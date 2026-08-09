@@ -103,6 +103,10 @@ func (agentPKIControlErrorStub) PrepareRelayListeners(_ context.Context, _ strin
 	return listeners, nil
 }
 
+func (s agentPKIControlErrorStub) ControlSyncAndPrepare(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest, []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
+	return storage.PKISecuritySnapshot{}, nil, nil, s.err
+}
+
 type heartbeatPKIProjectionStub struct {
 	calls *[]string
 }
@@ -134,6 +138,43 @@ func (s heartbeatPKIProjectionStub) PrepareRelayListeners(_ context.Context, _ s
 		prepared[index].TransportMode = "quic"
 	}
 	return prepared, nil
+}
+
+func (s heartbeatPKIProjectionStub) ControlSyncAndPrepare(ctx context.Context, agentID string, acknowledgement *storage.PKISecurityAcknowledgement, requests []PKIControlEnrollmentRequest, listeners []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
+	snapshot, credentials, err := s.ControlSync(ctx, agentID, acknowledgement, requests)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, credentials, nil, err
+	}
+	prepared, err := s.PrepareRelayListeners(ctx, agentID, listeners)
+	return snapshot, credentials, prepared, err
+}
+
+func TestControlSyncCredentialValidationFailsClosedAcrossConcurrentRotation(t *testing.T) {
+	credential := PKIControlCredential{RequestID: "request-1", Credential: storage.PKITunnelCredential{
+		IdentityID: "identity-1", CertificateID: "certificate-old", AuthorityID: "authority-old", CAGeneration: 1,
+	}}
+	rotated := storage.PKICanonicalState{
+		Authorities: []storage.PKIAuthorityRow{{ID: "authority-new", Generation: 2, Status: "active"}},
+		Certificates: []storage.PKICertificateRow{{
+			ID: "certificate-new", IdentityID: "identity-1", AuthorityID: "authority-new", CAGeneration: 2,
+			Status: storage.PKICertificateStatusActive,
+		}},
+	}
+	if err := validateControlCredentialsAgainstState([]PKIControlCredential{credential}, rotated); !errors.Is(err, storage.ErrPKIInvariant) {
+		t.Fatalf("validation after concurrent rotation error = %v, want fail-closed invariant", err)
+	}
+	rotated.Authorities = append(rotated.Authorities, storage.PKIAuthorityRow{ID: "authority-old", Generation: 1, Status: "retiring"})
+	rotated.Certificates = append(rotated.Certificates, storage.PKICertificateRow{
+		ID: "certificate-old", IdentityID: "identity-1", AuthorityID: "authority-old", CAGeneration: 1,
+		Status: storage.PKICertificateStatusActive,
+	})
+	currentCertificateID := "certificate-old"
+	rotated.Identities = []storage.PKIIdentityRow{{
+		ID: "identity-1", State: storage.PKIIdentityStateActive, CurrentCertificateID: &currentCertificateID,
+	}}
+	if err := validateControlCredentialsAgainstState([]PKIControlCredential{credential}, rotated); err != nil {
+		t.Fatalf("validation with retained rotation trust state error = %v", err)
+	}
 }
 
 type fakeHeartbeatTrafficService struct {
@@ -1390,25 +1431,23 @@ func TestHeartbeatPersistsPreparedPKISnapshotBeforeReply(t *testing.T) {
 	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ListenPort != 9443 || reply.RelayListeners[0].TransportMode != "quic" {
 		t.Fatalf("wire relay projection = %+v", reply.RelayListeners)
 	}
-	if len(store.issuedSnapshot.RelayListeners) != 1 || store.issuedSnapshot.RelayListeners[0].ListenPort != reply.RelayListeners[0].ListenPort || store.issuedSnapshot.RelayListeners[0].TransportMode != reply.RelayListeners[0].TransportMode {
-		t.Fatalf("issued/wire relay mismatch = %+v / %+v", store.issuedSnapshot.RelayListeners, reply.RelayListeners)
+	if len(store.issuedSnapshot.RelayListeners) != 1 || store.issuedSnapshot.RelayListeners[0].ListenPort != 7443 || store.issuedSnapshot.RelayListeners[0].TransportMode != "tcp" {
+		t.Fatalf("issued immutable relay projection = %+v", store.issuedSnapshot.RelayListeners)
 	}
 	var durable storage.Snapshot
 	if err := json.Unmarshal(store.issuedPayload, &durable); err != nil {
 		t.Fatal(err)
 	}
-	if len(durable.RelayListeners) != 1 || durable.RelayListeners[0].ListenPort != reply.RelayListeners[0].ListenPort || durable.RelayListeners[0].TransportMode != reply.RelayListeners[0].TransportMode {
-		t.Fatalf("durable/wire relay mismatch = %+v / %+v", durable.RelayListeners, reply.RelayListeners)
+	if len(durable.RelayListeners) != 1 || durable.RelayListeners[0].ListenPort != 7443 || durable.RelayListeners[0].TransportMode != "tcp" {
+		t.Fatalf("durable immutable relay projection = %+v", durable.RelayListeners)
 	}
 	if strings.Join(pkiCalls, ",") != "control,prepare" {
 		t.Fatalf("PKI projection order = %v, want control then prepare", pkiCalls)
 	}
-	if reply.PKISecurity == nil || store.issuedSnapshot.PKISecurity == nil || durable.PKISecurity == nil {
-		t.Fatalf("PKI security missing from wire/issued/durable: %+v / %+v / %+v", reply.PKISecurity, store.issuedSnapshot.PKISecurity, durable.PKISecurity)
+	if reply.PKISecurity == nil {
+		t.Fatal("wire PKI security is missing")
 	}
-	for label, got := range map[string]*storage.PKISecuritySnapshot{
-		"wire": reply.PKISecurity, "issued": store.issuedSnapshot.PKISecurity, "durable": durable.PKISecurity,
-	} {
+	for label, got := range map[string]*storage.PKISecuritySnapshot{"wire": reply.PKISecurity} {
 		if got.PKIDomainID != "pki-domain" || got.PKIEpoch != 3 || got.SecurityRevision != 7 || !got.Full ||
 			!got.IssuedAt.Equal(time.Date(2026, time.April, 11, 8, 0, 0, 0, time.UTC)) || got.SignerGeneration != 2 ||
 			len(got.TrustRoots) != 1 || got.TrustRoots[0].AuthorityID != "ca-1" || got.TrustRoots[0].Generation != 2 || got.TrustRoots[0].CertificatePEM != "CA" ||
@@ -1417,13 +1456,71 @@ func TestHeartbeatPersistsPreparedPKISnapshotBeforeReply(t *testing.T) {
 			t.Fatalf("%s PKI security projection = %+v", label, got)
 		}
 	}
-	if store.issuedSnapshot.AgentConfig.TrafficStatsEnabled == nil || !*store.issuedSnapshot.AgentConfig.TrafficStatsEnabled ||
-		durable.AgentConfig.TrafficStatsEnabled == nil || !*durable.AgentConfig.TrafficStatsEnabled {
-		t.Fatalf("traffic config missing from issued/durable snapshots: %+v / %+v", store.issuedSnapshot.AgentConfig, durable.AgentConfig)
+	if store.issuedSnapshot.PKISecurity != nil || durable.PKISecurity != nil {
+		t.Fatalf("dynamic PKI leaked into immutable snapshots: %+v / %+v", store.issuedSnapshot.PKISecurity, durable.PKISecurity)
+	}
+	if reply.TrafficStatsEnabled == nil || !*reply.TrafficStatsEnabled ||
+		store.issuedSnapshot.AgentConfig.TrafficStatsEnabled != nil || durable.AgentConfig.TrafficStatsEnabled != nil {
+		t.Fatalf("dynamic traffic projection leaked into immutable snapshots: reply=%v issued=%+v durable=%+v", reply.TrafficStatsEnabled, store.issuedSnapshot.AgentConfig, durable.AgentConfig)
 	}
 	payloadSum := sha256.Sum256(store.issuedPayload)
 	if reply.SnapshotDigest != hex.EncodeToString(payloadSum[:]) || reply.SnapshotDigest != store.issuedDigest {
 		t.Fatalf("wire/durable snapshot digest = %q / %q", reply.SnapshotDigest, store.issuedDigest)
+	}
+}
+
+func TestHeartbeatDynamicTrafficAndPKIDoNotChangeImmutableDigest(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID: "edge-dynamic", AgentToken: "token-edge-dynamic", DesiredRevision: 5,
+			CurrentRevision: 4, LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			Revision: 5, PluginPolicies: []storage.PluginPolicy{},
+			RelayListeners: []storage.RelayListener{{ID: 1, AgentID: "edge-dynamic", ListenPort: 7443, TransportMode: "tcp"}},
+		},
+	}
+	traffic := &fakeHeartbeatTrafficService{summary: TrafficSummary{Blocked: true, BlockReason: "monthly quota exceeded"}}
+	healthy := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	healthy.SetTrafficService(traffic)
+	healthy.SetPKIController(heartbeatPKIProjectionStub{})
+
+	blocked, err := healthy.Heartbeat(t.Context(), HeartbeatRequest{CurrentRevision: 4, LastApplyStatus: "success"}, "token-edge-dynamic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocked.TrafficBlocked || blocked.PKISecurity == nil || len(blocked.RelayListeners) != 1 {
+		t.Fatalf("healthy blocked runtime projection = %+v", blocked)
+	}
+	wantDigest := blocked.SnapshotDigest
+
+	traffic.summary = TrafficSummary{}
+	unblocked, err := healthy.Heartbeat(t.Context(), HeartbeatRequest{CurrentRevision: 4, LastApplyStatus: "success"}, "token-edge-dynamic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unblocked.TrafficBlocked || unblocked.SnapshotDigest != wantDigest {
+		t.Fatalf("unblocked runtime projection/digest = %+v, want digest %q", unblocked, wantDigest)
+	}
+
+	disabled := NewAgentService(config.Config{ListenAddr: "127.0.0.1:0"}, store)
+	disabled.SetPKIController(heartbeatPKIProjectionStub{})
+	disabledReply, err := disabled.Heartbeat(t.Context(), HeartbeatRequest{CurrentRevision: 4, LastApplyStatus: "success"}, "token-edge-dynamic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabledReply.TrafficStatsEnabled == nil || *disabledReply.TrafficStatsEnabled || disabledReply.SnapshotDigest != wantDigest {
+		t.Fatalf("disabled runtime projection/digest = %+v, want digest %q", disabledReply, wantDigest)
+	}
+
+	degraded := NewAgentService(config.Config{ListenAddr: "127.0.0.1:0"}, store)
+	degraded.SetPKIController(agentPKIControlErrorStub{err: errors.New("temporary PKI outage")})
+	degradedReply, err := degraded.Heartbeat(t.Context(), HeartbeatRequest{CurrentRevision: 4, LastApplyStatus: "success"}, "token-edge-dynamic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if degradedReply.PKISecurity != nil || len(degradedReply.RelayListeners) != 0 || degradedReply.SnapshotDigest != wantDigest {
+		t.Fatalf("degraded runtime projection/digest = %+v, want digest %q", degradedReply, wantDigest)
 	}
 }
 
@@ -2071,16 +2168,18 @@ func TestHeartbeatTrafficIngestErrorFailsAgentSync(t *testing.T) {
 	}
 }
 
-func TestHeartbeatTrafficBlockStateErrorsDoNotFailAgentSync(t *testing.T) {
+func TestHeartbeatTrafficBlockStateErrorsPreserveDurableBlock(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
-			ID:              "remote-traffic",
-			Name:            "remote-traffic",
-			AgentToken:      "token-remote-traffic",
-			DesiredRevision: 2,
-			CurrentRevision: 1,
-			LastApplyStatus: "success",
+			ID:                 "remote-traffic",
+			Name:               "remote-traffic",
+			AgentToken:         "token-remote-traffic",
+			DesiredRevision:    2,
+			CurrentRevision:    1,
+			LastApplyStatus:    "success",
+			TrafficBlocked:     true,
+			TrafficBlockReason: "monthly quota exceeded",
 		}},
 		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
 	}
@@ -2094,8 +2193,11 @@ func TestHeartbeatTrafficBlockStateErrorsDoNotFailAgentSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Heartbeat() error = %v", err)
 	}
-	if reply.TrafficBlocked {
-		t.Fatal("TrafficBlocked = true, want false on summary failure")
+	if !reply.TrafficBlocked || reply.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("traffic block on state error = %v %q, want durable block preserved", reply.TrafficBlocked, reply.TrafficBlockReason)
+	}
+	if !store.savedAgent.TrafficBlocked || store.savedAgent.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("durable block was cleared on state error: %+v", store.savedAgent)
 	}
 }
 

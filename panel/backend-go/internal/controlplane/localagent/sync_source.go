@@ -122,8 +122,9 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	}
 	blocked, reason, err := s.trafficService.BlockState(ctx, s.agentID)
 	if err != nil {
-		snapshot.AgentConfig.TrafficBlocked = false
-		snapshot.AgentConfig.TrafficBlockReason = ""
+		// Preserve the durable last-known state on transient quota/storage
+		// failures. Only a successful explicit unblocked result may reopen
+		// traffic.
 		return snapshot, nil
 	}
 	snapshot.AgentConfig.TrafficBlocked = blocked

@@ -159,6 +159,8 @@ type DegradedPKIService struct {
 	healthy *InternalPKIService
 }
 
+var _ AgentPKIController = (*DegradedPKIService)(nil)
+
 func NewDegradedPKIService(cause error) *DegradedPKIService {
 	return &DegradedPKIService{blocker: pkiRecoveryBlocker(cause)}
 }
@@ -338,6 +340,14 @@ func (s *DegradedPKIService) ControlSync(ctx context.Context, agentID string, ac
 		return healthy.ControlSync(ctx, agentID, acknowledgement, requests)
 	}
 	return storage.PKISecuritySnapshot{}, nil, s.unavailable()
+}
+func (s *DegradedPKIService) ControlSyncAndPrepare(ctx context.Context, agentID string, acknowledgement *storage.PKISecurityAcknowledgement, requests []PKIControlEnrollmentRequest, listeners []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
+	// Resolve the healthy implementation exactly once so promotion/degradation
+	// cannot split one heartbeat across different runtime instances.
+	if healthy := s.current(); healthy != nil {
+		return healthy.ControlSyncAndPrepare(ctx, agentID, acknowledgement, requests, listeners)
+	}
+	return storage.PKISecuritySnapshot{}, nil, nil, s.unavailable()
 }
 func (s *DegradedPKIService) PrepareRelayListeners(ctx context.Context, agentID string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
 	if healthy := s.current(); healthy != nil {

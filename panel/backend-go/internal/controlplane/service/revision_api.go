@@ -51,10 +51,6 @@ type operationDismissRepository interface {
 	DismissOperation(context.Context, string, time.Time) (storage.OperationRow, bool, error)
 }
 
-type revisionPKISecurityRepository interface {
-	LoadLatestPKISecuritySnapshot(context.Context) (*storage.PKISecuritySnapshot, error)
-}
-
 type supportedSnapshotRepairStore interface {
 	revisionpkg.Store
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -510,13 +506,6 @@ func (s *RevisionAPI) PullRemoteRevision(ctx context.Context, agentID string) (R
 	}
 	revisionRow := runtimeSnapshot.Revision
 	snapshot := runtimeSnapshot.Snapshot
-	if source, ok := s.repository.(revisionPKISecurityRepository); ok {
-		pkiSecurity, err := source.LoadLatestPKISecuritySnapshot(ctx)
-		if err != nil {
-			return RemoteRevisionPull{}, err
-		}
-		snapshot.PKISecurity = pkiSecurity
-	}
 	if lease, found, err := s.currentRemoteLease(ctx, revisionRow); err != nil {
 		return RemoteRevisionPull{}, err
 	} else if found {

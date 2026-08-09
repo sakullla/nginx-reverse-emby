@@ -97,9 +97,6 @@ type AgentPKIController interface {
 	RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error)
 	ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error)
 	PrepareRelayListeners(context.Context, string, []storage.RelayListener) ([]storage.RelayListener, error)
-}
-
-type coherentAgentPKIController interface {
 	ControlSyncAndPrepare(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest, []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error)
 }
 
@@ -1399,6 +1396,8 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	snapshot := heartbeatSnapshot.Snapshot
 	snapshotMetadata := heartbeatSnapshot.Metadata
 	pkiDegraded := false
+	wireRelayListeners := append([]storage.RelayListener(nil), snapshot.RelayListeners...)
+	var wirePKISecurity *storage.PKISecuritySnapshot
 	var pkiCredentials []PKIControlCredential
 	var pkiStatus *PKIControlStatus
 	if s.pki != nil {
@@ -1408,31 +1407,19 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		var pkiSnapshot storage.PKISecuritySnapshot
 		var credentials []PKIControlCredential
 		var controlErr error
-		if coherentPKI, ok := s.pki.(coherentAgentPKIController); ok {
-			pkiSnapshot, credentials, snapshot.RelayListeners, controlErr = coherentPKI.ControlSyncAndPrepare(
-				ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests, snapshot.RelayListeners,
-			)
-		} else {
-			pkiSnapshot, credentials, controlErr = s.pki.ControlSync(ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests)
-			if controlErr == nil {
-				snapshot.RelayListeners, err = s.pki.PrepareRelayListeners(ctx, row.ID, snapshot.RelayListeners)
-				if err != nil {
-					controlErr = err
-				}
-			}
-		}
+		pkiSnapshot, credentials, wireRelayListeners, controlErr = s.pki.ControlSyncAndPrepare(
+			ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests, wireRelayListeners,
+		)
 		if controlErr != nil {
 			if isPKIControlClientError(controlErr) {
 				return HeartbeatReply{}, controlErr
 			}
 			pkiDegraded = true
-			snapshot.RelayListeners = []storage.RelayListener{}
-			snapshot.PKISecurity = nil
+			wireRelayListeners = []storage.RelayListener{}
+			wirePKISecurity = nil
 		} else {
 			if pkiSnapshot.PKIDomainID != "" {
-				snapshot.PKISecurity = &pkiSnapshot
-			} else {
-				snapshot.PKISecurity = nil
+				wirePKISecurity = &pkiSnapshot
 			}
 			pkiCredentials = credentials
 		}
@@ -1443,16 +1430,15 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		}
 	}
 
-	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(ctx, row.ID, trafficStatsEnabled)
+	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(
+		ctx, row.ID, trafficStatsEnabled, snapshotMetadata.TrafficBlocked, snapshotMetadata.TrafficBlockReason,
+	)
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
-	snapshot.AgentConfig.TrafficStatsEnabled = heartbeatBoolPtr(trafficStatsEnabled)
-	snapshot.AgentConfig.TrafficBlocked = trafficBlocked
-	snapshot.AgentConfig.TrafficBlockReason = strings.TrimSpace(trafficBlockReason)
 	snapshotDigest, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
 	if err != nil {
 		return HeartbeatReply{}, err
@@ -1467,19 +1453,19 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
 		PluginPolicies:       snapshot.PluginPolicies,
-		RelayListeners:       snapshot.RelayListeners,
+		RelayListeners:       wireRelayListeners,
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
-		PKISecurity:          snapshot.PKISecurity,
+		PKISecurity:          wirePKISecurity,
 		PKICredentials:       pkiCredentials,
 		PKIStatus:            pkiStatus,
 		DDNSConfig:           snapshot.DDNSConfig,
 		OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
 		TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
-		TrafficStatsEnabled:  snapshot.AgentConfig.TrafficStatsEnabled,
-		TrafficBlocked:       snapshot.AgentConfig.TrafficBlocked,
-		TrafficBlockReason:   snapshot.AgentConfig.TrafficBlockReason,
+		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
+		TrafficBlocked:       trafficBlocked,
+		TrafficBlockReason:   strings.TrimSpace(trafficBlockReason),
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -1595,16 +1581,13 @@ func (s *agentService) recordTrafficEvent(ctx context.Context, agentID, eventTyp
 	})
 }
 
-func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID string, enabled bool) (bool, string, error) {
+func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID string, enabled bool, fallbackBlocked bool, fallbackReason string) (bool, string, error) {
 	if !enabled || s.trafficService == nil {
 		return false, "", nil
 	}
 	blocked, reason, err := s.trafficService.BlockState(ctx, agentID)
 	if err != nil {
-		if errors.Is(err, ErrTrafficStatsDisabled) {
-			return false, "", nil
-		}
-		return false, "", nil
+		return fallbackBlocked, strings.TrimSpace(fallbackReason), nil
 	}
 	if !blocked {
 		return false, "", nil

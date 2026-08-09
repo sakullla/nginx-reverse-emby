@@ -84,6 +84,8 @@ type InternalPKIService struct {
 	lastInvalidDataCleanup     time.Time
 }
 
+var _ AgentPKIController = (*InternalPKIService)(nil)
+
 func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIService, error) {
 	if options.Store == nil || options.Lease == nil || options.Tokens == nil || options.Enrollment == nil ||
 		options.Revocation == nil || options.SnapshotSigner == nil || options.Tasks == nil || options.Backup == nil || options.Activation == nil {
@@ -197,9 +199,22 @@ func (s *InternalPKIService) ControlSync(
 	acknowledgement *storage.PKISecurityAcknowledgement,
 	requests []PKIControlEnrollmentRequest,
 ) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
-	state, err := s.recordSecurityAcknowledgement(ctx, agentID, acknowledgement)
+	state, credentials, err := s.controlSyncCanonicalState(ctx, agentID, acknowledgement, requests)
 	if err != nil {
-		return storage.PKISecuritySnapshot{}, nil, err
+		return storage.PKISecuritySnapshot{}, credentials, err
+	}
+	snapshot, err := s.fullSecuritySnapshot(ctx, state)
+	return snapshot, credentials, err
+}
+
+func (s *InternalPKIService) controlSyncCanonicalState(
+	ctx context.Context,
+	agentID string,
+	acknowledgement *storage.PKISecurityAcknowledgement,
+	requests []PKIControlEnrollmentRequest,
+) (storage.PKICanonicalState, []PKIControlCredential, error) {
+	if _, err := s.recordSecurityAcknowledgement(ctx, agentID, acknowledgement); err != nil {
+		return storage.PKICanonicalState{}, nil, err
 	}
 	credentials := make([]PKIControlCredential, 0, len(requests))
 	seen := make(map[string]struct{}, len(requests))
@@ -221,7 +236,7 @@ func (s *InternalPKIService) ControlSync(
 		})
 		if err != nil {
 			if !isPKIControlEnrollmentItemError(err) {
-				return storage.PKISecuritySnapshot{}, credentials, err
+				return storage.PKICanonicalState{}, credentials, err
 			}
 			credentials = append(credentials, PKIControlCredential{RequestID: requestID, Error: pkiControlEnrollmentErrorCode(err)})
 			continue
@@ -236,15 +251,52 @@ func (s *InternalPKIService) ControlSync(
 			},
 		})
 	}
-	state, err = s.store.LoadPKICanonicalState(ctx)
+	state, err := s.store.LoadPKICanonicalState(ctx)
 	if err != nil {
-		return storage.PKISecuritySnapshot{}, credentials, err
+		return storage.PKICanonicalState{}, credentials, err
 	}
-	snapshot, err := s.fullSecuritySnapshot(ctx, state)
-	if err != nil {
-		return storage.PKISecuritySnapshot{}, credentials, err
+	if err := validateControlCredentialsAgainstState(credentials, state); err != nil {
+		return storage.PKICanonicalState{}, credentials, err
 	}
-	return snapshot, credentials, nil
+	return state, credentials, nil
+}
+
+func validateControlCredentialsAgainstState(credentials []PKIControlCredential, state storage.PKICanonicalState) error {
+	for _, issued := range credentials {
+		credential := issued.Credential
+		if issued.Error != "" || credential.CertificateID == "" {
+			continue
+		}
+		authorityFound := false
+		for _, authority := range state.Authorities {
+			if authority.ID == credential.AuthorityID && authority.Generation == credential.CAGeneration &&
+				(authority.Status == "active" || authority.Status == "prepared" || authority.Status == "retiring") {
+				authorityFound = true
+				break
+			}
+		}
+		certificateFound := false
+		for _, certificate := range state.Certificates {
+			if certificate.ID == credential.CertificateID && certificate.IdentityID == credential.IdentityID &&
+				certificate.AuthorityID == credential.AuthorityID && certificate.CAGeneration == credential.CAGeneration &&
+				certificate.Status == storage.PKICertificateStatusActive {
+				certificateFound = true
+				break
+			}
+		}
+		identityFound := false
+		for _, identity := range state.Identities {
+			if identity.ID == credential.IdentityID && identity.State == storage.PKIIdentityStateActive &&
+				identity.CurrentCertificateID != nil && *identity.CurrentCertificateID == credential.CertificateID {
+				identityFound = true
+				break
+			}
+		}
+		if !authorityFound || !certificateFound || !identityFound {
+			return fmt.Errorf("%w: control credential %q is not represented by the final canonical PKI state", storage.ErrPKIInvariant, credential.CertificateID)
+		}
+	}
+	return nil
 }
 
 // ControlSyncAndPrepare projects the security payload and relay listeners from
@@ -258,11 +310,7 @@ func (s *InternalPKIService) ControlSyncAndPrepare(
 	requests []PKIControlEnrollmentRequest,
 	listeners []storage.RelayListener,
 ) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
-	_, credentials, err := s.ControlSync(ctx, agentID, acknowledgement, requests)
-	if err != nil {
-		return storage.PKISecuritySnapshot{}, credentials, nil, err
-	}
-	state, err := s.store.LoadPKICanonicalState(ctx)
+	state, credentials, err := s.controlSyncCanonicalState(ctx, agentID, acknowledgement, requests)
 	if err != nil {
 		return storage.PKISecuritySnapshot{}, credentials, nil, err
 	}

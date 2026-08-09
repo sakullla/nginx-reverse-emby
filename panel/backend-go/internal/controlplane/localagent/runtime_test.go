@@ -3,6 +3,7 @@ package localagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"testing"
@@ -346,6 +347,23 @@ func TestLocalSyncSourceAddsTrafficAgentConfig(t *testing.T) {
 	}
 	if !got.AgentConfig.TrafficBlocked || got.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
 		t.Fatalf("AgentConfig traffic block = %+v", got.AgentConfig)
+	}
+}
+
+func TestLocalSyncSourcePreservesTrafficBlockOnStateError(t *testing.T) {
+	store := &bridgeStoreStub{snapshot: Snapshot{
+		DesiredVersion: "1.2.3", Revision: 15,
+		AgentConfig: storage.AgentConfig{TrafficBlocked: true, TrafficBlockReason: "monthly quota exceeded"},
+	}}
+	source := NewSyncSource(store, "local")
+	source.SetTrafficService(true, localTrafficSummaryStub{err: errors.New("traffic state unavailable")})
+
+	got, err := source.Sync(t.Context(), SyncRequest{CurrentRevision: 14})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if !got.AgentConfig.TrafficBlocked || got.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("AgentConfig traffic block on state error = %+v", got.AgentConfig)
 	}
 }
 

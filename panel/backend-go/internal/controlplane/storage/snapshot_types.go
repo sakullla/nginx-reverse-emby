@@ -263,9 +263,9 @@ func typedSnapshotRuleReferencesExcludedResource(
 type AgentConfig struct {
 	OutboundProxyURL     string `json:"outbound_proxy_url,omitempty"`
 	TrafficStatsInterval string `json:"traffic_stats_interval,omitempty"`
-	TrafficStatsEnabled  *bool  `json:"traffic_stats_enabled,omitempty"`
-	TrafficBlocked       bool   `json:"traffic_blocked,omitempty"`
-	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
+	TrafficStatsEnabled  *bool  `json:"-"`
+	TrafficBlocked       bool   `json:"-"`
+	TrafficBlockReason   string `json:"-"`
 }
 
 // DDNSConfig is the per-agent dynamic DNS extraction configuration. It is the

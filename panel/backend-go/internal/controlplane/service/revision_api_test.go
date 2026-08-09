@@ -749,6 +749,49 @@ func TestRevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport(t *t
 	}
 }
 
+func TestRevisionAPIPullKeepsIssuedPKIArtifactAfterRotation(t *testing.T) {
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	issuedPKI := &storage.PKISecuritySnapshot{PKIDomainID: "domain", PKIEpoch: 1, SecurityRevision: 2, SignerGeneration: 1, Signature: []byte("issued")}
+	rotatedPKI := &storage.PKISecuritySnapshot{PKIDomainID: "domain", PKIEpoch: 1, SecurityRevision: 3, SignerGeneration: 2, Signature: []byte("rotated")}
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "op-pki-artifact", Revision: 7, Now: time.Now().UTC(),
+		States: map[string]string{"edge-pki-artifact": storage.AgentRevisionStatePending},
+		Snapshots: map[string]storage.Snapshot{"edge-pki-artifact": {
+			Revision: 7, PluginPolicies: []storage.PluginPolicy{}, PKISecurity: issuedPKI,
+		}},
+	})
+	repository := &rotatedPKIRevisionRepository{GormStore: store, latest: rotatedPKI}
+	coord, err := coordinator.New(repository, coordinator.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(repository, coord)
+	pull, err := api.PullRemoteRevision(t.Context(), "edge-pki-artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pull.HasUpdate || pull.Lease == nil || pull.Snapshot == nil || pull.Snapshot.PKISecurity == nil {
+		t.Fatalf("pull = %+v", pull)
+	}
+	if pull.Snapshot.PKISecurity.SecurityRevision != issuedPKI.SecurityRevision || string(pull.Snapshot.PKISecurity.Signature) != "issued" {
+		t.Fatalf("pull PKI = %+v, want immutable issued artifact", pull.Snapshot.PKISecurity)
+	}
+	_, digest, err := revision.CanonicalSnapshotPayload(*pull.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != pull.Lease.SnapshotDigest {
+		t.Fatalf("wire/artifact digest = %q / %q", digest, pull.Lease.SnapshotDigest)
+	}
+	if repository.latestLoads != 0 {
+		t.Fatalf("latest PKI loads during immutable pull = %d", repository.latestLoads)
+	}
+}
+
 func TestRevisionAPIRejectsExpiredDrainReportWithoutMutation(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
@@ -908,6 +951,17 @@ func (s *drainInterleavingStore) CompleteCoordinatorDrain(ctx context.Context, r
 		beforeDrain()
 	}
 	return s.GormStore.CompleteCoordinatorDrain(ctx, request)
+}
+
+type rotatedPKIRevisionRepository struct {
+	*storage.GormStore
+	latest      *storage.PKISecuritySnapshot
+	latestLoads int
+}
+
+func (r *rotatedPKIRevisionRepository) LoadLatestPKISecuritySnapshot(context.Context) (*storage.PKISecuritySnapshot, error) {
+	r.latestLoads++
+	return r.latest, nil
 }
 
 type revisionOperationSeed struct {

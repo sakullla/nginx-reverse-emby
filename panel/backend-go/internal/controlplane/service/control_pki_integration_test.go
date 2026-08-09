@@ -21,6 +21,27 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+type blockingCanonicalStateStore struct {
+	internalPKIControlStore
+	loadCount int
+	blockAt   int
+	blocked   chan struct{}
+	release   chan struct{}
+}
+
+func (s *blockingCanonicalStateStore) LoadPKICanonicalState(ctx context.Context) (storage.PKICanonicalState, error) {
+	s.loadCount++
+	if s.loadCount == s.blockAt {
+		close(s.blocked)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return storage.PKICanonicalState{}, ctx.Err()
+		}
+	}
+	return s.internalPKIControlStore.LoadPKICanonicalState(ctx)
+}
+
 func TestPKIBootstrapSeparatesTunnelPKIFromManagedCertificates(t *testing.T) {
 	root := t.TempDir()
 	store := newControlPKIStore(t, root)
@@ -875,6 +896,89 @@ func TestAgentAuthenticatedControlSyncEnrollsListenerCSR(t *testing.T) {
 		PublicHost: &replacementPublicHost, PublicPort: &replacementPort,
 	}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create(revoked listener ID) error = %v", err)
+	}
+}
+
+func TestControlSyncAndPrepareFailsClosedWhenGenerationRetiresAfterEnrollment(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	if err := fixture.store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A", AgentToken: "control-token-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+			ID: "agent-identity-a", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindAgent,
+			AgentID: "agent-a", State: storage.PKIIdentityStateEnrollmentRequired,
+			CreatedAt: fixture.now, UpdatedAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := newPKIIdentityBinding(
+		"domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment := newPKIEnrollmentServiceForTest(
+		t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("control-sync-generation-race"),
+	)
+	store := &blockingCanonicalStateStore{
+		internalPKIControlStore: fixture.store,
+		blockAt:                 2,
+		blocked:                 make(chan struct{}),
+		release:                 make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-store.release:
+		default:
+			close(store.release)
+		}
+	})
+	pki := &InternalPKIService{
+		store: store, lease: pkiStaticLeaseGate{}, enrollment: enrollment,
+		clock: func() time.Time { return fixture.now },
+	}
+	request := PKIControlEnrollmentRequest{
+		RequestID: "agent-a-generation-1", Kind: storage.PKIIdentityKindAgent,
+		Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM:  mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false), controlToken: "control-token-a",
+	}
+	type syncResult struct {
+		snapshot    storage.PKISecuritySnapshot
+		credentials []PKIControlCredential
+		listeners   []storage.RelayListener
+		err         error
+	}
+	result := make(chan syncResult, 1)
+	go func() {
+		snapshot, credentials, listeners, syncErr := pki.ControlSyncAndPrepare(
+			t.Context(), "agent-a", nil, []PKIControlEnrollmentRequest{request}, nil,
+		)
+		result <- syncResult{snapshot: snapshot, credentials: credentials, listeners: listeners, err: syncErr}
+	}()
+	select {
+	case <-store.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("control sync did not reach the final canonical-state read")
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.ExpirePKICertificatesByGeneration(t.Context(), 1, "concurrent authority retirement", fixture.now.Add(time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(store.release)
+	select {
+	case got := <-result:
+		if !errors.Is(got.err, storage.ErrPKIInvariant) {
+			t.Fatalf("ControlSyncAndPrepare() error = %v, want fail-closed PKI invariant", got.err)
+		}
+		if got.snapshot.PKIDomainID != "" || len(got.listeners) != 0 || len(got.credentials) != 1 ||
+			got.credentials[0].Credential.CAGeneration != 1 {
+			t.Fatalf("mixed generation escaped fail-closed boundary: %+v", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("control sync remained blocked after concurrent generation retirement")
 	}
 }
 
