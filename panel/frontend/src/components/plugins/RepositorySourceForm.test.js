@@ -61,7 +61,7 @@ describe('RepositorySourceForm', () => {
     expect(payload).not.toHaveProperty('signer_key_id')
     expect(payload).not.toHaveProperty('signer_secret_ref')
     expect(payload).not.toHaveProperty('current_resolved_oid')
-    expect(payload).not.toHaveProperty('config_revision')
+    expect(payload.config_revision).toBe(7)
     expect(payload.refresh_interval).toBe('1h')
   })
 
@@ -77,7 +77,8 @@ describe('RepositorySourceForm', () => {
           ref_name: 'main',
           credential_configured: true,
           signer_key_id: 'market-key',
-          signer_fingerprint: 'SHA256:abc'
+          signer_fingerprint: 'SHA256:abc',
+          config_revision: 4
         }
       }
     })
@@ -103,7 +104,8 @@ describe('RepositorySourceForm', () => {
           ref_kind: 'branch',
           ref_name: 'main',
           signer_key_id: 'old-key',
-          signer_fingerprint: 'SHA256:abc'
+          signer_fingerprint: 'SHA256:abc',
+          config_revision: 4
         }
       }
     })
@@ -124,5 +126,26 @@ describe('RepositorySourceForm', () => {
 
     expect(wrapper.emitted('save')).toBeUndefined()
     expect(wrapper.text()).toContain('请输入签名密钥 ID 和签名密钥引用')
+  })
+
+  it('fails closed when an edit source has no observed config revision', async () => {
+    const wrapper = mount(RepositorySourceForm, {
+      props: {
+        source: {
+          id: 'market',
+          name: 'Market',
+          url: 'https://git.example.com/market.git',
+          purpose: 'market',
+          ref_kind: 'branch',
+          ref_name: 'main',
+          signer_key_id: 'market-key'
+        }
+      }
+    })
+
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('save')).toBeUndefined()
+    expect(wrapper.text()).toContain('仓库源版本信息无效')
   })
 })

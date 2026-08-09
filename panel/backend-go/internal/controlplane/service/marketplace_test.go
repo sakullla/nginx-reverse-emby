@@ -713,7 +713,7 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 	}
 	digest := strings.Repeat("d", 64)
 	now := time.Now().UTC()
-	refresh := marketplace.RefreshOperation{ID: "refresh-failed", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-failed", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := marketplace.RefreshOperation{ID: "refresh-failed", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: now, LeaseToken: "lease-failed", LeaseExpiresAt: now.Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func TestOfficialPartialRefreshFailureCollectsSignerAwareCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	refresh := marketplace.RefreshOperation{ID: "official-partial-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "official-partial-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := marketplace.RefreshOperation{ID: "official-partial-refresh", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: now, LeaseToken: "official-partial-lease", LeaseExpiresAt: now.Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}

@@ -184,6 +184,10 @@ function submit() {
   if (!isEditing.value && (!form.signer_key_id.trim() || !form.signer_secret_ref.trim())) {
     errors.submit = '请输入签名密钥 ID 和签名密钥引用'
   }
+  const configRevision = Number(props.source?.config_revision)
+  if (isEditing.value && (!Number.isSafeInteger(configRevision) || configRevision <= 0)) {
+    errors.submit = '仓库源版本信息无效，请重新打开编辑表单'
+  }
   const signerKeyChanged = isEditing.value && form.signer_key_id.trim() !== (props.source?.signer_key_id || '')
   if (signerKeyChanged && !form.signer_secret_ref.trim()) {
     errors.submit = '更换签名密钥 ID 时必须同时提供签名密钥引用'
@@ -200,6 +204,7 @@ function submit() {
     refresh_interval: form.refresh_interval.trim()
   }
   if (!isEditing.value) payload.id = form.id.trim()
+  if (isEditing.value) payload.config_revision = configRevision
   if (form.credential_ref.trim()) payload.credential_ref = form.credential_ref.trim()
   if (form.clear_credential) payload.credential_ref = ''
   if (!isEditing.value || form.signer_secret_ref.trim()) payload.signer_key_id = form.signer_key_id.trim()

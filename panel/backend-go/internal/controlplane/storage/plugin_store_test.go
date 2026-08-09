@@ -825,7 +825,7 @@ func TestStagePackageAcquisitionPersistsDerivedSourceTrustFingerprint(t *testing
 			}
 			now := time.Now().UTC()
 			operationID := fmt.Sprintf("staging-trust-%d", index)
-			operation := marketplace.RefreshOperation{ID: operationID, SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: operationID + "-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: operationID, SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: operationID + "-lease", LeaseExpiresAt: now.Add(time.Minute)})
 			if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 				t.Fatal(err)
 			}
@@ -1893,7 +1893,7 @@ func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *te
 	if err := store.PromoteSnapshot(ctx, source, stable); err != nil {
 		t.Fatal(err)
 	}
-	refresh := marketplace.RefreshOperation{ID: "refresh-kept", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "refresh-kept-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-kept", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "refresh-kept-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -1952,7 +1952,7 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 	if err := store.PromoteSnapshot(ctx, source, stable); err != nil {
 		t.Fatal(err)
 	}
-	op := marketplace.RefreshOperation{ID: "refresh-next", SourceID: source.ID, Commit: strings.Repeat("c", 40), Status: "running", StartedAt: now, LeaseToken: "lease-next", LeaseExpiresAt: now.Add(2 * time.Minute)}
+	op := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-next", SourceID: source.ID, Commit: strings.Repeat("c", 40), Status: "running", StartedAt: now, LeaseToken: "lease-next", LeaseExpiresAt: now.Add(2 * time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, op); err != nil {
 		t.Fatal(err)
 	}
@@ -2010,7 +2010,7 @@ func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) 
 				t.Fatal(err)
 			}
 			now := time.Now().UTC()
-			operation := marketplace.RefreshOperation{ID: "locked-refresh", SourceID: source.ID, Commit: strings.Repeat("1", 40), Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "locked-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "locked-refresh", SourceID: source.ID, Commit: strings.Repeat("1", 40), Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "locked-lease", LeaseExpiresAt: now.Add(time.Minute)})
 			if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 				t.Fatal(err)
 			}
@@ -2088,7 +2088,7 @@ func TestRefreshFailureFinalizationRejectsActorSubstitutionAtomically(t *testing
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	operation := marketplace.RefreshOperation{ID: "failure-actor-refresh", SourceID: source.ID, Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "failure-actor-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "failure-actor-refresh", SourceID: source.ID, Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "failure-actor-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -2132,7 +2132,7 @@ func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	operation := marketplace.RefreshOperation{ID: "lease-required-refresh", SourceID: source.ID, Commit: strings.Repeat("2", 40), Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "lease-required-refresh", SourceID: source.ID, Commit: strings.Repeat("2", 40), Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -2274,7 +2274,7 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	expired := marketplace.RefreshOperation{ID: "expired", SourceID: source.ID, Status: "running", StartedAt: now.Add(-2 * time.Hour), LeaseToken: "old-lease", LeaseExpiresAt: now.Add(-time.Hour)}
+	expired := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "expired", SourceID: source.ID, Status: "running", StartedAt: now.Add(-2 * time.Hour), LeaseToken: "old-lease", LeaseExpiresAt: now.Add(-time.Hour)})
 	if err := store.AcquireRefreshLease(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
@@ -2282,7 +2282,7 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 	if err := store.db.Create(&PluginPackageStagingRow{SourceID: source.ID, OperationID: expired.ID, Digest: abandonedDigest, UpdatedAt: expired.StartedAt}).Error; err != nil {
 		t.Fatal(err)
 	}
-	fresh := marketplace.RefreshOperation{ID: "fresh", SourceID: source.ID, Commit: strings.Repeat("f", 40), Status: "running", StartedAt: now, LeaseToken: "new-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	fresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "fresh", SourceID: source.ID, Commit: strings.Repeat("f", 40), Status: "running", StartedAt: now, LeaseToken: "new-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
 		t.Fatalf("expired lease was not recoverable: %v", err)
 	}
@@ -2366,7 +2366,7 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 		}
 		started := time.Now().UTC().Add(-time.Second)
 		oid := strings.Repeat("a", 40)
-		op := marketplace.RefreshOperation{ID: "audit-failure-op", SourceID: source.ID, SourceRevision: 999, RefKind: marketplace.GitRefKindTag, RefName: "spoofed", Status: "running", StartedAt: started, LeaseToken: "audit-failure-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		op := marketplace.RefreshOperation{ID: "audit-failure-op", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: "audit-failure-lease", LeaseExpiresAt: started.Add(time.Minute)}
 		if err := store.AcquireRefreshLease(ctx, op); err != nil {
 			t.Fatal(err)
 		}
@@ -2398,7 +2398,7 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 			t.Fatal(err)
 		}
 		started := time.Now().UTC().Add(-2 * time.Hour)
-		old := marketplace.RefreshOperation{ID: "audit-interrupted-old", SourceID: source.ID, Commit: strings.Repeat("b", 40), Status: "running", StartedAt: started, LeaseToken: "audit-interrupted-old-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		old := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "audit-interrupted-old", SourceID: source.ID, Commit: strings.Repeat("b", 40), Status: "running", StartedAt: started, LeaseToken: "audit-interrupted-old-lease", LeaseExpiresAt: started.Add(time.Minute)})
 		if err := store.AcquireRefreshLease(ctx, old); err != nil {
 			t.Fatal(err)
 		}
@@ -2408,7 +2408,7 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 			t.Fatal(err)
 		}
 		now := time.Now().UTC()
-		fresh := marketplace.RefreshOperation{ID: "audit-interrupted-new", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "audit-interrupted-new-lease", LeaseExpiresAt: now.Add(time.Minute)}
+		fresh := refreshOperationForSource(rotated, marketplace.RefreshOperation{ID: "audit-interrupted-new", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "audit-interrupted-new-lease", LeaseExpiresAt: now.Add(time.Minute)})
 		if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
 			t.Fatal(err)
 		}
@@ -2438,7 +2438,7 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 			t.Fatal(err)
 		}
 		started := time.Now().UTC().Add(-time.Second)
-		op := marketplace.RefreshOperation{ID: "audit-official-op", SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: "audit-official-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		op := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "audit-official-op", SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: "audit-official-lease", LeaseExpiresAt: started.Add(time.Minute)})
 		if err := store.AcquireRefreshLease(ctx, op); err != nil {
 			t.Fatal(err)
 		}
@@ -2452,6 +2452,64 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 			t.Fatalf("official audit did not derive built-in trust: %#v", metadata)
 		}
 	})
+}
+
+func TestAcquireRefreshLeaseRejectsPreLeaseSourceEditWithoutHybridState(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "pre-lease-edit", "Pre Lease Edit", "https://example.com/pre-lease.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	missing := marketplace.RefreshOperation{ID: "pre-lease-missing", SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: "pre-lease-missing-token", LeaseExpiresAt: started.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, missing); err == nil || !strings.Contains(err.Error(), "complete marketplace source generation") {
+		t.Fatalf("missing generation acquire error = %v", err)
+	}
+	var missingOperations int64
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", missing.ID).Count(&missingOperations).Error; err != nil || missingOperations != 0 {
+		t.Fatalf("missing generation operation count=%d err=%v", missingOperations, err)
+	}
+	var afterMissing MarketplaceSourceRow
+	if err := store.db.Where("id = ?", source.ID).First(&afterMissing).Error; err != nil || afterMissing.RefreshLeaseToken != "" || afterMissing.LastResult != "" {
+		t.Fatalf("missing generation changed source lease: %+v err=%v", afterMissing, err)
+	}
+	stale := marketplace.RefreshOperation{ID: "pre-lease-stale", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: "pre-lease-stale-token", LeaseExpiresAt: started.Add(time.Minute)}
+	updated := source
+	updated.RefName = "release"
+	updated.ConfigRevision++
+	if _, err := store.UpdateMarketplaceSource(ctx, updated, source.ConfigRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcquireRefreshLease(ctx, stale); !errors.Is(err, marketplace.ErrSourceGenerationChanged) {
+		t.Fatalf("stale generation acquire error = %v", err)
+	}
+	var operations int64
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", stale.ID).Count(&operations).Error; err != nil || operations != 0 {
+		t.Fatalf("stale generation operation count=%d err=%v", operations, err)
+	}
+	var refreshAudits int64
+	if err := store.db.Model(&AuditEventRow{}).Where("action = ?", "marketplace.source.refresh").Count(&refreshAudits).Error; err != nil || refreshAudits != 0 {
+		t.Fatalf("stale generation refresh audit count=%d err=%v", refreshAudits, err)
+	}
+	durable, ok, err := store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok || durable.ConfigRevision != updated.ConfigRevision || durable.RefName != updated.RefName || durable.LastResult != "refresh_required" {
+		t.Fatalf("source changed by stale acquire: %+v ok=%v err=%v", durable, ok, err)
+	}
+	fresh := stale
+	fresh.ID, fresh.SourceRevision, fresh.RefName = "pre-lease-fresh", durable.ConfigRevision, durable.RefName
+	fresh.LeaseToken = "pre-lease-fresh-token"
+	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
+		t.Fatalf("fresh generation acquire failed: %v", err)
+	}
+	var persisted MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", fresh.ID).First(&persisted).Error; err != nil || persisted.SourceRevision != durable.ConfigRevision || persisted.RefName != durable.RefName {
+		t.Fatalf("fresh operation provenance=%+v err=%v", persisted, err)
+	}
 }
 
 func TestLegacyRefreshOperationWithoutSignerProvenanceFailsClosed(t *testing.T) {
@@ -2491,7 +2549,7 @@ func TestLegacyRefreshOperationWithoutSignerProvenanceFailsClosed(t *testing.T) 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	fresh := marketplace.RefreshOperation{ID: "legacy-refresh-recovery", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "legacy-refresh-recovery-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	fresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "legacy-refresh-recovery", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "legacy-refresh-recovery-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
 		t.Fatalf("expired legacy operation permanently blocked refresh: %v", err)
 	}
@@ -2529,7 +2587,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err := validate(); err != nil {
 		t.Fatal(err)
 	}
-	refresh := marketplace.RefreshOperation{ID: "refresh-same", SourceID: source.ID, Status: "running", StartedAt: time.Now().UTC().Add(-time.Second), LeaseToken: "lease-same", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)}
+	refresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-same", SourceID: source.ID, Status: "running", StartedAt: time.Now().UTC().Add(-time.Second), LeaseToken: "lease-same", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -2650,7 +2708,7 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	refresh := marketplace.RefreshOperation{ID: "gc-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "gc-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "gc-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "gc-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -2903,7 +2961,7 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	refresh := marketplace.RefreshOperation{ID: "gc-expired-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "gc-expired-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "gc-expired-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "gc-expired-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -3053,7 +3111,7 @@ func TestMarketplaceDirectoryCleanupClaimsOnlyAbandonedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	operation := marketplace.RefreshOperation{ID: "refresh-claim", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-claim", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-claim", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-claim", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -3093,7 +3151,7 @@ func TestRefreshLeaseCannotRenewAfterExpiryOrAbandonNewOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	old := marketplace.RefreshOperation{ID: "refresh-old", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-old", LeaseExpiresAt: now.Add(time.Minute)}
+	old := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-old", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-old", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, old); err != nil {
 		t.Fatal(err)
 	}
@@ -3112,7 +3170,7 @@ func TestRefreshLeaseCannotRenewAfterExpiryOrAbandonNewOwner(t *testing.T) {
 	if err := store.db.Where("id = ?", old.ID).First(&expired).Error; err != nil || expired.LeaseExpiresAt.After(now) {
 		t.Fatalf("expired operation lease = %+v, %v", expired, err)
 	}
-	fresh := marketplace.RefreshOperation{ID: "refresh-fresh", SourceID: source.ID, Status: "running", StartedAt: now.Add(time.Second), LeaseToken: "lease-fresh", LeaseExpiresAt: now.Add(3 * time.Minute)}
+	fresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-fresh", SourceID: source.ID, Status: "running", StartedAt: now.Add(time.Second), LeaseToken: "lease-fresh", LeaseExpiresAt: now.Add(3 * time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -3141,7 +3199,7 @@ func TestPromotionRequiresExactUnclaimedSnapshotReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	operation := marketplace.RefreshOperation{ID: "refresh-reservation", SourceID: source.ID, Commit: strings.Repeat("5", 40), Status: "running", StartedAt: now, LeaseToken: "lease-reservation", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-reservation", SourceID: source.ID, Commit: strings.Repeat("5", 40), Status: "running", StartedAt: now, LeaseToken: "lease-reservation", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -3525,7 +3583,7 @@ func TestDuplicateMarketplaceSourcePreservesRuntimeStateAndAuditsWithoutCredenti
 	}
 	now := time.Now().UTC()
 	snapshot := marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: strings.Repeat("d", 40), Path: "current", ValidatedAt: now}
-	refresh := marketplace.RefreshOperation{ID: "refresh-audited", SourceID: source.ID, Commit: snapshot.Commit, Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "admin", SessionID: "session", CorrelationID: "request"}, LeaseToken: "lease-audited", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "refresh-audited", SourceID: source.ID, Commit: snapshot.Commit, Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "admin", SessionID: "session", CorrelationID: "request"}, LeaseToken: "lease-audited", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -3605,6 +3663,13 @@ func newSignedStorageMarketplaceSource(t *testing.T, id, name, remoteURL, branch
 		t.Fatal(err)
 	}
 	return source
+}
+
+func refreshOperationForSource(source marketplace.Source, operation marketplace.RefreshOperation) marketplace.RefreshOperation {
+	operation.SourceRevision = source.ConfigRevision
+	operation.RefKind = source.RefKind
+	operation.RefName = source.RefName
+	return operation
 }
 
 func pluginTestDigest(value string) string { return strings.Repeat(value, 64) }

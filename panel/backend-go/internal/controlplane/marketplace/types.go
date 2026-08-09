@@ -46,8 +46,9 @@ var sourceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 var fullCommitOIDPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 var (
-	ErrRefreshLeaseHeld = errors.New("marketplace source refresh lease is already held")
-	ErrInvalidSource    = errors.New("invalid marketplace source")
+	ErrRefreshLeaseHeld        = errors.New("marketplace source refresh lease is already held")
+	ErrSourceGenerationChanged = errors.New("marketplace source generation changed")
+	ErrInvalidSource           = errors.New("invalid marketplace source")
 )
 
 type Source struct {

@@ -163,6 +163,6 @@ describe('PluginRepositoriesPage', () => {
     const editPayload = { name: 'Renamed source', ref_name: 'v1.2.4' }
     wrapper.findComponent({ name: 'RepositorySourceForm' }).vm.$emit('save', editPayload)
     await flushPromises()
-    expect(updateRepositorySource).toHaveBeenCalledWith('team-plugins', editPayload)
+    expect(updateRepositorySource).toHaveBeenCalledWith('team-plugins', { ...editPayload, config_revision: 3 })
   })
 })

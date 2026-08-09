@@ -57,6 +57,29 @@ func TestCustomSourceURLRejectsCredentialQueryFragmentAndSSH(t *testing.T) {
 	}
 }
 
+func TestRefreshSourceGenerationChangeStopsBeforeFetchAndRejectionAudit(t *testing.T) {
+	repository := &memoryRepository{current: map[string]Snapshot{}, acquireError: ErrSourceGenerationChanged}
+	validator := marketTestValidator(plugins.ValidatorOptions{})
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), copyFetcher{source: marketplaceFixture(t, false)}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := marketplaceSignedTestSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(t.Context(), source, OperationActor{ActorID: "admin"}); !errors.Is(err, ErrSourceGenerationChanged) {
+		t.Fatalf("refresh generation error = %v", err)
+	}
+	if len(repository.operations) != 0 {
+		t.Fatalf("stale generation created operation or rejection audit: %+v", repository.operations)
+	}
+}
+
 func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
@@ -501,6 +524,7 @@ type memoryRepository struct {
 	rejectCanceled bool
 	renewError     error
 	promotionDelay time.Duration
+	acquireError   error
 }
 
 func (r *memoryRepository) RecordRefreshRejection(_ context.Context, sourceID string, actor OperationActor, errorClass string) error {
@@ -533,6 +557,9 @@ func (r *memoryRepository) CompletePackageAcquisitions(context.Context, string, 
 func (r *memoryRepository) AcquireRefreshLease(_ context.Context, operation RefreshOperation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.acquireError != nil {
+		return r.acquireError
+	}
 	for index := range r.operations {
 		current := &r.operations[index]
 		if current.SourceID != operation.SourceID || current.Status != "running" {

@@ -415,7 +415,7 @@ func TestPostgresMarketplacePromotionRejectsActorSubstitution(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	operation := marketplace.RefreshOperation{ID: "postgres-promotion-refresh", SourceID: source.ID, Commit: "postgres-promotion-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "postgres-promotion-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "postgres-promotion-refresh", SourceID: source.ID, Commit: "postgres-promotion-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "postgres-promotion-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestPostgresRefreshFinalizationRequiresDurableLease(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	operation := marketplace.RefreshOperation{ID: "postgres-lease-required-refresh", SourceID: source.ID, Commit: "durable-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "postgres-lease-required-refresh", SourceID: source.ID, Commit: "durable-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +564,7 @@ func TestPostgresRefreshFinalizationRejectsInvalidTimestamps(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := time.Now().UTC().Truncate(time.Millisecond)
-			operation := marketplace.RefreshOperation{ID: slug + "-refresh", SourceID: source.ID, Commit: slug + "-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: slug + "-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: slug + "-refresh", SourceID: source.ID, Commit: slug + "-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: slug + "-lease", LeaseExpiresAt: now.Add(time.Minute)})
 			if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 				t.Fatal(err)
 			}
@@ -628,7 +628,7 @@ func TestPostgresRefreshFinalizationRejectsInvalidTimestamps(t *testing.T) {
 				t.Fatal(err)
 			}
 			startedAt := time.Now().UTC().Add(-time.Second)
-			operation := marketplace.RefreshOperation{ID: slug + "-refresh", SourceID: source.ID, Commit: slug + "-commit", Status: "running", StartedAt: startedAt, LeaseToken: slug + "-lease", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)}
+			operation := refreshOperationForSource(source, marketplace.RefreshOperation{ID: slug + "-refresh", SourceID: source.ID, Commit: slug + "-commit", Status: "running", StartedAt: startedAt, LeaseToken: slug + "-lease", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)})
 			if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 				t.Fatal(err)
 			}

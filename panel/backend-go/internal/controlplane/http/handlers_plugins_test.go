@@ -622,7 +622,7 @@ func TestRepositorySourcePatchPreservesWriteOnlySignerAndRejectsDerivedFields(t 
 		t.Fatal(err)
 	}
 	fake := &repositorySourceAPIFake{source: source}
-	request := httptest.NewRequest(http.MethodPatch, "/marketplace/sources/community", strings.NewReader(`{"name":"Updated","signer_key_id":"community-release"}`))
+	request := httptest.NewRequest(http.MethodPatch, "/marketplace/sources/community", strings.NewReader(`{"name":"Updated","signer_key_id":"community-release","config_revision":1}`))
 	request.SetPathValue("id", source.ID)
 	response := httptest.NewRecorder()
 	Dependencies{MarketplaceService: fake}.handleMarketplaceSource(response, request)
@@ -638,6 +638,36 @@ func TestRepositorySourcePatchPreservesWriteOnlySignerAndRejectsDerivedFields(t 
 	Dependencies{MarketplaceService: fake}.handleMarketplaceSource(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("derived field response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRepositorySourcePatchRejectsStaleBrowserRevisionWithoutOverwrite(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	source, err := marketplace.NewSignedGitRepositorySource("stale-form", "Current Name", "https://example.com/community.git", marketplace.SourcePurposeMarket, marketplace.GitRefKindBranch, "release", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-signer", PublicKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.ConfigRevision = 2
+	fake := &repositorySourceAPIFake{source: source}
+	request := httptest.NewRequest(http.MethodPatch, "/marketplace/sources/stale-form", strings.NewReader(`{"name":"Stale Browser Name","ref_name":"main","config_revision":1}`))
+	request.SetPathValue("id", source.ID)
+	response := httptest.NewRecorder()
+	Dependencies{MarketplaceService: fake}.handleMarketplaceSource(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("stale patch response=%d %s", response.Code, response.Body.String())
+	}
+	if fake.updated.ID != "" {
+		t.Fatalf("stale patch overwrote source: %+v", fake.updated)
+	}
+}
+
+func TestRepositorySourceCreateRejectsClientSuppliedConfigRevision(t *testing.T) {
+	fake := &marketplaceAuditFake{}
+	request := httptest.NewRequest(http.MethodPost, "/marketplace/sources", strings.NewReader(`{"id":"derived","name":"Derived","url":"https://example.com/derived.git","purpose":"market","ref_kind":"branch","ref_name":"main","signer_key_id":"release","signer_secret_ref":"vault-release","config_revision":1}`))
+	response := httptest.NewRecorder()
+	Dependencies{MarketplaceService: fake}.handleMarketplaceSources(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("derived create field response=%d %s", response.Code, response.Body.String())
 	}
 }
 

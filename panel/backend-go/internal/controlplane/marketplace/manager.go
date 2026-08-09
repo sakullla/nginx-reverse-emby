@@ -86,6 +86,9 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	operation := RefreshOperation{ID: id, SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL)}
 	operation.Actor = actor
 	if err := m.repository.AcquireRefreshLease(ctx, operation); err != nil {
+		if errors.Is(err, ErrSourceGenerationChanged) {
+			return Snapshot{}, err
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		errorClass := "lease_acquire"

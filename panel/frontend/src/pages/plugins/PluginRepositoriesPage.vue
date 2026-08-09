@@ -253,7 +253,7 @@ async function saveSource(payload) {
   actionError.value = ''
   try {
     const source = editingSource.value
-      ? await updateRepositorySource(editingSource.value.id, payload)
+      ? await updateRepositorySource(editingSource.value.id, { ...payload, config_revision: editingSource.value.config_revision })
       : await createRepositorySource(payload)
     closeForm()
     await loadSources(source.id)

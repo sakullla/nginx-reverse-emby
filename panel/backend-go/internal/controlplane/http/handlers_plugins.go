@@ -150,6 +150,7 @@ func (d Dependencies) handleMarketplaceSourcePatch(w http.ResponseWriter, r *htt
 		SignerKeyID     *string `json:"signer_key_id"`
 		SignerSecretRef *string `json:"signer_secret_ref"`
 		RefreshInterval *string `json:"refresh_interval"`
+		ConfigRevision  *uint64 `json:"config_revision"`
 	}
 	if err := decodeStrictPluginJSON(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
@@ -162,6 +163,10 @@ func (d Dependencies) handleMarketplaceSourcePatch(w http.ResponseWriter, r *htt
 	}
 	if current.Kind == marketplace.SourceKindOfficial {
 		writePluginError(w, fmt.Errorf("%w: official source is immutable", service.ErrInvalidArgument))
+		return
+	}
+	if input.ConfigRevision == nil || *input.ConfigRevision == 0 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("config_revision is required"))
 		return
 	}
 	next := current
@@ -217,8 +222,8 @@ func (d Dependencies) handleMarketplaceSourcePatch(w http.ResponseWriter, r *htt
 		writePluginError(w, err)
 		return
 	}
-	expectedRevision := current.ConfigRevision
-	next.ConfigRevision++
+	expectedRevision := *input.ConfigRevision
+	next.ConfigRevision = expectedRevision + 1
 	next.CredentialConfigured = next.CredentialRef != ""
 	updated, err := d.MarketplaceService.UpdateGitRepositorySource(r.Context(), next, expectedRevision)
 	if err != nil {
@@ -521,6 +526,8 @@ func writePluginError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrMarketplaceSourceExists), errors.Is(err, storage.ErrPluginAlreadyInstalled), errors.Is(err, storage.ErrPluginConflict):
 		status = http.StatusConflict
 	case errors.Is(err, marketplace.ErrRefreshLeaseHeld):
+		status = http.StatusConflict
+	case errors.Is(err, marketplace.ErrSourceGenerationChanged):
 		status = http.StatusConflict
 	case errors.Is(err, authz.ErrForbidden), errors.Is(err, service.ErrPluginResourceAuthorization):
 		status = http.StatusForbidden

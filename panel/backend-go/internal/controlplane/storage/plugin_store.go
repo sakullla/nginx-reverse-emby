@@ -1953,22 +1953,31 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 	if operation.ID == "" || operation.SourceID == "" || operation.LeaseToken == "" || !operation.LeaseExpiresAt.After(operation.StartedAt) || operation.Status != "running" {
 		return errors.New("valid marketplace refresh lease is required")
 	}
+	if operation.SourceRevision == 0 ||
+		(operation.RefKind != marketplace.GitRefKindBranch && operation.RefKind != marketplace.GitRefKindTag) || strings.TrimSpace(operation.RefName) == "" {
+		return errors.New("complete marketplace source generation is required")
+	}
 	row := marketplaceRefreshOperationToRow(operation)
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var source MarketplaceSourceRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleting = ?", operation.SourceID, false).First(&source).Error; err != nil {
+			return err
+		}
+		if source.ConfigRevision != operation.SourceRevision || source.RefKind != operation.RefKind || source.RefName != operation.RefName {
+			return fmt.Errorf("%w: expected revision %d %s %q, found revision %d %s %q", marketplace.ErrSourceGenerationChanged, operation.SourceRevision, operation.RefKind, operation.RefName, source.ConfigRevision, source.RefKind, source.RefName)
+		}
+		if source.RefreshLeaseToken != "" && source.RefreshLeaseExpiresAt.After(operation.StartedAt) {
+			return marketplace.ErrRefreshLeaseHeld
+		}
 		result := tx.Model(&MarketplaceSourceRow{}).
-			Where("id = ? AND deleting = ? AND (refresh_lease_token = ? OR refresh_lease_expires_at <= ?)", operation.SourceID, false, "", operation.StartedAt).
+			Where("id = ? AND deleting = ? AND config_revision = ? AND ref_kind = ? AND ref_name = ?", operation.SourceID, false, operation.SourceRevision, operation.RefKind, operation.RefName).
 			Updates(map[string]any{"refresh_lease_token": operation.LeaseToken, "refresh_lease_expires_at": operation.LeaseExpiresAt, "last_result": "running", "last_error": "", "updated_at": operation.StartedAt})
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected != 1 {
-			return marketplace.ErrRefreshLeaseHeld
+			return marketplace.ErrSourceGenerationChanged
 		}
-		var source MarketplaceSourceRow
-		if err := tx.Where("id = ?", operation.SourceID).First(&source).Error; err != nil {
-			return err
-		}
-		row.SourceRevision, row.RefKind, row.RefName = source.ConfigRevision, source.RefKind, source.RefName
 		trust, err := marketplaceSourceFromRow(source).SignatureTrust()
 		if err != nil {
 			return fmt.Errorf("refresh source signer provenance: %w", err)
