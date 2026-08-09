@@ -436,9 +436,19 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 		}
 		if tx.Migrator().HasColumn("plugin_package_acquisitions", "operation_id") {
 			var legacy []struct{ SourceID, Digest, OperationID, Status string }
-			if err := tx.Table("plugin_package_acquisitions").Select("source_id, digest, operation_id, status").Where("status = ? AND operation_id <> ?", "staging", "").Scan(&legacy).Error; err != nil {
+			if err := tx.Table("plugin_package_acquisitions").Select("source_id, digest, operation_id, status").Where("status = ? AND operation_id <> ?", "staging", "").Order("digest, source_id, operation_id").Scan(&legacy).Error; err != nil {
 				return err
 			}
+			sort.Slice(legacy, func(i, j int) bool {
+				leftDigest, rightDigest := strings.ToLower(legacy[i].Digest), strings.ToLower(legacy[j].Digest)
+				if leftDigest != rightDigest {
+					return leftDigest < rightDigest
+				}
+				if legacy[i].SourceID != legacy[j].SourceID {
+					return legacy[i].SourceID < legacy[j].SourceID
+				}
+				return legacy[i].OperationID < legacy[j].OperationID
+			})
 			for _, row := range legacy {
 				var count int64
 				if err := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", row.OperationID, row.SourceID, "running", now).Count(&count).Error; err != nil {
@@ -1145,7 +1155,7 @@ func (s *GormStore) UpdateMarketplaceSource(ctx context.Context, source marketpl
 				return fmt.Errorf("%w: active marketplace refresh changed concurrently", ErrPluginConflict)
 			}
 			var staged []PluginPackageStagingRow
-			if err := tx.Where("source_id = ? AND operation_id = ?", locked.ID, active.ID).Find(&staged).Error; err != nil {
+			if err := tx.Where("source_id = ? AND operation_id = ?", locked.ID, active.ID).Order("digest, signer_fingerprint").Find(&staged).Error; err != nil {
 				return err
 			}
 			for _, candidate := range staged {
@@ -1541,7 +1551,18 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		for digest := range seenDigests {
 			deletion.CacheDigests = append(deletion.CacheDigests, digest)
 		}
+		sort.Strings(deletion.CacheDigests)
+		variants := make([]gcVariant, 0, len(seenVariants))
 		for variant := range seenVariants {
+			variants = append(variants, variant)
+		}
+		sort.Slice(variants, func(i, j int) bool {
+			if variants[i].digest != variants[j].digest {
+				return variants[i].digest < variants[j].digest
+			}
+			return variants[i].fingerprint < variants[j].fingerprint
+		})
+		for _, variant := range variants {
 			if err := schedulePackageGCTx(tx, sourceID, variant.digest, variant.fingerprint, now); err != nil {
 				return err
 			}
@@ -2035,9 +2056,14 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 			return err
 		}
 		var interrupted []MarketplaceRefreshOperationRow
-		if err := tx.Where("source_id = ? AND status = ? AND lease_expires_at <= ?", operation.SourceID, "running", operation.StartedAt).Find(&interrupted).Error; err != nil {
+		if err := tx.Where("source_id = ? AND status = ? AND lease_expires_at <= ?", operation.SourceID, "running", operation.StartedAt).Order("id").Find(&interrupted).Error; err != nil {
 			return err
 		}
+		type abandonedPackage struct {
+			operation MarketplaceRefreshOperationRow
+			staging   PluginPackageStagingRow
+		}
+		abandonedPackages := make([]abandonedPackage, 0)
 		for _, previous := range interrupted {
 			previous.Status, previous.ErrorClass, previous.Error, previous.FinishedAt = "failed", "interrupted", "refresh lease expired before completion", &operation.StartedAt
 			audit, err := marketplaceRefreshAudit(previous, "failure", operation.StartedAt)
@@ -2056,10 +2082,28 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 				return err
 			}
 			for _, row := range abandoned {
-				if err := schedulePackageGCTx(tx, previous.SourceID, row.Digest, row.SignerFingerprint, operation.StartedAt); err != nil {
-					return err
-				}
+				abandonedPackages = append(abandonedPackages, abandonedPackage{operation: previous, staging: row})
 			}
+		}
+		sort.Slice(abandonedPackages, func(i, j int) bool {
+			left, right := abandonedPackages[i], abandonedPackages[j]
+			if left.staging.Digest != right.staging.Digest {
+				return left.staging.Digest < right.staging.Digest
+			}
+			if left.staging.SignerFingerprint != right.staging.SignerFingerprint {
+				return left.staging.SignerFingerprint < right.staging.SignerFingerprint
+			}
+			if left.operation.SourceID != right.operation.SourceID {
+				return left.operation.SourceID < right.operation.SourceID
+			}
+			return left.operation.ID < right.operation.ID
+		})
+		for _, abandoned := range abandonedPackages {
+			if err := schedulePackageGCTx(tx, abandoned.operation.SourceID, abandoned.staging.Digest, abandoned.staging.SignerFingerprint, operation.StartedAt); err != nil {
+				return err
+			}
+		}
+		for _, previous := range interrupted {
 			if err := tx.Where("source_id = ? AND operation_id = ?", previous.SourceID, previous.ID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
 				return err
 			}
@@ -2394,7 +2438,7 @@ func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, ope
 
 func cleanupRefreshStagingTx(tx *gorm.DB, operation MarketplaceRefreshOperationRow, now time.Time, remove bool) error {
 	var staged []PluginPackageStagingRow
-	if err := tx.Where("source_id = ? AND operation_id = ?", operation.SourceID, operation.ID).Find(&staged).Error; err != nil {
+	if err := tx.Where("source_id = ? AND operation_id = ?", operation.SourceID, operation.ID).Order("digest, signer_fingerprint").Find(&staged).Error; err != nil {
 		return err
 	}
 	for _, row := range staged {
@@ -2471,7 +2515,7 @@ func reconcileTerminalMarketplaceRefreshStaging(ctx context.Context, db *gorm.DB
 				return err
 			}
 			var staged []PluginPackageStagingRow
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND operation_id = ?", key.SourceID, key.OperationID).Order("digest").Find(&staged).Error; err != nil {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND operation_id = ?", key.SourceID, key.OperationID).Order("digest, signer_fingerprint").Find(&staged).Error; err != nil {
 				return err
 			}
 			for _, row := range staged {
@@ -2613,7 +2657,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			return fmt.Errorf("%w: snapshot cleanup reservation changed", ErrPluginConflict)
 		}
 		var oldAcquisitions []PluginPackageAcquisitionRow
-		if err := tx.Where("source_id = ?", lockedSource.ID).Find(&oldAcquisitions).Error; err != nil {
+		if err := tx.Where("source_id = ?", lockedSource.ID).Order("digest, signature_fingerprint").Find(&oldAcquisitions).Error; err != nil {
 			return err
 		}
 		for _, previous := range retired {

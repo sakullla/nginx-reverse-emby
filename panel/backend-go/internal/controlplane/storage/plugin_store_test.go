@@ -2996,6 +2996,61 @@ func TestPackagePublicationFailureLeavesDurableReservationForCleanup(t *testing.
 	}
 }
 
+func TestMarketplaceSourceDeletionLocksPackageDigestsInCanonicalOrder(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "delete-digest-order", "Delete Digest Order", "https://example.com/delete-digest-order.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "delete-digest-order-op", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "delete-digest-order-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	low, high := pluginTestDigest("1"), pluginTestDigest("e")
+	trust := marketplaceTrustForTest(t, source)
+	for _, digest := range []string{high, low} {
+		if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, trust); err != nil {
+			t.Fatal(err)
+		}
+	}
+	callbackName := "test:marketplace_delete_digest_order"
+	var mu sync.Mutex
+	lockedDigests := make([]string, 0, 2)
+	queryDB := store.writeDB
+	if queryDB == nil {
+		queryDB = store.db
+	}
+	if err := queryDB.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		fence, ok := db.Statement.Dest.(*PluginDigestFenceRow)
+		if !ok || fence.Digest == "" {
+			return
+		}
+		mu.Lock()
+		lockedDigests = append(lockedDigests, fence.Digest)
+		mu.Unlock()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = queryDB.Callback().Query().Remove(callbackName) })
+	if _, err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lockedDigests) != 2 || lockedDigests[0] != low || lockedDigests[1] != high {
+		t.Fatalf("package digest fence order=%v, want [%s %s]", lockedDigests, low, high)
+	}
+}
+
 func TestRestartReconciliationFailsClosedForTerminalStagingWithoutImmutableTrust(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()

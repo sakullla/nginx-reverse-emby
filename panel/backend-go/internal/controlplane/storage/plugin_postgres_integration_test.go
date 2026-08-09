@@ -85,6 +85,93 @@ func TestPostgresPackagePublicationFencesSourceDeletion(t *testing.T) {
 	}
 }
 
+func TestPostgresConcurrentMarketplaceSourceDeletionUsesCanonicalDigestOrder(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	sources := []marketplace.Source{
+		newSignedStorageMarketplaceSource(t, "postgres-delete-order-a", "Postgres Delete Order A", "https://example.com/postgres-delete-order-a.git", "main", ""),
+		newSignedStorageMarketplaceSource(t, "postgres-delete-order-b", "Postgres Delete Order B", "https://example.com/postgres-delete-order-b.git", "main", ""),
+	}
+	digests := []string{pluginTestDigest("2"), pluginTestDigest("d")}
+	for index, source := range sources {
+		if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+			ID: fmt.Sprintf("postgres-delete-order-op-%d", index), SourceID: source.ID, Status: "running", StartedAt: now,
+			LeaseToken: fmt.Sprintf("postgres-delete-order-lease-%d", index), LeaseExpiresAt: now.Add(time.Minute),
+		})
+		if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+			t.Fatal(err)
+		}
+		trust := marketplaceTrustForTest(t, source)
+		order := digests
+		if index == 1 {
+			order = []string{digests[1], digests[0]}
+		}
+		for _, digest := range order {
+			if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, trust); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	callbackName := "test:postgres_marketplace_delete_source_barrier"
+	ready := make(chan struct{}, len(sources))
+	release := make(chan struct{})
+	if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		source, ok := db.Statement.Dest.(*MarketplaceSourceRow)
+		if !ok || (source.ID != sources[0].ID && source.ID != sources[1].ID) || source.Deleting {
+			return
+		}
+		select {
+		case ready <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.db.Callback().Query().Remove(callbackName) })
+	deleteDone := make(chan error, len(sources))
+	for _, source := range sources {
+		source := source
+		go func() {
+			_, err := store.DeleteMarketplaceSource(ctx, source.ID)
+			deleteDone <- err
+		}()
+	}
+	for range sources {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			t.Fatalf("concurrent source deletions did not reach the row-lock barrier: %v", ctx.Err())
+		}
+	}
+	close(release)
+	for range sources {
+		select {
+		case err := <-deleteDone:
+			if err != nil {
+				t.Fatalf("concurrent source deletion failed: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("concurrent source deletions did not complete: %v", ctx.Err())
+		}
+	}
+}
+
 func TestPostgresConcurrentPluginMutationsShareAgentCatalogFence(t *testing.T) {
 	dsn := postgresIntegrationSchemaDSN(t)
 	dataRoot := t.TempDir()
