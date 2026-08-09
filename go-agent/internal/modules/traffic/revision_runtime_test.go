@@ -19,7 +19,10 @@ import (
 
 func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t *testing.T) {
 	previousEnabled := Enabled()
-	t.Cleanup(func() { SetEnabled(previousEnabled) })
+	t.Cleanup(func() {
+		SetEnabled(previousEnabled)
+		Reset()
+	})
 
 	registry := module.NewRegistry()
 	trafficModule := NewModule(Config{GenerationSelector: registry})
@@ -89,6 +92,7 @@ func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t
 	if err := controller.PerformSyncPlan(t.Context(), core.SyncPlan{}); err != nil {
 		t.Fatal(err)
 	}
+	AddHTTP(5, 9)
 	enabledReport, err := trafficModule.TrafficReport(t.Context(), nil)
 	if err != nil || !enabledReport.StatsPresent || enabledReport.Stats["traffic"] == nil || trafficModule.TrafficBlockState().Blocked || unrelated.prepareCalls != 1 {
 		t.Fatalf("same-revision unblock rebuilt generation or missed runtime state: report=%+v block=%+v prepares=%d error=%v", enabledReport, trafficModule.TrafficBlockState(), unrelated.prepareCalls, err)
@@ -135,6 +139,11 @@ func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t
 }
 
 func TestRevisionSyncCommitsAuthenticatedBlockBeforePlanAndPullFailures(t *testing.T) {
+	previousEnabled := Enabled()
+	t.Cleanup(func() {
+		SetEnabled(previousEnabled)
+		Reset()
+	})
 	tests := []struct {
 		name             string
 		plan             core.SyncPlan
@@ -194,6 +203,11 @@ func TestRevisionSyncCommitsAuthenticatedBlockBeforePlanAndPullFailures(t *testi
 }
 
 func TestRevisionSyncTrafficPersistenceFailureRollsForwardBlockAndPreservesUnblock(t *testing.T) {
+	previousEnabled := Enabled()
+	t.Cleanup(func() {
+		SetEnabled(previousEnabled)
+		Reset()
+	})
 	t.Run("authenticated block retries durable state", func(t *testing.T) {
 		store, runtime, trafficModule, immutable := newTrafficRevisionRuntime(t, true, false, "")
 		store.failRuntimeSaves = map[int]error{1: errors.New("injected first write failure")}
@@ -231,9 +245,70 @@ func TestRevisionSyncTrafficPersistenceFailureRollsForwardBlockAndPreservesUnblo
 		}
 		assertTrafficRestartState(t, store, immutable, true, "existing block")
 	})
+
+	t.Run("two failed block writes converge through error persistence", func(t *testing.T) {
+		store, runtime, trafficModule, immutable := newTrafficRevisionRuntime(t, true, false, "")
+		store.failRuntimeSaves = map[int]error{
+			1: errors.New("injected block intent write failure"),
+			2: errors.New("injected block retry write failure"),
+		}
+		controller := &core.SyncController{
+			Store: store, Runtime: runtime,
+			SyncClient: &trafficRevisionClient{heartbeats: []trafficHeartbeatResult{{
+				snapshot: trafficHeartbeatSnapshot(true, true, "safe block"),
+			}}},
+		}
+		if err := controller.PerformSyncPlan(t.Context(), core.SyncPlan{}); err == nil || !strings.Contains(err.Error(), "block retry write failure") {
+			t.Fatalf("PerformSyncPlan() error = %v", err)
+		}
+		if block := trafficModule.TrafficBlockState(); !block.Blocked || block.Reason != "safe block" {
+			t.Fatalf("active block = %+v", block)
+		}
+		state, err := store.LoadRuntimeState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Metadata["traffic_blocked"] != "true" || state.Metadata["traffic_block_reason"] != "safe block" {
+			t.Fatalf("error persistence lost safe block: %+v", state.Metadata)
+		}
+		assertTrafficRestartState(t, store, immutable, true, "safe block")
+	})
+
+	t.Run("failed unblock rollback converges through error persistence", func(t *testing.T) {
+		store, runtime, trafficModule, immutable := newTrafficRevisionRuntime(t, true, true, "existing block")
+		store.failRuntimeSaves = map[int]error{2: errors.New("injected unblock rollback failure")}
+		trafficModule.reconcileTrafficRuntime = func(context.Context, model.AgentConfig) error {
+			return errors.New("injected provider unblock failure")
+		}
+		controller := &core.SyncController{
+			Store: store, Runtime: runtime,
+			SyncClient: &trafficRevisionClient{heartbeats: []trafficHeartbeatResult{{
+				snapshot: trafficHeartbeatSnapshot(true, false, ""),
+			}}},
+		}
+		if err := controller.PerformSyncPlan(t.Context(), core.SyncPlan{}); err == nil || !strings.Contains(err.Error(), "unblock rollback failure") {
+			t.Fatalf("PerformSyncPlan() error = %v", err)
+		}
+		if block := trafficModule.TrafficBlockState(); !block.Blocked || block.Reason != "existing block" {
+			t.Fatalf("failed unblock changed active state: %+v", block)
+		}
+		state, err := store.LoadRuntimeState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Metadata["traffic_blocked"] != "true" || state.Metadata["traffic_block_reason"] != "existing block" {
+			t.Fatalf("error persistence retained unsafe unblock: %+v", state.Metadata)
+		}
+		assertTrafficRestartState(t, store, immutable, true, "existing block")
+	})
 }
 
 func TestRevisionSyncMigratesLegacyTrafficEnabledFromAppliedArtifact(t *testing.T) {
+	previousEnabled := Enabled()
+	t.Cleanup(func() {
+		SetEnabled(previousEnabled)
+		Reset()
+	})
 	disabled, enabled := false, true
 	for _, tt := range []struct {
 		name           string

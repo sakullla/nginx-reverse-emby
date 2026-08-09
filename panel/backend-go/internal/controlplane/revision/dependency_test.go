@@ -3,6 +3,7 @@
 package revision
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"path/filepath"
@@ -253,6 +254,54 @@ func TestIntegrationExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testin
 	evaluation := plan.Evaluate(nil)
 	if len(evaluation.Frontier) != 1 || evaluation.Frontier[0].AgentID != "edge-a" {
 		t.Fatalf("delete frontier = %+v, want caller edge-a", evaluation.Frontier)
+	}
+}
+
+func TestIntegrationExecutorDependencyPlanArtifactsExcludePKIForApplyAndDelete(t *testing.T) {
+	for _, action := range []DependencyAction{DependencyActionApply, DependencyActionDelete} {
+		t.Run(string(action), func(t *testing.T) {
+			store := newRevisionTestStore(t)
+			executor := NewExecutor(
+				store,
+				WithSnapshotBuilder(SnapshotBuilderFunc(func(ctx context.Context, tx *storage.GormStore, target Target) (storage.Snapshot, error) {
+					snapshot, err := buildStorageSnapshot(ctx, tx, target)
+					if err != nil {
+						return storage.Snapshot{}, err
+					}
+					snapshot.PKISecurity = &storage.PKISecuritySnapshot{
+						PKIDomainID: "runtime-domain", PKIEpoch: 9, SecurityRevision: 17,
+						Full: true, SignerGeneration: 4, Signature: []byte("runtime-signature"),
+					}
+					return snapshot, nil
+				})),
+				WithOperationIDGenerator(func() (string, error) {
+					return "operation-dependency-pki-free-" + string(action), nil
+				}),
+			)
+			result, err := executor.Execute(t.Context(), MutationRequest{
+				Kind: "dependency.pki_free", DependencyAction: action, ForceRevision: true,
+				Request: map[string]any{"action": action}, Targets: []Target{{AgentID: "local", Local: true}},
+				ResourceState: func(context.Context, *storage.GormStore, Target) (any, error) { return nil, nil },
+				Mutate:        func(context.Context, *storage.GormStore, map[string]int64) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("Execute(%s) error = %v", action, err)
+			}
+			artifact, found, err := store.GetOperationDependencyArtifact(t.Context(), result.Operation.ID)
+			if err != nil || !found {
+				t.Fatalf("GetOperationDependencyArtifact(%s) found=%v error=%v", action, found, err)
+			}
+			if bytes.Contains(artifact.Payload, []byte("pki_security")) || bytes.Contains(artifact.Payload, []byte("runtime-domain")) {
+				t.Fatalf("dependency %s artifact contains runtime PKI: %s", action, artifact.Payload)
+			}
+			plan, err := dependency.ParsePlan(artifact.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Action != action || len(plan.Nodes) != 1 {
+				t.Fatalf("dependency %s plan = %+v", action, plan)
+			}
+		})
 	}
 }
 

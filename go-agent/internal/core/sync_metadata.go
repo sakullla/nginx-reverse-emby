@@ -213,6 +213,15 @@ func (c *SyncController) recordRuntimeErrorFromState(syncErr error, revision int
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
 	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
+	if c.Runtime != nil {
+		activeTraffic := c.Runtime.ActiveSnapshot().AgentConfig
+		if activeTraffic.TrafficStatsEnabled != nil {
+			// Error recovery must persist the state the active provider actually
+			// enforces, not an unconfirmed traffic intent left by a failed write or
+			// rollback. This keeps restart fail-closed.
+			SetTrafficRuntimeMetadata(state.Metadata, activeTraffic)
+		}
+	}
 	if err := c.Store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}

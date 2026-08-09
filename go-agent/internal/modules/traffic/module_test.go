@@ -143,14 +143,84 @@ func TestModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
 	}
 
 	candidate.Publish()
-	if !trafficmodule.Enabled() {
-		t.Fatal("sole-view publish mutated legacy traffic state")
+	if trafficmodule.Enabled() {
+		t.Fatal("active generation did not disable global traffic collectors")
 	}
-	if got := mod.TrafficBlockState(); got.Blocked {
-		t.Fatalf("legacy TrafficBlockState() after publish = %+v, want unblocked", got)
+	if got := mod.TrafficBlockState(); !got.Blocked || got.Reason != "quota" {
+		t.Fatalf("legacy TrafficBlockState() after publish = %+v, want active generation state", got)
 	}
 	if got, ok := trafficmodule.BlockStateFromProvider(registry); !ok || !got.Blocked || got.Reason != "quota" {
 		t.Fatalf("candidate TrafficBlockState() after publish = %+v/%v", got, ok)
+	}
+}
+
+func TestGenerationTrafficDisableDropsGlobalAndRecorderWindow(t *testing.T) {
+	trafficmodule.Reset()
+	trafficmodule.SetEnabled(true)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+
+	registry := module.NewRegistry()
+	mod := trafficmodule.NewModule(trafficmodule.Config{GenerationSelector: registry})
+	mustRegisterTrafficTestModule(t, registry, mod)
+	enabled := true
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{
+		Revision: 1, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &enabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	trafficmodule.AddHTTP(10, 20)
+	preDisableRecorder := trafficmodule.NewL4Recorder()
+	preDisableRecorder.Add(30, 40)
+
+	disabled := false
+	if err := registry.Apply(context.Background(), model.Snapshot{Revision: 1}, model.Snapshot{
+		Revision: 2, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &disabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if trafficmodule.Enabled() {
+		t.Fatal("global collector remained enabled after active generation disabled it")
+	}
+	trafficmodule.AddHTTP(100, 200)
+	preDisableRecorder.Add(300, 400)
+	preDisableRecorder.Flush()
+	disabledRecorder := trafficmodule.NewRelayRecorder()
+	disabledRecorder.Add(500, 600)
+	disabledRecorder.Flush()
+
+	if err := registry.Apply(context.Background(), model.Snapshot{Revision: 2}, model.Snapshot{
+		Revision: 3, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &enabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !trafficmodule.Enabled() {
+		t.Fatal("global collector remained disabled after active generation enabled it")
+	}
+	if leaked := trafficmodule.SnapshotNonZero(); leaked != nil {
+		t.Fatalf("disabled-window traffic leaked after re-enable: %+v", leaked)
+	}
+
+	trafficmodule.AddHTTP(7, 11)
+	preDisableRecorder.Add(13, 17)
+	preDisableRecorder.Flush()
+	stats := trafficmodule.SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("post-enable traffic was not collected")
+	}
+	traffic := stats["traffic"].(map[string]any)
+	assertModuleTrafficCounters(t, traffic["http"], 7, 11)
+	assertModuleTrafficCounters(t, traffic["l4"], 13, 17)
+	assertModuleTrafficCounters(t, traffic["relay"], 0, 0)
+}
+
+func assertModuleTrafficCounters(t *testing.T, value any, rx, tx uint64) {
+	t.Helper()
+	counters, ok := value.(map[string]uint64)
+	if !ok || counters["rx_bytes"] != rx || counters["tx_bytes"] != tx {
+		t.Fatalf("traffic counters = %#v, want rx=%d tx=%d", value, rx, tx)
 	}
 }
 
@@ -206,6 +276,10 @@ func TestGenerationModuleReportsOnlyActiveViewConfiguration(t *testing.T) {
 		t.Fatalf("TrafficReport(before second publish) = %+v, %v, want first disabled view", report, err)
 	}
 	secondCandidate.Publish()
+	if leaked := trafficmodule.SnapshotNonZero(); leaked != nil {
+		t.Fatalf("disabled generation traffic leaked after enable: %+v", leaked)
+	}
+	trafficmodule.AddHTTP(7, 11)
 	report, err = mod.TrafficReport(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("TrafficReport(second) error = %v", err)

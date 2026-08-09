@@ -264,10 +264,24 @@ func (tx *transaction) ReconcileTrafficRuntime(ctx context.Context, config model
 	nextEnabled := *config.TrafficStatsEnabled
 	nextBlockState := BlockState{Blocked: config.TrafficBlocked, Reason: config.TrafficBlockReason}.Normalized()
 	tx.mu.Lock()
+	SetEnabled(nextEnabled)
 	tx.nextEnabled = nextEnabled
 	tx.nextBlockState = nextBlockState
 	tx.mu.Unlock()
 	return nil
+}
+
+// FinalizeGenerationPublication runs after the immutable active view swap and
+// before provider readers are released. The active generation therefore owns
+// both report visibility and the process-wide collectors used by HTTP/L4/relay
+// and embedded consumers.
+func (tx *transaction) FinalizeGenerationPublication() {
+	if tx == nil || tx.module == nil {
+		return
+	}
+	tx.mu.Lock()
+	tx.module.installState(tx.nextEnabled, tx.nextMeta, tx.nextBlockState)
+	tx.mu.Unlock()
 }
 
 func (tx *transaction) FailClosedTrafficRuntime(config model.AgentConfig) {
@@ -277,6 +291,7 @@ func (tx *transaction) FailClosedTrafficRuntime(config model.AgentConfig) {
 	tx.mu.Lock()
 	if config.TrafficStatsEnabled != nil {
 		tx.nextEnabled = *config.TrafficStatsEnabled
+		SetEnabled(tx.nextEnabled)
 	}
 	tx.nextBlockState = BlockState{Blocked: true, Reason: config.TrafficBlockReason}.Normalized()
 	tx.mu.Unlock()

@@ -48,6 +48,7 @@ var (
 	l4RuleCounters        keyedCounters
 	relayListenerCounters keyedCounters
 	recorderRegistry      = recorderSet{recorders: map[*Recorder]struct{}{}}
+	collectionMu          sync.RWMutex
 	enabled               atomic.Bool
 	resetGeneration       atomic.Uint64
 )
@@ -57,10 +58,16 @@ func init() {
 }
 
 func SetEnabled(value bool) {
+	collectionMu.Lock()
+	defer collectionMu.Unlock()
 	if !value {
-		Reset()
+		// Close collection before clearing counters so concurrent global and
+		// recorder writers cannot repopulate the disabled window after Reset.
+		enabled.Store(false)
+		resetLocked()
+		return
 	}
-	enabled.Store(value)
+	enabled.Store(true)
 }
 
 func Enabled() bool {
@@ -68,14 +75,20 @@ func Enabled() bool {
 }
 
 func AddHTTP(rxBytes, txBytes int64) {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	add(&httpCounters, rxBytes, txBytes)
 }
 
 func AddL4(rxBytes, txBytes int64) {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	add(&l4Counters, rxBytes, txBytes)
 }
 
 func AddRelay(rxBytes, txBytes int64) {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	add(&relayCounters, rxBytes, txBytes)
 }
 
@@ -110,6 +123,8 @@ func newRecorder(counter *counters, scoped *counters) *Recorder {
 }
 
 func (r *Recorder) Add(rxBytes, txBytes int64) {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
@@ -124,7 +139,7 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 		r.tx.Add(uint64(txBytes))
 	}
 	if added > 0 && r.rx.Load()+r.tx.Load() >= recorderFlushThreshold {
-		r.Flush()
+		r.flushLocked()
 		return
 	}
 	if added > 0 {
@@ -133,6 +148,12 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 }
 
 func (r *Recorder) Flush() {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
+	r.flushLocked()
+}
+
+func (r *Recorder) flushLocked() {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
@@ -154,12 +175,14 @@ func (r *Recorder) Close() {
 }
 
 func (r *Recorder) FlushIfPendingBelow(maxBytes uint64) {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
 	r.discardPendingAfterReset()
 	if r.rx.Load()+r.tx.Load() <= maxBytes {
-		r.Flush()
+		r.flushLocked()
 	}
 }
 
@@ -174,6 +197,8 @@ func (r *Recorder) discardPendingAfterReset() {
 }
 
 func Snapshot() map[string]any {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	if !Enabled() {
 		return nil
 	}
@@ -181,6 +206,8 @@ func Snapshot() map[string]any {
 }
 
 func SnapshotNonZero() map[string]any {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	if !Enabled() {
 		return nil
 	}
@@ -195,6 +222,12 @@ func SnapshotNonZero() map[string]any {
 }
 
 func Reset() {
+	collectionMu.Lock()
+	defer collectionMu.Unlock()
+	resetLocked()
+}
+
+func resetLocked() {
 	resetGeneration.Add(1)
 	recorderRegistry.clear()
 	httpCounters.rx.Store(0)
@@ -209,6 +242,8 @@ func Reset() {
 }
 
 func snapshotCounterState() counterState {
+	collectionMu.RLock()
+	defer collectionMu.RUnlock()
 	if Enabled() {
 		recorderRegistry.flushDirty()
 	}
@@ -223,6 +258,8 @@ func snapshotCounterState() counterState {
 }
 
 func restoreCounterState(state counterState) {
+	collectionMu.Lock()
+	defer collectionMu.Unlock()
 	recorderRegistry.clear()
 	restoreCounterStateValue(&httpCounters, state.http)
 	restoreCounterStateValue(&l4Counters, state.l4)
@@ -257,7 +294,7 @@ func (s *recorderSet) flushDirty() {
 	}
 	s.mu.RUnlock()
 	for _, recorder := range recorders {
-		recorder.Flush()
+		recorder.flushLocked()
 	}
 }
 
