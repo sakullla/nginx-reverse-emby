@@ -161,7 +161,7 @@ func validateRuntimeError(payload []byte) error {
 				return errors.New("runtime error code is malformed or repeated")
 			}
 			code, length := protowire.ConsumeVarint(payload[:fieldLength])
-			if length < 0 || !ErrorCode(code).Valid() {
+			if length < 0 || code < uint64(ErrorInvalidArgument) || code > uint64(ErrorInternal) {
 				return fmt.Errorf("runtime error code %d is unspecified or unknown", code)
 			}
 			seenCode = true

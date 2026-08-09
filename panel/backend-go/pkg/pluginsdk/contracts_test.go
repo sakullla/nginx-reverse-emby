@@ -29,6 +29,7 @@ func TestWireResultFramesRejectConflictMissingAndUnknownEnums(t *testing.T) {
 	policySuccessFrame := appendBytesField(nil, 1, policySuccess)
 	policyError := appendVarintField(nil, 1, uint64(ErrorUnavailable))
 	policyErrorFrame := appendBytesField(nil, 2, policyError)
+	overflowError := appendVarintField(nil, 1, uint64(1)<<32|uint64(ErrorInvalidArgument))
 	rpcSuccessFrame := appendBytesField(nil, 1, appendVarintField(nil, 1, 1))
 	rpcErrorFrame := appendBytesField(nil, 2, policyError)
 	for name, test := range map[string]struct {
@@ -41,11 +42,13 @@ func TestWireResultFramesRejectConflictMissingAndUnknownEnums(t *testing.T) {
 		"policy conflict": {ValidatePolicyEvaluateResponseFrame, append(append([]byte(nil), policySuccessFrame...), policyErrorFrame...), false},
 		"policy missing":  {ValidatePolicyEvaluateResponseFrame, nil, false},
 		"policy unknown":  {ValidatePolicyEvaluateResponseFrame, appendBytesField(nil, 2, appendVarintField(nil, 1, 99)), false},
+		"policy overflow": {ValidatePolicyEvaluateResponseFrame, appendBytesField(nil, 2, overflowError), false},
 		"RPC success":     {ValidateRPCLifecycleResponseFrame, rpcSuccessFrame, true},
 		"RPC error":       {ValidateRPCLifecycleResponseFrame, rpcErrorFrame, true},
 		"RPC conflict":    {ValidateRPCLifecycleResponseFrame, append(append([]byte(nil), rpcSuccessFrame...), rpcErrorFrame...), false},
 		"RPC missing":     {ValidateRPCLifecycleResponseFrame, nil, false},
 		"RPC unknown":     {ValidateRPCLifecycleResponseFrame, appendBytesField(nil, 2, appendVarintField(nil, 1, 99)), false},
+		"RPC overflow":    {ValidateRPCLifecycleResponseFrame, appendBytesField(nil, 2, overflowError), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := test.validate(test.frame)
