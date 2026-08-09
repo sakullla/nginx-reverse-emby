@@ -27,6 +27,7 @@ var (
 	ErrPluginAlreadyInstalled  = errors.New("plugin already installed")
 	ErrPluginNotInstalled      = errors.New("plugin not installed")
 	ErrMarketplaceSourceExists = errors.New("marketplace source already exists")
+	ErrMarketplaceCatalogStale = errors.New("marketplace catalog provenance is stale")
 	ErrPluginInstanceScope     = errors.New("invalid plugin instance scope")
 	ErrPluginConflict          = errors.New("plugin state conflict")
 )
@@ -172,6 +173,13 @@ func preparePluginOperationForWriteTx(tx *gorm.DB, operation *PluginOperationRow
 	var candidate PluginPackageRow
 	err := tx.Where("identity = ?", strings.ToLower(strings.TrimSpace(operation.TargetPackageIdentity))).First(&candidate).Error
 	if err == nil {
+		// Repository provenance belongs to the acquisition that authorized this
+		// lifecycle operation, not to the content-addressed package row. The same
+		// package identity may be acquired again from a later source revision/OID.
+		candidate.SourceRevision = operation.SourceRevision
+		candidate.SourceRefKind = operation.SourceRefKind
+		candidate.SourceRefName = operation.SourceRefName
+		candidate.SourceResolvedOID = operation.SourceResolvedOID
 		return validatePluginOperationPackageProvenance(*operation, &candidate)
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -186,6 +194,10 @@ func samePluginOperationPackageProvenance(left, right PluginOperationRow) bool {
 		strings.TrimSpace(left.SourceID) == strings.TrimSpace(right.SourceID) &&
 		strings.TrimSpace(left.SourceKind) == strings.TrimSpace(right.SourceKind) &&
 		strings.TrimSpace(left.SourceRiskLabel) == strings.TrimSpace(right.SourceRiskLabel) &&
+		left.SourceRevision == right.SourceRevision &&
+		strings.TrimSpace(left.SourceRefKind) == strings.TrimSpace(right.SourceRefKind) &&
+		strings.TrimSpace(left.SourceRefName) == strings.TrimSpace(right.SourceRefName) &&
+		strings.EqualFold(strings.TrimSpace(left.SourceResolvedOID), strings.TrimSpace(right.SourceResolvedOID)) &&
 		strings.TrimSpace(left.TargetSignatureKeyID) == strings.TrimSpace(right.TargetSignatureKeyID) &&
 		strings.TrimSpace(left.TargetSignaturePublicKey) == strings.TrimSpace(right.TargetSignaturePublicKey) &&
 		strings.EqualFold(strings.TrimSpace(left.TargetSignatureFingerprint), strings.TrimSpace(right.TargetSignatureFingerprint))
@@ -350,11 +362,13 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 			return err
 		}
 		bySnapshot := make(map[string]string, len(sources))
+		sourceBySnapshot := make(map[string]MarketplaceSourceRow, len(sources))
 		trustBySnapshot := make(map[string]marketplace.SignatureTrust, len(sources))
 		trustBySource := make(map[string]marketplace.SignatureTrust, len(sources))
 		currentIDs := make([]string, 0, len(sources))
 		for _, source := range sources {
 			bySnapshot[source.CurrentSnapshotID] = source.ID
+			sourceBySnapshot[source.CurrentSnapshotID] = source
 			trust, err := marketplaceSourceFromRow(source).SignatureTrust()
 			if err != nil {
 				return fmt.Errorf("current marketplace source %s signature trust: %w", source.ID, err)
@@ -364,7 +378,15 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 			currentIDs = append(currentIDs, source.CurrentSnapshotID)
 		}
 		var entries []MarketEntryRow
+		snapshotByID := make(map[string]MarketSnapshotRow, len(currentIDs))
 		if len(currentIDs) > 0 {
+			var snapshots []MarketSnapshotRow
+			if err := tx.Where("id IN ?", currentIDs).Find(&snapshots).Error; err != nil {
+				return err
+			}
+			for _, snapshot := range snapshots {
+				snapshotByID[snapshot.ID] = snapshot
+			}
 			if err := tx.Where("snapshot_id IN ?", currentIDs).Find(&entries).Error; err != nil {
 				return err
 			}
@@ -440,7 +462,15 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 			if sourceID == "" {
 				continue
 			}
-			row := PluginPackageAcquisitionRow{SourceID: sourceID, Digest: strings.ToLower(entry.PackageDigest), SnapshotID: entry.SnapshotID, Status: "catalog", UpdatedAt: now}
+			snapshot := snapshotByID[entry.SnapshotID]
+			source := sourceBySnapshot[entry.SnapshotID]
+			row := PluginPackageAcquisitionRow{SourceID: sourceID, Digest: strings.ToLower(entry.PackageDigest), SnapshotID: entry.SnapshotID, SourceRevision: snapshot.SourceRevision, RefKind: snapshot.RefKind, RefName: snapshot.RefName, ResolvedOID: snapshot.Commit, Status: "catalog", UpdatedAt: now}
+			if snapshot.SourceRevision != source.ConfigRevision || snapshot.RefKind != source.RefKind || snapshot.RefName != source.RefName || !strings.EqualFold(snapshot.Commit, source.CurrentResolvedOID) {
+				// Preserve startup compatibility for a legacy source while keeping
+				// its catalog unusable until an authenticated refresh establishes
+				// the complete repository provenance tuple.
+				row.SourceRevision, row.RefKind, row.RefName, row.ResolvedOID = 0, "", "", ""
+			}
 			trust := trustBySnapshot[entry.SnapshotID]
 			row.SourceKind, row.SignatureKeyID = trust.SourceKind, trust.KeyID
 			row.SignaturePublicKey, row.SignatureFingerprint = trust.PublicKey, trust.Fingerprint
@@ -1099,7 +1129,8 @@ func (s *GormStore) UpdateMarketplaceSource(ctx context.Context, source marketpl
 			"purpose": row.Purpose, "name": row.Name, "name_key": row.NameKey, "url": row.URL, "ref_kind": row.RefKind, "ref_name": row.RefName,
 			"credential_ref": row.CredentialRef, "signer_key_id": row.SignerKeyID, "signer_secret_ref": row.SignerSecretRef,
 			"signer_public_key": row.SignerPublicKey, "signer_fingerprint": row.SignerFingerprint,
-			"refresh_interval_ns": row.RefreshIntervalNS, "risk_label": row.RiskLabel, "config_revision": row.ConfigRevision, "updated_at": time.Now().UTC(),
+			"refresh_interval_ns": row.RefreshIntervalNS, "risk_label": row.RiskLabel, "config_revision": row.ConfigRevision,
+			"current_snapshot_id": "", "current_resolved_oid": "", "last_result": "refresh_required", "last_error": "", "updated_at": time.Now().UTC(),
 		})
 		if result.Error != nil {
 			if isDuplicateKeyError(result.Error) {
@@ -1933,6 +1964,10 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 		if result.RowsAffected != 1 {
 			return marketplace.ErrRefreshLeaseHeld
 		}
+		var source MarketplaceSourceRow
+		if err := tx.Where("id = ?", operation.SourceID).First(&source).Error; err != nil {
+			return err
+		}
 		var interrupted []MarketplaceRefreshOperationRow
 		if err := tx.Where("source_id = ? AND status = ? AND lease_expires_at <= ?", operation.SourceID, "running", operation.StartedAt).Find(&interrupted).Error; err != nil {
 			return err
@@ -1942,7 +1977,7 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 				return err
 			}
 			previous.Status, previous.ErrorClass, previous.Error, previous.FinishedAt = "failed", "interrupted", "refresh lease expired before completion", &operation.StartedAt
-			if err := tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(previous), "failure", operation.StartedAt)).Error; err != nil {
+			if err := tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(previous), "failure", operation.StartedAt, source)).Error; err != nil {
 				return err
 			}
 			var abandoned []PluginPackageStagingRow
@@ -2035,7 +2070,17 @@ func (s *GormStore) CompletePackageAcquisitions(ctx context.Context, sourceID, o
 
 func (s *GormStore) RecordRefreshRejection(ctx context.Context, sourceID string, actor marketplace.OperationActor, errorClass string) error {
 	now := time.Now().UTC()
-	metadata := `{"redacted":true}`
+	metadataValues := map[string]any{"redacted": true}
+	if source, ok, err := s.GetMarketplaceSource(ctx, sourceID); err == nil && ok {
+		metadataValues["source_revision"] = source.ConfigRevision
+		metadataValues["ref_kind"] = source.RefKind
+		metadataValues["ref_name"] = source.RefName
+		metadataValues["resolved_oid"] = source.CurrentResolvedOID
+		metadataValues["signer_key_id"] = source.SignerKeyID
+		metadataValues["signer_fingerprint"] = source.SignerFingerprint
+	}
+	encoded, _ := json.Marshal(metadataValues)
+	metadata := string(encoded)
 	return s.AppendAuditEvent(ctx, AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.ActorID, SessionID: actor.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: sourceID, CorrelationID: actor.CorrelationID, Result: "failure", ErrorClass: errorClass, MetadataJSON: metadata, CreatedAt: now})
 }
 
@@ -2103,6 +2148,9 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 		}
 		lockedOperation.Commit, lockedOperation.Status, lockedOperation.ErrorClass, lockedOperation.Error = operation.Commit, operation.Status, operation.ErrorClass, operation.Error
 		lockedOperation.DiffJSON, lockedOperation.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
+		if sourceFound {
+			return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "failure", updatedAt, lockedSource)).Error
+		}
 		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "failure", updatedAt)).Error
 	})
 }
@@ -2160,7 +2208,7 @@ func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, ope
 			return err
 		}
 		operation.Status, operation.ErrorClass, operation.Error, operation.FinishedAt = "failed", errorClass, message, &now
-		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(operation), "failure", now)).Error
+		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(operation), "failure", now, source)).Error
 	})
 }
 
@@ -2335,7 +2383,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		}
 		lockedOperation.Commit, lockedOperation.Status, lockedOperation.ErrorClass, lockedOperation.Error = operation.Commit, operation.Status, "", ""
 		lockedOperation.DiffJSON, lockedOperation.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
-		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "success", *operation.FinishedAt)).Error
+		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "success", *operation.FinishedAt, lockedSource)).Error
 	})
 }
 
@@ -2375,32 +2423,54 @@ func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Sour
 }
 
 func (s *GormStore) CurrentSnapshot(ctx context.Context, sourceID string) (marketplace.Snapshot, bool, error) {
-	var source MarketplaceSourceRow
-	if err := s.db.WithContext(ctx).Where("id = ?", sourceID).First(&source).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return marketplace.Snapshot{}, false, nil
+	var result marketplace.Snapshot
+	var found bool
+	err := s.readSnapshotTransaction(ctx, func(view *GormStore) error {
+		var source MarketplaceSourceRow
+		if err := view.db.WithContext(ctx).Where("id = ?", sourceID).First(&source).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
 		}
-		return marketplace.Snapshot{}, false, err
-	}
-	if source.CurrentSnapshotID == "" {
-		return marketplace.Snapshot{}, false, nil
-	}
-	var row MarketSnapshotRow
-	if err := s.db.WithContext(ctx).Where("id = ?", source.CurrentSnapshotID).First(&row).Error; err != nil {
-		return marketplace.Snapshot{}, false, err
-	}
-	var entries []plugins.MarketEntry
-	if err := json.Unmarshal([]byte(row.EntriesJSON), &entries); err != nil {
-		return marketplace.Snapshot{}, false, err
-	}
-	var direct *plugins.DirectPluginSnapshot
-	if strings.TrimSpace(row.DirectPluginJSON) != "" {
-		direct = &plugins.DirectPluginSnapshot{}
-		if err := json.Unmarshal([]byte(row.DirectPluginJSON), direct); err != nil {
-			return marketplace.Snapshot{}, false, err
+		if source.CurrentSnapshotID == "" {
+			return nil
 		}
+		var row MarketSnapshotRow
+		if err := view.db.WithContext(ctx).Where("id = ? AND source_id = ?", source.CurrentSnapshotID, source.ID).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("%w: current snapshot is missing", ErrMarketplaceCatalogStale)
+			}
+			return err
+		}
+		if err := validateCurrentMarketplaceSnapshot(source, row); err != nil {
+			return err
+		}
+		var entries []plugins.MarketEntry
+		if err := json.Unmarshal([]byte(row.EntriesJSON), &entries); err != nil {
+			return err
+		}
+		var direct *plugins.DirectPluginSnapshot
+		if strings.TrimSpace(row.DirectPluginJSON) != "" {
+			direct = &plugins.DirectPluginSnapshot{}
+			if err := json.Unmarshal([]byte(row.DirectPluginJSON), direct); err != nil {
+				return err
+			}
+		}
+		result = marketplace.Snapshot{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, Path: row.Path, ValidatedAt: row.ValidatedAt, Entries: entries, DirectPlugin: direct}
+		found = true
+		return nil
+	})
+	return result, found, err
+}
+
+func validateCurrentMarketplaceSnapshot(source MarketplaceSourceRow, snapshot MarketSnapshotRow) error {
+	if source.ConfigRevision == 0 || snapshot.SourceRevision == 0 || source.ConfigRevision != snapshot.SourceRevision ||
+		source.RefKind != snapshot.RefKind || source.RefName != snapshot.RefName || !marketplace.IsFullCommitOID(source.CurrentResolvedOID) ||
+		!marketplace.IsFullCommitOID(snapshot.Commit) || !strings.EqualFold(source.CurrentResolvedOID, snapshot.Commit) {
+		return fmt.Errorf("%w: source revision, ref, or resolved OID differs from the current snapshot", ErrMarketplaceCatalogStale)
 	}
-	return marketplace.Snapshot{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, Path: row.Path, ValidatedAt: row.ValidatedAt, Entries: entries, DirectPlugin: direct}, true, nil
+	return nil
 }
 
 func (s *GormStore) CurrentMarketEntry(ctx context.Context, sourceID, pluginID, version, digest string) (plugins.MarketEntry, bool, error) {
@@ -2429,19 +2499,44 @@ func (s *GormStore) CurrentDirectPlugin(ctx context.Context, sourceID, pluginID,
 }
 
 func (s *GormStore) CurrentPackageAcquisition(ctx context.Context, sourceID, digest string) (marketplace.PackageAcquisition, bool, error) {
-	var row PluginPackageAcquisitionRow
-	err := s.db.WithContext(ctx).Where("source_id = ? AND digest = ? AND status = ?", sourceID, strings.ToLower(strings.TrimSpace(digest)), "catalog").First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return marketplace.PackageAcquisition{}, false, nil
-	}
-	if err != nil {
-		return marketplace.PackageAcquisition{}, false, err
-	}
-	result := marketplace.PackageAcquisition{SourceID: row.SourceID, Digest: row.Digest, SnapshotID: row.SnapshotID, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, ResolvedOID: row.ResolvedOID, Trust: marketplace.SignatureTrust{SourceID: row.SourceID, SourceKind: row.SourceKind, KeyID: row.SignatureKeyID, PublicKey: row.SignaturePublicKey, Fingerprint: row.SignatureFingerprint}}
-	if err := marketplace.ValidateSignatureTrust(result.Trust); err != nil {
-		return marketplace.PackageAcquisition{}, false, err
-	}
-	return result, true, nil
+	var result marketplace.PackageAcquisition
+	var found bool
+	err := s.readSnapshotTransaction(ctx, func(view *GormStore) error {
+		var source MarketplaceSourceRow
+		if err := view.db.WithContext(ctx).Where("id = ? AND deleting = ?", sourceID, false).First(&source).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if source.CurrentSnapshotID == "" {
+			return nil
+		}
+		var snapshot MarketSnapshotRow
+		if err := view.db.WithContext(ctx).Where("id = ? AND source_id = ?", source.CurrentSnapshotID, source.ID).First(&snapshot).Error; err != nil {
+			return fmt.Errorf("%w: current snapshot is missing", ErrMarketplaceCatalogStale)
+		}
+		if err := validateCurrentMarketplaceSnapshot(source, snapshot); err != nil {
+			return err
+		}
+		var row PluginPackageAcquisitionRow
+		if err := view.db.WithContext(ctx).Where("source_id = ? AND digest = ? AND snapshot_id = ? AND status = ?", sourceID, strings.ToLower(strings.TrimSpace(digest)), source.CurrentSnapshotID, "catalog").First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if row.SourceRevision == 0 || row.SourceRevision != source.ConfigRevision || row.RefKind != source.RefKind || row.RefName != source.RefName || !marketplace.IsFullCommitOID(row.ResolvedOID) || !strings.EqualFold(row.ResolvedOID, source.CurrentResolvedOID) {
+			return fmt.Errorf("%w: package acquisition differs from the current source", ErrMarketplaceCatalogStale)
+		}
+		result = marketplace.PackageAcquisition{SourceID: row.SourceID, Digest: row.Digest, SnapshotID: row.SnapshotID, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, ResolvedOID: row.ResolvedOID, Trust: marketplace.SignatureTrust{SourceID: row.SourceID, SourceKind: row.SourceKind, KeyID: row.SignatureKeyID, PublicKey: row.SignaturePublicKey, Fingerprint: row.SignatureFingerprint}}
+		if err := marketplace.ValidateSignatureTrust(result.Trust); err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	return result, found, err
 }
 
 func (s *GormStore) PackageReferenced(ctx context.Context, digest string) (bool, error) {
@@ -2732,6 +2827,15 @@ func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []
 	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || existing.RuntimeKind != candidate.RuntimeKind || existing.RuntimeABI != candidate.RuntimeABI || existing.HostScope != candidate.HostScope || existing.PolicyKind != candidate.PolicyKind || existing.EntryPath != candidate.EntryPath || existing.SignatureKeyID != candidate.SignatureKeyID || existing.SignaturePublicKey != candidate.SignaturePublicKey || existing.SignatureFingerprint != candidate.SignatureFingerprint || existing.SignatureVerdict != candidate.SignatureVerdict || existing.ResourceBudgetJSON != candidate.ResourceBudgetJSON || existing.FailurePolicyJSON != candidate.FailurePolicyJSON || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
 		return fmt.Errorf("%w: verified package metadata differs for digest", ErrPluginConflict)
 	}
+	if existing.SourceRevision != candidate.SourceRevision || existing.SourceRefKind != candidate.SourceRefKind || existing.SourceRefName != candidate.SourceRefName || !strings.EqualFold(existing.SourceResolvedOID, candidate.SourceResolvedOID) || existing.SourceRiskLabel != candidate.SourceRiskLabel {
+		if err := tx.Model(&PluginPackageRow{}).Where("identity = ?", existing.Identity).Updates(map[string]any{
+			"source_risk_label": candidate.SourceRiskLabel, "source_revision": candidate.SourceRevision,
+			"source_ref_kind": candidate.SourceRefKind, "source_ref_name": candidate.SourceRefName,
+			"source_resolved_oid": strings.ToLower(strings.TrimSpace(candidate.SourceResolvedOID)), "verified_at": candidate.VerifiedAt,
+		}).Error; err != nil {
+			return err
+		}
+	}
 	return ensurePluginArtifactsTx(tx, candidate.Identity, candidate.Digest, artifacts)
 }
 
@@ -2894,9 +2998,19 @@ func validatePackageAcquisitionTx(tx *gorm.DB, sourceID, digest string, candidat
 	if fence.ClaimToken != "" {
 		return errors.New("verified package cache is being deleted")
 	}
+	var snapshot MarketSnapshotRow
+	if source.CurrentSnapshotID == "" || tx.Where("id = ? AND source_id = ?", source.CurrentSnapshotID, source.ID).First(&snapshot).Error != nil {
+		return fmt.Errorf("%w: current snapshot is missing", ErrMarketplaceCatalogStale)
+	}
+	if err := validateCurrentMarketplaceSnapshot(source, snapshot); err != nil {
+		return err
+	}
 	var acquisition PluginPackageAcquisitionRow
 	if err := tx.Where("source_id = ? AND digest = ? AND snapshot_id = ? AND status = ?", sourceID, digest, source.CurrentSnapshotID, "catalog").First(&acquisition).Error; err != nil {
 		return errors.New("verified package acquisition is unavailable")
+	}
+	if acquisition.SourceRevision != source.ConfigRevision || acquisition.RefKind != source.RefKind || acquisition.RefName != source.RefName || !marketplace.IsFullCommitOID(acquisition.ResolvedOID) || !strings.EqualFold(acquisition.ResolvedOID, source.CurrentResolvedOID) {
+		return fmt.Errorf("%w: package acquisition differs from the current source", ErrMarketplaceCatalogStale)
 	}
 	if acquisition.SourceKind != candidate.SourceKind || acquisition.SignatureKeyID != candidate.SignatureKeyID || acquisition.SignaturePublicKey != candidate.SignaturePublicKey || acquisition.SignatureFingerprint != candidate.SignatureFingerprint || candidate.SourceID != sourceID {
 		return errors.New("verified package acquisition signer binding differs from package metadata")
@@ -3174,8 +3288,17 @@ func pluginDefaultJSON(value string) string {
 
 func pluginStorageID(prefix string) string { return securityID(prefix) }
 
-func marketplaceRefreshAudit(operation marketplace.RefreshOperation, result string, now time.Time) AuditEventRow {
-	metadata, _ := json.Marshal(map[string]any{"operation_id": operation.ID, "commit": operation.Commit, "diff": json.RawMessage(pluginDefaultJSON(operation.DiffJSON))})
+func marketplaceRefreshAudit(operation marketplace.RefreshOperation, result string, now time.Time, sources ...MarketplaceSourceRow) AuditEventRow {
+	metadataValues := map[string]any{
+		"operation_id": operation.ID, "commit": operation.Commit, "source_revision": operation.SourceRevision,
+		"ref_kind": operation.RefKind, "ref_name": operation.RefName, "resolved_oid": operation.Commit,
+		"diff": json.RawMessage(pluginDefaultJSON(operation.DiffJSON)),
+	}
+	if len(sources) > 0 {
+		metadataValues["signer_key_id"] = sources[0].SignerKeyID
+		metadataValues["signer_fingerprint"] = sources[0].SignerFingerprint
+	}
+	metadata, _ := json.Marshal(metadataValues)
 	return AuditEventRow{ID: pluginStorageID("audit"), ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: operation.SourceID, CorrelationID: operation.Actor.CorrelationID, Result: result, ErrorClass: operation.ErrorClass, MetadataJSON: string(metadata), CreatedAt: now}
 }
 

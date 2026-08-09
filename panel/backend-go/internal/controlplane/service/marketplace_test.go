@@ -146,13 +146,14 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	}
 	manifest := candidate.Package.Manifest
 	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom", Official: false}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-current", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+	currentOID := strings.Repeat("1", 40)
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-current", SourceID: source.ID, Commit: currentOID, Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
 	validator := pluginTestValidator()
 	catalog := NewMarketplaceService(store, nil, validator, filepath.Dir(candidate.CachePath))
 	current, err := catalog.CurrentCatalog(ctx, source.ID)
-	if err != nil || current.Source.Kind != marketplace.SourceKindCustom || current.Snapshot.Commit != "commit" || len(current.Snapshot.Entries) != 1 {
+	if err != nil || current.Source.Kind != marketplace.SourceKindCustom || current.Snapshot.Commit != currentOID || len(current.Snapshot.Entries) != 1 {
 		t.Fatalf("current market catalog = %+v, %v", current, err)
 	}
 	resolved, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
@@ -162,11 +163,87 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	if _, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, pluginTestOtherDigest()); !errors.Is(err, ErrMarketplaceEntryNotFound) {
 		t.Fatalf("non-current digest resolution error = %v", err)
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-next", SourceID: source.ID, Commit: "next", Path: "snapshot-next", ValidatedAt: time.Now().UTC()}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-next", SourceID: source.ID, Commit: strings.Repeat("2", 40), Path: "snapshot-next", ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := newPluginTestServiceAtRoot(t, store, filepath.Dir(filepath.Dir(resolved.CachePath))).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err == nil {
 		t.Fatal("candidate resolved from a removed snapshot remained installable")
+	}
+}
+
+func TestRepositoryRefreshSameDigestReinstallUsesCurrentAcquisitionProvenance(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "repository-refresh-test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	candidate := pluginCandidateFixture(t, "repository.reinstall", "1.0.0", []string{"http.inspect"}, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	source, err := marketplaceTestSource("repository-reinstall-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := candidate.Package.Manifest
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/repository.reinstall/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom"}
+	oidOne := strings.Repeat("4", 40)
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "reinstall-one", SourceID: source.ID, Commit: oidOne, Path: "reinstall-one", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+	catalog := NewMarketplaceService(store, nil, pluginTestValidator(), filepath.Dir(candidate.CachePath))
+	first, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pluginService := newPluginTestServiceAtRoot(t, store, filepath.Dir(filepath.Dir(first.CachePath)))
+	if _, err := pluginService.Install(ctx, PluginInstallRequest{Package: first, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err != nil {
+		t.Fatal(err)
+	}
+	source.RefName = "release"
+	source.ConfigRevision++
+	updated, err := store.UpdateMarketplaceSource(ctx, source, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oidTwo := strings.Repeat("5", 40)
+	if err := store.PromoteSnapshot(ctx, updated, marketplace.Snapshot{ID: "reinstall-two", SourceID: source.ID, Commit: oidTwo, Path: "reinstall-two", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
+	if err != nil || second.sourceRevision != 2 || second.sourceRefName != "release" || second.sourceResolvedOID != oidTwo {
+		t.Fatalf("refreshed candidate provenance = rev=%d ref=%q oid=%q err=%v", second.sourceRevision, second.sourceRefName, second.sourceResolvedOID, err)
+	}
+	if err := pluginService.Uninstall(ctx, PluginUninstallRequest{PluginID: manifest.ID, ActorID: "admin", Drained: true}); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled, err := pluginService.Install(ctx, PluginInstallRequest{Package: second, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reinstalled.ActiveSourceRevision != 2 || reinstalled.ActiveSourceRefName != "release" || reinstalled.ActiveSourceResolvedOID != oidTwo {
+		t.Fatalf("reinstalled provenance = %+v", reinstalled)
+	}
+	packageRow, ok, err := store.GetPluginPackageByIdentity(ctx, reinstalled.ActivePackageIdentity)
+	if err != nil || !ok || packageRow.SourceRevision != 2 || packageRow.SourceRefName != "release" || packageRow.SourceResolvedOID != oidTwo {
+		t.Fatalf("reused package provenance = %+v ok=%v err=%v", packageRow, ok, err)
+	}
+	audits, err := store.ListAuditEvents(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lifecycleMetadata, refreshMetadata map[string]any
+	for _, audit := range audits {
+		if audit.Action == "plugin.install" && strings.Contains(audit.MetadataJSON, oidTwo) {
+			_ = json.Unmarshal([]byte(audit.MetadataJSON), &lifecycleMetadata)
+		}
+		if audit.Action == "marketplace.source.refresh" && strings.Contains(audit.MetadataJSON, oidTwo) {
+			_ = json.Unmarshal([]byte(audit.MetadataJSON), &refreshMetadata)
+		}
+	}
+	for label, metadata := range map[string]map[string]any{"lifecycle": lifecycleMetadata, "refresh": refreshMetadata} {
+		if metadata == nil || metadata["source_revision"] != float64(2) || metadata["ref_kind"] != marketplace.GitRefKindBranch || metadata["ref_name"] != "release" || metadata["resolved_oid"] != oidTwo || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
+			t.Fatalf("%s audit provenance = %#v", label, metadata)
+		}
 	}
 }
 

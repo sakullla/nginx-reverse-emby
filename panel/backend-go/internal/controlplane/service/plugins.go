@@ -1982,7 +1982,13 @@ func grantRows(pluginID, digest, identity string, permissions []plugins.Permissi
 }
 
 func pluginLifecycleAudit(operation storage.PluginOperationRow, _ string, result, errorClass string, now time.Time) storage.AuditEventRow {
-	metadata, _ := json.Marshal(map[string]any{"operation_id": operation.ID, "operation_kind": operation.Kind, "package_digest": operation.TargetPackageDigest, "source_id": operation.SourceID, "source_kind": operation.SourceKind, "source_risk_label": operation.SourceRiskLabel})
+	metadata, _ := json.Marshal(map[string]any{
+		"operation_id": operation.ID, "operation_kind": operation.Kind, "package_digest": operation.TargetPackageDigest,
+		"source_id": operation.SourceID, "source_kind": operation.SourceKind, "source_risk_label": operation.SourceRiskLabel,
+		"source_revision": operation.SourceRevision, "ref_kind": operation.SourceRefKind, "ref_name": operation.SourceRefName,
+		"resolved_oid": operation.SourceResolvedOID, "signer_key_id": operation.TargetSignatureKeyID,
+		"signer_fingerprint": operation.TargetSignatureFingerprint,
+	})
 	return storage.AuditEventRow{ID: lifecycleID("audit"), ActorID: operation.ActorID, SessionID: operation.SessionID, Action: "plugin." + operation.Kind, TargetKind: "plugin", TargetID: operation.PluginID, CorrelationID: operation.CorrelationID, Result: result, ErrorClass: errorClass, MetadataJSON: string(metadata), CreatedAt: now}
 }
 

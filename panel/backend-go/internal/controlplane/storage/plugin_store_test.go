@@ -902,7 +902,7 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := marketplace.Snapshot{ID: "snapshot-1", SourceID: custom.ID, Commit: "commit-1", Path: snapshotPath, ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "example.plugin", Version: "1.0.0", PackagePath: "plugins/example.plugin/1.0.0", PackageSHA256: packageDigest, SignatureKeyID: trust.KeyID}}}
+	snapshot := marketplace.Snapshot{ID: "snapshot-1", SourceID: custom.ID, Commit: strings.Repeat("7", 40), Path: snapshotPath, ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "example.plugin", Version: "1.0.0", PackagePath: "plugins/example.plugin/1.0.0", PackageSHA256: packageDigest, SignatureKeyID: trust.KeyID}}}
 	if err := source.PromoteSnapshot(ctx, custom, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1016,7 @@ func TestPluginAcquisitionRebuildRejectsInvalidCurrentSourceTrust(t *testing.T) 
 		t.Fatal(err)
 	}
 	digest := pluginTestDigest("invalid-current-acquisition")
-	snapshot := marketplace.Snapshot{ID: "invalid-current-acquisition-snapshot", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "invalid.current.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+	snapshot := marketplace.Snapshot{ID: "invalid-current-acquisition-snapshot", SourceID: source.ID, Commit: strings.Repeat("8", 40), Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "invalid.current.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
 	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -1759,7 +1759,7 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := marketplace.Snapshot{ID: "catalog-current", SourceID: market.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "catalog.plugin", Version: "1.0.0", PackagePath: "plugins/catalog.plugin/1.0.0", PackageSHA256: digest, SignatureKeyID: market.SignerKeyID}}}
+	snapshot := marketplace.Snapshot{ID: "catalog-current", SourceID: market.ID, Commit: strings.Repeat("9", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "catalog.plugin", Version: "1.0.0", PackagePath: "plugins/catalog.plugin/1.0.0", PackageSHA256: digest, SignatureKeyID: market.SignerKeyID}}}
 	if err := source.PromoteSnapshot(ctx, market, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -1889,7 +1889,7 @@ func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *te
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	stable := marketplace.Snapshot{ID: "stable-snapshot", SourceID: source.ID, Commit: "stable-commit", Path: "stable/path", ValidatedAt: now}
+	stable := marketplace.Snapshot{ID: "stable-snapshot", SourceID: source.ID, Commit: strings.Repeat("a", 40), Path: "stable/path", ValidatedAt: now}
 	if err := store.PromoteSnapshot(ctx, source, stable); err != nil {
 		t.Fatal(err)
 	}
@@ -1948,11 +1948,11 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	source, _ := marketplace.NewCustomSource("atomic", "Atomic", "https://example.com/plugins.git", "main", "", 0)
 	now := time.Now().UTC()
-	stable := marketplace.Snapshot{ID: "stable", SourceID: source.ID, Commit: "stable-commit", Path: "stable", ValidatedAt: now}
+	stable := marketplace.Snapshot{ID: "stable", SourceID: source.ID, Commit: strings.Repeat("b", 40), Path: "stable", ValidatedAt: now}
 	if err := store.PromoteSnapshot(ctx, source, stable); err != nil {
 		t.Fatal(err)
 	}
-	op := marketplace.RefreshOperation{ID: "refresh-next", SourceID: source.ID, Commit: "next-commit", Status: "running", StartedAt: now, LeaseToken: "lease-next", LeaseExpiresAt: now.Add(2 * time.Minute)}
+	op := marketplace.RefreshOperation{ID: "refresh-next", SourceID: source.ID, Commit: strings.Repeat("c", 40), Status: "running", StartedAt: now, LeaseToken: "lease-next", LeaseExpiresAt: now.Add(2 * time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, op); err != nil {
 		t.Fatal(err)
 	}
@@ -2346,7 +2346,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	}
 	now := time.Now().UTC()
 	digest := pluginTestDigest("a")
-	snapshot := marketplace.Snapshot{ID: "one", SourceID: source.ID, Commit: "one", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "one"), ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "one.plugin", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+	snapshot := marketplace.Snapshot{ID: "one", SourceID: source.ID, Commit: strings.Repeat("1", 40), Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "one"), ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "one.plugin", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
 	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -2382,7 +2382,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err != nil || !ok || !completed.LastCompletedAt.Equal(finished) {
 		t.Fatalf("failed refresh completion baseline = %+v, %v, %v", completed, ok, err)
 	}
-	empty := marketplace.Snapshot{ID: "two", SourceID: source.ID, Commit: "two", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "two"), ValidatedAt: time.Now().UTC()}
+	empty := marketplace.Snapshot{ID: "two", SourceID: source.ID, Commit: strings.Repeat("2", 40), Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "two"), ValidatedAt: time.Now().UTC()}
 	if err := store.PromoteSnapshot(ctx, source, empty); err != nil {
 		t.Fatal(err)
 	}
@@ -2392,6 +2392,75 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	intents, err := store.ListPackageGCIntents(ctx)
 	if err != nil || len(intents) != 1 || intents[0].Digest != digest || intents[0].SourceID != source.ID {
 		t.Fatalf("retired catalog digest GC intents = %+v, %v", intents, err)
+	}
+}
+
+func TestRepositorySourceEditInvalidatesCatalogAndPreservesInstalledRollback(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplace.NewSignedCustomSource("edit-fence", "Edit Fence", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "edit-release", SecretRef: "vault-edit", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, _ := source.SignatureTrust()
+	digest := pluginTestDigest("a")
+	rollbackDigest := pluginTestDigest("b")
+	oid := strings.Repeat("1", 40)
+	snapshot := marketplace.Snapshot{ID: "edit-current", SourceID: source.ID, Commit: oid, Path: "edit-current", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "edit.plugin", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	installed := InstalledPluginRow{PluginID: "edit.plugin", ActivePackageDigest: digest, RollbackPackageDigest: rollbackDigest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "old-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	source.RefName = "release"
+	source.ConfigRevision++
+	updated, err := store.UpdateMarketplaceSource(ctx, source, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CurrentSnapshot != "" || updated.CurrentResolvedOID != "" || updated.LastResult != "refresh_required" {
+		t.Fatalf("edited source retained current catalog authority: %+v", updated)
+	}
+	if _, ok, err := store.CurrentSnapshot(ctx, source.ID); err != nil || ok {
+		t.Fatalf("edited source exposed old snapshot: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.CurrentPackageAcquisition(ctx, source.ID, digest); err != nil || ok {
+		t.Fatalf("edited source exposed old acquisition: ok=%v err=%v", ok, err)
+	}
+	persisted, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok || persisted.ActivePackageDigest != digest || persisted.RollbackPackageDigest != rollbackDigest {
+		t.Fatalf("source edit changed installed/rollback objects: %+v ok=%v err=%v", persisted, ok, err)
+	}
+}
+
+func TestRepositoryCatalogMissingProvenanceFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewSignedCustomSource("legacy-provenance", "Legacy Provenance", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "legacy-release", SecretRef: "vault-legacy", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	trust, _ := source.SignatureTrust()
+	digest := pluginTestDigest("c")
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "legacy-current", SourceID: source.ID, Commit: strings.Repeat("3", 40), Path: "legacy-current", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "legacy.plugin", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("current_resolved_oid", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CurrentSnapshot(ctx, source.ID); !errors.Is(err, ErrMarketplaceCatalogStale) {
+		t.Fatalf("legacy snapshot without provenance error = %v", err)
+	}
+	if _, _, err := store.CurrentPackageAcquisition(ctx, source.ID, digest); !errors.Is(err, ErrMarketplaceCatalogStale) {
+		t.Fatalf("legacy acquisition without provenance error = %v", err)
 	}
 }
 
@@ -3283,7 +3352,7 @@ func TestDuplicateMarketplaceSourcePreservesRuntimeStateAndAuditsWithoutCredenti
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	snapshot := marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: "commit", Path: "current", ValidatedAt: now}
+	snapshot := marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: strings.Repeat("d", 40), Path: "current", ValidatedAt: now}
 	refresh := marketplace.RefreshOperation{ID: "refresh-audited", SourceID: source.ID, Commit: snapshot.Commit, Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "admin", SessionID: "session", CorrelationID: "request"}, LeaseToken: "lease-audited", LeaseExpiresAt: now.Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
