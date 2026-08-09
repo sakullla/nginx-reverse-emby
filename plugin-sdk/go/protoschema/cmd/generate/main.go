@@ -10,8 +10,8 @@ import (
 )
 
 func main() {
-	sdkRoot := flag.String("sdk-root", "..", "path to the canonical plugin-sdk directory")
-	output := flag.String("output", "./protoschema/descriptors_gen.go", "generated Go descriptor output")
+	sdkRoot := flag.String("sdk-root", ".", "path to the canonical plugin-sdk Go module")
+	output := flag.String("output", "./go/protoschema/descriptors_gen.go", "generated Go descriptor output")
 	flag.Parse()
 
 	descriptorSet, err := protogen.CompileDescriptorSet(context.Background(), *sdkRoot)

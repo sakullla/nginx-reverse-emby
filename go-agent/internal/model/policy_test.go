@@ -28,3 +28,44 @@ func TestHTTPAndL4RulesExposeOnePolicyRef(t *testing.T) {
 		t.Fatalf("decoded HTTP policy ref = %+v", decoded.Rules[0].PolicyRef)
 	}
 }
+
+func TestFullRevisionRequiresPresentPluginPolicies(t *testing.T) {
+	base := `{"desired_version":"v1","desired_revision":1,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`
+	var absent Snapshot
+	if err := json.Unmarshal([]byte(base), &absent); err != nil {
+		t.Fatalf("Unmarshal(absent) error = %v", err)
+	}
+	if absent.HasFullRevisionPayload() {
+		t.Fatal("revision without plugin_policies was accepted as full")
+	}
+
+	presentWire := strings.TrimSuffix(base, "}") + `,"plugin_policies":[]}`
+	var present Snapshot
+	if err := json.Unmarshal([]byte(presentWire), &present); err != nil {
+		t.Fatalf("Unmarshal(present) error = %v", err)
+	}
+	if !present.HasFullRevisionPayload() {
+		t.Fatal("revision with explicit empty plugin_policies was rejected")
+	}
+	if present.PluginPolicies == nil || len(present.PluginPolicies) != 0 {
+		t.Fatalf("explicit empty plugin_policies = %#v, want non-nil empty", present.PluginPolicies)
+	}
+}
+
+func TestPluginPoliciesWireAlwaysSerializesPresence(t *testing.T) {
+	nilWire, err := json.Marshal(Snapshot{})
+	if err != nil {
+		t.Fatalf("Marshal(nil policies) error = %v", err)
+	}
+	if !strings.Contains(string(nilWire), `"plugin_policies":null`) {
+		t.Fatalf("nil plugin policies wire = %s", nilWire)
+	}
+
+	emptyWire, err := json.Marshal(Snapshot{PluginPolicies: []PluginPolicy{}})
+	if err != nil {
+		t.Fatalf("Marshal(empty policies) error = %v", err)
+	}
+	if !strings.Contains(string(emptyWire), `"plugin_policies":[]`) {
+		t.Fatalf("empty plugin policies wire = %s", emptyWire)
+	}
+}

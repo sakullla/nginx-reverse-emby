@@ -23,6 +23,11 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policy
 // before calling free exactly once. Zero length is encoded as zero and is not
 // freed. All ranges are unsigned 32-bit offsets into the exported memory and
 // are rejected before wraparound or when they exceed manifest budgets.
+// input_bytes and output_bytes are limits on each complete encoded protobuf
+// wire frame, including tags, length prefixes, nested envelopes, request IDs,
+// generation/grant metadata, and Host request/response framing. They are not
+// payload-only limits. A host must marshal the complete frame before admission
+// and must not promise a payload field equal to the whole frame budget.
 //
 // Required function imports use module "nre:policy/v1" and names
 // nre_host_read_field, nre_host_read_body_window, nre_host_state_get,

@@ -69,7 +69,13 @@ func TestIPPolicyTCPUsesAuthenticatedProxyProtocolSource(t *testing.T) {
 	if _, err := source.Peek(len("buffered-prefix")); err != nil {
 		t.Fatalf("prime buffered source: %v", err)
 	}
-	rule := model.L4Rule{ID: 7, Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 8443, PolicyRef: &model.PolicyRef{ID: "ip-policy"}}
+	rule := model.L4Rule{
+		ID: 7, Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 8443,
+		PolicyRef: &model.PolicyRef{ID: "ip-policy"},
+		Tuning: model.L4Tuning{ProxyProtocol: model.L4ProxyProtocolTuning{
+			Decode: true, TrustedPeers: []string{"192.0.2.0/24"},
+		}},
+	}
 	proxyMetadata := &proxyInfo{Source: &net.TCPAddr{IP: net.ParseIP("198.51.100.22"), Port: 12345}, Version: 2}
 
 	if !server.allowTCPPolicy(rule, client, source, proxyMetadata) {
@@ -90,6 +96,33 @@ func TestIPPolicyTCPUsesAuthenticatedProxyProtocolSource(t *testing.T) {
 	}
 	if got := string(captured.Fields()[policy.FieldFlowNew]); got != "true" {
 		t.Fatalf("flow.new = %q, want true for accepted TCP connection", got)
+	}
+}
+
+func TestIPPolicyTCPRejectsForgedProxySourceFromUntrustedPeer(t *testing.T) {
+	var captured policy.Input
+	evaluator := l4PolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
+		captured = input
+		return policy.Decision{Action: policy.ActionAllow}
+	})
+	server := &Server{ctx: context.Background(), policyEvaluator: evaluator, generationID: "generation-untrusted-source"}
+	client := &l4PolicyConn{remote: &net.TCPAddr{IP: net.ParseIP("203.0.113.30"), Port: 40000}}
+	rule := model.L4Rule{
+		ID: 8, Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 8443,
+		PolicyRef: &model.PolicyRef{ID: "ip-policy"},
+		Tuning: model.L4Tuning{ProxyProtocol: model.L4ProxyProtocolTuning{
+			Decode: true, TrustedPeers: []string{"192.0.2.0/24"},
+		}},
+	}
+	forged := &proxyInfo{Source: &net.TCPAddr{IP: net.ParseIP("198.51.100.22"), Port: 12345}, Version: 2}
+	if !server.allowTCPPolicy(rule, client, bufio.NewReader(nil), forged) {
+		t.Fatal("untrusted PROXY claim should be ignored, not affect policy availability")
+	}
+	if got := captured.Metadata().Source().String(); got != "203.0.113.30:40000" {
+		t.Fatalf("forged PROXY source = %q, want physical peer", got)
+	}
+	if captured.Metadata().Kind() != policy.SourceDirect {
+		t.Fatalf("forged PROXY source kind = %q", captured.Metadata().Kind())
 	}
 }
 

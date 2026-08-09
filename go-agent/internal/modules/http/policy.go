@@ -3,8 +3,12 @@ package http
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	stdhttp "net/http"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -52,7 +56,7 @@ func (s *Server) allowPolicyRequest(req *stdhttp.Request, rule model.HTTPRule) (
 	if req.ProtoMajor == 3 {
 		network = "udp"
 	}
-	metadata, err := policy.NewDirectMetadata(httpRemoteAddr{network: network, address: req.RemoteAddr})
+	metadata, err := httpPolicyMetadata(req, network, rule.TrustedProxyRanges)
 	if err != nil {
 		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "invalid-source", Degraded: true}, false
 	}
@@ -60,12 +64,50 @@ func (s *Server) allowPolicyRequest(req *stdhttp.Request, rule model.HTTPRule) (
 	if err != nil {
 		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "body-window", Degraded: true}, false
 	}
-	input, err := policy.NewInput(policy.ExtensionHTTP, httpPolicyRequestID(req.Context()), metadata, httpPolicyFields(req), body)
+	fields, err := httpPolicyFields(req)
+	if err != nil {
+		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "input-projection", Degraded: true}, false
+	}
+	input, err := policy.NewInput(policy.ExtensionHTTP, httpPolicyRequestID(req.Context()), metadata, fields, body)
 	if err != nil {
 		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "invalid-input", Degraded: true}, false
 	}
 	decision := s.policyEvaluator.Evaluate(req.Context(), rule.PolicyRef, input)
 	return decision, decision.Action == policy.ActionAllow || decision.Action == policy.ActionObserve
+}
+
+func httpPolicyMetadata(req *stdhttp.Request, network string, trustedProxyRanges []string) (policy.CanonicalMetadata, error) {
+	physicalPeer := httpRemoteAddr{network: network, address: req.RemoteAddr}
+	direct, err := policy.NewDirectMetadata(physicalPeer)
+	if err != nil {
+		return policy.CanonicalMetadata{}, err
+	}
+	allowlist, err := policy.NewTrustedPeerAllowlist(trustedProxyRanges)
+	if err != nil {
+		return policy.CanonicalMetadata{}, err
+	}
+	forwardedValues := req.Header.Values("X-Forwarded-For")
+	if len(forwardedValues) == 0 || !allowlist.Contains(physicalPeer) {
+		return direct, nil
+	}
+
+	hops := strings.Split(strings.Join(forwardedValues, ","), ",")
+	var canonicalSource net.Addr
+	currentHop := net.Addr(physicalPeer)
+	for index := len(hops) - 1; index >= 0 && allowlist.Contains(currentHop); index-- {
+		hop := strings.TrimSpace(hops[index])
+		address, parseErr := netip.ParseAddr(hop)
+		if parseErr != nil || !address.IsValid() || address.IsUnspecified() {
+			return policy.CanonicalMetadata{}, fmt.Errorf("invalid trusted X-Forwarded-For hop %q", hop)
+		}
+		address = address.Unmap()
+		canonicalSource = &net.TCPAddr{IP: net.IP(address.AsSlice())}
+		currentHop = canonicalSource
+	}
+	if canonicalSource == nil {
+		return policy.CanonicalMetadata{}, errors.New("trusted X-Forwarded-For chain is empty")
+	}
+	return policy.NewAuthenticatedMetadata(policy.SourceTrustedProxy, physicalPeer, canonicalSource)
 }
 
 func prepareHTTPPolicyBodyWindow(req *stdhttp.Request) (policy.BodyWindow, error) {
@@ -97,27 +139,47 @@ func prepareHTTPPolicyBodyWindow(req *stdhttp.Request) (policy.BodyWindow, error
 	return policy.NewBodyWindow(prefix, true, policy.BodyNotSkipped)
 }
 
-func httpPolicyFields(req *stdhttp.Request) map[string][]byte {
+func httpPolicyFields(req *stdhttp.Request) (map[string][]byte, error) {
 	if req == nil {
-		return nil
+		return nil, nil
+	}
+	method, err := exactHTTPPolicyField(req.Method, 32, "method")
+	if err != nil {
+		return nil, err
+	}
+	host, err := exactHTTPPolicyField(req.Host, 1024, "host")
+	if err != nil {
+		return nil, err
+	}
+	scheme, err := exactHTTPPolicyField(requestScheme(req), 16, "scheme")
+	if err != nil {
+		return nil, err
 	}
 	fields := map[string][]byte{
-		policy.FieldRequestMethod: boundedHTTPPolicyField(req.Method, 32),
-		policy.FieldRequestHost:   boundedHTTPPolicyField(req.Host, 1024),
-		policy.FieldRequestScheme: boundedHTTPPolicyField(requestScheme(req), 16),
+		policy.FieldRequestMethod: method,
+		policy.FieldRequestHost:   host,
+		policy.FieldRequestScheme: scheme,
 		policy.FieldFlowNew:       []byte("true"),
 	}
 	if req.URL != nil {
-		fields[policy.FieldRequestPath] = boundedHTTPPolicyField(req.URL.EscapedPath(), 8<<10)
-		fields[policy.FieldRequestQuery] = boundedHTTPPolicyField(req.URL.RawQuery, 8<<10)
+		fields[policy.FieldRequestPath], err = exactHTTPPolicyField(req.URL.EscapedPath(), 8<<10, "path")
+		if err != nil {
+			return nil, err
+		}
+		fields[policy.FieldRequestQuery], err = exactHTTPPolicyField(req.URL.RawQuery, 8<<10, "query")
+		if err != nil {
+			return nil, err
+		}
 	}
-	projectHTTPPolicyHeaders(fields, req.Header)
-	return fields
+	if err := projectHTTPPolicyHeaders(fields, req.Header); err != nil {
+		return nil, err
+	}
+	return fields, nil
 }
 
-func projectHTTPPolicyHeaders(fields map[string][]byte, headers stdhttp.Header) {
+func projectHTTPPolicyHeaders(fields map[string][]byte, headers stdhttp.Header) error {
 	if len(headers) == 0 {
-		return
+		return nil
 	}
 	rawNames := make([]string, 0, len(headers))
 	for name := range headers {
@@ -128,7 +190,7 @@ func projectHTTPPolicyHeaders(fields map[string][]byte, headers stdhttp.Header) 
 	for _, rawName := range rawNames {
 		field, ok := policy.CanonicalHTTPHeaderField(rawName)
 		if !ok {
-			continue
+			return fmt.Errorf("header name %q cannot be projected completely", rawName)
 		}
 		valuesByField[field] = append(valuesByField[field], headers[rawName]...)
 	}
@@ -140,26 +202,28 @@ func projectHTTPPolicyHeaders(fields map[string][]byte, headers stdhttp.Header) 
 	sort.Strings(canonicalNames)
 	remaining := httpPolicyHeadersBytes
 	for _, name := range canonicalNames {
-		if len(name) >= remaining {
-			break
+		value := strings.Join(valuesByField[name], "\n")
+		if len(value) > httpPolicyHeaderValueBytes {
+			return fmt.Errorf("header %q exceeds the policy value projection bound", name)
 		}
-		valueLimit := httpPolicyHeaderValueBytes
-		if available := remaining - len(name); valueLimit > available {
-			valueLimit = available
+		projectedBytes := len(name) + len(value)
+		if projectedBytes > remaining {
+			return errors.New("aggregate headers exceed the policy projection bound")
 		}
-		fields[name] = boundedHTTPPolicyField(strings.Join(valuesByField[name], "\n"), valueLimit)
-		remaining -= len(name) + len(fields[name])
+		fields[name] = []byte(value)
+		remaining -= projectedBytes
 	}
+	return nil
 }
 
-func boundedHTTPPolicyField(value string, limit int) []byte {
+func exactHTTPPolicyField(value string, limit int, name string) ([]byte, error) {
 	if limit < 0 {
 		limit = 0
 	}
 	if len(value) > limit {
-		value = value[:limit]
+		return nil, fmt.Errorf("%s exceeds the policy projection bound", name)
 	}
-	return []byte(value)
+	return []byte(value), nil
 }
 
 func writeHTTPPolicyDecision(w stdhttp.ResponseWriter, decision policy.Decision) {

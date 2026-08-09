@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
@@ -14,6 +15,8 @@ import (
 )
 
 type hostContextKey struct{}
+
+var policyMessageDescriptors sync.Map
 
 type hostInvocation struct {
 	generation string
@@ -48,21 +51,30 @@ func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name st
 	}
 	requestPointer, requestLength := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])
 	responsePointer, responseCapacity := api.DecodeU32(stack[2]), api.DecodeU32(stack[3])
-	if requestLength > invocation.budget.MaxInputBytes || responseCapacity > invocation.budget.MaxOutputBytes {
-		runtime.observer.ObserveWASM(Event{Generation: invocation.generation, Operation: "host." + name, Code: ErrorInputBudget})
+	if requestLength > invocation.budget.MaxInputBytes {
+		runtime.observeHostBudget(invocation.generation, name, ErrorInputBudget, pluginsdk.BudgetDimensionInput)
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 0)
+	}
+	if responseCapacity > invocation.budget.MaxOutputBytes {
+		runtime.observeHostBudget(invocation.generation, name, ErrorOutputBudget, pluginsdk.BudgetDimensionOutput)
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 0)
 	}
 	request, readable := module.Memory().Read(requestPointer, requestLength)
 	if !readable {
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
 	}
-	response, status := dispatchHost(ctx, invocation.host, name, append([]byte(nil), request...))
+	response, status, dimension := dispatchHost(ctx, invocation.host, name, append([]byte(nil), request...))
 	if status != pluginsdk.PolicyStatusOK {
-		runtime.observer.ObserveWASM(Event{Generation: invocation.generation, Operation: "host." + name, Code: hostStatusCode(status)})
+		runtime.observer.ObserveWASM(Event{
+			Generation: invocation.generation,
+			Operation:  "host." + name,
+			Code:       hostStatusCode(status, dimension),
+			Dimension:  dimension,
+		})
 		return pluginsdk.PackPolicyHostResult(status, 0)
 	}
 	if uint64(len(response)) > uint64(invocation.budget.MaxOutputBytes) {
-		runtime.observer.ObserveWASM(Event{Generation: invocation.generation, Operation: "host." + name, Code: ErrorOutputBudget})
+		runtime.observeHostBudget(invocation.generation, name, ErrorOutputBudget, pluginsdk.BudgetDimensionOutput)
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, uint32(len(response)))
 	}
 	if uint32(len(response)) > responseCapacity {
@@ -74,77 +86,94 @@ func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name st
 	return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusOK, uint32(len(response)))
 }
 
-func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, request []byte) ([]byte, pluginsdk.PolicyStatus) {
+func (runtime *Runtime) observeHostBudget(generation, name string, code ErrorCode, dimension pluginsdk.BudgetDimension) {
+	runtime.observer.ObserveWASM(Event{
+		Generation: generation,
+		Operation:  "host." + name,
+		Code:       code,
+		Dimension:  dimension,
+	})
+}
+
+func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, request []byte) ([]byte, pluginsdk.PolicyStatus, pluginsdk.BudgetDimension) {
 	if err := ctx.Err(); err != nil {
-		return nil, pluginsdk.PolicyStatusDeadlineExceeded
+		return nil, pluginsdk.PolicyStatusDeadlineExceeded, pluginsdk.BudgetDimensionDeadline
 	}
 	switch name {
 	case pluginsdk.PolicyHostReadField:
 		message, err := decodePolicyMessage("ReadFieldRequest", request)
 		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
 		value, err := host.ReadField(ctx, messageString(message, "name"))
 		return encodeBytesResponse(value, value != nil, err)
 	case pluginsdk.PolicyHostReadBodyWindow:
 		message, err := decodePolicyMessage("ReadBodyWindowRequest", request)
 		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
 		value, err := host.ReadBodyWindow(ctx, messageUint32(message, "offset"), messageUint32(message, "length"))
 		return encodeBytesResponse(value, value != nil, err)
 	case pluginsdk.PolicyHostStateGet:
 		message, err := decodePolicyMessage("StateGetRequest", request)
 		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
 		value, found, err := host.StateGet(ctx, messageString(message, "key"))
 		return encodeBytesResponse(value, found, err)
 	case pluginsdk.PolicyHostStatePut:
 		message, err := decodePolicyMessage("StatePutRequest", request)
 		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
 		return encodeEmpty(host.StatePut(ctx, messageString(message, "key"), messageBytes(message, "value")))
 	case pluginsdk.PolicyHostEmitEvent:
 		message, err := decodePolicyMessage("EmitEventRequest", request)
 		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
 		return encodeEmpty(host.EmitEvent(ctx, messageString(message, "kind"), messageBytes(message, "payload")))
 	case pluginsdk.PolicyHostAddMetric:
 		message, err := decodePolicyMessage("AddMetricRequest", request)
 		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
 		return encodeEmpty(host.AddMetric(ctx, messageString(message, "name"), messageInt64(message, "delta")))
 	default:
-		return nil, pluginsdk.PolicyStatusPermissionDenied
+		return nil, pluginsdk.PolicyStatusPermissionDenied, ""
 	}
 }
 
-func encodeEmpty(err error) ([]byte, pluginsdk.PolicyStatus) {
+func encodeEmpty(err error) ([]byte, pluginsdk.PolicyStatus, pluginsdk.BudgetDimension) {
 	if err != nil {
-		return nil, statusForHostError(err)
+		return nil, statusForHostError(err), budgetDimensionForHostError(err)
 	}
-	return nil, pluginsdk.PolicyStatusOK
+	return nil, pluginsdk.PolicyStatusOK, ""
 }
 
-func encodeBytesResponse(value []byte, found bool, err error) ([]byte, pluginsdk.PolicyStatus) {
+func encodeBytesResponse(value []byte, found bool, err error) ([]byte, pluginsdk.PolicyStatus, pluginsdk.BudgetDimension) {
 	if err != nil {
-		return nil, statusForHostError(err)
+		return nil, statusForHostError(err), budgetDimensionForHostError(err)
 	}
 	message, err := newPolicyMessage("BytesResponse")
 	if err != nil {
-		return nil, pluginsdk.PolicyStatusInternal
+		return nil, pluginsdk.PolicyStatusInternal, ""
 	}
 	setMessageBytes(message, "value", value)
 	setMessageBool(message, "found", found)
 	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
 	if err != nil {
-		return nil, pluginsdk.PolicyStatusInternal
+		return nil, pluginsdk.PolicyStatusInternal, ""
 	}
-	return encoded, pluginsdk.PolicyStatusOK
+	return encoded, pluginsdk.PolicyStatusOK, ""
+}
+
+func budgetDimensionForHostError(err error) pluginsdk.BudgetDimension {
+	var dimensionError pluginsdk.BudgetDimensionError
+	if errors.As(err, &dimensionError) {
+		return dimensionError.BudgetDimension()
+	}
+	return ""
 }
 
 func statusForHostError(err error) pluginsdk.PolicyStatus {
@@ -171,23 +200,35 @@ func statusForHostError(err error) pluginsdk.PolicyStatus {
 	return pluginsdk.PolicyStatusUnavailable
 }
 
-func hostStatusCode(status pluginsdk.PolicyStatus) ErrorCode {
+func hostStatusCode(status pluginsdk.PolicyStatus, dimension pluginsdk.BudgetDimension) ErrorCode {
 	switch status {
 	case pluginsdk.PolicyStatusDeadlineExceeded:
 		return ErrorDeadline
 	case pluginsdk.PolicyStatusResourceExhausted:
-		return ErrorOutputBudget
+		switch dimension {
+		case pluginsdk.BudgetDimensionInput:
+			return ErrorInputBudget
+		case pluginsdk.BudgetDimensionOutput:
+			return ErrorOutputBudget
+		default:
+			return ErrorHost
+		}
 	default:
 		return ErrorHost
 	}
 }
 
 func newPolicyMessage(name protoreflect.Name) (*dynamicpb.Message, error) {
-	descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.policy.v1." + string(name)))
+	fullName := protoreflect.FullName("nre.plugin.policy.v1." + string(name))
+	if cached, ok := policyMessageDescriptors.Load(fullName); ok {
+		return dynamicpb.NewMessage(cached.(protoreflect.MessageDescriptor)), nil
+	}
+	descriptor, err := protoschema.Message(fullName)
 	if err != nil {
 		return nil, err
 	}
-	return dynamicpb.NewMessage(descriptor), nil
+	actual, _ := policyMessageDescriptors.LoadOrStore(fullName, descriptor)
+	return dynamicpb.NewMessage(actual.(protoreflect.MessageDescriptor)), nil
 }
 
 func decodePolicyMessage(name protoreflect.Name, encoded []byte) (*dynamicpb.Message, error) {

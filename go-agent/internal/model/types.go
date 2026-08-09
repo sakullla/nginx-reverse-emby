@@ -68,7 +68,7 @@ type Snapshot struct {
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
-	PluginPolicies      []PluginPolicy             `json:"plugin_policies,omitempty"`
+	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	agentConfigPresent  bool
 }
 

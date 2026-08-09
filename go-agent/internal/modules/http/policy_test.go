@@ -3,9 +3,11 @@ package http
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -49,7 +51,7 @@ func TestWAFPolicyStreamingBodyWindowPreservesBodyAndTrustedSource(t *testing.T)
 	req.RemoteAddr = "192.0.2.40:43210"
 	req.Header.Set("X-Forwarded-For", "203.0.113.99")
 	req.Header.Set("User-Agent", "policy-waf-agent")
-	req.Header.Set("X-Large", string(bytes.Repeat([]byte("x"), httpPolicyHeaderValueBytes+100)))
+	req.Header.Set("X-Large", string(bytes.Repeat([]byte("x"), httpPolicyHeaderValueBytes)))
 
 	decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}})
 	if !allowed || decision.Action != policy.ActionAllow {
@@ -81,6 +83,103 @@ func TestWAFPolicyStreamingBodyWindowPreservesBodyAndTrustedSource(t *testing.T)
 	}
 	if !bytes.Equal(rebuilt, payload) {
 		t.Fatalf("rebuilt body length = %d, want %d exact bytes", len(rebuilt), len(payload))
+	}
+}
+
+func TestIPPolicyTrustedSourceWalksXFFOnlyThroughTrustedPeers(t *testing.T) {
+	var captured policy.Input
+	evaluator := httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
+		captured = input
+		return policy.Decision{Action: policy.ActionAllow}
+	})
+	server := &Server{policyEvaluator: evaluator}
+	rule := model.HTTPRule{
+		PolicyRef:          &model.PolicyRef{ID: "ip-policy"},
+		TrustedProxyRanges: []string{"192.0.2.0/24", "10.0.0.0/8"},
+	}
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
+	req.RemoteAddr = "192.0.2.40:43210"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99, 198.51.100.22")
+	decision, allowed := server.allowPolicyRequest(req, rule)
+	if !allowed || decision.Action != policy.ActionAllow {
+		t.Fatalf("policy decision = %+v, allowed=%v", decision, allowed)
+	}
+	if got := captured.Metadata().Source().String(); got != "198.51.100.22:0" {
+		t.Fatalf("forged left XFF source = %q, want first untrusted hop", got)
+	}
+	if captured.Metadata().Kind() != policy.SourceTrustedProxy {
+		t.Fatalf("trusted source kind = %q", captured.Metadata().Kind())
+	}
+
+	req = httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
+	req.RemoteAddr = "10.0.0.8:43210"
+	req.Header.Set("X-Forwarded-For", "198.51.100.44, 192.0.2.12")
+	if _, allowed := server.allowPolicyRequest(req, rule); !allowed {
+		t.Fatal("trusted multi-hop XFF request was denied")
+	}
+	if got := captured.Metadata().Source().String(); got != "198.51.100.44:0" {
+		t.Fatalf("trusted multi-hop source = %q", got)
+	}
+}
+
+func TestIPPolicyUntrustedOrMalformedXFFCannotForgeSource(t *testing.T) {
+	var calls int
+	var captured policy.Input
+	evaluator := httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
+		calls++
+		captured = input
+		return policy.Decision{Action: policy.ActionAllow}
+	})
+	server := &Server{policyEvaluator: evaluator}
+	rule := model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "ip-policy"}, TrustedProxyRanges: []string{"10.0.0.0/8"}}
+
+	untrusted := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
+	untrusted.RemoteAddr = "192.0.2.40:43210"
+	untrusted.Header.Set("X-Forwarded-For", "203.0.113.99")
+	if _, allowed := server.allowPolicyRequest(untrusted, rule); !allowed {
+		t.Fatal("untrusted peer request was denied instead of using its physical source")
+	}
+	if got := captured.Metadata().Source().String(); got != "192.0.2.40:43210" || captured.Metadata().Kind() != policy.SourceDirect {
+		t.Fatalf("untrusted XFF metadata = %q/%q", got, captured.Metadata().Kind())
+	}
+
+	malformed := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
+	malformed.RemoteAddr = "10.0.0.4:43210"
+	malformed.Header.Set("X-Forwarded-For", "not-an-ip")
+	decision, allowed := server.allowPolicyRequest(malformed, rule)
+	if allowed || decision.Reason != "invalid-source" || calls != 1 {
+		t.Fatalf("malformed trusted XFF decision/calls = %+v/%d", decision, calls)
+	}
+}
+
+func TestWAFPolicyRejectsIncompleteSecurityFieldProjection(t *testing.T) {
+	for name, mutate := range map[string]func(*stdhttp.Request){
+		"malicious query suffix": func(req *stdhttp.Request) {
+			req.URL.RawQuery = strings.Repeat("safe=1&", (8<<10)/7) + strings.Repeat("x", 32) + "<script>"
+		},
+		"header value suffix": func(req *stdhttp.Request) {
+			req.Header.Set("X-Policy-Input", strings.Repeat("a", httpPolicyHeaderValueBytes)+"malicious-suffix")
+		},
+		"aggregate header overflow": func(req *stdhttp.Request) {
+			for index := 0; index < 9; index++ {
+				req.Header.Set(fmt.Sprintf("X-Overflow-%02d", index), strings.Repeat("a", httpPolicyHeaderValueBytes-8))
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			server := &Server{policyEvaluator: httpPolicyEvaluatorFunc(func(context.Context, *model.PolicyRef, policy.Input) policy.Decision {
+				calls++
+				return policy.Decision{Action: policy.ActionAllow}
+			})}
+			req := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/library", nil)
+			mutate(req)
+			decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}})
+			if allowed || decision.Reason != "input-projection" || calls != 0 {
+				t.Fatalf("overflow decision/allowed/calls = %+v/%v/%d", decision, allowed, calls)
+			}
+		})
 	}
 }
 

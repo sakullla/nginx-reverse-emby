@@ -249,6 +249,22 @@ func (transaction *transaction) Destroy(ctx context.Context) error {
 }
 
 func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Snapshot) ([]model.PluginPolicy, []string, error) {
+	for _, rule := range snapshot.Rules {
+		if !rule.Enabled || rule.PolicyRef == nil {
+			continue
+		}
+		if _, err := NewTrustedPeerAllowlist(rule.TrustedProxyRanges); err != nil {
+			return nil, nil, fmt.Errorf("http rule %d trusted proxy ranges: %w", rule.ID, err)
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if !rule.Enabled || rule.PolicyRef == nil || !rule.Tuning.ProxyProtocol.Decode {
+			continue
+		}
+		if _, err := NewTrustedPeerAllowlist(rule.Tuning.ProxyProtocol.TrustedPeers); err != nil {
+			return nil, nil, fmt.Errorf("l4 rule %d trusted PROXY peers: %w", rule.ID, err)
+		}
+	}
 	rawDefinitions := make(map[string]model.PluginPolicy, len(snapshot.PluginPolicies))
 	for _, definition := range snapshot.PluginPolicies {
 		id := strings.TrimSpace(definition.ID)

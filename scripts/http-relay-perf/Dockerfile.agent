@@ -1,7 +1,7 @@
 FROM golang:1.26.5-trixie AS builder
 
 WORKDIR /src
-COPY plugin-sdk/go/go.mod plugin-sdk/go/go.sum ./plugin-sdk/go/
+COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
 COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 WORKDIR /src/go-agent
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

@@ -102,6 +102,9 @@ func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID stri
 	if err != nil {
 		return preparedPolicyStage{}, fmt.Errorf("marshal init request: %w", err)
 	}
+	if err := policy.AdmitPolicyInputFrame(stage.ResourceBudget, len(initRequest)); err != nil {
+		return preparedPolicyStage{}, fmt.Errorf("admit init request frame: %w", err)
+	}
 	generation, err := runtime.CompileGeneration(ctx, artifact, GenerationConfig{
 		ID: generationID + "/" + stage.InstanceID, InitRequest: initRequest, Budget: stageBudget(stage.ResourceBudget),
 	})
@@ -191,9 +194,15 @@ func (generation *PolicyGeneration) Evaluate(ctx context.Context, request policy
 	if err != nil {
 		return policy.ModuleResponse{}, policy.RuntimeError("request-wire", err)
 	}
+	if err := policy.AdmitPolicyInputFrame(request.Budget, len(wireRequest)); err != nil {
+		return policy.ModuleResponse{}, err
+	}
 	wireResponse, err := stage.generation.Evaluate(ctx, request.Host, wireRequest)
 	if err != nil {
 		return policy.ModuleResponse{}, mapRuntimeError(err)
+	}
+	if err := policy.AdmitPolicyOutputFrame(request.Budget, len(wireResponse)); err != nil {
+		return policy.ModuleResponse{}, err
 	}
 	return decodeEvaluateResponse(wireResponse)
 }
@@ -235,13 +244,8 @@ func validatePolicyStageEvidence(stage model.PolicyStage) error {
 	if strings.TrimSpace(stage.ArtifactPath) == "" || strings.TrimSpace(stage.ArtifactDigest) == "" {
 		return errors.New("artifact path and digest are required")
 	}
-	budget := stage.ResourceBudget
-	if budget.TimeoutMS <= 0 || budget.TimeoutMS > int64(policy.MaxPolicyTimeout/time.Millisecond) ||
-		budget.MemoryBytes < 65536 || budget.MemoryBytes > policy.MaxPolicyMemoryBytes ||
-		budget.Concurrency <= 0 || budget.Concurrency > policy.MaxPolicyConcurrency ||
-		budget.InputBytes <= 0 || budget.InputBytes > policy.MaxPolicyInputBytes ||
-		budget.OutputBytes <= 0 || budget.OutputBytes > policy.MaxPolicyOutputBytes {
-		return errors.New("policy stage resource budget is invalid")
+	if err := policy.ValidatePolicyResourceBudget(stage.ResourceBudget); err != nil {
+		return fmt.Errorf("policy stage resource budget is invalid: %w", err)
 	}
 	return nil
 }
@@ -322,13 +326,21 @@ func mapRuntimeError(err error) error {
 	var runtimeError *RuntimeError
 	if errors.As(err, &runtimeError) {
 		switch runtimeError.Code {
-		case ErrorInputBudget, ErrorOutputBudget, ErrorMemoryBudget, ErrorConcurrencyBudget, ErrorDeadline:
-			return policy.BudgetError(string(runtimeError.Code), err)
+		case ErrorInputBudget:
+			return policy.BudgetErrorFor(pluginsdk.BudgetDimensionInput, string(runtimeError.Code), err)
+		case ErrorOutputBudget:
+			return policy.BudgetErrorFor(pluginsdk.BudgetDimensionOutput, string(runtimeError.Code), err)
+		case ErrorMemoryBudget:
+			return policy.BudgetErrorFor(pluginsdk.BudgetDimensionMemory, string(runtimeError.Code), err)
+		case ErrorConcurrencyBudget:
+			return policy.BudgetErrorFor(pluginsdk.BudgetDimensionConcurrency, string(runtimeError.Code), err)
+		case ErrorDeadline:
+			return policy.BudgetErrorFor(pluginsdk.BudgetDimensionDeadline, string(runtimeError.Code), err)
 		}
 		return policy.RuntimeError(string(runtimeError.Code), err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return policy.BudgetError("deadline", err)
+		return policy.BudgetErrorFor(pluginsdk.BudgetDimensionDeadline, "deadline", err)
 	}
 	return policy.RuntimeError("runtime-error", err)
 }

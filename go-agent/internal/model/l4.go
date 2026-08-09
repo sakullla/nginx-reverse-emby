@@ -8,8 +8,9 @@ type L4Backend struct {
 }
 
 type L4ProxyProtocolTuning struct {
-	Decode bool `json:"decode,omitempty"`
-	Send   bool `json:"send,omitempty"`
+	Decode       bool     `json:"decode,omitempty"`
+	Send         bool     `json:"send,omitempty"`
+	TrustedPeers []string `json:"trusted_peers,omitempty"`
 }
 
 type L4ProxyEntryAuth struct {

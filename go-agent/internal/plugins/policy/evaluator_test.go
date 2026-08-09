@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
 	"testing"
@@ -208,6 +209,79 @@ func TestPolicyGenerationStateIsInstanceScopedAndCopiesValues(t *testing.T) {
 	}
 	if err := state.put("one", "large", make([]byte, maxStateValueBytes+1)); failureKind(err) != FailureBudget {
 		t.Fatalf("oversized state error = %v", err)
+	}
+}
+
+func TestPolicyGenerationStateCapacityIsolatedPerInstance(t *testing.T) {
+	state := newGenerationState()
+	for index := 0; index < maxInstanceStateEntries; index++ {
+		if err := state.put("instance-a", fmt.Sprintf("key-%04d", index), nil); err != nil {
+			t.Fatalf("fill instance A entry %d: %v", index, err)
+		}
+	}
+	if err := state.put("instance-a", "overflow", nil); failureKind(err) != FailureBudget {
+		t.Fatalf("instance A overflow error = %v", err)
+	}
+	if err := state.put("instance-b", "available", []byte("value")); err != nil {
+		t.Fatalf("instance B was exhausted by instance A: %v", err)
+	}
+	if value, ok := state.get("instance-b", "available"); !ok || string(value) != "value" {
+		t.Fatalf("instance B value = %q, %v", value, ok)
+	}
+}
+
+func TestPolicyGenerationStateRetainsTotalCeiling(t *testing.T) {
+	state := newGenerationState()
+	value := make([]byte, maxStateValueBytes)
+	instances := maxGenerationStateBytes / maxInstanceStateBytes
+	valuesPerInstance := maxInstanceStateBytes / maxStateValueBytes
+	for instance := 0; instance < instances; instance++ {
+		instanceID := fmt.Sprintf("instance-%02d", instance)
+		for index := 0; index < valuesPerInstance; index++ {
+			if err := state.put(instanceID, fmt.Sprintf("key-%04d", index), value); err != nil {
+				t.Fatalf("fill generation instance/key %d/%d: %v", instance, index, err)
+			}
+		}
+	}
+	if err := state.put("instance-overflow", "key", []byte("x")); failureKind(err) != FailureBudget {
+		t.Fatalf("generation overflow error = %v", err)
+	}
+}
+
+func TestPolicyWireFrameBudgetExactBoundariesAndDimensions(t *testing.T) {
+	budget := model.PolicyResourceBudget{
+		TimeoutMS:   pluginsdk.PolicyV1MaxTimeoutMilliseconds,
+		MemoryBytes: pluginsdk.PolicyV1MinMemoryBytes,
+		Concurrency: 1,
+		InputBytes:  pluginsdk.PolicyV1MinInputFrameBytes,
+		OutputBytes: pluginsdk.PolicyV1MinOutputFrameBytes,
+	}
+	if err := ValidatePolicyResourceBudget(budget); err != nil {
+		t.Fatalf("ValidatePolicyResourceBudget(exact minimum frames) error = %v", err)
+	}
+	if err := AdmitPolicyInputFrame(budget, int(budget.InputBytes)); err != nil {
+		t.Fatalf("AdmitPolicyInputFrame(exact) error = %v", err)
+	}
+	if err := AdmitPolicyOutputFrame(budget, int(budget.OutputBytes)); err != nil {
+		t.Fatalf("AdmitPolicyOutputFrame(exact) error = %v", err)
+	}
+	for name, testCase := range map[string]struct {
+		err  error
+		want pluginsdk.BudgetDimension
+	}{
+		"input":  {AdmitPolicyInputFrame(budget, int(budget.InputBytes)+1), pluginsdk.BudgetDimensionInput},
+		"output": {AdmitPolicyOutputFrame(budget, int(budget.OutputBytes)+1), pluginsdk.BudgetDimensionOutput},
+		"state":  {resourceExhausted("state-capacity", "full"), pluginsdk.BudgetDimensionState},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var dimensionError pluginsdk.BudgetDimensionError
+			if !errors.As(testCase.err, &dimensionError) || dimensionError.BudgetDimension() != testCase.want {
+				t.Fatalf("budget error = %v dimension = %v, want %v", testCase.err, dimensionError, testCase.want)
+			}
+			if failureKind(testCase.err) != FailureBudget {
+				t.Fatalf("failureKind(%v) = %q", testCase.err, failureKind(testCase.err))
+			}
+		})
 	}
 }
 

@@ -62,7 +62,13 @@ func (s *Server) allowTCPPolicy(rule model.L4Rule, client net.Conn, source io.Re
 	}
 	var canonicalSource net.Addr
 	if proxyMetadata != nil {
-		canonicalSource = proxyMetadata.Source
+		allowlist, allowlistErr := policy.NewTrustedPeerAllowlist(rule.Tuning.ProxyProtocol.TrustedPeers)
+		if allowlistErr != nil {
+			return false
+		}
+		if allowlist.Contains(client.RemoteAddr()) {
+			canonicalSource = proxyMetadata.Source
+		}
 	}
 	return s.allowL4Policy(
 		s.ctx,

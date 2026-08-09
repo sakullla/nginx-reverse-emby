@@ -20,6 +20,74 @@ const (
 	HostScopeControlPlane = "control-plane"
 )
 
+// Policy v1 resource budgets are host-independent ABI limits. InputBytes and
+// OutputBytes always count the complete deterministic protobuf wire frame,
+// including field tags, length prefixes, nested result envelopes, and all
+// host-added metadata. They never mean only an application payload field. The
+// minimum input is the six-byte smallest EvaluateRequest with non-empty
+// extension_point and request_id; the minimum output is the four-byte smallest
+// EvaluateResponse success envelope with a valid non-zero action.
+const (
+	PolicyV1MaxTimeoutMilliseconds int64 = 2
+	PolicyV1MinMemoryBytes         int64 = 1 << 16
+	PolicyV1MaxMemoryBytes         int64 = 16 << 20
+	PolicyV1MaxConcurrency               = 64
+	PolicyV1MinInputFrameBytes     int64 = 6
+	PolicyV1MaxInputFrameBytes     int64 = 128 << 10
+	PolicyV1MinOutputFrameBytes    int64 = 4
+	PolicyV1MaxOutputFrameBytes    int64 = 4 << 10
+)
+
+// PolicyV1ResourceBudget is the canonical admission shape for a wasm-policy
+// manifest. Hosts can project their manifest/model types into this value and
+// thereby share one set of policy ceilings and wire-frame minimums.
+type PolicyV1ResourceBudget struct {
+	TimeoutMilliseconds int64
+	MemoryBytes         int64
+	Concurrency         int
+	InputFrameBytes     int64
+	OutputFrameBytes    int64
+}
+
+func (budget PolicyV1ResourceBudget) Validate() error {
+	if budget.TimeoutMilliseconds <= 0 || budget.TimeoutMilliseconds > PolicyV1MaxTimeoutMilliseconds {
+		return fmt.Errorf("policy timeout_ms must be within 1..%d", PolicyV1MaxTimeoutMilliseconds)
+	}
+	if budget.MemoryBytes < PolicyV1MinMemoryBytes || budget.MemoryBytes > PolicyV1MaxMemoryBytes {
+		return fmt.Errorf("policy memory_bytes must be within %d..%d", PolicyV1MinMemoryBytes, PolicyV1MaxMemoryBytes)
+	}
+	if budget.Concurrency <= 0 || budget.Concurrency > PolicyV1MaxConcurrency {
+		return fmt.Errorf("policy concurrency must be within 1..%d", PolicyV1MaxConcurrency)
+	}
+	if budget.InputFrameBytes < PolicyV1MinInputFrameBytes || budget.InputFrameBytes > PolicyV1MaxInputFrameBytes {
+		return fmt.Errorf("policy input_bytes must be a complete protobuf wire-frame budget within %d..%d", PolicyV1MinInputFrameBytes, PolicyV1MaxInputFrameBytes)
+	}
+	if budget.OutputFrameBytes < PolicyV1MinOutputFrameBytes || budget.OutputFrameBytes > PolicyV1MaxOutputFrameBytes {
+		return fmt.Errorf("policy output_bytes must be a complete protobuf wire-frame budget within %d..%d", PolicyV1MinOutputFrameBytes, PolicyV1MaxOutputFrameBytes)
+	}
+	return nil
+}
+
+// BudgetDimension classifies resource exhaustion without changing the stable
+// PolicyStatus or protobuf RuntimeError wire values.
+type BudgetDimension string
+
+const (
+	BudgetDimensionInput       BudgetDimension = "input"
+	BudgetDimensionOutput      BudgetDimension = "output"
+	BudgetDimensionMemory      BudgetDimension = "memory"
+	BudgetDimensionConcurrency BudgetDimension = "concurrency"
+	BudgetDimensionDeadline    BudgetDimension = "deadline"
+	BudgetDimensionState       BudgetDimension = "state"
+)
+
+// BudgetDimensionError is implemented by host-side errors that retain the
+// exhausted resource across package boundaries.
+type BudgetDimensionError interface {
+	error
+	BudgetDimension() BudgetDimension
+}
+
 const (
 	PolicyExportVersion  = "nre_policy_version"
 	PolicyExportAllocate = "nre_policy_alloc"

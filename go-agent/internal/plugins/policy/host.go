@@ -14,27 +14,39 @@ import (
 )
 
 const (
-	maxStateEntries    = 65536
-	maxStateBytes      = 16 << 20
-	maxStateKeyBytes   = 256
-	maxStateValueBytes = 4096
+	maxGenerationStateEntries = 65536
+	maxGenerationStateBytes   = 16 << 20
+	maxInstanceStateEntries   = 4096
+	maxInstanceStateBytes     = 1 << 20
+	maxStateKeyBytes          = 256
+	maxStateValueBytes        = 4096
 )
+
+type instanceState struct {
+	values  map[string][]byte
+	entries int
+	bytes   int
+}
 
 type generationState struct {
 	mu      sync.Mutex
-	values  map[string]map[string][]byte
+	values  map[string]*instanceState
 	entries int
 	bytes   int
 }
 
 func newGenerationState() *generationState {
-	return &generationState{values: make(map[string]map[string][]byte)}
+	return &generationState{values: make(map[string]*instanceState)}
 }
 
 func (state *generationState) get(instanceID, key string) ([]byte, bool) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	value, ok := state.values[instanceID][key]
+	instance := state.values[instanceID]
+	if instance == nil {
+		return nil, false
+	}
+	value, ok := instance.values[key]
 	return append([]byte(nil), value...), ok
 }
 
@@ -49,21 +61,33 @@ func (state *generationState) put(instanceID, key string, value []byte) error {
 	defer state.mu.Unlock()
 	instance := state.values[instanceID]
 	if instance == nil {
-		instance = make(map[string][]byte)
-		state.values[instanceID] = instance
+		instance = &instanceState{values: make(map[string][]byte)}
 	}
-	previous, exists := instance[key]
-	nextEntries := state.entries
+	previous, exists := instance.values[key]
+	nextInstanceEntries := instance.entries
 	if !exists {
-		nextEntries++
+		nextInstanceEntries++
 	}
-	nextBytes := state.bytes - len(previous) + len(value)
-	if nextEntries > maxStateEntries || nextBytes > maxStateBytes {
+	nextInstanceBytes := instance.bytes - len(previous) + len(value)
+	if nextInstanceEntries > maxInstanceStateEntries || nextInstanceBytes > maxInstanceStateBytes {
+		return resourceExhausted("state-capacity", "instance state capacity exhausted")
+	}
+	nextGenerationEntries := state.entries
+	if !exists {
+		nextGenerationEntries++
+	}
+	nextGenerationBytes := state.bytes - len(previous) + len(value)
+	if nextGenerationEntries > maxGenerationStateEntries || nextGenerationBytes > maxGenerationStateBytes {
 		return resourceExhausted("state-capacity", "generation state capacity exhausted")
 	}
-	instance[key] = append([]byte(nil), value...)
-	state.entries = nextEntries
-	state.bytes = nextBytes
+	if state.values[instanceID] == nil {
+		state.values[instanceID] = instance
+	}
+	instance.values[key] = append([]byte(nil), value...)
+	instance.entries = nextInstanceEntries
+	instance.bytes = nextInstanceBytes
+	state.entries = nextGenerationEntries
+	state.bytes = nextGenerationBytes
 	return nil
 }
 
@@ -197,7 +221,7 @@ func permissionDenied(message string) error {
 }
 
 func resourceExhausted(code, message string) error {
-	return BudgetError(code, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorResourceExhausted, Message: message})
+	return BudgetErrorFor(pluginsdk.BudgetDimensionState, code, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorResourceExhausted, Message: message})
 }
 
 func (host *requestHost) observe(ctx context.Context, name, outcome, reason string, delta int64) {

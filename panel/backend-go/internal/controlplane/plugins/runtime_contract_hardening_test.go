@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestValidatorExactNumberBoundsDecimalComplexityBeforeRationalConstruction(t *testing.T) {
@@ -188,7 +190,7 @@ func TestValidatorAcceptsExactBoundarySchemaDomainAndRuntimeValue(t *testing.T) 
 
 func insertTestWASMSectionBefore(t *testing.T, module []byte, beforeID, sectionID byte, payload []byte) []byte {
 	t.Helper()
-	for offset := len(wasmV1Header); offset < len(module); {
+	for offset := pluginsdk.WASMModuleV1HeaderSize; offset < len(module); {
 		start := offset
 		currentID := module[offset]
 		offset++

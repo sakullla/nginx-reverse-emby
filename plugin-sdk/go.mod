@@ -1,4 +1,4 @@
-module github.com/sakullla/nginx-reverse-emby/plugin-sdk/go
+module github.com/sakullla/nginx-reverse-emby/plugin-sdk
 
 go 1.26.5
 

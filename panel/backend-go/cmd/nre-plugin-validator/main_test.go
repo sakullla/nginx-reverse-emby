@@ -31,7 +31,7 @@ artifacts:
 extension_points: [http.request]
 permissions: [http.inspect]
 config_schema: config.schema.json
-resource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}
+resource_budget: {timeout_ms: 2, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 4096}
 failure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}
 signature: {algorithm: ed25519, key_id: test-cli, file: package.sig}
 cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete, shared_refs: retain, audit_events: retain}

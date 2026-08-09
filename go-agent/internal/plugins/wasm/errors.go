@@ -3,6 +3,8 @@ package wasm
 import (
 	"errors"
 	"fmt"
+
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type ErrorCode string
@@ -51,6 +53,7 @@ type Event struct {
 	Generation string
 	Operation  string
 	Code       ErrorCode
+	Dimension  pluginsdk.BudgetDimension
 }
 
 type Observer interface {

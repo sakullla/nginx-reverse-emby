@@ -10,7 +10,7 @@ RUN npm run build
 FROM golang:1.26.5-trixie AS go-builder
 ARG GO_AGENT_LDFLAGS="-s -w"
 WORKDIR /src
-COPY plugin-sdk/go/go.mod plugin-sdk/go/go.sum ./plugin-sdk/go/
+COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
 COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 WORKDIR /src/go-agent
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -42,7 +42,7 @@ ARG APP_VERSION=dev
 ARG BUILD_TIME=dev
 ARG GO_VERSION=dev
 WORKDIR /src
-COPY plugin-sdk/go/go.mod plugin-sdk/go/go.sum ./plugin-sdk/go/
+COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
 COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 COPY panel/backend-go/go.mod panel/backend-go/go.sum ./panel/backend-go/
 WORKDIR /src/panel/backend-go

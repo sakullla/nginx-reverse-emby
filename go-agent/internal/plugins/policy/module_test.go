@@ -93,6 +93,34 @@ func TestPolicyModuleRejectsMissingRequiredPolicyBeforeFactory(t *testing.T) {
 	}
 }
 
+func TestPolicyModuleRejectsMalformedTrustedSourceAllowlists(t *testing.T) {
+	for name, next := range map[string]model.Snapshot{
+		"http": {
+			PluginPolicies: []model.PluginPolicy{testPolicy("ip", model.PolicyKindIP)},
+			Rules: []model.HTTPRule{{
+				ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "ip"}, TrustedProxyRanges: []string{"not-a-prefix"},
+			}},
+		},
+		"l4": {
+			PluginPolicies: []model.PluginPolicy{testPolicy("ip", model.PolicyKindIP)},
+			L4Rules: []model.L4Rule{{
+				ID: 2, Enabled: true, PolicyRef: &model.PolicyRef{ID: "ip"},
+				Tuning: model.L4Tuning{ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true, TrustedPeers: []string{"not-a-prefix"}}},
+			}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			factory := &testGenerationFactory{}
+			if _, err := NewModule(factory, nil).Prepare(context.Background(), module.ApplyRequest{Next: next}); err == nil {
+				t.Fatal("Prepare() accepted malformed trusted source allowlist")
+			}
+			if factory.runtime != nil {
+				t.Fatal("factory was called for malformed trusted source allowlist")
+			}
+		})
+	}
+}
+
 func TestPolicyModuleRejectsWAFOnL4(t *testing.T) {
 	policyModule := NewModule(&testGenerationFactory{}, nil)
 	next := model.Snapshot{Revision: 1, PluginPolicies: []model.PluginPolicy{testPolicy("waf", model.PolicyKindWAF)}}

@@ -926,16 +926,29 @@ func (v *Validator) validateRuntimeIdentity(kind, abi, hostScope string) error {
 }
 
 func validateResourceBudget(kind string, budget ResourceBudget) error {
-	if budget.TimeoutMS <= 0 || budget.TimeoutMS > 300000 || budget.MemoryBytes < 65536 || budget.MemoryBytes > MaxRuntimeMemoryBytes || budget.Concurrency <= 0 || budget.Concurrency > 4096 || budget.InputBytes <= 0 || budget.InputBytes > MaxRuntimeIOBytes || budget.OutputBytes <= 0 || budget.OutputBytes > MaxRuntimeIOBytes {
-		return errors.New("timeout, memory, concurrency, and IO budgets must be positive and within host limits")
+	switch kind {
+	case pluginsdk.RuntimeWASMPolicy:
+		if budget.CPUMillis != 0 || budget.Restarts != 0 {
+			return errors.New("wasm-policy cannot declare process CPU or restart budgets")
+		}
+		return (pluginsdk.PolicyV1ResourceBudget{
+			TimeoutMilliseconds: budget.TimeoutMS,
+			MemoryBytes:         budget.MemoryBytes,
+			Concurrency:         budget.Concurrency,
+			InputFrameBytes:     budget.InputBytes,
+			OutputFrameBytes:    budget.OutputBytes,
+		}).Validate()
+	case pluginsdk.RuntimeRPCService:
+		if budget.TimeoutMS <= 0 || budget.TimeoutMS > 300000 || budget.MemoryBytes < 65536 || budget.MemoryBytes > MaxRuntimeMemoryBytes || budget.Concurrency <= 0 || budget.Concurrency > 4096 || budget.InputBytes <= 0 || budget.InputBytes > MaxRuntimeIOBytes || budget.OutputBytes <= 0 || budget.OutputBytes > MaxRuntimeIOBytes {
+			return errors.New("RPC timeout, memory, concurrency, and IO budgets must be positive and within host limits")
+		}
+		if budget.CPUMillis <= 0 || budget.CPUMillis > 100000 || budget.Restarts < 0 || budget.Restarts > 100 {
+			return errors.New("rpc-service requires bounded CPU and restart budgets")
+		}
+		return nil
+	default:
+		return fmt.Errorf("runtime kind %q does not have a resource budget contract", kind)
 	}
-	if kind == pluginsdk.RuntimeWASMPolicy && (budget.CPUMillis != 0 || budget.Restarts != 0) {
-		return errors.New("wasm-policy cannot declare process CPU or restart budgets")
-	}
-	if kind == pluginsdk.RuntimeRPCService && (budget.CPUMillis <= 0 || budget.CPUMillis > 100000 || budget.Restarts < 0 || budget.Restarts > 100) {
-		return errors.New("rpc-service requires bounded CPU and restart budgets")
-	}
-	return nil
 }
 
 func validateFailurePolicy(kind string, policy FailurePolicy) error {

@@ -33,6 +33,9 @@ type PolicyResourceBudget struct {
 	TimeoutMS   int64 `json:"timeout_ms"`
 	MemoryBytes int64 `json:"memory_bytes"`
 	Concurrency int   `json:"concurrency"`
+	// InputBytes and OutputBytes count complete deterministic nre:policy/v1
+	// protobuf wire frames, including tags, lengths, envelopes, and host-added
+	// metadata. They are not raw Config, Overlay, or response payload limits.
 	InputBytes  int64 `json:"input_bytes"`
 	OutputBytes int64 `json:"output_bytes"`
 }

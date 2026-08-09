@@ -263,7 +263,7 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 			t.Fatalf("expected memory budget error, got %v", err)
 		}
 	})
-	t.Run("low initial and high accepted maximum", func(t *testing.T) {
+	t.Run("memory maximum above policy ceiling is rejected", func(t *testing.T) {
 		artifact := replaceWASMFixtureBytes(t, fixture,
 			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
 			[]byte{0x05, 0x05, 0x01, 0x01, 0x01, 0x80, 0x04},
@@ -272,11 +272,12 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		if err := os.WriteFile(name, artifact, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validatePolicyWASMArtifact(name, 512*int64(wasmPageSizeBytes)); err != nil {
-			t.Fatalf("valid low-initial/high-maximum module rejected: %v", err)
+		err := validatePolicyWASMArtifact(name, pluginsdk.PolicyV1MaxMemoryBytes)
+		if err == nil || !strings.Contains(err.Error(), "exceeds manifest resource budget") {
+			t.Fatalf("high-maximum module error = %v", err)
 		}
 	})
-	t.Run("four GiB declared maximum is accepted without instantiation", func(t *testing.T) {
+	t.Run("four GiB declared maximum is rejected without instantiation", func(t *testing.T) {
 		artifact := replaceWASMFixtureBytes(t, fixture,
 			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
 			[]byte{0x05, 0x06, 0x01, 0x01, 0x01, 0x80, 0x80, 0x04},
@@ -285,21 +286,18 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		if err := os.WriteFile(name, artifact, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validatePolicyWASMArtifact(name, 65536*int64(wasmPageSizeBytes)); err != nil {
-			t.Fatalf("valid 4 GiB declared maximum rejected: %v", err)
+		err := validatePolicyWASMArtifact(name, pluginsdk.PolicyV1MaxMemoryBytes)
+		if err == nil || !strings.Contains(err.Error(), "exceeds manifest resource budget") {
+			t.Fatalf("4 GiB maximum error = %v", err)
 		}
 	})
 	t.Run("version memory grow is rejected statically", func(t *testing.T) {
-		artifact := replaceWASMFixtureBytes(t, fixture,
-			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
-			[]byte{0x05, 0x06, 0x01, 0x01, 0x01, 0x80, 0x80, 0x04},
-		)
-		artifact = replaceFirstWASMFunctionBody(t, artifact, []byte{0x00, 0x41, 0xff, 0xff, 0x03, 0x40, 0x00, 0x1a, 0x41, 0x01, 0x0b})
+		artifact := replaceFirstWASMFunctionBody(t, fixture, []byte{0x00, 0x41, 0xff, 0xff, 0x03, 0x40, 0x00, 0x1a, 0x41, 0x01, 0x0b})
 		name := filepath.Join(t.TempDir(), "memory-grow-version.wasm")
 		if err := os.WriteFile(name, artifact, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := validatePolicyWASMArtifact(name, 65536*int64(wasmPageSizeBytes))
+		err := validatePolicyWASMArtifact(name, 16*int64(wasmPageSizeBytes))
 		if err == nil || !strings.Contains(err.Error(), "canonical static ABI major declaration") {
 			t.Fatalf("version memory.grow rejection = %v", err)
 		}
@@ -313,7 +311,7 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		if err := os.WriteFile(name, artifact, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := validatePolicyWASMArtifact(name, 512*int64(wasmPageSizeBytes))
+		err := validatePolicyWASMArtifact(name, pluginsdk.PolicyV1MaxMemoryBytes)
 		if err == nil || !strings.Contains(err.Error(), "initial memory") || !strings.Contains(err.Error(), "ABI validation ceiling") {
 			t.Fatalf("initial memory ceiling error = %v", err)
 		}
@@ -344,6 +342,67 @@ func TestWASMMemoryBudgetUsesManifestAndChecksPageOverflow(t *testing.T) {
 	}
 }
 
+func TestWASMPolicyResourceBudgetCeilingsAndProjection(t *testing.T) {
+	maximum := ResourceBudget{
+		TimeoutMS:   pluginsdk.PolicyV1MaxTimeoutMilliseconds,
+		MemoryBytes: pluginsdk.PolicyV1MaxMemoryBytes,
+		Concurrency: pluginsdk.PolicyV1MaxConcurrency,
+		InputBytes:  pluginsdk.PolicyV1MaxInputFrameBytes,
+		OutputBytes: pluginsdk.PolicyV1MaxOutputFrameBytes,
+	}
+	if err := validateResourceBudget(pluginsdk.RuntimeWASMPolicy, maximum); err != nil {
+		t.Fatalf("policy maximum budget rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*ResourceBudget)
+	}{
+		{"timeout", func(b *ResourceBudget) { b.TimeoutMS++ }},
+		{"memory", func(b *ResourceBudget) { b.MemoryBytes++ }},
+		{"concurrency", func(b *ResourceBudget) { b.Concurrency++ }},
+		{"input frame", func(b *ResourceBudget) { b.InputBytes++ }},
+		{"output frame", func(b *ResourceBudget) { b.OutputBytes++ }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := maximum
+			test.mutate(&invalid)
+			if err := validateResourceBudget(pluginsdk.RuntimeWASMPolicy, invalid); err == nil {
+				t.Fatal("control-plane accepted a budget above the canonical Agent ceiling")
+			}
+		})
+	}
+
+	root := newPackageFixture(t)
+	manifest := validManifestYAML(ConfigSchemaFile)
+	manifest = strings.Replace(manifest, "memory_bytes: 1048576", fmt.Sprintf("memory_bytes: %d", maximum.MemoryBytes), 1)
+	manifest = strings.Replace(manifest, "concurrency: 8", fmt.Sprintf("concurrency: %d", maximum.Concurrency), 1)
+	manifest = strings.Replace(manifest, "input_bytes: 65536", fmt.Sprintf("input_bytes: %d", maximum.InputBytes), 1)
+	writeFixture(t, root, PackageManifestFile, manifest)
+	refreshFixtureDigest(t, root)
+	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package at canonical policy ceilings rejected: %v", err)
+	}
+	projected := validated.Manifest.ResourceBudget
+	if projected != maximum {
+		t.Fatalf("validated policy budget projection = %+v, want %+v", projected, maximum)
+	}
+	if err := (pluginsdk.PolicyV1ResourceBudget{
+		TimeoutMilliseconds: projected.TimeoutMS,
+		MemoryBytes:         projected.MemoryBytes,
+		Concurrency:         projected.Concurrency,
+		InputFrameBytes:     projected.InputBytes,
+		OutputFrameBytes:    projected.OutputBytes,
+	}).Validate(); err != nil {
+		t.Fatalf("control-plane accepted budget cannot prepare under shared Agent contract: %v", err)
+	}
+
+	rpcBudget := ResourceBudget{TimeoutMS: 300000, MemoryBytes: MaxRuntimeMemoryBytes, Concurrency: 4096, InputBytes: MaxRuntimeIOBytes, OutputBytes: MaxRuntimeIOBytes, CPUMillis: 100000, Restarts: 100}
+	if err := validateResourceBudget(pluginsdk.RuntimeRPCService, rpcBudget); err != nil {
+		t.Fatalf("independent RPC ceilings were narrowed with wasm-policy: %v", err)
+	}
+}
+
 func replaceWASMFixtureBytes(t *testing.T, fixture, old, replacement []byte) []byte {
 	t.Helper()
 	if bytes.Count(fixture, old) != 1 {
@@ -354,7 +413,7 @@ func replaceWASMFixtureBytes(t *testing.T, fixture, old, replacement []byte) []b
 
 func replaceFirstWASMFunctionBody(t *testing.T, fixture, body []byte) []byte {
 	t.Helper()
-	for offset := len(wasmV1Header); offset < len(fixture); {
+	for offset := pluginsdk.WASMModuleV1HeaderSize; offset < len(fixture); {
 		sectionStart := offset
 		sectionID := fixture[offset]
 		offset++
@@ -1839,11 +1898,11 @@ extension_points: [http.request]
 permissions: [http.inspect]
 config_schema: %s
 resource_budget:
-  timeout_ms: 10
+  timeout_ms: 2
   memory_bytes: 1048576
   concurrency: 8
   input_bytes: 65536
-  output_bytes: 65536
+  output_bytes: 4096
 failure_policy:
   on_error: fail-open
   on_budget: fail-open

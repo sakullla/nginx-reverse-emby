@@ -30,7 +30,8 @@ func (s Snapshot) HasFullRevisionPayload() bool {
 		s.RelayListeners != nil &&
 		s.EgressProfiles != nil &&
 		s.Certificates != nil &&
-		s.CertificatePolicies != nil
+		s.CertificatePolicies != nil &&
+		s.PluginPolicies != nil
 }
 
 type RevisionStart struct {

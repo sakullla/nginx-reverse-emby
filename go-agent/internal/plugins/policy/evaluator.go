@@ -87,10 +87,6 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 		if e.modules == nil {
 			return e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "runtime-unavailable", decision)
 		}
-		if int64(len(ref.Overlay)) > stage.ResourceBudget.InputBytes {
-			return e.handleFailure(ctx, definition.ID, stage, FailureBudget, "input-budget", decision)
-		}
-
 		requestHost := &requestHost{
 			input:        input,
 			generationID: e.generationID,
@@ -121,9 +117,6 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 		}
 		if !response.Action.valid() {
 			return e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "invalid-action", decision)
-		}
-		if int64(len(response.Payload)) > stage.ResourceBudget.OutputBytes {
-			return e.handleFailure(ctx, definition.ID, stage, FailureBudget, "output-budget", decision)
 		}
 		outcome := map[Action]string{ActionAllow: "allowed", ActionDeny: "denied", ActionObserve: "observed"}[response.Action]
 		e.observe(ctx, observability.PolicyEvaluation, outcome, stage, definition.ID, "", duration)
@@ -227,14 +220,8 @@ func validateStage(stage model.PolicyStage) error {
 			return errors.New("waf only supports http.request")
 		}
 	}
-	budget := stage.ResourceBudget
-	if budget.TimeoutMS <= 0 || budget.TimeoutMS > MaxPolicyTimeout.Milliseconds() ||
-		budget.MemoryBytes < 65536 || budget.MemoryBytes > MaxPolicyMemoryBytes || budget.Concurrency <= 0 || budget.Concurrency > MaxPolicyConcurrency ||
-		budget.InputBytes <= 0 || budget.InputBytes > MaxPolicyInputBytes || budget.OutputBytes <= 0 || budget.OutputBytes > MaxPolicyOutputBytes {
-		return errors.New("resource budget exceeds the policy host ceiling")
-	}
-	if int64(len(stage.Config)) > budget.InputBytes {
-		return errors.New("initial configuration exceeds the policy input budget")
+	if err := ValidatePolicyResourceBudget(stage.ResourceBudget); err != nil {
+		return fmt.Errorf("resource budget exceeds the policy host contract: %w", err)
 	}
 	if !validFailureAction(stage.FailurePolicy.OnError, true) || !validFailureAction(stage.FailurePolicy.OnBudget, false) ||
 		stage.FailurePolicy.Restart != "never" || stage.FailurePolicy.CoreFallback != "preserve" {

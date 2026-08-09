@@ -24,6 +24,51 @@ type CanonicalMetadata struct {
 	authorized bool
 }
 
+// TrustedPeerAllowlist is an immutable set of physical ingress peers allowed
+// to authenticate forwarded source metadata. An empty allowlist trusts no
+// peer; callers must not infer trust from the mere presence of XFF or PROXY.
+type TrustedPeerAllowlist struct {
+	prefixes []netip.Prefix
+}
+
+func NewTrustedPeerAllowlist(ranges []string) (TrustedPeerAllowlist, error) {
+	allowlist := TrustedPeerAllowlist{prefixes: make([]netip.Prefix, 0, len(ranges))}
+	for _, rawRange := range ranges {
+		value := strings.TrimSpace(rawRange)
+		if value == "" {
+			return TrustedPeerAllowlist{}, errors.New("trusted peer range is empty")
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return TrustedPeerAllowlist{}, fmt.Errorf("parse trusted peer range %q: %w", rawRange, err)
+			}
+			address = address.Unmap()
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		prefix = prefix.Masked()
+		if !prefix.IsValid() {
+			return TrustedPeerAllowlist{}, fmt.Errorf("trusted peer range %q is invalid", rawRange)
+		}
+		allowlist.prefixes = append(allowlist.prefixes, prefix)
+	}
+	return allowlist, nil
+}
+
+func (allowlist TrustedPeerAllowlist) Contains(peer net.Addr) bool {
+	address, err := canonicalAddrPort(peer)
+	if err != nil {
+		return false
+	}
+	for _, prefix := range allowlist.prefixes {
+		if prefix.Contains(address.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
 func NewDirectMetadata(peer net.Addr) (CanonicalMetadata, error) {
 	address, err := canonicalAddrPort(peer)
 	if err != nil {

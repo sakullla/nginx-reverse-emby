@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 	"time"
 
@@ -122,7 +121,8 @@ func (runtime *Runtime) CompileGeneration(ctx context.Context, artifact Verified
 	if uint64(len(configuration.InitRequest)) > uint64(budget.MaxInputBytes) {
 		return nil, runtime.failure(configuration.ID, "compile", ErrorInputBudget, nil)
 	}
-	if err := validateBinaryEnvelope(artifact.wasm); err != nil {
+	memoryBudgetBytes := int64(budget.MaxMemoryPages) * int64(pluginsdk.WASMPageSizeBytes)
+	if err := pluginsdk.ValidatePolicyV1WASM(artifact.wasm, memoryBudgetBytes); err != nil {
 		return nil, runtime.failure(configuration.ID, "compile", ErrorIncompatibleABI, err)
 	}
 
@@ -136,10 +136,6 @@ func (runtime *Runtime) CompileGeneration(ctx context.Context, artifact Verified
 	compiled, err := runtime.wasm.CompileModule(ctx, artifact.wasm)
 	if err != nil {
 		return nil, runtime.failure(configuration.ID, "compile", ErrorInvalidArtifact, err)
-	}
-	if err := validateCompiledModule(compiled, budget.MaxMemoryPages); err != nil {
-		_ = compiled.Close(ctx)
-		return nil, runtime.failure(configuration.ID, "compile", ErrorIncompatibleABI, err)
 	}
 	generation := &Generation{
 		runtime:     runtime,
@@ -181,8 +177,30 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 }
 
 func (runtime *Runtime) failure(generation, operation string, code ErrorCode, cause error) error {
-	runtime.observer.ObserveWASM(Event{Generation: generation, Operation: operation, Code: code})
+	runtime.observer.ObserveWASM(Event{
+		Generation: generation,
+		Operation:  operation,
+		Code:       code,
+		Dimension:  budgetDimensionForRuntimeCode(code),
+	})
 	return &RuntimeError{Code: code, Generation: generation, Operation: operation, Cause: cause}
+}
+
+func budgetDimensionForRuntimeCode(code ErrorCode) pluginsdk.BudgetDimension {
+	switch code {
+	case ErrorInputBudget:
+		return pluginsdk.BudgetDimensionInput
+	case ErrorOutputBudget:
+		return pluginsdk.BudgetDimensionOutput
+	case ErrorMemoryBudget:
+		return pluginsdk.BudgetDimensionMemory
+	case ErrorConcurrencyBudget:
+		return pluginsdk.BudgetDimensionConcurrency
+	case ErrorDeadline:
+		return pluginsdk.BudgetDimensionDeadline
+	default:
+		return ""
+	}
 }
 
 type Generation struct {
@@ -235,14 +253,18 @@ func (generation *Generation) Evaluate(ctx context.Context, host pluginsdk.Polic
 		callContext, cancel = context.WithTimeout(callContext, generation.budget.Timeout)
 	}
 	response, callErr := guest.evaluateRequest(callContext, request, generation.budget.MaxOutputBytes)
-	cancel()
 	reusable := callErr == nil && !guest.module.IsClosed()
 	if reusable {
-		if resetErr := guest.reset(contextWithHost(ctx, generation.id, host, generation.budget)); resetErr != nil {
+		// Reset is guest-controlled work and is part of the request invocation.
+		// Keeping it under the same deadline prevents a successful evaluate from
+		// occupying the request and pool slot forever in nre_policy_reset.
+		if resetErr := guest.reset(callContext); resetErr != nil {
 			reusable = false
 			callErr = resetErr
 		}
 	}
+	callContextErr := callContext.Err()
+	cancel()
 	if reusable {
 		guest.evaluations++
 		reusable = guest.evaluations < maxInstanceEvaluations
@@ -254,7 +276,7 @@ func (generation *Generation) Evaluate(ctx context.Context, host pluginsdk.Polic
 		if errors.As(callErr, &runtimeError) {
 			code = runtimeError.Code
 		}
-		if errors.Is(callContext.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(callContextErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			code = ErrorDeadline
 		}
 		return nil, generation.runtime.failure(generation.id, "evaluate", code, callErr)
@@ -488,48 +510,6 @@ func (guest *instance) reset(ctx context.Context) error {
 }
 
 func (guest *instance) close(ctx context.Context) error { return guest.module.Close(ctx) }
-
-func validateCompiledModule(compiled wazero.CompiledModule, maxMemoryPages uint32) error {
-	if len(compiled.ImportedMemories()) != 0 {
-		return errors.New("imported memory is forbidden")
-	}
-	imports := compiled.ImportedFunctions()
-	expectedImports := pluginsdk.PolicyV1HostFunctions()
-	if len(imports) != len(expectedImports) {
-		return fmt.Errorf("policy imports %d functions, want %d", len(imports), len(expectedImports))
-	}
-	for _, definition := range imports {
-		moduleName, name, imported := definition.Import()
-		signature, ok := expectedImports[name]
-		if !imported || moduleName != pluginsdk.PolicyHostModule || !ok {
-			return fmt.Errorf("forbidden import %q.%q", moduleName, name)
-		}
-		if !matchesSignature(definition, signature) {
-			return fmt.Errorf("host import %q has incompatible signature", name)
-		}
-	}
-
-	exports := compiled.ExportedFunctions()
-	for name, signature := range pluginsdk.PolicyV1GuestFunctions() {
-		definition, ok := exports[name]
-		if !ok || !matchesSignature(definition, signature) {
-			return fmt.Errorf("guest export %q is missing or incompatible", name)
-		}
-	}
-	memory, ok := compiled.ExportedMemories()[pluginsdk.PolicyExportMemory]
-	if !ok {
-		return errors.New("exported policy memory is missing")
-	}
-	maximum, bounded := memory.Max()
-	if !bounded || maximum > maxMemoryPages || memory.Min() > maxMemoryPages {
-		return fmt.Errorf("policy memory min=%d max=%d bounded=%t exceeds %d pages", memory.Min(), maximum, bounded, maxMemoryPages)
-	}
-	return nil
-}
-
-func matchesSignature(definition api.FunctionDefinition, signature pluginsdk.WASMFunctionSignature) bool {
-	return slices.Equal(definition.ParamTypes(), wasmValueTypes(signature.Parameters)) && slices.Equal(definition.ResultTypes(), wasmValueTypes(signature.Results))
-}
 
 func wasmValueTypes(values []pluginsdk.WASMValueType) []api.ValueType {
 	result := make([]api.ValueType, len(values))

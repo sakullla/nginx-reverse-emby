@@ -2,9 +2,15 @@ package wasm
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,9 +34,26 @@ type wafMeasurement struct {
 	p99Increase          time.Duration
 }
 
-// TestWAFReferencePerformanceGate is intentionally a deterministic reference
-// gate, not a benchmark. It uses one fixed canonical WAF corpus item, warms the
-// compiler runtime and pool once, then records exactly three complete passes.
+type wafCorpusItem struct {
+	path    string
+	headers [][2]string
+}
+
+var fixedWAFHeaderPathCorpus = []wafCorpusItem{
+	{path: "/library/items?sort=created_at", headers: [][2]string{{"User-Agent", "nre-reference/1"}, {"Accept", "application/json"}}},
+	{path: "/videos/42/stream.m3u8", headers: [][2]string{{"Range", "bytes=0-1048575"}, {"Accept-Encoding", "identity"}}},
+	{path: "/search?q=%27%20or%201%3D1--", headers: [][2]string{{"User-Agent", "Mozilla/5.0"}, {"X-Request-Class", "interactive"}}},
+	{path: "/images/%2e%2e/%2e%2e/etc/passwd", headers: [][2]string{{"Accept", "image/avif,image/webp"}, {"Cache-Control", "no-cache"}}},
+	{path: "/login", headers: [][2]string{{"Content-Type", "application/json"}, {"X-Forwarded-Host", "<script>alert(1)</script>"}}},
+	{path: "/api/sessions", headers: [][2]string{{"Authorization", "Bearer reference-redacted"}, {"X-Client-Version", "4.8.0"}}},
+}
+
+// TestWAFReferencePerformanceGate is a deterministic end-to-end reference
+// gate. Both paths serve the same fixed HTTP header/path corpus. The disabled
+// path performs normal request projection only, while the enabled path also
+// crosses the pooled WASM policy ABI and executes the WAF corpus scan from its
+// bounded Host callback. One request warms the compiler, pool, and HTTP server;
+// three independent paired passes are then required to meet every limit.
 func TestWAFReferencePerformanceGate(t *testing.T) {
 	previousProcessors := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(previousProcessors)
@@ -55,38 +78,86 @@ func TestWAFReferencePerformanceGate(t *testing.T) {
 			MaxOutputBytes: 4096,
 			MaxMemoryPages: 16,
 			MaxConcurrency: 1,
-			Timeout:        time.Second,
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := compatfixture.CanonicalPolicyV1EvaluateRequest()
-	host := &testPolicyHost{}
 
-	// The single prescribed warm-up creates the compiled generation's one
-	// bounded instance and touches every host/guest ABI path used below.
-	if _, err := generation.Evaluate(ctx, host, request); err != nil {
-		t.Fatal(err)
-	}
+	var wafMatches atomic.Uint64
+	handlerErrors := make(chan error, 1)
+	upstreamPayload := strings.Repeat("reference-media-segment", 2048)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = io.WriteString(writer, upstreamPayload)
+	}))
+	defer upstream.Close()
+	upstreamClient := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 2 * time.Second}
+	defer upstreamClient.CloseIdleConnections()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		projection := projectWAFReferenceRequest(request)
+		if request.Header.Get("X-NRE-WAF-Enabled") == "1" {
+			host := &wafReferenceHost{request: request, matches: &wafMatches}
+			if _, evaluateErr := generation.Evaluate(request.Context(), host, compatfixture.CanonicalPolicyV1EvaluateRequest()); evaluateErr != nil {
+				select {
+				case handlerErrors <- evaluateErr:
+				default:
+				}
+				http.Error(writer, "policy unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		upstreamResponse, upstreamErr := upstreamClient.Get(upstream.URL)
+		if upstreamErr == nil {
+			_, upstreamErr = io.Copy(io.Discard, upstreamResponse.Body)
+			closeErr := upstreamResponse.Body.Close()
+			if upstreamErr == nil {
+				upstreamErr = closeErr
+			}
+		}
+		if upstreamErr != nil {
+			select {
+			case handlerErrors <- upstreamErr:
+			default:
+			}
+			http.Error(writer, "upstream unavailable", http.StatusBadGateway)
+			return
+		}
+		writer.Header().Set("X-NRE-Projection", strconv.FormatUint(projection, 10))
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 1}, Timeout: 2 * time.Second}
+	defer client.CloseIdleConnections()
+
+	// The prescribed single warm-up uses the enabled path, creating the one
+	// pooled guest and touching the fixed corpus Host callback.
+	invokeWAFReference(t, client, server.URL, fixedWAFHeaderPathCorpus[0], true)
 
 	measurements := make([]wafMeasurement, 3)
 	for pass := range measurements {
-		measurements[pass] = measureWAFPass(t, ctx, generation, host, request)
+		measurements[pass] = measureWAFPass(t, client, server.URL)
+	}
+	select {
+	case handlerErr := <-handlerErrors:
+		t.Fatalf("WAF reference handler failed: %v", handlerErr)
+	default:
+	}
+	if wafMatches.Load() == 0 {
+		t.Fatal("fixed WAF corpus did not exercise an attack signature")
 	}
 	for index, measurement := range measurements {
-		throughputRegression := measurement.throughputRegression
-		if throughputRegression > maximumThroughputDecline {
-			t.Fatalf("measurement %d throughput regression %.2f%% exceeds 10%%", index+1, throughputRegression*100)
+		if measurement.throughputRegression > maximumThroughputDecline {
+			t.Fatalf("measurement %d throughput regression %.2f%% exceeds 10%%", index+1, measurement.throughputRegression*100)
 		}
-		if increase := measurement.p95Increase; increase > maximumP95Increase {
-			t.Fatalf("measurement %d p95 increase %s exceeds %s", index+1, increase, maximumP95Increase)
+		if measurement.p95Increase > maximumP95Increase {
+			t.Fatalf("measurement %d p95 increase %s exceeds %s", index+1, measurement.p95Increase, maximumP95Increase)
 		}
-		if increase := measurement.p99Increase; increase > maximumP99Increase {
-			t.Fatalf("measurement %d p99 increase %s exceeds %s", index+1, increase, maximumP99Increase)
+		if measurement.p99Increase > maximumP99Increase {
+			t.Fatalf("measurement %d p99 increase %s exceeds %s", index+1, measurement.p99Increase, maximumP99Increase)
 		}
-		t.Logf("measurement %d reference=%.0f/s throughput=%.0f/s p95_increment=%s p99_increment=%s", index+1,
-			measurement.referenceThroughput, measurement.throughput, measurement.p95Increase, measurement.p99Increase)
+		t.Logf("measurement %d reference=%.0f/s throughput=%.0f/s regression=%.2f%% p95_increment=%s p99_increment=%s", index+1,
+			measurement.referenceThroughput, measurement.throughput, measurement.throughputRegression*100, measurement.p95Increase, measurement.p99Increase)
 	}
 
 	runtime.GC()
@@ -102,7 +173,7 @@ func TestWAFReferencePerformanceGate(t *testing.T) {
 	t.Logf("steady extra memory=%d bytes", extraMemory)
 }
 
-func measureWAFPass(t *testing.T, ctx context.Context, generation *Generation, host *testPolicyHost, request []byte) wafMeasurement {
+func measureWAFPass(t *testing.T, client *http.Client, serverURL string) wafMeasurement {
 	t.Helper()
 	var totalReferenceElapsed, totalElapsed time.Duration
 	p95Increases := make([]time.Duration, wafMeasurementBatches)
@@ -111,23 +182,22 @@ func measureWAFPass(t *testing.T, ctx context.Context, generation *Generation, h
 		var referenceElapsed, elapsed time.Duration
 		referenceLatencies := make([]time.Duration, 0, wafCorpusIterations)
 		latencies := make([]time.Duration, 0, wafCorpusIterations)
-		invoke := func(total *time.Duration) time.Duration {
-			started := time.Now()
-			if _, err := generation.Evaluate(ctx, host, request); err != nil {
-				t.Fatal(err)
-			}
-			duration := time.Since(started)
-			*total += duration
-			return duration
-		}
 		for iteration := range wafCorpusIterations {
+			item := fixedWAFHeaderPathCorpus[(batch*wafCorpusIterations+iteration)%len(fixedWAFHeaderPathCorpus)]
+			invoke := func(enabled bool, total *time.Duration) time.Duration {
+				started := time.Now()
+				invokeWAFReference(t, client, serverURL, item, enabled)
+				duration := time.Since(started)
+				*total += duration
+				return duration
+			}
 			var referenceLatency, latency time.Duration
 			if iteration%2 == 0 {
-				referenceLatency = invoke(&referenceElapsed)
-				latency = invoke(&elapsed)
+				referenceLatency = invoke(false, &referenceElapsed)
+				latency = invoke(true, &elapsed)
 			} else {
-				latency = invoke(&elapsed)
-				referenceLatency = invoke(&referenceElapsed)
+				latency = invoke(true, &elapsed)
+				referenceLatency = invoke(false, &referenceElapsed)
 			}
 			referenceLatencies = append(referenceLatencies, referenceLatency)
 			latencies = append(latencies, latency)
@@ -150,6 +220,69 @@ func measureWAFPass(t *testing.T, ctx context.Context, generation *Generation, h
 		p95Increase:          p95Increases[len(p95Increases)/2],
 		p99Increase:          p99Increases[len(p99Increases)/2],
 	}
+}
+
+func invokeWAFReference(t *testing.T, client *http.Client, serverURL string, item wafCorpusItem, enabled bool) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, serverURL+item.path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, header := range item.headers {
+		request.Header.Add(header[0], header[1])
+	}
+	if enabled {
+		request.Header.Set("X-NRE-WAF-Enabled", "1")
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := io.Copy(io.Discard, response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("consume WAF reference response: read=%v close=%v", readErr, closeErr)
+	}
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("WAF reference status=%d", response.StatusCode)
+	}
+}
+
+func projectWAFReferenceRequest(request *http.Request) uint64 {
+	projection := uint64(len(request.URL.EscapedPath()) + len(request.URL.RawQuery))
+	for name, values := range request.Header {
+		projection += uint64(len(strings.ToLower(name)))
+		for _, value := range values {
+			projection += uint64(len(strings.TrimSpace(value)))
+		}
+	}
+	return projection
+}
+
+type wafReferenceHost struct {
+	testPolicyHost
+	request *http.Request
+	matches *atomic.Uint64
+}
+
+func (host *wafReferenceHost) ReadField(context.Context, string) ([]byte, error) {
+	if wafReferenceAttack(host.request) {
+		host.matches.Add(1)
+	}
+	return []byte(host.request.Method), nil
+}
+
+func wafReferenceAttack(request *http.Request) bool {
+	combined := strings.ToLower(request.URL.EscapedPath() + "?" + request.URL.RawQuery)
+	for name, values := range request.Header {
+		combined += "\n" + strings.ToLower(name) + ":" + strings.ToLower(strings.Join(values, ","))
+	}
+	for _, signature := range []string{"%27%20or%201%3d1", "%2e%2e", "<script"} {
+		if strings.Contains(combined, signature) {
+			return true
+		}
+	}
+	return false
 }
 
 func percentile(sorted []time.Duration, percentile int) time.Duration {

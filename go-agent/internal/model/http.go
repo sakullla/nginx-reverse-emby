@@ -28,6 +28,9 @@ type HTTPRule struct {
 	UserAgent        string        `json:"user_agent,omitempty"`
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
 	EgressProfileID  *int          `json:"egress_profile_id,omitempty"`
+	// TrustedProxyRanges is the explicit physical-peer allowlist allowed to
+	// contribute X-Forwarded-For source metadata to policy evaluation.
+	TrustedProxyRanges []string `json:"trusted_proxy_ranges,omitempty"`
 	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
 	RelayChain  []int      `json:"relay_chain,omitempty"`
 	RelayLayers [][]int    `json:"relay_layers,omitempty"`
