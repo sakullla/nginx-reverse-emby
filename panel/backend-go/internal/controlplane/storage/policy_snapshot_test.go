@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -9,11 +10,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"gorm.io/gorm"
 )
 
 func TestPolicySnapshotProjectionPreservesAttachmentsAndExplicitEmptyDefinitions(t *testing.T) {
@@ -394,6 +397,154 @@ func TestTransactionalPluginPolicyCatalogReadDoesNotCreateFence(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("transactional catalog read created %d fence rows, want 0", count)
+	}
+}
+
+func TestStandalonePluginPolicyCatalogReadUsesOneSQLiteSnapshot(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(context.Context, *GormStore, string) ([]PluginPolicy, error)
+	}{
+		{name: "catalog API", read: func(ctx context.Context, store *GormStore, agentID string) ([]PluginPolicy, error) {
+			return store.LoadAgentPluginPolicies(ctx, agentID)
+		}},
+		{name: "heartbeat intent snapshot", read: func(ctx context.Context, store *GormStore, agentID string) ([]PluginPolicy, error) {
+			snapshot, err := store.LoadAgentIntentSnapshot(ctx, agentID, AgentSnapshotInput{})
+			return snapshot.PluginPolicies, err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			testStandalonePluginPolicyCatalogReadUsesOneSQLiteSnapshot(t, test.read)
+		})
+	}
+}
+
+func testStandalonePluginPolicyCatalogReadUsesOneSQLiteSnapshot(t *testing.T, readCatalog func(context.Context, *GormStore, string) ([]PluginPolicy, error)) {
+	t.Helper()
+	dataRoot := t.TempDir()
+	reader, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testStandalonePluginPolicyCatalogReadUsesOneSnapshot(t, reader, writer, "sqlite", readCatalog)
+}
+
+func testStandalonePluginPolicyCatalogReadUsesOneSnapshot(t *testing.T, reader, writer *GormStore, operationPrefix string, readCatalog func(context.Context, *GormStore, string) ([]PluginPolicy, error)) {
+	t.Helper()
+	ctx := t.Context()
+	if err := reader.SaveAgent(ctx, AgentRow{ID: "edge-a", AgentToken: "token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	instance := installActivePolicyFixture(t, reader, signingKey, "policy.snapshot", "ip", "snapshot-ip", `["edge-a"]`, `["shared"]`)
+	before, err := reader.LoadAgentPluginPolicies(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || len(before[0].Stages) != 1 {
+		t.Fatalf("before catalog = %+v", before)
+	}
+
+	candidate, artifacts := preparePolicyPackageFixture(t, reader, signingKey, instance.PluginID, "ip", 32768)
+	installed, found, err := reader.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	installed.ActivePackageDigest, installed.ActivePackageIdentity = candidate.Digest, candidate.Identity
+	installed.RuntimeKind, installed.RuntimeABI, installed.HostScope = candidate.RuntimeKind, candidate.RuntimeABI, candidate.HostScope
+	installed.ActiveSourceID, installed.ActiveSourceKind, installed.ActiveSourceRiskLabel = candidate.SourceID, candidate.SourceKind, candidate.SourceRiskLabel
+	installed.ActiveSignatureKeyID, installed.ActiveSignaturePublicKey, installed.ActiveSignatureFingerprint = candidate.SignatureKeyID, candidate.SignaturePublicKey, candidate.SignatureFingerprint
+	instance.ConfigJSON = `{"generation":2}`
+	instance.ConfigVersion++
+	now := time.Now().UTC()
+	mutation := PluginMutation{
+		PluginID: instance.PluginID, ExpectedActive: before[0].Stages[0].PackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Package: &candidate, Artifacts: artifacts, Installed: &installed, ReplaceInstance: &instance,
+		Operation: PluginOperationRow{ID: operationPrefix + "-snapshot-upgrade", PluginID: instance.PluginID, Kind: "upgrade", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: operationPrefix + "-snapshot-upgrade-audit", Action: "plugin.upgrade", TargetKind: "plugin", TargetID: instance.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	}
+
+	firstInstanceRead := make(chan struct{})
+	continueRead := make(chan struct{})
+	var intercept sync.Once
+	const callbackName = "test:standalone-policy-snapshot"
+	if err := reader.db.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement == nil || db.Statement.Table != "plugin_instances" {
+			return
+		}
+		intercept.Do(func() {
+			close(firstInstanceRead)
+			<-continueRead
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.db.Callback().Query().Remove(callbackName) })
+
+	readDone := make(chan struct {
+		policies []PluginPolicy
+		err      error
+	}, 1)
+	go func() {
+		policies, err := readCatalog(ctx, reader, "edge-a")
+		readDone <- struct {
+			policies []PluginPolicy
+			err      error
+		}{policies: policies, err: err}
+	}()
+	select {
+	case <-firstInstanceRead:
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatal("catalog reader did not reach the deterministic query boundary")
+	}
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- writer.ApplyPluginMutation(ctx, mutation) }()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			close(continueRead)
+			t.Fatalf("concurrent upgrade error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatalf("concurrent %s upgrade could not commit while the read snapshot was open", operationPrefix)
+	}
+	close(continueRead)
+	read := <-readDone
+	if read.err != nil {
+		t.Fatalf("standalone catalog read error = %v", read.err)
+	}
+	after, err := reader.LoadAgentPluginPolicies(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	catalogGeneration := func(policies []PluginPolicy) string {
+		if len(policies) != 1 || len(policies[0].Stages) != 1 {
+			return fmt.Sprintf("invalid:%+v", policies)
+		}
+		stage := policies[0].Stages[0]
+		return stage.PackageDigest + "\x00" + string(stage.Config)
+	}
+	got := catalogGeneration(read.policies)
+	wantBefore, wantAfter := catalogGeneration(before), catalogGeneration(after)
+	if got != wantBefore && got != wantAfter {
+		t.Fatalf("standalone catalog read produced a hybrid generation %q; before=%q after=%q", got, wantBefore, wantAfter)
+	}
+	if wantBefore == wantAfter {
+		t.Fatalf("fixture did not create distinct catalog generations: %q", wantBefore)
 	}
 }
 

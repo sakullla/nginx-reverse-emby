@@ -107,6 +107,28 @@ func TestPostgresConcurrentPluginMutationsShareAgentCatalogFence(t *testing.T) {
 	}
 }
 
+func TestPostgresStandalonePluginPolicyCatalogReadUsesOneSnapshot(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	dataRoot := t.TempDir()
+	reader, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local", SkipBootstrapSchema: true})
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testStandalonePluginPolicyCatalogReadUsesOneSnapshot(t, reader, writer, "postgres", func(ctx context.Context, store *GormStore, agentID string) ([]PluginPolicy, error) {
+		return store.LoadAgentPluginPolicies(ctx, agentID)
+	})
+}
+
 func TestPostgresPluginVariantMigrationFromDigestIdentity(t *testing.T) {
 	dsn := postgresIntegrationSchemaDSN(t)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})

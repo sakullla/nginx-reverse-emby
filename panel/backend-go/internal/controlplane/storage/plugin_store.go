@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -651,6 +652,19 @@ func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
 }
 
 func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
+	if !s.transactionScoped {
+		var policies []PluginPolicy
+		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			scoped := &GormStore{
+				db: tx, dataRoot: s.dataRoot, localAgentID: s.localAgentID,
+				driver: s.driver, transactionScoped: true,
+			}
+			var err error
+			policies, err = scoped.loadAgentPluginPolicies(ctx, agentID)
+			return err
+		}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+		return policies, err
+	}
 	agentID = s.resolveAgentID(agentID)
 	var instances []PluginInstanceRow
 	if err := s.pluginPolicyGraphQuery(ctx).Order("id").Find(&instances).Error; err != nil {
@@ -937,15 +951,13 @@ func (s *GormStore) LoadAgentPluginPolicies(ctx context.Context, agentID string)
 	return s.loadAgentPluginPolicies(ctx, agentID)
 }
 
-// pluginPolicyGraphQuery keeps standalone catalog reads stable with shared row
-// locks. Transaction-scoped callers already hold the affected Agent catalog
-// fence, so avoiding graph-wide shared locks prevents cross-plugin lock upgrades.
+// pluginPolicyGraphQuery always participates in the loader's surrounding
+// transaction. Standalone loaders establish one repeatable-read snapshot;
+// mutation-scoped loaders reuse their caller's transaction. Per-statement
+// shared locks cannot make a multi-query projection atomic and would create
+// avoidable lock-upgrade cycles with plugin lifecycle mutations.
 func (s *GormStore) pluginPolicyGraphQuery(ctx context.Context) *gorm.DB {
-	query := s.db.WithContext(ctx)
-	if !s.transactionScoped {
-		query = query.Clauses(clause.Locking{Strength: "SHARE"})
-	}
-	return query
+	return s.db.WithContext(ctx)
 }
 
 func installedProjectsActivePolicy(installed InstalledPluginRow) bool {
