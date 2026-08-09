@@ -2783,6 +2783,219 @@ func TestRestartReconciliationPreservesRunningRefreshStagingAsGCMarker(t *testin
 	}
 }
 
+func TestPackagePublicationFencesSourceDeletionUntilCacheWriteCompletes(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "publish-delete", "Publish Delete", "https://example.com/publish-delete.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "publish-delete-op", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "publish-delete-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("9")
+	trust := marketplaceTrustForTest(t, source)
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, trust); err != nil {
+		t.Fatal(err)
+	}
+	publishedPath := filepath.Join(dataRoot, "publish-delete-object")
+	publishEntered := make(chan struct{})
+	releasePublish := make(chan struct{})
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- store.PublishPackageAcquisition(ctx, source.ID, digest, operation.ID, trust, func() error {
+			if err := os.WriteFile(publishedPath, []byte("verified"), 0o600); err != nil {
+				return err
+			}
+			close(publishEntered)
+			<-releasePublish
+			return nil
+		})
+	}()
+	<-publishEntered
+
+	deleteStarted := make(chan struct{})
+	deleteDone := make(chan error, 1)
+	go func() {
+		close(deleteStarted)
+		_, err := store.DeleteMarketplaceSource(ctx, source.ID)
+		deleteDone <- err
+	}()
+	<-deleteStarted
+	select {
+	case err := <-deleteDone:
+		t.Fatalf("source deletion crossed an active package publication: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releasePublish)
+	if err := <-publishDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatal(err)
+	}
+	var staged int64
+	if err := store.db.Model(&PluginPackageStagingRow{}).Where("source_id = ? AND operation_id = ?", source.ID, operation.ID).Count(&staged).Error; err != nil || staged != 0 {
+		t.Fatalf("source deletion left publication marker count=%d err=%v", staged, err)
+	}
+	claim, claimed, err := store.ClaimPackageGC(ctx, source.ID, digest, trust.Fingerprint)
+	if err != nil || !claimed {
+		t.Fatalf("published package was not claimable after deletion: claimed=%v err=%v", claimed, err)
+	}
+	if err := store.WithPackageGCMutation(ctx, claim, func() error { return os.Remove(publishedPath) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompletePackageGC(ctx, claim, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(publishedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("published package survived fenced deletion: %v", err)
+	}
+}
+
+func TestPackagePublicationFencesBootstrapAndSourceEditUntilCacheWriteCompletes(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "publish-edit", "Publish Edit", "https://example.com/publish-edit.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "publish-edit-op", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "publish-edit-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("a")
+	trust := marketplaceTrustForTest(t, source)
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, trust); err != nil {
+		t.Fatal(err)
+	}
+	publishedPath := filepath.Join(dataRoot, "publish-edit-object")
+	publishEntered := make(chan struct{})
+	releasePublish := make(chan struct{})
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- store.PublishPackageAcquisition(ctx, source.ID, digest, operation.ID, trust, func() error {
+			if err := os.WriteFile(publishedPath, []byte("verified"), 0o600); err != nil {
+				return err
+			}
+			close(publishEntered)
+			<-releasePublish
+			return nil
+		})
+	}()
+	<-publishEntered
+
+	reopenStarted := make(chan struct{})
+	reopenDone := make(chan error, 1)
+	go func() {
+		close(reopenStarted)
+		reopened, err := NewSQLiteStore(dataRoot, "local")
+		if err == nil {
+			err = reopened.Close()
+		}
+		reopenDone <- err
+	}()
+	<-reopenStarted
+	select {
+	case err := <-reopenDone:
+		t.Fatalf("bootstrap crossed an active package publication: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releasePublish)
+	if err := <-publishDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reopenDone; err != nil {
+		t.Fatal(err)
+	}
+
+	rotated := source
+	rotated.RefName, rotated.ConfigRevision = "release", source.ConfigRevision+1
+	if _, err := store.UpdateMarketplaceSource(ctx, rotated, source.ConfigRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged int64
+	if err := store.db.Model(&PluginPackageStagingRow{}).Where("source_id = ? AND operation_id = ?", source.ID, operation.ID).Count(&staged).Error; err != nil || staged != 0 {
+		t.Fatalf("restart did not reconcile terminal publication marker count=%d err=%v", staged, err)
+	}
+	claim, claimed, err := store.ClaimPackageGC(ctx, source.ID, digest, trust.Fingerprint)
+	if err != nil || !claimed {
+		t.Fatalf("reconciled package was not claimable: claimed=%v err=%v", claimed, err)
+	}
+	if err := store.WithPackageGCMutation(ctx, claim, func() error { return os.Remove(publishedPath) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompletePackageGC(ctx, claim, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPackagePublicationFailureLeavesDurableReservationForCleanup(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "publish-failure", "Publish Failure", "https://example.com/publish-failure.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "publish-failure-op", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "publish-failure-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("b")
+	trust := marketplaceTrustForTest(t, source)
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, trust); err != nil {
+		t.Fatal(err)
+	}
+	publishFailure := errors.New("injected publication failure")
+	if err := store.PublishPackageAcquisition(ctx, source.ID, digest, operation.ID, trust, func() error { return publishFailure }); !errors.Is(err, publishFailure) {
+		t.Fatalf("publication error=%v, want injected failure", err)
+	}
+	var staged int64
+	if err := store.db.Model(&PluginPackageStagingRow{}).Where("source_id = ? AND operation_id = ? AND digest = ?", source.ID, operation.ID, digest).Count(&staged).Error; err != nil || staged != 1 {
+		t.Fatalf("failed publication reservation count=%d err=%v", staged, err)
+	}
+	if err := store.CompletePackageAcquisitions(ctx, source.ID, operation.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := store.ClaimPackageGC(ctx, source.ID, digest, trust.Fingerprint); err != nil || !claimed {
+		t.Fatalf("failed publication cleanup claim=%v err=%v", claimed, err)
+	}
+}
+
 func TestRestartReconciliationFailsClosedForTerminalStagingWithoutImmutableTrust(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()

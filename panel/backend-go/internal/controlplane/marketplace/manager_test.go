@@ -559,6 +559,9 @@ func (r *memoryRepository) RenewRefreshLease(_ context.Context, operation Refres
 func (r *memoryRepository) StagePackageAcquisition(context.Context, string, string, string, SignatureTrust) error {
 	return nil
 }
+func (r *memoryRepository) PublishPackageAcquisition(_ context.Context, _, _, _ string, _ SignatureTrust, publish func() error) error {
+	return publish()
+}
 func (r *memoryRepository) CompletePackageAcquisitions(context.Context, string, string, bool) error {
 	return nil
 }

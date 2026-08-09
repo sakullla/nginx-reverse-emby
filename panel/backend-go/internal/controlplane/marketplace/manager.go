@@ -197,7 +197,10 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		if err := m.repository.StagePackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID, trust); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache_reservation", err)
 		}
-		if _, err := m.cache.StoreWithTrust(candidate, validator, trust); err != nil {
+		if err := m.repository.PublishPackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID, trust, func() error {
+			_, err := m.cache.StoreWithTrust(candidate, validator, trust)
+			return err
+		}); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache", err)
 		}
 	}

@@ -435,6 +435,7 @@ type Repository interface {
 	RenewRefreshLease(context.Context, RefreshOperation) error
 	RecordRefreshRejection(context.Context, RefreshOperation, string) error
 	StagePackageAcquisition(context.Context, string, string, string, SignatureTrust) error
+	PublishPackageAcquisition(context.Context, string, string, string, SignatureTrust, func() error) error
 	CompletePackageAcquisitions(context.Context, string, string, bool) error
 	SaveRefreshOperation(context.Context, RefreshOperation) error
 	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error

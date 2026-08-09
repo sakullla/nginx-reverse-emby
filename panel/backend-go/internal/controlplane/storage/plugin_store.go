@@ -2112,31 +2112,77 @@ func (s *GormStore) StagePackageAcquisition(ctx context.Context, sourceID, diges
 		return errors.New("valid package digest and refresh operation are required")
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		var source MarketplaceSourceRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleting = ?", sourceID, false).First(&source).Error; err != nil {
-			return err
-		}
 		now := time.Now().UTC()
-		var operation MarketplaceRefreshOperationRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", operationID, sourceID, "running", now).First(&operation).Error; err != nil {
-			return errors.New("refresh operation is unavailable or expired")
-		}
-		if err := validateRefreshOperationSourceBinding(operation, source); err != nil {
-			return err
-		}
-		if source.RefreshLeaseToken != operation.LeaseToken || !source.RefreshLeaseExpiresAt.After(now) || trust.KeyID != operation.SignerKeyID || !strings.EqualFold(trust.Fingerprint, operation.SignerFingerprint) {
-			return errors.New("refresh operation signer or source generation changed")
-		}
-		fence, err := lockPackageDigestFenceTx(tx, digest, now)
+		operation, err := lockPackageAcquisitionTx(tx, sourceID, digest, operationID, trust, now)
 		if err != nil {
 			return err
-		}
-		if fence.ClaimToken != "" {
-			return errors.New("package cache digest is being deleted")
 		}
 		row := PluginPackageStagingRow{SourceID: sourceID, Digest: digest, OperationID: operationID, SignerFingerprint: operation.SignerFingerprint, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 	})
+}
+
+// PublishPackageAcquisition keeps the durable staging reservation and cache
+// publication under the same source, operation, and digest locks. A source
+// edit, deletion, lease takeover, startup reconciliation, or GC mutation can
+// proceed only before publication begins or after the callback has returned.
+func (s *GormStore) PublishPackageAcquisition(ctx context.Context, sourceID, digest, operationID string, trust marketplace.SignatureTrust, publish func() error) error {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if !marketplace.IsDigest(digest) || strings.TrimSpace(operationID) == "" || marketplace.ValidateSignatureTrust(trust) != nil || trust.SourceID != sourceID || publish == nil {
+		return errors.New("valid package publication is required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		operation, err := lockPackageAcquisitionTx(tx, sourceID, digest, operationID, trust, now)
+		if err != nil {
+			return err
+		}
+		var staged PluginPackageStagingRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND operation_id = ? AND digest = ?", sourceID, operationID, digest).First(&staged).Error; err != nil {
+			return errors.New("package publication reservation is unavailable")
+		}
+		if !strings.EqualFold(staged.SignerFingerprint, operation.SignerFingerprint) {
+			return errors.New("package publication signer differs from refresh operation")
+		}
+		if err := publish(); err != nil {
+			return err
+		}
+		result := tx.Model(&PluginPackageStagingRow{}).
+			Where("source_id = ? AND operation_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, operationID, digest, staged.SignerFingerprint).
+			Update("updated_at", time.Now().UTC())
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("%w: package publication reservation changed", ErrPluginConflict)
+		}
+		return nil
+	})
+}
+
+func lockPackageAcquisitionTx(tx *gorm.DB, sourceID, digest, operationID string, trust marketplace.SignatureTrust, now time.Time) (MarketplaceRefreshOperationRow, error) {
+	var source MarketplaceSourceRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleting = ?", sourceID, false).First(&source).Error; err != nil {
+		return MarketplaceRefreshOperationRow{}, err
+	}
+	var operation MarketplaceRefreshOperationRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", operationID, sourceID, "running", now).First(&operation).Error; err != nil {
+		return MarketplaceRefreshOperationRow{}, errors.New("refresh operation is unavailable or expired")
+	}
+	if err := validateRefreshOperationSourceBinding(operation, source); err != nil {
+		return MarketplaceRefreshOperationRow{}, err
+	}
+	if source.RefreshLeaseToken != operation.LeaseToken || !source.RefreshLeaseExpiresAt.After(now) || trust.KeyID != operation.SignerKeyID || trust.PublicKey != operation.SignerPublicKey || trust.SourceKind != operation.SignerSourceKind || !strings.EqualFold(trust.Fingerprint, operation.SignerFingerprint) {
+		return MarketplaceRefreshOperationRow{}, errors.New("refresh operation signer or source generation changed")
+	}
+	fence, err := lockPackageDigestFenceTx(tx, digest, now)
+	if err != nil {
+		return MarketplaceRefreshOperationRow{}, err
+	}
+	if fence.ClaimToken != "" {
+		return MarketplaceRefreshOperationRow{}, errors.New("package cache digest is being deleted")
+	}
+	return operation, nil
 }
 
 func (s *GormStore) CompletePackageAcquisitions(ctx context.Context, sourceID, operationID string, succeeded bool) error {
