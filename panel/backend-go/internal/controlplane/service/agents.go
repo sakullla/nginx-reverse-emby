@@ -86,6 +86,10 @@ type agentHeartbeatRevisionIssuer interface {
 	EnsureAgentHeartbeatRevision(context.Context, string, storage.Snapshot, []byte, string, time.Time) (storage.AgentRevisionRow, error)
 }
 
+type agentDurableRevisionSnapshotStore interface {
+	LoadCoordinatorRuntimeSnapshot(context.Context, string, int64) (storage.CoordinatorRuntimeSnapshot, bool, error)
+}
+
 type agentRevisionRepository interface {
 	RevisionRepository
 	coordinator.Repository
@@ -1499,6 +1503,43 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 			return "", err
 		}
 		if found {
+			if durableStore, ok := s.store.(agentDurableRevisionSnapshotStore); ok {
+				durable, durableFound, loadErr := durableStore.LoadCoordinatorRuntimeSnapshot(ctx, agentID, snapshot.Revision)
+				if loadErr != nil {
+					return "", loadErr
+				}
+				if !durableFound {
+					return "", errors.New("heartbeat durable revision snapshot is missing")
+				}
+				// Older immutable artifacts may contain a PKI security projection.
+				// Compare the non-PKI revision contract while preserving and returning
+				// the original artifact digest used by its lease and pull response.
+				durable.Snapshot.PKISecurity = nil
+				_, durableComparableDigest, compareErr := revision.CanonicalSnapshotPayload(durable.Snapshot)
+				if compareErr != nil {
+					return "", compareErr
+				}
+				if !strings.EqualFold(durableComparableDigest, digest) {
+					return "", errors.New("heartbeat snapshot differs from its durable revision")
+				}
+				if strings.TrimSpace(durable.Revision.SnapshotDigest) == "" {
+					return "", errors.New("heartbeat durable revision has no snapshot digest")
+				}
+				if issuer, ok := s.store.(agentHeartbeatRevisionIssuer); ok {
+					issued, issueErr := issuer.EnsureAgentHeartbeatRevision(
+						ctx, agentID, durable.Snapshot, durable.Artifact.Payload,
+						durable.Revision.SnapshotDigest, s.now().UTC(),
+					)
+					if issueErr != nil {
+						return "", issueErr
+					}
+					if issued.Revision != durable.Revision.Revision ||
+						!strings.EqualFold(issued.SnapshotDigest, durable.Revision.SnapshotDigest) {
+						return "", errors.New("heartbeat revision issuer returned a conflicting durable identity")
+					}
+				}
+				return strings.ToLower(durable.Revision.SnapshotDigest), nil
+			}
 			if !strings.EqualFold(strings.TrimSpace(row.SnapshotDigest), digest) {
 				return "", errors.New("heartbeat snapshot differs from its durable revision")
 			}
@@ -1655,6 +1696,7 @@ func (s *agentService) loadCoherentHeartbeatSnapshot(ctx context.Context, row st
 		if err != nil {
 			return storage.AgentHeartbeatSnapshot{}, err
 		}
+		result.Snapshot.PKISecurity = nil
 		result.Snapshot.VersionPackage = s.resolveDesiredPackage(result.Snapshot.VersionPackage, result.Metadata.Platform)
 		return result, nil
 	}
@@ -1671,6 +1713,7 @@ func (s *agentService) loadCoherentHeartbeatSnapshot(ctx context.Context, row st
 	if err != nil {
 		return storage.AgentHeartbeatSnapshot{}, err
 	}
+	snapshot.PKISecurity = nil
 	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
 	return storage.AgentHeartbeatSnapshot{
 		Snapshot: snapshot,

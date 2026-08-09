@@ -17,9 +17,17 @@ func (m *GenerationManager) ApplyWithDrainTimeout(ctx context.Context, previous,
 }
 
 func (m *GenerationManager) applyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
+	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, nil)
+}
+
+func (m *GenerationManager) ApplyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config model.AgentConfig) (GenerationCutover, error) {
+	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, &config)
+}
+
+func (m *GenerationManager) applyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config *model.AgentConfig) (GenerationCutover, error) {
 	started := time.Now()
 	before := m.ActiveIdentity()
-	cutover, err := m.apply(ctx, previous, next, drainTimeout)
+	cutover, err := m.apply(ctx, previous, next, drainTimeout, config)
 	outcome := "succeeded"
 	if err != nil {
 		outcome = "failed"

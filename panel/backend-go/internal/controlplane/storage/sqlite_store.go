@@ -307,6 +307,10 @@ func (s *GormStore) LoadAgentHeartbeatSnapshot(ctx context.Context, agentID stri
 				return err
 			}
 		}
+		// Heartbeat PKI is a separately authenticated runtime projection. It is
+		// intentionally excluded from the immutable revision candidate so a PKI
+		// security rotation cannot change the digest of a fixed Agent revision.
+		snapshot.PKISecurity = nil
 		result = AgentHeartbeatSnapshot{
 			Snapshot: snapshot,
 			Metadata: AgentSnapshotMetadata{

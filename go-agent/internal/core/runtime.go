@@ -17,6 +17,8 @@ type Activator func(ctx context.Context, previous, next model.Snapshot) error
 type Runtime struct {
 	mu             sync.RWMutex
 	activeSnapshot model.Snapshot
+	trafficRuntime model.AgentConfig
+	trafficSet     bool
 	state          model.RuntimeState
 	activator      Activator
 	generations    *GenerationManager
@@ -81,14 +83,14 @@ func defaultActivator(_ context.Context, previous, next model.Snapshot) error {
 }
 
 func (r *Runtime) ActiveSnapshot() model.Snapshot {
-	if r != nil && r.generations != nil {
-		if active := r.generations.ActiveGeneration(); active != nil {
-			return active.Snapshot()
-		}
-	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return cloneSnapshot(r.activeSnapshot)
+	if r != nil && r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			return overlayTrafficRuntime(active.Snapshot(), r.trafficRuntime, r.trafficSet)
+		}
+	}
+	return overlayTrafficRuntime(cloneSnapshot(r.activeSnapshot), r.trafficRuntime, r.trafficSet)
 }
 
 func (r *Runtime) State() model.RuntimeState {
@@ -113,18 +115,22 @@ func (r *Runtime) State() model.RuntimeState {
 }
 
 func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, true, 0)
+	return r.activate(ctx, previous, next, true, 0, nil)
 }
 
 func (r *Runtime) ApplyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) error {
-	return r.activate(ctx, previous, next, true, drainTimeout)
+	return r.activate(ctx, previous, next, true, drainTimeout, nil)
+}
+
+func (r *Runtime) ApplyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config model.AgentConfig) error {
+	return r.activate(ctx, previous, next, true, drainTimeout, &config)
 }
 
 func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, false, 0)
+	return r.activate(ctx, previous, next, false, 0, nil)
 }
 
-func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool, drainTimeout time.Duration) error {
+func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool, drainTimeout time.Duration, trafficRuntime *model.AgentConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -143,14 +149,27 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 	}
 
 	if r.generations != nil {
-		cutover, err := r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
+		var cutover GenerationCutover
+		var err error
+		if trafficRuntime != nil {
+			cutover, err = r.generations.ApplyWithTrafficRuntime(ctx, previous, next, drainTimeout, *trafficRuntime)
+		} else {
+			cutover, err = r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
+		}
 		if err != nil {
 			r.state.Status = "error"
 			return err
 		}
+		if trafficRuntime != nil {
+			r.setTrafficRuntimeLocked(*trafficRuntime)
+		}
 		r.setActiveSnapshotLocked(cutover.Active.Snapshot())
 	} else {
-		if err := r.activator(ctx, previous, next); err != nil {
+		runtimeNext := next
+		if trafficRuntime != nil {
+			runtimeNext = overlayTrafficRuntime(runtimeNext, *trafficRuntime, true)
+		}
+		if err := r.activator(ctx, previous, runtimeNext); err != nil {
 			r.state.Status = "error"
 			return err
 		}
@@ -158,22 +177,72 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 			r.state.Status = "error"
 			return err
 		}
-		r.setActiveSnapshotLocked(next)
+		if trafficRuntime != nil {
+			r.setTrafficRuntimeLocked(*trafficRuntime)
+		}
+		r.setActiveSnapshotLocked(runtimeNext)
 	}
 
 	return nil
 }
 
+func (r *Runtime) ReconcileTrafficRuntime(ctx context.Context, config model.AgentConfig) error {
+	if r == nil || config.TrafficStatsEnabled == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.generations != nil {
+		if _, err := r.generations.ReconcileTrafficRuntime(ctx, config); err != nil {
+			return err
+		}
+	} else if !isZeroSnapshot(r.activeSnapshot) {
+		previous := overlayTrafficRuntime(cloneSnapshot(r.activeSnapshot), r.trafficRuntime, r.trafficSet)
+		next := overlayTrafficRuntime(cloneSnapshot(r.activeSnapshot), config, true)
+		if err := r.activator(ctx, previous, next); err != nil {
+			return err
+		}
+		r.activeSnapshot = next
+	}
+	r.setTrafficRuntimeLocked(config)
+	return nil
+}
+
+func (r *Runtime) setTrafficRuntimeLocked(config model.AgentConfig) {
+	r.trafficRuntime = model.AgentConfig{
+		TrafficStatsEnabled: clonePtr(config.TrafficStatsEnabled),
+		TrafficBlocked:      config.TrafficBlocked,
+		TrafficBlockReason:  config.TrafficBlockReason,
+	}
+	r.trafficSet = config.TrafficStatsEnabled != nil
+}
+
+func overlayTrafficRuntime(snapshot model.Snapshot, config model.AgentConfig, set bool) model.Snapshot {
+	if !set {
+		return snapshot
+	}
+	snapshot.AgentConfig.TrafficStatsEnabled = clonePtr(config.TrafficStatsEnabled)
+	snapshot.AgentConfig.TrafficBlocked = config.TrafficBlocked
+	snapshot.AgentConfig.TrafficBlockReason = config.TrafficBlockReason
+	return snapshot
+}
+
 func (r *Runtime) activeSnapshotLocked() model.Snapshot {
 	if r.generations != nil {
 		if active := r.generations.ActiveGeneration(); active != nil {
-			return active.Snapshot()
+			return overlayTrafficRuntime(active.Snapshot(), r.trafficRuntime, r.trafficSet)
 		}
 	}
-	return r.activeSnapshot
+	return overlayTrafficRuntime(r.activeSnapshot, r.trafficRuntime, r.trafficSet)
 }
 
 func (r *Runtime) setActiveSnapshotLocked(next model.Snapshot) {
+	if next.AgentConfig.TrafficStatsEnabled != nil {
+		r.setTrafficRuntimeLocked(next.AgentConfig)
+	}
 	r.activeSnapshot = cloneSnapshot(next)
 	r.state.Status = "active"
 	r.state.CurrentRevision = next.Revision

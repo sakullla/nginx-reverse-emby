@@ -12,6 +12,7 @@ import (
 
 const (
 	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
+	runtimeMetaTrafficStatsEnabled        = "traffic_stats_enabled"
 	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
 	runtimeMetaTrafficBlocked             = "traffic_blocked"
 	runtimeMetaTrafficBlockReason         = "traffic_block_reason"
@@ -72,6 +73,42 @@ func SetTrafficBlockedMetadata(meta map[string]string, cfg model.AgentConfig) {
 		return
 	}
 	meta[runtimeMetaTrafficBlockReason] = cfg.TrafficBlockReason
+}
+
+func SetTrafficRuntimeMetadata(meta map[string]string, cfg model.AgentConfig) {
+	if cfg.TrafficStatsEnabled != nil {
+		meta[runtimeMetaTrafficStatsEnabled] = strconv.FormatBool(*cfg.TrafficStatsEnabled)
+	}
+	SetTrafficBlockedMetadata(meta, cfg)
+}
+
+func trafficRuntimeConfigFromMetadata(meta map[string]string) (model.AgentConfig, bool, error) {
+	enabledText, hasEnabled := meta[runtimeMetaTrafficStatsEnabled]
+	blockedText, hasBlocked := meta[runtimeMetaTrafficBlocked]
+	reason, hasReason := meta[runtimeMetaTrafficBlockReason]
+	if !hasEnabled && !hasBlocked && !hasReason {
+		return model.AgentConfig{}, false, nil
+	}
+	enabled := true
+	var err error
+	if hasEnabled {
+		enabled, err = strconv.ParseBool(strings.TrimSpace(enabledText))
+		if err != nil {
+			return model.AgentConfig{}, false, fmt.Errorf("traffic_stats_enabled metadata: %w", err)
+		}
+	}
+	blocked := false
+	if hasBlocked {
+		blocked, err = strconv.ParseBool(strings.TrimSpace(blockedText))
+		if err != nil {
+			return model.AgentConfig{}, false, fmt.Errorf("traffic_blocked metadata: %w", err)
+		}
+	}
+	return model.AgentConfig{
+		TrafficStatsEnabled: &enabled,
+		TrafficBlocked:      blocked,
+		TrafficBlockReason:  strings.TrimSpace(reason),
+	}, true, nil
 }
 
 func (c *SyncController) recordRuntimeError(syncErr error) error {
@@ -197,7 +234,7 @@ func (c *SyncController) persistRuntimeState(clearLastSyncError bool) error {
 	if err := SetTrafficStatsIntervalMetadata(state.Metadata, activeConfig.TrafficStatsInterval); err != nil {
 		return err
 	}
-	SetTrafficBlockedMetadata(state.Metadata, activeConfig)
+	SetTrafficRuntimeMetadata(state.Metadata, activeConfig)
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}

@@ -46,6 +46,17 @@ type GenerationContext struct {
 	snapshot     model.Snapshot
 }
 
+// WithTrafficRuntimeConfig overlays authenticated heartbeat-only traffic state
+// onto module preparation without changing the immutable revision identity.
+// The generation ID and snapshot hash continue to bind the verified pull
+// artifact created by NewGenerationContext.
+func (c GenerationContext) WithTrafficRuntimeConfig(config model.AgentConfig) GenerationContext {
+	c.snapshot.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(config.TrafficStatsEnabled)
+	c.snapshot.AgentConfig.TrafficBlocked = config.TrafficBlocked
+	c.snapshot.AgentConfig.TrafficBlockReason = config.TrafficBlockReason
+	return c
+}
+
 func NewGenerationContext(previous, next model.Snapshot) (GenerationContext, error) {
 	snapshotJSON, err := json.Marshal(next)
 	if err != nil {
@@ -103,6 +114,13 @@ type PreparedGeneration interface {
 type GenerationPreparer interface {
 	PrepareGeneration(context.Context, GenerationContext) (PreparedGeneration, error)
 	ActiveGeneration() *GenerationView
+}
+
+// TrafficRuntimeReconciler atomically updates heartbeat-owned traffic state on
+// the already active generation. It must not change generation identity or any
+// immutable snapshot field.
+type TrafficRuntimeReconciler interface {
+	ReconcileTrafficRuntime(context.Context, model.AgentConfig) error
 }
 
 // GenerationView is immutable after publication. Its providers and snapshot

@@ -80,7 +80,7 @@ func NewManagedGenerationManager(source module.GenerationPreparer, drain *Genera
 	return &GenerationManager{source: source, drain: drain, timeout: timeout, sessions: drain.Controller()}
 }
 
-func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
+func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, trafficRuntime *model.AgentConfig) (GenerationCutover, error) {
 	if m == nil || m.source == nil {
 		return GenerationCutover{}, errors.New("generation source is not configured")
 	}
@@ -98,6 +98,9 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 	generationContext, err := module.NewGenerationContext(previous, next)
 	if err != nil {
 		return GenerationCutover{}, err
+	}
+	if trafficRuntime != nil {
+		generationContext = generationContext.WithTrafficRuntimeConfig(*trafficRuntime)
 	}
 	if active := m.source.ActiveGeneration(); active != nil && active.ID() == generationContext.ID() {
 		return GenerationCutover{Active: active}, nil
@@ -154,6 +157,33 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 	}
 	m.endPublication(publicationDone)
 	return cutover, nil
+}
+
+func (m *GenerationManager) ReconcileTrafficRuntime(ctx context.Context, config model.AgentConfig) (bool, error) {
+	if m == nil || m.source == nil {
+		return false, errors.New("generation source is not configured")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	active := m.source.ActiveGeneration()
+	if active == nil {
+		return false, nil
+	}
+	provider, found := active.Resolve(module.ProviderTrafficSink)
+	if !found {
+		return false, errors.New("active generation has no traffic provider")
+	}
+	reconciler, ok := provider.(module.TrafficRuntimeReconciler)
+	if !ok {
+		return false, errors.New("active traffic provider cannot reconcile runtime state")
+	}
+	if err := reconciler.ReconcileTrafficRuntime(ctx, config); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func validateGenerationDrain(drain *GenerationDrain, next module.GenerationContext, previous *module.GenerationView) error {

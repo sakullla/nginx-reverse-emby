@@ -64,6 +64,9 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.recordSyncError(errors.Join(acknowledgementErr, err))
 	}
 	if !pull.HasUpdate {
+		if err := c.reconcileHeartbeatTrafficRuntime(ctx, heartbeatSnapshot); err != nil {
+			return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
+		}
 		// Revision mode still uses the heartbeat as the delivery channel for a
 		// bundled fallback binary. Configuration payloads remain lease-gated, but
 		// a package-only heartbeat must be handled when there is no revision to
@@ -108,6 +111,10 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateImmutableRevisionDigest(journal, snapshot.Revision, digest); err != nil {
 		return c.recordRuntimeError(err)
 	}
+	if err := c.reconcileHeartbeatTrafficRuntime(ctx, heartbeatSnapshot); err != nil {
+		return c.recordRuntimeError(err)
+	}
+	previousApplied = c.Runtime.ActiveSnapshot()
 	if failed := journal.Candidate; failed != nil && failed.Phase == model.GenerationPhaseFailed &&
 		sameGenerationLease(*failed, lease) && strings.EqualFold(failed.SnapshotDigest, digest) {
 		return c.replayFailedRevisionReport(ctx, client, store, journal, *failed)
@@ -272,23 +279,30 @@ func (c *SyncController) performRevisionSyncPlan(
 
 	previousApplied = c.Runtime.ActiveSnapshot()
 	candidateApplied := snapshot
-	if err := c.Runtime.ApplyWithDrainTimeout(
-		leaseCtx,
-		previousApplied,
-		candidateApplied,
-		time.Duration(lease.DrainTimeoutSeconds)*time.Second,
-	); err != nil {
+	var applyErr error
+	if trafficRuntime, ok := heartbeatTrafficRuntime(heartbeatSnapshot); ok {
+		applyErr = c.Runtime.ApplyWithTrafficRuntime(
+			leaseCtx, previousApplied, candidateApplied,
+			time.Duration(lease.DrainTimeoutSeconds)*time.Second, trafficRuntime,
+		)
+	} else {
+		applyErr = c.Runtime.ApplyWithDrainTimeout(
+			leaseCtx, previousApplied, candidateApplied,
+			time.Duration(lease.DrainTimeoutSeconds)*time.Second,
+		)
+	}
+	if applyErr != nil {
 		if durableCutover {
-			return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
+			return c.recordRuntimeErrorWithRevision(applyErr, candidate.Revision)
 		}
 		if c.Runtime.UsesGenerationManager() {
-			return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
+			return c.failRevisionAttempt(ctx, client, store, journal, candidate, applyErr)
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		if rollbackErr != nil {
-			return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidate.Revision)
+			return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, rollbackErr), candidate.Revision)
 		}
-		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
+		return c.failRevisionAttempt(ctx, client, store, journal, candidate, applyErr)
 	}
 	if err := c.validateActiveRuntimeGeneration(candidate); err != nil {
 		return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
@@ -328,6 +342,29 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	return c.finishRevisionAcknowledgement(ctx, client, store, journal, candidate, candidateApplied)
+}
+
+func heartbeatTrafficRuntime(snapshot model.Snapshot) (model.AgentConfig, bool) {
+	if snapshot.AgentConfig.TrafficStatsEnabled == nil {
+		return model.AgentConfig{}, false
+	}
+	enabled := *snapshot.AgentConfig.TrafficStatsEnabled
+	return model.AgentConfig{
+		TrafficStatsEnabled: &enabled,
+		TrafficBlocked:      snapshot.AgentConfig.TrafficBlocked,
+		TrafficBlockReason:  strings.TrimSpace(snapshot.AgentConfig.TrafficBlockReason),
+	}, true
+}
+
+func (c *SyncController) reconcileHeartbeatTrafficRuntime(ctx context.Context, snapshot model.Snapshot) error {
+	config, ok := heartbeatTrafficRuntime(snapshot)
+	if !ok {
+		return nil
+	}
+	if err := c.Runtime.ReconcileTrafficRuntime(ctx, config); err != nil {
+		return fmt.Errorf("reconcile heartbeat traffic runtime: %w", err)
+	}
+	return c.persistRuntimeState(false)
 }
 
 func (c *SyncController) recoverActiveRevisionAcknowledgement(
@@ -774,7 +811,20 @@ func (c *SyncController) restoreDurableRevisionRuntime(ctx context.Context) erro
 	if isZeroSnapshot(applied) {
 		return nil
 	}
-	if err := c.Runtime.Apply(ctx, model.Snapshot{}, applied); err != nil {
+	runtimeState, err := c.Store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	trafficRuntime, hasTrafficRuntime, err := trafficRuntimeConfigFromMetadata(runtimeState.Metadata)
+	if err != nil {
+		return err
+	}
+	if hasTrafficRuntime {
+		err = c.Runtime.ApplyWithTrafficRuntime(ctx, model.Snapshot{}, applied, 0, trafficRuntime)
+	} else {
+		err = c.Runtime.Apply(ctx, model.Snapshot{}, applied)
+	}
+	if err != nil {
 		return fmt.Errorf("restore durable applied snapshot: %w", err)
 	}
 	return c.persistRuntimeState(false)

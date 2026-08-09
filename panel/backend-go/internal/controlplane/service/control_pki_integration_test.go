@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -76,6 +77,140 @@ func TestPKIBootstrapSeparatesTunnelPKIFromManagedCertificates(t *testing.T) {
 	managed, err := store.ListManagedCertificates(t.Context())
 	if err != nil || len(managed) != 0 {
 		t.Fatalf("managed certificates after PKI bootstrap = %+v, error = %v", managed, err)
+	}
+}
+
+func TestHeartbeatRevisionDigestIgnoresPKIAdvanceForExistingAndNewArtifacts(t *testing.T) {
+	root := t.TempDir()
+	store := newControlPKIStore(t, root)
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test-heartbeat-pki-runtime")
+
+	for _, agent := range []storage.AgentRow{
+		{ID: "edge-existing", Name: "edge-existing", AgentToken: "token-existing", Platform: "linux-amd64", DesiredRevision: 1, LastApplyStatus: "success", CapabilitiesJSON: `[]`},
+		{ID: "edge-new", Name: "edge-new", AgentToken: "token-new", Platform: "linux-amd64", DesiredRevision: 1, LastApplyStatus: "success", CapabilitiesJSON: `[]`},
+	} {
+		if err := store.SaveAgent(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	existingSnapshot, err := store.LoadAgentSnapshot(ctx, "edge-existing", storage.AgentSnapshotInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existingSnapshot.PKISecurity == nil {
+		t.Fatal("existing revision fixture has no captured PKI snapshot")
+	}
+	existingPayload, existingDigest, err := revision.CanonicalSnapshotPayload(existingSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{ID: "existing-pki-artifact", Kind: "test", Status: storage.OperationStatusPending, PrimaryAgentID: "edge-existing", CreatedAt: now, UpdatedAt: now},
+		Artifacts: []storage.GenerationArtifactRow{{ID: "snapshot-" + existingDigest, Kind: "agent_snapshot", SHA256: existingDigest, Payload: existingPayload, SizeBytes: int64(len(existingPayload)), CreatedAt: now}},
+		Revisions: []storage.AgentRevisionRow{{AgentID: "edge-existing", Revision: 1, OperationID: "existing-pki-artifact", State: storage.AgentRevisionStatePending, SnapshotArtifactID: "snapshot-" + existingDigest, SnapshotDigest: existingDigest, CreatedAt: now, UpdatedAt: now}},
+		Pointers:  []storage.AgentRevisionPointerRow{{AgentID: "edge-existing", DesiredRevision: 1, UpdatedAt: now}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	advanceHeartbeatTestPKI(t, ctx, store, bootstrap, now.Add(time.Second))
+	service := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	existingFirst, err := service.Heartbeat(ctx, HeartbeatRequest{CurrentRevision: 0, LastApplyStatus: "success"}, "token-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existingFirst.SnapshotDigest != existingDigest {
+		t.Fatalf("existing artifact digest = %q, want original %q", existingFirst.SnapshotDigest, existingDigest)
+	}
+
+	newFirst, err := service.Heartbeat(ctx, HeartbeatRequest{CurrentRevision: 0, LastApplyStatus: "success"}, "token-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRuntime, found, err := store.LoadCoordinatorRuntimeSnapshot(ctx, "edge-new", 1)
+	if err != nil || !found {
+		t.Fatalf("new runtime snapshot found=%t error=%v", found, err)
+	}
+	if newRuntime.Snapshot.PKISecurity != nil || newFirst.SnapshotDigest != newRuntime.Revision.SnapshotDigest {
+		t.Fatalf("new heartbeat artifact contains runtime PKI or wrong digest: %+v / %q", newRuntime.Snapshot.PKISecurity, newFirst.SnapshotDigest)
+	}
+
+	advanceHeartbeatTestPKI(t, ctx, store, bootstrap, now.Add(2*time.Second))
+	for _, test := range []struct {
+		token      string
+		wantDigest string
+	}{
+		{token: "token-existing", wantDigest: existingDigest},
+		{token: "token-new", wantDigest: newFirst.SnapshotDigest},
+	} {
+		for range 2 {
+			reply, heartbeatErr := service.Heartbeat(ctx, HeartbeatRequest{CurrentRevision: 0, LastApplyStatus: "success"}, test.token)
+			if heartbeatErr != nil {
+				t.Fatal(heartbeatErr)
+			}
+			if reply.SnapshotDigest != test.wantDigest {
+				t.Fatalf("continuous heartbeat digest = %q, want %q", reply.SnapshotDigest, test.wantDigest)
+			}
+		}
+	}
+}
+
+func advanceHeartbeatTestPKI(t *testing.T, ctx context.Context, store *storage.GormStore, bootstrap controlPKIBootstrap, now time.Time) {
+	t.Helper()
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil || state.Settings == nil {
+		t.Fatalf("LoadPKICanonicalState() state=%+v error=%v", state, err)
+	}
+	nextRevision := state.Settings.SecurityRevision + 1
+	trust := make([]int64, 0, len(state.Authorities))
+	for _, authority := range state.Authorities {
+		if authority.Status == "active" || authority.Status == "prepared" || authority.Status == "retiring" {
+			trust = append(trust, authority.Generation)
+		}
+	}
+	slices.Sort(trust)
+	signed, err := bootstrap.snapshotSigner.SignPKISecuritySnapshot(ctx, PKIUnsignedSecuritySnapshot{
+		PKIDomainID: state.Settings.PKIDomainID,
+		Version: PKISecuritySnapshotVersion{Version: PKISecurityVersion{
+			PKIEpoch: state.Settings.PKIEpoch, SecurityRevision: nextRevision,
+		}, Full: true},
+		IssuedAt: now, TrustGenerations: trust,
+		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := tx.SetPKISecurityRevision(ctx, state.Settings.SecurityRevision, nextRevision, now); err != nil {
+			return err
+		}
+		canonical, err := tx.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return err
+		}
+		persisted, err := storagePKISecuritySnapshot(canonical, signed)
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(persisted)
+		if err != nil {
+			return err
+		}
+		return tx.SavePKISecuritySnapshot(ctx, storage.PKISecuritySnapshotRow{
+			PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch,
+			SecurityRevision: nextRevision, SnapshotJSON: string(encoded), UpdatedAt: now,
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
