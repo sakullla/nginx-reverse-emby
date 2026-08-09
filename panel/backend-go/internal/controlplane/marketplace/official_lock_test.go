@@ -10,12 +10,13 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-func TestOfficialLockRequiresImmutableCandidateIdentity(t *testing.T) {
+func TestOfficialLockRequiresRepositoryAndTrustIdentity(t *testing.T) {
 	lock := validOfficialLock()
 	for name, mutate := range map[string]func(*OfficialMarketLock){
-		"movable ref":  func(value *OfficialMarketLock) { value.Commit = "main" },
-		"zero oid":     func(value *OfficialMarketLock) { value.Commit = strings.Repeat("0", 40) },
+		"wrong schema": func(value *OfficialMarketLock) { value.SchemaVersion = 2 },
 		"wrong repo":   func(value *OfficialMarketLock) { value.Repository = "https://example.invalid/market.git" },
+		"tag pin":      func(value *OfficialMarketLock) { value.RefKind = GitRefKindTag },
+		"invalid ref":  func(value *OfficialMarketLock) { value.RefName = "refs/heads/main" },
 		"wrong ABI":    func(value *OfficialMarketLock) { value.SDKABIs = []string{pluginsdk.PolicyABIV1} },
 		"wrong signer": func(value *OfficialMarketLock) { value.SignatureKeyID = "custom" },
 	} {
@@ -30,22 +31,20 @@ func TestOfficialLockRequiresImmutableCandidateIdentity(t *testing.T) {
 	}
 }
 
-func TestOfficialLockAcceptsOnlyRFC3339ZeroOffsetTimestamps(t *testing.T) {
-	for _, verifiedAt := range []string{"2026-08-08T00:00:00Z", "2026-08-08T00:00:00+00:00"} {
-		t.Run("accept_"+strings.ReplaceAll(verifiedAt, ":", "_"), func(t *testing.T) {
-			lock := validOfficialLock()
-			lock.VerifiedAt = verifiedAt
-			if err := ValidateOfficialMarketLock(lock); err != nil {
-				t.Fatalf("zero-offset RFC3339 timestamp %q rejected: %v", verifiedAt, err)
+func TestOfficialLockSchemaRejectsVersionPins(t *testing.T) {
+	base := "schema_version: 1\nrepository: " + OfficialSourceURL + "\nref_kind: branch\nref_name: main\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: " + plugins.OfficialSignatureKeyID + "\n"
+	for name, field := range map[string]string{
+		"commit":        "commit: " + strings.Repeat("a", 40) + "\n",
+		"market_digest": "market_sha256: " + strings.Repeat("b", 64) + "\n",
+		"verified_at":   "verified_at: 2026-08-08T00:00:00Z\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), OfficialMarketLockFile)
+			if err := os.WriteFile(path, []byte(base+field), 0o644); err != nil {
+				t.Fatal(err)
 			}
-		})
-	}
-	for _, verifiedAt := range []string{"2026-08-08T08:00:00+08:00", "2026-08-07T19:00:00-05:00"} {
-		t.Run("reject_"+strings.ReplaceAll(verifiedAt, ":", "_"), func(t *testing.T) {
-			lock := validOfficialLock()
-			lock.VerifiedAt = verifiedAt
-			if err := ValidateOfficialMarketLock(lock); err == nil {
-				t.Fatalf("non-zero-offset RFC3339 timestamp %q accepted", verifiedAt)
+			if _, err := ReadOfficialMarketLock(path); err == nil {
+				t.Fatal("version-pinned official market policy was accepted")
 			}
 		})
 	}
@@ -68,35 +67,44 @@ func TestOfficialLockPathConfigurationRequiresAbsoluteRegularFile(t *testing.T) 
 	}
 }
 
-func TestOfficialLockCheckoutUsesOIDMarketDigestAndCleanTree(t *testing.T) {
+func TestRepositoryOfficialMarketPolicyTracksMovableBranch(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "..", OfficialMarketLockFile)
+	lock, err := ReadOfficialMarketLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.RefKind != GitRefKindBranch || lock.RefName != "main" {
+		t.Fatalf("repository official market policy = %+v", lock)
+	}
+}
+
+func TestOfficialLockCheckoutAcceptsChangingFullOIDAndRequiresCleanSignedTree(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, plugins.MarketManifestFile), []byte("schema_version: 1\nname: Official\nplugins: []\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	lock := validOfficialLock()
-	digest, err := MarketManifestDigest(root)
-	if err != nil {
-		t.Fatal(err)
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	for _, oid := range []string{strings.Repeat("a", 40), strings.Repeat("b", 40)} {
+		validated, err := ValidateOfficialLockCheckout(lock, root, oid, validator)
+		if err != nil || len(validated.Packages) != 0 {
+			t.Fatalf("official checkout %s validation: %+v, %v", oid, validated, err)
+		}
 	}
-	lock.MarketSHA256 = digest
-	validated, err := ValidateOfficialLockCheckout(lock, root, lock.Commit, plugins.NewValidator(plugins.ValidatorOptions{}))
-	if err != nil || len(validated.Packages) != 0 {
-		t.Fatalf("official lock checkout validation: %+v, %v", validated, err)
-	}
-	if _, err := ValidateOfficialLockCheckout(lock, root, strings.Repeat("b", 40), plugins.NewValidator(plugins.ValidatorOptions{})); err == nil {
-		t.Fatal("mismatched checkout OID was accepted")
+	if _, err := ValidateOfficialLockCheckout(lock, root, "main", validator); err == nil {
+		t.Fatal("non-OID official checkout provenance was accepted")
 	}
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ValidateOfficialLockCheckout(lock, root, lock.Commit, plugins.NewValidator(plugins.ValidatorOptions{})); err == nil {
+	if _, err := ValidateOfficialLockCheckout(lock, root, strings.Repeat("c", 40), validator); err == nil {
 		t.Fatal("checkout with Git metadata was accepted")
 	}
 }
 
 func validOfficialLock() OfficialMarketLock {
 	return OfficialMarketLock{
-		SchemaVersion: 1, Repository: OfficialSourceURL, Commit: strings.Repeat("a", 40), MarketSHA256: strings.Repeat("b", 64),
-		SDKABIs: []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}, SignatureKeyID: plugins.OfficialSignatureKeyID, VerifiedAt: "2026-08-08T00:00:00Z",
+		SchemaVersion: 1, Repository: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "main",
+		SDKABIs: []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}, SignatureKeyID: plugins.OfficialSignatureKeyID,
 	}
 }

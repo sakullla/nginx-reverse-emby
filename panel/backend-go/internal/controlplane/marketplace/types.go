@@ -106,6 +106,16 @@ func OfficialSource() Source {
 	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Purpose: SourcePurposeMarket, Name: "Sakullla Official", URL: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "main", ConfigRevision: 1, RefreshInterval: OfficialRefreshInterval}
 }
 
+func OfficialSourceForBranch(branch string, revision uint64) (Source, error) {
+	source := OfficialSource()
+	source.RefName = strings.TrimSpace(branch)
+	source.ConfigRevision = revision
+	if err := ValidateSource(source); err != nil {
+		return Source{}, err
+	}
+	return source, nil
+}
+
 func EffectiveRefreshInterval(source Source) time.Duration {
 	if source.Kind == SourceKindOfficial && source.RefreshInterval == 0 {
 		return OfficialRefreshInterval
@@ -170,8 +180,11 @@ func validateSource(source Source) error {
 	}
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
-		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Purpose != official.Purpose || source.RefKind != official.RefKind || source.RefName != official.RefName || source.ConfigRevision != official.ConfigRevision || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != "" {
-			return errors.New("official source identity is built in and immutable")
+		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Purpose != official.Purpose || source.RefKind != GitRefKindBranch || source.ConfigRevision == 0 || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != "" {
+			return errors.New("official source identity and trust are built in")
+		}
+		if _, err := sourceReferenceName(source); err != nil {
+			return fmt.Errorf("official source branch is invalid: %w", err)
 		}
 		return nil
 	}
@@ -440,6 +453,10 @@ type Repository interface {
 	SaveRefreshOperation(context.Context, RefreshOperation) error
 	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error
 	CurrentSnapshot(context.Context, string) (Snapshot, bool, error)
+}
+
+type OfficialSourcePolicyRepository interface {
+	ReconcileOfficialMarketplaceSource(context.Context, Source) (Source, error)
 }
 
 type PackageReferenceChecker interface {

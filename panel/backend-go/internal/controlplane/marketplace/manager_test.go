@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -38,9 +39,13 @@ func TestCustomSourceCannotImpersonateOfficialAndAlwaysCarriesRisk(t *testing.T)
 		t.Fatal("custom source without risk label was accepted")
 	}
 	official := OfficialSource()
-	official.RefName = "attacker-controlled"
+	official.RefName, official.ConfigRevision = "release", 2
+	if err := ValidateSource(official); err != nil {
+		t.Fatalf("official source branch switch was rejected: %v", err)
+	}
+	official.RefKind = GitRefKindTag
 	if err := ValidateSource(official); err == nil {
-		t.Fatal("official source reference was mutable")
+		t.Fatal("official source accepted a version-pinned tag")
 	}
 }
 
@@ -164,7 +169,7 @@ func TestManagerUsesPersistedSourceBoundSigner(t *testing.T) {
 	}
 }
 
-func TestProductionOfficialRefreshUsesOnlyPackagedFullOIDLockAndPendingKeepsCurrent(t *testing.T) {
+func TestProductionOfficialRefreshResolvesCurrentBranchAndInvalidPolicyKeepsCurrent(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{OfficialSourceID: {ID: "stable", SourceID: OfficialSourceID, Commit: "stable-commit"}}}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
@@ -177,15 +182,11 @@ func TestProductionOfficialRefreshUsesOnlyPackagedFullOIDLockAndPendingKeepsCurr
 		t.Fatal(err)
 	}
 	lock := validOfficialLock()
-	lock.MarketSHA256, err = MarketManifestDigest(lockedRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
 	lockPath := filepath.Join(t.TempDir(), OfficialMarketLockFile)
-	if err := os.WriteFile(lockPath, []byte("schema_version: 1\nrepository: "+OfficialSourceURL+"\ncommit: PENDING_INDEPENDENT_WORKFLOW_FULL_OID\n"), 0o644); err != nil {
+	if err := os.WriteFile(lockPath, []byte("schema_version: 1\nrepository: "+OfficialSourceURL+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fetcher := &lockedCopyFetcher{lockedRoot: lockedRoot}
+	fetcher := &lockedCopyFetcher{lockedRoot: lockedRoot, commits: []string{strings.Repeat("a", 40), strings.Repeat("b", 40)}}
 	manager, err := NewManagerWithOfficialLock(filepath.Join(t.TempDir(), "marketplace"), fetcher, validator, cache, repository, NewSourceValidatorFactory(plugins.ValidatorOptions{}), lockPath)
 	if err != nil {
 		t.Fatal(err)
@@ -193,19 +194,35 @@ func TestProductionOfficialRefreshUsesOnlyPackagedFullOIDLockAndPendingKeepsCurr
 	if _, err := manager.Refresh(ctx, OfficialSource(), OperationActor{}); err == nil {
 		t.Fatal("pending official lock was accepted")
 	}
-	if fetcher.lockedCalls != 0 || repository.current[OfficialSourceID].ID != "stable" {
-		t.Fatalf("pending lock changed official current: calls=%d current=%+v", fetcher.lockedCalls, repository.current[OfficialSourceID])
+	if fetcher.normalCalls != 0 || repository.current[OfficialSourceID].ID != "stable" {
+		t.Fatalf("invalid policy changed official current: calls=%d current=%+v", fetcher.normalCalls, repository.current[OfficialSourceID])
 	}
-	lockYAML := fmt.Sprintf("schema_version: 1\nrepository: %s\ncommit: %s\nmarket_sha256: %s\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: %s\nverified_at: %s\n", lock.Repository, lock.Commit, lock.MarketSHA256, lock.SignatureKeyID, lock.VerifiedAt)
-	if err := os.WriteFile(lockPath, []byte(lockYAML), 0o644); err != nil {
+	lockYAML := func(branch string) string {
+		return fmt.Sprintf("schema_version: 1\nrepository: %s\nref_kind: branch\nref_name: %s\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: %s\n", lock.Repository, branch, lock.SignatureKeyID)
+	}
+	if err := os.WriteFile(lockPath, []byte(lockYAML("main")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := manager.Refresh(ctx, OfficialSource(), OperationActor{})
-	if err != nil {
-		t.Fatal(err)
+	for index, wantCommit := range fetcher.commits {
+		if index == 1 {
+			if err := os.WriteFile(lockPath, []byte(lockYAML("release")), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		snapshot, err := manager.Refresh(ctx, OfficialSource(), OperationActor{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Commit != wantCommit {
+			t.Fatalf("refresh %d commit = %q, want %q", index, snapshot.Commit, wantCommit)
+		}
+		wantBranch := []string{"main", "release"}[index]
+		if snapshot.RefName != wantBranch {
+			t.Fatalf("refresh %d branch = %q, want %q", index, snapshot.RefName, wantBranch)
+		}
 	}
-	if snapshot.Commit != lock.Commit || fetcher.normalCalls != 0 || fetcher.lockedCalls != 1 || fetcher.lastOID != lock.Commit {
-		t.Fatalf("official refresh did not stay on lock: snapshot=%+v fetcher=%+v", snapshot, fetcher)
+	if fetcher.normalCalls != len(fetcher.commits) || fetcher.lastOID != fetcher.commits[len(fetcher.commits)-1] || !slices.Equal(fetcher.refs, []string{"main", "release"}) {
+		t.Fatalf("official refresh did not resolve each current branch head: fetcher=%+v", fetcher)
 	}
 }
 
@@ -487,19 +504,23 @@ func (f copyFetcher) Fetch(_ context.Context, _ Source, destination string) (str
 type lockedCopyFetcher struct {
 	lockedRoot  string
 	normalCalls int
-	lockedCalls int
+	commits     []string
 	lastOID     string
+	refs        []string
 }
 
-func (f *lockedCopyFetcher) Fetch(context.Context, Source, string) (string, error) {
+func (f *lockedCopyFetcher) Fetch(_ context.Context, source Source, destination string) (string, error) {
+	if source.ID != OfficialSourceID || source.Kind != SourceKindOfficial || source.URL != OfficialSourceURL || source.RefKind != GitRefKindBranch {
+		return "", errors.New("unexpected source passed to official fetch")
+	}
+	if f.normalCalls >= len(f.commits) {
+		return "", errors.New("official fetch called more times than configured")
+	}
+	commit := f.commits[f.normalCalls]
 	f.normalCalls++
-	return "movable-main", errors.New("movable main must not be fetched for official refresh")
-}
-
-func (f *lockedCopyFetcher) FetchOfficialLock(_ context.Context, lock OfficialMarketLock, destination string) (string, error) {
-	f.lockedCalls++
-	f.lastOID = lock.Commit
-	return lock.Commit, copyFixtureTree(f.lockedRoot, destination)
+	f.lastOID = commit
+	f.refs = append(f.refs, source.RefName)
+	return commit, copyFixtureTree(f.lockedRoot, destination)
 }
 
 type blockingFetcher struct {
@@ -533,6 +554,25 @@ type memoryRepository struct {
 	renewError     error
 	promotionDelay time.Duration
 	acquireError   error
+	officialSource Source
+}
+
+func (r *memoryRepository) ReconcileOfficialMarketplaceSource(_ context.Context, desired Source) (Source, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.officialSource
+	if current.ID == "" {
+		current = OfficialSource()
+	}
+	if current.RefKind == desired.RefKind && current.RefName == desired.RefName {
+		return current, nil
+	}
+	desired.ConfigRevision = current.ConfigRevision + 1
+	if err := ValidateSource(desired); err != nil {
+		return Source{}, err
+	}
+	r.officialSource = desired
+	return desired, nil
 }
 
 func (r *memoryRepository) RecordRefreshRejection(_ context.Context, operation RefreshOperation, errorClass string) error {

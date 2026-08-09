@@ -36,9 +36,9 @@ func NewManagerWithSourceValidators(root string, fetcher Fetcher, validator *plu
 	return newManager(root, fetcher, validator, cache, repository, validators)
 }
 
-// NewManagerWithOfficialLock is the production constructor. Official refresh
-// remains fail-closed until the packaged lock is valid and its exact OID can be
-// materialized by the fetcher.
+// NewManagerWithOfficialLock is the production constructor. The packaged lock
+// owns official repository and signer identity, while every refresh resolves
+// the current official branch to a new immutable OID.
 func NewManagerWithOfficialLock(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository, validators SourceValidatorFactory, lockPath string) (*Manager, error) {
 	manager, err := newManager(root, fetcher, validator, cache, repository, validators)
 	if err != nil {
@@ -72,6 +72,30 @@ func newManager(root string, fetcher Fetcher, validator *plugins.Validator, cach
 }
 
 func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationActor) (Snapshot, error) {
+	var lock OfficialMarketLock
+	var officialPolicy bool
+	if source.Kind == SourceKindOfficial && m.officialLockPath != "" {
+		var err error
+		lock, err = ReadOfficialMarketLock(m.officialLockPath)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		desired, err := lock.Source(source.ConfigRevision)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if source.RefKind != desired.RefKind || source.RefName != desired.RefName {
+			repository, ok := m.repository.(OfficialSourcePolicyRepository)
+			if !ok {
+				return Snapshot{}, errors.New("marketplace repository cannot reconcile the configured official branch")
+			}
+			source, err = repository.ReconcileOfficialMarketplaceSource(ctx, desired)
+			if err != nil {
+				return Snapshot{}, err
+			}
+		}
+		officialPolicy = true
+	}
 	if err := ValidateSource(source); err != nil {
 		return Snapshot{}, err
 	}
@@ -133,20 +157,9 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "staging", err)
 	}
 	defer os.RemoveAll(staging)
-	var lock OfficialMarketLock
-	var lockedOfficial bool
 	var commit string
-	if source.Kind == SourceKindOfficial && m.officialLockPath != "" {
-		lock, err = ReadOfficialMarketLock(m.officialLockPath)
-		if err != nil {
-			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "official_lock", err)
-		}
-		lockedFetcher, ok := m.fetcher.(OfficialLockFetcher)
-		if !ok {
-			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "official_lock_fetch", errors.New("official marketplace fetcher does not support immutable lock checkout"))
-		}
-		commit, err = lockedFetcher.FetchOfficialLock(refreshCtx, lock, staging)
-		lockedOfficial = true
+	if officialPolicy {
+		commit, err = m.fetcher.Fetch(refreshCtx, source, staging)
 	} else {
 		commit, err = m.fetcher.Fetch(refreshCtx, source, staging)
 	}
@@ -164,7 +177,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	var validated plugins.ValidatedMarket
 	var direct *plugins.DirectPluginSnapshot
 	var packages []plugins.ValidatedPackage
-	if lockedOfficial {
+	if officialPolicy {
 		validated, err = ValidateOfficialLockCheckout(lock, staging, commit, validator)
 	} else if source.Purpose == SourcePurposePlugin {
 		var directResult plugins.ValidatedDirectPlugin

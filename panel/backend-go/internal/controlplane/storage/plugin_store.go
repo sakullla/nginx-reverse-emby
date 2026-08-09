@@ -1119,7 +1119,9 @@ func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplac
 }
 
 func (s *GormStore) UpdateMarketplaceSource(ctx context.Context, source marketplace.Source, expectedRevision uint64) (marketplace.Source, error) {
-	if source.Kind != marketplace.SourceKindCustom || source.ID == marketplace.OfficialSourceID || expectedRevision == 0 || source.ConfigRevision != expectedRevision+1 {
+	validCustom := source.Kind == marketplace.SourceKindCustom && source.ID != marketplace.OfficialSourceID
+	validOfficial := source.Kind == marketplace.SourceKindOfficial && source.ID == marketplace.OfficialSourceID
+	if (!validCustom && !validOfficial) || expectedRevision == 0 || source.ConfigRevision != expectedRevision+1 {
 		return marketplace.Source{}, marketplace.ErrInvalidSource
 	}
 	if err := marketplace.ValidateSource(source); err != nil {
@@ -1128,7 +1130,7 @@ func (s *GormStore) UpdateMarketplaceSource(ctx context.Context, source marketpl
 	var updated marketplace.Source
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		var locked MarketplaceSourceRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND kind = ? AND deleting = ?", source.ID, marketplace.SourceKindCustom, false).First(&locked).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND kind = ? AND deleting = ?", source.ID, source.Kind, false).First(&locked).Error; err != nil {
 			return err
 		}
 		if locked.ConfigRevision != expectedRevision {
@@ -1197,9 +1199,55 @@ func (s *GormStore) UpdateMarketplaceSource(ctx context.Context, source marketpl
 		updated = marketplaceSourceFromRow(locked)
 		actor, _ := QuotaActorFromContext(ctx)
 		metadata, _ := json.Marshal(map[string]any{"purpose": updated.Purpose, "ref_kind": updated.RefKind, "ref_name": updated.RefName, "config_revision": updated.ConfigRevision, "has_credential_ref": updated.CredentialRef != ""})
-		return tx.Create(&AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source.edit", TargetKind: "marketplace_source", TargetID: source.ID, CorrelationID: actor.CorrelationID, Result: "success", MetadataJSON: string(metadata), CreatedAt: time.Now().UTC()}).Error
+		action := "marketplace.source.edit"
+		if source.Kind == marketplace.SourceKindOfficial {
+			action = "marketplace.source.policy_sync"
+		}
+		return tx.Create(&AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: action, TargetKind: "marketplace_source", TargetID: source.ID, CorrelationID: actor.CorrelationID, Result: "success", MetadataJSON: string(metadata), CreatedAt: time.Now().UTC()}).Error
 	})
 	return updated, err
+}
+
+func (s *GormStore) ReconcileOfficialMarketplaceSource(ctx context.Context, desired marketplace.Source) (marketplace.Source, error) {
+	if desired.Kind != marketplace.SourceKindOfficial || desired.ID != marketplace.OfficialSourceID {
+		return marketplace.Source{}, marketplace.ErrInvalidSource
+	}
+	if err := marketplace.ValidateSource(desired); err != nil {
+		return marketplace.Source{}, err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		current, found, err := s.GetMarketplaceSource(ctx, marketplace.OfficialSourceID)
+		if err != nil {
+			return marketplace.Source{}, err
+		}
+		if !found {
+			candidate, err := marketplace.OfficialSourceForBranch(desired.RefName, 1)
+			if err != nil {
+				return marketplace.Source{}, err
+			}
+			if err := s.SaveMarketplaceSource(ctx, candidate); err == nil {
+				return candidate, nil
+			} else if !errors.Is(err, ErrMarketplaceSourceExists) {
+				return marketplace.Source{}, err
+			}
+			continue
+		}
+		if current.RefKind == desired.RefKind && current.RefName == desired.RefName {
+			return current, nil
+		}
+		candidate := current
+		candidate.RefKind = desired.RefKind
+		candidate.RefName = desired.RefName
+		candidate.ConfigRevision = current.ConfigRevision + 1
+		updated, err := s.UpdateMarketplaceSource(ctx, candidate, current.ConfigRevision)
+		if err == nil {
+			return updated, nil
+		}
+		if !errors.Is(err, ErrPluginConflict) {
+			return marketplace.Source{}, err
+		}
+	}
+	return marketplace.Source{}, fmt.Errorf("%w: official marketplace branch changed concurrently", ErrPluginConflict)
 }
 
 func (s *GormStore) ListMarketplaceSources(ctx context.Context) ([]marketplace.Source, error) {

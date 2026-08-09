@@ -22,6 +22,8 @@ import (
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 	pluginwasm "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm"
 	"log"
 	"os"
@@ -77,6 +79,8 @@ type App struct {
 	ddns                   *moduleddns.Module
 	generations            *core.GenerationManager
 	policyWASM             *pluginwasm.Runtime
+	rpcProcesses           *pluginprocess.Supervisor
+	rpcHost                *pluginrpc.Host
 	relayTimeoutReset      func()
 	closeOnce              sync.Once
 	syncMu                 sync.Mutex
@@ -516,6 +520,8 @@ func newAppWithAllDeps(
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = model.Default().HeartbeatInterval
 	}
+	rpcProcesses := pluginprocess.NewSupervisor(nil, nil, nil)
+	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(cfg.DataDir, "plugins", "rpc-runtime")}, rpcProcesses, nil)
 	app := &App{
 		cfg:            cfg,
 		store:          st,
@@ -525,6 +531,8 @@ func newAppWithAllDeps(
 		runCtx:         context.Background(),
 		processStreams: ingress.NewProcessStreamRegistry(),
 		processPackets: ingress.NewProcessPacketRegistry(),
+		rpcProcesses:   rpcProcesses,
+		rpcHost:        rpcHost,
 	}
 	app.hotRestartStart = app.startHotRestartWithResources
 	app.hotRestartDrain = app.drainHotRestartParent
@@ -556,6 +564,21 @@ func (a *App) ModuleNames() []string {
 		return nil
 	}
 	return a.moduleRegistry.Names()
+}
+
+// PluginProcessSupervisor exposes the per-Agent rpc-service process host to
+// generation reconciliation without making process ownership global.
+func (a *App) PluginProcessSupervisor() *pluginprocess.Supervisor {
+	if a == nil {
+		return nil
+	}
+	return a.rpcProcesses
+}
+func (a *App) PluginRPCHost() *pluginrpc.Host {
+	if a == nil {
+		return nil
+	}
+	return a.rpcHost
 }
 
 func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[string]any, error) {
@@ -940,6 +963,14 @@ func (a *App) closeLocalRuntimes() {
 	if a.policyWASM != nil {
 		_ = a.policyWASM.Close(context.Background())
 		a.policyWASM = nil
+	}
+	if a.rpcProcesses != nil {
+		if a.rpcHost != nil {
+			_ = a.rpcHost.Close(context.Background())
+			a.rpcHost = nil
+		}
+		_ = a.rpcProcesses.Close(context.Background())
+		a.rpcProcesses = nil
 	}
 	if a.processStreams != nil {
 		_ = a.processStreams.Close()

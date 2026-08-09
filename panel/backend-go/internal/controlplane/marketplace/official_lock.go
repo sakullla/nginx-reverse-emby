@@ -3,20 +3,14 @@ package marketplace
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
-	"time"
 
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gopkg.in/yaml.v3"
@@ -28,16 +22,13 @@ const (
 	packagedOfficialMarketLockPath = "/opt/nginx-reverse-emby/official-market.lock"
 )
 
-var fullGitOIDPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
-
 type OfficialMarketLock struct {
 	SchemaVersion  int      `yaml:"schema_version" json:"schema_version"`
 	Repository     string   `yaml:"repository" json:"repository"`
-	Commit         string   `yaml:"commit" json:"commit"`
-	MarketSHA256   string   `yaml:"market_sha256" json:"market_sha256"`
+	RefKind        string   `yaml:"ref_kind" json:"ref_kind"`
+	RefName        string   `yaml:"ref_name" json:"ref_name"`
 	SDKABIs        []string `yaml:"sdk_abis" json:"sdk_abis"`
 	SignatureKeyID string   `yaml:"signature_key_id" json:"signature_key_id"`
-	VerifiedAt     string   `yaml:"verified_at" json:"verified_at"`
 }
 
 // ResolveOfficialMarketLockPath resolves either an explicit absolute path, the
@@ -115,13 +106,13 @@ func ReadOfficialMarketLock(name string) (OfficialMarketLock, error) {
 
 func ValidateOfficialMarketLock(lock OfficialMarketLock) error {
 	if lock.SchemaVersion != 1 || lock.Repository != OfficialSourceURL {
-		return errors.New("official market lock has an invalid schema or immutable repository identity")
+		return errors.New("official market lock has an invalid schema or repository identity")
 	}
-	if !fullGitOIDPattern.MatchString(lock.Commit) || strings.Trim(lock.Commit, "0") == "" {
-		return errors.New("official market lock requires a non-zero lowercase full Git OID")
+	if lock.RefKind != GitRefKindBranch {
+		return errors.New("official market policy must track a movable branch")
 	}
-	if !IsDigest(lock.MarketSHA256) || strings.Trim(lock.MarketSHA256, "0") == "" {
-		return errors.New("official market lock requires a non-zero market digest")
+	if _, err := OfficialSourceForBranch(lock.RefName, 1); err != nil {
+		return fmt.Errorf("official market policy branch: %w", err)
 	}
 	wantABIs := []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}
 	gotABIs := append([]string(nil), lock.SDKABIs...)
@@ -133,25 +124,19 @@ func ValidateOfficialMarketLock(lock OfficialMarketLock) error {
 	if lock.SignatureKeyID != plugins.OfficialSignatureKeyID {
 		return errors.New("official market lock signature identity is not the built-in official root")
 	}
-	verifiedAt, err := time.Parse(time.RFC3339, lock.VerifiedAt)
-	_, zoneOffset := verifiedAt.Zone()
-	if err != nil || zoneOffset != 0 {
-		return errors.New("official market lock verified_at must be an RFC3339 UTC timestamp")
-	}
 	return nil
 }
 
-func MarketManifestDigest(root string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(root, plugins.MarketManifestFile))
-	if err != nil {
-		return "", err
+func (lock OfficialMarketLock) Source(revision uint64) (Source, error) {
+	if err := ValidateOfficialMarketLock(lock); err != nil {
+		return Source{}, err
 	}
-	digest := sha256.Sum256(data)
-	return hex.EncodeToString(digest[:]), nil
+	return OfficialSourceForBranch(lock.RefName, revision)
 }
 
-// ValidateOfficialLockCheckout validates an already isolated, metadata-free
-// checkout. Callers must bind checkoutOID to the immutable fetch result.
+// ValidateOfficialLockCheckout validates one isolated, metadata-free refresh
+// result. The policy intentionally does not pin checkoutOID, but requires the
+// fetcher to return a full immutable OID for snapshot provenance.
 func ValidateOfficialLockCheckout(lock OfficialMarketLock, checkoutRoot, checkoutOID string, validator *plugins.Validator) (plugins.ValidatedMarket, error) {
 	if err := ValidateOfficialMarketLock(lock); err != nil {
 		return plugins.ValidatedMarket{}, err
@@ -159,12 +144,12 @@ func ValidateOfficialLockCheckout(lock OfficialMarketLock, checkoutRoot, checkou
 	if validator == nil {
 		return plugins.ValidatedMarket{}, errors.New("plugin validator is required")
 	}
-	if checkoutOID != lock.Commit {
-		return plugins.ValidatedMarket{}, errors.New("official checkout OID does not match lock")
+	if !IsFullCommitOID(checkoutOID) {
+		return plugins.ValidatedMarket{}, errors.New("official checkout requires a non-zero lowercase full Git OID")
 	}
-	validated, err := validator.ValidateMarketWithManifestDigest(checkoutRoot, true, lock.MarketSHA256)
+	validated, err := validator.ValidateMarket(checkoutRoot, true)
 	if err != nil {
-		return plugins.ValidatedMarket{}, fmt.Errorf("official market snapshot does not match lock: %w", err)
+		return plugins.ValidatedMarket{}, fmt.Errorf("official market snapshot is invalid: %w", err)
 	}
 	for _, entry := range validated.Manifest.Entries {
 		if entry.SignatureKeyID != lock.SignatureKeyID {
@@ -174,37 +159,27 @@ func ValidateOfficialLockCheckout(lock OfficialMarketLock, checkoutRoot, checkou
 	return validated, nil
 }
 
-// ValidateOfficialMarketAtLock always creates a temporary clean checkout of
-// the exact immutable OID. It never reads a sibling development worktree.
-func ValidateOfficialMarketAtLock(ctx context.Context, lock OfficialMarketLock, validator *plugins.Validator) (plugins.ValidatedMarket, error) {
+// ValidateOfficialMarketAtLock resolves the current built-in official branch,
+// validates its isolated tree, and returns the full OID used for this refresh.
+// It never reads a sibling development worktree.
+func ValidateOfficialMarketAtLock(ctx context.Context, lock OfficialMarketLock, validator *plugins.Validator) (plugins.ValidatedMarket, string, error) {
 	if err := ValidateOfficialMarketLock(lock); err != nil {
-		return plugins.ValidatedMarket{}, err
+		return plugins.ValidatedMarket{}, "", err
 	}
 	temporary, err := os.MkdirTemp("", "nre-official-market-")
 	if err != nil {
-		return plugins.ValidatedMarket{}, err
+		return plugins.ValidatedMarket{}, "", err
 	}
 	defer os.RemoveAll(temporary)
-	bare := filepath.Join(temporary, "repository")
-	if err := os.MkdirAll(bare, 0o755); err != nil {
-		return plugins.ValidatedMarket{}, err
-	}
-	repository, closeStorage, err := cloneBareBudgeted(ctx, bare, &git.CloneOptions{URL: lock.Repository, NoCheckout: true}, plugins.DefaultMaxMarketBytes)
-	if err != nil {
-		return plugins.ValidatedMarket{}, err
-	}
-	defer closeStorage()
-	commit, err := repository.CommitObject(plumbing.NewHash(lock.Commit))
-	if err != nil || commit.Hash.String() != lock.Commit {
-		return plugins.ValidatedMarket{}, errors.New("locked official commit is unavailable from the immutable repository")
-	}
-	tree, err := commit.Tree()
-	if err != nil {
-		return plugins.ValidatedMarket{}, err
-	}
 	checkout := filepath.Join(temporary, "checkout")
-	if err := checkoutBudgetedTree(ctx, tree, checkout, plugins.DefaultMaxMarketFiles, plugins.DefaultMaxMarketBytes); err != nil {
-		return plugins.ValidatedMarket{}, err
+	source, err := lock.Source(1)
+	if err != nil {
+		return plugins.ValidatedMarket{}, "", err
 	}
-	return ValidateOfficialLockCheckout(lock, checkout, commit.Hash.String(), validator)
+	commit, err := (GoGitFetcher{}).Fetch(ctx, source, checkout)
+	if err != nil {
+		return plugins.ValidatedMarket{}, "", err
+	}
+	validated, err := ValidateOfficialLockCheckout(lock, checkout, commit, validator)
+	return validated, commit, err
 }

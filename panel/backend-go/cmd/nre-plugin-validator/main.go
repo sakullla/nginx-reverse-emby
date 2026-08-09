@@ -48,7 +48,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "plugin package root")
 	marketPath := flags.String("market", "", "path to a market.yaml file")
-	officialLockPath := flags.String("official-lock", "", "validate the official market from an immutable lock")
+	officialLockPath := flags.String("official-lock", "", "validate the current official market against its repository and trust policy")
 	official := flags.Bool("official", true, "validate market entries as the built-in official source")
 	expectedID := flags.String("id", "", "expected plugin id")
 	expectedVersion := flags.String("version", "", "expected plugin version")
@@ -85,9 +85,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			validationErr = err
 		} else {
-			output.Commit = lock.Commit
 			var result plugins.ValidatedMarket
-			result, validationErr = marketplace.ValidateOfficialMarketAtLock(context.Background(), lock, validator)
+			result, output.Commit, validationErr = marketplace.ValidateOfficialMarketAtLock(context.Background(), lock, validator)
 			if validationErr == nil {
 				output.Packages = len(result.Packages)
 			}

@@ -2512,6 +2512,55 @@ func TestAcquireRefreshLeaseRejectsPreLeaseSourceEditWithoutHybridState(t *testi
 	}
 }
 
+func TestReconcileOfficialMarketplaceSourceSwitchesBranchAsNewGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	source := marketplace.OfficialSource()
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Updates(map[string]any{
+		"current_snapshot_id": "old-main-snapshot", "current_resolved_oid": strings.Repeat("a", 40), "last_result": "succeeded",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "official-main-running", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "official-main-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := marketplace.OfficialSourceForBranch("release", source.ConfigRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.ReconcileOfficialMarketplaceSource(ctx, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RefKind != marketplace.GitRefKindBranch || updated.RefName != "release" || updated.ConfigRevision != source.ConfigRevision+1 || updated.CurrentSnapshot != "" || updated.CurrentResolvedOID != "" || updated.LastResult != "refresh_required" || !updated.LeaseExpiresAt.IsZero() {
+		t.Fatalf("reconciled official source = %+v", updated)
+	}
+	var oldOperation MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", operation.ID).First(&oldOperation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if oldOperation.Status != "failed" || oldOperation.ErrorClass != "source_generation_changed" {
+		t.Fatalf("old official refresh was not terminalized: %+v", oldOperation)
+	}
+	var audit AuditEventRow
+	if err := store.db.Where("action = ? AND target_id = ?", "marketplace.source.policy_sync", source.ID).First(&audit).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAcquireRefreshLeaseValidatesImmutableSignerBeforeLeaseContention(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(t.TempDir(), "local")

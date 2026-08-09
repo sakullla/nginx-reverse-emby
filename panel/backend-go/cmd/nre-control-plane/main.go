@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	httpapi "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/http"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/localagent"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -508,6 +509,17 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	if err != nil {
 		return nil, err
 	}
+	rpcProcessHost, err := pluginhost.New(filepath.Join(cfg.DataDir, "plugins", "rpc-runtime"), nil, pluginhost.GRPCDialer{}, logger.Writer())
+	if err != nil {
+		_ = serviceStore.Close()
+		return nil, err
+	}
+	rpcRuntimeHost, err := service.NewPluginRuntimeHost(rpcProcessHost, serviceStore)
+	if err != nil {
+		_ = rpcProcessHost.Close(context.Background())
+		_ = serviceStore.Close()
+		return nil, err
+	}
 
 	systemSvc := service.NewSystemService(cfg, serviceStore)
 	agentSvc := service.NewAgentService(cfg, serviceStore)
@@ -551,7 +563,8 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		if runtimeStore != nil {
 			runtimeErr = runtimeStore.Close()
 		}
-		return errors.Join(pkiErr, taskErr, runtimeErr, serviceStore.Close())
+		rpcErr := rpcRuntimeHost.Close(context.Background())
+		return errors.Join(pkiErr, taskErr, runtimeErr, rpcErr, serviceStore.Close())
 	}
 
 	var runLocalAgent func(context.Context) error

@@ -23,11 +23,16 @@ const (
 	PolicyDegraded    = "nre_agent_policy_degraded"
 	PolicyHostEvent   = "nre_agent_policy_host_event"
 	PolicyHostMetric  = "nre_agent_policy_host_metric"
+	PluginProcess     = "nre_agent_plugin_process"
+	PluginRPC         = "nre_agent_plugin_rpc"
+	PluginSandbox     = "nre_agent_plugin_sandbox"
+	PluginBudget      = "nre_agent_plugin_budget"
 )
 
 var metricNames = map[string]struct{}{
 	RevisionApply: {}, GenerationDrain: {}, GenerationCutover: {}, HotRestartUpgrade: {},
 	PolicyEvaluation: {}, PolicyRejection: {}, PolicyBudget: {}, PolicyDegraded: {}, PolicyHostEvent: {}, PolicyHostMetric: {},
+	PluginProcess: {}, PluginRPC: {}, PluginSandbox: {}, PluginBudget: {},
 }
 
 var policyGuestMetrics = map[string]string{
