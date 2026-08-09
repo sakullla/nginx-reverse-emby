@@ -135,6 +135,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&MarketplaceDirectoryCleanupRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
+		&PluginPolicyAgentRevisionRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
 	); err != nil {

@@ -41,7 +41,7 @@ const (
 	// fit the 4096-byte output frame without pagination.
 	MaxPolicyReadFieldValueBytes = int(MaxPolicyOutputBytes) - 5
 	MaxBodyPrefixBytes           = 128 << 10
-	MaxPolicyRequestIDBytes      = 256
+	MaxPolicyRequestIDBytes      = pluginsdk.PolicyRequestIDMaxBytes
 )
 
 func CanonicalHTTPHeaderField(name string) (string, bool) {
@@ -93,7 +93,7 @@ type Host interface {
 	ReadBodyWindow(context.Context, uint32, uint32) ([]byte, error)
 	StateGet(context.Context, string) ([]byte, bool, error)
 	StatePut(context.Context, string, []byte) error
-	EmitEvent(context.Context, string, []byte) error
+	EmitEvent(context.Context, pluginsdk.PolicySecurityEvent) error
 	AddMetric(context.Context, string, int64) error
 }
 

@@ -25,6 +25,7 @@ import (
 	pluginwasm "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
 	stdruntime "runtime"
 	"strings"
@@ -283,6 +284,8 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 	var policyModule agentmodule.Module
 	if policyRuntime != nil {
 		policyModule = policy.NewModule(pluginwasm.GenerationFactory{Runtime: policyRuntime, Observer: policyObserver}, observability.Default())
+	} else {
+		policyModule = policy.NewValidationModule(observability.Default())
 	}
 	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
@@ -408,6 +411,7 @@ func New(cfg Config) (*App, error) {
 		Capabilities:   capabilities,
 		CurrentVersion: cfg.CurrentVersion,
 		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
+		PluginCacheDir: filepath.Join(cfg.DataDir, "plugins", "policy-artifacts"),
 		RuntimePackage: model.RuntimePackage{
 			Version:  cfg.CurrentVersion,
 			Platform: stdruntime.GOOS,

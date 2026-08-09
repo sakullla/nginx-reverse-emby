@@ -10,6 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type GenerationEvaluator struct {
@@ -199,8 +200,8 @@ func validateStage(stage model.PolicyStage) error {
 		{"artifact digest", stage.ArtifactDigest}, {"signer key id", stage.SignerKeyID}, {"signer fingerprint", stage.SignerFingerprint},
 	}
 	for _, identity := range identities {
-		if strings.TrimSpace(identity.value) == "" || identity.value != strings.TrimSpace(identity.value) || strings.ContainsAny(identity.value, "\r\n\x00") {
-			return fmt.Errorf("%s is missing or non-canonical", identity.name)
+		if err := pluginsdk.ValidatePolicyIdentity(identity.value); err != nil {
+			return fmt.Errorf("%s is missing or non-canonical: %w", identity.name, err)
 		}
 	}
 	if !stage.SignatureVerified {
@@ -242,7 +243,7 @@ func validFailureAction(action string, allowDegraded bool) bool {
 }
 
 func canonicalIdentity(value string) bool {
-	return strings.TrimSpace(value) != "" && value == strings.TrimSpace(value) && len(value) <= 512 && !strings.ContainsAny(value, "\r\n\x00")
+	return pluginsdk.ValidatePolicyIdentity(value) == nil
 }
 
 func stageOrder(kind model.PolicyKind) int {

@@ -161,6 +161,10 @@ type PluginAPI interface {
 	Operations(context.Context, string) ([]service.PluginOperationDetail, error)
 }
 
+type AgentPluginArtifactService interface {
+	ResolveAgentPluginArtifact(context.Context, string, string) (service.AgentPluginArtifact, error)
+}
+
 type Dependencies struct {
 	Config                       config.Config
 	SystemService                SystemService
@@ -178,6 +182,7 @@ type Dependencies struct {
 	RevisionService              RevisionService
 	MarketplaceService           MarketplaceAPI
 	PluginService                PluginAPI
+	PluginArtifactService        AgentPluginArtifactService
 	AccessManager                *authz.Manager
 	SecretVault                  *secrets.Vault
 	MonitorStreamRefreshInterval time.Duration
@@ -360,6 +365,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agent-revisions/pull", http.HandlerFunc(resolved.handleRemoteRevisionPull))
 		mux.Handle(prefix+"/agent-revisions/{revision}/start", http.HandlerFunc(resolved.handleRemoteRevisionStart))
 		mux.Handle(prefix+"/agent-revisions/{revision}/report", http.HandlerFunc(resolved.handleRemoteRevisionReport))
+		mux.Handle(prefix+"/agent-plugin-artifacts/{artifactID}", http.HandlerFunc(resolved.handleAgentPluginArtifact))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
 		mux.Handle(prefix+"/agents/task-stream", http.HandlerFunc(resolved.handleAgentTaskStream))
 		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
@@ -633,7 +639,13 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	sourceValidators := marketplacepkg.NewSourceValidatorFactory(plugins.ValidatorOptions{HostVersion: runtimeVersion})
 	cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
 	if d.PluginService == nil {
-		d.PluginService = service.NewPluginServiceWithValidator(store, validator, cacheRoot)
+		pluginService := service.NewPluginServiceWithValidator(store, validator, cacheRoot)
+		d.PluginService = pluginService
+		d.PluginArtifactService = pluginService
+	} else if d.PluginArtifactService == nil {
+		if artifactService, ok := d.PluginService.(AgentPluginArtifactService); ok {
+			d.PluginArtifactService = artifactService
+		}
 	}
 	if d.MarketplaceService == nil {
 		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)

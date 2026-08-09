@@ -132,7 +132,11 @@ func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, r
 		if err != nil {
 			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
-		return encodeEmpty(host.EmitEvent(ctx, messageString(message, "kind"), messageBytes(message, "payload")))
+		event, err := pluginsdk.PolicySecurityEventFromWire(messageEnum(message, "code"), messageEnum(message, "action"))
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
+		}
+		return encodeEmpty(host.EmitEvent(ctx, event))
 	case pluginsdk.PolicyHostAddMetric:
 		message, err := decodePolicyMessage("AddMetricRequest", request)
 		if err != nil {
@@ -260,6 +264,10 @@ func messageUint32(message protoreflect.ProtoMessage, name protoreflect.Name) ui
 
 func messageInt64(message protoreflect.ProtoMessage, name protoreflect.Name) int64 {
 	return message.ProtoReflect().Get(policyField(message, name)).Int()
+}
+
+func messageEnum(message protoreflect.ProtoMessage, name protoreflect.Name) int32 {
+	return int32(message.ProtoReflect().Get(policyField(message, name)).Enum())
 }
 
 func setMessageBytes(message protoreflect.ProtoMessage, name protoreflect.Name, value []byte) {

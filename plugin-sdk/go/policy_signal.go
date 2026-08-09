@@ -1,74 +1,62 @@
 package pluginsdk
 
-import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"strings"
-	"unicode/utf8"
-)
+import "errors"
+
+type PolicySecurityEventCode int32
 
 const (
-	PolicySecurityEventMaxBytes   = 1024
-	PolicySecurityRuleMaxBytes    = 96
-	PolicySecurityActionMaxBytes  = 32
-	PolicySecuritySummaryMaxBytes = 256
+	PolicySecurityEventCodeUnspecified  PolicySecurityEventCode = 0
+	PolicySecurityEventCodeWAFRuleMatch PolicySecurityEventCode = 1
 )
 
-// PolicySecurityEvent is the bounded, redacted payload accepted by
-// PolicyHost.EmitEvent. It deliberately cannot carry request bodies, headers,
-// credentials, or arbitrary structured fields.
+type PolicySecurityEventAction int32
+
+const (
+	PolicySecurityEventActionUnspecified PolicySecurityEventAction = 0
+	PolicySecurityEventActionObserve     PolicySecurityEventAction = 1
+	PolicySecurityEventActionDeny        PolicySecurityEventAction = 2
+)
+
+// PolicySecurityEvent contains only fixed-catalog enum values. Its printable
+// code, action, and template are all host-owned and cannot transport request
+// fields, bodies, credentials, or arbitrary guest bytes.
 type PolicySecurityEvent struct {
-	RuleID  string `json:"rule_id"`
-	Action  string `json:"action"`
-	Summary string `json:"summary"`
+	Code   PolicySecurityEventCode
+	Action PolicySecurityEventAction
 }
 
-func DecodePolicySecurityEvent(payload []byte) (PolicySecurityEvent, error) {
-	if len(payload) == 0 || len(payload) > PolicySecurityEventMaxBytes {
-		return PolicySecurityEvent{}, fmt.Errorf("policy security event payload must contain 1..%d bytes", PolicySecurityEventMaxBytes)
+func PolicySecurityEventFromWire(code, action int32) (PolicySecurityEvent, error) {
+	event := PolicySecurityEvent{Code: PolicySecurityEventCode(code), Action: PolicySecurityEventAction(action)}
+	if event.Code != PolicySecurityEventCodeWAFRuleMatch {
+		return PolicySecurityEvent{}, errors.New("policy security event code is unknown")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	var event PolicySecurityEvent
-	if err := decoder.Decode(&event); err != nil {
-		return PolicySecurityEvent{}, fmt.Errorf("decode policy security event: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return PolicySecurityEvent{}, errors.New("policy security event contains trailing JSON")
-	}
-	event.RuleID = strings.TrimSpace(event.RuleID)
-	event.Action = strings.TrimSpace(event.Action)
-	event.Summary = strings.TrimSpace(event.Summary)
-	if !canonicalPolicySignal(event.RuleID, PolicySecurityRuleMaxBytes) {
-		return PolicySecurityEvent{}, errors.New("policy security event rule_id is not canonical")
-	}
-	if !canonicalPolicySignal(event.Action, PolicySecurityActionMaxBytes) {
-		return PolicySecurityEvent{}, errors.New("policy security event action is not canonical")
-	}
-	if event.Summary == "" || len(event.Summary) > PolicySecuritySummaryMaxBytes || !utf8.ValidString(event.Summary) || strings.ContainsAny(event.Summary, "\r\n\x00") {
-		return PolicySecurityEvent{}, errors.New("policy security event summary is not canonical")
-	}
-	lowerSummary := strings.ToLower(event.Summary)
-	for _, sensitive := range []string{"authorization", "cookie", "password", "secret", "token"} {
-		if strings.Contains(lowerSummary, sensitive) {
-			return PolicySecurityEvent{}, errors.New("policy security event summary contains sensitive material")
-		}
+	if event.Action != PolicySecurityEventActionObserve && event.Action != PolicySecurityEventActionDeny {
+		return PolicySecurityEvent{}, errors.New("policy security event action is unknown")
 	}
 	return event, nil
 }
 
-func canonicalPolicySignal(value string, limit int) bool {
-	if value == "" || len(value) > limit {
-		return false
+func (code PolicySecurityEventCode) String() string {
+	if code == PolicySecurityEventCodeWAFRuleMatch {
+		return "waf.rule_match"
 	}
-	for _, char := range value {
-		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '.' || char == '-' || char == '_' {
-			continue
-		}
-		return false
+	return "unknown"
+}
+
+func (action PolicySecurityEventAction) String() string {
+	switch action {
+	case PolicySecurityEventActionObserve:
+		return "observe"
+	case PolicySecurityEventActionDeny:
+		return "deny"
+	default:
+		return "unknown"
 	}
-	return true
+}
+
+func (event PolicySecurityEvent) Template() string {
+	if event.Code == PolicySecurityEventCodeWAFRuleMatch {
+		return "WAF rule matched"
+	}
+	return "Policy security event"
 }

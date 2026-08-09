@@ -53,6 +53,13 @@ func NewModule(factory GenerationFactory, observer observability.Observer) *Modu
 	return &Module{factory: factory, observer: observer}
 }
 
+// NewValidationModule keeps policy references in the atomic generation
+// prepare graph when execution is unavailable. Empty policy snapshots remain
+// publishable, while any policy-bearing candidate fails before cutover.
+func NewValidationModule(observer observability.Observer) *Module {
+	return NewModule(nil, observer)
+}
+
 func (*Module) Name() string { return "plugin-policy" }
 
 func (m *Module) Descriptor() module.ModuleDescriptor {
@@ -63,7 +70,10 @@ func (*Module) RegisterProviders(reg module.ProviderRegistry) error {
 	return reg.Provide(ProviderEvaluator, Evaluator(disabledEvaluator{}))
 }
 
-func (*Module) Capabilities(module.SnapshotView) []module.Capability {
+func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
+	if m == nil || m.factory == nil {
+		return nil
+	}
 	return []module.Capability{
 		{Name: ExtensionHTTP, Enabled: true, Metadata: map[string]string{"abi": model.PolicyABIV1}},
 		{Name: ExtensionL4, Enabled: true, Metadata: map[string]string{"abi": model.PolicyABIV1}},
@@ -81,6 +91,9 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	definitions, required, err := m.prepareSnapshotPolicies(ctx, request.Next)
 	if err != nil {
 		return nil, err
+	}
+	if len(request.Next.PluginPolicies) > 0 && m.factory == nil {
+		return nil, errors.New("policy execution runtime is unavailable")
 	}
 	if _, err := NewGenerationEvaluator(generationContext.ID(), definitions, nil, m.observer); err != nil {
 		return nil, fmt.Errorf("validate policy generation: %w", err)

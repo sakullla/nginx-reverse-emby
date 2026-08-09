@@ -46,28 +46,28 @@ func PolicyGuestMetric(name string) (string, bool) {
 }
 
 type Event struct {
-	Name            string
-	Outcome         string
-	OperationID     string
-	AgentID         string
-	Revision        int64
-	GenerationID    string
-	Attempt         int
-	Duration        time.Duration
-	PluginID        string
-	InstanceID      string
-	PolicyID        string
-	PolicyStage     string
-	Reason          string
-	RequestID       string
-	Source          string
-	SourceKind      string
-	NodeLocal       bool
-	GuestMetric     string
-	MetricDelta     int64
-	SecurityRule    string
-	SecurityAction  string
-	SecuritySummary string
+	Name             string
+	Outcome          string
+	OperationID      string
+	AgentID          string
+	Revision         int64
+	GenerationID     string
+	Attempt          int
+	Duration         time.Duration
+	PluginID         string
+	InstanceID       string
+	PolicyID         string
+	PolicyStage      string
+	Reason           string
+	RequestID        string
+	Source           string
+	SourceKind       string
+	NodeLocal        bool
+	GuestMetric      string
+	MetricDelta      int64
+	SecurityCode     string
+	SecurityAction   string
+	SecurityTemplate string
 }
 
 type Correlation struct {
@@ -188,8 +188,8 @@ func (r *Recorder) Observe(ctx context.Context, event Event) {
 		"reason", clean(event.Reason), "request_id", clean(event.RequestID),
 		"source", clean(event.Source), "source_kind", clean(event.SourceKind),
 		"node_local", event.NodeLocal, "guest_metric", clean(event.GuestMetric), "metric_delta", event.MetricDelta,
-		"metric_overflow", metricOverflow, "security_rule", clean(event.SecurityRule),
-		"security_action", clean(event.SecurityAction), "security_summary", clean(event.SecuritySummary),
+		"metric_overflow", metricOverflow, "security_code", clean(event.SecurityCode),
+		"security_action", clean(event.SecurityAction), "security_template", clean(event.SecurityTemplate),
 	)
 }
 

@@ -46,6 +46,51 @@ func TestWASMRuntimeCompilerUnavailableIsTypedWithoutFallback(t *testing.T) {
 	}
 }
 
+func TestWASMHostEmitEventAcceptsOnlyFixedWireEnums(t *testing.T) {
+	message, err := newPolicyMessage("EmitEventRequest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message.Set(policyField(message, "code"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(pluginsdk.PolicySecurityEventCodeWAFRuleMatch)))
+	message.Set(policyField(message, "action"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(pluginsdk.PolicySecurityEventActionDeny)))
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &eventCapturePolicyHost{}
+	if _, status, _ := dispatchHost(context.Background(), host, pluginsdk.PolicyHostEmitEvent, encoded); status != pluginsdk.PolicyStatusOK {
+		t.Fatalf("fixed event status=%d, want OK", status)
+	}
+	if host.event.Code != pluginsdk.PolicySecurityEventCodeWAFRuleMatch || host.event.Action != pluginsdk.PolicySecurityEventActionDeny {
+		t.Fatalf("host event=%+v", host.event)
+	}
+
+	message.Set(policyField(message, "action"), protoreflect.ValueOfEnum(200))
+	encoded, err = (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, status, _ := dispatchHost(context.Background(), host, pluginsdk.PolicyHostEmitEvent, encoded); status != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("unknown guest event enum status=%d, want invalid argument", status)
+	}
+
+	// This is the old v1 free-text wire shape with real request-derived values
+	// in rule_id and summary. The new enum schema treats both length-delimited
+	// fields as unknown, leaving code/action unspecified and rejecting dispatch.
+	headerSecret := "actual-header-secret-7c993"
+	bodySecret := "actual-body-secret-1fa26"
+	legacyPayload := []byte(`{"rule_id":"` + headerSecret + `","action":"deny","summary":"` + bodySecret + `"}`)
+	legacyWire := append([]byte{0x0a, byte(len("waf.hit"))}, []byte("waf.hit")...)
+	legacyWire = append(legacyWire, 0x12, byte(len(legacyPayload)))
+	legacyWire = append(legacyWire, legacyPayload...)
+	if _, status, _ := dispatchHost(context.Background(), host, pluginsdk.PolicyHostEmitEvent, legacyWire); status != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("legacy free-text guest event status=%d, want invalid argument", status)
+	}
+	if host.calls != 1 {
+		t.Fatalf("host event calls=%d, legacy/unknown event reached host", host.calls)
+	}
+}
+
 func TestWASMRuntimeExecutableMemoryPanicIsTypedUnavailable(t *testing.T) {
 	hostRuntime, err := NewRuntime(context.Background(), RuntimeOptions{
 		compilerConfigFactory: wazero.NewRuntimeConfigCompiler,
@@ -915,6 +960,18 @@ type testPolicyHost struct {
 	once           sync.Once
 }
 
+type eventCapturePolicyHost struct {
+	testPolicyHost
+	event pluginsdk.PolicySecurityEvent
+	calls int
+}
+
+func (host *eventCapturePolicyHost) EmitEvent(_ context.Context, event pluginsdk.PolicySecurityEvent) error {
+	host.event = event
+	host.calls++
+	return nil
+}
+
 func (host *testPolicyHost) ReadField(context.Context, string) ([]byte, error) {
 	host.mu.Lock()
 	host.readFieldCalls++
@@ -935,7 +992,7 @@ func (*testPolicyHost) StateGet(context.Context, string) ([]byte, bool, error) {
 func (*testPolicyHost) StatePut(context.Context, string, []byte) error {
 	return errors.New("unavailable")
 }
-func (*testPolicyHost) EmitEvent(context.Context, string, []byte) error {
+func (*testPolicyHost) EmitEvent(context.Context, pluginsdk.PolicySecurityEvent) error {
 	return errors.New("unavailable")
 }
 func (*testPolicyHost) AddMetric(context.Context, string, int64) error {

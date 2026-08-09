@@ -1,15 +1,69 @@
 package http
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	agent, ok := d.authenticateRevisionAgent(w, r)
+	if !ok {
+		return
+	}
+	if d.PluginArtifactService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin artifact service unavailable"))
+		return
+	}
+	artifact, err := d.PluginArtifactService.ResolveAgentPluginArtifact(r.Context(), agent.ID, r.PathValue("artifactID"))
+	if err != nil {
+		if errors.Is(err, service.ErrPluginArtifactUnavailable) {
+			writeJSON(w, http.StatusNotFound, errorPayload("plugin artifact not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
+		return
+	}
+	file, err := os.Open(artifact.Path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorPayload("plugin artifact not found"))
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != artifact.SizeBytes {
+		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
+		return
+	}
+	var verified bytes.Buffer
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(hash, &verified), io.LimitReader(file, artifact.SizeBytes+1)); err != nil || int64(verified.Len()) != artifact.SizeBytes || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), artifact.SHA256) {
+		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Content-Type", "application/wasm")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, &verified)
+}
 
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var body map[string]json.RawMessage
@@ -102,6 +156,7 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 	if reply.HasUpdate {
 		payload["rules"] = reply.Rules
 		payload["l4_rules"] = reply.L4Rules
+		payload["plugin_policies"] = remotePluginPolicies(reply.PluginPolicies)
 		payload["certificates"] = reply.Certificates
 		payload["certificate_policies"] = reply.CertificatePolicies
 	} else if len(reply.RelayListeners) > 0 {
@@ -109,6 +164,25 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		payload["certificate_policies"] = reply.CertificatePolicies
 	}
 	return payload
+}
+
+func remotePluginPolicies(policies []storage.PluginPolicy) []storage.PluginPolicy {
+	if policies == nil {
+		return nil
+	}
+	cloned := make([]storage.PluginPolicy, len(policies))
+	for policyIndex, policy := range policies {
+		cloned[policyIndex] = policy
+		cloned[policyIndex].Stages = make([]storage.PolicyStage, len(policy.Stages))
+		for stageIndex, stage := range policy.Stages {
+			stage.ArtifactPath = ""
+			stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
+			stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
+			stage.Config = append(json.RawMessage(nil), stage.Config...)
+			cloned[policyIndex].Stages[stageIndex] = stage
+		}
+	}
+	return cloned
 }
 
 func absolutePublicURL(baseURL string, raw string) string {

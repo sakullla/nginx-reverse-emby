@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -651,18 +651,38 @@ func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
 }
 
 func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
+	agentID = s.resolveAgentID(agentID)
 	var instances []PluginInstanceRow
 	if err := s.db.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "SHARE"}).
 		Order("id").Find(&instances).Error; err != nil {
 		return nil, err
 	}
-	policies := make([]PluginPolicy, 0, len(instances))
+	if err := s.validatePolicyChainMembershipTopology(ctx, instances); err != nil {
+		return nil, err
+	}
+	var catalogRevision PluginPolicyAgentRevisionRow
+	if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("agent_id = ?", agentID).First(&catalogRevision).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	type chainProjection struct {
+		targetsKey string
+		stages     []PolicyStage
+		kinds      map[string]string
+	}
+	chains := make(map[string]*chainProjection)
 	for _, instance := range instances {
+		if err := ValidatePluginPolicyIdentity(instance.ID); err != nil {
+			return nil, fmt.Errorf("plugin instance identity %q: %w", instance.ID, err)
+		}
+		memberships, err := CanonicalPluginPolicyChains(instance.PolicyChainsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("plugin instance %s policy chains: %w", instance.ID, err)
+		}
 		// ConfigJSON/ConfigVersion are the committed active values. Pending fields
 		// and lifecycle presentation state must not hide the old generation while
 		// configure, upgrade, rollback, or disable is still awaiting Agent apply.
-		if instance.ConfigVersion == 0 {
+		if instance.ConfigVersion == 0 || len(memberships) == 0 {
 			continue
 		}
 		targets, err := pluginInstanceTargets(instance.TargetJSON, s.LocalAgentID())
@@ -674,7 +694,12 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 		}
 
 		var installed InstalledPluginRow
-		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; err != nil {
+		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			// Cleanup may intentionally retain disabled instance/config rows after
+			// uninstall. Installed state is lifecycle authority, so these rows do
+			// not publish a policy until the plugin is installed again.
+			continue
+		} else if err != nil {
 			return nil, fmt.Errorf("plugin instance %s installed state: %w", instance.ID, err)
 		}
 		if !installedProjectsActivePolicy(installed) || installed.RuntimeKind != "wasm-policy" || installed.HostScope != "agent" {
@@ -734,30 +759,178 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 		if err != nil {
 			return nil, fmt.Errorf("plugin instance %s grants: %w", instance.ID, err)
 		}
-		revision := maxPluginPolicyRevision(installed.StateVersion, instance.StateVersion, instance.ConfigVersion)
-		policies = append(policies, PluginPolicy{
-			ID: instance.ID, Revision: revision,
-			Stages: []PolicyStage{{
-				Kind: kind, PolicyID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version,
-				InstanceID: instance.ID, PackageDigest: packageRow.Digest, ArtifactPath: artifactPath,
-				ArtifactDigest: entryArtifact.SHA256, SignatureVerified: true,
-				SignerKeyID: installed.ActiveSignatureKeyID, SignerFingerprint: installed.ActiveSignatureFingerprint,
-				ABI: packageRow.RuntimeABI, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...),
-				GrantedScopes: grantedScopes, Config: append(json.RawMessage(nil), config...),
-				ResourceBudget: PolicyResourceBudget{
-					TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes,
-					Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes,
-					OutputBytes: manifest.ResourceBudget.OutputBytes,
-				},
-				FailurePolicy: PolicyFailurePolicy{
-					OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget,
-					Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback,
-				},
-			}},
+		if agentID != s.LocalAgentID() {
+			artifactPath = ""
+		}
+		targetsJSON, _ := json.Marshal(targets)
+		stage := PolicyStage{
+			Kind: kind, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version,
+			InstanceID: instance.ID, PackageDigest: packageRow.Digest, ArtifactPath: artifactPath,
+			ArtifactDigest: entryArtifact.SHA256,
+			ArtifactSource: PolicyArtifactSource{
+				ArtifactID: entryArtifact.ID, PackageIdentity: packageRow.Identity, PackageDigest: packageRow.Digest,
+				RelativePath: entryArtifact.Path, SHA256: entryArtifact.SHA256, SizeBytes: entryArtifact.SizeBytes,
+			},
+			SignatureVerified: true,
+			SignerKeyID:       installed.ActiveSignatureKeyID, SignerFingerprint: installed.ActiveSignatureFingerprint,
+			ABI: packageRow.RuntimeABI, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...),
+			GrantedScopes: grantedScopes, Config: append(json.RawMessage(nil), config...),
+			ResourceBudget: PolicyResourceBudget{
+				TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes,
+				Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes,
+				OutputBytes: manifest.ResourceBudget.OutputBytes,
+			},
+			FailurePolicy: PolicyFailurePolicy{
+				OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget,
+				Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback,
+			},
+		}
+		for _, chainID := range memberships {
+			chain := chains[chainID]
+			if chain == nil {
+				chain = &chainProjection{targetsKey: string(targetsJSON), kinds: make(map[string]string)}
+				chains[chainID] = chain
+			} else if chain.targetsKey != string(targetsJSON) {
+				return nil, fmt.Errorf("policy chain %s has incompatible target sets", chainID)
+			}
+			if previous, exists := chain.kinds[kind]; exists {
+				return nil, fmt.Errorf("policy chain %s has duplicate %s stages from instances %s and %s", chainID, kind, previous, instance.ID)
+			}
+			chain.kinds[kind] = instance.ID
+			member := stage
+			member.PolicyID = chainID
+			chain.stages = append(chain.stages, member)
+		}
+	}
+	policies := make([]PluginPolicy, 0, len(chains))
+	for chainID, chain := range chains {
+		sort.Slice(chain.stages, func(i, j int) bool {
+			left, right := policyStageOrder(chain.stages[i].Kind), policyStageOrder(chain.stages[j].Kind)
+			if left != right {
+				return left < right
+			}
+			return chain.stages[i].InstanceID < chain.stages[j].InstanceID
 		})
+		policies = append(policies, PluginPolicy{ID: chainID, Revision: catalogRevision.Revision, Stages: chain.stages})
 	}
 	sort.Slice(policies, func(i, j int) bool { return policies[i].ID < policies[j].ID })
 	return policies, nil
+}
+
+func (s *GormStore) validatePolicyChainMembershipTopology(ctx context.Context, instances []PluginInstanceRow) error {
+	type topology struct {
+		targets string
+		kinds   map[string]string
+	}
+	chains := make(map[string]*topology)
+	for _, instance := range instances {
+		memberships, err := CanonicalPluginPolicyChains(instance.PolicyChainsJSON)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s policy chains: %w", instance.ID, err)
+		}
+		if instance.ConfigVersion == 0 || len(memberships) == 0 {
+			continue
+		}
+		targets, err := pluginInstanceTargets(instance.TargetJSON, s.LocalAgentID())
+		if err != nil {
+			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+		}
+		var installed InstalledPluginRow
+		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("plugin instance %s installed state: %w", instance.ID, err)
+		}
+		if !installedProjectsActivePolicy(installed) || installed.RuntimeKind != "wasm-policy" || installed.HostScope != "agent" {
+			continue
+		}
+		var packageRow PluginPackageRow
+		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("identity = ? AND digest = ?", installed.ActivePackageIdentity, installed.ActivePackageDigest).First(&packageRow).Error; err != nil {
+			return fmt.Errorf("plugin instance %s active package: %w", instance.ID, err)
+		}
+		kind := strings.ToLower(packageRow.PolicyKind)
+		if policyStageOrder(kind) > 2 {
+			return fmt.Errorf("plugin instance %s policy kind is invalid", instance.ID)
+		}
+		targetsJSON, _ := json.Marshal(targets)
+		for _, chainID := range memberships {
+			current := chains[chainID]
+			if current == nil {
+				current = &topology{targets: string(targetsJSON), kinds: make(map[string]string)}
+				chains[chainID] = current
+			} else if current.targets != string(targetsJSON) {
+				return fmt.Errorf("policy chain %s has incompatible target sets", chainID)
+			}
+			if previous, exists := current.kinds[kind]; exists {
+				return fmt.Errorf("policy chain %s has duplicate %s stages from instances %s and %s", chainID, kind, previous, instance.ID)
+			}
+			current.kinds[kind] = instance.ID
+		}
+	}
+	return nil
+}
+
+func policyStageOrder(kind string) int {
+	switch kind {
+	case "ip":
+		return 0
+	case "rate":
+		return 1
+	case "waf":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// ValidatePluginPolicyIdentity delegates every storage identity boundary to
+// the canonical SDK contract.
+func ValidatePluginPolicyIdentity(value string) error { return pluginsdk.ValidatePolicyIdentity(value) }
+
+// CanonicalPluginPolicyChains parses and canonicalizes an instance's explicit
+// chain membership. Blank legacy values mean no published policy.
+func CanonicalPluginPolicyChains(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	var chains []string
+	if err := decoder.Decode(&chains); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("multiple policy chain values")
+		}
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(chains))
+	for _, chainID := range chains {
+		if err := ValidatePluginPolicyIdentity(chainID); err != nil {
+			return nil, fmt.Errorf("policy chain identity %q: %w", chainID, err)
+		}
+		if _, exists := seen[chainID]; exists {
+			return nil, fmt.Errorf("duplicate policy chain identity %q", chainID)
+		}
+		seen[chainID] = struct{}{}
+	}
+	sort.Strings(chains)
+	return chains, nil
+}
+
+// EncodePluginPolicyChains validates and encodes canonical chain membership.
+func EncodePluginPolicyChains(chains []string) (string, error) {
+	encoded, err := json.Marshal(chains)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := CanonicalPluginPolicyChains(string(encoded))
+	if err != nil {
+		return "", err
+	}
+	encoded, err = json.Marshal(canonical)
+	return string(encoded), err
 }
 
 // LoadAgentPluginPolicies returns the authoritative active policy catalog for
@@ -847,19 +1020,6 @@ func containsPluginTarget(targets []string, agentID string) bool {
 		}
 	}
 	return false
-}
-
-func maxPluginPolicyRevision(values ...uint64) int64 {
-	var result uint64
-	for _, value := range values {
-		if value > result {
-			result = value
-		}
-	}
-	if result > math.MaxInt64 {
-		return math.MaxInt64
-	}
-	return int64(result)
 }
 
 func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplace.Source) error {
@@ -2254,148 +2414,166 @@ type PluginMutation struct {
 
 func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMutation) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if mutation.RequireAcquisition {
-			if mutation.Package == nil {
-				return errors.New("package acquisition promotion requires package metadata")
+		scoped := *s
+		scoped.db = tx
+		scoped.writeDB = tx
+		scoped.transactionScoped = true
+		before, err := scoped.capturePluginPolicyCatalogs(ctx, mutation.PluginID)
+		if err != nil {
+			return err
+		}
+		if err := scoped.applyPluginMutationTx(ctx, tx, mutation); err != nil {
+			return err
+		}
+		if err := scoped.validateProspectivePluginPolicyTransition(ctx, mutation, before); err != nil {
+			return err
+		}
+		return scoped.reconcilePluginPolicyCatalogRevisions(ctx, mutation.PluginID, before, mutation.Operation.CreatedAt)
+	})
+}
+
+func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, mutation PluginMutation) error {
+	if mutation.RequireAcquisition {
+		if mutation.Package == nil {
+			return errors.New("package acquisition promotion requires package metadata")
+		}
+		if err := validatePackageAcquisitionTx(tx, mutation.AcquisitionSourceID, mutation.AcquisitionDigest, *mutation.Package); err != nil {
+			return err
+		}
+	}
+	var current InstalledPluginRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("plugin_id = ?", mutation.PluginID).First(&current).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrPluginNotInstalled
+		}
+		return err
+	}
+	if mutation.ExpectedActive != "" && current.ActivePackageDigest != mutation.ExpectedActive {
+		return fmt.Errorf("%w: active plugin package changed concurrently", ErrPluginConflict)
+	}
+	if mutation.ExpectedStateVersion != 0 && current.StateVersion != mutation.ExpectedStateVersion {
+		return fmt.Errorf("%w: plugin state changed concurrently", ErrPluginConflict)
+	}
+	if mutation.ExpectedPendingOperationID != "" && current.PendingOperationID != mutation.ExpectedPendingOperationID {
+		return fmt.Errorf("%w: plugin operation is stale or out of order", ErrPluginConflict)
+	}
+	if mutation.Package != nil {
+		if err := ensurePluginPackageTx(tx, *mutation.Package, mutation.Artifacts); err != nil {
+			return err
+		}
+	}
+	if mutation.DeletePlugin {
+		if mutation.DeleteInstances {
+			var instanceIDs []string
+			if err := tx.Model(&PluginInstanceRow{}).Where("plugin_id = ?", mutation.PluginID).Pluck("id", &instanceIDs).Error; err != nil {
+				return err
 			}
-			if err := validatePackageAcquisitionTx(tx, mutation.AcquisitionSourceID, mutation.AcquisitionDigest, *mutation.Package); err != nil {
+			if len(instanceIDs) > 0 {
+				if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&QuotaAllocationRow{}).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&ResourceBindingRow{}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginInstanceRow{}).Error; err != nil {
+				return err
+			}
+			quotaUpdatedAt := mutation.Operation.CreatedAt
+			if quotaUpdatedAt.IsZero() {
+				quotaUpdatedAt = time.Now().UTC()
+			}
+			if err := recomputeCountQuotaUsageTx(tx, quotaUpdatedAt); err != nil {
 				return err
 			}
 		}
-		var current InstalledPluginRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("plugin_id = ?", mutation.PluginID).First(&current).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return ErrPluginNotInstalled
+		if mutation.DeleteGrants {
+			if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginGrantRow{}).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Where("plugin_id = ? AND state_version = ?", mutation.PluginID, current.StateVersion).Delete(&InstalledPluginRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("%w: plugin state changed concurrently", ErrPluginConflict)
+		}
+	} else {
+		if mutation.Installed == nil {
+			return errors.New("installed plugin update is required")
+		}
+		if mutation.Installed.PluginID != mutation.PluginID {
+			return errors.New("installed plugin identity differs from mutation target")
+		}
+		next := *mutation.Installed
+		next.StateVersion = current.StateVersion + 1
+		result := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ? AND state_version = ?", mutation.PluginID, current.StateVersion).Select("*").Omit("plugin_id").Updates(&next)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("%w: plugin state changed concurrently", ErrPluginConflict)
+		}
+		mutation.Installed.StateVersion = next.StateVersion
+		if mutation.ReplaceGrants != nil {
+			normalizePluginGrantRows(mutation.ReplaceGrants)
+			if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginGrantRow{}).Error; err != nil {
+				return err
+			}
+			if len(mutation.ReplaceGrants) > 0 {
+				if err := tx.Create(&mutation.ReplaceGrants).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if mutation.ReplaceInstance != nil {
+			if err := s.replacePluginInstanceTx(ctx, tx, mutation.PluginID, mutation.ReplaceInstance, mutation.ValidateInstanceScope, mutation.PromoteInstanceBinding); err != nil {
+				return err
+			}
+		}
+		if len(mutation.ReplaceInstances) > 0 {
+			for index := range mutation.ReplaceInstances {
+				if err := s.replacePluginInstanceTx(ctx, tx, mutation.PluginID, &mutation.ReplaceInstances[index], false, false); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if mutation.CompleteOperation {
+		var storedOperation PluginOperationRow
+		if err := tx.Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).First(&storedOperation).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("%w: plugin operation is stale, replayed, or already completed", ErrPluginConflict)
 			}
 			return err
 		}
-		if mutation.ExpectedActive != "" && current.ActivePackageDigest != mutation.ExpectedActive {
-			return fmt.Errorf("%w: active plugin package changed concurrently", ErrPluginConflict)
+		if err := preparePluginOperationForWriteTx(tx, &storedOperation); err != nil {
+			return err
 		}
-		if mutation.ExpectedStateVersion != 0 && current.StateVersion != mutation.ExpectedStateVersion {
-			return fmt.Errorf("%w: plugin state changed concurrently", ErrPluginConflict)
+		if err := preparePluginOperationForWriteTx(tx, &mutation.Operation); err != nil {
+			return err
 		}
-		if mutation.ExpectedPendingOperationID != "" && current.PendingOperationID != mutation.ExpectedPendingOperationID {
-			return fmt.Errorf("%w: plugin operation is stale or out of order", ErrPluginConflict)
+		if !samePluginOperationPackageProvenance(storedOperation, mutation.Operation) {
+			return fmt.Errorf("%w: plugin operation package provenance changed during completion", ErrPluginConflict)
 		}
-		if mutation.Package != nil {
-			if err := ensurePluginPackageTx(tx, *mutation.Package, mutation.Artifacts); err != nil {
-				return err
-			}
+		result := tx.Model(&PluginOperationRow{}).Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).Updates(map[string]any{
+			"status": mutation.Operation.Status, "agent_results_json": mutation.Operation.AgentResultsJSON,
+			"error_class": mutation.Operation.ErrorClass, "error": mutation.Operation.Error, "completed_at": mutation.Operation.CompletedAt,
+			"target_package_identity": mutation.Operation.TargetPackageIdentity, "source_id": mutation.Operation.SourceID,
+			"source_kind": mutation.Operation.SourceKind, "source_risk_label": mutation.Operation.SourceRiskLabel,
+			"target_signature_key_id": mutation.Operation.TargetSignatureKeyID, "target_signature_public_key": mutation.Operation.TargetSignaturePublicKey,
+			"target_signature_fingerprint": mutation.Operation.TargetSignatureFingerprint,
+		})
+		if result.Error != nil {
+			return result.Error
 		}
-		if mutation.DeletePlugin {
-			if mutation.DeleteInstances {
-				var instanceIDs []string
-				if err := tx.Model(&PluginInstanceRow{}).Where("plugin_id = ?", mutation.PluginID).Pluck("id", &instanceIDs).Error; err != nil {
-					return err
-				}
-				if len(instanceIDs) > 0 {
-					if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&QuotaAllocationRow{}).Error; err != nil {
-						return err
-					}
-					if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&ResourceBindingRow{}).Error; err != nil {
-						return err
-					}
-				}
-				if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginInstanceRow{}).Error; err != nil {
-					return err
-				}
-				quotaUpdatedAt := mutation.Operation.CreatedAt
-				if quotaUpdatedAt.IsZero() {
-					quotaUpdatedAt = time.Now().UTC()
-				}
-				if err := recomputeCountQuotaUsageTx(tx, quotaUpdatedAt); err != nil {
-					return err
-				}
-			}
-			if mutation.DeleteGrants {
-				if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginGrantRow{}).Error; err != nil {
-					return err
-				}
-			}
-			result := tx.Where("plugin_id = ? AND state_version = ?", mutation.PluginID, current.StateVersion).Delete(&InstalledPluginRow{})
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected != 1 {
-				return fmt.Errorf("%w: plugin state changed concurrently", ErrPluginConflict)
-			}
-		} else {
-			if mutation.Installed == nil {
-				return errors.New("installed plugin update is required")
-			}
-			if mutation.Installed.PluginID != mutation.PluginID {
-				return errors.New("installed plugin identity differs from mutation target")
-			}
-			next := *mutation.Installed
-			next.StateVersion = current.StateVersion + 1
-			result := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ? AND state_version = ?", mutation.PluginID, current.StateVersion).Select("*").Omit("plugin_id").Updates(&next)
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected != 1 {
-				return fmt.Errorf("%w: plugin state changed concurrently", ErrPluginConflict)
-			}
-			mutation.Installed.StateVersion = next.StateVersion
-			if mutation.ReplaceGrants != nil {
-				normalizePluginGrantRows(mutation.ReplaceGrants)
-				if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginGrantRow{}).Error; err != nil {
-					return err
-				}
-				if len(mutation.ReplaceGrants) > 0 {
-					if err := tx.Create(&mutation.ReplaceGrants).Error; err != nil {
-						return err
-					}
-				}
-			}
-			if mutation.ReplaceInstance != nil {
-				if err := s.replacePluginInstanceTx(ctx, tx, mutation.PluginID, mutation.ReplaceInstance, mutation.ValidateInstanceScope, mutation.PromoteInstanceBinding); err != nil {
-					return err
-				}
-			}
-			if len(mutation.ReplaceInstances) > 0 {
-				for index := range mutation.ReplaceInstances {
-					if err := s.replacePluginInstanceTx(ctx, tx, mutation.PluginID, &mutation.ReplaceInstances[index], false, false); err != nil {
-						return err
-					}
-				}
-			}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("%w: plugin operation is stale, replayed, or already completed", ErrPluginConflict)
 		}
-		if mutation.CompleteOperation {
-			var storedOperation PluginOperationRow
-			if err := tx.Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).First(&storedOperation).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return fmt.Errorf("%w: plugin operation is stale, replayed, or already completed", ErrPluginConflict)
-				}
-				return err
-			}
-			if err := preparePluginOperationForWriteTx(tx, &storedOperation); err != nil {
-				return err
-			}
-			if err := preparePluginOperationForWriteTx(tx, &mutation.Operation); err != nil {
-				return err
-			}
-			if !samePluginOperationPackageProvenance(storedOperation, mutation.Operation) {
-				return fmt.Errorf("%w: plugin operation package provenance changed during completion", ErrPluginConflict)
-			}
-			result := tx.Model(&PluginOperationRow{}).Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).Updates(map[string]any{
-				"status": mutation.Operation.Status, "agent_results_json": mutation.Operation.AgentResultsJSON,
-				"error_class": mutation.Operation.ErrorClass, "error": mutation.Operation.Error, "completed_at": mutation.Operation.CompletedAt,
-				"target_package_identity": mutation.Operation.TargetPackageIdentity, "source_id": mutation.Operation.SourceID,
-				"source_kind": mutation.Operation.SourceKind, "source_risk_label": mutation.Operation.SourceRiskLabel,
-				"target_signature_key_id": mutation.Operation.TargetSignatureKeyID, "target_signature_public_key": mutation.Operation.TargetSignaturePublicKey,
-				"target_signature_fingerprint": mutation.Operation.TargetSignatureFingerprint,
-			})
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected != 1 {
-				return fmt.Errorf("%w: plugin operation is stale, replayed, or already completed", ErrPluginConflict)
-			}
-			return tx.Create(&mutation.Audit).Error
-		}
-		return createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit)
-	})
+		return tx.Create(&mutation.Audit).Error
+	}
+	return createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit)
 }
 
 func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []PluginArtifactRow) error {
@@ -2505,6 +2683,9 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 	if instance == nil || instance.PluginID != pluginID {
 		return errors.New("plugin instance identity differs from mutation target")
 	}
+	if err := normalizePluginInstancePolicyChains(instance); err != nil {
+		return err
+	}
 	// Resource/agent bindings are the global first lock class. Agent rebind uses
 	// the same order before it locks plugin instances, avoiding a DB lock cycle.
 	if validateScope {
@@ -2538,6 +2719,34 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 		return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
 	}
 	instance.StateVersion = next.StateVersion
+	return nil
+}
+
+func normalizePluginInstancePolicyChains(instance *PluginInstanceRow) error {
+	if instance == nil {
+		return errors.New("plugin instance is required")
+	}
+	if err := ValidatePluginPolicyIdentity(instance.ID); err != nil {
+		return fmt.Errorf("plugin instance identity: %w", err)
+	}
+	if err := ValidatePluginPolicyIdentity(instance.PluginID); err != nil {
+		return fmt.Errorf("plugin identity: %w", err)
+	}
+	for label, field := range map[string]*string{
+		"policy chains":          &instance.PolicyChainsJSON,
+		"pending policy chains":  &instance.PendingPolicyChainsJSON,
+		"rollback policy chains": &instance.RollbackPolicyChainsJSON,
+	} {
+		chains, err := CanonicalPluginPolicyChains(*field)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, label, err)
+		}
+		canonical, err := EncodePluginPolicyChains(chains)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, label, err)
+		}
+		*field = canonical
+	}
 	return nil
 }
 

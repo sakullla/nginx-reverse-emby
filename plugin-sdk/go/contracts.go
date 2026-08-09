@@ -348,7 +348,7 @@ type PolicyHost interface {
 	ReadBodyWindow(context.Context, uint32, uint32) ([]byte, error)
 	StateGet(context.Context, string) ([]byte, bool, error)
 	StatePut(context.Context, string, []byte) error
-	EmitEvent(context.Context, string, []byte) error
+	EmitEvent(context.Context, PolicySecurityEvent) error
 	AddMetric(context.Context, string, int64) error
 }
 

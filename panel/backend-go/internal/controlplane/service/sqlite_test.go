@@ -63,6 +63,7 @@ func serviceSQLiteTemplateData() ([]byte, error) {
 			&storage.InstalledPluginRow{},
 			&storage.PluginInstanceRow{},
 			&storage.PluginGrantRow{},
+			&storage.PluginPolicyAgentRevisionRow{},
 		); err != nil {
 			serviceSQLiteTemplateFixture.err = err
 			return

@@ -364,6 +364,18 @@ type PolicyFailurePolicy struct {
 	CoreFallback string `json:"core_fallback"`
 }
 
+// PolicyArtifactSource is the durable, location-independent identity of a
+// policy artifact. ArtifactPath remains an optional embedded-Agent execution
+// hint and is empty for remotes.
+type PolicyArtifactSource struct {
+	ArtifactID      string `json:"artifact_id"`
+	PackageIdentity string `json:"package_identity"`
+	PackageDigest   string `json:"package_digest"`
+	RelativePath    string `json:"relative_path"`
+	SHA256          string `json:"sha256"`
+	SizeBytes       int64  `json:"size_bytes"`
+}
+
 type PolicyStage struct {
 	Kind              string               `json:"kind"`
 	PolicyID          string               `json:"policy_id"`
@@ -373,6 +385,7 @@ type PolicyStage struct {
 	PackageDigest     string               `json:"package_digest"`
 	ArtifactPath      string               `json:"artifact_path"`
 	ArtifactDigest    string               `json:"artifact_digest"`
+	ArtifactSource    PolicyArtifactSource `json:"artifact_source"`
 	SignatureVerified bool                 `json:"signature_verified"`
 	SignerKeyID       string               `json:"signer_key_id"`
 	SignerFingerprint string               `json:"signer_fingerprint"`

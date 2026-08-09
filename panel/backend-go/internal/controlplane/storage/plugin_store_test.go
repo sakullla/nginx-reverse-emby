@@ -23,6 +23,14 @@ import (
 )
 
 func writeMigrationVerifiedPackage(t *testing.T, root, pluginID string, signingKey ed25519.PrivateKey) string {
+	return writeMigrationVerifiedPolicyPackage(t, root, pluginID, "waf", "http.request", signingKey)
+}
+
+func writeMigrationVerifiedPolicyPackage(t *testing.T, root, pluginID, policyKind, extensionPoint string, signingKey ed25519.PrivateKey) string {
+	return writeMigrationVerifiedPolicyPackageWithBudget(t, root, pluginID, policyKind, extensionPoint, 65536, signingKey)
+}
+
+func writeMigrationVerifiedPolicyPackageWithBudget(t *testing.T, root, pluginID, policyKind, extensionPoint string, inputBytes int64, signingKey ed25519.PrivateKey) string {
 	t.Helper()
 	artifact := compatfixture.PolicyV1GuestWASM()
 	artifactDigest := sha256.Sum256(artifact)
@@ -31,17 +39,17 @@ id: %s
 version: 1.0.0
 name: Migration Fixture
 compatibility: {host: "*", agent: "*"}
-runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm, policy_kind: waf}
+runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm, policy_kind: %s}
 artifacts:
   - {path: artifacts/policy.wasm, sha256: %x, size: %d, mode: wasm}
-extension_points: [http.request]
+extension_points: [%s]
 permissions: [http.inspect]
 config_schema: config.schema.json
-resource_budget: {timeout_ms: 2, memory_bytes: 1048576, concurrency: 1, input_bytes: 65536, output_bytes: 4096}
+resource_budget: {timeout_ms: 2, memory_bytes: 1048576, concurrency: 1, input_bytes: %d, output_bytes: 4096}
 failure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}
 signature: {algorithm: ed25519, key_id: community-release, file: package.sig}
 cleanup: {instances: retain, config: retain, owned_data: retain, grants: retain, shared_refs: retain, audit_events: retain}
-`, pluginID, artifactDigest, len(artifact))
+`, pluginID, policyKind, artifactDigest, len(artifact), extensionPoint, inputBytes)
 	files := map[string][]byte{
 		plugins.PackageManifestFile: []byte(manifest),
 		plugins.ConfigSchemaFile:    []byte(`{"type":"object"}`),

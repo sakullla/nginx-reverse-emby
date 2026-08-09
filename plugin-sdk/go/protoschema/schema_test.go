@@ -72,7 +72,7 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 		{"ReadBodyWindowRequest", []fieldExpectation{{"offset", 1, protoreflect.Uint32Kind, false, ""}, {"length", 2, protoreflect.Uint32Kind, false, ""}}},
 		{"StateGetRequest", []fieldExpectation{{"key", 1, protoreflect.StringKind, false, ""}}},
 		{"StatePutRequest", []fieldExpectation{{"key", 1, protoreflect.StringKind, false, ""}, {"value", 2, protoreflect.BytesKind, false, ""}}},
-		{"EmitEventRequest", []fieldExpectation{{"kind", 1, protoreflect.StringKind, false, ""}, {"payload", 2, protoreflect.BytesKind, false, ""}}},
+		{"EmitEventRequest", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.EmitEventRequest.Code"}, {"action", 2, protoreflect.EnumKind, false, "nre.plugin.policy.v1.EmitEventRequest.Action"}}},
 		{"AddMetricRequest", []fieldExpectation{{"name", 1, protoreflect.StringKind, false, ""}, {"delta", 2, protoreflect.Sint64Kind, false, ""}}},
 		{"BytesResponse", []fieldExpectation{{"value", 1, protoreflect.BytesKind, false, ""}, {"found", 2, protoreflect.BoolKind, false, ""}}},
 	})
@@ -81,6 +81,9 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 	assertExclusiveResult(t, file.Messages().ByName("EvaluateResponse"))
 	action := file.Messages().ByName("EvaluateSuccess").Enums().ByName("Action")
 	assertEnum(t, action, []enumValueExpectation{{"ACTION_UNSPECIFIED", 0}, {"ALLOW", 1}, {"DENY", 2}, {"OBSERVE", 3}})
+	emitEvent := file.Messages().ByName("EmitEventRequest")
+	assertEnum(t, emitEvent.Enums().ByName("Code"), []enumValueExpectation{{"SECURITY_EVENT_CODE_UNSPECIFIED", 0}, {"SECURITY_EVENT_CODE_WAF_RULE_MATCH", 1}})
+	assertEnum(t, emitEvent.Enums().ByName("Action"), []enumValueExpectation{{"SECURITY_EVENT_ACTION_UNSPECIFIED", 0}, {"SECURITY_EVENT_ACTION_OBSERVE", 1}, {"SECURITY_EVENT_ACTION_DENY", 2}})
 }
 
 func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {

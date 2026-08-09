@@ -80,6 +80,7 @@ func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, jo
 		&PluginArtifactRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
+		&PluginPolicyAgentRevisionRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
 	}
@@ -1486,6 +1487,13 @@ func copyRows(ctx context.Context, source, target *GormStore, model any) error {
 	if err := source.db.WithContext(ctx).Model(model).Find(rows).Error; err != nil {
 		return err
 	}
+	if pluginInstances, ok := rows.(*[]PluginInstanceRow); ok {
+		for index := range *pluginInstances {
+			if err := normalizePluginInstancePolicyChains(&(*pluginInstances)[index]); err != nil {
+				return fmt.Errorf("validate migrated plugin instance: %w", err)
+			}
+		}
+	}
 	if isEmptyMigrationSlice(rows) {
 		return nil
 	}
@@ -1609,6 +1617,8 @@ func newSliceForModel(model any) any {
 		return &[]InstalledPluginRow{}
 	case *PluginInstanceRow:
 		return &[]PluginInstanceRow{}
+	case *PluginPolicyAgentRevisionRow:
+		return &[]PluginPolicyAgentRevisionRow{}
 	case *PluginGrantRow:
 		return &[]PluginGrantRow{}
 	case *PluginOperationRow:
@@ -1713,6 +1723,8 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]InstalledPluginRow:
 		return len(*typed) == 0
 	case *[]PluginInstanceRow:
+		return len(*typed) == 0
+	case *[]PluginPolicyAgentRevisionRow:
 		return len(*typed) == 0
 	case *[]PluginGrantRow:
 		return len(*typed) == 0

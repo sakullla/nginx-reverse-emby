@@ -47,6 +47,18 @@ type PolicyFailurePolicy struct {
 	CoreFallback string `json:"core_fallback"`
 }
 
+// PolicyArtifactSource is the location-independent, durable artifact identity
+// issued by the control plane. ArtifactPath is populated only after the Agent
+// has materialized and verified this source into its own cache.
+type PolicyArtifactSource struct {
+	ArtifactID      string `json:"artifact_id"`
+	PackageIdentity string `json:"package_identity"`
+	PackageDigest   string `json:"package_digest"`
+	RelativePath    string `json:"relative_path"`
+	SHA256          string `json:"sha256"`
+	SizeBytes       int64  `json:"size_bytes"`
+}
+
 // PolicyStage is a single authority in a shared policy chain. ArtifactPath is
 // a host-verified, generation-scoped reference; policy evaluation never opens
 // or resolves it itself.
@@ -59,6 +71,7 @@ type PolicyStage struct {
 	PackageDigest     string               `json:"package_digest"`
 	ArtifactPath      string               `json:"artifact_path"`
 	ArtifactDigest    string               `json:"artifact_digest"`
+	ArtifactSource    PolicyArtifactSource `json:"artifact_source"`
 	SignatureVerified bool                 `json:"signature_verified"`
 	SignerKeyID       string               `json:"signer_key_id"`
 	SignerFingerprint string               `json:"signer_fingerprint"`

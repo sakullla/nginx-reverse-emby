@@ -170,21 +170,17 @@ func (host *requestHost) StatePut(_ context.Context, key string, value []byte) e
 	return host.state.put(host.instanceID, key, value)
 }
 
-func (host *requestHost) EmitEvent(ctx context.Context, kind string, payload []byte) error {
+func (host *requestHost) EmitEvent(ctx context.Context, event pluginsdk.PolicySecurityEvent) error {
 	if !host.granted("event.emit") {
 		return permissionDenied("policy event emission is not granted")
 	}
-	kind = canonicalSignalName(kind)
-	if kind == "" {
-		return errors.New("policy event kind is not canonical")
-	}
-	event, err := pluginsdk.DecodePolicySecurityEvent(payload)
+	event, err := pluginsdk.PolicySecurityEventFromWire(int32(event.Code), int32(event.Action))
 	if err != nil {
 		return err
 	}
 	host.observe(ctx, observability.Event{
-		Name: observability.PolicyHostEvent, Outcome: "observed", Reason: kind,
-		SecurityRule: event.RuleID, SecurityAction: event.Action, SecuritySummary: event.Summary,
+		Name: observability.PolicyHostEvent, Outcome: "observed", Reason: event.Code.String(),
+		SecurityCode: event.Code.String(), SecurityAction: event.Action.String(), SecurityTemplate: event.Template(),
 	})
 	return nil
 }

@@ -35,6 +35,10 @@ type SyncClientConfig struct {
 	CurrentVersion string
 	Platform       string
 	RuntimePackage model.RuntimePackage
+	// PluginCacheDir is the Agent-owned immutable policy artifact cache. Remote
+	// snapshots are not returned to the runtime until every referenced artifact
+	// has been downloaded and verified into this directory.
+	PluginCacheDir string
 	HTTPTransport  HTTPTransportConfig
 	// DDNSReporter supplies the agent's last-extracted IPv4/IPv6 for the
 	// heartbeat. Nil when DDNS extraction is unavailable; the heartbeat then
@@ -227,6 +231,9 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		syncMeta.VersionPackageURL,
 		syncMeta.VersionSHA256,
 	)
+	if err := c.preparePluginArtifacts(ctx, &snapshot); err != nil {
+		return Snapshot{}, err
+	}
 
 	return snapshot, nil
 }
@@ -278,6 +285,9 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	// requires an absolute URL, while the verified digest must remain the digest
 	// issued by the control plane for the root-relative snapshot value.
 	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
+	if err := c.preparePluginArtifacts(ctx, &snapshot); err != nil {
+		return model.RevisionPull{}, err
+	}
 	pull.Snapshot = &snapshot
 	pull.VerifiedSnapshotDigest = digest
 	return pull, nil

@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -10,18 +11,7 @@ import (
 )
 
 func PolicyEvaluateRequestFrameBytes(extensionPoint, requestID string, payload []byte) (int, error) {
-	message, err := canonicalPolicyWireMessage("EvaluateRequest")
-	if err != nil {
-		return 0, err
-	}
-	setPolicyWireString(message, "extension_point", extensionPoint)
-	setPolicyWireString(message, "request_id", requestID)
-	setPolicyWireBytes(message, "payload", payload)
-	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message.Interface())
-	if err != nil {
-		return 0, fmt.Errorf("marshal deterministic policy evaluate request: %w", err)
-	}
-	return len(encoded), nil
+	return pluginsdk.PolicyV1EvaluateRequestFrameBytes(extensionPoint, requestID, payload)
 }
 
 func policyBytesResponseFrameBytes(value []byte, found bool) (int, error) {
@@ -45,11 +35,6 @@ func canonicalPolicyWireMessage(name string) (*dynamicpb.Message, error) {
 		return nil, err
 	}
 	return dynamicpb.NewMessage(descriptor), nil
-}
-
-func setPolicyWireString(message *dynamicpb.Message, name, value string) {
-	field := message.Descriptor().Fields().ByName(protoreflect.Name(name))
-	message.Set(field, protoreflect.ValueOfString(value))
 }
 
 func setPolicyWireBytes(message *dynamicpb.Message, name string, value []byte) {

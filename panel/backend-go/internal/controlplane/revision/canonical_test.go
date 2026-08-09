@@ -101,26 +101,26 @@ func TestCanonicalSnapshotPreservesConfiguredBackendOrder(t *testing.T) {
 
 func TestCanonicalSnapshotNormalizesPluginPoliciesWithoutReorderingStages(t *testing.T) {
 	t.Parallel()
-	stage := func(kind string, extensionPoints, scopes []string, config string) storage.PolicyStage {
+	stage := func(policyID, kind string, extensionPoints, scopes []string, config string) storage.PolicyStage {
 		return storage.PolicyStage{
-			Kind: kind, PolicyID: kind, InstanceID: kind,
+			Kind: kind, PolicyID: policyID, InstanceID: kind,
 			ExtensionPoints: extensionPoints, GrantedScopes: scopes,
 			Config: json.RawMessage(config),
 		}
 	}
 	first := storage.Snapshot{PluginPolicies: []storage.PluginPolicy{
-		{ID: "z-policy", Revision: 9, Stages: []storage.PolicyStage{stage("ip", []string{"http.request", "l4.accept", "http.request"}, []string{"state.write", "state.read"}, `{"limit":2,"enabled":true}`)}},
+		{ID: "z-policy", Revision: 9, Stages: []storage.PolicyStage{stage("z-policy", "ip", []string{"http.request", "l4.accept", "http.request"}, []string{"state.write", "state.read"}, `{"limit":2,"enabled":true}`)}},
 		{ID: "a-policy", Revision: 8, Stages: []storage.PolicyStage{
-			stage("rate", []string{"http.request"}, nil, `{}`),
-			stage("waf", []string{"http.request"}, []string{"request.read"}, `{"mode":"block"}`),
+			stage("a-policy", "rate", []string{"http.request"}, nil, `{}`),
+			stage("a-policy", "waf", []string{"http.request"}, []string{"request.read"}, `{"mode":"block"}`),
 		}},
 	}}
 	second := storage.Snapshot{PluginPolicies: []storage.PluginPolicy{
 		{ID: "a-policy", Revision: 100, Stages: []storage.PolicyStage{
-			stage("rate", []string{"http.request"}, []string{}, `{}`),
-			stage("waf", []string{"http.request"}, []string{"request.read"}, `{ "mode" : "block" }`),
+			stage("a-policy", "rate", []string{"http.request"}, []string{}, `{}`),
+			stage("a-policy", "waf", []string{"http.request"}, []string{"request.read"}, `{ "mode" : "block" }`),
 		}},
-		{ID: "z-policy", Revision: 101, Stages: []storage.PolicyStage{stage("ip", []string{"l4.accept", "http.request"}, []string{"state.read", "state.write"}, `{"enabled":true,"limit":2}`)}},
+		{ID: "z-policy", Revision: 101, Stages: []storage.PolicyStage{stage("z-policy", "ip", []string{"l4.accept", "http.request"}, []string{"state.read", "state.write"}, `{"enabled":true,"limit":2}`)}},
 	}}
 	firstDigest, err := SemanticSnapshotDigest(first)
 	if err != nil {

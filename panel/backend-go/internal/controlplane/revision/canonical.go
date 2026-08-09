@@ -58,12 +58,24 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 	}
 	result.PluginPolicies = nonNil(result.PluginPolicies)
 	for i := range result.PluginPolicies {
+		if err := storage.ValidatePluginPolicyIdentity(result.PluginPolicies[i].ID); err != nil {
+			return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy identity is invalid", err)
+		}
 		if stripRevision {
 			result.PluginPolicies[i].Revision = 0
 		}
 		result.PluginPolicies[i].Stages = nonNil(result.PluginPolicies[i].Stages)
 		for j := range result.PluginPolicies[i].Stages {
 			stage := &result.PluginPolicies[i].Stages[j]
+			if err := storage.ValidatePluginPolicyIdentity(stage.PolicyID); err != nil {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage identity is invalid", err)
+			}
+			if stage.PolicyID != result.PluginPolicies[i].ID {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage identity differs from its chain", nil)
+			}
+			if err := storage.ValidatePluginPolicyIdentity(stage.InstanceID); err != nil {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy instance identity is invalid", err)
+			}
 			stage.ExtensionPoints = canonicalStringSet(stage.ExtensionPoints)
 			stage.GrantedScopes = canonicalStringSet(stage.GrantedScopes)
 			stage.Config, err = canonicalJSON(stage.Config)

@@ -95,6 +95,26 @@ func TestPolicyModuleRejectsMissingRequiredPolicyBeforeFactory(t *testing.T) {
 	}
 }
 
+func TestPolicyValidationModuleAllowsEmptyAndRejectsAnyPolicyCatalog(t *testing.T) {
+	validation := NewValidationModule(nil)
+	if capabilities := validation.Capabilities(model.Snapshot{}); len(capabilities) != 0 {
+		t.Fatalf("validation-only module capabilities=%+v, want none", capabilities)
+	}
+	transaction, err := validation.Prepare(context.Background(), module.ApplyRequest{Next: model.Snapshot{Revision: 1, PluginPolicies: []model.PluginPolicy{}}})
+	if err != nil {
+		t.Fatalf("empty policy snapshot rejected: %v", err)
+	}
+	if err := transaction.(module.GenerationTransaction).Destroy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = validation.Prepare(context.Background(), module.ApplyRequest{Next: model.Snapshot{
+		Revision: 2, PluginPolicies: []model.PluginPolicy{testPolicy("unused", model.PolicyKindIP)},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "policy execution runtime is unavailable") {
+		t.Fatalf("policy-bearing snapshot error=%v, want unavailable validation failure", err)
+	}
+}
+
 func TestPolicyModuleRejectsMalformedTrustedSourceAllowlists(t *testing.T) {
 	for name, next := range map[string]model.Snapshot{
 		"http": {

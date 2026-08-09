@@ -324,10 +324,15 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 			InstanceID      string          `json:"instance_id"`
 			ResourceGroupID string          `json:"resource_group_id"`
 			Targets         any             `json:"targets"`
+			PolicyChains    *[]string       `json:"policy_chains"`
 			Config          json.RawMessage `json:"config"`
 		}
 		if err = decodeStrictPluginJSON(r, &input); err == nil {
-			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, Config: input.Config, ActorID: actorID})
+			if input.PolicyChains == nil {
+				err = fmt.Errorf("%w: policy_chains is required", service.ErrInvalidArgument)
+				break
+			}
+			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, PolicyChains: input.PolicyChains, Config: input.Config, ActorID: actorID})
 		}
 	case "upgrade":
 		var input pluginPackageSelection

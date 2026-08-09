@@ -1,11 +1,14 @@
 package policy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -18,6 +21,25 @@ type scriptedModule struct {
 	responses map[model.PolicyKind]ModuleResponse
 	errors    map[model.PolicyKind]error
 	inspect   func(ModuleRequest)
+}
+
+type eventExfiltrationModule struct {
+	headerSecret string
+	bodySecret   string
+	errors       []error
+}
+
+func (module *eventExfiltrationModule) Evaluate(ctx context.Context, request ModuleRequest) (ModuleResponse, error) {
+	module.errors = append(module.errors,
+		request.Host.EmitEvent(ctx, pluginsdk.PolicySecurityEvent{Code: 200, Action: pluginsdk.PolicySecurityEventActionDeny}),
+		request.Host.EmitEvent(ctx, pluginsdk.PolicySecurityEvent{Code: pluginsdk.PolicySecurityEventCodeWAFRuleMatch, Action: 200}),
+		request.Host.EmitEvent(ctx, pluginsdk.PolicySecurityEvent{Code: pluginsdk.PolicySecurityEventCodeWAFRuleMatch, Action: pluginsdk.PolicySecurityEventActionObserve}),
+	)
+	// Keep the request-derived values live in the guest implementation: the
+	// typed event surface provides no string/byte field in which to place them.
+	_ = module.headerSecret
+	_ = module.bodySecret
+	return ModuleResponse{Action: ActionAllow}, nil
 }
 
 func (module *scriptedModule) Evaluate(_ context.Context, request ModuleRequest) (ModuleResponse, error) {
@@ -294,7 +316,7 @@ func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	if err := host.StatePut(context.Background(), "bucket", []byte("value")); !isPermissionDenied(err) {
 		t.Fatalf("StatePut() error = %v", err)
 	}
-	if err := host.EmitEvent(context.Background(), "waf.hit", []byte("not-logged")); !isPermissionDenied(err) {
+	if err := host.EmitEvent(context.Background(), pluginsdk.PolicySecurityEvent{Code: pluginsdk.PolicySecurityEventCodeWAFRuleMatch, Action: pluginsdk.PolicySecurityEventActionDeny}); !isPermissionDenied(err) {
 		t.Fatalf("EmitEvent() error = %v", err)
 	}
 	host.stage.GrantedScopes = []string{"http.inspect", "policy.read", "policy.write", "event.emit"}
@@ -324,18 +346,54 @@ func TestPolicyHostPreservesEmptyFieldPresenceAndEmitsSafeEvent(t *testing.T) {
 	if err != nil || missing != nil {
 		t.Fatalf("missing field = %#v, error = %v", missing, err)
 	}
-	payload := []byte(`{"rule_id":"waf.sql-1","action":"deny","summary":"sql injection signature matched"}`)
-	if err := host.EmitEvent(context.Background(), "waf.hit", payload); err != nil {
+	if err := host.EmitEvent(context.Background(), pluginsdk.PolicySecurityEvent{Code: pluginsdk.PolicySecurityEventCodeWAFRuleMatch, Action: pluginsdk.PolicySecurityEventActionDeny}); err != nil {
 		t.Fatalf("EmitEvent() error = %v", err)
 	}
-	if observed.SecurityRule != "waf.sql-1" || observed.SecurityAction != "deny" || observed.SecuritySummary != "sql injection signature matched" {
+	if observed.SecurityCode != "waf.rule_match" || observed.SecurityAction != "deny" || observed.SecurityTemplate != "WAF rule matched" {
 		t.Fatalf("observed event = %+v", observed)
 	}
 	if observed.RequestID != "request-1" || observed.PluginID != "official.waf" {
 		t.Fatalf("observed identity = %+v", observed)
 	}
-	if err := host.EmitEvent(context.Background(), "waf.hit", []byte(`{"rule_id":"waf.sql-1","action":"deny","summary":"authorization token leaked"}`)); err == nil {
-		t.Fatal("EmitEvent() accepted sensitive summary")
+	if err := host.EmitEvent(context.Background(), pluginsdk.PolicySecurityEvent{Code: 200, Action: pluginsdk.PolicySecurityEventActionDeny}); err == nil {
+		t.Fatal("EmitEvent() accepted unknown guest event code")
+	}
+}
+
+func TestPolicyGuestCannotRelayHeaderOrBodySecretsToRecorder(t *testing.T) {
+	headerSecret := "actual-header-credential-7c993"
+	bodySecret := "actual-body-secret-1fa26"
+	body, err := NewBodyWindow([]byte(bodySecret), true, BodyNotSkipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := testInput(t, ExtensionHTTP, map[string][]byte{
+		"request.header.authorization": []byte(headerSecret),
+	}, body)
+	var log bytes.Buffer
+	recorder := observability.NewRecorder(slog.New(slog.NewTextHandler(&log, nil)))
+	policyDefinition := testPolicy("policy-1", model.PolicyKindWAF)
+	policyDefinition.Stages[0].GrantedScopes = []string{"http.inspect", "event.emit"}
+	guest := &eventExfiltrationModule{headerSecret: headerSecret, bodySecret: bodySecret}
+	evaluator, err := NewGenerationEvaluator("generation-1", []model.PluginPolicy{policyDefinition}, guest, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := evaluator.Evaluate(context.Background(), &model.PolicyRef{ID: "policy-1"}, input)
+	if decision.Action != ActionAllow {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if len(guest.errors) != 3 || guest.errors[0] == nil || guest.errors[1] == nil || guest.errors[2] != nil {
+		t.Fatalf("guest event errors = %v, want rejected/rejected/accepted", guest.errors)
+	}
+	output := log.String()
+	if strings.Contains(output, headerSecret) || strings.Contains(output, bodySecret) {
+		t.Fatalf("recorder leaked request-derived secret: %s", output)
+	}
+	for _, fixed := range []string{"security_code=waf.rule_match", "security_action=observe", `security_template="WAF rule matched"`} {
+		if !strings.Contains(output, fixed) {
+			t.Fatalf("recorder output missing host-owned field %q: %s", fixed, output)
+		}
 	}
 }
 

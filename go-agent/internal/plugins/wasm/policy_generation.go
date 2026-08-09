@@ -7,7 +7,6 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,9 +50,8 @@ func preparePolicyGeneration(ctx context.Context, runtime *Runtime, generationID
 	if runtime == nil {
 		return nil, errors.New("wasm runtime is required")
 	}
-	generationID = strings.TrimSpace(generationID)
-	if generationID == "" {
-		return nil, errors.New("policy generation id is required")
+	if err := pluginsdk.ValidatePolicyIdentity(generationID); err != nil {
+		return nil, fmt.Errorf("policy generation id is invalid: %w", err)
 	}
 	if observer == nil {
 		observer = discardObserver{}
@@ -229,20 +227,20 @@ func (generation *PolicyGeneration) Close(ctx context.Context) error {
 }
 
 func validatePolicyStageEvidence(stage model.PolicyStage) error {
-	if strings.TrimSpace(stage.InstanceID) == "" || stage.InstanceID != strings.TrimSpace(stage.InstanceID) {
-		return errors.New("instance id is missing or non-canonical")
-	}
-	if strings.TrimSpace(stage.PolicyID) == "" || stage.PolicyID != strings.TrimSpace(stage.PolicyID) {
-		return errors.New("policy id is missing or non-canonical")
+	for _, identity := range []struct{ name, value string }{
+		{"instance id", stage.InstanceID}, {"policy id", stage.PolicyID},
+		{"signer key id", stage.SignerKeyID}, {"signer fingerprint", stage.SignerFingerprint},
+		{"artifact path", stage.ArtifactPath}, {"artifact digest", stage.ArtifactDigest},
+	} {
+		if err := pluginsdk.ValidatePolicyIdentity(identity.value); err != nil {
+			return fmt.Errorf("%s is missing or non-canonical: %w", identity.name, err)
+		}
 	}
 	if stage.ABI != pluginsdk.PolicyABIV1 {
 		return fmt.Errorf("unsupported policy ABI %q", stage.ABI)
 	}
-	if !stage.SignatureVerified || strings.TrimSpace(stage.SignerKeyID) == "" || strings.TrimSpace(stage.SignerFingerprint) == "" {
+	if !stage.SignatureVerified {
 		return errors.New("artifact signature verification evidence is incomplete")
-	}
-	if strings.TrimSpace(stage.ArtifactPath) == "" || strings.TrimSpace(stage.ArtifactDigest) == "" {
-		return errors.New("artifact path and digest are required")
 	}
 	if err := policy.ValidatePolicyResourceBudget(stage.ResourceBudget); err != nil {
 		return fmt.Errorf("policy stage resource budget is invalid: %w", err)

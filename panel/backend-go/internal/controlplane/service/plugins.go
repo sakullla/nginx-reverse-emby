@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ var (
 	ErrPluginResourceAuthorization  = errors.New("plugin target resource authorization denied")
 	ErrPluginReadProjection         = errors.New("plugin read projection is invalid")
 	ErrPluginConflict               = storage.ErrPluginConflict
+	ErrPluginArtifactUnavailable    = errors.New("plugin artifact is unavailable for agent")
 )
 
 type PluginPackageCandidate struct {
@@ -52,6 +54,7 @@ type PluginConfigureRequest struct {
 	InstanceID      string
 	ResourceGroupID string
 	Targets         any
+	PolicyChains    *[]string
 	Config          json.RawMessage
 	ActorID         string
 }
@@ -102,6 +105,15 @@ type PluginArtifactDetail struct {
 	Mode   string `json:"mode"`
 	GOOS   string `json:"goos,omitempty"`
 	GOARCH string `json:"goarch,omitempty"`
+}
+
+// AgentPluginArtifact is an authenticated, active-catalog-bound artifact.
+// Path is an internal verified-cache path and must never be accepted from an
+// HTTP request or serialized back to an Agent.
+type AgentPluginArtifact struct {
+	Path      string
+	SHA256    string
+	SizeBytes int64
 }
 
 type PluginAgentStatus struct {
@@ -156,6 +168,7 @@ type PluginInstanceDetail struct {
 	PluginID               string          `json:"plugin_id"`
 	ResourceGroupID        string          `json:"resource_group_id"`
 	Targets                []string        `json:"targets"`
+	PolicyChains           []string        `json:"policy_chains"`
 	Config                 json.RawMessage `json:"config"`
 	ConfigVersion          uint64          `json:"config_version"`
 	PendingConfig          json.RawMessage `json:"pending_config,omitempty"`
@@ -163,6 +176,7 @@ type PluginInstanceDetail struct {
 	PendingOperationID     string          `json:"pending_operation_id,omitempty"`
 	PendingResourceGroupID string          `json:"pending_resource_group_id,omitempty"`
 	PendingTargets         []string        `json:"pending_targets,omitempty"`
+	PendingPolicyChains    []string        `json:"pending_policy_chains,omitempty"`
 	DesiredEnabled         bool            `json:"desired_enabled"`
 	CurrentState           string          `json:"current_state"`
 	StatusSummary          json.RawMessage `json:"status_summary"`
@@ -374,6 +388,77 @@ func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]Plug
 		result = append(result, PluginOperationDetail{ID: row.ID, PluginID: row.PluginID, Kind: row.Kind, Status: row.Status, TargetPackageDigest: row.TargetPackageDigest, TargetRevision: row.TargetRevision, AgentResults: agentResults, ErrorClass: row.ErrorClass, Error: row.Error, ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID, SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: row.CreatedAt, CompletedAt: row.CompletedAt})
 	}
 	return result, nil
+}
+
+type agentPluginPolicyCatalog interface {
+	LoadAgentPluginPolicies(context.Context, string) ([]storage.PluginPolicy, error)
+}
+
+// ResolveAgentPluginArtifact binds an opaque artifact ID to the requesting
+// Agent's current policy catalog, then revalidates the durable package and
+// artifact projection before exposing the internal file to the HTTP layer.
+func (s *PluginService) ResolveAgentPluginArtifact(ctx context.Context, agentID, artifactID string) (AgentPluginArtifact, error) {
+	artifactID = strings.TrimSpace(artifactID)
+	if err := storage.ValidatePluginPolicyIdentity(artifactID); err != nil {
+		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+	}
+	catalogStore, ok := s.store.(agentPluginPolicyCatalog)
+	if !ok {
+		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+	}
+	policies, err := catalogStore.LoadAgentPluginPolicies(ctx, agentID)
+	if err != nil {
+		return AgentPluginArtifact{}, err
+	}
+	var matched *storage.PolicyStage
+	for policyIndex := range policies {
+		for stageIndex := range policies[policyIndex].Stages {
+			stage := &policies[policyIndex].Stages[stageIndex]
+			if stage.ArtifactSource.ArtifactID != artifactID {
+				continue
+			}
+			if matched != nil {
+				return AgentPluginArtifact{}, errors.New("active plugin artifact identity is ambiguous")
+			}
+			matched = stage
+		}
+	}
+	if matched == nil {
+		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+	}
+	source := matched.ArtifactSource
+	packageRow, found, err := s.store.GetPluginPackageByIdentity(ctx, source.PackageIdentity)
+	if err != nil {
+		return AgentPluginArtifact{}, err
+	}
+	if !found || !strings.EqualFold(packageRow.Digest, source.PackageDigest) ||
+		!strings.EqualFold(packageRow.Digest, matched.PackageDigest) ||
+		!strings.EqualFold(packageRow.SignatureFingerprint, matched.SignerFingerprint) {
+		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+	}
+	if err := s.validateStoredPackageIntegrity(ctx, packageRow); err != nil {
+		return AgentPluginArtifact{}, err
+	}
+	artifacts, err := s.store.ListPluginArtifactsByIdentity(ctx, source.PackageIdentity)
+	if err != nil {
+		return AgentPluginArtifact{}, err
+	}
+	for _, artifact := range artifacts {
+		if artifact.ID != artifactID {
+			continue
+		}
+		if artifact.Path != source.RelativePath || !strings.EqualFold(artifact.SHA256, source.SHA256) ||
+			artifact.SizeBytes != source.SizeBytes || !strings.EqualFold(artifact.SHA256, matched.ArtifactDigest) {
+			return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+		}
+		path := filepath.Join(packageRow.CachePath, filepath.FromSlash(artifact.Path))
+		relative, relErr := filepath.Rel(packageRow.CachePath, path)
+		if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+		}
+		return AgentPluginArtifact{Path: path, SHA256: strings.ToLower(artifact.SHA256), SizeBytes: artifact.SizeBytes}, nil
+	}
+	return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
 }
 
 func (s *PluginService) InstallMutation(ctx context.Context, request PluginInstallRequest) (PluginSummary, error) {
@@ -627,6 +712,9 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if strings.TrimSpace(request.InstanceID) == "" {
 		request.InstanceID = lifecycleID("instance")
 	}
+	if err := storage.ValidatePluginPolicyIdentity(request.InstanceID); err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin instance identity: %v", ErrInvalidArgument, err))
+	}
 	instance, exists, err := s.store.GetPluginInstance(ctx, request.InstanceID)
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
@@ -634,17 +722,31 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if exists && instance.PluginID != request.PluginID {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance identity mismatch", ErrInvalidArgument))
 	}
+	policyChains := []string{}
+	if request.PolicyChains != nil {
+		policyChains = append(policyChains, (*request.PolicyChains)...)
+	} else if exists {
+		policyChains, err = storage.CanonicalPluginPolicyChains(instance.PolicyChainsJSON)
+		if err != nil {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: persisted policy chain memberships are invalid", ErrInvalidArgument))
+		}
+	}
+	policyChainsJSON, err := storage.EncodePluginPolicyChains(policyChains)
+	if err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid policy chain memberships: %v", ErrInvalidArgument, err))
+	}
 	now := s.now()
 	version := instance.ConfigVersion + 1
 	if instance.PendingVersion >= version {
 		version = instance.PendingVersion + 1
 	}
 	if !exists {
-		instance = storage.PluginInstanceRow{ID: request.InstanceID, PluginID: request.PluginID, ResourceGroupID: request.ResourceGroupID, TargetJSON: string(targetJSON), ConfigJSON: "{}", StatusSummaryJSON: "{}"}
+		instance = storage.PluginInstanceRow{ID: request.InstanceID, PluginID: request.PluginID, ResourceGroupID: request.ResourceGroupID, TargetJSON: string(targetJSON), PolicyChainsJSON: "[]", ConfigJSON: "{}", StatusSummaryJSON: "{}"}
 	}
 	instance.PendingConfigJSON = string(request.Config)
 	instance.PendingResourceGroupID = request.ResourceGroupID
 	instance.PendingTargetJSON = string(targetJSON)
+	instance.PendingPolicyChainsJSON = policyChainsJSON
 	instance.PendingVersion = version
 	instance.PendingOperationID = operation.ID
 	instance.DesiredEnabled = installed.DesiredLifecycle == "enabled"
@@ -695,6 +797,7 @@ func (s *PluginService) CompleteConfigure(ctx context.Context, applyResult Plugi
 	if applyResult.Applied {
 		instance.ConfigJSON, instance.ConfigVersion = instance.PendingConfigJSON, instance.PendingVersion
 		instance.ResourceGroupID, instance.TargetJSON = instance.PendingResourceGroupID, instance.PendingTargetJSON
+		instance.PolicyChainsJSON = instance.PendingPolicyChainsJSON
 		clearPendingInstance(&instance)
 		if installed.CurrentLifecycle == "active" {
 			instance.CurrentState = "active"
@@ -792,6 +895,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("candidate config for instance %s is incompatible after migration: %w", instances[index].ID, err))
 		}
 		instances[index].PendingConfigJSON = string(staged)
+		instances[index].PendingPolicyChainsJSON = instances[index].PolicyChainsJSON
 		instances[index].PendingVersion = instances[index].ConfigVersion + 1
 		instances[index].PendingOperationID = operation.ID
 		instances[index].CurrentState = "applying"
@@ -887,8 +991,10 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 		grants = grantRows(applyResult.PluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
+			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
 			instances[index].ConfigJSON, instances[index].ConfigVersion = instances[index].PendingConfigJSON, instances[index].PendingVersion
-			instances[index].PendingConfigJSON, instances[index].PendingVersion, instances[index].PendingOperationID = "", 0, ""
+			instances[index].PolicyChainsJSON = instances[index].PendingPolicyChainsJSON
+			clearPendingInstance(&instances[index])
 			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
 			instances[index].UpdatedAt = now
 		}
@@ -897,7 +1003,7 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 		installed.CurrentLifecycle = lifecycleCurrentState(installed.DesiredLifecycle)
 		operation.Status, operation.ErrorClass, operation.Error = "failed", "agent_apply", "one or more target agents failed to apply staged plugin package"
 		for index := range instances {
-			instances[index].PendingConfigJSON, instances[index].PendingVersion, instances[index].PendingOperationID = "", 0, ""
+			clearPendingInstance(&instances[index])
 			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
 			instances[index].UpdatedAt = now
 		}
@@ -974,6 +1080,7 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, fmt.Errorf("rollback config for instance %s is unavailable or invalid", instances[index].ID))
 		}
 		instances[index].PendingConfigJSON = instances[index].RollbackConfigJSON
+		instances[index].PendingPolicyChainsJSON = instances[index].RollbackPolicyChainsJSON
 		instances[index].PendingVersion = instances[index].RollbackVersion
 		instances[index].PendingOperationID = operation.ID
 		instances[index].CurrentState = "applying"
@@ -1059,8 +1166,10 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 		grants = grantRows(applyResult.PluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
+			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
 			instances[index].ConfigJSON, instances[index].ConfigVersion = instances[index].PendingConfigJSON, instances[index].PendingVersion
-			instances[index].PendingConfigJSON, instances[index].PendingVersion, instances[index].PendingOperationID = "", 0, ""
+			instances[index].PolicyChainsJSON = instances[index].PendingPolicyChainsJSON
+			clearPendingInstance(&instances[index])
 			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
 			instances[index].UpdatedAt = now
 		}
@@ -1069,7 +1178,7 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 		installed.CurrentLifecycle = lifecycleCurrentState(installed.DesiredLifecycle)
 		operation.Status, operation.ErrorClass, operation.Error = "failed", "agent_apply", "one or more target agents failed to apply rollback package"
 		for index := range instances {
-			instances[index].PendingConfigJSON, instances[index].PendingVersion, instances[index].PendingOperationID = "", 0, ""
+			clearPendingInstance(&instances[index])
 			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
 			instances[index].UpdatedAt = now
 		}
@@ -1402,6 +1511,7 @@ func clearPendingInstance(instance *storage.PluginInstanceRow) {
 	instance.PendingConfigJSON = ""
 	instance.PendingResourceGroupID = ""
 	instance.PendingTargetJSON = ""
+	instance.PendingPolicyChainsJSON = "[]"
 	instance.PendingVersion = 0
 	instance.PendingOperationID = ""
 }
@@ -1654,7 +1764,11 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		if err != nil {
 			return nil, err
 		}
-		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, Config: config, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
+		policyChains, err := storage.CanonicalPluginPolicyChains(row.PolicyChainsJSON)
+		if err != nil {
+			return nil, ErrPluginReadProjection
+		}
+		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, PolicyChains: policyChains, Config: config, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
 		if strings.TrimSpace(row.PendingConfigJSON) != "" {
 			detail.PendingConfig, err = pluginReadJSONObject(row.PendingConfigJSON)
 			if err != nil {
@@ -1663,6 +1777,12 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		}
 		if strings.TrimSpace(row.PendingTargetJSON) != "" || strings.TrimSpace(row.PendingResourceGroupID) != "" {
 			detail.PendingTargets, err = pluginTargetIDs(json.RawMessage(row.PendingTargetJSON), defaultTargetID)
+			if err != nil {
+				return nil, ErrPluginReadProjection
+			}
+		}
+		if row.PendingOperationID != "" {
+			detail.PendingPolicyChains, err = storage.CanonicalPluginPolicyChains(row.PendingPolicyChainsJSON)
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func newConfigMutationExecutor(cfg config.Config, store any) *revision.Executor {
@@ -492,7 +494,7 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef); err != nil {
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
 		return HTTPRule{}, err
 	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
@@ -684,7 +686,7 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef); err != nil {
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
 		return HTTPRule{}, err
 	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
@@ -2062,7 +2064,7 @@ func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.Policy
 		}
 		return nil, nil
 	}
-	if id != input.ID || len(id) > 512 || strings.ContainsAny(id, "\r\n\x00") {
+	if err := pluginsdk.ValidatePolicyIdentity(input.ID); err != nil {
 		return nil, fmt.Errorf("%w: policy_ref id is not canonical", ErrInvalidArgument)
 	}
 	overlay := append(json.RawMessage(nil), input.Overlay...)
@@ -2076,7 +2078,12 @@ type rulePolicyCatalogStore interface {
 	LoadAgentPluginPolicies(context.Context, string) ([]storage.PluginPolicy, error)
 }
 
-func validateRulePolicyReference(ctx context.Context, store any, agentID string, ref *storage.PolicyRef) error {
+const (
+	policyExtensionHTTP = "http.request"
+	policyExtensionL4   = "l4.accept"
+)
+
+func validateRulePolicyReference(ctx context.Context, store any, agentID string, ref *storage.PolicyRef, extensionPoint string) error {
 	if ref == nil {
 		return nil
 	}
@@ -2090,6 +2097,18 @@ func validateRulePolicyReference(ctx context.Context, store any, agentID string,
 	}
 	for _, policy := range policies {
 		if policy.ID == ref.ID {
+			frameBytes, frameErr := pluginsdk.PolicyV1EvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", pluginsdk.PolicyRequestIDMaxBytes), ref.Overlay)
+			if frameErr != nil {
+				return fmt.Errorf("%w: policy_ref %q frame is invalid: %v", ErrInvalidArgument, ref.ID, frameErr)
+			}
+			for index, stage := range policy.Stages {
+				if !slices.Contains(stage.ExtensionPoints, extensionPoint) {
+					return fmt.Errorf("%w: policy_ref %q stage %d does not support %q", ErrInvalidArgument, ref.ID, index, extensionPoint)
+				}
+				if int64(frameBytes) > stage.ResourceBudget.InputBytes {
+					return fmt.Errorf("%w: policy_ref %q overlay exceeds stage %d input frame budget", ErrInvalidArgument, ref.ID, index)
+				}
+			}
 			return nil
 		}
 	}

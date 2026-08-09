@@ -17,6 +17,7 @@ import (
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 	pluginwasm "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm"
 	"io"
 	"log/slog"
@@ -199,14 +200,46 @@ func TestConfiguredRuntimeContinuesWithoutUnavailablePolicyCompiler(t *testing.T
 	if configured.policyWASM != nil {
 		t.Fatal("unavailable compiler retained a policy runtime")
 	}
-	for _, name := range configured.registry.Names() {
-		if name == "plugin-policy" {
-			t.Fatalf("unavailable policy capability was registered: %v", configured.registry.Names())
+	if !containsString(configured.registry.Names(), "plugin-policy") {
+		t.Fatalf("unavailable compiler omitted policy validation module: %v", configured.registry.Names())
+	}
+	for _, capability := range configured.registry.Capabilities(model.Snapshot{}) {
+		if capability.Name == policy.ExtensionHTTP || capability.Name == policy.ExtensionL4 {
+			t.Fatalf("unavailable policy execution capability was advertised: %+v", capability)
 		}
 	}
 	if len(configured.registry.Names()) == 0 {
 		t.Fatal("unrelated core modules were not registered")
 	}
+
+	app := &App{}
+	app.setConfiguredModules(configured)
+	base := model.Snapshot{Revision: 1, DesiredVersion: "v1", PluginPolicies: []model.PluginPolicy{}}
+	if err := app.runtime.Apply(t.Context(), model.Snapshot{}, base); err != nil {
+		t.Fatalf("policy-free revision failed with unavailable compiler: %v", err)
+	}
+	policySnapshot := base
+	policySnapshot.Revision = 2
+	policySnapshot.PluginPolicies = []model.PluginPolicy{appTestPolicy("required-policy")}
+	policySnapshot.Rules = []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "required-policy"}}}
+	if err := app.runtime.Apply(t.Context(), base, policySnapshot); err == nil || !strings.Contains(err.Error(), "policy execution runtime is unavailable") {
+		t.Fatalf("policy-bearing revision error=%v, want unavailable prepare failure", err)
+	}
+	active := configured.registry.ActiveGeneration()
+	if active == nil || active.Revision() != base.Revision {
+		t.Fatalf("active generation=%+v, want last-known-good revision %d", active, base.Revision)
+	}
+}
+
+func appTestPolicy(id string) model.PluginPolicy {
+	return model.PluginPolicy{ID: id, Revision: 1, Stages: []model.PolicyStage{{
+		Kind: model.PolicyKindIP, PolicyID: id + "-ip", PluginID: "official.ip", PluginVersion: "1.0.0",
+		InstanceID: id + "-instance", PackageDigest: "package-digest", ArtifactPath: "verified/policy.wasm",
+		ArtifactDigest: "artifact-digest", SignatureVerified: true, SignerKeyID: "official-release", SignerFingerprint: "signer-fingerprint",
+		ABI: model.PolicyABIV1, ExtensionPoints: []string{policy.ExtensionHTTP, policy.ExtensionL4}, GrantedScopes: []string{"policy.read"},
+		ResourceBudget: model.PolicyResourceBudget{TimeoutMS: 2, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 1024},
+		FailurePolicy:  model.PolicyFailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
+	}}}
 }
 
 func TestConfiguredRuntimeInjectsProcessPacketRegistry(t *testing.T) {

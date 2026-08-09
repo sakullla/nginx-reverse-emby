@@ -76,14 +76,16 @@ func TestMarketplaceAndPluginAPIDTOsHideInternalPathsAndUseStableFields(t *testi
 
 type pluginReadAPIFake struct {
 	PluginAPI
-	installed    []service.PluginSummary
-	detail       service.PluginDetail
-	detailErr    error
-	preview      service.PluginPackageDetail
-	operations   []service.PluginOperationDetail
-	mutation     service.PluginSummary
-	configured   service.PluginInstanceDetail
-	configureErr error
+	installed      []service.PluginSummary
+	detail         service.PluginDetail
+	detailErr      error
+	preview        service.PluginPackageDetail
+	operations     []service.PluginOperationDetail
+	mutation       service.PluginSummary
+	configured     service.PluginInstanceDetail
+	configureErr   error
+	configureIn    service.PluginConfigureRequest
+	configureCalls int
 }
 
 func (f *pluginReadAPIFake) List(context.Context) ([]service.PluginSummary, error) {
@@ -114,7 +116,9 @@ func (f *pluginReadAPIFake) DisableMutation(context.Context, string, string) (se
 	return f.mutation, nil
 }
 
-func (f *pluginReadAPIFake) ConfigureMutation(context.Context, service.PluginConfigureRequest) (service.PluginInstanceDetail, error) {
+func (f *pluginReadAPIFake) ConfigureMutation(_ context.Context, input service.PluginConfigureRequest) (service.PluginInstanceDetail, error) {
+	f.configureCalls++
+	f.configureIn = input
 	return f.configured, f.configureErr
 }
 
@@ -203,7 +207,7 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 		t.Fatalf("package detail status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
 	}
 
-	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{"mode":"observe"}}`))
+	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":["shared"],"config":{"mode":"observe"}}`))
 	configureRequest.SetPathValue("id", installed.PluginID)
 	configureRequest.SetPathValue("action", "configure")
 	configureResponse := httptest.NewRecorder()
@@ -224,6 +228,17 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	if _, ok := configureResult["pending_targets"].([]any); !ok || strings.Contains(configureResponse.Body.String(), "TargetJSON") {
 		t.Fatalf("configure mutation leaked persistence shape: %s", configureResponse.Body.String())
 	}
+	if pluginAPI.configureIn.PolicyChains == nil || len(*pluginAPI.configureIn.PolicyChains) != 1 || (*pluginAPI.configureIn.PolicyChains)[0] != "shared" {
+		t.Fatalf("configure policy chains = %v", pluginAPI.configureIn.PolicyChains)
+	}
+	omittedChains := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{"mode":"observe"}}`))
+	omittedChains.SetPathValue("id", installed.PluginID)
+	omittedChains.SetPathValue("action", "configure")
+	omittedResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePluginAction(omittedResponse, omittedChains)
+	if omittedResponse.Code != http.StatusBadRequest || pluginAPI.configureCalls != 1 {
+		t.Fatalf("omitted policy_chains status=%d configure calls=%d", omittedResponse.Code, pluginAPI.configureCalls)
+	}
 
 	enableRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/enable", nil)
 	enableRequest.SetPathValue("id", installed.PluginID)
@@ -236,7 +251,7 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 }
 
 func TestPluginActionDoesNotClassifyInternalJSONTextAsBadRequest(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{}}`))
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":[],"config":{}}`))
 	request.SetPathValue("id", "official.read")
 	request.SetPathValue("action", "configure")
 	response := httptest.NewRecorder()

@@ -2326,12 +2326,11 @@ func parsePolicyRef(raw string) *PolicyRef {
 		return nil
 	}
 	var ref PolicyRef
-	if err := json.Unmarshal([]byte(raw), &ref); err != nil || strings.TrimSpace(ref.ID) == "" {
+	if err := json.Unmarshal([]byte(raw), &ref); err != nil || ValidatePluginPolicyIdentity(ref.ID) != nil {
 		// Preserve fail-closed behavior: malformed persisted attachment must make
 		// the Agent reject the candidate instead of silently dropping protection.
 		return &PolicyRef{ID: "\x00invalid-policy-ref"}
 	}
-	ref.ID = strings.TrimSpace(ref.ID)
 	ref.Overlay = append(json.RawMessage(nil), ref.Overlay...)
 	return &ref
 }

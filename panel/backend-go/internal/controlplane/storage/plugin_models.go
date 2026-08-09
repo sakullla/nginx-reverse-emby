@@ -252,27 +252,41 @@ type InstalledPluginRow struct {
 func (InstalledPluginRow) TableName() string { return "installed_plugins" }
 
 type PluginInstanceRow struct {
-	ID                     string    `gorm:"primaryKey;size:64" json:"id"`
-	PluginID               string    `gorm:"index;size:190;not null" json:"plugin_id"`
-	ResourceGroupID        string    `gorm:"index;size:64;not null" json:"resource_group_id"`
-	TargetJSON             string    `gorm:"type:text;not null" json:"targets"`
-	ConfigJSON             string    `gorm:"type:text;not null" json:"config"`
-	ConfigVersion          uint64    `gorm:"not null;default:0" json:"config_version"`
-	PendingConfigJSON      string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
-	PendingVersion         uint64    `gorm:"not null;default:0" json:"pending_version,omitempty"`
-	PendingOperationID     string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
-	PendingResourceGroupID string    `gorm:"size:64;not null;default:''" json:"pending_resource_group_id,omitempty"`
-	PendingTargetJSON      string    `gorm:"type:text;not null" json:"pending_targets,omitempty"`
-	RollbackConfigJSON     string    `gorm:"type:text;not null" json:"-"`
-	RollbackVersion        uint64    `gorm:"not null;default:0" json:"-"`
-	DesiredEnabled         bool      `gorm:"not null;default:false" json:"desired_enabled"`
-	CurrentState           string    `gorm:"index;size:32;not null" json:"current_state"`
-	StatusSummaryJSON      string    `gorm:"type:text;not null" json:"status_summary"`
-	StateVersion           uint64    `gorm:"not null;default:1" json:"state_version"`
-	UpdatedAt              time.Time `gorm:"not null" json:"updated_at"`
+	ID                       string    `gorm:"primaryKey;size:64" json:"id"`
+	PluginID                 string    `gorm:"index;size:190;not null" json:"plugin_id"`
+	ResourceGroupID          string    `gorm:"index;size:64;not null" json:"resource_group_id"`
+	TargetJSON               string    `gorm:"type:text;not null" json:"targets"`
+	PolicyChainsJSON         string    `gorm:"type:text;not null;default:'[]'" json:"policy_chains"`
+	ConfigJSON               string    `gorm:"type:text;not null" json:"config"`
+	ConfigVersion            uint64    `gorm:"not null;default:0" json:"config_version"`
+	PendingConfigJSON        string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
+	PendingVersion           uint64    `gorm:"not null;default:0" json:"pending_version,omitempty"`
+	PendingOperationID       string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
+	PendingResourceGroupID   string    `gorm:"size:64;not null;default:''" json:"pending_resource_group_id,omitempty"`
+	PendingTargetJSON        string    `gorm:"type:text;not null" json:"pending_targets,omitempty"`
+	PendingPolicyChainsJSON  string    `gorm:"type:text;not null;default:'[]'" json:"pending_policy_chains,omitempty"`
+	RollbackConfigJSON       string    `gorm:"type:text;not null" json:"-"`
+	RollbackVersion          uint64    `gorm:"not null;default:0" json:"-"`
+	RollbackPolicyChainsJSON string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	DesiredEnabled           bool      `gorm:"not null;default:false" json:"desired_enabled"`
+	CurrentState             string    `gorm:"index;size:32;not null" json:"current_state"`
+	StatusSummaryJSON        string    `gorm:"type:text;not null" json:"status_summary"`
+	StateVersion             uint64    `gorm:"not null;default:1" json:"state_version"`
+	UpdatedAt                time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (PluginInstanceRow) TableName() string { return "plugin_instances" }
+
+// PluginPolicyAgentRevisionRow owns the globally monotonic policy-catalog
+// revision space for one Agent. It is deliberately independent from plugin,
+// package, instance, and grant-local row versions.
+type PluginPolicyAgentRevisionRow struct {
+	AgentID   string    `gorm:"primaryKey;size:64"`
+	Revision  int64     `gorm:"not null;default:0"`
+	UpdatedAt time.Time `gorm:"not null"`
+}
+
+func (PluginPolicyAgentRevisionRow) TableName() string { return "plugin_policy_agent_revisions" }
 
 type PluginGrantRow struct {
 	ID               string    `gorm:"primaryKey;size:64" json:"id"`

@@ -126,8 +126,19 @@ message StatePutRequest {
 }
 
 message EmitEventRequest {
-  string kind = 1;
-  bytes payload = 2;
+  // Security events intentionally contain no guest-controlled strings or
+  // bytes. The host owns the stable code/action names and log templates.
+  enum Code {
+    SECURITY_EVENT_CODE_UNSPECIFIED = 0;
+    SECURITY_EVENT_CODE_WAF_RULE_MATCH = 1;
+  }
+  enum Action {
+    SECURITY_EVENT_ACTION_UNSPECIFIED = 0;
+    SECURITY_EVENT_ACTION_OBSERVE = 1;
+    SECURITY_EVENT_ACTION_DENY = 2;
+  }
+  Code code = 1;
+  Action action = 2;
 }
 
 message AddMetricRequest {

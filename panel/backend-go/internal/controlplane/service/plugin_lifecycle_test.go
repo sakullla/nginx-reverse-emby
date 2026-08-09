@@ -26,7 +26,8 @@ import (
 
 func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,10 +42,11 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "edge-other-binding", ResourceKind: "agent", ResourceID: "edge-other", ResourceGroupID: "other", UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	service := newPluginTestService(t, store)
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	service := newPluginTestServiceAtRoot(t, store, cacheRoot)
 
 	cleanupRetain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
-	packageV1 := pluginCandidateFixture(t, "official.lifecycle", "1.0.0", []string{"http.inspect"}, cleanupRetain)
+	packageV1 := pluginCandidateFixtureAtRoot(t, cacheRoot, "official.lifecycle", "1.0.0", []string{"http.inspect"}, cleanupRetain)
 	if _, err := service.PluginService.Install(ctx, PluginInstallRequest{Package: packageV1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); !errors.Is(err, ErrPluginRiskConfirmation) {
 		t.Fatalf("custom test fixture source did not require risk confirmation: %v", err)
 	}
@@ -104,11 +106,19 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Config: json.RawMessage(`{"other":true}`), ActorID: "admin"}); err == nil {
 		t.Fatal("invalid plugin config was accepted")
 	}
-	instance, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: " invalid ", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("non-canonical instance identity error = %v", err)
+	}
+	invalidPolicyChains := []string{" shared "}
+	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "invalid-chain", ResourceGroupID: "default", Targets: []string{"local"}, PolicyChains: &invalidPolicyChains, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("non-canonical policy chain error = %v", err)
+	}
+	policyChains := []string{"shared"}
+	instance, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Targets: []string{"local"}, PolicyChains: &policyChains, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if instance.CurrentState != "applying" || instance.ConfigVersion != 0 || instance.PendingVersion != 1 {
+	if instance.CurrentState != "applying" || instance.ConfigVersion != 0 || instance.PendingVersion != 1 || instance.PendingPolicyChainsJSON != `["shared"]` {
 		t.Fatalf("configure did not stage desired config: %+v", instance)
 	}
 	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, false, map[string]string{"local": "failed"}))
@@ -118,12 +128,12 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if instance.ConfigVersion != 0 || instance.ConfigJSON != "{}" || instance.PendingVersion != 0 {
 		t.Fatalf("failed configure changed current config: %+v", instance)
 	}
-	instance, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	instance, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Targets: []string{"local"}, PolicyChains: &policyChains, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"local": "applied"}))
-	if err != nil || instance.ConfigVersion != 1 || instance.ConfigJSON != `{"mode":"observe"}` {
+	if err != nil || instance.ConfigVersion != 1 || instance.ConfigJSON != `{"mode":"observe"}` || instance.PolicyChainsJSON != `["shared"]` {
 		t.Fatalf("completed config = %+v, %v", instance, err)
 	}
 	if binding, err := store.GetResourceBinding(ctx, "plugin_instance", instance.ID); err != nil || binding.ResourceGroupID != "default" {
@@ -149,6 +159,18 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	installed, err = service.CompleteLifecycleApply(ctx, enableResult)
 	if err != nil || installed.CurrentLifecycle != "active" {
 		t.Fatalf("enable completion = %+v, %v", installed, err)
+	}
+	policies, err := store.LoadAgentPluginPolicies(ctx, "local")
+	if err != nil || len(policies) != 1 || len(policies[0].Stages) != 1 {
+		t.Fatalf("active policy catalog = %+v, %v", policies, err)
+	}
+	artifactID := policies[0].Stages[0].ArtifactSource.ArtifactID
+	artifact, err := service.ResolveAgentPluginArtifact(ctx, "local", artifactID)
+	if err != nil || artifact.SHA256 != policies[0].Stages[0].ArtifactDigest || artifact.SizeBytes <= 0 {
+		t.Fatalf("resolved Agent artifact = %+v, %v", artifact, err)
+	}
+	if _, err := service.ResolveAgentPluginArtifact(ctx, "edge-other", artifactID); !errors.Is(err, ErrPluginArtifactUnavailable) {
+		t.Fatalf("cross-Agent artifact resolution error = %v", err)
 	}
 	if _, err := service.CompleteLifecycleApply(ctx, enableResult); err == nil {
 		t.Fatal("replayed lifecycle completion was accepted")
@@ -181,7 +203,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 		t.Fatalf("disable completion = %+v, %v", installed, err)
 	}
 
-	packageV2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect", "http.respond"}, cleanupRetain)
+	packageV2 := pluginCandidateFixtureAtRoot(t, cacheRoot, installed.PluginID, "2.0.0", []string{"http.inspect", "http.respond"}, cleanupRetain)
 	if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
 		t.Fatalf("upgrade permission increase did not require confirmation: %v", err)
 	}

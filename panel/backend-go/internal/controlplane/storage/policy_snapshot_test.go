@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,12 +49,14 @@ func TestPolicySnapshotProjectionPreservesAttachmentsAndExplicitEmptyDefinitions
 }
 
 func TestMalformedPersistedPolicyRefFailsClosedInSnapshot(t *testing.T) {
-	rules := snapshotHTTPRules([]HTTPRuleRow{{
-		ID: 1, FrontendURL: "https://media.example.test", BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`,
-		Enabled: true, PolicyRefJSON: `{"id":`,
-	}}, false)
-	if len(rules) != 1 || rules[0].PolicyRef == nil || !strings.Contains(rules[0].PolicyRef.ID, "invalid") {
-		t.Fatalf("malformed policy ref was silently dropped: %+v", rules)
+	for _, refJSON := range []string{`{"id":`, `{"id":" shared-policy"}`, `{"id":"shared-policy\n"}`} {
+		rules := snapshotHTTPRules([]HTTPRuleRow{{
+			ID: 1, FrontendURL: "https://media.example.test", BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`,
+			Enabled: true, PolicyRefJSON: refJSON,
+		}}, false)
+		if len(rules) != 1 || rules[0].PolicyRef == nil || !strings.Contains(rules[0].PolicyRef.ID, "invalid") {
+			t.Fatalf("malformed policy ref %q was silently dropped: %+v", refJSON, rules)
+		}
 	}
 }
 
@@ -129,7 +132,8 @@ func TestActivePluginPolicyProjectsFromVerifiedDurableState(t *testing.T) {
 	}
 	instance := PluginInstanceRow{
 		ID: "waf-main", PluginID: packageRow.PluginID, ResourceGroupID: "default", TargetJSON: `["edge-policy"]`,
-		ConfigJSON: `{"mode":"block"}`, ConfigVersion: 3, DesiredEnabled: false, CurrentState: "disabled",
+		PolicyChainsJSON: `["shared-policy"]`,
+		ConfigJSON:       `{"mode":"block"}`, ConfigVersion: 3, DesiredEnabled: false, CurrentState: "disabled",
 		StatusSummaryJSON: `{}`, StateVersion: 5, UpdatedAt: now,
 	}
 	if err := store.db.Create(&instance).Error; err != nil {
@@ -150,7 +154,7 @@ func TestActivePluginPolicyProjectsFromVerifiedDurableState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.PluginPolicies) != 1 || snapshot.PluginPolicies[0].ID != instance.ID || len(snapshot.PluginPolicies[0].Stages) != 1 {
+	if len(snapshot.PluginPolicies) != 1 || snapshot.PluginPolicies[0].ID != "shared-policy" || len(snapshot.PluginPolicies[0].Stages) != 1 {
 		t.Fatalf("plugin policies = %+v", snapshot.PluginPolicies)
 	}
 	stage := snapshot.PluginPolicies[0].Stages[0]
@@ -159,10 +163,331 @@ func TestActivePluginPolicyProjectsFromVerifiedDurableState(t *testing.T) {
 		!stage.SignatureVerified || string(stage.Config) != instance.ConfigJSON {
 		t.Fatalf("projected policy stage = %+v", stage)
 	}
-	if !strings.HasPrefix(filepath.Clean(stage.ArtifactPath), filepath.Clean(cachePath)+string(filepath.Separator)) {
-		t.Fatalf("artifact path %q is outside verified package %q", stage.ArtifactPath, cachePath)
+	if stage.ArtifactPath != "" {
+		t.Fatalf("remote artifact path = %q, want empty", stage.ArtifactPath)
+	}
+	if stage.ArtifactSource.ArtifactID != artifacts[0].ID || stage.ArtifactSource.PackageIdentity != packageRow.Identity ||
+		stage.ArtifactSource.RelativePath != artifacts[0].Path || stage.ArtifactSource.SHA256 != artifacts[0].SHA256 ||
+		stage.ArtifactSource.SizeBytes != artifacts[0].SizeBytes {
+		t.Fatalf("artifact source = %+v", stage.ArtifactSource)
 	}
 	if len(stage.GrantedScopes) != 1 || stage.GrantedScopes[0] != "http.inspect" || stage.ResourceBudget.TimeoutMS != 2 {
 		t.Fatalf("projected grants/budget = %+v / %+v", stage.GrantedScopes, stage.ResourceBudget)
 	}
+}
+
+func TestAuthoritativePolicyCatalogGroupsSharedChainsAndUsesGlobalAgentRevision(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(ctx, AgentRow{ID: agentID, AgentToken: agentID + "-token", CapabilitiesJSON: `[]`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	instances := make(map[string]PluginInstanceRow)
+	for _, fixture := range []struct {
+		pluginID, kind, instanceID, chains string
+	}{
+		{"policy.ip", "ip", "ip-main", `["chain-full","chain-lite"]`},
+		{"policy.rate", "rate", "rate-main", `["chain-lite","chain-full"]`},
+		{"policy.waf", "waf", "waf-main", `["chain-full"]`},
+	} {
+		instance := installActivePolicyFixture(t, store, signingKey, fixture.pluginID, fixture.kind, fixture.instanceID, `["edge-a"]`, fixture.chains)
+		instances[fixture.kind] = instance
+	}
+	if err := store.db.Create(&AgentRevisionPointerRow{AgentID: "edge-a", DesiredRevision: 40, AppliedRevision: 39, LastKnownGoodRevision: 39, UpdatedAt: time.Now().UTC()}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	policies, err := store.LoadAgentPluginPolicies(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policies) != 2 || policies[0].ID != "chain-full" || policies[1].ID != "chain-lite" {
+		t.Fatalf("policies = %+v", policies)
+	}
+	if got := policyKinds(policies[0]); strings.Join(got, ",") != "ip,rate,waf" {
+		t.Fatalf("full chain kinds = %v", got)
+	}
+	if got := policyKinds(policies[1]); strings.Join(got, ",") != "ip,rate" {
+		t.Fatalf("lite chain kinds = %v", got)
+	}
+	if policies[0].Stages[0].ArtifactPath != "" || policies[0].Stages[0].ArtifactSource.ArtifactID == "" {
+		t.Fatalf("remote artifact projection = %+v", policies[0].Stages[0])
+	}
+
+	instance := instances["waf"]
+	instance.ConfigJSON = `{"mode":"observe"}`
+	instance.ConfigVersion++
+	installed, found, err := store.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	now := time.Now().UTC()
+	if err := store.ApplyPluginMutation(ctx, PluginMutation{
+		PluginID: instance.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, ReplaceInstance: &instance,
+		Operation: PluginOperationRow{ID: "configure-waf", PluginID: instance.PluginID, Kind: "configure", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: "configure-waf-audit", Action: "plugin.configure", TargetKind: "plugin", TargetID: instance.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	policies, err = store.LoadAgentPluginPolicies(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policies[0].Revision != 41 || policies[1].Revision != 41 {
+		t.Fatalf("catalog revisions = %d/%d, want global floor 41", policies[0].Revision, policies[1].Revision)
+	}
+	snapshot, err := store.LoadAgentSnapshot(ctx, "edge-a", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Revision != 41 {
+		t.Fatalf("snapshot revision = %d, want 41", snapshot.Revision)
+	}
+
+	mismatched := instances["rate"]
+	mismatched.TargetJSON = `["edge-b"]`
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", mismatched.ID).Update("target_json", mismatched.TargetJSON).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadAgentPluginPolicies(ctx, "edge-a"); err == nil || !strings.Contains(err.Error(), "incompatible target sets") {
+		t.Fatalf("incompatible chain targets error = %v", err)
+	}
+}
+
+func TestPluginPolicyIdentityAndRestoreBoundariesRejectNonCanonicalValues(t *testing.T) {
+	for _, value := range []string{" policy", "policy ", "policy\r", "policy\n", "policy\x00", strings.Repeat("x", 513)} {
+		if err := ValidatePluginPolicyIdentity(value); err == nil {
+			t.Fatalf("ValidatePluginPolicyIdentity(%q) succeeded", value)
+		}
+	}
+	if _, err := CanonicalPluginPolicyChains(`["chain-a"," chain-b"]`); err == nil {
+		t.Fatal("non-canonical chain identity was accepted")
+	}
+
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close(); _ = target.Close() })
+	row := PluginInstanceRow{ID: "bad\ninstance", PluginID: "policy.ip", ResourceGroupID: "default", TargetJSON: `["local"]`, PolicyChainsJSON: `["chain-a"]`, ConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "disabled", UpdatedAt: time.Now().UTC()}
+	if err := source.db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := copyRows(t.Context(), source, target, &PluginInstanceRow{}); err == nil || !strings.Contains(err.Error(), "policy identity") {
+		t.Fatalf("copyRows malformed identity error = %v", err)
+	}
+}
+
+func TestPluginMutationRejectsDanglingPolicyReferencesInSameTransaction(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-a", AgentToken: "token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	instance := installActivePolicyFixture(t, store, signingKey, "policy.single", "ip", "ip-only", `["edge-a"]`, `["shared"]`)
+	if err := store.db.Create(&HTTPRuleRow{ID: 1, AgentID: "edge-a", FrontendURL: "https://example.test", BackendsJSON: `[]`, Enabled: true, PolicyRefJSON: `{"id":"shared"}`, Revision: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	installed, found, err := store.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	now := time.Now().UTC()
+	pending := instance
+	pending.PendingConfigJSON = pending.ConfigJSON
+	pending.PendingVersion = pending.ConfigVersion + 1
+	pending.PendingTargetJSON = pending.TargetJSON
+	pending.PendingPolicyChainsJSON = `[]`
+	pending.PendingOperationID = "configure-remove-chain"
+	installed.PendingOperationID = pending.PendingOperationID
+	installed.PendingKind = "configure"
+	err = store.ApplyPluginMutation(ctx, PluginMutation{
+		PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, ReplaceInstance: &pending,
+		Operation: PluginOperationRow{ID: pending.PendingOperationID, PluginID: installed.PluginID, Kind: "configure", Status: "applying", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: "configure-remove-chain-audit", Action: "plugin.configure", TargetKind: "plugin", TargetID: installed.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now},
+	})
+	if !errors.Is(err, ErrPluginConflict) || !strings.Contains(err.Error(), "would become unavailable") {
+		t.Fatalf("prospective configure error = %v", err)
+	}
+	persistedInstance, found, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !found || persistedInstance.PendingOperationID != "" {
+		t.Fatalf("rolled-back pending instance = %+v, %v, %v", persistedInstance, found, err)
+	}
+
+	installed, found, err = store.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin(after prospective rollback) = %v, %v", found, err)
+	}
+	installed.DesiredLifecycle = "disabled"
+	installed.CurrentLifecycle = "disabled"
+	err = store.ApplyPluginMutation(ctx, PluginMutation{
+		PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed,
+		Operation: PluginOperationRow{ID: "disable", PluginID: installed.PluginID, Kind: "disable", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: "disable-audit", Action: "plugin.disable", TargetKind: "plugin", TargetID: installed.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	})
+	if !errors.Is(err, ErrPluginConflict) || !strings.Contains(err.Error(), "would become unavailable") {
+		t.Fatalf("disable error = %v", err)
+	}
+	persisted, found, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !found || persisted.CurrentLifecycle != "active" {
+		t.Fatalf("rolled-back installed state = %+v, %v, %v", persisted, found, err)
+	}
+}
+
+func TestProspectiveUpgradeRejectsPolicyOverlayBudgetShrinkAndRollsBack(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-a", AgentToken: "token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	instance := installActivePolicyFixture(t, store, signingKey, "policy.budget", "ip", "ip-budget", `["edge-a"]`, `["shared"]`)
+	overlay := `{"payload":"` + strings.Repeat("x", 512) + `"}`
+	if err := store.db.Create(&HTTPRuleRow{ID: 1, AgentID: "edge-a", FrontendURL: "https://example.test", BackendsJSON: `[]`, Enabled: true, PolicyRefJSON: `{"id":"shared","overlay":` + overlay + `}`, Revision: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidate, artifacts := preparePolicyPackageFixture(t, store, signingKey, instance.PluginID, "ip", 300)
+	installed, found, err := store.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	installed.StagedPackageDigest, installed.StagedPackageIdentity = candidate.Digest, candidate.Identity
+	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = candidate.SourceID, candidate.SourceKind, candidate.SourceRiskLabel
+	installed.StagedSignatureKeyID, installed.StagedSignaturePublicKey, installed.StagedSignatureFingerprint = candidate.SignatureKeyID, candidate.SignaturePublicKey, candidate.SignatureFingerprint
+	installed.CurrentLifecycle, installed.PendingOperationID, installed.PendingKind = "upgrading", "upgrade-budget", "upgrade"
+	instance.PendingConfigJSON, instance.PendingVersion = instance.ConfigJSON, instance.ConfigVersion+1
+	instance.PendingPolicyChainsJSON, instance.PendingOperationID = instance.PolicyChainsJSON, installed.PendingOperationID
+	now := time.Now().UTC()
+	err = store.ApplyPluginMutation(ctx, PluginMutation{
+		PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, Package: &candidate, Artifacts: artifacts, ReplaceInstances: []PluginInstanceRow{instance},
+		Operation: PluginOperationRow{ID: installed.PendingOperationID, PluginID: installed.PluginID, Kind: "upgrade", Status: "staged", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: "upgrade-budget-audit", Action: "plugin.upgrade", TargetKind: "plugin", TargetID: installed.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now},
+	})
+	if !errors.Is(err, ErrPluginConflict) || !strings.Contains(err.Error(), "overlay budget") {
+		t.Fatalf("budget shrink error = %v", err)
+	}
+	persisted, found, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !found || persisted.StagedPackageDigest != "" || persisted.ActivePackageDigest == candidate.Digest {
+		t.Fatalf("rolled-back upgrade state = %+v, %v, %v", persisted, found, err)
+	}
+	if _, found, err := store.GetPluginPackageByIdentity(ctx, candidate.Identity); err != nil || found {
+		t.Fatalf("rolled-back candidate package = %v, %v", found, err)
+	}
+}
+
+func policyKinds(policy PluginPolicy) []string {
+	result := make([]string, 0, len(policy.Stages))
+	for _, stage := range policy.Stages {
+		result = append(result, stage.Kind)
+	}
+	return result
+}
+
+func installActivePolicyFixture(t *testing.T, store *GormStore, signingKey ed25519.PrivateKey, pluginID, kind, instanceID, targetsJSON, chainsJSON string) PluginInstanceRow {
+	t.Helper()
+	packageRow, artifacts := preparePolicyPackageFixture(t, store, signingKey, pluginID, kind, 65536)
+	if err := store.db.Create(&packageRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&artifacts).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	installed := InstalledPluginRow{
+		PluginID: pluginID, ActivePackageDigest: packageRow.Digest, ActivePackageIdentity: packageRow.Identity,
+		RuntimeKind: packageRow.RuntimeKind, RuntimeABI: packageRow.RuntimeABI, HostScope: packageRow.HostScope,
+		ActiveSourceID: packageRow.SourceID, ActiveSourceKind: packageRow.SourceKind, ActiveSourceRiskLabel: packageRow.SourceRiskLabel,
+		ActiveSignatureKeyID: packageRow.SignatureKeyID, ActiveSignaturePublicKey: packageRow.SignaturePublicKey,
+		ActiveSignatureFingerprint: packageRow.SignatureFingerprint, DesiredLifecycle: "enabled", CurrentLifecycle: "active",
+		CleanupPolicyJSON: `{}`, LastOperationID: "enable-" + instanceID, StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+	}
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	instance := PluginInstanceRow{
+		ID: instanceID, PluginID: pluginID, ResourceGroupID: "default", TargetJSON: targetsJSON, PolicyChainsJSON: chainsJSON,
+		ConfigJSON: `{}`, ConfigVersion: 1, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now,
+	}
+	if err := normalizePluginInstancePolicyChains(&instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&PluginGrantRow{ID: "grant-" + instanceID, GrantKey: "grant-key-" + instanceID, PluginID: pluginID, PackageDigest: packageRow.Digest, PackageIdentity: packageRow.Identity, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return instance
+}
+
+func preparePolicyPackageFixture(t *testing.T, store *GormStore, signingKey ed25519.PrivateKey, pluginID, kind string, inputBytes int64) (PluginPackageRow, []PluginArtifactRow) {
+	t.Helper()
+	staging := t.TempDir()
+	digest := writeMigrationVerifiedPolicyPackageWithBudget(t, staging, pluginID, kind, "http.request", inputBytes, signingKey)
+	publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{SourceID: "snapshot-source", SourceKind: marketplace.SourceKindCustom, KeyID: "community-release", PublicKey: publicKey, Fingerprint: fingerprint}
+	validator, err := marketplace.ValidatorForSignatureTrust(trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := validator.ValidatePackage(staging, plugins.PackageExpectation{ID: pluginID, Version: "1.0.0", SHA256: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := marketplace.ImportVerifiedPackage(filepath.Join(store.dataRoot, "plugins", "packages"), validated, validator, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestJSON, err := json.Marshal(validated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageRow, artifacts, err := ProjectPluginPackage(PluginPackageRow{
+		Digest: digest, PluginID: pluginID, Version: "1.0.0", SourceID: trust.SourceID, SourceKind: trust.SourceKind,
+		SourceRiskLabel: marketplace.UntrustedRiskLabel, SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint,
+		CachePath: cachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: time.Now().UTC(),
+	}, validated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packageRow, artifacts
 }
