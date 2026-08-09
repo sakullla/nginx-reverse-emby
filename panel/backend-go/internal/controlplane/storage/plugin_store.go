@@ -655,10 +655,7 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 	if !s.transactionScoped {
 		var policies []PluginPolicy
 		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			scoped := &GormStore{
-				db: tx, dataRoot: s.dataRoot, localAgentID: s.localAgentID,
-				driver: s.driver, transactionScoped: true,
-			}
+			scoped := s.transactionView(tx)
 			var err error
 			policies, err = scoped.loadAgentPluginPolicies(ctx, agentID)
 			return err
@@ -2435,10 +2432,7 @@ type PluginMutation struct {
 
 func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMutation) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		scoped := *s
-		scoped.db = tx
-		scoped.writeDB = tx
-		scoped.transactionScoped = true
+		scoped := s.transactionView(tx)
 		agents, err := scoped.pluginMutationPolicyAgents(ctx, mutation)
 		if err != nil {
 			return err

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/url"
@@ -60,6 +61,10 @@ func NewConfiguredStore(cfg config.Config) (*GormStore, error) {
 }
 
 func (s *GormStore) writeTransaction(ctx context.Context, fn func(*gorm.DB) error) error {
+	return s.writeTransactionWithOptions(ctx, nil, fn)
+}
+
+func (s *GormStore) writeTransactionWithOptions(ctx context.Context, options *sql.TxOptions, fn func(*gorm.DB) error) error {
 	if s != nil && s.transactionScoped {
 		return fn(s.db.WithContext(ctx))
 	}
@@ -79,7 +84,33 @@ func (s *GormStore) writeTransaction(ctx context.Context, fn func(*gorm.DB) erro
 			db = s.writeDB
 		}
 	}
-	return db.WithContext(ctx).Transaction(fn)
+	return db.WithContext(ctx).Transaction(fn, options)
+}
+
+// transactionView creates a transaction-scoped store without copying mutexes
+// or atomic values from the owning store. Configuration used by storage
+// helpers remains available, while every database operation is bound to tx.
+func (s *GormStore) transactionView(tx *gorm.DB) *GormStore {
+	view := &GormStore{
+		db: tx, writeDB: tx, writeDSN: s.writeDSN,
+		dataRoot: s.dataRoot, localAgentID: s.localAgentID, driver: s.driver,
+		transactionScoped: true, certificateGCDomains: s.certificateGCDomains,
+		databaseLifecycle: s.databaseLifecycle, storeConfig: s.storeConfig,
+	}
+	view.localAgentPresent.Store(s.localAgentPresent.Load())
+	return view
+}
+
+func (s *GormStore) readSnapshotTransaction(ctx context.Context, read func(*GormStore) error) error {
+	if s == nil || s.db == nil || read == nil {
+		return gorm.ErrInvalidDB
+	}
+	if s.transactionScoped {
+		return read(s)
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return read(s.transactionView(tx))
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 }
 
 func (s *GormStore) ensureSQLiteWriteDB() error {

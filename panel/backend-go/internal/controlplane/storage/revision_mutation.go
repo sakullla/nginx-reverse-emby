@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -32,21 +33,16 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		return fmt.Errorf("revision mutation callback is required")
 	}
 	certificateGCDomains := make(map[string]struct{})
-	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+	err := s.writeTransactionWithOptions(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(tx *gorm.DB) error {
 		const resourceSavepoint = "revision_mutation_resources"
 		if err := tx.SavePoint(resourceSavepoint).Error; err != nil {
 			return err
 		}
 
-		scoped := GormStore{
-			db:                   tx,
-			dataRoot:             s.dataRoot,
-			localAgentID:         s.localAgentID,
-			transactionScoped:    true,
-			certificateGCDomains: certificateGCDomains,
-		}
+		scoped := s.transactionView(tx)
+		scoped.certificateGCDomains = certificateGCDomains
 
-		decision, err := mutate(&scoped)
+		decision, err := mutate(scoped)
 		if err != nil {
 			return err
 		}
@@ -70,7 +66,7 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		}
 		if decision.Ledger == nil {
 			if decision.BeforeCommit != nil {
-				return decision.BeforeCommit(&scoped)
+				return decision.BeforeCommit(scoped)
 			}
 			return nil
 		}
@@ -101,7 +97,7 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 			}
 		}
 		if decision.BeforeCommit != nil {
-			if err := decision.BeforeCommit(&scoped); err != nil {
+			if err := decision.BeforeCommit(scoped); err != nil {
 				return err
 			}
 		}

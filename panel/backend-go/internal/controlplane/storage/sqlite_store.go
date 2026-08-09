@@ -238,11 +238,15 @@ func (s *GormStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, er
 }
 
 func (s *GormStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
-	return s.loadLocalSnapshot(ctx, agentID, true)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadLocalSnapshot(ctx, agentID, true)
+	})
 }
 
 func (s *GormStore) LoadLocalIntentSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
-	return s.loadLocalSnapshot(ctx, agentID, false)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadLocalSnapshot(ctx, agentID, false)
+	})
 }
 
 // LoadRelayListenerCredentialTargets returns configured relay listeners without
@@ -271,11 +275,25 @@ func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runti
 }
 
 func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
-	return s.loadAgentSnapshot(ctx, agentID, input, true)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadAgentSnapshot(ctx, agentID, input, true)
+	})
 }
 
 func (s *GormStore) LoadAgentIntentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
-	return s.loadAgentSnapshot(ctx, agentID, input, false)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadAgentSnapshot(ctx, agentID, input, false)
+	})
+}
+
+func (s *GormStore) loadCompleteSnapshot(ctx context.Context, load func(*GormStore) (Snapshot, error)) (Snapshot, error) {
+	var snapshot Snapshot
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var err error
+		snapshot, err = load(scoped)
+		return err
+	})
+	return snapshot, err
 }
 
 func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput, runtimeFiltered bool) (Snapshot, error) {

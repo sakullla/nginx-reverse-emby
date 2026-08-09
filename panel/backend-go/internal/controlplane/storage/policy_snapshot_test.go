@@ -548,6 +548,202 @@ func testStandalonePluginPolicyCatalogReadUsesOneSnapshot(t *testing.T, reader, 
 	}
 }
 
+func TestCompleteAgentSnapshotUsesOneSQLiteSnapshot(t *testing.T) {
+	dataRoot := t.TempDir()
+	reader, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testCompleteAgentSnapshotUsesOneSnapshot(t, reader, writer, "sqlite", false)
+}
+
+func TestRevisionMutationSnapshotSeesOwnWrites(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	ctx := t.Context()
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-own-writes", AgentToken: "token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	before := HTTPRuleRow{ID: 1, AgentID: "edge-own-writes", FrontendURL: "https://before.example.test", BackendsJSON: `[]`, Enabled: true, Revision: 1}
+	if err := store.SaveHTTPRules(ctx, "edge-own-writes", []HTTPRuleRow{before}); err != nil {
+		t.Fatal(err)
+	}
+	after := before
+	after.FrontendURL = "https://after.example.test"
+	after.Revision = 2
+
+	err = store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+		if err := tx.SaveHTTPRules(ctx, "edge-own-writes", []HTTPRuleRow{after}); err != nil {
+			return RevisionMutationDecision{}, err
+		}
+		snapshot, err := tx.LoadAgentIntentSnapshot(ctx, "edge-own-writes", AgentSnapshotInput{})
+		if err != nil {
+			return RevisionMutationDecision{}, err
+		}
+		if len(snapshot.Rules) != 1 || snapshot.Rules[0].FrontendURL != after.FrontendURL {
+			t.Fatalf("transaction snapshot rules = %+v, want own write %q", snapshot.Rules, after.FrontendURL)
+		}
+		return RevisionMutationDecision{}, nil
+	})
+	if err != nil {
+		t.Fatalf("WithRevisionMutation() error = %v", err)
+	}
+}
+
+func testCompleteAgentSnapshotUsesOneSnapshot(t *testing.T, reader, writer *GormStore, operationPrefix string, transactionScoped bool) {
+	t.Helper()
+	ctx := t.Context()
+	if err := reader.SaveAgent(ctx, AgentRow{ID: "edge-full", AgentToken: "token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	instance := installActivePolicyFixture(t, reader, signingKey, "policy.full."+operationPrefix, "ip", "full-ip-"+operationPrefix, `["edge-full"]`, `["shared-full"]`)
+	if err := reader.EnsureAgentPluginPolicyCatalog(ctx, "edge-full"); err != nil {
+		t.Fatal(err)
+	}
+	beforeRule := HTTPRuleRow{
+		ID: 1, AgentID: "edge-full", FrontendURL: "https://before.example.test", BackendsJSON: `[]`,
+		Enabled: true, PolicyRefJSON: `{"id":"shared-full"}`, Revision: 1,
+	}
+	if err := reader.SaveHTTPRules(ctx, "edge-full", []HTTPRuleRow{beforeRule}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := reader.LoadAgentIntentSnapshot(ctx, "edge-full", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installed, found, err := reader.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	installed.DesiredLifecycle = "disabled"
+	installed.CurrentLifecycle = "disabled"
+	now := time.Now().UTC()
+	disable := PluginMutation{
+		PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed,
+		Operation: PluginOperationRow{ID: operationPrefix + "-full-disable", PluginID: installed.PluginID, Kind: "disable", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: operationPrefix + "-full-disable-audit", Action: "plugin.disable", TargetKind: "plugin", TargetID: installed.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	}
+	afterRule := beforeRule
+	afterRule.FrontendURL = "https://after.example.test"
+	afterRule.PolicyRefJSON = ""
+	afterRule.Revision = 2
+
+	firstRuleRead := make(chan struct{})
+	continueRead := make(chan struct{})
+	var intercept sync.Once
+	callbackName := "test:complete-snapshot-" + operationPrefix
+	if err := reader.db.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement == nil || db.Statement.Table != (HTTPRuleRow{}).TableName() {
+			return
+		}
+		intercept.Do(func() {
+			close(firstRuleRead)
+			<-continueRead
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.db.Callback().Query().Remove(callbackName) })
+
+	readSnapshot := func() (Snapshot, error) {
+		if !transactionScoped {
+			return reader.LoadAgentIntentSnapshot(ctx, "edge-full", AgentSnapshotInput{})
+		}
+		var snapshot Snapshot
+		err := reader.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			var err error
+			snapshot, err = tx.LoadAgentIntentSnapshot(ctx, "edge-full", AgentSnapshotInput{})
+			return RevisionMutationDecision{}, err
+		})
+		return snapshot, err
+	}
+	readDone := make(chan struct {
+		snapshot Snapshot
+		err      error
+	}, 1)
+	go func() {
+		snapshot, err := readSnapshot()
+		readDone <- struct {
+			snapshot Snapshot
+			err      error
+		}{snapshot: snapshot, err: err}
+	}()
+	select {
+	case <-firstRuleRead:
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatal("full snapshot reader did not reach the deterministic rule boundary")
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- writer.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			if err := tx.LockAgentPluginPolicyCatalog(ctx, "edge-full"); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			if err := tx.SaveHTTPRules(ctx, "edge-full", []HTTPRuleRow{afterRule}); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			if err := tx.ApplyPluginMutation(ctx, disable); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			return RevisionMutationDecision{}, nil
+		})
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			close(continueRead)
+			t.Fatalf("concurrent full snapshot mutation error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatalf("concurrent %s full snapshot mutation could not commit", operationPrefix)
+	}
+	close(continueRead)
+	read := <-readDone
+	if read.err != nil {
+		t.Fatalf("complete snapshot read error = %v", read.err)
+	}
+	after, err := reader.LoadAgentIntentSnapshot(ctx, "edge-full", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeGeneration := func(snapshot Snapshot) string {
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			return fmt.Sprintf("invalid-snapshot:%v", err)
+		}
+		return string(encoded)
+	}
+	got, wantBefore, wantAfter := completeGeneration(read.snapshot), completeGeneration(before), completeGeneration(after)
+	if got != wantBefore && got != wantAfter {
+		t.Fatalf("complete snapshot produced a hybrid generation %q; before=%q after=%q", got, wantBefore, wantAfter)
+	}
+	if wantBefore == wantAfter {
+		t.Fatalf("fixture did not create distinct complete generations: %q", wantBefore)
+	}
+}
+
 func TestRuleCatalogFenceSerializesReferenceCreateAndDeleteWithPluginLifecycle(t *testing.T) {
 	ctx := t.Context()
 	dataRoot := t.TempDir()

@@ -129,6 +129,63 @@ func TestPostgresStandalonePluginPolicyCatalogReadUsesOneSnapshot(t *testing.T) 
 	})
 }
 
+func TestPostgresCompleteAgentSnapshotUsesOneSnapshot(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		transactionScoped bool
+	}{
+		{name: "standalone", transactionScoped: false},
+		{name: "revision mutation", transactionScoped: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dsn := postgresIntegrationSchemaDSN(t)
+			dataRoot := t.TempDir()
+			reader, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local", SkipBootstrapSchema: true})
+			if err != nil {
+				_ = reader.Close()
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = writer.Close()
+				_ = reader.Close()
+				_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+			})
+			testCompleteAgentSnapshotUsesOneSnapshot(t, reader, writer, "postgres-"+strings.ReplaceAll(test.name, " ", "-"), test.transactionScoped)
+		})
+	}
+}
+
+func TestPostgresRevisionMutationUsesRepeatableRead(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	dataRoot := t.TempDir()
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+
+	var isolation string
+	err = store.WithRevisionMutation(t.Context(), func(tx *GormStore) (RevisionMutationDecision, error) {
+		if err := tx.db.Raw("SHOW transaction_isolation").Scan(&isolation).Error; err != nil {
+			return RevisionMutationDecision{}, err
+		}
+		return RevisionMutationDecision{}, nil
+	})
+	if err != nil {
+		t.Fatalf("WithRevisionMutation() error = %v", err)
+	}
+	if isolation != "repeatable read" {
+		t.Fatalf("revision mutation isolation = %q, want repeatable read", isolation)
+	}
+}
+
 func TestPostgresPluginVariantMigrationFromDigestIdentity(t *testing.T) {
 	dsn := postgresIntegrationSchemaDSN(t)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
