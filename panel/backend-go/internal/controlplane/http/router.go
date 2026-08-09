@@ -162,7 +162,7 @@ type PluginAPI interface {
 }
 
 type AgentPluginArtifactService interface {
-	ResolveAgentPluginArtifact(context.Context, string, string) (service.AgentPluginArtifact, error)
+	ResolveAgentPluginArtifact(context.Context, string, int64, string, string) (service.AgentPluginArtifact, error)
 }
 
 type Dependencies struct {

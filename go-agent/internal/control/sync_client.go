@@ -222,6 +222,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		VersionPackageURL  string                `json:"version_package"`
 		VersionPackageMeta *model.VersionPackage `json:"version_package_meta"`
 		VersionSHA256      string                `json:"version_sha256"`
+		SnapshotDigest     string                `json:"snapshot_digest"`
 	}
 	if err := json.Unmarshal(reply.Sync, &syncMeta); err != nil {
 		return Snapshot{}, err
@@ -231,7 +232,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		syncMeta.VersionPackageURL,
 		syncMeta.VersionSHA256,
 	)
-	if err := c.preparePluginArtifacts(ctx, &snapshot); err != nil {
+	if err := c.preparePluginArtifacts(ctx, &snapshot, snapshot.Revision, syncMeta.SnapshotDigest); err != nil {
 		return Snapshot{}, err
 	}
 
@@ -285,7 +286,7 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	// requires an absolute URL, while the verified digest must remain the digest
 	// issued by the control plane for the root-relative snapshot value.
 	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
-	if err := c.preparePluginArtifacts(ctx, &snapshot); err != nil {
+	if err := c.preparePluginArtifacts(ctx, &snapshot, pull.Lease.Revision, pull.Lease.SnapshotDigest); err != nil {
 		return model.RevisionPull{}, err
 	}
 	pull.Snapshot = &snapshot

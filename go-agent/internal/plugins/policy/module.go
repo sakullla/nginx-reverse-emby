@@ -54,8 +54,8 @@ func NewModule(factory GenerationFactory, observer observability.Observer) *Modu
 }
 
 // NewValidationModule keeps policy references in the atomic generation
-// prepare graph when execution is unavailable. Empty policy snapshots remain
-// publishable, while any policy-bearing candidate fails before cutover.
+// prepare graph when execution is unavailable. Optional catalog entries remain
+// publishable, while candidates that reference a policy fail before cutover.
 func NewValidationModule(observer observability.Observer) *Module {
 	return NewModule(nil, observer)
 }
@@ -92,7 +92,7 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	if err != nil {
 		return nil, err
 	}
-	if len(request.Next.PluginPolicies) > 0 && m.factory == nil {
+	if len(required) > 0 && m.factory == nil {
 		return nil, errors.New("policy execution runtime is unavailable")
 	}
 	if _, err := NewGenerationEvaluator(generationContext.ID(), definitions, nil, m.observer); err != nil {
@@ -290,7 +290,11 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		}
 		rawDefinitions[id] = definition
 	}
-	required := make(map[string]struct{})
+	requiredIDs := RequiredPolicyIDs(snapshot)
+	required := make(map[string]struct{}, len(requiredIDs))
+	for _, id := range requiredIDs {
+		required[id] = struct{}{}
+	}
 	l4Required := make(map[string]struct{})
 	for _, rule := range snapshot.Rules {
 		if !rule.Enabled || rule.PolicyRef == nil {
@@ -299,7 +303,6 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions, ExtensionHTTP); err != nil {
 			return nil, nil, fmt.Errorf("http rule %d: %w", rule.ID, err)
 		}
-		required[strings.TrimSpace(rule.PolicyRef.ID)] = struct{}{}
 	}
 	for _, rule := range snapshot.L4Rules {
 		if !rule.Enabled || rule.PolicyRef == nil {
@@ -309,7 +312,6 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 			return nil, nil, fmt.Errorf("l4 rule %d: %w", rule.ID, err)
 		}
 		id := strings.TrimSpace(rule.PolicyRef.ID)
-		required[id] = struct{}{}
 		l4Required[id] = struct{}{}
 	}
 	definitions := make([]model.PluginPolicy, 0, len(rawDefinitions))
@@ -331,12 +333,35 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		}
 		definitions = append(definitions, cloned)
 	}
+	return definitions, requiredIDs, nil
+}
+
+// RequiredPolicyIDs returns the canonical, stable set of policy definitions
+// directly referenced by enabled HTTP and L4 rules. Artifact admission and
+// generation validation share this helper so optional catalog entries cannot
+// become implicit publication dependencies.
+func RequiredPolicyIDs(snapshot model.Snapshot) []string {
+	required := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		if rule.Enabled && rule.PolicyRef != nil {
+			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if rule.Enabled && rule.PolicyRef != nil {
+			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
 	ids := make([]string, 0, len(required))
 	for id := range required {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	return definitions, ids, nil
+	return ids
 }
 
 func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.PluginPolicy, extensionPoint string) error {

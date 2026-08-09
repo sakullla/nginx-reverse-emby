@@ -653,16 +653,14 @@ func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
 func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
 	agentID = s.resolveAgentID(agentID)
 	var instances []PluginInstanceRow
-	if err := s.db.WithContext(ctx).
-		Clauses(clause.Locking{Strength: "SHARE"}).
-		Order("id").Find(&instances).Error; err != nil {
+	if err := s.pluginPolicyGraphQuery(ctx).Order("id").Find(&instances).Error; err != nil {
 		return nil, err
 	}
 	if err := s.validatePolicyChainMembershipTopology(ctx, instances); err != nil {
 		return nil, err
 	}
 	var catalogRevision PluginPolicyAgentRevisionRow
-	if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("agent_id = ?", agentID).First(&catalogRevision).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.pluginPolicyGraphQuery(ctx).Where("agent_id = ?", agentID).First(&catalogRevision).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 	type chainProjection struct {
@@ -694,7 +692,7 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 		}
 
 		var installed InstalledPluginRow
-		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := s.pluginPolicyGraphQuery(ctx).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			// Cleanup may intentionally retain disabled instance/config rows after
 			// uninstall. Installed state is lifecycle authority, so these rows do
 			// not publish a policy until the plugin is installed again.
@@ -706,8 +704,7 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 			continue
 		}
 		var packageRow PluginPackageRow
-		if err := s.db.WithContext(ctx).
-			Clauses(clause.Locking{Strength: "SHARE"}).
+		if err := s.pluginPolicyGraphQuery(ctx).
 			Where("identity = ? AND digest = ?", installed.ActivePackageIdentity, installed.ActivePackageDigest).
 			First(&packageRow).Error; err != nil {
 			return nil, fmt.Errorf("plugin instance %s active package: %w", instance.ID, err)
@@ -765,7 +762,7 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 		targetsJSON, _ := json.Marshal(targets)
 		stage := PolicyStage{
 			Kind: kind, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version,
-			InstanceID: instance.ID, PackageDigest: packageRow.Digest, ArtifactPath: artifactPath,
+			PolicyID: instance.ID, InstanceID: instance.ID, PackageDigest: packageRow.Digest, ArtifactPath: artifactPath,
 			ArtifactDigest: entryArtifact.SHA256,
 			ArtifactSource: PolicyArtifactSource{
 				ArtifactID: entryArtifact.ID, PackageIdentity: packageRow.Identity, PackageDigest: packageRow.Digest,
@@ -797,9 +794,7 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 				return nil, fmt.Errorf("policy chain %s has duplicate %s stages from instances %s and %s", chainID, kind, previous, instance.ID)
 			}
 			chain.kinds[kind] = instance.ID
-			member := stage
-			member.PolicyID = chainID
-			chain.stages = append(chain.stages, member)
+			chain.stages = append(chain.stages, stage)
 		}
 	}
 	policies := make([]PluginPolicy, 0, len(chains))
@@ -836,7 +831,7 @@ func (s *GormStore) validatePolicyChainMembershipTopology(ctx context.Context, i
 			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 		}
 		var installed InstalledPluginRow
-		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := s.pluginPolicyGraphQuery(ctx).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			continue
 		} else if err != nil {
 			return fmt.Errorf("plugin instance %s installed state: %w", instance.ID, err)
@@ -845,7 +840,7 @@ func (s *GormStore) validatePolicyChainMembershipTopology(ctx context.Context, i
 			continue
 		}
 		var packageRow PluginPackageRow
-		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("identity = ? AND digest = ?", installed.ActivePackageIdentity, installed.ActivePackageDigest).First(&packageRow).Error; err != nil {
+		if err := s.pluginPolicyGraphQuery(ctx).Where("identity = ? AND digest = ?", installed.ActivePackageIdentity, installed.ActivePackageDigest).First(&packageRow).Error; err != nil {
 			return fmt.Errorf("plugin instance %s active package: %w", instance.ID, err)
 		}
 		kind := strings.ToLower(packageRow.PolicyKind)
@@ -936,7 +931,24 @@ func EncodePluginPolicyChains(chains []string) (string, error) {
 // LoadAgentPluginPolicies returns the authoritative active policy catalog for
 // one agent. A transactional GormStore observes the rows the mutation commits.
 func (s *GormStore) LoadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
-	return s.loadAgentPluginPolicies(ctx, s.resolveAgentID(agentID))
+	agentID = s.resolveAgentID(agentID)
+	if s.transactionScoped {
+		if err := s.lockPluginPolicyAgentCatalogs(ctx, []string{agentID}, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+	}
+	return s.loadAgentPluginPolicies(ctx, agentID)
+}
+
+// pluginPolicyGraphQuery keeps standalone catalog reads stable with shared row
+// locks. Transaction-scoped callers already hold the affected Agent catalog
+// fence, so avoiding graph-wide shared locks prevents cross-plugin lock upgrades.
+func (s *GormStore) pluginPolicyGraphQuery(ctx context.Context) *gorm.DB {
+	query := s.db.WithContext(ctx)
+	if !s.transactionScoped {
+		query = query.Clauses(clause.Locking{Strength: "SHARE"})
+	}
+	return query
 }
 
 func installedProjectsActivePolicy(installed InstalledPluginRow) bool {
@@ -2418,17 +2430,24 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 		scoped.db = tx
 		scoped.writeDB = tx
 		scoped.transactionScoped = true
-		before, err := scoped.capturePluginPolicyCatalogs(ctx, mutation.PluginID)
+		agents, err := scoped.pluginMutationPolicyAgents(ctx, mutation)
+		if err != nil {
+			return err
+		}
+		if err := scoped.lockPluginPolicyAgentCatalogs(ctx, agents, mutation.Operation.CreatedAt); err != nil {
+			return err
+		}
+		before, err := scoped.capturePluginPolicyCatalogs(ctx, agents)
 		if err != nil {
 			return err
 		}
 		if err := scoped.applyPluginMutationTx(ctx, tx, mutation); err != nil {
 			return err
 		}
-		if err := scoped.validateProspectivePluginPolicyTransition(ctx, mutation, before); err != nil {
+		if err := scoped.validateProspectivePluginPolicyTransition(ctx, mutation, agents, before); err != nil {
 			return err
 		}
-		return scoped.reconcilePluginPolicyCatalogRevisions(ctx, mutation.PluginID, before, mutation.Operation.CreatedAt)
+		return scoped.reconcilePluginPolicyCatalogRevisions(ctx, agents, before, mutation.Operation.CreatedAt)
 	})
 }
 

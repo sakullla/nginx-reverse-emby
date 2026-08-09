@@ -478,6 +478,12 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				ID: artifactID, Kind: "agent_snapshot", SHA256: digest,
 				Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
 			})
+			policyArtifacts, policyArtifactRefs, policyArtifactErr := tx.BuildAgentRevisionPolicyArtifacts(ctx, target.AgentID, revision, snapshot, now)
+			if policyArtifactErr != nil {
+				return storage.RevisionMutationDecision{}, policyArtifactErr
+			}
+			ledger.Artifacts = append(ledger.Artifacts, policyArtifacts...)
+			ledger.ArtifactRefs = append(ledger.ArtifactRefs, policyArtifactRefs...)
 			ledger.Revisions = append(ledger.Revisions, storage.AgentRevisionRow{
 				AgentID: target.AgentID, Revision: revision, OperationID: operationID,
 				State: storage.AgentRevisionStatePending, SnapshotArtifactID: artifactID, SnapshotDigest: digest,

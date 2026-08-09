@@ -16,6 +16,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
+const testPluginSnapshotDigest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
 func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerifiedCache(t *testing.T) {
 	payload := []byte("verified wasm payload")
 	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
@@ -30,6 +32,10 @@ func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerified
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Query().Get("revision") != "1" || r.URL.Query().Get("snapshot_digest") != testPluginSnapshotDigest {
+			http.Error(w, "invalid revision identity", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/wasm")
 		_, _ = w.Write(payload)
 	}))
@@ -40,7 +46,7 @@ func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerified
 		MasterURL: server.URL, AgentToken: "agent-secret", PluginCacheDir: cacheRoot,
 	}, server.Client())
 	snapshot := pluginArtifactSnapshot("artifact-1", digest, int64(len(payload)))
-	if err := client.preparePluginArtifacts(t.Context(), &snapshot); err != nil {
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest); err != nil {
 		t.Fatalf("preparePluginArtifacts() error = %v", err)
 	}
 	localPath := snapshot.PluginPolicies[0].Stages[0].ArtifactPath
@@ -51,7 +57,7 @@ func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerified
 	if err != nil || string(got) != string(payload) {
 		t.Fatalf("materialized artifact = %q, error = %v", got, err)
 	}
-	if err := client.preparePluginArtifacts(t.Context(), &snapshot); err != nil {
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest); err != nil {
 		t.Fatalf("reuse verified artifact error = %v", err)
 	}
 	if requests.Load() != 1 {
@@ -83,6 +89,10 @@ func TestPullRevisionMaterializesEmptyURLArtifactAfterVerifyingPersistedSnapshot
 		case "/api/agent-plugin-artifacts/artifact-revision":
 			if r.Header.Get("X-Agent-Token") != "agent-secret" {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if r.URL.Query().Get("revision") != "7" || r.URL.Query().Get("snapshot_digest") != snapshotDigest {
+				http.Error(w, "invalid revision identity", http.StatusBadRequest)
 				return
 			}
 			_, _ = w.Write(payload)
@@ -121,7 +131,7 @@ func TestPluginArtifactPreparationSerializesConcurrentPublication(t *testing.T) 
 	for range 2 {
 		go func() {
 			snapshot := pluginArtifactSnapshot("artifact-concurrent", digest, int64(len(payload)))
-			errors <- client.preparePluginArtifacts(t.Context(), &snapshot)
+			errors <- client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest)
 		}()
 	}
 	for range 2 {
@@ -131,6 +141,102 @@ func TestPluginArtifactPreparationSerializesConcurrentPublication(t *testing.T) 
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("concurrent artifact requests = %d, want one", requests.Load())
+	}
+}
+
+func TestPluginArtifactPreparationDropsFailedOptionalPolicyAndKeepsRequiredPolicy(t *testing.T) {
+	goodPayload := []byte("required policy wasm")
+	goodDigest := fmt.Sprintf("%x", sha256.Sum256(goodPayload))
+	badPayload := []byte("optional policy wasm")
+	badDigest := fmt.Sprintf("%x", sha256.Sum256(badPayload))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/agent-plugin-artifacts/artifact-optional":
+			http.Error(w, "optional unavailable", http.StatusServiceUnavailable)
+		case "/api/agent-plugin-artifacts/artifact-required":
+			_, _ = w.Write(goodPayload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	requiredSnapshot := pluginArtifactSnapshot("artifact-required", goodDigest, int64(len(goodPayload)))
+	optionalSnapshot := pluginArtifactSnapshot("artifact-optional", badDigest, int64(len(badPayload)))
+	optional := optionalSnapshot.PluginPolicies[0]
+	optional.ID = "optional"
+	snapshot := requiredSnapshot
+	snapshot.PluginPolicies = []model.PluginPolicy{optional, requiredSnapshot.PluginPolicies[0]}
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL: server.URL, AgentToken: "agent-secret", PluginCacheDir: t.TempDir(),
+	}, server.Client())
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest); err != nil {
+		t.Fatalf("preparePluginArtifacts() error = %v", err)
+	}
+	if len(snapshot.PluginPolicies) != 1 || snapshot.PluginPolicies[0].ID != "shared" {
+		t.Fatalf("materialized policies = %+v, want only required policy", snapshot.PluginPolicies)
+	}
+	if snapshot.PluginPolicies[0].Stages[0].ArtifactPath == "" {
+		t.Fatal("required policy was not materialized")
+	}
+}
+
+func TestPluginArtifactPreparationRejectsMismatchedRevisionIdentityBeforeDownload(t *testing.T) {
+	payload := []byte("policy wasm")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	t.Cleanup(server.Close)
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, PluginCacheDir: t.TempDir()}, server.Client())
+	snapshot := pluginArtifactSnapshot("artifact-mismatch", digest, int64(len(payload)))
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision+1, testPluginSnapshotDigest); err == nil {
+		t.Fatal("preparePluginArtifacts() accepted mismatched snapshot revision")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("artifact requests = %d, want none", requests.Load())
+	}
+}
+
+func TestHeartbeatCarriesDurableSnapshotIdentityToArtifactDownload(t *testing.T) {
+	payload := []byte("heartbeat policy wasm")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	snapshot := pluginArtifactSnapshot("artifact-heartbeat", digest, int64(len(payload)))
+	snapshot.Revision = 9
+	rawSnapshot, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var syncPayload map[string]any
+	if err := json.Unmarshal(rawSnapshot, &syncPayload); err != nil {
+		t.Fatal(err)
+	}
+	syncPayload["snapshot_digest"] = testPluginSnapshotDigest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/agents/heartbeat":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sync": syncPayload})
+		case "/api/agent-plugin-artifacts/artifact-heartbeat":
+			if r.URL.Query().Get("revision") != "9" || r.URL.Query().Get("snapshot_digest") != testPluginSnapshotDigest {
+				http.Error(w, "invalid revision identity", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL: server.URL, AgentToken: "agent-secret", PluginCacheDir: t.TempDir(),
+	}, server.Client())
+	got, err := client.Sync(t.Context(), SyncRequest{})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if got.PluginPolicies[0].Stages[0].ArtifactPath == "" {
+		t.Fatal("heartbeat policy artifact was not materialized")
 	}
 }
 
@@ -168,7 +274,7 @@ func TestPluginArtifactPreparationAuthAndDigestFailuresPreserveLastKnownGood(t *
 			}
 			client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: test.token, PluginCacheDir: cacheRoot}, server.Client())
 			snapshot := pluginArtifactSnapshot("artifact-new", newDigest, int64(len(newPayload)))
-			if err := client.preparePluginArtifacts(t.Context(), &snapshot); err == nil {
+			if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest); err == nil {
 				t.Fatal("preparePluginArtifacts() error = nil")
 			}
 			got, err := os.ReadFile(oldPath)
@@ -183,7 +289,7 @@ func TestPluginArtifactPreparationAuthAndDigestFailuresPreserveLastKnownGood(t *
 }
 
 func pluginArtifactSnapshot(artifactID, digest string, size int64) model.Snapshot {
-	return model.Snapshot{PluginPolicies: []model.PluginPolicy{{ID: "shared", Stages: []model.PolicyStage{{
+	return model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}, PluginPolicies: []model.PluginPolicy{{ID: "shared", Stages: []model.PolicyStage{{
 		InstanceID: "instance-1", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: digest,
 		ArtifactSource: model.PolicyArtifactSource{
 			ArtifactID: artifactID, PackageIdentity: strings.Repeat("b", 64), PackageDigest: strings.Repeat("a", 64),

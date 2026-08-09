@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -95,7 +96,7 @@ func TestPolicyModuleRejectsMissingRequiredPolicyBeforeFactory(t *testing.T) {
 	}
 }
 
-func TestPolicyValidationModuleAllowsEmptyAndRejectsAnyPolicyCatalog(t *testing.T) {
+func TestPolicyValidationModuleAllowsOptionalCatalogAndRejectsRequiredPolicy(t *testing.T) {
 	validation := NewValidationModule(nil)
 	if capabilities := validation.Capabilities(model.Snapshot{}); len(capabilities) != 0 {
 		t.Fatalf("validation-only module capabilities=%+v, want none", capabilities)
@@ -107,11 +108,37 @@ func TestPolicyValidationModuleAllowsEmptyAndRejectsAnyPolicyCatalog(t *testing.
 	if err := transaction.(module.GenerationTransaction).Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	_, err = validation.Prepare(context.Background(), module.ApplyRequest{Next: model.Snapshot{
+	transaction, err = validation.Prepare(context.Background(), module.ApplyRequest{Next: model.Snapshot{
 		Revision: 2, PluginPolicies: []model.PluginPolicy{testPolicy("unused", model.PolicyKindIP)},
 	}})
+	if err != nil {
+		t.Fatalf("optional policy catalog rejected: %v", err)
+	}
+	if err := transaction.(module.GenerationTransaction).Destroy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = validation.Prepare(context.Background(), module.ApplyRequest{Next: model.Snapshot{
+		Revision: 3, PluginPolicies: []model.PluginPolicy{testPolicy("required", model.PolicyKindIP)},
+		Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "required"}}},
+	}})
 	if err == nil || !strings.Contains(err.Error(), "policy execution runtime is unavailable") {
-		t.Fatalf("policy-bearing snapshot error=%v, want unavailable validation failure", err)
+		t.Fatalf("required policy snapshot error=%v, want unavailable validation failure", err)
+	}
+}
+
+func TestRequiredPolicyIDsUsesOnlyEnabledHTTPAndL4References(t *testing.T) {
+	snapshot := model.Snapshot{
+		Rules: []model.HTTPRule{
+			{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: " waf "}},
+			{ID: 2, Enabled: false, PolicyRef: &model.PolicyRef{ID: "disabled"}},
+		},
+		L4Rules: []model.L4Rule{
+			{ID: 3, Enabled: true, PolicyRef: &model.PolicyRef{ID: "rate"}},
+			{ID: 4, Enabled: true, PolicyRef: &model.PolicyRef{ID: "waf"}},
+		},
+	}
+	if got := RequiredPolicyIDs(snapshot); !slices.Equal(got, []string{"rate", "waf"}) {
+		t.Fatalf("RequiredPolicyIDs() = %v", got)
 	}
 }
 

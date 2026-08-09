@@ -74,6 +74,10 @@ type agentRevisionActionStore interface {
 	RetryCoordinatorRevision(context.Context, string, int64, time.Time) (storage.AgentRevisionRow, error)
 }
 
+type agentHeartbeatRevisionIssuer interface {
+	EnsureAgentHeartbeatRevision(context.Context, string, storage.Snapshot, []byte, string, time.Time) (storage.AgentRevisionRow, error)
+}
+
 type agentRevisionRepository interface {
 	RevisionRepository
 	coordinator.Repository
@@ -201,6 +205,7 @@ type HeartbeatReply struct {
 	HasUpdate            bool                               `json:"has_update"`
 	DesiredVersion       string                             `json:"desired_version"`
 	DesiredRevision      int64                              `json:"desired_revision"`
+	SnapshotDigest       string                             `json:"snapshot_digest,omitempty"`
 	CurrentRevision      int64                              `json:"current_revision"`
 	VersionPackage       string                             `json:"version_package,omitempty"`
 	VersionPackageMeta   *storage.VersionPackage            `json:"version_package_meta,omitempty"`
@@ -1379,6 +1384,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
+	snapshotDigest, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
+	if err != nil {
+		return HeartbeatReply{}, err
+	}
 	pkiDegraded := false
 	if s.pki != nil {
 		snapshot.RelayListeners, err = s.pki.PrepareRelayListeners(ctx, row.ID, snapshot.RelayListeners)
@@ -1400,6 +1409,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
 		DesiredVersion:       snapshot.DesiredVersion,
 		DesiredRevision:      snapshot.Revision,
+		SnapshotDigest:       snapshotDigest,
 		CurrentRevision:      int64(row.CurrentRevision),
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
@@ -1453,6 +1463,44 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.DDNSConfig = nil
 	}
 	return reply, nil
+}
+
+func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID string, snapshot storage.Snapshot) (string, error) {
+	if snapshot.Revision <= 0 {
+		return "", nil
+	}
+	payload, digest, err := revision.CanonicalSnapshotPayload(snapshot)
+	if err != nil {
+		return "", err
+	}
+	foundRevision := false
+	if s.revisionActions != nil {
+		row, found, err := s.revisionActions.GetCoordinatorRevision(ctx, agentID, snapshot.Revision)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if !strings.EqualFold(strings.TrimSpace(row.SnapshotDigest), digest) {
+				return "", errors.New("heartbeat snapshot differs from its durable revision")
+			}
+			foundRevision = true
+		}
+	}
+	issuer, ok := s.store.(agentHeartbeatRevisionIssuer)
+	if !ok {
+		if len(snapshot.PluginPolicies) > 0 || !foundRevision {
+			return "", errors.New("heartbeat snapshot has no durable revision issuer")
+		}
+		return strings.ToLower(digest), nil
+	}
+	issued, err := issuer.EnsureAgentHeartbeatRevision(ctx, agentID, snapshot, payload, digest, s.now().UTC())
+	if err != nil {
+		return "", err
+	}
+	if issued.Revision != snapshot.Revision || !strings.EqualFold(issued.SnapshotDigest, digest) {
+		return "", errors.New("heartbeat revision issuer returned a conflicting identity")
+	}
+	return strings.ToLower(digest), nil
 }
 
 func isPKIControlClientError(err error) bool {

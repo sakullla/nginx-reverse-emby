@@ -1,12 +1,10 @@
 package http
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -31,7 +29,13 @@ func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin artifact service unavailable"))
 		return
 	}
-	artifact, err := d.PluginArtifactService.ResolveAgentPluginArtifact(r.Context(), agent.ID, r.PathValue("artifactID"))
+	revision, parseErr := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("revision")), 10, 64)
+	snapshotDigest := strings.TrimSpace(r.URL.Query().Get("snapshot_digest"))
+	if parseErr != nil || revision <= 0 || len(snapshotDigest) != sha256.Size*2 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("revision-bound artifact identity is required"))
+		return
+	}
+	artifact, err := d.PluginArtifactService.ResolveAgentPluginArtifact(r.Context(), agent.ID, revision, snapshotDigest, r.PathValue("artifactID"))
 	if err != nil {
 		if errors.Is(err, service.ErrPluginArtifactUnavailable) {
 			writeJSON(w, http.StatusNotFound, errorPayload("plugin artifact not found"))
@@ -40,20 +44,9 @@ func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
 		return
 	}
-	file, err := os.Open(artifact.Path)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorPayload("plugin artifact not found"))
-		return
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() != artifact.SizeBytes {
-		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
-		return
-	}
-	var verified bytes.Buffer
-	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(hash, &verified), io.LimitReader(file, artifact.SizeBytes+1)); err != nil || int64(verified.Len()) != artifact.SizeBytes || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), artifact.SHA256) {
+	verified := append([]byte(nil), artifact.Payload...)
+	digest := sha256.Sum256(verified)
+	if int64(len(verified)) != artifact.SizeBytes || !strings.EqualFold(hex.EncodeToString(digest[:]), artifact.SHA256) {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
 		return
 	}
@@ -62,7 +55,7 @@ func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.R
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, &verified)
+	_, _ = w.Write(verified)
 }
 
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +110,7 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		"has_update":       reply.HasUpdate,
 		"desired_version":  reply.DesiredVersion,
 		"desired_revision": reply.DesiredRevision,
+		"snapshot_digest":  reply.SnapshotDigest,
 		"current_revision": reply.CurrentRevision,
 		"relay_listeners":  reply.RelayListeners,
 		"egress_profiles":  reply.EgressProfiles,

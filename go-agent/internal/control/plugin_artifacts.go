@@ -11,38 +11,62 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 )
 
 const maxPluginArtifactIdentityBytes = 256
 
 var pluginArtifactMaterializeLocks [64]sync.Mutex
 
-func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model.Snapshot) error {
+func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model.Snapshot, revision int64, snapshotDigest string) error {
 	if snapshot == nil || len(snapshot.PluginPolicies) == 0 {
 		return nil
 	}
-	cacheDir := strings.TrimSpace(c.cfg.PluginCacheDir)
-	if cacheDir == "" {
-		return errors.New("plugin policy snapshot requires an Agent artifact cache")
+	snapshotDigest = strings.ToLower(strings.TrimSpace(snapshotDigest))
+	if revision <= 0 || snapshot.Revision != revision || !validSHA256Hex(snapshotDigest) {
+		return errors.New("plugin policy snapshot has an invalid immutable revision identity")
 	}
+	required := make(map[string]struct{})
+	for _, id := range policy.RequiredPolicyIDs(*snapshot) {
+		required[id] = struct{}{}
+	}
+	cacheDir := strings.TrimSpace(c.cfg.PluginCacheDir)
+	materialized := make([]model.PluginPolicy, 0, len(snapshot.PluginPolicies))
 	for policyIndex := range snapshot.PluginPolicies {
-		for stageIndex := range snapshot.PluginPolicies[policyIndex].Stages {
-			stage := &snapshot.PluginPolicies[policyIndex].Stages[stageIndex]
-			localPath, err := c.materializePluginArtifact(ctx, cacheDir, *stage)
+		definition := snapshot.PluginPolicies[policyIndex]
+		definition.Stages = append([]model.PolicyStage(nil), definition.Stages...)
+		var policyErr error
+		for stageIndex := range definition.Stages {
+			stage := &definition.Stages[stageIndex]
+			if cacheDir == "" {
+				policyErr = errors.New("plugin policy snapshot requires an Agent artifact cache")
+				break
+			}
+			localPath, err := c.materializePluginArtifact(ctx, cacheDir, revision, snapshotDigest, *stage)
 			if err != nil {
-				return fmt.Errorf("prepare plugin policy %q stage %q: %w", snapshot.PluginPolicies[policyIndex].ID, stage.InstanceID, err)
+				policyErr = fmt.Errorf("stage %q: %w", stage.InstanceID, err)
+				break
 			}
 			stage.ArtifactPath = localPath
 		}
+		if policyErr != nil {
+			if _, directlyRequired := required[strings.TrimSpace(definition.ID)]; directlyRequired {
+				return fmt.Errorf("prepare required plugin policy %q: %w", definition.ID, policyErr)
+			}
+			continue
+		}
+		materialized = append(materialized, definition)
 	}
+	snapshot.PluginPolicies = materialized
 	return nil
 }
 
-func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir string, stage model.PolicyStage) (string, error) {
+func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir string, revision int64, snapshotDigest string, stage model.PolicyStage) (string, error) {
 	source := stage.ArtifactSource
 	artifactID := strings.TrimSpace(source.ArtifactID)
 	digest := strings.ToLower(strings.TrimSpace(source.SHA256))
@@ -75,7 +99,10 @@ func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir str
 		return target, nil
 	}
 
-	endpoint := c.cfg.MasterURL + "/api/agent-plugin-artifacts/" + url.PathEscape(artifactID)
+	query := url.Values{}
+	query.Set("revision", strconv.FormatInt(revision, 10))
+	query.Set("snapshot_digest", snapshotDigest)
+	endpoint := c.cfg.MasterURL + "/api/agent-plugin-artifacts/" + url.PathEscape(artifactID) + "?" + query.Encode()
 	temporary, err := os.CreateTemp(targetDir, ".artifact-*.tmp")
 	if err != nil {
 		return "", fmt.Errorf("create artifact temporary file: %w", err)

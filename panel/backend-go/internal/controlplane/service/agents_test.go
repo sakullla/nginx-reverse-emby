@@ -39,6 +39,44 @@ type fakeStore struct {
 	savedRuntimeState   storage.RuntimeState
 	savedRuntimeAgentID string
 	saveRuntimeCalls    int
+	revisionPointers    map[string]storage.AgentRevisionPointerRow
+	revisions           map[string]storage.AgentRevisionRow
+	ensureRevisionCalls int
+}
+
+func (f *fakeStore) GetAgentRevisionPointer(_ context.Context, agentID string) (storage.AgentRevisionPointerRow, bool, error) {
+	row, found := f.revisionPointers[agentID]
+	return row, found, nil
+}
+
+func (f *fakeStore) GetCoordinatorRevision(_ context.Context, agentID string, revision int64) (storage.AgentRevisionRow, bool, error) {
+	row, found := f.revisions[fmt.Sprintf("%s/%d", agentID, revision)]
+	return row, found, nil
+}
+
+func (f *fakeStore) RetryCoordinatorRevision(_ context.Context, agentID string, revision int64, _ time.Time) (storage.AgentRevisionRow, error) {
+	row, found := f.revisions[fmt.Sprintf("%s/%d", agentID, revision)]
+	if !found {
+		return storage.AgentRevisionRow{}, errors.New("revision not found")
+	}
+	return row, nil
+}
+
+func (f *fakeStore) EnsureAgentHeartbeatRevision(_ context.Context, agentID string, snapshot storage.Snapshot, _ []byte, digest string, now time.Time) (storage.AgentRevisionRow, error) {
+	f.ensureRevisionCalls++
+	key := fmt.Sprintf("%s/%d", agentID, snapshot.Revision)
+	if row, found := f.revisions[key]; found {
+		if !strings.EqualFold(row.SnapshotDigest, digest) {
+			return storage.AgentRevisionRow{}, errors.New("conflicting snapshot digest")
+		}
+		return row, nil
+	}
+	if f.revisions == nil {
+		f.revisions = make(map[string]storage.AgentRevisionRow)
+	}
+	row := storage.AgentRevisionRow{AgentID: agentID, Revision: snapshot.Revision, SnapshotDigest: digest, CreatedAt: now, UpdatedAt: now}
+	f.revisions[key] = row
+	return row, nil
 }
 
 type agentPKIControlErrorStub struct {
@@ -1221,6 +1259,11 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 			}},
 		},
 	}
+	_, expectedSnapshotDigest, err := revision.CanonicalSnapshotPayload(store.snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.revisions = map[string]storage.AgentRevisionRow{"remote-a/8": {AgentID: "remote-a", Revision: 8, SnapshotDigest: expectedSnapshotDigest}}
 
 	svc := NewAgentService(config.Config{}, store)
 	svc.now = func() time.Time { return now }
@@ -1247,6 +1290,12 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	}
 	if reply.DesiredRevision != 8 {
 		t.Fatalf("DesiredRevision = %d", reply.DesiredRevision)
+	}
+	if reply.SnapshotDigest != expectedSnapshotDigest {
+		t.Fatalf("SnapshotDigest = %q", reply.SnapshotDigest)
+	}
+	if store.ensureRevisionCalls != 1 {
+		t.Fatalf("durable heartbeat revision issue calls = %d", store.ensureRevisionCalls)
 	}
 	if reply.DesiredVersion != "2.0.0" {
 		t.Fatalf("DesiredVersion = %q", reply.DesiredVersion)

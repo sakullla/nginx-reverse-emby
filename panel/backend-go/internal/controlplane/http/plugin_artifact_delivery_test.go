@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,17 +17,23 @@ import (
 type pluginArtifactServiceStub struct {
 	agentID    string
 	artifactID string
+	revision   int64
+	digest     string
 	artifact   service.AgentPluginArtifact
 	err        error
 	calls      int
 }
 
 func TestHeartbeatProjectsStableArtifactIdentityWithoutServerFilesystemPath(t *testing.T) {
-	reply := service.HeartbeatReply{HasUpdate: true, PluginPolicies: []storage.PluginPolicy{{ID: "shared", Stages: []storage.PolicyStage{{
+	snapshotDigest := strings.Repeat("a", 64)
+	reply := service.HeartbeatReply{HasUpdate: true, DesiredRevision: 7, SnapshotDigest: snapshotDigest, PluginPolicies: []storage.PluginPolicy{{ID: "shared", Stages: []storage.PolicyStage{{
 		ArtifactPath:   `C:\panel\data\plugins\packages\secret\policy.wasm`,
 		ArtifactSource: storage.PolicyArtifactSource{ArtifactID: "artifact-1"},
 	}}}}}
 	payload := heartbeatSyncPayload(reply, "https://control.example")
+	if payload["desired_revision"] != int64(7) || payload["snapshot_digest"] != snapshotDigest {
+		t.Fatalf("heartbeat revision binding = %v/%v", payload["desired_revision"], payload["snapshot_digest"])
+	}
 	encoded, err := json.Marshal(payload["plugin_policies"])
 	if err != nil {
 		t.Fatal(err)
@@ -50,20 +54,17 @@ func TestHeartbeatProjectsStableArtifactIdentityWithoutServerFilesystemPath(t *t
 	}
 }
 
-func (s *pluginArtifactServiceStub) ResolveAgentPluginArtifact(_ context.Context, agentID, artifactID string) (service.AgentPluginArtifact, error) {
+func (s *pluginArtifactServiceStub) ResolveAgentPluginArtifact(_ context.Context, agentID string, revision int64, digest, artifactID string) (service.AgentPluginArtifact, error) {
 	s.calls++
 	s.agentID, s.artifactID = agentID, artifactID
+	s.revision, s.digest = revision, digest
 	return s.artifact, s.err
 }
 
 func TestAgentPluginArtifactRouteRequiresAgentTokenAndStreamsVerifiedArtifact(t *testing.T) {
 	payload := []byte("policy wasm")
 	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
-	path := filepath.Join(t.TempDir(), "policy.wasm")
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	artifacts := &pluginArtifactServiceStub{artifact: service.AgentPluginArtifact{Path: path, SHA256: digest, SizeBytes: int64(len(payload))}}
+	artifacts := &pluginArtifactServiceStub{artifact: service.AgentPluginArtifact{Payload: payload, SHA256: digest, SizeBytes: int64(len(payload))}}
 	deps := Dependencies{
 		AgentService:          fakeAgentService{agentsByToken: map[string]service.AgentSummary{"agent-secret": {ID: "edge-1"}}},
 		PluginArtifactService: artifacts,
@@ -76,17 +77,25 @@ func TestAgentPluginArtifactRouteRequiresAgentTokenAndStreamsVerifiedArtifact(t 
 	if unauthorized.Code != http.StatusUnauthorized || artifacts.calls != 0 {
 		t.Fatalf("unauthorized response = %d, resolver calls = %d", unauthorized.Code, artifacts.calls)
 	}
+	missingBinding := httptest.NewRecorder()
+	missingBindingRequest := httptest.NewRequest(http.MethodGet, "/panel-api/agent-plugin-artifacts/artifact-1", nil)
+	missingBindingRequest.SetPathValue("artifactID", "artifact-1")
+	missingBindingRequest.Header.Set("X-Agent-Token", "agent-secret")
+	deps.handleAgentPluginArtifact(missingBinding, missingBindingRequest)
+	if missingBinding.Code != http.StatusBadRequest || artifacts.calls != 0 {
+		t.Fatalf("missing revision binding response = %d, resolver calls = %d", missingBinding.Code, artifacts.calls)
+	}
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/panel-api/agent-plugin-artifacts/artifact-1", nil)
+	request := httptest.NewRequest(http.MethodGet, "/panel-api/agent-plugin-artifacts/artifact-1?revision=7&snapshot_digest="+digest, nil)
 	request.SetPathValue("artifactID", "artifact-1")
 	request.Header.Set("X-Agent-Token", "agent-secret")
 	deps.handleAgentPluginArtifact(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != string(payload) {
 		t.Fatalf("artifact response = %d %q", response.Code, response.Body.String())
 	}
-	if artifacts.agentID != "edge-1" || artifacts.artifactID != "artifact-1" {
-		t.Fatalf("resolver identity = %q/%q", artifacts.agentID, artifacts.artifactID)
+	if artifacts.agentID != "edge-1" || artifacts.revision != 7 || artifacts.digest != digest || artifacts.artifactID != "artifact-1" {
+		t.Fatalf("resolver identity = %q/%d/%q/%q", artifacts.agentID, artifacts.revision, artifacts.digest, artifacts.artifactID)
 	}
 	if response.Header().Get("Cache-Control") != "private, no-store" || response.Header().Get("Content-Type") != "application/wasm" {
 		t.Fatalf("artifact headers = %v", response.Header())
@@ -94,18 +103,15 @@ func TestAgentPluginArtifactRouteRequiresAgentTokenAndStreamsVerifiedArtifact(t 
 }
 
 func TestAgentPluginArtifactRouteRejectsDigestMismatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "policy.wasm")
-	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	snapshotDigest := strings.Repeat("a", 64)
 	deps := Dependencies{
 		AgentService: fakeAgentService{agentsByToken: map[string]service.AgentSummary{"agent-secret": {ID: "edge-1"}}},
 		PluginArtifactService: &pluginArtifactServiceStub{artifact: service.AgentPluginArtifact{
-			Path: path, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("expected"))), SizeBytes: int64(len("tampered")),
+			Payload: []byte("tampered"), SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("expected"))), SizeBytes: int64(len("tampered")),
 		}},
 	}
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/panel-api/agent-plugin-artifacts/artifact-1", nil)
+	request := httptest.NewRequest(http.MethodGet, "/panel-api/agent-plugin-artifacts/artifact-1?revision=7&snapshot_digest="+snapshotDigest, nil)
 	request.SetPathValue("artifactID", "artifact-1")
 	request.Header.Set("X-Agent-Token", "agent-secret")
 	deps.handleAgentPluginArtifact(response, request)

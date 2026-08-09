@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -107,11 +106,10 @@ type PluginArtifactDetail struct {
 	GOARCH string `json:"goarch,omitempty"`
 }
 
-// AgentPluginArtifact is an authenticated, active-catalog-bound artifact.
-// Path is an internal verified-cache path and must never be accepted from an
-// HTTP request or serialized back to an Agent.
+// AgentPluginArtifact is a revision-bound immutable artifact. Payload comes
+// from the revision ledger rather than the mutable package cache.
 type AgentPluginArtifact struct {
-	Path      string
+	Payload   []byte
 	SHA256    string
 	SizeBytes int64
 }
@@ -390,75 +388,34 @@ func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]Plug
 	return result, nil
 }
 
-type agentPluginPolicyCatalog interface {
-	LoadAgentPluginPolicies(context.Context, string) ([]storage.PluginPolicy, error)
+type agentRevisionPluginArtifactStore interface {
+	ResolveAgentRevisionPolicyArtifact(context.Context, string, int64, string, string) (storage.GenerationArtifactRow, bool, error)
 }
 
 // ResolveAgentPluginArtifact binds an opaque artifact ID to the requesting
-// Agent's current policy catalog, then revalidates the durable package and
-// artifact projection before exposing the internal file to the HTTP layer.
-func (s *PluginService) ResolveAgentPluginArtifact(ctx context.Context, agentID, artifactID string) (AgentPluginArtifact, error) {
+// Agent's immutable issued revision. Later disable, retarget, upgrade or
+// uninstall operations cannot revoke a valid retry while that revision is
+// retained.
+func (s *PluginService) ResolveAgentPluginArtifact(ctx context.Context, agentID string, revision int64, snapshotDigest, artifactID string) (AgentPluginArtifact, error) {
 	artifactID = strings.TrimSpace(artifactID)
+	if revision <= 0 || len(strings.TrimSpace(snapshotDigest)) != 64 {
+		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+	}
 	if err := storage.ValidatePluginPolicyIdentity(artifactID); err != nil {
 		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
 	}
-	catalogStore, ok := s.store.(agentPluginPolicyCatalog)
+	revisionStore, ok := s.store.(agentRevisionPluginArtifactStore)
 	if !ok {
 		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
 	}
-	policies, err := catalogStore.LoadAgentPluginPolicies(ctx, agentID)
+	artifact, found, err := revisionStore.ResolveAgentRevisionPolicyArtifact(ctx, agentID, revision, snapshotDigest, artifactID)
 	if err != nil {
 		return AgentPluginArtifact{}, err
 	}
-	var matched *storage.PolicyStage
-	for policyIndex := range policies {
-		for stageIndex := range policies[policyIndex].Stages {
-			stage := &policies[policyIndex].Stages[stageIndex]
-			if stage.ArtifactSource.ArtifactID != artifactID {
-				continue
-			}
-			if matched != nil {
-				return AgentPluginArtifact{}, errors.New("active plugin artifact identity is ambiguous")
-			}
-			matched = stage
-		}
-	}
-	if matched == nil {
+	if !found {
 		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
 	}
-	source := matched.ArtifactSource
-	packageRow, found, err := s.store.GetPluginPackageByIdentity(ctx, source.PackageIdentity)
-	if err != nil {
-		return AgentPluginArtifact{}, err
-	}
-	if !found || !strings.EqualFold(packageRow.Digest, source.PackageDigest) ||
-		!strings.EqualFold(packageRow.Digest, matched.PackageDigest) ||
-		!strings.EqualFold(packageRow.SignatureFingerprint, matched.SignerFingerprint) {
-		return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
-	}
-	if err := s.validateStoredPackageIntegrity(ctx, packageRow); err != nil {
-		return AgentPluginArtifact{}, err
-	}
-	artifacts, err := s.store.ListPluginArtifactsByIdentity(ctx, source.PackageIdentity)
-	if err != nil {
-		return AgentPluginArtifact{}, err
-	}
-	for _, artifact := range artifacts {
-		if artifact.ID != artifactID {
-			continue
-		}
-		if artifact.Path != source.RelativePath || !strings.EqualFold(artifact.SHA256, source.SHA256) ||
-			artifact.SizeBytes != source.SizeBytes || !strings.EqualFold(artifact.SHA256, matched.ArtifactDigest) {
-			return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
-		}
-		path := filepath.Join(packageRow.CachePath, filepath.FromSlash(artifact.Path))
-		relative, relErr := filepath.Rel(packageRow.CachePath, path)
-		if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
-		}
-		return AgentPluginArtifact{Path: path, SHA256: strings.ToLower(artifact.SHA256), SizeBytes: artifact.SizeBytes}, nil
-	}
-	return AgentPluginArtifact{}, ErrPluginArtifactUnavailable
+	return AgentPluginArtifact{Payload: append([]byte(nil), artifact.Payload...), SHA256: strings.ToLower(artifact.SHA256), SizeBytes: artifact.SizeBytes}, nil
 }
 
 func (s *PluginService) InstallMutation(ctx context.Context, request PluginInstallRequest) (PluginSummary, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -224,6 +225,12 @@ func TestAuthoritativePolicyCatalogGroupsSharedChainsAndUsesGlobalAgentRevision(
 	if policies[0].Stages[0].ArtifactPath != "" || policies[0].Stages[0].ArtifactSource.ArtifactID == "" {
 		t.Fatalf("remote artifact projection = %+v", policies[0].Stages[0])
 	}
+	if policies[0].Stages[0].PolicyID != "ip-main" || policies[0].Stages[0].InstanceID != "ip-main" {
+		t.Fatalf("shared stage authority = %+v", policies[0].Stages[0])
+	}
+	if !reflect.DeepEqual(policies[0].Stages[0], policies[1].Stages[0]) {
+		t.Fatalf("shared instance differs across containing chains: full=%+v lite=%+v", policies[0].Stages[0], policies[1].Stages[0])
+	}
 
 	instance := instances["waf"]
 	instance.ConfigJSON = `{"mode":"observe"}`
@@ -357,6 +364,83 @@ func TestPluginMutationRejectsDanglingPolicyReferencesInSameTransaction(t *testi
 	persisted, found, err := store.GetInstalledPlugin(ctx, installed.PluginID)
 	if err != nil || !found || persisted.CurrentLifecycle != "active" {
 		t.Fatalf("rolled-back installed state = %+v, %v, %v", persisted, found, err)
+	}
+}
+
+func TestPluginMutationRetargetAndDeletePreserveUnrelatedAgentCatalog(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(ctx, AgentRow{ID: agentID, AgentToken: agentID + "-token", CapabilitiesJSON: `[]`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	moving := installActivePolicyFixture(t, store, signingKey, "policy.moving", "ip", "moving-ip", `["edge-a"]`, `["moving"]`)
+	installActivePolicyFixture(t, store, signingKey, "policy.keep", "rate", "keep-rate", `["edge-a","edge-b"]`, `["keep"]`)
+	for index, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.db.Create(&HTTPRuleRow{
+			ID: index + 1, AgentID: agentID, FrontendURL: "https://example.test", BackendsJSON: `[]`, Enabled: true,
+			PolicyRefJSON: `{"id":"keep"}`, Revision: 1,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	installed, found, err := store.GetInstalledPlugin(ctx, moving.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	moving.TargetJSON = `["edge-b"]`
+	now := time.Now().UTC()
+	if err := store.ApplyPluginMutation(ctx, PluginMutation{
+		PluginID: moving.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, ReplaceInstance: &moving,
+		Operation: PluginOperationRow{ID: "retarget-moving", PluginID: moving.PluginID, Kind: "configure", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+		Audit:     AuditEventRow{ID: "retarget-moving-audit", Action: "plugin.configure", TargetKind: "plugin", TargetID: moving.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	edgeA, err := store.LoadAgentPluginPolicies(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edgeA) != 1 || edgeA[0].ID != "keep" {
+		t.Fatalf("edge-a catalog = %+v, want unrelated keep chain", edgeA)
+	}
+	edgeB, err := store.LoadAgentPluginPolicies(ctx, "edge-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edgeB) != 2 || edgeB[0].ID != "keep" || edgeB[1].ID != "moving" {
+		t.Fatalf("edge-b catalog = %+v, want keep and retargeted moving chains", edgeB)
+	}
+
+	installed, found, err = store.GetInstalledPlugin(ctx, moving.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin(after retarget) = %v, %v", found, err)
+	}
+	if err := store.ApplyPluginMutation(ctx, PluginMutation{
+		PluginID: moving.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		DeletePlugin: true, DeleteInstances: true, DeleteGrants: true,
+		Operation: PluginOperationRow{ID: "delete-moving", PluginID: moving.PluginID, Kind: "uninstall", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now.Add(time.Second)},
+		Audit:     AuditEventRow{ID: "delete-moving-audit", Action: "plugin.uninstall", TargetKind: "plugin", TargetID: moving.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now.Add(time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	edgeB, err = store.LoadAgentPluginPolicies(ctx, "edge-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edgeB) != 1 || edgeB[0].ID != "keep" {
+		t.Fatalf("edge-b catalog after delete = %+v, want unrelated keep chain", edgeB)
 	}
 }
 

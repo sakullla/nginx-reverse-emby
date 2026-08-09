@@ -15,11 +15,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func (s *GormStore) capturePluginPolicyCatalogs(ctx context.Context, pluginID string) (map[string]string, error) {
-	agents, err := s.pluginPolicyTargetAgents(ctx, pluginID)
-	if err != nil {
-		return nil, err
-	}
+func (s *GormStore) capturePluginPolicyCatalogs(ctx context.Context, agents []string) (map[string]string, error) {
 	result := make(map[string]string, len(agents))
 	for _, agentID := range agents {
 		semantic, err := s.semanticPluginPolicyCatalog(ctx, agentID)
@@ -31,37 +27,25 @@ func (s *GormStore) capturePluginPolicyCatalogs(ctx context.Context, pluginID st
 	return result, nil
 }
 
-func (s *GormStore) reconcilePluginPolicyCatalogRevisions(ctx context.Context, pluginID string, before map[string]string, now time.Time) error {
-	after, err := s.capturePluginPolicyCatalogs(ctx, pluginID)
+func (s *GormStore) reconcilePluginPolicyCatalogRevisions(ctx context.Context, agents []string, before map[string]string, now time.Time) error {
+	after, err := s.capturePluginPolicyCatalogs(ctx, agents)
 	if err != nil {
 		return err
 	}
 	if err := s.validatePluginPolicyReferenceTransition(ctx, before, after); err != nil {
 		return err
 	}
-	agents := make(map[string]struct{}, len(before)+len(after))
-	for agentID := range before {
-		agents[agentID] = struct{}{}
-	}
-	for agentID := range after {
-		agents[agentID] = struct{}{}
-	}
-	ordered := make([]string, 0, len(agents))
-	for agentID := range agents {
-		ordered = append(ordered, agentID)
-	}
-	sort.Strings(ordered)
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	for _, agentID := range ordered {
+	for _, agentID := range agents {
 		left, ok := before[agentID]
 		if !ok {
-			left = "[]"
+			return fmt.Errorf("plugin policy catalog before-image for agent %q is missing", agentID)
 		}
 		right, ok := after[agentID]
 		if !ok {
-			right = "[]"
+			return fmt.Errorf("plugin policy catalog after-image for agent %q is missing", agentID)
 		}
 		if left == right {
 			continue
@@ -73,7 +57,7 @@ func (s *GormStore) reconcilePluginPolicyCatalogRevisions(ctx context.Context, p
 	return nil
 }
 
-func (s *GormStore) validateProspectivePluginPolicyTransition(ctx context.Context, mutation PluginMutation, before map[string]string) error {
+func (s *GormStore) validateProspectivePluginPolicyTransition(ctx context.Context, mutation PluginMutation, agents []string, before map[string]string) error {
 	if mutation.CompleteOperation || (mutation.Operation.Status != "applying" && mutation.Operation.Status != "staged") {
 		return nil
 	}
@@ -138,7 +122,7 @@ func (s *GormStore) validateProspectivePluginPolicyTransition(ctx context.Contex
 				return
 			}
 		}
-		after, err := s.capturePluginPolicyCatalogs(ctx, mutation.PluginID)
+		after, err := s.capturePluginPolicyCatalogs(ctx, agents)
 		if err != nil {
 			prospectiveErr = err
 			return
@@ -263,22 +247,47 @@ func policySupportsRule(policy PluginPolicy, extension string, overlay json.RawM
 	return true
 }
 
-func (s *GormStore) pluginPolicyTargetAgents(ctx context.Context, pluginID string) ([]string, error) {
+func (s *GormStore) pluginMutationPolicyAgents(ctx context.Context, mutation PluginMutation) ([]string, error) {
 	var instances []PluginInstanceRow
-	if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", pluginID).Order("id").Find(&instances).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("plugin_id = ?", mutation.PluginID).Order("id").Find(&instances).Error; err != nil {
 		return nil, err
 	}
 	result := make(map[string]struct{})
-	for _, instance := range instances {
+	addInstanceTargets := func(instance PluginInstanceRow) error {
 		if err := ValidatePluginPolicyIdentity(instance.ID); err != nil {
-			return nil, fmt.Errorf("plugin instance identity %q: %w", instance.ID, err)
+			return fmt.Errorf("plugin instance identity %q: %w", instance.ID, err)
 		}
 		targets, err := pluginInstanceTargets(instance.TargetJSON, s.LocalAgentID())
 		if err != nil {
-			return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 		}
 		for _, target := range targets {
 			result[target] = struct{}{}
+		}
+		if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+			pendingTargets, err := pluginInstanceTargets(instance.PendingTargetJSON, s.LocalAgentID())
+			if err != nil {
+				return fmt.Errorf("plugin instance %s pending targets: %w", instance.ID, err)
+			}
+			for _, target := range pendingTargets {
+				result[target] = struct{}{}
+			}
+		}
+		return nil
+	}
+	for _, instance := range instances {
+		if err := addInstanceTargets(instance); err != nil {
+			return nil, err
+		}
+	}
+	if mutation.ReplaceInstance != nil {
+		if err := addInstanceTargets(*mutation.ReplaceInstance); err != nil {
+			return nil, err
+		}
+	}
+	for _, instance := range mutation.ReplaceInstances {
+		if err := addInstanceTargets(instance); err != nil {
+			return nil, err
 		}
 	}
 	agents := make([]string, 0, len(result))
@@ -287,6 +296,57 @@ func (s *GormStore) pluginPolicyTargetAgents(ctx context.Context, pluginID strin
 	}
 	sort.Strings(agents)
 	return agents, nil
+}
+
+// lockPluginPolicyAgentCatalogs is the single serialization boundary shared by
+// plugin lifecycle mutations and rule validation. Rows are inserted and locked
+// in canonical Agent order, avoiding graph-wide shared-lock/upgraded-lock cycles.
+func (s *GormStore) lockPluginPolicyAgentCatalogs(ctx context.Context, agents []string, now time.Time) error {
+	if len(agents) == 0 {
+		return nil
+	}
+	ordered := append([]string(nil), agents...)
+	for index := range ordered {
+		ordered[index] = s.resolveAgentID(ordered[index])
+	}
+	sort.Strings(ordered)
+	ordered = slicesCompactStrings(ordered)
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for _, agentID := range ordered {
+		row := PluginPolicyAgentRevisionRow{AgentID: agentID, Revision: 0, UpdatedAt: now}
+		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "agent_id"}},
+			DoNothing: true,
+		}).Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	var locked []PluginPolicyAgentRevisionRow
+	if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id IN ?", ordered).Order("agent_id").Find(&locked).Error; err != nil {
+		return err
+	}
+	if len(locked) != len(ordered) {
+		return fmt.Errorf("plugin policy Agent catalog fence is incomplete")
+	}
+	return nil
+}
+
+func slicesCompactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	write := 1
+	for _, value := range values[1:] {
+		if value == values[write-1] {
+			continue
+		}
+		values[write] = value
+		write++
+	}
+	return values[:write]
 }
 
 func (s *GormStore) semanticPluginPolicyCatalog(ctx context.Context, agentID string) (string, error) {

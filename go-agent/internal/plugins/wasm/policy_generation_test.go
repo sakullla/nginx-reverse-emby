@@ -200,6 +200,17 @@ func TestPolicyGenerationFactoryReusesSharedStageAcrossHTTPAndL4Chains(t *testin
 	if len(generation.stages) != 1 {
 		t.Fatalf("shared authority compiled %d pools, want one", len(generation.stages))
 	}
+	response, err := generation.Evaluate(ctx, policy.ModuleRequest{
+		GenerationID: "compat-generation-1", PolicyID: shared.PolicyID, PolicyKind: shared.Kind,
+		InstanceID: shared.InstanceID, ExtensionPoint: policy.ExtensionHTTP, RequestID: "request-1",
+		Payload: []byte("input"), Budget: shared.ResourceBudget, Host: &testPolicyHost{},
+	})
+	if err != nil {
+		t.Fatalf("evaluate shared authority: %v", err)
+	}
+	if response.Action != policy.ActionAllow || string(response.Payload) != "guest-ok" {
+		t.Fatalf("shared authority response = %+v", response)
+	}
 }
 
 func TestPolicyGenerationFactoryRejectsConflictingSharedStage(t *testing.T) {

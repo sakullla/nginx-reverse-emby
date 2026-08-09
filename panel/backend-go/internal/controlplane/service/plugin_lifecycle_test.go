@@ -165,11 +165,34 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 		t.Fatalf("active policy catalog = %+v, %v", policies, err)
 	}
 	artifactID := policies[0].Stages[0].ArtifactSource.ArtifactID
-	artifact, err := service.ResolveAgentPluginArtifact(ctx, "local", artifactID)
+	issuedRevision := int64(71)
+	sharedStage := policies[0].Stages[0]
+	sharedStage.PolicyID = "shared-copy"
+	issuedSnapshot := storage.Snapshot{Revision: issuedRevision, PluginPolicies: append(policies, storage.PluginPolicy{ID: "shared-copy", Stages: []storage.PolicyStage{sharedStage}})}
+	payload, err := json.Marshal(issuedSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotSum := sha256.Sum256(payload)
+	snapshotDigest := hex.EncodeToString(snapshotSum[:])
+	policyArtifacts, policyRefs, err := store.BuildAgentRevisionPolicyArtifacts(ctx, "local", issuedRevision, issuedSnapshot, time.Now().UTC())
+	if err != nil || len(policyArtifacts) != 1 || len(policyRefs) != 1 {
+		t.Fatalf("revision policy artifact projection = %d/%d, %v", len(policyArtifacts), len(policyRefs), err)
+	}
+	now := time.Now().UTC()
+	if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+		Operation:    storage.OperationRow{ID: "plugin-artifact-revision", Kind: "test", Status: storage.OperationStatusPending, CreatedAt: now, UpdatedAt: now},
+		Artifacts:    append([]storage.GenerationArtifactRow{{ID: "snapshot-" + snapshotDigest, Kind: "agent_snapshot", SHA256: snapshotDigest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}}, policyArtifacts...),
+		Revisions:    []storage.AgentRevisionRow{{AgentID: "local", Revision: issuedRevision, OperationID: "plugin-artifact-revision", State: storage.AgentRevisionStatePending, SnapshotArtifactID: "snapshot-" + snapshotDigest, SnapshotDigest: snapshotDigest, CreatedAt: now, UpdatedAt: now}},
+		ArtifactRefs: policyRefs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := service.ResolveAgentPluginArtifact(ctx, "local", issuedRevision, snapshotDigest, artifactID)
 	if err != nil || artifact.SHA256 != policies[0].Stages[0].ArtifactDigest || artifact.SizeBytes <= 0 {
 		t.Fatalf("resolved Agent artifact = %+v, %v", artifact, err)
 	}
-	if _, err := service.ResolveAgentPluginArtifact(ctx, "edge-other", artifactID); !errors.Is(err, ErrPluginArtifactUnavailable) {
+	if _, err := service.ResolveAgentPluginArtifact(ctx, "edge-other", issuedRevision, snapshotDigest, artifactID); !errors.Is(err, ErrPluginArtifactUnavailable) {
 		t.Fatalf("cross-Agent artifact resolution error = %v", err)
 	}
 	if _, err := service.CompleteLifecycleApply(ctx, enableResult); err == nil {
@@ -267,6 +290,9 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 	if retained, ok, err := store.GetPluginInstance(ctx, "instance-1"); err != nil || !ok || retained.ConfigVersion != 1 {
 		t.Fatalf("retain cleanup lost instance: %+v, %v, %v", retained, ok, err)
+	}
+	if retried, err := service.ResolveAgentPluginArtifact(ctx, "local", issuedRevision, snapshotDigest, artifactID); err != nil || !strings.EqualFold(retried.SHA256, artifact.SHA256) {
+		t.Fatalf("revision artifact retry after lifecycle mutation = %+v, %v", retried, err)
 	}
 	if grants, err := store.ListPluginGrants(ctx, installed.PluginID); err != nil || len(grants) == 0 {
 		t.Fatalf("retain cleanup lost grants: %+v, %v", grants, err)

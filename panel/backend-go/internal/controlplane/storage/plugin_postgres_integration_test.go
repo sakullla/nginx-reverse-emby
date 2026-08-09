@@ -3,6 +3,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -20,6 +21,91 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+func TestPostgresConcurrentPluginMutationsShareAgentCatalogFence(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	dataRoot := t.TempDir()
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	if err := store.SaveAgent(t.Context(), AgentRow{ID: "edge-a", AgentToken: "edge-a-token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	first := installActivePolicyFixture(t, store, signingKey, "policy.concurrent.first", "ip", "concurrent-ip", `["edge-a"]`, `["concurrent-first"]`)
+	second := installActivePolicyFixture(t, store, signingKey, "policy.concurrent.second", "rate", "concurrent-rate", `["edge-a"]`, `["concurrent-second"]`)
+
+	mutations := make([]PluginMutation, 0, 2)
+	upgradeDigest := ""
+	for index, instance := range []PluginInstanceRow{first, second} {
+		installed, found, err := store.GetInstalledPlugin(t.Context(), instance.PluginID)
+		if err != nil || !found {
+			t.Fatalf("GetInstalledPlugin(%s) = %v, %v", instance.PluginID, found, err)
+		}
+		instance.ConfigJSON = fmt.Sprintf(`{"generation":%d}`, index+2)
+		instance.ConfigVersion++
+		now := time.Now().UTC()
+		operationKind := "configure"
+		operationID := fmt.Sprintf("postgres-concurrent-%s-%d", operationKind, index)
+		mutation := PluginMutation{
+			PluginID: instance.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+			Installed: &installed, ReplaceInstance: &instance,
+			Operation: PluginOperationRow{ID: operationID, PluginID: instance.PluginID, Kind: operationKind, Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+			Audit:     AuditEventRow{ID: operationID + "-audit", Action: "plugin." + operationKind, TargetKind: "plugin", TargetID: instance.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+		}
+		if index == 1 {
+			candidate, artifacts := preparePolicyPackageFixture(t, store, signingKey, instance.PluginID, "rate", 32768)
+			upgradeDigest = candidate.Digest
+			mutation.Operation.Kind = "upgrade"
+			mutation.Audit.Action = "plugin.upgrade"
+			mutation.Package, mutation.Artifacts = &candidate, artifacts
+			installed.ActivePackageDigest, installed.ActivePackageIdentity = candidate.Digest, candidate.Identity
+			installed.RuntimeKind, installed.RuntimeABI, installed.HostScope = candidate.RuntimeKind, candidate.RuntimeABI, candidate.HostScope
+			installed.ActiveSourceID, installed.ActiveSourceKind, installed.ActiveSourceRiskLabel = candidate.SourceID, candidate.SourceKind, candidate.SourceRiskLabel
+			installed.ActiveSignatureKeyID, installed.ActiveSignaturePublicKey, installed.ActiveSignatureFingerprint = candidate.SignatureKeyID, candidate.SignaturePublicKey, candidate.SignatureFingerprint
+		}
+		mutations = append(mutations, mutation)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	start := make(chan struct{})
+	errorsByMutation := make(chan error, len(mutations))
+	for index := range mutations {
+		mutation := mutations[index]
+		go func() {
+			<-start
+			errorsByMutation <- store.ApplyPluginMutation(ctx, mutation)
+		}()
+	}
+	close(start)
+	for range mutations {
+		select {
+		case err := <-errorsByMutation:
+			if err != nil {
+				t.Fatalf("concurrent plugin mutation failed: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("concurrent plugin mutations did not complete: %v", ctx.Err())
+		}
+	}
+	for index, expected := range []PluginInstanceRow{first, second} {
+		persisted, found, err := store.GetPluginInstance(t.Context(), expected.ID)
+		wantConfig := fmt.Sprintf(`{"generation":%d}`, index+2)
+		if err != nil || !found || persisted.ConfigJSON != wantConfig {
+			t.Fatalf("persisted plugin instance %s = %+v, %v, %v", expected.ID, persisted, found, err)
+		}
+	}
+	upgraded, found, err := store.GetInstalledPlugin(t.Context(), second.PluginID)
+	if err != nil || !found || upgraded.ActivePackageDigest != upgradeDigest {
+		t.Fatalf("upgraded plugin = %+v, %v, %v", upgraded, found, err)
+	}
+}
 
 func TestPostgresPluginVariantMigrationFromDigestIdentity(t *testing.T) {
 	dsn := postgresIntegrationSchemaDSN(t)
