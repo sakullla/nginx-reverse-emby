@@ -469,6 +469,11 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			changedTargets++
 			revision := allocated[target.AgentID]
 			snapshot.Revision = revision
+			// PKI security is authenticated heartbeat runtime state. Every newly
+			// issued immutable revision artifact shares this boundary, regardless
+			// of whether a rule, plugin, certificate, or another resource caused
+			// the revision. Historical artifacts remain byte-for-byte untouched.
+			snapshot.PKISecurity = nil
 			payload, digest, payloadErr := CanonicalSnapshotPayload(snapshot)
 			if payloadErr != nil {
 				return storage.RevisionMutationDecision{}, payloadErr

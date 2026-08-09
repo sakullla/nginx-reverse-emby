@@ -22,6 +22,8 @@ type Module struct {
 	reporter *Reporter
 	meta     map[string]string
 	selector interface{ ActiveGeneration() *module.GenerationView }
+	// Used by package tests to exercise the controller's fail-closed path.
+	reconcileTrafficRuntime func(context.Context, model.AgentConfig) error
 
 	blockState BlockStateValue
 }
@@ -250,9 +252,14 @@ func (tx *transaction) TrafficReport(ctx context.Context, meta map[string]string
 	return tx.module.trafficReport(ctx, meta, enabled, configuredMeta)
 }
 
-func (tx *transaction) ReconcileTrafficRuntime(_ context.Context, config model.AgentConfig) error {
+func (tx *transaction) ReconcileTrafficRuntime(ctx context.Context, config model.AgentConfig) error {
 	if tx == nil || tx.module == nil || config.TrafficStatsEnabled == nil {
 		return nil
+	}
+	if hook := tx.module.reconcileTrafficRuntime; hook != nil {
+		if err := hook(ctx, config); err != nil {
+			return err
+		}
 	}
 	nextEnabled := *config.TrafficStatsEnabled
 	nextBlockState := BlockState{Blocked: config.TrafficBlocked, Reason: config.TrafficBlockReason}.Normalized()
@@ -261,6 +268,18 @@ func (tx *transaction) ReconcileTrafficRuntime(_ context.Context, config model.A
 	tx.nextBlockState = nextBlockState
 	tx.mu.Unlock()
 	return nil
+}
+
+func (tx *transaction) FailClosedTrafficRuntime(config model.AgentConfig) {
+	if tx == nil || tx.module == nil {
+		return
+	}
+	tx.mu.Lock()
+	if config.TrafficStatsEnabled != nil {
+		tx.nextEnabled = *config.TrafficStatsEnabled
+	}
+	tx.nextBlockState = BlockState{Blocked: true, Reason: config.TrafficBlockReason}.Normalized()
+	tx.mu.Unlock()
 }
 
 func (m *Module) committedMeta() map[string]string {

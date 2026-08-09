@@ -3,7 +3,9 @@
 package revision
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -422,6 +424,106 @@ func TestIntegrationExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) 
 	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-force", 5)
 	if err != nil || !found || row.OperationID != "op-force-revision" {
 		t.Fatalf("forced revision = %+v found=%v error=%v", row, found, err)
+	}
+}
+
+func TestIntegrationExecutorNewRulePluginAndCertificateArtifactsExcludePKI(t *testing.T) {
+	tests := []struct {
+		name  string
+		kind  string
+		build func(int64) storage.Snapshot
+	}{
+		{
+			name: "rule", kind: "http_rule.update",
+			build: func(resourceRevision int64) storage.Snapshot {
+				return storage.Snapshot{Rules: []storage.HTTPRule{{
+					ID: 1, AgentID: "local", FrontendURL: fmt.Sprintf("https://rule-%d.example.com", resourceRevision),
+					Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8080"}}, Revision: resourceRevision,
+				}}}
+			},
+		},
+		{
+			name: "plugin", kind: "plugin_policy.update",
+			build: func(resourceRevision int64) storage.Snapshot {
+				return storage.Snapshot{PluginPolicies: []storage.PluginPolicy{{ID: "full", Revision: resourceRevision, Stages: []storage.PolicyStage{}}}}
+			},
+		},
+		{
+			name: "certificate", kind: "managed_certificate.promote",
+			build: func(resourceRevision int64) storage.Snapshot {
+				return storage.Snapshot{Certificates: []storage.ManagedCertificateBundle{{
+					ID: 1, Domain: "edge.example.com", Revision: resourceRevision,
+					CertPEM: fmt.Sprintf("certificate-%d", resourceRevision), KeyPEM: fmt.Sprintf("key-%d", resourceRevision),
+				}}}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newRevisionTestStore(t)
+			var operationSequence atomic.Int64
+			resourceRevision := int64(0)
+			pkiRevision := int64(1)
+			build := func() storage.Snapshot {
+				snapshot := tt.build(resourceRevision)
+				snapshot.PKISecurity = &storage.PKISecuritySnapshot{
+					PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: pkiRevision,
+					Full: true, SignerGeneration: pkiRevision,
+				}
+				return snapshot
+			}
+			executor := NewExecutor(
+				store,
+				WithSnapshotBuilder(SnapshotBuilderFunc(func(context.Context, *storage.GormStore, Target) (storage.Snapshot, error) {
+					return build(), nil
+				})),
+				WithOperationIDGenerator(func() (string, error) {
+					return fmt.Sprintf("op-pki-free-%s-%d", tt.name, operationSequence.Add(1)), nil
+				}),
+			)
+
+			for issuance := int64(1); issuance <= 2; issuance++ {
+				result, err := executor.Execute(t.Context(), MutationRequest{
+					Kind: tt.kind, Request: map[string]any{"issuance": issuance},
+					Targets: []Target{{AgentID: "local", Local: true}},
+					ResourceState: func(context.Context, *storage.GormStore, Target) (any, error) {
+						return resourceRevision, nil
+					},
+					Mutate: func(context.Context, *storage.GormStore, map[string]int64) error {
+						resourceRevision++
+						return nil
+					},
+				})
+				if err != nil {
+					t.Fatalf("Execute(issuance %d) error = %v", issuance, err)
+				}
+				if len(result.Agents) != 1 || result.Agents[0].SnapshotDigest == "" {
+					t.Fatalf("Execute(issuance %d) result = %+v", issuance, result)
+				}
+				artifact, found, err := store.GetGenerationArtifact(t.Context(), "snapshot-"+result.Agents[0].SnapshotDigest)
+				if err != nil || !found {
+					t.Fatalf("GetGenerationArtifact(issuance %d) found=%v error=%v", issuance, found, err)
+				}
+				var delivered storage.Snapshot
+				if err := json.Unmarshal(artifact.Payload, &delivered); err != nil {
+					t.Fatal(err)
+				}
+				if delivered.PKISecurity != nil {
+					t.Fatalf("issuance %d artifact contains PKI: %+v", issuance, delivered.PKISecurity)
+				}
+				expected := build()
+				expected.Revision = result.Agents[0].DesiredRevision
+				expected.PKISecurity = nil
+				expectedPayload, expectedDigest, err := CanonicalSnapshotPayload(expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if expectedDigest != result.Agents[0].SnapshotDigest || !bytes.Equal(expectedPayload, artifact.Payload) {
+					t.Fatalf("issuance %d identity includes runtime PKI: digest=%s want=%s", issuance, result.Agents[0].SnapshotDigest, expectedDigest)
+				}
+				pkiRevision++
+			}
+		})
 	}
 }
 

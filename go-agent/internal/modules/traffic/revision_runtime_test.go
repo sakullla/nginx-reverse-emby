@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,6 +134,230 @@ func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t
 	}
 }
 
+func TestRevisionSyncCommitsAuthenticatedBlockBeforePlanAndPullFailures(t *testing.T) {
+	tests := []struct {
+		name             string
+		plan             core.SyncPlan
+		pull             model.RevisionPull
+		pullErr          error
+		failRuntimeSaves map[int]error
+		providerErr      error
+		wantErr          string
+	}{
+		{name: "pull network", pullErr: errors.New("pull unavailable"), wantErr: "pull unavailable"},
+		{name: "bad pull digest", pull: model.RevisionPull{HasUpdate: true}, wantErr: "revision pull"},
+		{
+			name: "plan metadata persistence", plan: core.SyncPlan{RuntimeMetadata: map[string]string{"plan": "metadata"}},
+			failRuntimeSaves: map[int]error{2: errors.New("plan metadata persistence failed")},
+			wantErr:          "plan metadata persistence failed",
+		},
+		{
+			name: "traffic persistence retries after fail closed", failRuntimeSaves: map[int]error{1: errors.New("traffic persistence failed")},
+		},
+		{name: "provider reconcile failure is forced closed", providerErr: errors.New("provider reconcile failed"), wantErr: "provider reconcile failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, runtime, trafficModule, immutable := newTrafficRevisionRuntime(t, true, false, "")
+			store.failRuntimeSaves = tt.failRuntimeSaves
+			if tt.providerErr != nil {
+				trafficModule.reconcileTrafficRuntime = func(context.Context, model.AgentConfig) error { return tt.providerErr }
+			}
+			controller := &core.SyncController{
+				Store: store, Runtime: runtime,
+				SyncClient: &trafficRevisionClient{
+					heartbeats: []trafficHeartbeatResult{{snapshot: trafficHeartbeatSnapshot(false, true, "quota exceeded")}},
+					pulls:      []model.RevisionPull{tt.pull}, pullErr: tt.pullErr,
+				},
+			}
+			err := controller.PerformSyncPlan(t.Context(), tt.plan)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("PerformSyncPlan() error = %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("PerformSyncPlan() error = %v, want %q", err, tt.wantErr)
+			}
+			if block := trafficModule.TrafficBlockState(); !block.Blocked || block.Reason != "quota exceeded" {
+				t.Fatalf("active block after later failure = %+v", block)
+			}
+			state, loadErr := store.LoadRuntimeState()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if state.Metadata["traffic_blocked"] != "true" || state.Metadata["traffic_block_reason"] != "quota exceeded" {
+				t.Fatalf("durable traffic runtime = %+v", state.Metadata)
+			}
+			assertTrafficRestartState(t, store, immutable, true, "quota exceeded")
+		})
+	}
+}
+
+func TestRevisionSyncTrafficPersistenceFailureRollsForwardBlockAndPreservesUnblock(t *testing.T) {
+	t.Run("authenticated block retries durable state", func(t *testing.T) {
+		store, runtime, trafficModule, immutable := newTrafficRevisionRuntime(t, true, false, "")
+		store.failRuntimeSaves = map[int]error{1: errors.New("injected first write failure")}
+		controller := &core.SyncController{
+			Store: store, Runtime: runtime,
+			SyncClient: &trafficRevisionClient{
+				heartbeats: []trafficHeartbeatResult{{snapshot: trafficHeartbeatSnapshot(true, true, "quota exceeded")}},
+				pulls:      []model.RevisionPull{{}},
+			},
+		}
+		if err := controller.PerformSyncPlan(t.Context(), core.SyncPlan{}); err != nil {
+			t.Fatal(err)
+		}
+		if block := trafficModule.TrafficBlockState(); !block.Blocked {
+			t.Fatalf("active block = %+v", block)
+		}
+		assertTrafficRestartState(t, store, immutable, true, "quota exceeded")
+	})
+
+	t.Run("failed unblock persistence leaves prior block", func(t *testing.T) {
+		store, runtime, trafficModule, immutable := newTrafficRevisionRuntime(t, true, true, "existing block")
+		store.failRuntimeSaves = map[int]error{1: errors.New("injected unblock write failure")}
+		controller := &core.SyncController{
+			Store: store, Runtime: runtime,
+			SyncClient: &trafficRevisionClient{
+				heartbeats: []trafficHeartbeatResult{{snapshot: trafficHeartbeatSnapshot(true, false, "")}},
+				pulls:      []model.RevisionPull{{}},
+			},
+		}
+		if err := controller.PerformSyncPlan(t.Context(), core.SyncPlan{}); err == nil || !strings.Contains(err.Error(), "injected unblock write failure") {
+			t.Fatalf("PerformSyncPlan() error = %v", err)
+		}
+		if block := trafficModule.TrafficBlockState(); !block.Blocked || block.Reason != "existing block" {
+			t.Fatalf("failed unblock changed active state: %+v", block)
+		}
+		assertTrafficRestartState(t, store, immutable, true, "existing block")
+	})
+}
+
+func TestRevisionSyncMigratesLegacyTrafficEnabledFromAppliedArtifact(t *testing.T) {
+	disabled, enabled := false, true
+	for _, tt := range []struct {
+		name           string
+		appliedEnabled *bool
+		wantEnabled    bool
+	}{
+		{name: "disabled artifact", appliedEnabled: &disabled, wantEnabled: false},
+		{name: "enabled artifact", appliedEnabled: &enabled, wantEnabled: true},
+		{name: "unknown artifact fails safe", appliedEnabled: nil, wantEnabled: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			immutable := model.Snapshot{
+				DesiredVersion: "v1", Revision: 1,
+				AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s", TrafficStatsEnabled: tt.appliedEnabled},
+				Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+				EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
+				CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
+			}
+			store := &trafficRevisionStore{InMemory: core.NewInMemory()}
+			if err := store.SaveAppliedSnapshot(immutable); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.InMemory.SaveRuntimeState(model.RuntimeState{CurrentRevision: 1, Metadata: map[string]string{
+				"traffic_blocked": "false",
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			registry := module.NewRegistry()
+			trafficModule := NewModule(Config{GenerationSelector: registry})
+			if err := registry.Register(trafficModule); err != nil {
+				t.Fatal(err)
+			}
+			manager := core.NewGenerationManager(registry)
+			restarted := &core.SyncController{
+				Store: store, Runtime: core.NewRuntimeWithGenerationManager(manager),
+				SyncClient: &trafficRevisionClient{heartbeats: []trafficHeartbeatResult{{err: errors.New("heartbeat unavailable")}}},
+			}
+			if err := restarted.PerformSyncPlan(t.Context(), core.SyncPlan{}); err == nil {
+				t.Fatal("PerformSyncPlan() error = nil")
+			}
+			active := manager.ActiveGeneration()
+			if active == nil {
+				t.Fatal("restored active generation = nil")
+			}
+			provider, found := active.Resolve(module.ProviderTrafficSink)
+			tx, ok := provider.(*transaction)
+			if !found || !ok {
+				t.Fatalf("restored traffic provider = %T, found=%t", provider, found)
+			}
+			tx.mu.RLock()
+			runtimeEnabled := tx.nextEnabled
+			tx.mu.RUnlock()
+			if runtimeEnabled != tt.wantEnabled {
+				t.Fatalf("legacy enabled migration runtime=%t, want %t", runtimeEnabled, tt.wantEnabled)
+			}
+			migrated, err := store.LoadRuntimeState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if migrated.Metadata["traffic_stats_enabled"] != fmt.Sprintf("%t", tt.wantEnabled) {
+				t.Fatalf("migrated metadata = %+v", migrated.Metadata)
+			}
+			if applied, err := store.LoadAppliedSnapshot(); err != nil || applied.Revision != immutable.Revision {
+				t.Fatalf("applied snapshot = %+v, error=%v", applied, err)
+			}
+		})
+	}
+}
+
+func newTrafficRevisionRuntime(t *testing.T, enabled, blocked bool, reason string) (*trafficRevisionStore, *core.Runtime, *Module, model.Snapshot) {
+	t.Helper()
+	registry := module.NewRegistry()
+	trafficModule := NewModule(Config{GenerationSelector: registry})
+	if err := registry.Register(trafficModule); err != nil {
+		t.Fatal(err)
+	}
+	manager := core.NewGenerationManager(registry)
+	runtime := core.NewRuntimeWithGenerationManager(manager)
+	immutable := model.Snapshot{
+		DesiredVersion: "v1", Revision: 1,
+		AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s", TrafficStatsEnabled: &enabled},
+		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+		EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
+	}
+	config := model.AgentConfig{TrafficStatsEnabled: &enabled, TrafficBlocked: blocked, TrafficBlockReason: reason}
+	if err := runtime.ApplyWithTrafficRuntime(t.Context(), model.Snapshot{}, immutable, 0, config); err != nil {
+		t.Fatal(err)
+	}
+	store := &trafficRevisionStore{InMemory: core.NewInMemory()}
+	if err := store.SaveAppliedSnapshot(immutable); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InMemory.SaveRuntimeState(model.RuntimeState{CurrentRevision: immutable.Revision, Metadata: map[string]string{
+		"traffic_stats_enabled": fmt.Sprintf("%t", enabled),
+		"traffic_blocked":       fmt.Sprintf("%t", blocked),
+		"traffic_block_reason":  reason,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return store, runtime, trafficModule, immutable
+}
+
+func assertTrafficRestartState(t *testing.T, store *trafficRevisionStore, immutable model.Snapshot, blocked bool, reason string) {
+	t.Helper()
+	registry := module.NewRegistry()
+	trafficModule := NewModule(Config{GenerationSelector: registry})
+	if err := registry.Register(trafficModule); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &core.SyncController{
+		Store: store, Runtime: core.NewRuntimeWithGenerationManager(core.NewGenerationManager(registry)),
+		SyncClient: &trafficRevisionClient{heartbeats: []trafficHeartbeatResult{{err: errors.New("heartbeat unavailable")}}},
+	}
+	store.failRuntimeSaves = nil
+	if err := restarted.PerformSyncPlan(t.Context(), core.SyncPlan{}); err == nil {
+		t.Fatal("restart heartbeat error = nil")
+	}
+	if block := trafficModule.TrafficBlockState(); block.Blocked != blocked || block.Reason != reason {
+		t.Fatalf("restart block = %+v, want blocked=%t reason=%q (revision=%d)", block, blocked, reason, immutable.Revision)
+	}
+}
+
 func trafficHeartbeatSnapshot(enabled bool, blocked bool, reason string) model.Snapshot {
 	return model.Snapshot{AgentConfig: model.AgentConfig{
 		TrafficStatsEnabled: &enabled, TrafficBlocked: blocked, TrafficBlockReason: reason,
@@ -146,6 +372,7 @@ type trafficHeartbeatResult struct {
 type trafficRevisionClient struct {
 	heartbeats []trafficHeartbeatResult
 	pulls      []model.RevisionPull
+	pullErr    error
 }
 
 func (c *trafficRevisionClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
@@ -155,6 +382,12 @@ func (c *trafficRevisionClient) Sync(context.Context, control.SyncRequest) (mode
 }
 
 func (c *trafficRevisionClient) PullRevision(context.Context) (model.RevisionPull, error) {
+	if c.pullErr != nil {
+		return model.RevisionPull{}, c.pullErr
+	}
+	if len(c.pulls) == 0 {
+		return model.RevisionPull{}, nil
+	}
 	pull := c.pulls[0]
 	c.pulls = c.pulls[1:]
 	return pull, nil
@@ -165,8 +398,18 @@ func (*trafficRevisionClient) ReportRevision(context.Context, model.RevisionRepo
 
 type trafficRevisionStore struct {
 	*core.InMemory
-	journal model.GenerationJournal
-	lkg     model.Snapshot
+	journal          model.GenerationJournal
+	lkg              model.Snapshot
+	runtimeSaveCount int
+	failRuntimeSaves map[int]error
+}
+
+func (s *trafficRevisionStore) SaveRuntimeState(state model.RuntimeState) error {
+	s.runtimeSaveCount++
+	if err := s.failRuntimeSaves[s.runtimeSaveCount]; err != nil {
+		return err
+	}
+	return s.InMemory.SaveRuntimeState(state)
 }
 
 func (s *trafficRevisionStore) SaveGenerationJournal(journal model.GenerationJournal) error {

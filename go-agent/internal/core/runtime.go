@@ -197,6 +197,9 @@ func (r *Runtime) ReconcileTrafficRuntime(ctx context.Context, config model.Agen
 	}
 	if r.generations != nil {
 		if _, err := r.generations.ReconcileTrafficRuntime(ctx, config); err != nil {
+			if config.TrafficBlocked {
+				r.setTrafficRuntimeLocked(config)
+			}
 			return err
 		}
 	} else if !isZeroSnapshot(r.activeSnapshot) {

@@ -54,6 +54,9 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err != nil {
 		return c.recordSyncError(errors.Join(acknowledgementErr, err))
 	}
+	if err := c.commitHeartbeatTrafficRuntime(ctx, heartbeatSnapshot); err != nil {
+		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
+	}
 	if len(plan.RuntimeMetadata) > 0 {
 		if err := c.persistRuntimeMetadata(plan.RuntimeMetadata); err != nil {
 			return c.recordRuntimeError(err)
@@ -64,9 +67,6 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.recordSyncError(errors.Join(acknowledgementErr, err))
 	}
 	if !pull.HasUpdate {
-		if err := c.reconcileHeartbeatTrafficRuntime(ctx, heartbeatSnapshot); err != nil {
-			return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
-		}
 		// Revision mode still uses the heartbeat as the delivery channel for a
 		// bundled fallback binary. Configuration payloads remain lease-gated, but
 		// a package-only heartbeat must be handled when there is no revision to
@@ -109,9 +109,6 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.recordRuntimeError(fmt.Errorf("stale revision %d cannot replace durable revision %d", snapshot.Revision, durableRevision))
 	}
 	if err := validateImmutableRevisionDigest(journal, snapshot.Revision, digest); err != nil {
-		return c.recordRuntimeError(err)
-	}
-	if err := c.reconcileHeartbeatTrafficRuntime(ctx, heartbeatSnapshot); err != nil {
 		return c.recordRuntimeError(err)
 	}
 	previousApplied = c.Runtime.ActiveSnapshot()
@@ -356,15 +353,60 @@ func heartbeatTrafficRuntime(snapshot model.Snapshot) (model.AgentConfig, bool) 
 	}, true
 }
 
-func (c *SyncController) reconcileHeartbeatTrafficRuntime(ctx context.Context, snapshot model.Snapshot) error {
+func (c *SyncController) commitHeartbeatTrafficRuntime(ctx context.Context, snapshot model.Snapshot) error {
 	config, ok := heartbeatTrafficRuntime(snapshot)
 	if !ok {
 		return nil
 	}
-	if err := c.Runtime.ReconcileTrafficRuntime(ctx, config); err != nil {
+	state, err := c.runtimeStateForPersistence()
+	if err != nil {
+		return fmt.Errorf("load heartbeat traffic runtime state: %w", err)
+	}
+	previousState := state
+	previousState.Metadata = cloneStringMap(state.Metadata)
+	state.Metadata = ensureMetadata(state.Metadata)
+	SetTrafficRuntimeMetadata(state.Metadata, config)
+	if err := c.Store.SaveRuntimeState(state); err != nil {
+		// A successfully authenticated block is security state. Even when the
+		// first durable write fails, apply it fail-closed before returning and
+		// retry the exact intent once so a transient persistence failure cannot
+		// leave restart state behind the active provider.
+		if !config.TrafficBlocked {
+			return fmt.Errorf("persist heartbeat traffic runtime: %w", err)
+		}
+		reconcileErr := c.Runtime.ReconcileTrafficRuntime(context.WithoutCancel(ctx), config)
+		retryErr := c.Store.SaveRuntimeState(state)
+		if reconcileErr != nil || retryErr != nil {
+			return errors.Join(
+				fmt.Errorf("persist heartbeat traffic runtime: %w", err),
+				wrapOptionalError("fail-closed heartbeat traffic runtime", reconcileErr),
+				wrapOptionalError("retry heartbeat traffic runtime persistence", retryErr),
+			)
+		}
+		return nil
+	}
+	if err := c.Runtime.ReconcileTrafficRuntime(context.WithoutCancel(ctx), config); err != nil {
+		if config.TrafficBlocked {
+			// The provider contract has already forced the active path closed and
+			// Runtime recorded the same overlay; retain the durable blocked intent.
+			return fmt.Errorf("reconcile heartbeat traffic runtime after fail-closed apply: %w", err)
+		}
+		if rollbackErr := c.Store.SaveRuntimeState(previousState); rollbackErr != nil {
+			return errors.Join(
+				fmt.Errorf("reconcile heartbeat traffic runtime: %w", err),
+				fmt.Errorf("rollback heartbeat traffic runtime persistence: %w", rollbackErr),
+			)
+		}
 		return fmt.Errorf("reconcile heartbeat traffic runtime: %w", err)
 	}
-	return c.persistRuntimeState(false)
+	return nil
+}
+
+func wrapOptionalError(message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 func (c *SyncController) recoverActiveRevisionAcknowledgement(
@@ -815,7 +857,7 @@ func (c *SyncController) restoreDurableRevisionRuntime(ctx context.Context) erro
 	if err != nil {
 		return err
 	}
-	trafficRuntime, hasTrafficRuntime, err := trafficRuntimeConfigFromMetadata(runtimeState.Metadata)
+	trafficRuntime, hasTrafficRuntime, err := trafficRuntimeConfigFromMetadata(runtimeState.Metadata, applied.AgentConfig)
 	if err != nil {
 		return err
 	}

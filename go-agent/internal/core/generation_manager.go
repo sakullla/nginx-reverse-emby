@@ -181,6 +181,10 @@ func (m *GenerationManager) ReconcileTrafficRuntime(ctx context.Context, config 
 		return false, errors.New("active traffic provider cannot reconcile runtime state")
 	}
 	if err := reconciler.ReconcileTrafficRuntime(ctx, config); err != nil {
+		if config.TrafficBlocked {
+			reconciler.FailClosedTrafficRuntime(config)
+			return true, err
+		}
 		return false, err
 	}
 	return true, nil

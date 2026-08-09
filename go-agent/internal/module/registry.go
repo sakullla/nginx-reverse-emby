@@ -121,6 +121,9 @@ type GenerationPreparer interface {
 // immutable snapshot field.
 type TrafficRuntimeReconciler interface {
 	ReconcileTrafficRuntime(context.Context, model.AgentConfig) error
+	// FailClosedTrafficRuntime synchronously installs a blocked state without
+	// external I/O when the normal reconciliation path reports an error.
+	FailClosedTrafficRuntime(model.AgentConfig)
 }
 
 // GenerationView is immutable after publication. Its providers and snapshot

@@ -82,20 +82,25 @@ func SetTrafficRuntimeMetadata(meta map[string]string, cfg model.AgentConfig) {
 	SetTrafficBlockedMetadata(meta, cfg)
 }
 
-func trafficRuntimeConfigFromMetadata(meta map[string]string) (model.AgentConfig, bool, error) {
+func trafficRuntimeConfigFromMetadata(meta map[string]string, legacyConfig model.AgentConfig) (model.AgentConfig, bool, error) {
 	enabledText, hasEnabled := meta[runtimeMetaTrafficStatsEnabled]
 	blockedText, hasBlocked := meta[runtimeMetaTrafficBlocked]
 	reason, hasReason := meta[runtimeMetaTrafficBlockReason]
 	if !hasEnabled && !hasBlocked && !hasReason {
 		return model.AgentConfig{}, false, nil
 	}
-	enabled := true
+	enabled := false
 	var err error
 	if hasEnabled {
 		enabled, err = strconv.ParseBool(strings.TrimSpace(enabledText))
 		if err != nil {
 			return model.AgentConfig{}, false, fmt.Errorf("traffic_stats_enabled metadata: %w", err)
 		}
+	} else if legacyConfig.TrafficStatsEnabled != nil {
+		// Runtime metadata written before traffic_stats_enabled was introduced
+		// only proves block state. Recover enabled from the immutable applied
+		// artifact that originally configured that runtime instead of guessing.
+		enabled = *legacyConfig.TrafficStatsEnabled
 	}
 	blocked := false
 	if hasBlocked {
@@ -104,6 +109,9 @@ func trafficRuntimeConfigFromMetadata(meta map[string]string) (model.AgentConfig
 			return model.AgentConfig{}, false, fmt.Errorf("traffic_blocked metadata: %w", err)
 		}
 	}
+	// When neither metadata nor the old artifact proves enabled, false is the
+	// only safe upgrade value. This prevents module preparation from falling
+	// back to a process-global true default while heartbeat remains unavailable.
 	return model.AgentConfig{
 		TrafficStatsEnabled: &enabled,
 		TrafficBlocked:      blocked,
