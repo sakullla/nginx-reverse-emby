@@ -392,6 +392,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
+		PluginPolicies:      []PluginPolicy{},
 		PKISecurity:         pkiSecurity,
 	}, nil
 }
@@ -2252,10 +2253,12 @@ func snapshotHTTPRules(rows []HTTPRuleRow, intent bool) []HTTPRule {
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
 
-			EgressProfileID: copyOptionalPositiveInt(row.EgressProfileID),
+			EgressProfileID:    copyOptionalPositiveInt(row.EgressProfileID),
+			TrustedProxyRanges: parseStringSlice(row.TrustedProxyRangesJSON),
 
 			RelayLayers: parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:   row.RelayObfs,
+			PolicyRef:   parsePolicyRef(row.PolicyRefJSON),
 			Revision:    int64(row.Revision),
 		})
 	}
@@ -2293,10 +2296,27 @@ func snapshotL4Rules(rows []L4RuleRow, intent bool) []L4Rule {
 			EgressProfileID: copyOptionalPositiveInt(row.EgressProfileID),
 
 			ProxyEntryAuth: parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+			PolicyRef:      parsePolicyRef(row.PolicyRefJSON),
 			Revision:       int64(row.Revision),
 		})
 	}
 	return rules
+}
+
+func parsePolicyRef(raw string) *PolicyRef {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var ref PolicyRef
+	if err := json.Unmarshal([]byte(raw), &ref); err != nil || strings.TrimSpace(ref.ID) == "" {
+		// Preserve fail-closed behavior: malformed persisted attachment must make
+		// the Agent reject the candidate instead of silently dropping protection.
+		return &PolicyRef{ID: "\x00invalid-policy-ref"}
+	}
+	ref.ID = strings.TrimSpace(ref.ID)
+	ref.Overlay = append(json.RawMessage(nil), ref.Overlay...)
+	return &ref
 }
 
 func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {

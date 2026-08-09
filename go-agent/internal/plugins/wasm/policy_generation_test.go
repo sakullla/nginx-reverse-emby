@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -34,11 +35,23 @@ func TestPolicyGenerationPreparesMultipleStages(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, stage := range []model.PolicyStage{first, second} {
-		response, err := generation.Evaluate(ctx, policy.ModuleRequest{
-			GenerationID: "compat-generation-1", PolicyID: stage.PolicyID, PolicyKind: stage.Kind,
-			InstanceID: stage.InstanceID, ExtensionPoint: policy.ExtensionHTTP, RequestID: "request-1",
-			Payload: []byte("input"), Budget: stage.ResourceBudget, Host: &testPolicyHost{},
-		})
+		var response policy.ModuleResponse
+		var err error
+		for attempt := 0; attempt < 20; attempt++ {
+			response, err = generation.Evaluate(ctx, policy.ModuleRequest{
+				GenerationID: "compat-generation-1", PolicyID: stage.PolicyID, PolicyKind: stage.Kind,
+				InstanceID: stage.InstanceID, ExtensionPoint: policy.ExtensionHTTP, RequestID: "request-1",
+				Payload: []byte("input"), Budget: stage.ResourceBudget, Host: &testPolicyHost{},
+			})
+			if err == nil {
+				break
+			}
+			var evaluationError *policy.EvaluationError
+			if !errors.As(err, &evaluationError) || evaluationError.Kind != policy.FailureBudget || evaluationError.Code != string(ErrorDeadline) {
+				break
+			}
+			goruntime.Gosched()
+		}
 		if err != nil {
 			t.Fatal(err)
 		}

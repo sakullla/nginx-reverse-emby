@@ -342,6 +342,8 @@ func (response PolicyEvaluateResponse) Validate() error {
 // PolicyHost is the complete nre:policy/v1 host surface. It intentionally has
 // no filesystem, network, process, wall-clock, or raw host-memory operation.
 type PolicyHost interface {
+	// ReadField returns nil for a missing field and a non-nil slice, including
+	// an empty slice, for a present field.
 	ReadField(context.Context, string) ([]byte, error)
 	ReadBodyWindow(context.Context, uint32, uint32) ([]byte, error)
 	StateGet(context.Context, string) ([]byte, bool, error)

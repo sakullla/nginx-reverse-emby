@@ -169,7 +169,7 @@ func NewInput(extensionPoint, requestID string, metadata CanonicalMetadata, fiel
 		if int64(total) > MaxPolicyInputBytes {
 			return Input{}, fmt.Errorf("policy input exceeds %d bytes", MaxPolicyInputBytes)
 		}
-		cloned[name] = append([]byte(nil), value...)
+		cloned[name] = clonePresentBytes(value)
 	}
 	return Input{extensionPoint: extensionPoint, requestID: requestID, metadata: metadata, fields: cloned, body: body}, nil
 }
@@ -183,9 +183,18 @@ func (input Input) Body() BodyWindow {
 func (input Input) Fields() map[string][]byte {
 	fields := make(map[string][]byte, len(input.fields))
 	for name, value := range input.fields {
-		fields[name] = append([]byte(nil), value...)
+		fields[name] = clonePresentBytes(value)
 	}
 	return fields
+}
+
+func clonePresentBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	cloned := make([]byte, len(value))
+	copy(cloned, value)
+	return cloned
 }
 
 func canonicalAddrPort(address net.Addr) (netip.AddrPort, error) {

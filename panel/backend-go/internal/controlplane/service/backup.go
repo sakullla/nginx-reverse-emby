@@ -2561,23 +2561,25 @@ func certificateRequiresMaterial(cert ManagedCertificate) bool {
 
 func backupHTTPRuleFromRule(rule HTTPRule) BackupHTTPRule {
 	return BackupHTTPRule{
-		ID:               rule.ID,
-		AgentID:          rule.AgentID,
-		FrontendURL:      rule.FrontendURL,
-		BackendURL:       rule.BackendURL,
-		Backends:         append([]HTTPRuleBackend(nil), rule.Backends...),
-		LoadBalancing:    rule.LoadBalancing,
-		Enabled:          rule.Enabled,
-		Tags:             append([]string(nil), rule.Tags...),
-		ProxyRedirect:    rule.ProxyRedirect,
-		RelayChain:       append([]int(nil), rule.RelayChain...),
-		RelayLayers:      cloneIntLayers(rule.RelayLayers),
-		RelayObfs:        rule.RelayObfs,
-		PassProxyHeaders: rule.PassProxyHeaders,
-		UserAgent:        rule.UserAgent,
-		CustomHeaders:    append([]HTTPCustomHeader(nil), rule.CustomHeaders...),
-		EgressProfileID:  copyOptionalInt(rule.EgressProfileID),
-		Revision:         rule.Revision,
+		ID:                 rule.ID,
+		AgentID:            rule.AgentID,
+		FrontendURL:        rule.FrontendURL,
+		BackendURL:         rule.BackendURL,
+		Backends:           append([]HTTPRuleBackend(nil), rule.Backends...),
+		LoadBalancing:      rule.LoadBalancing,
+		Enabled:            rule.Enabled,
+		Tags:               append([]string(nil), rule.Tags...),
+		ProxyRedirect:      rule.ProxyRedirect,
+		RelayChain:         append([]int(nil), rule.RelayChain...),
+		RelayLayers:        cloneIntLayers(rule.RelayLayers),
+		RelayObfs:          rule.RelayObfs,
+		PassProxyHeaders:   rule.PassProxyHeaders,
+		UserAgent:          rule.UserAgent,
+		CustomHeaders:      append([]HTTPCustomHeader(nil), rule.CustomHeaders...),
+		EgressProfileID:    copyOptionalInt(rule.EgressProfileID),
+		TrustedProxyRanges: append([]string(nil), rule.TrustedProxyRanges...),
+		PolicyRef:          cloneRulePolicyRef(rule.PolicyRef),
+		Revision:           rule.Revision,
 	}
 }
 
@@ -2600,6 +2602,7 @@ func backupL4RuleFromRule(rule L4Rule) BackupL4Rule {
 		ListenMode:      rule.ListenMode,
 		EgressProfileID: copyOptionalInt(rule.EgressProfileID),
 		ProxyEntryAuth:  rule.ProxyEntryAuth,
+		PolicyRef:       cloneRulePolicyRef(rule.PolicyRef),
 		Enabled:         rule.Enabled,
 		Tags:            append([]string(nil), rule.Tags...),
 		Revision:        rule.Revision,
@@ -2727,18 +2730,20 @@ func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int, egr
 	backends := backupHTTPBackends(rule.Backends, rule.BackendURL)
 	relayLayers := backupRelayLayers(rule.RelayChain, rule.RelayLayers, listenerIDMap)
 	return HTTPRuleInput{
-		FrontendURL:      backupStringPtr(rule.FrontendURL),
-		Backends:         &backends,
-		LoadBalancing:    &rule.LoadBalancing,
-		Enabled:          backupBoolPtr(rule.Enabled),
-		Tags:             &rule.Tags,
-		ProxyRedirect:    backupBoolPtr(rule.ProxyRedirect),
-		RelayLayers:      relayLayers,
-		RelayObfs:        backupBoolPtr(rule.RelayObfs),
-		PassProxyHeaders: backupBoolPtr(rule.PassProxyHeaders),
-		UserAgent:        backupStringPtr(rule.UserAgent),
-		CustomHeaders:    &rule.CustomHeaders,
-		EgressProfileID:  copyOptionalInt(egressProfileID),
+		FrontendURL:        backupStringPtr(rule.FrontendURL),
+		Backends:           &backends,
+		LoadBalancing:      &rule.LoadBalancing,
+		Enabled:            backupBoolPtr(rule.Enabled),
+		Tags:               &rule.Tags,
+		ProxyRedirect:      backupBoolPtr(rule.ProxyRedirect),
+		RelayLayers:        relayLayers,
+		RelayObfs:          backupBoolPtr(rule.RelayObfs),
+		PassProxyHeaders:   backupBoolPtr(rule.PassProxyHeaders),
+		UserAgent:          backupStringPtr(rule.UserAgent),
+		CustomHeaders:      &rule.CustomHeaders,
+		EgressProfileID:    copyOptionalInt(egressProfileID),
+		TrustedProxyRanges: &rule.TrustedProxyRanges,
+		PolicyRef:          cloneRulePolicyRef(rule.PolicyRef),
 	}
 }
 
@@ -2762,8 +2767,9 @@ func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int, egressP
 			Username: rule.ProxyEntryAuth.Username,
 			Password: rule.ProxyEntryAuth.Password,
 		},
-		Enabled: backupBoolPtr(rule.Enabled),
-		Tags:    &rule.Tags,
+		PolicyRef: cloneRulePolicyRef(rule.PolicyRef),
+		Enabled:   backupBoolPtr(rule.Enabled),
+		Tags:      &rule.Tags,
 	}
 }
 

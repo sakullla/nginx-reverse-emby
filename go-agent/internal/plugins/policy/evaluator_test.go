@@ -306,6 +306,39 @@ func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	}
 }
 
+func TestPolicyHostPreservesEmptyFieldPresenceAndEmitsSafeEvent(t *testing.T) {
+	input := testInput(t, ExtensionHTTP, map[string][]byte{
+		FieldRequestQuery: {},
+	}, testCompleteBody(t, nil))
+	var observed observability.Event
+	host := &requestHost{
+		input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
+		stage: model.PolicyStage{Kind: model.PolicyKindWAF, PluginID: "official.waf", GrantedScopes: []string{"http.inspect", "event.emit"}},
+		state: newGenerationState(), observer: observability.ObserverFunc(func(_ context.Context, event observability.Event) { observed = event }),
+	}
+	present, err := host.ReadField(context.Background(), FieldRequestQuery)
+	if err != nil || present == nil || len(present) != 0 {
+		t.Fatalf("present empty field = %#v, error = %v", present, err)
+	}
+	missing, err := host.ReadField(context.Background(), "request.header.x-missing")
+	if err != nil || missing != nil {
+		t.Fatalf("missing field = %#v, error = %v", missing, err)
+	}
+	payload := []byte(`{"rule_id":"waf.sql-1","action":"deny","summary":"sql injection signature matched"}`)
+	if err := host.EmitEvent(context.Background(), "waf.hit", payload); err != nil {
+		t.Fatalf("EmitEvent() error = %v", err)
+	}
+	if observed.SecurityRule != "waf.sql-1" || observed.SecurityAction != "deny" || observed.SecuritySummary != "sql injection signature matched" {
+		t.Fatalf("observed event = %+v", observed)
+	}
+	if observed.RequestID != "request-1" || observed.PluginID != "official.waf" {
+		t.Fatalf("observed identity = %+v", observed)
+	}
+	if err := host.EmitEvent(context.Background(), "waf.hit", []byte(`{"rule_id":"waf.sql-1","action":"deny","summary":"authorization token leaked"}`)); err == nil {
+		t.Fatal("EmitEvent() accepted sensitive summary")
+	}
+}
+
 func isPermissionDenied(err error) bool {
 	var runtimeError *pluginsdk.RuntimeError
 	return errors.As(err, &runtimeError) && runtimeError.Code == pluginsdk.ErrorPermissionDenied

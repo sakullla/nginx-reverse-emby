@@ -206,12 +206,6 @@ func (s *Server) lockUDPPolicyFlow(key string) func() {
 	}
 }
 
-func (s *Server) udpPolicyFlowIsNew(listener udpListener, peer *net.UDPAddr, target string) bool {
-	s.udpMu.Lock()
-	defer s.udpMu.Unlock()
-	return s.existingUDPSessionLocked(listener, peer, strings.TrimSpace(target)) == nil
-}
-
 func (s *Server) policyCheckedUDPSession(
 	rule model.L4Rule,
 	listener udpListener,
@@ -228,8 +222,32 @@ func (s *Server) policyCheckedUDPSession(
 	flowKey := udpSessionKey(listener, peer, strings.TrimSpace(target))
 	unlock := s.lockUDPPolicyFlow(flowKey)
 	defer unlock()
-	newFlow := s.udpPolicyFlowIsNew(listener, peer, target)
-	if !s.allowUDPPolicy(rule, peer, target, payload, newFlow) {
+
+	s.udpMu.Lock()
+	existing := s.existingUDPSessionLocked(listener, peer, strings.TrimSpace(target))
+	if existing != nil {
+		blocked := s.currentTrafficBlockState().Blocked
+		ready := existing.ready
+		if ready == nil {
+			existing.lastActive = s.currentTime()
+		}
+		key := existing.key
+		s.udpMu.Unlock()
+		if blocked {
+			s.closeUDPSession(key)
+			return nil, nil
+		}
+		if ready != nil {
+			<-ready
+			if existing.initErr != nil {
+				return nil, existing.initErr
+			}
+		}
+		return existing, nil
+	}
+	s.udpMu.Unlock()
+
+	if !s.allowUDPPolicy(rule, peer, target, payload, true) {
 		return nil, nil
 	}
 	return s.sessionForUDPFlow(rule, listener, peer, target)

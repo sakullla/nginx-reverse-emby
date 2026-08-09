@@ -70,3 +70,30 @@ func TestPolicyObservabilityKeepsIdentityOutOfMetricLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyGuestMetricsApplySignedDeltasFromBoundedCatalog(t *testing.T) {
+	recorder := NewRecorder(nil)
+	for _, delta := range []int64{5, -2, 4} {
+		recorder.Observe(context.Background(), Event{
+			Name: PolicyHostMetric, Outcome: "observed", GuestMetric: "rate.allowed", MetricDelta: delta,
+		})
+	}
+	var metrics bytes.Buffer
+	if err := recorder.WritePrometheus(&metrics); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	if metricText := metrics.String(); !strings.Contains(metricText, "nre_agent_policy_guest_rate_allowed 7\n") {
+		t.Fatalf("guest metrics = %s", metricText)
+	}
+
+	recorder = NewRecorder(nil)
+	recorder.Observe(context.Background(), Event{Name: PolicyHostMetric, Outcome: "observed", GuestMetric: "policy.allowed", MetricDelta: int64(^uint64(0) >> 1)})
+	recorder.Observe(context.Background(), Event{Name: PolicyHostMetric, Outcome: "observed", GuestMetric: "policy.allowed", MetricDelta: 1})
+	metrics.Reset()
+	if err := recorder.WritePrometheus(&metrics); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	if metricText := metrics.String(); !strings.Contains(metricText, "nre_agent_policy_guest_allowed 9223372036854775807\n") {
+		t.Fatalf("overflow changed guest metric: %s", metricText)
+	}
+}

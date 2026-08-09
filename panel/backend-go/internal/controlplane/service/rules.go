@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -209,21 +211,23 @@ func runConfigPostCommitActions(actions []func()) {
 }
 
 type HTTPRuleInput struct {
-	ID               *int                `json:"id,omitempty"`
-	FrontendURL      *string             `json:"frontend_url,omitempty"`
-	BackendURL       *string             `json:"backend_url,omitempty"`
-	Backends         *[]HTTPRuleBackend  `json:"backends,omitempty"`
-	LoadBalancing    *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
-	Enabled          *bool               `json:"enabled,omitempty"`
-	Tags             *[]string           `json:"tags,omitempty"`
-	ProxyRedirect    *bool               `json:"proxy_redirect,omitempty"`
-	RelayChain       *[]int              `json:"relay_chain,omitempty"`
-	RelayLayers      *[][]int            `json:"relay_layers,omitempty"`
-	RelayObfs        *bool               `json:"relay_obfs,omitempty"`
-	PassProxyHeaders *bool               `json:"pass_proxy_headers,omitempty"`
-	UserAgent        *string             `json:"user_agent,omitempty"`
-	CustomHeaders    *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
-	EgressProfileID  *int                `json:"egress_profile_id,omitempty"`
+	ID                 *int                `json:"id,omitempty"`
+	FrontendURL        *string             `json:"frontend_url,omitempty"`
+	BackendURL         *string             `json:"backend_url,omitempty"`
+	Backends           *[]HTTPRuleBackend  `json:"backends,omitempty"`
+	LoadBalancing      *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
+	Enabled            *bool               `json:"enabled,omitempty"`
+	Tags               *[]string           `json:"tags,omitempty"`
+	ProxyRedirect      *bool               `json:"proxy_redirect,omitempty"`
+	RelayChain         *[]int              `json:"relay_chain,omitempty"`
+	RelayLayers        *[][]int            `json:"relay_layers,omitempty"`
+	RelayObfs          *bool               `json:"relay_obfs,omitempty"`
+	PassProxyHeaders   *bool               `json:"pass_proxy_headers,omitempty"`
+	UserAgent          *string             `json:"user_agent,omitempty"`
+	CustomHeaders      *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	EgressProfileID    *int                `json:"egress_profile_id,omitempty"`
+	TrustedProxyRanges *[]string           `json:"trusted_proxy_ranges,omitempty"`
+	PolicyRef          *storage.PolicyRef  `json:"policy_ref,omitempty"`
 }
 
 type ruleStore interface {
@@ -1780,6 +1784,17 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	if input.CustomHeaders != nil {
 		customHeaders = normalizeHTTPCustomHeaders(*input.CustomHeaders)
 	}
+	trustedProxyRanges := append([]string(nil), fallback.TrustedProxyRanges...)
+	if input.TrustedProxyRanges != nil {
+		trustedProxyRanges, err = normalizeTrustedPeerRanges(*input.TrustedProxyRanges)
+		if err != nil {
+			return HTTPRule{}, err
+		}
+	}
+	policyRef, err := normalizeRulePolicyRef(input.PolicyRef, fallback.PolicyRef)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 
 	egressProfileID, err := normalizeEgressProfileIDInput(input.EgressProfileID, fallback.EgressProfileID)
 	if err != nil {
@@ -1802,23 +1817,25 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	}
 
 	return HTTPRule{
-		ID:               id,
-		AgentID:          fallback.AgentID,
-		FrontendURL:      frontendURL,
-		BackendURL:       backendURL,
-		Backends:         backends,
-		LoadBalancing:    loadBalancing,
-		Enabled:          enabled,
-		Tags:             tags,
-		ProxyRedirect:    proxyRedirect,
-		RelayChain:       relayChain,
-		RelayLayers:      relayLayers,
-		RelayObfs:        relayObfs,
-		PassProxyHeaders: passProxyHeaders,
-		UserAgent:        userAgent,
-		CustomHeaders:    customHeaders,
-		EgressProfileID:  egressProfileID,
-		Revision:         fallback.Revision,
+		ID:                 id,
+		AgentID:            fallback.AgentID,
+		FrontendURL:        frontendURL,
+		BackendURL:         backendURL,
+		Backends:           backends,
+		LoadBalancing:      loadBalancing,
+		Enabled:            enabled,
+		Tags:               tags,
+		ProxyRedirect:      proxyRedirect,
+		RelayChain:         relayChain,
+		RelayLayers:        relayLayers,
+		RelayObfs:          relayObfs,
+		PassProxyHeaders:   passProxyHeaders,
+		UserAgent:          userAgent,
+		CustomHeaders:      customHeaders,
+		EgressProfileID:    egressProfileID,
+		TrustedProxyRanges: trustedProxyRanges,
+		PolicyRef:          policyRef,
+		Revision:           fallback.Revision,
 	}, nil
 }
 
@@ -1951,46 +1968,121 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 	backends := parseBackends(row.BackendsJSON)
 
 	return HTTPRule{
-		ID:               row.ID,
-		AgentID:          row.AgentID,
-		FrontendURL:      row.FrontendURL,
-		BackendURL:       "",
-		Backends:         backends,
-		LoadBalancing:    parseLoadBalancing(row.LoadBalancingJSON),
-		Enabled:          row.Enabled,
-		Tags:             parseStringArray(row.TagsJSON),
-		ProxyRedirect:    row.ProxyRedirect,
-		RelayChain:       []int{},
-		RelayLayers:      parseIntLayers(row.RelayLayersJSON),
-		RelayObfs:        row.RelayObfs,
-		PassProxyHeaders: row.PassProxyHeaders,
-		UserAgent:        row.UserAgent,
-		CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
-		EgressProfileID:  normalizeOptionalPositiveInt(row.EgressProfileID),
-		Revision:         row.Revision,
+		ID:                 row.ID,
+		AgentID:            row.AgentID,
+		FrontendURL:        row.FrontendURL,
+		BackendURL:         "",
+		Backends:           backends,
+		LoadBalancing:      parseLoadBalancing(row.LoadBalancingJSON),
+		Enabled:            row.Enabled,
+		Tags:               parseStringArray(row.TagsJSON),
+		ProxyRedirect:      row.ProxyRedirect,
+		RelayChain:         []int{},
+		RelayLayers:        parseIntLayers(row.RelayLayersJSON),
+		RelayObfs:          row.RelayObfs,
+		PassProxyHeaders:   row.PassProxyHeaders,
+		UserAgent:          row.UserAgent,
+		CustomHeaders:      parseCustomHeaders(row.CustomHeadersJSON),
+		EgressProfileID:    normalizeOptionalPositiveInt(row.EgressProfileID),
+		TrustedProxyRanges: parseStringArray(row.TrustedProxyRangesJSON),
+		PolicyRef:          parseRulePolicyRef(row.PolicyRefJSON),
+		Revision:           row.Revision,
 	}
 }
 
 func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 	return storage.HTTPRuleRow{
-		ID:                rule.ID,
-		AgentID:           rule.AgentID,
-		FrontendURL:       rule.FrontendURL,
-		BackendURL:        "",
-		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
-		Enabled:           rule.Enabled,
-		TagsJSON:          marshalJSON(rule.Tags, "[]"),
-		ProxyRedirect:     rule.ProxyRedirect,
-		RelayChainJSON:    "[]",
-		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
-		RelayObfs:         rule.RelayObfs,
-		PassProxyHeaders:  rule.PassProxyHeaders,
-		UserAgent:         rule.UserAgent,
-		CustomHeadersJSON: marshalJSON(rule.CustomHeaders, "[]"),
-		EgressProfileID:   normalizeOptionalPositiveInt(rule.EgressProfileID),
-		Revision:          rule.Revision,
+		ID:                     rule.ID,
+		AgentID:                rule.AgentID,
+		FrontendURL:            rule.FrontendURL,
+		BackendURL:             "",
+		BackendsJSON:           marshalJSON(rule.Backends, "[]"),
+		LoadBalancingJSON:      marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
+		Enabled:                rule.Enabled,
+		TagsJSON:               marshalJSON(rule.Tags, "[]"),
+		ProxyRedirect:          rule.ProxyRedirect,
+		RelayChainJSON:         "[]",
+		RelayLayersJSON:        marshalJSON(rule.RelayLayers, "[]"),
+		RelayObfs:              rule.RelayObfs,
+		PassProxyHeaders:       rule.PassProxyHeaders,
+		UserAgent:              rule.UserAgent,
+		CustomHeadersJSON:      marshalJSON(rule.CustomHeaders, "[]"),
+		EgressProfileID:        normalizeOptionalPositiveInt(rule.EgressProfileID),
+		TrustedProxyRangesJSON: marshalJSON(rule.TrustedProxyRanges, "[]"),
+		PolicyRefJSON:          marshalJSON(rule.PolicyRef, ""),
+		Revision:               rule.Revision,
 	}
+}
+
+func normalizeTrustedPeerRanges(values []string) ([]string, error) {
+	if values == nil {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return nil, fmt.Errorf("%w: trusted peer range is empty", ErrInvalidArgument)
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return nil, fmt.Errorf("%w: trusted peer range %q is invalid", ErrInvalidArgument, raw)
+			}
+			address = address.Unmap()
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		canonical := prefix.Masked().String()
+		if _, duplicate := seen[canonical]; duplicate {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		normalized = append(normalized, canonical)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
+}
+
+func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.PolicyRef, error) {
+	if input == nil {
+		return cloneRulePolicyRef(fallback), nil
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" {
+		if len(input.Overlay) != 0 && string(input.Overlay) != "null" {
+			return nil, fmt.Errorf("%w: policy_ref id is required with an overlay", ErrInvalidArgument)
+		}
+		return nil, nil
+	}
+	if id != input.ID || len(id) > 512 || strings.ContainsAny(id, "\r\n\x00") {
+		return nil, fmt.Errorf("%w: policy_ref id is not canonical", ErrInvalidArgument)
+	}
+	overlay := append(json.RawMessage(nil), input.Overlay...)
+	if len(overlay) != 0 && (len(overlay) > 128<<10 || !json.Valid(overlay)) {
+		return nil, fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
+	}
+	return &storage.PolicyRef{ID: id, Overlay: overlay}, nil
+}
+
+func cloneRulePolicyRef(ref *storage.PolicyRef) *storage.PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	return &storage.PolicyRef{ID: ref.ID, Overlay: append(json.RawMessage(nil), ref.Overlay...)}
+}
+
+func parseRulePolicyRef(raw string) *storage.PolicyRef {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var ref storage.PolicyRef
+	if err := json.Unmarshal([]byte(raw), &ref); err != nil {
+		return &storage.PolicyRef{ID: "\x00invalid-policy-ref"}
+	}
+	return cloneRulePolicyRef(&ref)
 }
 
 func maxInt(values ...int) int {

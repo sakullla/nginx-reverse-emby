@@ -208,6 +208,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded := goagentembedded.Snapshot{
 		DesiredVersion: snapshot.DesiredVersion,
 		Revision:       snapshot.Revision,
+		PluginPolicies: toEmbeddedPluginPolicies(snapshot.PluginPolicies),
 		AgentConfig: goagentembedded.AgentConfig{
 			OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
 			TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
@@ -245,17 +246,19 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
-			ID:               rule.ID,
-			Enabled:          true,
-			FrontendURL:      rule.FrontendURL,
-			Backends:         toEmbeddedHTTPBackends(rule.Backends),
-			LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
-			ProxyRedirect:    rule.ProxyRedirect,
-			PassProxyHeaders: rule.PassProxyHeaders,
-			UserAgent:        rule.UserAgent,
-			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
-			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
-			Revision:         rule.Revision,
+			ID:                 rule.ID,
+			Enabled:            true,
+			FrontendURL:        rule.FrontendURL,
+			Backends:           toEmbeddedHTTPBackends(rule.Backends),
+			LoadBalancing:      goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
+			ProxyRedirect:      rule.ProxyRedirect,
+			PassProxyHeaders:   rule.PassProxyHeaders,
+			UserAgent:          rule.UserAgent,
+			CustomHeaders:      toEmbeddedHTTPHeaders(rule.CustomHeaders),
+			TrustedProxyRanges: append([]string(nil), rule.TrustedProxyRanges...),
+			PolicyRef:          toEmbeddedPolicyRef(rule.PolicyRef),
+			RelayLayers:        cloneRelayLayers(rule.RelayLayers),
+			Revision:           rule.Revision,
 		})
 	}
 	embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))
@@ -271,8 +274,9 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			LoadBalancing: goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
 			Tuning: goagentembedded.L4Tuning{
 				ProxyProtocol: goagentembedded.L4ProxyProtocolTuning{
-					Decode: rule.Tuning.ProxyProtocol.Decode,
-					Send:   rule.Tuning.ProxyProtocol.Send,
+					Decode:       rule.Tuning.ProxyProtocol.Decode,
+					Send:         rule.Tuning.ProxyProtocol.Send,
+					TrustedPeers: append([]string(nil), rule.Tuning.ProxyProtocol.TrustedPeers...),
 				},
 			},
 			RelayLayers:     cloneRelayLayers(rule.RelayLayers),
@@ -284,7 +288,8 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 				Username: rule.ProxyEntryAuth.Username,
 				Password: rule.ProxyEntryAuth.Password,
 			},
-			Revision: rule.Revision,
+			PolicyRef: toEmbeddedPolicyRef(rule.PolicyRef),
+			Revision:  rule.Revision,
 		})
 	}
 	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
@@ -352,6 +357,28 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			CertificateType: policy.CertificateType,
 			SelfSigned:      policy.SelfSigned,
 		})
+	}
+	return embedded
+}
+
+func toEmbeddedPolicyRef(ref *storage.PolicyRef) *goagentembedded.PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	return &goagentembedded.PolicyRef{ID: ref.ID, Overlay: append(json.RawMessage(nil), ref.Overlay...)}
+}
+
+func toEmbeddedPluginPolicies(policies []storage.PluginPolicy) []goagentembedded.PluginPolicy {
+	if policies == nil {
+		return nil
+	}
+	data, err := json.Marshal(policies)
+	if err != nil {
+		return nil
+	}
+	var embedded []goagentembedded.PluginPolicy
+	if err := json.Unmarshal(data, &embedded); err != nil {
+		return nil
 	}
 	return embedded
 }

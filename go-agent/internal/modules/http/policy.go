@@ -115,13 +115,18 @@ func prepareHTTPPolicyBodyWindow(req *stdhttp.Request) (policy.BodyWindow, error
 	if req == nil || req.Body == nil || req.Body == stdhttp.NoBody {
 		return policy.NewBodyWindow(nil, true, policy.BodyNotSkipped)
 	}
-
-	readLimit := int64(httpPolicyBodyWindowBytes + 1)
-	if req.ContentLength > httpPolicyBodyWindowBytes {
-		readLimit = httpPolicyBodyWindowBytes
+	if req.ContentLength < 0 {
+		return policy.NewBodyWindow(nil, false, policy.BodyLengthUnknown)
 	}
+	if req.ContentLength > httpPolicyBodyWindowBytes {
+		return policy.NewBodyWindow(nil, false, policy.BodyLimitExceeded)
+	}
+	if req.ContentLength == 0 {
+		return policy.NewBodyWindow(nil, true, policy.BodyNotSkipped)
+	}
+
 	source := req.Body
-	prefix, err := io.ReadAll(io.LimitReader(source, readLimit))
+	prefix, err := io.ReadAll(io.LimitReader(source, req.ContentLength))
 	if err != nil {
 		_ = source.Close()
 		return policy.BodyWindow{}, err
@@ -131,12 +136,6 @@ func prepareHTTPPolicyBodyWindow(req *stdhttp.Request) (policy.BodyWindow, error
 		Closer: source,
 	}
 
-	if req.ContentLength > httpPolicyBodyWindowBytes || len(prefix) > httpPolicyBodyWindowBytes {
-		if len(prefix) > httpPolicyBodyWindowBytes {
-			prefix = prefix[:httpPolicyBodyWindowBytes]
-		}
-		return policy.NewBodyWindow(prefix, false, policy.BodyLimitExceeded)
-	}
 	return policy.NewBodyWindow(prefix, true, policy.BodyNotSkipped)
 }
 

@@ -10,6 +10,7 @@ import (
 type ErrorCode string
 
 const (
+	ErrorUnavailable        ErrorCode = "runtime_unavailable"
 	ErrorInvalidArtifact    ErrorCode = "invalid_artifact"
 	ErrorIncompatibleABI    ErrorCode = "incompatible_abi"
 	ErrorInputBudget        ErrorCode = "input_budget_exceeded"

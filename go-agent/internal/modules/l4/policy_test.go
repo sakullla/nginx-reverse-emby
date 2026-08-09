@@ -130,9 +130,13 @@ func TestRateLimitPolicyUDPDatagramsOnlyMarkNewFlowOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var flowNew []string
 	var bodies []string
+	deny := false
 	evaluator := l4PolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
 		flowNew = append(flowNew, string(input.Fields()[policy.FieldFlowNew]))
 		bodies = append(bodies, string(input.Body().Prefix()))
+		if deny {
+			return policy.Decision{Action: policy.ActionDeny}
+		}
 		return policy.Decision{Action: policy.ActionAllow}
 	})
 	upstream := newBlockingPolicyUDPUpstream()
@@ -153,15 +157,25 @@ func TestRateLimitPolicyUDPDatagramsOnlyMarkNewFlowOnce(t *testing.T) {
 	if err != nil || first == nil {
 		t.Fatalf("first UDP policy/session = %v, %v", first, err)
 	}
+	deny = true
 	second, err := server.policyCheckedUDPSession(rule, listener, peer, "", []byte("second"))
 	if err != nil || second != first {
 		t.Fatalf("second UDP policy/session = %v, %v, want existing %v", second, err, first)
 	}
-	if len(flowNew) != 2 || flowNew[0] != "true" || flowNew[1] != "false" {
-		t.Fatalf("flow.new evaluations = %v, want [true false]", flowNew)
+	if len(flowNew) != 1 || flowNew[0] != "true" {
+		t.Fatalf("flow.new evaluations = %v, want one authoritative new-flow admission", flowNew)
 	}
-	if len(bodies) != 2 || bodies[0] != "first" || bodies[1] != "second" {
-		t.Fatalf("per-datagram body windows = %v", bodies)
+	if len(bodies) != 1 || bodies[0] != "first" {
+		t.Fatalf("new-flow body windows = %v", bodies)
+	}
+
+	server.closeUDPSession(first.key)
+	replacement, err := server.policyCheckedUDPSession(rule, listener, peer, "", []byte("replacement"))
+	if err != nil || replacement != nil {
+		t.Fatalf("expired flow replacement = %v, error = %v, want policy denial", replacement, err)
+	}
+	if len(flowNew) != 2 || flowNew[1] != "true" || len(bodies) != 2 || bodies[1] != "replacement" {
+		t.Fatalf("replacement admission flow.new/bodies = %v/%v", flowNew, bodies)
 	}
 }
 

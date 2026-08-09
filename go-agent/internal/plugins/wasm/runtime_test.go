@@ -15,11 +15,51 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/testing/wasmreference"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
+	"github.com/tetratelabs/wazero"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 var testWASMHeader = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+
+func TestWASMRuntimeCompilerUnavailableIsTypedWithoutFallback(t *testing.T) {
+	compilerCalls := 0
+	runtimeCalls := 0
+	hostRuntime, err := NewRuntime(context.Background(), RuntimeOptions{
+		compilerConfigFactory: func() wazero.RuntimeConfig {
+			compilerCalls++
+			panic("unsupported compiler platform")
+		},
+		runtimeFactory: func(context.Context, wazero.RuntimeConfig) wazero.Runtime {
+			runtimeCalls++
+			return nil
+		},
+	})
+	if hostRuntime != nil {
+		t.Fatal("compiler capability failure returned a runtime")
+	}
+	if !IsCode(err, ErrorUnavailable) {
+		t.Fatalf("compiler capability error=%v, want %s", err, ErrorUnavailable)
+	}
+	if compilerCalls != 1 || runtimeCalls != 0 {
+		t.Fatalf("compiler calls=%d runtime calls=%d, want compiler-only failure without fallback", compilerCalls, runtimeCalls)
+	}
+}
+
+func TestWASMRuntimeExecutableMemoryPanicIsTypedUnavailable(t *testing.T) {
+	hostRuntime, err := NewRuntime(context.Background(), RuntimeOptions{
+		compilerConfigFactory: wazero.NewRuntimeConfigCompiler,
+		runtimeFactory: func(context.Context, wazero.RuntimeConfig) wazero.Runtime {
+			panic("executable memory denied")
+		},
+	})
+	if hostRuntime != nil {
+		t.Fatal("runtime construction panic returned a runtime")
+	}
+	if !IsCode(err, ErrorUnavailable) {
+		t.Fatalf("runtime construction error=%v, want %s", err, ErrorUnavailable)
+	}
+}
 
 func TestWASMVerifiedBoundaryAndGenerationReuse(t *testing.T) {
 	wasmBytes := compatfixture.PolicyV1GuestWASM()
@@ -569,6 +609,62 @@ func TestWASMHostReadFieldExactWireBoundaryAndOverflow(t *testing.T) {
 	}
 }
 
+func TestWASMHostReadFieldEncodesPresentEmptySeparatelyFromMissing(t *testing.T) {
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	generation, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
+		ID: "host-read-field-presence", InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
+		Budget: Budget{MaxMemoryPages: 16, MaxConcurrency: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := generation.acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer generation.release(guest, true)
+	request := marshalHostTestMessage(t, "ReadFieldRequest", func(message protoreflect.Message) {
+		message.Set(policyField(message.Interface(), "name"), protoreflect.ValueOfString("request.query"))
+	})
+	budget := Budget{MaxInputBytes: uint32(len(request)), MaxOutputBytes: uint32(pluginsdk.PolicyV1MaxOutputFrameBytes)}
+
+	for name, test := range map[string]struct {
+		value []byte
+		found bool
+	}{
+		"present empty": {value: make([]byte, 0), found: true},
+		"missing":       {value: nil, found: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			packed := callHostTestFrame(t, runtime, guest, &readFieldPresenceHost{value: test.value}, pluginsdk.PolicyHostReadField, request, budget.MaxOutputBytes, budget)
+			status, written := pluginsdk.UnpackPolicyHostResult(packed)
+			if status != pluginsdk.PolicyStatusOK {
+				t.Fatalf("ReadField status = %d", status)
+			}
+			response, ok := guest.module.Memory().Read(32<<10, written)
+			if !ok {
+				t.Fatal("read BytesResponse")
+			}
+			message, err := newPolicyMessage("BytesResponse")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := proto.Unmarshal(response, message); err != nil {
+				t.Fatalf("decode BytesResponse: %v", err)
+			}
+			found := message.ProtoReflect().Get(policyField(message, "found")).Bool()
+			if found != test.found {
+				t.Fatalf("BytesResponse found = %v, want %v", found, test.found)
+			}
+		})
+	}
+}
+
 func marshalHostTestMessage(t *testing.T, name protoreflect.Name, populate func(protoreflect.Message)) []byte {
 	t.Helper()
 	message, err := newPolicyMessage(name)
@@ -602,6 +698,15 @@ type dimensionPolicyHost struct {
 type readFieldBoundaryHost struct {
 	testPolicyHost
 	value []byte
+}
+
+type readFieldPresenceHost struct {
+	testPolicyHost
+	value []byte
+}
+
+func (host *readFieldPresenceHost) ReadField(context.Context, string) ([]byte, error) {
+	return host.value, nil
 }
 
 func (host *readFieldBoundaryHost) ReadField(context.Context, string) ([]byte, error) {

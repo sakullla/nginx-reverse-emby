@@ -127,7 +127,7 @@ func (host *requestHost) ReadField(_ context.Context, name string) ([]byte, erro
 		if !ok {
 			return nil, nil
 		}
-		return append([]byte(nil), field...), nil
+		return clonePresentBytes(field), nil
 	}
 	return []byte(value), nil
 }
@@ -170,7 +170,7 @@ func (host *requestHost) StatePut(_ context.Context, key string, value []byte) e
 	return host.state.put(host.instanceID, key, value)
 }
 
-func (host *requestHost) EmitEvent(ctx context.Context, kind string, _ []byte) error {
+func (host *requestHost) EmitEvent(ctx context.Context, kind string, payload []byte) error {
 	if !host.granted("event.emit") {
 		return permissionDenied("policy event emission is not granted")
 	}
@@ -178,7 +178,14 @@ func (host *requestHost) EmitEvent(ctx context.Context, kind string, _ []byte) e
 	if kind == "" {
 		return errors.New("policy event kind is not canonical")
 	}
-	host.observe(ctx, observability.PolicyHostEvent, "observed", kind, 0)
+	event, err := pluginsdk.DecodePolicySecurityEvent(payload)
+	if err != nil {
+		return err
+	}
+	host.observe(ctx, observability.Event{
+		Name: observability.PolicyHostEvent, Outcome: "observed", Reason: kind,
+		SecurityRule: event.RuleID, SecurityAction: event.Action, SecuritySummary: event.Summary,
+	})
 	return nil
 }
 
@@ -187,10 +194,13 @@ func (host *requestHost) AddMetric(ctx context.Context, name string, delta int64
 		return permissionDenied("policy metric emission is not granted")
 	}
 	name = canonicalSignalName(name)
-	if name == "" {
-		return errors.New("policy metric name is not canonical")
+	if _, ok := observability.PolicyGuestMetric(name); !ok {
+		return errors.New("policy metric name is not in the host catalog")
 	}
-	host.observe(ctx, observability.PolicyHostMetric, "observed", name, delta)
+	host.observe(ctx, observability.Event{
+		Name: observability.PolicyHostMetric, Outcome: "observed", Reason: name,
+		GuestMetric: name, MetricDelta: delta,
+	})
 	return nil
 }
 
@@ -224,16 +234,20 @@ func resourceExhausted(code, message string) error {
 	return BudgetErrorFor(pluginsdk.BudgetDimensionState, code, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorResourceExhausted, Message: message})
 }
 
-func (host *requestHost) observe(ctx context.Context, name, outcome, reason string, delta int64) {
+func (host *requestHost) observe(ctx context.Context, event observability.Event) {
 	if host == nil || host.observer == nil {
 		return
 	}
-	observeEvent(ctx, host.observer, observability.Event{
-		Name: name, Outcome: outcome, PluginID: host.stage.PluginID, InstanceID: host.instanceID,
-		GenerationID: host.generationID, PolicyID: host.policyID, PolicyStage: string(host.stage.Kind), Reason: reason,
-		RequestID: host.input.requestID, Source: host.input.metadata.source.Addr().String(), SourceKind: string(host.input.metadata.kind),
-		NodeLocal: host.stage.Kind == model.PolicyKindRate, MetricDelta: delta,
-	})
+	event.PluginID = host.stage.PluginID
+	event.InstanceID = host.instanceID
+	event.GenerationID = host.generationID
+	event.PolicyID = host.policyID
+	event.PolicyStage = string(host.stage.Kind)
+	event.RequestID = host.input.requestID
+	event.Source = host.input.metadata.source.Addr().String()
+	event.SourceKind = string(host.input.metadata.kind)
+	event.NodeLocal = host.stage.Kind == model.PolicyKindRate
+	observeEvent(ctx, host.observer, event)
 }
 
 func canonicalSignalName(value string) string {

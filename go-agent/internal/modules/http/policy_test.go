@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -71,8 +72,8 @@ func TestWAFPolicyStreamingBodyWindowPreservesBodyAndTrustedSource(t *testing.T)
 	if got := len(fields["request.header.x-large"]); got != httpPolicyHeaderValueBytes {
 		t.Fatalf("bounded WAF header length = %d, want %d", got, httpPolicyHeaderValueBytes)
 	}
-	if got := captured.Body().Prefix(); len(got) != httpPolicyBodyWindowBytes || !bytes.Equal(got, payload[:httpPolicyBodyWindowBytes]) {
-		t.Fatalf("policy body prefix length = %d, want %d matching bytes", len(got), httpPolicyBodyWindowBytes)
+	if got := captured.Body().Prefix(); len(got) != 0 {
+		t.Fatalf("declared-large policy body prefix length = %d, want 0 without synchronous reads", len(got))
 	}
 	if captured.Body().Complete() || captured.Body().SkipReason() != policy.BodyLimitExceeded {
 		t.Fatalf("body window = complete %v skip %q", captured.Body().Complete(), captured.Body().SkipReason())
@@ -83,6 +84,40 @@ func TestWAFPolicyStreamingBodyWindowPreservesBodyAndTrustedSource(t *testing.T)
 	}
 	if !bytes.Equal(rebuilt, payload) {
 		t.Fatalf("rebuilt body length = %d, want %d exact bytes", len(rebuilt), len(payload))
+	}
+}
+
+func TestWAFPolicyUnknownLengthBodyDoesNotBlockAdmission(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+
+	var captured policy.Input
+	server := &Server{policyEvaluator: httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
+		captured = input
+		return policy.Decision{Action: policy.ActionAllow}
+	})}
+	req := httptest.NewRequest(stdhttp.MethodPost, "http://media.example.test/upload", reader)
+	req.ContentLength = -1
+	req.RemoteAddr = "192.0.2.40:43210"
+	result := make(chan bool, 1)
+	go func() {
+		_, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}})
+		result <- allowed
+	}()
+	select {
+	case allowed := <-result:
+		if !allowed {
+			t.Fatal("unknown-length request was denied")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("policy admission blocked reading an open unknown-length body")
+	}
+	if captured.Body().Complete() || captured.Body().SkipReason() != policy.BodyLengthUnknown || len(captured.Body().Prefix()) != 0 {
+		t.Fatalf("unknown-length body window = complete %v skip %q prefix %d", captured.Body().Complete(), captured.Body().SkipReason(), len(captured.Body().Prefix()))
+	}
+	if req.Body != reader {
+		t.Fatal("unknown-length request body was replaced despite no read")
 	}
 }
 

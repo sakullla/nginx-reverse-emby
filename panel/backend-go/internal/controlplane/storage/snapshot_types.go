@@ -14,6 +14,7 @@ type Snapshot struct {
 	DDNSConfig          *DDNSConfig                `json:"ddns_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
+	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
@@ -343,22 +344,70 @@ type LoadBalancing struct {
 	Strategy string `json:"strategy,omitempty"`
 }
 
+type PolicyRef struct {
+	ID      string          `json:"id"`
+	Overlay json.RawMessage `json:"overlay,omitempty"`
+}
+
+type PolicyResourceBudget struct {
+	TimeoutMS   int64 `json:"timeout_ms"`
+	MemoryBytes int64 `json:"memory_bytes"`
+	Concurrency int   `json:"concurrency"`
+	InputBytes  int64 `json:"input_bytes"`
+	OutputBytes int64 `json:"output_bytes"`
+}
+
+type PolicyFailurePolicy struct {
+	OnError      string `json:"on_error"`
+	OnBudget     string `json:"on_budget"`
+	Restart      string `json:"restart"`
+	CoreFallback string `json:"core_fallback"`
+}
+
+type PolicyStage struct {
+	Kind              string               `json:"kind"`
+	PolicyID          string               `json:"policy_id"`
+	PluginID          string               `json:"plugin_id"`
+	PluginVersion     string               `json:"plugin_version"`
+	InstanceID        string               `json:"instance_id"`
+	PackageDigest     string               `json:"package_digest"`
+	ArtifactPath      string               `json:"artifact_path"`
+	ArtifactDigest    string               `json:"artifact_digest"`
+	SignatureVerified bool                 `json:"signature_verified"`
+	SignerKeyID       string               `json:"signer_key_id"`
+	SignerFingerprint string               `json:"signer_fingerprint"`
+	ABI               string               `json:"abi"`
+	ExtensionPoints   []string             `json:"extension_points"`
+	GrantedScopes     []string             `json:"granted_scopes"`
+	Config            json.RawMessage      `json:"config,omitempty"`
+	ResourceBudget    PolicyResourceBudget `json:"resource_budget"`
+	FailurePolicy     PolicyFailurePolicy  `json:"failure_policy"`
+}
+
+type PluginPolicy struct {
+	ID       string        `json:"id"`
+	Revision int64         `json:"revision"`
+	Stages   []PolicyStage `json:"stages"`
+}
+
 type HTTPRule struct {
-	ID               int           `json:"id,omitempty"`
-	AgentID          string        `json:"agent_id,omitempty"`
-	FrontendURL      string        `json:"frontend_url"`
-	BackendURL       string        `json:"-"`
-	Backends         []HTTPBackend `json:"backends,omitempty"`
-	LoadBalancing    LoadBalancing `json:"load_balancing,omitempty"`
-	ProxyRedirect    bool          `json:"proxy_redirect,omitempty"`
-	PassProxyHeaders bool          `json:"pass_proxy_headers,omitempty"`
-	UserAgent        string        `json:"user_agent,omitempty"`
-	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
-	EgressProfileID  *int          `json:"egress_profile_id,omitempty"`
-	RelayChain       []int         `json:"-"`
-	RelayLayers      [][]int       `json:"relay_layers,omitempty"`
-	RelayObfs        bool          `json:"relay_obfs,omitempty"`
-	Revision         int64         `json:"revision,omitempty"`
+	ID                 int           `json:"id,omitempty"`
+	AgentID            string        `json:"agent_id,omitempty"`
+	FrontendURL        string        `json:"frontend_url"`
+	BackendURL         string        `json:"-"`
+	Backends           []HTTPBackend `json:"backends,omitempty"`
+	LoadBalancing      LoadBalancing `json:"load_balancing,omitempty"`
+	ProxyRedirect      bool          `json:"proxy_redirect,omitempty"`
+	PassProxyHeaders   bool          `json:"pass_proxy_headers,omitempty"`
+	UserAgent          string        `json:"user_agent,omitempty"`
+	CustomHeaders      []HTTPHeader  `json:"custom_headers,omitempty"`
+	EgressProfileID    *int          `json:"egress_profile_id,omitempty"`
+	TrustedProxyRanges []string      `json:"trusted_proxy_ranges,omitempty"`
+	RelayChain         []int         `json:"-"`
+	RelayLayers        [][]int       `json:"relay_layers,omitempty"`
+	RelayObfs          bool          `json:"relay_obfs,omitempty"`
+	PolicyRef          *PolicyRef    `json:"policy_ref,omitempty"`
+	Revision           int64         `json:"revision,omitempty"`
 }
 
 type L4Backend struct {
@@ -367,8 +416,9 @@ type L4Backend struct {
 }
 
 type L4ProxyProtocolTuning struct {
-	Decode bool `json:"decode,omitempty"`
-	Send   bool `json:"send,omitempty"`
+	Decode       bool     `json:"decode,omitempty"`
+	Send         bool     `json:"send,omitempty"`
+	TrustedPeers []string `json:"trusted_peers,omitempty"`
 }
 
 type L4ProxyEntryAuth struct {
@@ -399,6 +449,7 @@ type L4Rule struct {
 	ListenMode      string           `json:"listen_mode,omitempty"`
 	EgressProfileID *int             `json:"egress_profile_id,omitempty"`
 	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	PolicyRef       *PolicyRef       `json:"policy_ref,omitempty"`
 	Revision        int64            `json:"revision,omitempty"`
 }
 

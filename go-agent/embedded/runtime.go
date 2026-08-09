@@ -14,6 +14,8 @@ import (
 )
 
 type Snapshot = model.Snapshot
+type PolicyRef = model.PolicyRef
+type PluginPolicy = model.PluginPolicy
 type RuntimeState = model.RuntimeState
 type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage

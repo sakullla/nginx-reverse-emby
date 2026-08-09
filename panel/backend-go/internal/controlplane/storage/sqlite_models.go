@@ -39,23 +39,25 @@ type AgentRow struct {
 }
 
 type HTTPRuleRow struct {
-	ID                int    `gorm:"column:id;primaryKey"`
-	AgentID           string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
-	FrontendURL       string `gorm:"column:frontend_url"`
-	BackendURL        string `gorm:"column:backend_url"`
-	BackendsJSON      string `gorm:"column:backends"`
-	LoadBalancingJSON string `gorm:"column:load_balancing"`
-	Enabled           bool   `gorm:"column:enabled"`
-	TagsJSON          string `gorm:"column:tags"`
-	ProxyRedirect     bool   `gorm:"column:proxy_redirect"`
-	RelayChainJSON    string `gorm:"column:relay_chain"`
-	RelayLayersJSON   string `gorm:"column:relay_layers"`
-	RelayObfs         bool   `gorm:"column:relay_obfs"`
-	PassProxyHeaders  bool   `gorm:"column:pass_proxy_headers"`
-	UserAgent         string `gorm:"column:user_agent"`
-	CustomHeadersJSON string `gorm:"column:custom_headers"`
-	EgressProfileID   *int   `gorm:"column:egress_profile_id"`
-	Revision          int    `gorm:"column:revision"`
+	ID                     int    `gorm:"column:id;primaryKey"`
+	AgentID                string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
+	FrontendURL            string `gorm:"column:frontend_url"`
+	BackendURL             string `gorm:"column:backend_url"`
+	BackendsJSON           string `gorm:"column:backends"`
+	LoadBalancingJSON      string `gorm:"column:load_balancing"`
+	Enabled                bool   `gorm:"column:enabled"`
+	TagsJSON               string `gorm:"column:tags"`
+	ProxyRedirect          bool   `gorm:"column:proxy_redirect"`
+	RelayChainJSON         string `gorm:"column:relay_chain"`
+	RelayLayersJSON        string `gorm:"column:relay_layers"`
+	RelayObfs              bool   `gorm:"column:relay_obfs"`
+	PassProxyHeaders       bool   `gorm:"column:pass_proxy_headers"`
+	UserAgent              string `gorm:"column:user_agent"`
+	CustomHeadersJSON      string `gorm:"column:custom_headers"`
+	EgressProfileID        *int   `gorm:"column:egress_profile_id"`
+	TrustedProxyRangesJSON string `gorm:"column:trusted_proxy_ranges;not null;default:'[]'"`
+	PolicyRefJSON          string `gorm:"column:policy_ref;not null;default:''"`
+	Revision               int    `gorm:"column:revision"`
 }
 
 type LocalAgentStateRow struct {
@@ -89,6 +91,7 @@ type L4RuleRow struct {
 	ListenMode         string `gorm:"column:listen_mode;not null;default:'tcp'"`
 	EgressProfileID    *int   `gorm:"column:egress_profile_id"`
 	ProxyEntryAuthJSON string `gorm:"column:proxy_entry_auth;not null;default:'{}'"`
+	PolicyRefJSON      string `gorm:"column:policy_ref;not null;default:''"`
 	Enabled            bool   `gorm:"column:enabled"`
 	TagsJSON           string `gorm:"column:tags"`
 	Revision           int    `gorm:"column:revision"`

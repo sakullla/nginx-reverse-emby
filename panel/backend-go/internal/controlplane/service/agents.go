@@ -150,24 +150,26 @@ type HTTPCustomHeader struct {
 }
 
 type HTTPRule struct {
-	ID               int                `json:"id"`
-	AgentID          string             `json:"agent_id"`
-	AgentName        string             `json:"agent_name,omitempty"`
-	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"-"`
-	Backends         []HTTPRuleBackend  `json:"backends"`
-	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
-	Enabled          bool               `json:"enabled"`
-	Tags             []string           `json:"tags"`
-	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"-"`
-	RelayLayers      [][]int            `json:"relay_layers"`
-	RelayObfs        bool               `json:"relay_obfs"`
-	PassProxyHeaders bool               `json:"pass_proxy_headers"`
-	UserAgent        string             `json:"user_agent"`
-	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
-	EgressProfileID  *int               `json:"egress_profile_id,omitempty"`
-	Revision         int                `json:"revision"`
+	ID                 int                `json:"id"`
+	AgentID            string             `json:"agent_id"`
+	AgentName          string             `json:"agent_name,omitempty"`
+	FrontendURL        string             `json:"frontend_url"`
+	BackendURL         string             `json:"-"`
+	Backends           []HTTPRuleBackend  `json:"backends"`
+	LoadBalancing      HTTPLoadBalancing  `json:"load_balancing"`
+	Enabled            bool               `json:"enabled"`
+	Tags               []string           `json:"tags"`
+	ProxyRedirect      bool               `json:"proxy_redirect"`
+	RelayChain         []int              `json:"-"`
+	RelayLayers        [][]int            `json:"relay_layers"`
+	RelayObfs          bool               `json:"relay_obfs"`
+	PassProxyHeaders   bool               `json:"pass_proxy_headers"`
+	UserAgent          string             `json:"user_agent"`
+	CustomHeaders      []HTTPCustomHeader `json:"custom_headers"`
+	EgressProfileID    *int               `json:"egress_profile_id,omitempty"`
+	TrustedProxyRanges []string           `json:"trusted_proxy_ranges,omitempty"`
+	PolicyRef          *storage.PolicyRef `json:"policy_ref,omitempty"`
+	Revision           int                `json:"revision"`
 }
 
 type HeartbeatRequest struct {
@@ -205,6 +207,7 @@ type HeartbeatReply struct {
 	VersionSHA256        string                             `json:"version_sha256,omitempty"`
 	Rules                []storage.HTTPRule                 `json:"rules"`
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
+	PluginPolicies       []storage.PluginPolicy             `json:"plugin_policies"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
@@ -1400,6 +1403,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		CurrentRevision:      int64(row.CurrentRevision),
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
+		PluginPolicies:       snapshot.PluginPolicies,
 		RelayListeners:       snapshot.RelayListeners,
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,

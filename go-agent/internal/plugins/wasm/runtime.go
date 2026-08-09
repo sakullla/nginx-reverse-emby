@@ -25,6 +25,11 @@ const (
 type RuntimeOptions struct {
 	MaxMemoryPages uint32
 	Observer       Observer
+
+	// These factories are test seams for startup capability failures. Production
+	// always uses wazero's compiler backend and never substitutes the interpreter.
+	compilerConfigFactory func() wazero.RuntimeConfig
+	runtimeFactory        func(context.Context, wazero.RuntimeConfig) wazero.Runtime
 }
 
 type Budget struct {
@@ -111,12 +116,18 @@ func NewRuntime(ctx context.Context, options RuntimeOptions) (*Runtime, error) {
 	if observer == nil {
 		observer = discardObserver{}
 	}
-	configuration := wazero.NewRuntimeConfigCompiler().
-		WithCoreFeatures(api.CoreFeaturesV1).
-		WithMemoryLimitPages(memoryPages).
-		WithCloseOnContextDone(true).
-		WithDebugInfoEnabled(false)
-	wazeroRuntime := wazero.NewRuntimeWithConfig(ctx, configuration)
+	compilerConfigFactory := options.compilerConfigFactory
+	if compilerConfigFactory == nil {
+		compilerConfigFactory = wazero.NewRuntimeConfigCompiler
+	}
+	runtimeFactory := options.runtimeFactory
+	if runtimeFactory == nil {
+		runtimeFactory = wazero.NewRuntimeWithConfig
+	}
+	wazeroRuntime, err := newCompilerRuntime(ctx, memoryPages, compilerConfigFactory, runtimeFactory)
+	if err != nil {
+		return nil, err
+	}
 	runtime := &Runtime{
 		wasm:        wazeroRuntime,
 		observer:    observer,
@@ -128,6 +139,41 @@ func NewRuntime(ctx context.Context, options RuntimeOptions) (*Runtime, error) {
 		return nil, fmt.Errorf("instantiate nre policy host: %w", err)
 	}
 	return runtime, nil
+}
+
+func newCompilerRuntime(
+	ctx context.Context,
+	memoryPages uint32,
+	compilerConfigFactory func() wazero.RuntimeConfig,
+	runtimeFactory func(context.Context, wazero.RuntimeConfig) wazero.Runtime,
+) (wazeroRuntime wazero.Runtime, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if wazeroRuntime != nil {
+				_ = wazeroRuntime.Close(context.Background())
+				wazeroRuntime = nil
+			}
+			err = &RuntimeError{
+				Code:      ErrorUnavailable,
+				Operation: "initialize_compiler",
+				Cause:     fmt.Errorf("compiler backend unavailable: %v", recovered),
+			}
+		}
+	}()
+	configuration := compilerConfigFactory()
+	if configuration == nil {
+		return nil, &RuntimeError{Code: ErrorUnavailable, Operation: "initialize_compiler", Cause: errors.New("compiler configuration is unavailable")}
+	}
+	configuration = configuration.
+		WithCoreFeatures(api.CoreFeaturesV1).
+		WithMemoryLimitPages(memoryPages).
+		WithCloseOnContextDone(true).
+		WithDebugInfoEnabled(false)
+	wazeroRuntime = runtimeFactory(ctx, configuration)
+	if wazeroRuntime == nil {
+		return nil, &RuntimeError{Code: ErrorUnavailable, Operation: "initialize_compiler", Cause: errors.New("compiler runtime is unavailable")}
+	}
+	return wazeroRuntime, nil
 }
 
 func (runtime *Runtime) CompileGeneration(ctx context.Context, artifact VerifiedArtifact, configuration GenerationConfig) (*Generation, error) {
