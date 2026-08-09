@@ -851,6 +851,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	for i, rule := range snapshot.Rules {
 		cloned.Rules[i].Backends = slices.Clone(rule.Backends)
 		cloned.Rules[i].CustomHeaders = slices.Clone(rule.CustomHeaders)
+		cloned.Rules[i].TrustedProxyRanges = slices.Clone(rule.TrustedProxyRanges)
 		cloned.Rules[i].EgressProfileID = cloneGenerationPtr(rule.EgressProfileID)
 		cloned.Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned.Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
@@ -860,6 +861,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned.L4Rules = slices.Clone(snapshot.L4Rules)
 	for i, rule := range snapshot.L4Rules {
 		cloned.L4Rules[i].Backends = slices.Clone(rule.Backends)
+		cloned.L4Rules[i].Tuning.ProxyProtocol.TrustedPeers = slices.Clone(rule.Tuning.ProxyProtocol.TrustedPeers)
 		cloned.L4Rules[i].EgressProfileID = cloneGenerationPtr(rule.EgressProfileID)
 		cloned.L4Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned.L4Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)

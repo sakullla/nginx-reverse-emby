@@ -6,6 +6,19 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
+func TestCloneHTTPRulesDeepClonesTrustedProxyRanges(t *testing.T) {
+	rules := []model.HTTPRule{{TrustedProxyRanges: []string{"192.0.2.0/24"}}}
+	cloned := cloneHTTPRules(rules)
+	rules[0].TrustedProxyRanges[0] = "203.0.113.0/24"
+	if got := cloned[0].TrustedProxyRanges[0]; got != "192.0.2.0/24" {
+		t.Fatalf("cloned trusted proxy range = %q", got)
+	}
+	cloned[0].TrustedProxyRanges[0] = "198.51.100.0/24"
+	if got := rules[0].TrustedProxyRanges[0]; got != "203.0.113.0/24" {
+		t.Fatalf("source trusted proxy range = %q", got)
+	}
+}
+
 func TestHTTPEffectiveInputsIgnoresUnreferencedRelayListenerChanges(t *testing.T) {
 	t.Parallel()
 	rules := []model.HTTPRule{{

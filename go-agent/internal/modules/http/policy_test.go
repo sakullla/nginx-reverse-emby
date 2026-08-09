@@ -156,7 +156,7 @@ func TestIPPolicyUntrustedOrMalformedXFFCannotForgeSource(t *testing.T) {
 func TestWAFPolicyRejectsIncompleteSecurityFieldProjection(t *testing.T) {
 	for name, mutate := range map[string]func(*stdhttp.Request){
 		"malicious query suffix": func(req *stdhttp.Request) {
-			req.URL.RawQuery = strings.Repeat("safe=1&", (8<<10)/7) + strings.Repeat("x", 32) + "<script>"
+			req.URL.RawQuery = strings.Repeat("a", httpPolicyFieldValueBytes) + "<script>"
 		},
 		"header value suffix": func(req *stdhttp.Request) {
 			req.Header.Set("X-Policy-Input", strings.Repeat("a", httpPolicyHeaderValueBytes)+"malicious-suffix")
@@ -177,6 +177,78 @@ func TestWAFPolicyRejectsIncompleteSecurityFieldProjection(t *testing.T) {
 			mutate(req)
 			decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}})
 			if allowed || decision.Reason != "input-projection" || calls != 0 {
+				t.Fatalf("overflow decision/allowed/calls = %+v/%v/%d", decision, allowed, calls)
+			}
+		})
+	}
+}
+
+func TestWAFPolicyFieldProjectionFitsCompleteHostResponseBoundary(t *testing.T) {
+	tests := map[string]struct {
+		field    string
+		exact    func(*stdhttp.Request)
+		overflow func(*stdhttp.Request)
+	}{
+		"path": {
+			field: policy.FieldRequestPath,
+			exact: func(req *stdhttp.Request) {
+				req.URL.Path = "/" + strings.Repeat("p", httpPolicyFieldValueBytes-1)
+			},
+			overflow: func(req *stdhttp.Request) {
+				req.URL.Path = "/" + strings.Repeat("p", httpPolicyFieldValueBytes-1) + "<script>"
+			},
+		},
+		"query": {
+			field: policy.FieldRequestQuery,
+			exact: func(req *stdhttp.Request) {
+				req.URL.RawQuery = strings.Repeat("q", httpPolicyFieldValueBytes)
+			},
+			overflow: func(req *stdhttp.Request) {
+				req.URL.RawQuery = strings.Repeat("q", httpPolicyFieldValueBytes) + "<script>"
+			},
+		},
+		"host": {
+			field: policy.FieldRequestHost,
+			exact: func(req *stdhttp.Request) {
+				req.Host = strings.Repeat("h", httpPolicyFieldValueBytes)
+			},
+			overflow: func(req *stdhttp.Request) {
+				req.Host = strings.Repeat("h", httpPolicyFieldValueBytes) + ".evil"
+			},
+		},
+		"header": {
+			field: "request.header.x-policy-boundary",
+			exact: func(req *stdhttp.Request) {
+				req.Header.Set("X-Policy-Boundary", strings.Repeat("h", httpPolicyFieldValueBytes))
+			},
+			overflow: func(req *stdhttp.Request) {
+				req.Header.Set("X-Policy-Boundary", strings.Repeat("h", httpPolicyFieldValueBytes)+"malicious-suffix")
+			},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			var captured policy.Input
+			calls := 0
+			server := &Server{policyEvaluator: httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
+				calls++
+				captured = input
+				return policy.Decision{Action: policy.ActionAllow}
+			})}
+			rule := model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}}
+			exact := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/library", nil)
+			test.exact(exact)
+			if decision, allowed := server.allowPolicyRequest(exact, rule); !allowed {
+				t.Fatalf("exact boundary denied: %+v", decision)
+			}
+			if got := len(captured.Fields()[test.field]); got != httpPolicyFieldValueBytes {
+				t.Fatalf("projected field length = %d, want %d", got, httpPolicyFieldValueBytes)
+			}
+
+			overflow := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/library", nil)
+			test.overflow(overflow)
+			decision, allowed := server.allowPolicyRequest(overflow, rule)
+			if allowed || decision.Reason != "input-projection" || calls != 1 {
 				t.Fatalf("overflow decision/allowed/calls = %+v/%v/%d", decision, allowed, calls)
 			}
 		})

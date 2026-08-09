@@ -251,10 +251,12 @@ func validatePolicyStageEvidence(stage model.PolicyStage) error {
 }
 
 func stageBudget(budget model.PolicyResourceBudget) Budget {
+	memoryPages := (uint64(budget.MemoryBytes) + pluginsdk.WASMPageSizeBytes - 1) / pluginsdk.WASMPageSizeBytes
 	return Budget{
 		MaxInputBytes:  uint32(budget.InputBytes),
 		MaxOutputBytes: uint32(budget.OutputBytes),
-		MaxMemoryPages: uint32((budget.MemoryBytes + 65535) / 65536),
+		MemoryBytes:    budget.MemoryBytes,
+		MaxMemoryPages: uint32(memoryPages),
 		MaxConcurrency: budget.Concurrency,
 		Timeout:        time.Duration(budget.TimeoutMS) * time.Millisecond,
 	}

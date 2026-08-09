@@ -1,8 +1,10 @@
 package policy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -127,6 +129,66 @@ func TestPolicyModuleRejectsWAFOnL4(t *testing.T) {
 	next.L4Rules = []model.L4Rule{{ID: 2, Enabled: true, PolicyRef: &model.PolicyRef{ID: "waf"}}}
 	if _, err := policyModule.Prepare(context.Background(), module.ApplyRequest{Next: next}); err == nil {
 		t.Fatal("Prepare() accepted an L4 WAF dependency")
+	}
+}
+
+func TestPolicyModuleRejectsStageExtensionMismatchBeforeFactory(t *testing.T) {
+	for name, test := range map[string]struct {
+		extension string
+		snapshot  model.Snapshot
+	}{
+		"http": {
+			extension: ExtensionHTTP,
+			snapshot:  model.Snapshot{Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}},
+		},
+		"l4": {
+			extension: ExtensionL4,
+			snapshot:  model.Snapshot{L4Rules: []model.L4Rule{{ID: 2, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			definition := testPolicy("shared", model.PolicyKindIP)
+			if test.extension == ExtensionHTTP {
+				definition.Stages[0].ExtensionPoints = []string{ExtensionL4}
+			} else {
+				definition.Stages[0].ExtensionPoints = []string{ExtensionHTTP}
+			}
+			test.snapshot.PluginPolicies = []model.PluginPolicy{definition}
+			factory := &testGenerationFactory{}
+			if _, err := NewModule(factory, nil).Prepare(context.Background(), module.ApplyRequest{Next: test.snapshot}); err == nil {
+				t.Fatalf("Prepare() accepted a stage without %q", test.extension)
+			}
+			if factory.runtime != nil {
+				t.Fatal("factory was called for an incompatible extension")
+			}
+		})
+	}
+}
+
+func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) {
+	overlay := bytes.Repeat([]byte("x"), 900)
+	frameBytes, err := PolicyEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := testPolicy("shared", model.PolicyKindIP, model.PolicyKindRate)
+	for index := range definition.Stages {
+		definition.Stages[index].ResourceBudget.InputBytes = int64(frameBytes)
+	}
+	snapshot := model.Snapshot{
+		PluginPolicies: []model.PluginPolicy{definition},
+		Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{
+			ID: "shared", Overlay: overlay,
+		}}},
+	}
+	policyModule := NewModule(nil, nil)
+	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err != nil {
+		t.Fatalf("exact frame boundary rejected: %v", err)
+	}
+
+	snapshot.PluginPolicies[0].Stages[1].ResourceBudget.InputBytes--
+	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err == nil {
+		t.Fatal("one-byte-over-budget frame accepted by second stage")
 	}
 }
 

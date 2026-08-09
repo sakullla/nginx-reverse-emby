@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -282,7 +283,7 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		if !rule.Enabled || rule.PolicyRef == nil {
 			continue
 		}
-		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions); err != nil {
+		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions, ExtensionHTTP); err != nil {
 			return nil, nil, fmt.Errorf("http rule %d: %w", rule.ID, err)
 		}
 		required[strings.TrimSpace(rule.PolicyRef.ID)] = struct{}{}
@@ -291,7 +292,7 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		if !rule.Enabled || rule.PolicyRef == nil {
 			continue
 		}
-		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions); err != nil {
+		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions, ExtensionL4); err != nil {
 			return nil, nil, fmt.Errorf("l4 rule %d: %w", rule.ID, err)
 		}
 		id := strings.TrimSpace(rule.PolicyRef.ID)
@@ -325,15 +326,35 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 	return definitions, ids, nil
 }
 
-func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.PluginPolicy) error {
+func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.PluginPolicy, extensionPoint string) error {
 	if ref == nil || !canonicalIdentity(ref.ID) {
 		return errors.New("policy ref is missing or non-canonical")
 	}
 	if len(ref.Overlay) > int(MaxPolicyInputBytes) {
 		return errors.New("policy overlay exceeds host input ceiling")
 	}
-	if _, ok := definitions[ref.ID]; !ok {
+	definition, ok := definitions[ref.ID]
+	if !ok {
 		return fmt.Errorf("policy %q is unavailable", ref.ID)
+	}
+	// A request ID may legally reach its canonical bound at runtime. Admission
+	// therefore uses that exact worst-case deterministic wire frame so every
+	// published stage can accept every legal rule overlay.
+	frameBytes, err := PolicyEvaluateRequestFrameBytes(
+		extensionPoint,
+		strings.Repeat("r", MaxPolicyRequestIDBytes),
+		ref.Overlay,
+	)
+	if err != nil {
+		return fmt.Errorf("encode policy evaluate request: %w", err)
+	}
+	for index, stage := range definition.Stages {
+		if !slices.Contains(stage.ExtensionPoints, extensionPoint) {
+			return fmt.Errorf("policy %q stage %d (%q) does not support extension %q", ref.ID, index, stage.InstanceID, extensionPoint)
+		}
+		if err := AdmitPolicyInputFrame(stage.ResourceBudget, frameBytes); err != nil {
+			return fmt.Errorf("policy %q stage %d (%q) evaluate request: %w", ref.ID, index, stage.InstanceID, err)
+		}
 	}
 	return nil
 }

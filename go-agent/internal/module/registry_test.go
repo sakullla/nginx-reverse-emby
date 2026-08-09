@@ -392,7 +392,13 @@ func TestRegistryGenerationCandidateIsInvisibleUntilPublish(t *testing.T) {
 func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
 	snapshot := model.Snapshot{
 		Revision: 4,
-		Rules:    []model.HTTPRule{{PolicyRef: &model.PolicyRef{ID: "edge-policy", Overlay: []byte(`{"level":1}`)}}},
+		Rules: []model.HTTPRule{{
+			TrustedProxyRanges: []string{"192.0.2.0/24"},
+			PolicyRef:          &model.PolicyRef{ID: "edge-policy", Overlay: []byte(`{"level":1}`)},
+		}},
+		L4Rules: []model.L4Rule{{Tuning: model.L4Tuning{ProxyProtocol: model.L4ProxyProtocolTuning{
+			TrustedPeers: []string{"198.51.100.10"},
+		}}}},
 		PluginPolicies: []model.PluginPolicy{{ID: "edge-policy", Revision: 1, Stages: []model.PolicyStage{{
 			Kind: model.PolicyKindWAF, ExtensionPoints: []string{"http.request"},
 			GrantedScopes: []string{"http.inspect"}, Config: []byte(`{"mode":"block"}`),
@@ -403,15 +409,19 @@ func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot.Rules[0].PolicyRef.Overlay[0] = 'x'
+	snapshot.Rules[0].TrustedProxyRanges[0] = "203.0.113.0/24"
+	snapshot.L4Rules[0].Tuning.ProxyProtocol.TrustedPeers[0] = "203.0.113.10"
 	snapshot.PluginPolicies[0].Stages[0].ExtensionPoints[0] = "changed"
 	snapshot.PluginPolicies[0].Stages[0].GrantedScopes[0] = "changed"
 	snapshot.PluginPolicies[0].Stages[0].Config[0] = 'x'
 
 	first := ctx.Snapshot()
 	first.Rules[0].PolicyRef.Overlay[0] = 'y'
+	first.Rules[0].TrustedProxyRanges[0] = "198.51.100.0/24"
+	first.L4Rules[0].Tuning.ProxyProtocol.TrustedPeers[0] = "198.51.100.20"
 	first.PluginPolicies[0].Stages[0].Config[0] = 'y'
 	second := ctx.Snapshot()
-	if string(second.Rules[0].PolicyRef.Overlay) != `{"level":1}` || second.PluginPolicies[0].Stages[0].ExtensionPoints[0] != "http.request" || second.PluginPolicies[0].Stages[0].GrantedScopes[0] != "http.inspect" || string(second.PluginPolicies[0].Stages[0].Config) != `{"mode":"block"}` {
+	if string(second.Rules[0].PolicyRef.Overlay) != `{"level":1}` || second.Rules[0].TrustedProxyRanges[0] != "192.0.2.0/24" || second.L4Rules[0].Tuning.ProxyProtocol.TrustedPeers[0] != "198.51.100.10" || second.PluginPolicies[0].Stages[0].ExtensionPoints[0] != "http.request" || second.PluginPolicies[0].Stages[0].GrantedScopes[0] != "http.inspect" || string(second.PluginPolicies[0].Stages[0].Config) != `{"mode":"block"}` {
 		t.Fatalf("generation context leaked plugin policy backing storage: %+v", second)
 	}
 }

@@ -30,13 +30,18 @@ const (
 	// whole chain with false so the rate stage does not count another new flow.
 	FieldFlowNew = "flow.new"
 
-	MaxPolicyTimeout        = time.Duration(pluginsdk.PolicyV1MaxTimeoutMilliseconds) * time.Millisecond
-	MaxPolicyMemoryBytes    = pluginsdk.PolicyV1MaxMemoryBytes
-	MaxPolicyConcurrency    = pluginsdk.PolicyV1MaxConcurrency
-	MaxPolicyInputBytes     = pluginsdk.PolicyV1MaxInputFrameBytes
-	MaxPolicyOutputBytes    = pluginsdk.PolicyV1MaxOutputFrameBytes
-	MaxBodyPrefixBytes      = 128 << 10
-	MaxPolicyRequestIDBytes = 256
+	MaxPolicyTimeout     = time.Duration(pluginsdk.PolicyV1MaxTimeoutMilliseconds) * time.Millisecond
+	MaxPolicyMemoryBytes = pluginsdk.PolicyV1MaxMemoryBytes
+	MaxPolicyConcurrency = pluginsdk.PolicyV1MaxConcurrency
+	MaxPolicyInputBytes  = pluginsdk.PolicyV1MaxInputFrameBytes
+	MaxPolicyOutputBytes = pluginsdk.PolicyV1MaxOutputFrameBytes
+	// BytesResponse encodes a non-empty value with a one-byte field tag, a
+	// two-byte length at this size, and the two-byte found=true field. Keeping
+	// values at this bound makes the complete deterministic response exactly
+	// fit the 4096-byte output frame without pagination.
+	MaxPolicyReadFieldValueBytes = int(MaxPolicyOutputBytes) - 5
+	MaxBodyPrefixBytes           = 128 << 10
+	MaxPolicyRequestIDBytes      = 256
 )
 
 func CanonicalHTTPHeaderField(name string) (string, bool) {

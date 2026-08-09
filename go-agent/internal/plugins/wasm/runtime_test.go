@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/testing/wasmreference"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
 	"google.golang.org/protobuf/proto"
@@ -280,6 +282,40 @@ func TestWASMAgentAcceptanceUsesCanonicalPolicyV1Declarations(t *testing.T) {
 	}
 }
 
+func TestWASMAgentAcceptancePreservesExactNonPageAlignedMemoryBudget(t *testing.T) {
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	artifact := verifiedArtifactFromBytes(t, wasmreference.WAFGuest(wasmreference.WAFOptions{
+		MemoryMinPages: 2,
+		MemoryMaxPages: 2,
+	}))
+	configuration := GenerationConfig{
+		ID:          "non-page-aligned-memory",
+		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
+		Budget: Budget{
+			MemoryBytes:    65537,
+			MaxMemoryPages: 2,
+			MaxConcurrency: 1,
+		},
+	}
+	if _, err := runtime.CompileGeneration(ctx, artifact, configuration); !IsCode(err, ErrorIncompatibleABI) {
+		t.Fatalf("two-page module with exact 65,537-byte budget error=%v, want incompatible ABI", err)
+	}
+	configuration.ID = "page-aligned-memory"
+	configuration.Budget.MemoryBytes = 2 * int64(pluginsdk.WASMPageSizeBytes)
+	generation, err := runtime.CompileGeneration(ctx, artifact, configuration)
+	if err != nil {
+		t.Fatalf("two-page module with exact two-page budget rejected: %v", err)
+	}
+	if err := generation.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWASMOutputBudgetIsObservable(t *testing.T) {
 	ctx := context.Background()
 	events := make(chan Event, 4)
@@ -478,6 +514,61 @@ func TestWASMHostBudgetEventsPreserveInputOutputAndStateDimensions(t *testing.T)
 	}
 }
 
+func TestWASMHostReadFieldExactWireBoundaryAndOverflow(t *testing.T) {
+	events := make(chan Event, 2)
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{
+		MaxMemoryPages: 16,
+		Observer:       ObserverFunc(func(event Event) { events <- event }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	generation, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
+		ID:          "host-read-field-wire-boundary",
+		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
+		Budget:      Budget{MaxMemoryPages: 16, MaxConcurrency: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := generation.acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer generation.release(guest, true)
+
+	request := marshalHostTestMessage(t, "ReadFieldRequest", func(message protoreflect.Message) {
+		message.Set(policyField(message.Interface(), "name"), protoreflect.ValueOfString("request.path"))
+	})
+	budget := Budget{
+		MaxInputBytes:  uint32(len(request)),
+		MaxOutputBytes: uint32(pluginsdk.PolicyV1MaxOutputFrameBytes),
+	}
+	exactHost := &readFieldBoundaryHost{value: bytes.Repeat([]byte("x"), int(policy.MaxPolicyReadFieldValueBytes))}
+	packed := callHostTestFrame(t, runtime, guest, exactHost, pluginsdk.PolicyHostReadField, request, budget.MaxOutputBytes, budget)
+	status, written := pluginsdk.UnpackPolicyHostResult(packed)
+	if status != pluginsdk.PolicyStatusOK || written != budget.MaxOutputBytes {
+		t.Fatalf("exact ReadField boundary status=%d written=%d, want OK/%d", status, written, budget.MaxOutputBytes)
+	}
+
+	overflowHost := &readFieldBoundaryHost{value: bytes.Repeat([]byte("x"), int(policy.MaxPolicyReadFieldValueBytes+1))}
+	packed = callHostTestFrame(t, runtime, guest, overflowHost, pluginsdk.PolicyHostReadField, request, budget.MaxOutputBytes, budget)
+	status, required := pluginsdk.UnpackPolicyHostResult(packed)
+	if status != pluginsdk.PolicyStatusResourceExhausted || required != budget.MaxOutputBytes+1 {
+		t.Fatalf("overflow ReadField status=%d required=%d, want resource-exhausted/%d", status, required, budget.MaxOutputBytes+1)
+	}
+	select {
+	case event := <-events:
+		if event.Code != ErrorOutputBudget || event.Dimension != pluginsdk.BudgetDimensionOutput {
+			t.Fatalf("overflow event=%+v, want output budget dimension", event)
+		}
+	default:
+		t.Fatal("overflow ReadField was not observed")
+	}
+}
+
 func marshalHostTestMessage(t *testing.T, name protoreflect.Name, populate func(protoreflect.Message)) []byte {
 	t.Helper()
 	message, err := newPolicyMessage(name)
@@ -506,6 +597,15 @@ func callHostTestFrame(t *testing.T, runtime *Runtime, guest *instance, host plu
 type dimensionPolicyHost struct {
 	testPolicyHost
 	statePutError error
+}
+
+type readFieldBoundaryHost struct {
+	testPolicyHost
+	value []byte
+}
+
+func (host *readFieldBoundaryHost) ReadField(context.Context, string) ([]byte, error) {
+	return append([]byte(nil), host.value...), nil
 }
 
 func (host *dimensionPolicyHost) StatePut(context.Context, string, []byte) error {

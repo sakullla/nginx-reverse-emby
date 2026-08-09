@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,7 +16,10 @@ import (
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	pluginwasm "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +31,32 @@ import (
 	"time"
 	"unsafe"
 )
+
+func TestPolicyWASMObserverRecordsStateBudgetDimension(t *testing.T) {
+	var logOutput bytes.Buffer
+	recorder := observability.NewRecorder(slog.New(slog.NewJSONHandler(&logOutput, nil)))
+	observer := newPolicyWASMObserverWith(recorder)
+	observer.ObserveWASM(pluginwasm.Event{
+		Generation: "generation-7",
+		Operation:  "host.nre_host_state_put",
+		Code:       pluginwasm.ErrorHost,
+		Dimension:  "state",
+	})
+
+	logged := logOutput.String()
+	for _, want := range []string{`"event":"nre_agent_policy_budget"`, `"outcome":"exhausted"`, `"generation_id":"generation-7"`, `"reason":"dimension=state:host_failure:host.nre_host_state_put"`} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("observer log %q does not contain %q", logged, want)
+		}
+	}
+	var metrics bytes.Buffer
+	if err := recorder.WritePrometheus(&metrics); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(metrics.String(), `nre_agent_policy_budget_total{outcome="exhausted"} 1`) {
+		t.Fatalf("observer metrics = %q", metrics.String())
+	}
+}
 
 func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	cfg := Config{

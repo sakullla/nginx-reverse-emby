@@ -9,6 +9,7 @@ import (
 func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
 	cloned := moduleutil.CloneL4Rules(rules)
 	for i := range cloned {
+		cloned[i].Tuning.ProxyProtocol.TrustedPeers = append([]string(nil), rules[i].Tuning.ProxyProtocol.TrustedPeers...)
 		cloned[i].PolicyRef = clonePolicyRef(rules[i].PolicyRef)
 	}
 	return cloned

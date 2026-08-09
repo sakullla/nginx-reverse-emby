@@ -21,7 +21,8 @@ import (
 // policy inspection never requires whole-body buffering.
 const (
 	httpPolicyBodyWindowBytes  = 64 << 10
-	httpPolicyHeaderValueBytes = 4 << 10
+	httpPolicyFieldValueBytes  = policy.MaxPolicyReadFieldValueBytes
+	httpPolicyHeaderValueBytes = httpPolicyFieldValueBytes
 	httpPolicyHeadersBytes     = 32 << 10
 )
 
@@ -147,7 +148,7 @@ func httpPolicyFields(req *stdhttp.Request) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	host, err := exactHTTPPolicyField(req.Host, 1024, "host")
+	host, err := exactHTTPPolicyField(req.Host, httpPolicyFieldValueBytes, "host")
 	if err != nil {
 		return nil, err
 	}
@@ -162,11 +163,11 @@ func httpPolicyFields(req *stdhttp.Request) (map[string][]byte, error) {
 		policy.FieldFlowNew:       []byte("true"),
 	}
 	if req.URL != nil {
-		fields[policy.FieldRequestPath], err = exactHTTPPolicyField(req.URL.EscapedPath(), 8<<10, "path")
+		fields[policy.FieldRequestPath], err = exactHTTPPolicyField(req.URL.EscapedPath(), httpPolicyFieldValueBytes, "path")
 		if err != nil {
 			return nil, err
 		}
-		fields[policy.FieldRequestQuery], err = exactHTTPPolicyField(req.URL.RawQuery, 8<<10, "query")
+		fields[policy.FieldRequestQuery], err = exactHTTPPolicyField(req.URL.RawQuery, httpPolicyFieldValueBytes, "query")
 		if err != nil {
 			return nil, err
 		}

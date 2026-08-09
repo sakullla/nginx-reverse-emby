@@ -198,18 +198,33 @@ type configuredModules struct {
 }
 
 func newPolicyWASMObserver() pluginwasm.Observer {
+	return newPolicyWASMObserverWith(observability.Default())
+}
+
+func newPolicyWASMObserverWith(observer observability.Observer) pluginwasm.Observer {
+	if observer == nil {
+		observer = observability.Default()
+	}
 	return pluginwasm.ObserverFunc(func(event pluginwasm.Event) {
 		name, outcome := observability.PolicyDegraded, "failed"
-		switch event.Code {
-		case pluginwasm.ErrorInputBudget, pluginwasm.ErrorOutputBudget, pluginwasm.ErrorMemoryBudget,
-			pluginwasm.ErrorConcurrencyBudget, pluginwasm.ErrorDeadline:
+		if event.Dimension != "" {
 			name, outcome = observability.PolicyBudget, "exhausted"
-		case pluginwasm.ErrorOptionalDegraded:
-			outcome = "degraded"
+		} else {
+			switch event.Code {
+			case pluginwasm.ErrorInputBudget, pluginwasm.ErrorOutputBudget, pluginwasm.ErrorMemoryBudget,
+				pluginwasm.ErrorConcurrencyBudget, pluginwasm.ErrorDeadline:
+				name, outcome = observability.PolicyBudget, "exhausted"
+			case pluginwasm.ErrorOptionalDegraded:
+				outcome = "degraded"
+			}
 		}
-		observability.Observe(context.Background(), observability.Event{
+		reason := string(event.Code) + ":" + event.Operation
+		if event.Dimension != "" {
+			reason = "dimension=" + string(event.Dimension) + ":" + reason
+		}
+		observability.Observe(observability.WithObserver(context.Background(), observer), observability.Event{
 			Name: name, Outcome: outcome, GenerationID: event.Generation,
-			Reason: string(event.Code) + ":" + event.Operation,
+			Reason: reason,
 		})
 	})
 }

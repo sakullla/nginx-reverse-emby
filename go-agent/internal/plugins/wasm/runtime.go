@@ -30,20 +30,36 @@ type RuntimeOptions struct {
 type Budget struct {
 	MaxInputBytes  uint32
 	MaxOutputBytes uint32
+	// MemoryBytes preserves the exact manifest budget for independent ABI
+	// validation. MaxMemoryPages is only the wazero allocation ceiling and may
+	// be the ceiling division of a non-page-aligned byte budget.
+	MemoryBytes    int64
 	MaxMemoryPages uint32
 	MaxConcurrency int
 	Timeout        time.Duration
 }
 
 func (budget Budget) normalized(runtimeMemoryPages uint32) (Budget, error) {
+	if budget.MemoryBytes < 0 {
+		return Budget{}, errors.New("generation memory byte budget must be positive")
+	}
 	if budget.MaxInputBytes == 0 {
 		budget.MaxInputBytes = defaultInputBytes
 	}
 	if budget.MaxOutputBytes == 0 {
 		budget.MaxOutputBytes = defaultOutputBytes
 	}
-	if budget.MaxMemoryPages == 0 {
+	if budget.MemoryBytes == 0 && budget.MaxMemoryPages == 0 {
 		budget.MaxMemoryPages = runtimeMemoryPages
+		budget.MemoryBytes = int64(runtimeMemoryPages) * int64(pluginsdk.WASMPageSizeBytes)
+	} else if budget.MemoryBytes == 0 {
+		budget.MemoryBytes = int64(budget.MaxMemoryPages) * int64(pluginsdk.WASMPageSizeBytes)
+	} else if budget.MaxMemoryPages == 0 {
+		pages := (uint64(budget.MemoryBytes) + pluginsdk.WASMPageSizeBytes - 1) / pluginsdk.WASMPageSizeBytes
+		if pages > uint64(^uint32(0)) {
+			return Budget{}, errors.New("generation memory byte budget exceeds WebAssembly page addressing")
+		}
+		budget.MaxMemoryPages = uint32(pages)
 	}
 	if budget.MaxConcurrency == 0 {
 		budget.MaxConcurrency = defaultConcurrency
@@ -53,6 +69,13 @@ func (budget Budget) normalized(runtimeMemoryPages uint32) (Budget, error) {
 	}
 	if budget.MaxMemoryPages > runtimeMemoryPages {
 		return Budget{}, fmt.Errorf("generation memory budget %d pages exceeds runtime ceiling %d", budget.MaxMemoryPages, runtimeMemoryPages)
+	}
+	if budget.MemoryBytes <= 0 || uint64(budget.MemoryBytes) > uint64(runtimeMemoryPages)*pluginsdk.WASMPageSizeBytes {
+		return Budget{}, fmt.Errorf("generation memory budget %d bytes exceeds runtime ceiling", budget.MemoryBytes)
+	}
+	requiredPages := (uint64(budget.MemoryBytes) + pluginsdk.WASMPageSizeBytes - 1) / pluginsdk.WASMPageSizeBytes
+	if requiredPages != uint64(budget.MaxMemoryPages) {
+		return Budget{}, fmt.Errorf("generation memory budget %d bytes requires %d pages, got %d", budget.MemoryBytes, requiredPages, budget.MaxMemoryPages)
 	}
 	if budget.MaxConcurrency < 1 || budget.Timeout < 0 {
 		return Budget{}, errors.New("generation concurrency and timeout budgets must be positive")
@@ -121,8 +144,7 @@ func (runtime *Runtime) CompileGeneration(ctx context.Context, artifact Verified
 	if uint64(len(configuration.InitRequest)) > uint64(budget.MaxInputBytes) {
 		return nil, runtime.failure(configuration.ID, "compile", ErrorInputBudget, nil)
 	}
-	memoryBudgetBytes := int64(budget.MaxMemoryPages) * int64(pluginsdk.WASMPageSizeBytes)
-	if err := pluginsdk.ValidatePolicyV1WASM(artifact.wasm, memoryBudgetBytes); err != nil {
+	if err := pluginsdk.ValidatePolicyV1WASM(artifact.wasm, budget.MemoryBytes); err != nil {
 		return nil, runtime.failure(configuration.ID, "compile", ErrorIncompatibleABI, err)
 	}
 

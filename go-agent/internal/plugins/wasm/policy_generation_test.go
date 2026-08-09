@@ -239,6 +239,13 @@ func TestPolicyGenerationRejectsOverflowAndConcurrencyBudgets(t *testing.T) {
 	}
 }
 
+func TestStageBudgetPreservesExactNonPageAlignedMemoryBytes(t *testing.T) {
+	projected := stageBudget(model.PolicyResourceBudget{MemoryBytes: 65537})
+	if projected.MemoryBytes != 65537 || projected.MaxMemoryPages != 2 {
+		t.Fatalf("stage budget memory bytes=%d pages=%d, want exact 65537 bytes and two-page ceiling", projected.MemoryBytes, projected.MaxMemoryPages)
+	}
+}
+
 func writePolicyFixture(t *testing.T) (string, string) {
 	t.Helper()
 	wasmBytes := compatfixture.PolicyV1GuestWASM()
