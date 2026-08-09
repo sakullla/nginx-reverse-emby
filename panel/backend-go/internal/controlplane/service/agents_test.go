@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,9 @@ type fakeStore struct {
 	revisionPointers    map[string]storage.AgentRevisionPointerRow
 	revisions           map[string]storage.AgentRevisionRow
 	ensureRevisionCalls int
+	issuedSnapshot      storage.Snapshot
+	issuedPayload       []byte
+	issuedDigest        string
 }
 
 func (f *fakeStore) GetAgentRevisionPointer(_ context.Context, agentID string) (storage.AgentRevisionPointerRow, bool, error) {
@@ -62,8 +67,11 @@ func (f *fakeStore) RetryCoordinatorRevision(_ context.Context, agentID string, 
 	return row, nil
 }
 
-func (f *fakeStore) EnsureAgentHeartbeatRevision(_ context.Context, agentID string, snapshot storage.Snapshot, _ []byte, digest string, now time.Time) (storage.AgentRevisionRow, error) {
+func (f *fakeStore) EnsureAgentHeartbeatRevision(_ context.Context, agentID string, snapshot storage.Snapshot, payload []byte, digest string, now time.Time) (storage.AgentRevisionRow, error) {
 	f.ensureRevisionCalls++
+	f.issuedSnapshot = snapshot
+	f.issuedPayload = append([]byte(nil), payload...)
+	f.issuedDigest = digest
 	key := fmt.Sprintf("%s/%d", agentID, snapshot.Revision)
 	if row, found := f.revisions[key]; found {
 		if !strings.EqualFold(row.SnapshotDigest, digest) {
@@ -93,6 +101,25 @@ func (s agentPKIControlErrorStub) ControlSync(context.Context, string, *storage.
 
 func (agentPKIControlErrorStub) PrepareRelayListeners(_ context.Context, _ string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
 	return listeners, nil
+}
+
+type heartbeatPKIProjectionStub struct{}
+
+func (heartbeatPKIProjectionStub) RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error) {
+	return PKIRegistrationReply{}, nil
+}
+
+func (heartbeatPKIProjectionStub) ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
+	return storage.PKISecuritySnapshot{PKIDomainID: "pki-domain"}, nil, nil
+}
+
+func (heartbeatPKIProjectionStub) PrepareRelayListeners(_ context.Context, _ string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
+	prepared := append([]storage.RelayListener(nil), listeners...)
+	for index := range prepared {
+		prepared[index].ListenPort = 9443
+		prepared[index].TransportMode = "quic"
+	}
+	return prepared, nil
 }
 
 type fakeHeartbeatTrafficService struct {
@@ -1329,6 +1356,37 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	}
 	if store.savedAgent.LastSeenAt != now.Format(time.RFC3339) {
 		t.Fatalf("LastSeenAt = %q", store.savedAgent.LastSeenAt)
+	}
+}
+
+func TestHeartbeatPersistsPreparedPKISnapshotBeforeReply(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents:   []storage.AgentRow{{ID: "edge-pki", Name: "edge-pki", AgentToken: "token-edge-pki", DesiredRevision: 5, CurrentRevision: 4, LastApplyStatus: "success"}},
+		snapshot: storage.Snapshot{Revision: 5, PluginPolicies: []storage.PluginPolicy{}, RelayListeners: []storage.RelayListener{{ID: 1, AgentID: "edge-pki", ListenPort: 7443, TransportMode: "tcp"}}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	svc.SetPKIController(heartbeatPKIProjectionStub{})
+	reply, err := svc.Heartbeat(t.Context(), HeartbeatRequest{CurrentRevision: 4, LastApplyStatus: "success"}, "token-edge-pki")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ListenPort != 9443 || reply.RelayListeners[0].TransportMode != "quic" {
+		t.Fatalf("wire relay projection = %+v", reply.RelayListeners)
+	}
+	if len(store.issuedSnapshot.RelayListeners) != 1 || store.issuedSnapshot.RelayListeners[0].ListenPort != reply.RelayListeners[0].ListenPort || store.issuedSnapshot.RelayListeners[0].TransportMode != reply.RelayListeners[0].TransportMode {
+		t.Fatalf("issued/wire relay mismatch = %+v / %+v", store.issuedSnapshot.RelayListeners, reply.RelayListeners)
+	}
+	var durable storage.Snapshot
+	if err := json.Unmarshal(store.issuedPayload, &durable); err != nil {
+		t.Fatal(err)
+	}
+	if len(durable.RelayListeners) != 1 || durable.RelayListeners[0].ListenPort != reply.RelayListeners[0].ListenPort || durable.RelayListeners[0].TransportMode != reply.RelayListeners[0].TransportMode {
+		t.Fatalf("durable/wire relay mismatch = %+v / %+v", durable.RelayListeners, reply.RelayListeners)
+	}
+	payloadSum := sha256.Sum256(store.issuedPayload)
+	if reply.SnapshotDigest != hex.EncodeToString(payloadSum[:]) || reply.SnapshotDigest != store.issuedDigest {
+		t.Fatalf("wire/durable snapshot digest = %q / %q", reply.SnapshotDigest, store.issuedDigest)
 	}
 }
 

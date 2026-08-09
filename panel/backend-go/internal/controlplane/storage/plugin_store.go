@@ -929,14 +929,11 @@ func EncodePluginPolicyChains(chains []string) (string, error) {
 }
 
 // LoadAgentPluginPolicies returns the authoritative active policy catalog for
-// one agent. A transactional GormStore observes the rows the mutation commits.
+// one agent. Reads never create or lock the per-Agent catalog fence. Callers
+// that must serialize with plugin lifecycle changes explicitly acquire the
+// existing fence through LockAgentPluginPolicyCatalog first.
 func (s *GormStore) LoadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
 	agentID = s.resolveAgentID(agentID)
-	if s.transactionScoped {
-		if err := s.lockPluginPolicyAgentCatalogs(ctx, []string{agentID}, time.Now().UTC()); err != nil {
-			return nil, err
-		}
-	}
 	return s.loadAgentPluginPolicies(ctx, agentID)
 }
 

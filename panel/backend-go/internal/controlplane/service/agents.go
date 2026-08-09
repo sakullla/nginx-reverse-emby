@@ -1384,17 +1384,41 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
-	snapshotDigest, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
-	if err != nil {
-		return HeartbeatReply{}, err
-	}
 	pkiDegraded := false
+	var pkiSecurity *storage.PKISecuritySnapshot
+	var pkiCredentials []PKIControlCredential
+	var pkiStatus *PKIControlStatus
 	if s.pki != nil {
 		snapshot.RelayListeners, err = s.pki.PrepareRelayListeners(ctx, row.ID, snapshot.RelayListeners)
 		if err != nil {
 			pkiDegraded = true
 			snapshot.RelayListeners = []storage.RelayListener{}
 		}
+		for index := range request.PKIEnrollmentRequests {
+			request.PKIEnrollmentRequests[index].controlToken = agentToken
+		}
+		pkiSnapshot, credentials, controlErr := s.pki.ControlSync(ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests)
+		if controlErr != nil {
+			if isPKIControlClientError(controlErr) {
+				return HeartbeatReply{}, controlErr
+			}
+			pkiDegraded = true
+			snapshot.RelayListeners = []storage.RelayListener{}
+		} else {
+			if pkiSnapshot.PKIDomainID != "" {
+				pkiSecurity = &pkiSnapshot
+			}
+			pkiCredentials = credentials
+		}
+		if pkiDegraded {
+			pkiStatus = &PKIControlStatus{Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync; relay credentials remain disabled"}
+		} else {
+			pkiStatus = &PKIControlStatus{Status: "ready"}
+		}
+	}
+	snapshotDigest, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
+	if err != nil {
+		return HeartbeatReply{}, err
 	}
 
 	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(ctx, row.ID, trafficStatsEnabled)
@@ -1418,35 +1442,15 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
+		PKISecurity:          pkiSecurity,
+		PKICredentials:       pkiCredentials,
+		PKIStatus:            pkiStatus,
 		DDNSConfig:           snapshot.DDNSConfig,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
 		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
 		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
 		TrafficBlocked:       trafficBlocked,
 		TrafficBlockReason:   trafficBlockReason,
-	}
-	if s.pki != nil {
-		for index := range request.PKIEnrollmentRequests {
-			request.PKIEnrollmentRequests[index].controlToken = agentToken
-		}
-		pkiSnapshot, credentials, err := s.pki.ControlSync(ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests)
-		if err != nil {
-			if isPKIControlClientError(err) {
-				return HeartbeatReply{}, err
-			}
-			pkiDegraded = true
-			reply.RelayListeners = []storage.RelayListener{}
-		} else {
-			if pkiSnapshot.PKIDomainID != "" {
-				reply.PKISecurity = &pkiSnapshot
-			}
-			reply.PKICredentials = credentials
-		}
-		if pkiDegraded {
-			reply.PKIStatus = &PKIControlStatus{Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync; relay credentials remain disabled"}
-		} else {
-			reply.PKIStatus = &PKIControlStatus{Status: "ready"}
-		}
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage

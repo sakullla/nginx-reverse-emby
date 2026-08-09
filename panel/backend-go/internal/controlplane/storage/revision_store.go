@@ -70,6 +70,7 @@ func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, agentID
 		now = time.Now().UTC()
 	}
 	identities := make(map[string]revisionPolicyArtifactIdentity)
+	stages := make(map[string]PolicyStage)
 	blobs := make(map[string]GenerationArtifactRow)
 	refs := make([]AgentRevisionArtifactRow, 0)
 	for _, policy := range snapshot.PluginPolicies {
@@ -93,22 +94,30 @@ func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, agentID
 				continue
 			}
 			identities[artifactID] = identity
-
-			payload, err := loadIssuedPolicyArtifact(ctx, db, stage)
-			if err != nil {
-				return nil, nil, err
-			}
-			blobID := revisionPolicyArtifactBlobID(identity.ArtifactDigest)
-			blob := GenerationArtifactRow{ID: blobID, Kind: revisionPolicyArtifactKind, SHA256: identity.ArtifactDigest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}
-			if existing, found := blobs[blobID]; found {
-				if existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || !bytes.Equal(existing.Payload, blob.Payload) {
-					return nil, nil, fmt.Errorf("policy artifact blob %q has conflicting content", blobID)
-				}
-			} else {
-				blobs[blobID] = blob
-			}
-			refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionPolicyArtifactRole(artifactID), CreatedAt: now})
+			stages[artifactID] = stage
 		}
+	}
+	artifactIDs := make([]string, 0, len(stages))
+	for artifactID := range stages {
+		artifactIDs = append(artifactIDs, artifactID)
+	}
+	sort.Strings(artifactIDs)
+	for _, artifactID := range artifactIDs {
+		stage, identity := stages[artifactID], identities[artifactID]
+		payload, err := loadIssuedPolicyArtifact(ctx, db, stage)
+		if err != nil {
+			return nil, nil, err
+		}
+		blobID := revisionPolicyArtifactBlobID(identity.ArtifactDigest)
+		blob := GenerationArtifactRow{ID: blobID, Kind: revisionPolicyArtifactKind, SHA256: identity.ArtifactDigest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}
+		if existing, found := blobs[blobID]; found {
+			if existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || !bytes.Equal(existing.Payload, blob.Payload) {
+				return nil, nil, fmt.Errorf("policy artifact blob %q has conflicting content", blobID)
+			}
+		} else {
+			blobs[blobID] = blob
+		}
+		refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionPolicyArtifactRole(artifactID), CreatedAt: now})
 	}
 	artifacts := make([]GenerationArtifactRow, 0, len(blobs))
 	for _, blob := range blobs {

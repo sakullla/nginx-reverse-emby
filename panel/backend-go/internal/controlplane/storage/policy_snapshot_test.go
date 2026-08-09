@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -364,6 +365,131 @@ func TestPluginMutationRejectsDanglingPolicyReferencesInSameTransaction(t *testi
 	persisted, found, err := store.GetInstalledPlugin(ctx, installed.PluginID)
 	if err != nil || !found || persisted.CurrentLifecycle != "active" {
 		t.Fatalf("rolled-back installed state = %+v, %v, %v", persisted, found, err)
+	}
+}
+
+func TestTransactionalPluginPolicyCatalogReadDoesNotCreateFence(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.WithRevisionMutation(t.Context(), func(tx *GormStore) (RevisionMutationDecision, error) {
+		policies, err := tx.LoadAgentPluginPolicies(t.Context(), "new-agent")
+		if err != nil {
+			return RevisionMutationDecision{}, err
+		}
+		if len(policies) != 0 {
+			t.Fatalf("new Agent policies = %+v, want empty", policies)
+		}
+		return RevisionMutationDecision{}, nil
+	}); err != nil {
+		t.Fatalf("transactional catalog read error = %v", err)
+	}
+
+	var count int64
+	if err := store.db.Model(&PluginPolicyAgentRevisionRow{}).Where("agent_id = ?", "new-agent").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("transactional catalog read created %d fence rows, want 0", count)
+	}
+}
+
+func TestRuleCatalogFenceSerializesReferenceCreateAndDeleteWithPluginLifecycle(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-a", AgentToken: "token", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	instance := installActivePolicyFixture(t, store, signingKey, "policy.fenced", "ip", "ip-fenced", `["edge-a"]`, `["shared"]`)
+	if err := store.EnsureAgentPluginPolicyCatalog(ctx, "edge-a"); err != nil {
+		t.Fatalf("EnsureAgentPluginPolicyCatalog() error = %v", err)
+	}
+
+	installed, found, err := store.GetInstalledPlugin(ctx, instance.PluginID)
+	if err != nil || !found {
+		t.Fatalf("GetInstalledPlugin() = %v, %v", found, err)
+	}
+	disable := func(operationID string) error {
+		candidate := installed
+		candidate.DesiredLifecycle = "disabled"
+		candidate.CurrentLifecycle = "disabled"
+		now := time.Now().UTC()
+		return store.ApplyPluginMutation(ctx, PluginMutation{
+			PluginID: candidate.PluginID, ExpectedActive: candidate.ActivePackageDigest, ExpectedStateVersion: candidate.StateVersion,
+			Installed: &candidate,
+			Operation: PluginOperationRow{ID: operationID, PluginID: candidate.PluginID, Kind: "disable", Status: "succeeded", AgentResultsJSON: `{}`, CreatedAt: now},
+			Audit:     AuditEventRow{ID: operationID + "-audit", Action: "plugin.disable", TargetKind: "plugin", TargetID: candidate.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+		})
+	}
+
+	locked := make(chan struct{})
+	allowCommit := make(chan struct{})
+	ruleDone := make(chan error, 1)
+	go func() {
+		ruleDone <- store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			if err := tx.LockAgentPluginPolicyCatalog(ctx, "edge-a"); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			policies, err := tx.LoadAgentPluginPolicies(ctx, "edge-a")
+			if err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			if len(policies) != 1 || policies[0].ID != "shared" {
+				return RevisionMutationDecision{}, fmt.Errorf("locked catalog = %+v", policies)
+			}
+			close(locked)
+			<-allowCommit
+			return RevisionMutationDecision{}, tx.SaveHTTPRules(ctx, "edge-a", []HTTPRuleRow{{
+				ID: 1, AgentID: "edge-a", FrontendURL: "https://fenced.example.test", BackendsJSON: `[]`,
+				Enabled: true, PolicyRefJSON: `{"id":"shared"}`, Revision: 1,
+			}})
+		})
+	}()
+	<-locked
+	disableDone := make(chan error, 1)
+	go func() { disableDone <- disable("disable-behind-create") }()
+	close(allowCommit)
+	if err := <-ruleDone; err != nil {
+		t.Fatalf("fenced rule create error = %v", err)
+	}
+	if err := <-disableDone; !errors.Is(err, ErrPluginConflict) || !strings.Contains(err.Error(), "would become unavailable") {
+		t.Fatalf("plugin disable behind rule create error = %v", err)
+	}
+
+	locked = make(chan struct{})
+	allowCommit = make(chan struct{})
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			if err := tx.LockAgentPluginPolicyCatalog(ctx, "edge-a"); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			close(locked)
+			<-allowCommit
+			return RevisionMutationDecision{}, tx.SaveHTTPRules(ctx, "edge-a", nil)
+		})
+	}()
+	<-locked
+	disableDone = make(chan error, 1)
+	go func() { disableDone <- disable("disable-behind-delete") }()
+	close(allowCommit)
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("fenced rule delete error = %v", err)
+	}
+	if err := <-disableDone; err != nil {
+		t.Fatalf("plugin disable behind rule delete error = %v", err)
 	}
 }
 

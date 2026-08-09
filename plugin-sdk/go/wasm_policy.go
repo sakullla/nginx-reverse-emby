@@ -20,9 +20,24 @@ var wasmModuleV1Header = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
 // ValidatePolicyV1WASM statically validates the complete nre:policy/v1 module
 // declaration against a manifest memory budget. It compiles declarations but
-// never instantiates the module or executes guest code. This is the canonical
-// validator shared by package admission and every runtime host.
+// never instantiates the module or executes guest code. Validation requires
+// wazero's compiler backend and never falls back to the interpreter. This is
+// the canonical validator shared by package admission and every runtime host.
 func ValidatePolicyV1WASM(module []byte, memoryBudgetBytes int64) error {
+	return validatePolicyV1WASMWithCompiler(
+		module,
+		memoryBudgetBytes,
+		wazero.NewRuntimeConfigCompiler,
+		wazero.NewRuntimeWithConfig,
+	)
+}
+
+func validatePolicyV1WASMWithCompiler(
+	module []byte,
+	memoryBudgetBytes int64,
+	compilerConfigFactory func() wazero.RuntimeConfig,
+	runtimeFactory func(context.Context, wazero.RuntimeConfig) wazero.Runtime,
+) error {
 	if len(module) == len(wasmModuleV1Header) && bytes.Equal(module, wasmModuleV1Header) {
 		return errors.New("invalid WebAssembly module: version 1 module header is present but the module is empty")
 	}
@@ -34,8 +49,43 @@ func ValidatePolicyV1WASM(module []byte, memoryBudgetBytes int64) error {
 		return fmt.Errorf("incompatible %s module: %w", PolicyABIV1, err)
 	}
 
+	if err := validatePolicyV1WithCompiler(module, memoryBudgetBytes, compilerConfigFactory, runtimeFactory); err != nil {
+		return err
+	}
+	if err := declaration.validateStaticMajor(); err != nil {
+		return fmt.Errorf("incompatible %s module: %w", PolicyABIV1, err)
+	}
+	return nil
+}
+
+func validatePolicyV1WithCompiler(
+	module []byte,
+	memoryBudgetBytes int64,
+	compilerConfigFactory func() wazero.RuntimeConfig,
+	runtimeFactory func(context.Context, wazero.RuntimeConfig) wazero.Runtime,
+) (err error) {
 	ctx := context.Background()
-	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV1))
+	var runtime wazero.Runtime
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("WebAssembly compiler is unavailable: %v", recovered)
+		}
+	}()
+	if compilerConfigFactory == nil || runtimeFactory == nil {
+		return errors.New("WebAssembly compiler is unavailable: compiler construction is not configured")
+	}
+	configuration := compilerConfigFactory()
+	if configuration == nil {
+		return errors.New("WebAssembly compiler is unavailable: compiler configuration is unavailable")
+	}
+	configuration = configuration.
+		WithCoreFeatures(api.CoreFeaturesV1).
+		WithCloseOnContextDone(true).
+		WithDebugInfoEnabled(false)
+	runtime = runtimeFactory(ctx, configuration)
+	if runtime == nil {
+		return errors.New("WebAssembly compiler is unavailable: compiler runtime is unavailable")
+	}
 	defer runtime.Close(context.Background())
 	compiled, err := runtime.CompileModule(ctx, module)
 	if err != nil {
@@ -43,9 +93,6 @@ func ValidatePolicyV1WASM(module []byte, memoryBudgetBytes int64) error {
 	}
 	defer compiled.Close(ctx)
 	if err := validatePolicyV1CompiledModule(compiled, memoryBudgetBytes); err != nil {
-		return fmt.Errorf("incompatible %s module: %w", PolicyABIV1, err)
-	}
-	if err := declaration.validateStaticMajor(); err != nil {
 		return fmt.Errorf("incompatible %s module: %w", PolicyABIV1, err)
 	}
 	return nil

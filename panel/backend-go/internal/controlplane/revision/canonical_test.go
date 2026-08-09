@@ -101,9 +101,9 @@ func TestCanonicalSnapshotPreservesConfiguredBackendOrder(t *testing.T) {
 
 func TestCanonicalSnapshotNormalizesPluginPoliciesWithoutReorderingStages(t *testing.T) {
 	t.Parallel()
-	stage := func(policyID, kind string, extensionPoints, scopes []string, config string) storage.PolicyStage {
+	stage := func(_ string, kind string, extensionPoints, scopes []string, config string) storage.PolicyStage {
 		return storage.PolicyStage{
-			Kind: kind, PolicyID: policyID, InstanceID: kind,
+			Kind: kind, PolicyID: kind, InstanceID: kind,
 			ExtensionPoints: extensionPoints, GrantedScopes: scopes,
 			Config: json.RawMessage(config),
 		}
@@ -155,6 +155,41 @@ func TestCanonicalSnapshotNormalizesPluginPoliciesWithoutReorderingStages(t *tes
 	}
 	if firstDigest == reorderedDigest {
 		t.Fatal("canonicalization ignored semantic policy stage order")
+	}
+}
+
+func TestCanonicalSnapshotAllowsSharedStageAuthorityAcrossContainingChains(t *testing.T) {
+	t.Parallel()
+	shared := storage.PolicyStage{
+		Kind: "ip", PolicyID: "shared-instance", InstanceID: "shared-instance",
+		ExtensionPoints: []string{"l4.accept", "http.request"}, GrantedScopes: []string{"state.write", "state.read"},
+		Config: json.RawMessage(`{"enabled":true}`),
+	}
+	first := storage.Snapshot{PluginPolicies: []storage.PluginPolicy{
+		{ID: "chain-full", Stages: []storage.PolicyStage{shared}},
+		{ID: "chain-lite", Stages: []storage.PolicyStage{shared}},
+	}}
+	second := storage.Snapshot{PluginPolicies: []storage.PluginPolicy{
+		{ID: "chain-lite", Stages: []storage.PolicyStage{shared}},
+		{ID: "chain-full", Stages: []storage.PolicyStage{shared}},
+	}}
+	firstDigest, err := SemanticSnapshotDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := SemanticSnapshotDigest(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("shared stage catalog digests differ: %s != %s", firstDigest, secondDigest)
+	}
+	invalid := first
+	invalid.PluginPolicies = append([]storage.PluginPolicy(nil), first.PluginPolicies...)
+	invalid.PluginPolicies[0].Stages = append([]storage.PolicyStage(nil), first.PluginPolicies[0].Stages...)
+	invalid.PluginPolicies[0].Stages[0].PolicyID = "different-authority"
+	if _, err := SemanticSnapshotDigest(invalid); err == nil {
+		t.Fatal("stage authority differing from InstanceID was accepted")
 	}
 }
 

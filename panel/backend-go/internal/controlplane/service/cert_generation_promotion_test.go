@@ -14,7 +14,7 @@ import (
 
 func TestManagedCertificateGenerationRevisionMutationDistributesThenPromotes(t *testing.T) {
 	t.Parallel()
-	ctx := t.Context()
+	ctx := authenticatedServiceMutationContext(t)
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -175,7 +175,7 @@ func TestManagedCertificateGenerationRevisionMutationDistributesThenPromotes(t *
 
 func TestManagedCertificateGenerationRevisionPromotionRollbackRestoresMissingProjection(t *testing.T) {
 	t.Parallel()
-	ctx := t.Context()
+	ctx := authenticatedServiceMutationContext(t)
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)

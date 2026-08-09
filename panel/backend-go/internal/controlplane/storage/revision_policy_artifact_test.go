@@ -97,12 +97,14 @@ func TestRevisionPolicyArtifactSurvivesLivePackageRemovalAndBindsRevisionIdentit
 	}
 }
 
-func TestRevisionPolicyArtifactRejectsConflictingDuplicateIdentity(t *testing.T) {
+func TestRevisionPolicyArtifactRejectsConflictingDuplicateIdentityBeforeMaterialization(t *testing.T) {
 	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	// Deliberately do not seed the live package. Conflict validation must win
+	// before the first occurrence can attempt materialization.
 	stage := PolicyStage{ArtifactDigest: strings.Repeat("a", 64), PackageDigest: strings.Repeat("b", 64), ArtifactSource: PolicyArtifactSource{ArtifactID: "shared", PackageIdentity: strings.Repeat("c", 64), PackageDigest: strings.Repeat("b", 64), RelativePath: "a.wasm", SHA256: strings.Repeat("a", 64), SizeBytes: 1}}
 	conflict := stage
 	conflict.ArtifactSource.RelativePath = "other.wasm"

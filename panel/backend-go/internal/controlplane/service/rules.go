@@ -425,6 +425,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	targetAgentIDs, err := s.ruleMutationAgentIDs(ctx, resolvedID, nil, &input)
 	if err != nil {
 		return HTTPRule{}, err
@@ -461,6 +464,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return HTTPRule{}, err
 	}
 
@@ -597,6 +603,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	current, err := s.Get(ctx, resolvedID, id)
 	if err != nil {
 		return HTTPRule{}, err
@@ -643,6 +652,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, input HTTPRuleInput) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return HTTPRule{}, err
 	}
 
@@ -799,6 +811,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	current, err := s.Get(ctx, resolvedID, id)
 	if err != nil {
 		return HTTPRule{}, err
@@ -839,6 +854,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return HTTPRule{}, err
 	}
 
@@ -2078,10 +2096,34 @@ type rulePolicyCatalogStore interface {
 	LoadAgentPluginPolicies(context.Context, string) ([]storage.PluginPolicy, error)
 }
 
+type rulePolicyCatalogFenceStore interface {
+	EnsureAgentPluginPolicyCatalog(context.Context, string) error
+	LockAgentPluginPolicyCatalog(context.Context, string) error
+}
+
 const (
 	policyExtensionHTTP = "http.request"
 	policyExtensionL4   = "l4.accept"
 )
+
+func ensureRulePolicyCatalogFence(ctx context.Context, store any, agentID string) error {
+	fenceStore, ok := store.(rulePolicyCatalogFenceStore)
+	if !ok {
+		return fmt.Errorf("%w: policy catalog fence is unavailable", errRevisionMutationStoreRequired)
+	}
+	return fenceStore.EnsureAgentPluginPolicyCatalog(ctx, agentID)
+}
+
+func lockRulePolicyCatalogFence(ctx context.Context, store any, agentID string, required bool) error {
+	if !required {
+		return nil
+	}
+	fenceStore, ok := store.(rulePolicyCatalogFenceStore)
+	if !ok {
+		return fmt.Errorf("%w: policy catalog fence is unavailable", errRevisionMutationStoreRequired)
+	}
+	return fenceStore.LockAgentPluginPolicyCatalog(ctx, agentID)
+}
 
 func validateRulePolicyReference(ctx context.Context, store any, agentID string, ref *storage.PolicyRef, extensionPoint string) error {
 	if ref == nil {

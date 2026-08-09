@@ -70,11 +70,11 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 			if err := storage.ValidatePluginPolicyIdentity(stage.PolicyID); err != nil {
 				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage identity is invalid", err)
 			}
-			if stage.PolicyID != result.PluginPolicies[i].ID {
-				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage identity differs from its chain", nil)
-			}
 			if err := storage.ValidatePluginPolicyIdentity(stage.InstanceID); err != nil {
 				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy instance identity is invalid", err)
+			}
+			if stage.PolicyID != stage.InstanceID {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage authority differs from its instance", nil)
 			}
 			stage.ExtensionPoints = canonicalStringSet(stage.ExtensionPoints)
 			stage.GrantedScopes = canonicalStringSet(stage.GrantedScopes)

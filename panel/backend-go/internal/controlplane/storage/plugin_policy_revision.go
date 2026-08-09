@@ -298,19 +298,63 @@ func (s *GormStore) pluginMutationPolicyAgents(ctx context.Context, mutation Plu
 	return agents, nil
 }
 
-// lockPluginPolicyAgentCatalogs is the single serialization boundary shared by
-// plugin lifecycle mutations and rule validation. Rows are inserted and locked
-// in canonical Agent order, avoiding graph-wide shared-lock/upgraded-lock cycles.
-func (s *GormStore) lockPluginPolicyAgentCatalogs(ctx context.Context, agents []string, now time.Time) error {
+func (s *GormStore) canonicalPluginPolicyAgentIDs(agents []string) []string {
 	if len(agents) == 0 {
-		return nil
+		return []string{}
 	}
 	ordered := append([]string(nil), agents...)
 	for index := range ordered {
 		ordered[index] = s.resolveAgentID(ordered[index])
 	}
 	sort.Strings(ordered)
-	ordered = slicesCompactStrings(ordered)
+	return slicesCompactStrings(ordered)
+}
+
+// EnsureAgentPluginPolicyCatalog creates the durable serialization row before
+// a revision transaction starts. It deliberately rejects transaction-scoped
+// stores: callers inside a revision transaction must only lock an existing row
+// and must never turn a catalog read into a write.
+func (s *GormStore) EnsureAgentPluginPolicyCatalog(ctx context.Context, agentID string) error {
+	if s == nil {
+		return gorm.ErrInvalidDB
+	}
+	if s.transactionScoped {
+		return fmt.Errorf("plugin policy Agent catalog fence must be ensured before the revision transaction")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		scoped := &GormStore{db: tx, localAgentID: s.localAgentID, transactionScoped: true}
+		return scoped.ensurePluginPolicyAgentCatalogs(ctx, []string{agentID}, time.Now().UTC())
+	})
+}
+
+// LockAgentPluginPolicyCatalog joins a rule mutation to the same per-Agent
+// serialization boundary as plugin lifecycle mutations. The lock is useful
+// only when retained by the surrounding revision transaction.
+func (s *GormStore) LockAgentPluginPolicyCatalog(ctx context.Context, agentID string) error {
+	if s == nil {
+		return gorm.ErrInvalidDB
+	}
+	if !s.transactionScoped {
+		return fmt.Errorf("plugin policy Agent catalog fence lock requires a revision transaction")
+	}
+	return s.lockExistingPluginPolicyAgentCatalogs(ctx, []string{agentID})
+}
+
+// lockPluginPolicyAgentCatalogs is the lifecycle write boundary. Lifecycle
+// mutations may create missing rows because they already run in an authorized
+// storage mutation transaction; ordinary catalog readers may not.
+func (s *GormStore) lockPluginPolicyAgentCatalogs(ctx context.Context, agents []string, now time.Time) error {
+	if err := s.ensurePluginPolicyAgentCatalogs(ctx, agents, now); err != nil {
+		return err
+	}
+	return s.lockExistingPluginPolicyAgentCatalogs(ctx, agents)
+}
+
+func (s *GormStore) ensurePluginPolicyAgentCatalogs(ctx context.Context, agents []string, now time.Time) error {
+	ordered := s.canonicalPluginPolicyAgentIDs(agents)
+	if len(ordered) == 0 {
+		return nil
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -322,6 +366,14 @@ func (s *GormStore) lockPluginPolicyAgentCatalogs(ctx context.Context, agents []
 		}).Create(&row).Error; err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *GormStore) lockExistingPluginPolicyAgentCatalogs(ctx context.Context, agents []string) error {
+	ordered := s.canonicalPluginPolicyAgentIDs(agents)
+	if len(ordered) == 0 {
+		return nil
 	}
 	var locked []PluginPolicyAgentRevisionRow
 	if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).

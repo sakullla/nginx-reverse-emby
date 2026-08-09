@@ -190,18 +190,19 @@ func l4StoreAgentByID(t *testing.T, store *fakeL4Store, agentID string) storage.
 func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
 	t.Parallel()
 	store := newMutationValidationStore(t)
+	ctx := authenticatedServiceMutationContext(t)
 	svc := NewL4RuleService(testConfig(), store)
 	applyCalls := 0
 	svc.SetLocalApplyTrigger(func(context.Context) error {
 		applyCalls++
 		return errors.New("synchronous apply must not run")
 	})
-	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	baselineRevisions, err := store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
 	}
 
-	created, err := svc.Create(t.Context(), "local", L4RuleInput{
+	created, err := svc.Create(ctx, "local", L4RuleInput{
 		Protocol:   stringPtrL4("tcp"),
 		ListenHost: stringPtrL4("127.0.0.1"),
 		ListenPort: intPtrL4(19090),
@@ -213,7 +214,7 @@ func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing
 	if applyCalls != 0 {
 		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
 	}
-	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	revisions, err := store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after create error = %v", err)
 	}
@@ -221,12 +222,12 @@ func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing
 		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
 	}
 	createRevision := revisions[len(revisions)-1]
-	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+	if _, found, err := store.GetOperationDependencyArtifact(ctx, createRevision.OperationID); err != nil {
 		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
 	} else if !found {
 		t.Fatal("create dependency plan artifact was not persisted")
 	}
-	updated, err := svc.Update(t.Context(), "local", created.ID, L4RuleInput{
+	updated, err := svc.Update(ctx, "local", created.ID, L4RuleInput{
 		Tags: &[]string{"updated"},
 	})
 	if err != nil {
@@ -235,7 +236,7 @@ func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing
 	if len(updated.Tags) != 1 || updated.Tags[0] != "updated" {
 		t.Fatalf("Update() tags = %v, want [updated]", updated.Tags)
 	}
-	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	revisions, err = store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after update error = %v", err)
 	}
@@ -243,13 +244,13 @@ func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing
 		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
 	}
 
-	if _, err := svc.Delete(t.Context(), "local", created.ID); err != nil {
+	if _, err := svc.Delete(ctx, "local", created.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 	if applyCalls != 0 {
 		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
 	}
-	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	revisions, err = store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
 	}
@@ -1340,8 +1341,9 @@ func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testi
 	}
 
 	svc := NewL4RuleService(config.Config{}, store)
+	ctx := authenticatedServiceMutationContext(t)
 
-	first, err := svc.Create(context.Background(), "agent-a", L4RuleInput{
+	first, err := svc.Create(ctx, "agent-a", L4RuleInput{
 		Protocol:   stringPtrL4("tcp"),
 		ListenPort: intPtrL4(9000),
 		Backends:   &[]L4Backend{{Host: "upstream-a", Port: 9001}},
@@ -1349,7 +1351,7 @@ func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testi
 	if err != nil {
 		t.Fatalf("Create(agent-a) error = %v", err)
 	}
-	second, err := svc.Create(context.Background(), "agent-b", L4RuleInput{
+	second, err := svc.Create(ctx, "agent-b", L4RuleInput{
 		Protocol:   stringPtrL4("tcp"),
 		ListenPort: intPtrL4(9100),
 		Backends:   &[]L4Backend{{Host: "upstream-b", Port: 9101}},
@@ -1390,8 +1392,9 @@ func TestL4RuleServiceCreateAllocatesIDsAfterExistingHTTPRulesInSQLiteStore(t *t
 
 	httpSvc := NewRuleService(config.Config{}, store)
 	l4Svc := NewL4RuleService(config.Config{}, store)
+	ctx := authenticatedServiceMutationContext(t)
 
-	httpRule, err := httpSvc.Create(context.Background(), "agent-a", HTTPRuleInput{
+	httpRule, err := httpSvc.Create(ctx, "agent-a", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-a.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://backend-a.example.internal:8096"}},
 	})
@@ -1399,7 +1402,7 @@ func TestL4RuleServiceCreateAllocatesIDsAfterExistingHTTPRulesInSQLiteStore(t *t
 		t.Fatalf("Create HTTP rule error = %v", err)
 	}
 
-	l4Rule, err := l4Svc.Create(context.Background(), "agent-b", L4RuleInput{
+	l4Rule, err := l4Svc.Create(ctx, "agent-b", L4RuleInput{
 		Protocol:   stringPtrL4("tcp"),
 		ListenPort: intPtrL4(9100),
 		Backends:   &[]L4Backend{{Host: "backend-b.example.internal", Port: 9101}},

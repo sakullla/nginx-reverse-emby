@@ -242,7 +242,8 @@ func testConfig() config.Config {
 func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
 	t.Parallel()
 	store := newMutationValidationStore(t)
-	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+	ctx := authenticatedServiceMutationContext(t)
+	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
 		ID: 1, Domain: "sub.zouter.skl.onl", Enabled: true, Scope: "domain", IssuerMode: "local_http01",
 		TargetAgentIDs: `["local"]`, Status: "active", Usage: "https", CertificateType: "acme", Revision: 1,
 	}}); err != nil {
@@ -254,12 +255,12 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 		applyCalls++
 		return errors.New("synchronous apply must not run")
 	})
-	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	baselineRevisions, err := store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
 	}
 
-	created, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+	created, err := svc.Create(ctx, "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://sub.zouter.skl.onl"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
@@ -269,7 +270,7 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 	if applyCalls != 0 {
 		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
 	}
-	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	revisions, err := store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after create error = %v", err)
 	}
@@ -277,12 +278,12 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
 	}
 	createRevision := revisions[len(revisions)-1]
-	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+	if _, found, err := store.GetOperationDependencyArtifact(ctx, createRevision.OperationID); err != nil {
 		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
 	} else if !found {
 		t.Fatal("create dependency plan artifact was not persisted")
 	}
-	updated, err := svc.Update(t.Context(), "local", created.ID, HTTPRuleInput{
+	updated, err := svc.Update(ctx, "local", created.ID, HTTPRuleInput{
 		Tags: &[]string{"updated"},
 	})
 	if err != nil {
@@ -291,7 +292,7 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 	if len(updated.Tags) != 1 || updated.Tags[0] != "updated" {
 		t.Fatalf("Update() tags = %v, want [updated]", updated.Tags)
 	}
-	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	revisions, err = store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after update error = %v", err)
 	}
@@ -299,7 +300,7 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
 	}
 
-	deleted, err := svc.Delete(t.Context(), "local", created.ID)
+	deleted, err := svc.Delete(ctx, "local", created.ID)
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
@@ -309,7 +310,7 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 	if applyCalls != 0 {
 		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
 	}
-	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	revisions, err = store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
 	}
@@ -317,7 +318,7 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 		t.Fatalf("revision count after delete = %d, want baseline + 3 (%d)", len(revisions), len(baselineRevisions)+3)
 	}
 	deleteRevision := revisions[len(revisions)-1]
-	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), deleteRevision.OperationID); err != nil {
+	if _, found, err := store.GetOperationDependencyArtifact(ctx, deleteRevision.OperationID); err != nil {
 		t.Fatalf("GetOperationDependencyArtifact() after delete error = %v", err)
 	} else if !found {
 		t.Fatal("delete dependency plan artifact was not persisted")
@@ -327,6 +328,7 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 func TestRuleServiceCrossAgentRelayPlanAndMissingDependencyAreAtomic(t *testing.T) {
 	t.Parallel()
 	store := newMutationValidationStore(t)
+	ctx := authenticatedServiceMutationContext(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "relay-edge", Name: "relay-edge", Platform: "linux-amd64", CapabilitiesJSON: `[]`,
 	}); err != nil {
@@ -339,7 +341,7 @@ func TestRuleServiceCrossAgentRelayPlanAndMissingDependencyAreAtomic(t *testing.
 		t.Fatalf("SaveRelayListeners() error = %v", err)
 	}
 	svc := NewRuleService(testConfig(), store)
-	created, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+	created, err := svc.Create(ctx, "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://relay-plan.example.test:18082"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 		RelayLayers: &[][]int{{70}},
@@ -367,7 +369,7 @@ func TestRuleServiceCrossAgentRelayPlanAndMissingDependencyAreAtomic(t *testing.
 	}
 
 	beforeLocalRevisionCount := len(localRevisions)
-	_, err = svc.Create(t.Context(), "local", HTTPRuleInput{
+	_, err = svc.Create(ctx, "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://missing-relay.example.test:18083"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 		RelayLayers: &[][]int{{999}},
@@ -2092,8 +2094,9 @@ func TestRuleServiceCreateHTTPSPersistsManagedCertificateInSQLiteStore(t *testin
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store)
+	ctx := authenticatedServiceMutationContext(t)
 
-	created, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+	created, err := svc.Create(ctx, "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://sqlite.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
@@ -2146,15 +2149,16 @@ func TestRuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing
 	}
 
 	svc := NewRuleService(config.Config{}, store)
+	ctx := authenticatedServiceMutationContext(t)
 
-	first, err := svc.Create(context.Background(), "agent-a", HTTPRuleInput{
+	first, err := svc.Create(ctx, "agent-a", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-a.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create(agent-a) error = %v", err)
 	}
-	second, err := svc.Create(context.Background(), "agent-b", HTTPRuleInput{
+	second, err := svc.Create(ctx, "agent-b", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-b.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
@@ -2194,8 +2198,9 @@ func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testi
 
 	l4Svc := NewL4RuleService(config.Config{}, store)
 	httpSvc := NewRuleService(config.Config{}, store)
+	ctx := authenticatedServiceMutationContext(t)
 
-	l4Rule, err := l4Svc.Create(context.Background(), "agent-a", L4RuleInput{
+	l4Rule, err := l4Svc.Create(ctx, "agent-a", L4RuleInput{
 		Protocol:   stringPtrL4("tcp"),
 		ListenPort: intPtrL4(9000),
 		Backends:   &[]L4Backend{{Host: "backend-a.example.internal", Port: 9001}},
@@ -2204,7 +2209,7 @@ func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testi
 		t.Fatalf("Create L4 rule error = %v", err)
 	}
 
-	httpRule, err := httpSvc.Create(context.Background(), "agent-b", HTTPRuleInput{
+	httpRule, err := httpSvc.Create(ctx, "agent-b", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-b.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://backend-b.example.internal:8096"}},
 	})
@@ -3237,7 +3242,7 @@ func TestRuleServiceRejectsRevisionIncapableStoreWithoutWritesOrApply(t *testing
 func TestRuleServiceCreateIgnoresUnsupportedStoredSharedResources(t *testing.T) {
 	t.Parallel()
 	store := newMutationValidationStore(t)
-	ctx := t.Context()
+	ctx := authenticatedServiceMutationContext(t)
 
 	if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
 		ID: 91, AgentID: "local", Name: "legacy tunnel", Protocol: "tcp",

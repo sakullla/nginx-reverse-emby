@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,6 +20,12 @@ type serviceSQLiteTemplate struct {
 }
 
 var serviceSQLiteTemplateFixture serviceSQLiteTemplate
+
+func authenticatedServiceMutationContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx := storage.WithQuotaActor(t.Context(), storage.QuotaActor{UserID: "test-service-operator"})
+	return WithResourceAuthorizer(ctx, func(context.Context, string, string) error { return nil })
+}
 
 func serviceSQLiteTemplateData() ([]byte, error) {
 	serviceSQLiteTemplateFixture.once.Do(func() {
@@ -64,6 +71,13 @@ func serviceSQLiteTemplateData() ([]byte, error) {
 			&storage.PluginInstanceRow{},
 			&storage.PluginGrantRow{},
 			&storage.PluginPolicyAgentRevisionRow{},
+			&storage.RoleBindingRow{},
+			&storage.ResourceBindingRow{},
+			&storage.QuotaPolicyRow{},
+			&storage.QuotaUsageRow{},
+			&storage.QuotaPolicyUsageRow{},
+			&storage.QuotaAllocationRow{},
+			&storage.AuditEventRow{},
 		); err != nil {
 			serviceSQLiteTemplateFixture.err = err
 			return

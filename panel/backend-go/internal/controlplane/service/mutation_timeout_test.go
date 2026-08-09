@@ -12,7 +12,7 @@ import (
 
 func TestConfigMutationRevisionTimeoutsPersistGlobalAndPerAgent(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := authenticatedServiceMutationContext(t)
 	store := newMutationTimeoutStore(t, "config-mutation")
 	if err := store.SaveAgent(ctx, storage.AgentRow{
 		ID: "edge-a", Name: "Edge A", AgentToken: "token-edge-a", CapabilitiesJSON: `["http_rules"]`,

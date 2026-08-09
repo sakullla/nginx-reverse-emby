@@ -36,7 +36,7 @@ artifacts belong only in `sakullla/sakullla-plugins`.
   from both v1 IDLs. From `plugin-sdk`,
   `go run ./go/protoschema/cmd/generate` reproduces it without a
   platform `protoc` installation. Its SHA-256 is
-  `175157e6c2f6f337ba9e5c10de136a458272f0b74a563f00db2b402c6f80b7ec`.
+  `f5a79c6246f603bac7a24cb824337783e14e43d4b6569148370efad9bd454755`.
   Fast tests recompile both checked-in sources, require byte-for-byte descriptor
   and generator equality, and lock every policy message plus the RPC message,
   service, method, and streaming surface. The golden guest round trip creates

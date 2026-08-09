@@ -57,18 +57,19 @@ type relayMaterial struct {
 func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
 	t.Parallel()
 	store := newMutationValidationStore(t)
+	ctx := authenticatedServiceMutationContext(t)
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 	applyCalls := 0
 	svc.SetLocalApplyTrigger(func(context.Context) error {
 		applyCalls++
 		return errors.New("synchronous apply must not run")
 	})
-	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	baselineRevisions, err := store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
 	}
 
-	created, err := svc.Create(t.Context(), "local", RelayListenerInput{
+	created, err := svc.Create(ctx, "local", RelayListenerInput{
 		Name:       stringPtr("uow-relay"),
 		ListenHost: stringPtr("127.0.0.1"),
 		ListenPort: intPtrService(19443),
@@ -80,7 +81,7 @@ func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.
 	if applyCalls != 0 {
 		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
 	}
-	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	revisions, err := store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after create error = %v", err)
 	}
@@ -88,12 +89,12 @@ func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.
 		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
 	}
 	createRevision := revisions[len(revisions)-1]
-	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+	if _, found, err := store.GetOperationDependencyArtifact(ctx, createRevision.OperationID); err != nil {
 		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
 	} else if !found {
 		t.Fatal("create dependency plan artifact was not persisted")
 	}
-	updated, err := svc.Update(t.Context(), "local", created.ID, RelayListenerInput{
+	updated, err := svc.Update(ctx, "local", created.ID, RelayListenerInput{
 		Name: stringPtr("uow-relay-updated"),
 	})
 	if err != nil {
@@ -102,7 +103,7 @@ func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.
 	if updated.Name != "uow-relay-updated" {
 		t.Fatalf("Update() name = %q, want uow-relay-updated", updated.Name)
 	}
-	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	revisions, err = store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after update error = %v", err)
 	}
@@ -110,13 +111,13 @@ func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.
 		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
 	}
 
-	if _, err := svc.Delete(t.Context(), "local", created.ID); err != nil {
+	if _, err := svc.Delete(ctx, "local", created.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 	if applyCalls != 0 {
 		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
 	}
-	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	revisions, err = store.ListAgentRevisions(ctx, "local")
 	if err != nil {
 		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
 	}
@@ -128,6 +129,7 @@ func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.
 func TestRelayServiceUpdateCreatesCrossAgentDependencyPlan(t *testing.T) {
 	t.Parallel()
 	store := newMutationValidationStore(t)
+	ctx := authenticatedServiceMutationContext(t)
 	for _, agent := range []storage.AgentRow{
 		{ID: "rule-edge", Name: "rule-edge", Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`},
 		{ID: "relay-edge", Name: "relay-edge", Platform: "linux-amd64", CapabilitiesJSON: `[]`},
@@ -150,7 +152,7 @@ func TestRelayServiceUpdateCreatesCrossAgentDependencyPlan(t *testing.T) {
 	}
 
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-	updated, err := svc.Update(t.Context(), "relay-edge", 70, RelayListenerInput{
+	updated, err := svc.Update(ctx, "relay-edge", 70, RelayListenerInput{
 		Name:              stringPtr("relay-updated"),
 		CertificateSource: stringPtr("auto_relay_ca"),
 		TrustModeSource:   stringPtr("auto"),
@@ -198,6 +200,7 @@ func (s *rejectAfterRelayMutationStore) WithRevisionMutation(ctx context.Context
 
 func TestRelayServiceCreateRestoresSameDomainMaterialWhenRevisionCommitFails(t *testing.T) {
 	store := newMutationValidationStore(t)
+	ctx := authenticatedServiceMutationContext(t)
 	oldMaterial := storage.ManagedCertificateBundle{
 		Domain: relayCADomainIdentity, CertPEM: "old-invalid-cert", KeyPEM: "old-invalid-key",
 	}
@@ -221,7 +224,7 @@ func TestRelayServiceCreateRestoresSameDomainMaterialWhenRevisionCommitFails(t *
 	t.Cleanup(func() { relayListenerAutoCertificateNonce = originalNonce })
 	failingStore := &rejectAfterRelayMutationStore{GormStore: store, err: errors.New("forced revision commit failure")}
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore)
-	_, err = svc.Create(t.Context(), "local", RelayListenerInput{
+	_, err = svc.Create(ctx, "local", RelayListenerInput{
 		Name: stringPtr("rollback-relay"), ListenPort: intPtrService(19444), PublicHost: stringPtr("rollback.example.test"),
 		Enabled: boolPtr(true), CertificateSource: stringPtr("auto_relay_ca"), TrustModeSource: stringPtr("auto"),
 	})

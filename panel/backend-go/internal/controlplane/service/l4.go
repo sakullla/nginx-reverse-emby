@@ -260,6 +260,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	targetAgentIDs, err := s.l4MutationAgentIDs(ctx, resolvedID, nil, &input)
 	if err != nil {
 		return L4Rule{}, err
@@ -290,6 +293,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return L4Rule{}, err
 	}
 
@@ -387,6 +393,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	current, err := s.Get(ctx, resolvedID, id)
 	if err != nil {
 		return L4Rule{}, err
@@ -430,6 +439,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, input L4RuleInput) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return L4Rule{}, err
 	}
 
@@ -536,6 +548,9 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	current, err := s.Get(ctx, resolvedID, id)
 	if err != nil {
 		return L4Rule{}, err
@@ -575,6 +590,9 @@ func redactL4RuleForPanelReplay(rule L4Rule) L4Rule {
 func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return L4Rule{}, err
 	}
 
