@@ -159,6 +159,46 @@ func TestPostgresCompleteAgentSnapshotUsesOneSnapshot(t *testing.T) {
 	}
 }
 
+func TestPostgresAgentHeartbeatSnapshotUsesOneSnapshot(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	dataRoot := t.TempDir()
+	reader, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local", SkipBootstrapSchema: true})
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testAgentHeartbeatSnapshotUsesOneSnapshot(t, reader, writer, "postgres")
+}
+
+func TestPostgresAgentHeartbeatPendingCertificateOverlayUsesOneSnapshot(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	dataRoot := t.TempDir()
+	reader, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local", SkipBootstrapSchema: true})
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testAgentHeartbeatPendingCertificateOverlayUsesOneSnapshot(t, reader, writer, "postgres")
+}
+
 func TestPostgresRevisionMutationUsesRepeatableRead(t *testing.T) {
 	dsn := postgresIntegrationSchemaDSN(t)
 	dataRoot := t.TempDir()

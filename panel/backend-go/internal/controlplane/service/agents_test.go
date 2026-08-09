@@ -103,17 +103,31 @@ func (agentPKIControlErrorStub) PrepareRelayListeners(_ context.Context, _ strin
 	return listeners, nil
 }
 
-type heartbeatPKIProjectionStub struct{}
+type heartbeatPKIProjectionStub struct {
+	calls *[]string
+}
 
 func (heartbeatPKIProjectionStub) RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error) {
 	return PKIRegistrationReply{}, nil
 }
 
-func (heartbeatPKIProjectionStub) ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
-	return storage.PKISecuritySnapshot{PKIDomainID: "pki-domain"}, nil, nil
+func (s heartbeatPKIProjectionStub) ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
+	if s.calls != nil {
+		*s.calls = append(*s.calls, "control")
+	}
+	return storage.PKISecuritySnapshot{
+		PKIDomainID: "pki-domain", PKIEpoch: 3, SecurityRevision: 7, Full: true,
+		IssuedAt:           time.Date(2026, time.April, 11, 8, 0, 0, 0, time.UTC),
+		TrustRoots:         []storage.PKITrustRoot{{AuthorityID: "ca-1", Generation: 2, Status: "active", CertificatePEM: "CA"}},
+		RevokedIdentityIDs: []string{"identity-old"}, RevokedSerials: []string{"serial-old"},
+		SignerGeneration: 2, Signature: []byte("signature"),
+	}, nil, nil
 }
 
-func (heartbeatPKIProjectionStub) PrepareRelayListeners(_ context.Context, _ string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
+func (s heartbeatPKIProjectionStub) PrepareRelayListeners(_ context.Context, _ string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
+	if s.calls != nil {
+		*s.calls = append(*s.calls, "prepare")
+	}
 	prepared := append([]storage.RelayListener(nil), listeners...)
 	for index := range prepared {
 		prepared[index].ListenPort = 9443
@@ -1286,6 +1300,7 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 			}},
 		},
 	}
+	store.snapshot.AgentConfig.TrafficStatsEnabled = heartbeatBoolPtr(true)
 	_, expectedSnapshotDigest, err := revision.CanonicalSnapshotPayload(store.snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -1366,7 +1381,8 @@ func TestHeartbeatPersistsPreparedPKISnapshotBeforeReply(t *testing.T) {
 		snapshot: storage.Snapshot{Revision: 5, PluginPolicies: []storage.PluginPolicy{}, RelayListeners: []storage.RelayListener{{ID: 1, AgentID: "edge-pki", ListenPort: 7443, TransportMode: "tcp"}}},
 	}
 	svc := NewAgentService(config.Config{}, store)
-	svc.SetPKIController(heartbeatPKIProjectionStub{})
+	var pkiCalls []string
+	svc.SetPKIController(heartbeatPKIProjectionStub{calls: &pkiCalls})
 	reply, err := svc.Heartbeat(t.Context(), HeartbeatRequest{CurrentRevision: 4, LastApplyStatus: "success"}, "token-edge-pki")
 	if err != nil {
 		t.Fatal(err)
@@ -1383,6 +1399,27 @@ func TestHeartbeatPersistsPreparedPKISnapshotBeforeReply(t *testing.T) {
 	}
 	if len(durable.RelayListeners) != 1 || durable.RelayListeners[0].ListenPort != reply.RelayListeners[0].ListenPort || durable.RelayListeners[0].TransportMode != reply.RelayListeners[0].TransportMode {
 		t.Fatalf("durable/wire relay mismatch = %+v / %+v", durable.RelayListeners, reply.RelayListeners)
+	}
+	if strings.Join(pkiCalls, ",") != "control,prepare" {
+		t.Fatalf("PKI projection order = %v, want control then prepare", pkiCalls)
+	}
+	if reply.PKISecurity == nil || store.issuedSnapshot.PKISecurity == nil || durable.PKISecurity == nil {
+		t.Fatalf("PKI security missing from wire/issued/durable: %+v / %+v / %+v", reply.PKISecurity, store.issuedSnapshot.PKISecurity, durable.PKISecurity)
+	}
+	for label, got := range map[string]*storage.PKISecuritySnapshot{
+		"wire": reply.PKISecurity, "issued": store.issuedSnapshot.PKISecurity, "durable": durable.PKISecurity,
+	} {
+		if got.PKIDomainID != "pki-domain" || got.PKIEpoch != 3 || got.SecurityRevision != 7 || !got.Full ||
+			!got.IssuedAt.Equal(time.Date(2026, time.April, 11, 8, 0, 0, 0, time.UTC)) || got.SignerGeneration != 2 ||
+			len(got.TrustRoots) != 1 || got.TrustRoots[0].AuthorityID != "ca-1" || got.TrustRoots[0].Generation != 2 || got.TrustRoots[0].CertificatePEM != "CA" ||
+			len(got.RevokedIdentityIDs) != 1 || got.RevokedIdentityIDs[0] != "identity-old" || len(got.RevokedSerials) != 1 || got.RevokedSerials[0] != "serial-old" ||
+			string(got.Signature) != "signature" {
+			t.Fatalf("%s PKI security projection = %+v", label, got)
+		}
+	}
+	if store.issuedSnapshot.AgentConfig.TrafficStatsEnabled == nil || !*store.issuedSnapshot.AgentConfig.TrafficStatsEnabled ||
+		durable.AgentConfig.TrafficStatsEnabled == nil || !*durable.AgentConfig.TrafficStatsEnabled {
+		t.Fatalf("traffic config missing from issued/durable snapshots: %+v / %+v", store.issuedSnapshot.AgentConfig, durable.AgentConfig)
 	}
 	payloadSum := sha256.Sum256(store.issuedPayload)
 	if reply.SnapshotDigest != hex.EncodeToString(payloadSum[:]) || reply.SnapshotDigest != store.issuedDigest {

@@ -247,6 +247,36 @@ func (s *InternalPKIService) ControlSync(
 	return snapshot, credentials, nil
 }
 
+// ControlSyncAndPrepare projects the security payload and relay listeners from
+// one canonical PKI state read. This prevents a concurrent rotation from
+// producing a security snapshot from one generation and relay credentials
+// from another in the same heartbeat.
+func (s *InternalPKIService) ControlSyncAndPrepare(
+	ctx context.Context,
+	agentID string,
+	acknowledgement *storage.PKISecurityAcknowledgement,
+	requests []PKIControlEnrollmentRequest,
+	listeners []storage.RelayListener,
+) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
+	_, credentials, err := s.ControlSync(ctx, agentID, acknowledgement, requests)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, credentials, nil, err
+	}
+	state, err := s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, credentials, nil, err
+	}
+	snapshot, err := s.fullSecuritySnapshot(ctx, state)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, credentials, nil, err
+	}
+	prepared, err := prepareRelayListenersWithPKIState(state, agentID, listeners)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, credentials, nil, err
+	}
+	return snapshot, credentials, prepared, nil
+}
+
 func pkiControlEnrollmentErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrPKIEnrollmentOwnerMismatch):

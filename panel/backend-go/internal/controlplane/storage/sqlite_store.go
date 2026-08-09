@@ -286,6 +286,42 @@ func (s *GormStore) LoadAgentIntentSnapshot(ctx context.Context, agentID string,
 	})
 }
 
+func (s *GormStore) LoadAgentHeartbeatSnapshot(ctx context.Context, agentID string, overlay AgentHeartbeatSnapshotOverlay) (AgentHeartbeatSnapshot, error) {
+	var result AgentHeartbeatSnapshot
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var row AgentRow
+		if err := scoped.db.WithContext(ctx).Where("id = ?", scoped.resolveAgentID(agentID)).First(&row).Error; err != nil {
+			return err
+		}
+		normalizeAgentRow(&row)
+		snapshot, err := scoped.loadAgentSnapshot(ctx, row.ID, AgentSnapshotInput{
+			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+		}, true)
+		if err != nil {
+			return err
+		}
+		if overlay != nil {
+			snapshot, err = overlay(ctx, scoped, row.ID, snapshot)
+			if err != nil {
+				return err
+			}
+		}
+		result = AgentHeartbeatSnapshot{
+			Snapshot: snapshot,
+			Metadata: AgentSnapshotMetadata{
+				Platform: strings.TrimSpace(row.Platform), DesiredVersion: strings.TrimSpace(row.DesiredVersion),
+				DesiredRevision: row.DesiredRevision, CurrentRevision: row.CurrentRevision,
+				LastApplyStatus:  strings.TrimSpace(row.LastApplyStatus),
+				OutboundProxyURL: strings.TrimSpace(row.OutboundProxyURL), TrafficInterval: strings.TrimSpace(row.TrafficStatsInterval),
+				TrafficBlocked: row.TrafficBlocked, TrafficBlockReason: strings.TrimSpace(row.TrafficBlockReason),
+			},
+		}
+		return nil
+	})
+	return result, err
+}
+
 func (s *GormStore) loadCompleteSnapshot(ctx context.Context, load func(*GormStore) (Snapshot, error)) (Snapshot, error) {
 	var snapshot Snapshot
 	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
@@ -298,6 +334,21 @@ func (s *GormStore) loadCompleteSnapshot(ctx context.Context, load func(*GormSto
 
 func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput, runtimeFiltered bool) (Snapshot, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
+	var remoteAgent AgentRow
+	remoteAgentFound := false
+	if resolvedAgentID != s.localAgentID {
+		if err := s.db.WithContext(ctx).Where("id = ?", resolvedAgentID).Limit(1).Find(&remoteAgent).Error; err != nil {
+			return Snapshot{}, err
+		}
+		if remoteAgent.ID != "" {
+			normalizeAgentRow(&remoteAgent)
+			remoteAgentFound = true
+			input.DesiredVersion = remoteAgent.DesiredVersion
+			input.DesiredRevision = remoteAgent.DesiredRevision
+			input.CurrentRevision = remoteAgent.CurrentRevision
+			input.Platform = remoteAgent.Platform
+		}
+	}
 
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
 	if err != nil {
@@ -367,13 +418,27 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	agentConfig := AgentConfig{}
 	if resolvedAgentID == s.localAgentID {
 		agentRevisionState, err = s.LoadLocalAgentState(ctx)
+	} else if remoteAgentFound {
+		agentRevisionState = LocalAgentStateRow{
+			Version: remoteAgent.Version, DesiredRevision: remoteAgent.DesiredRevision,
+			CurrentRevision: remoteAgent.CurrentRevision,
+		}
 	} else {
 		agentRevisionState, err = s.loadAgentRevisionState(ctx, resolvedAgentID)
 	}
 	if err != nil {
 		return Snapshot{}, err
 	}
-	agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
+	if remoteAgentFound {
+		agentConfig = AgentConfig{
+			OutboundProxyURL:     strings.TrimSpace(remoteAgent.OutboundProxyURL),
+			TrafficStatsInterval: strings.TrimSpace(remoteAgent.TrafficStatsInterval),
+			TrafficBlocked:       remoteAgent.TrafficBlocked,
+			TrafficBlockReason:   strings.TrimSpace(remoteAgent.TrafficBlockReason),
+		}
+	} else {
+		agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
+	}
 	revisionState := LocalAgentStateRow{
 		Version:         agentRevisionState.Version,
 		DesiredRevision: maxInt(input.DesiredRevision, agentRevisionState.DesiredRevision),

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -21,6 +22,31 @@ type Snapshot struct {
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	PKISecurity         *PKISecuritySnapshot       `json:"pki_security,omitempty"`
 }
+
+// AgentSnapshotMetadata carries database-owned values needed to finish a
+// heartbeat response without consulting an AgentRow captured before the
+// snapshot transaction. It is deliberately separate from the JSON snapshot.
+type AgentSnapshotMetadata struct {
+	Platform           string
+	DesiredVersion     string
+	DesiredRevision    int
+	CurrentRevision    int
+	LastApplyStatus    string
+	OutboundProxyURL   string
+	TrafficInterval    string
+	TrafficBlocked     bool
+	TrafficBlockReason string
+}
+
+type AgentHeartbeatSnapshot struct {
+	Snapshot Snapshot
+	Metadata AgentSnapshotMetadata `json:"-"`
+}
+
+// AgentHeartbeatSnapshotOverlay runs inside the same stable read transaction
+// as the base snapshot. It is used by the service layer to project pending
+// certificate generations without creating a storage-to-service dependency.
+type AgentHeartbeatSnapshotOverlay func(context.Context, *GormStore, string, Snapshot) (Snapshot, error)
 
 // PKISecurityAcknowledgement is reported over the existing authenticated
 // control channel. It never authenticates that channel; X-Agent-Token remains

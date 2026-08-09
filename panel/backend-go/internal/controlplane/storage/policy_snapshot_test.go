@@ -567,6 +567,279 @@ func TestCompleteAgentSnapshotUsesOneSQLiteSnapshot(t *testing.T) {
 	testCompleteAgentSnapshotUsesOneSnapshot(t, reader, writer, "sqlite", false)
 }
 
+func TestAgentHeartbeatSnapshotUsesOneSQLiteSnapshot(t *testing.T) {
+	dataRoot := t.TempDir()
+	reader, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testAgentHeartbeatSnapshotUsesOneSnapshot(t, reader, writer, "sqlite")
+}
+
+func TestAgentHeartbeatPendingCertificateOverlayUsesOneSQLiteSnapshot(t *testing.T) {
+	dataRoot := t.TempDir()
+	reader, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(dataRoot, "plugins", "packages"))
+	})
+	testAgentHeartbeatPendingCertificateOverlayUsesOneSnapshot(t, reader, writer, "sqlite")
+}
+
+func testAgentHeartbeatPendingCertificateOverlayUsesOneSnapshot(t *testing.T, reader, writer *GormStore, operationPrefix string) {
+	t.Helper()
+	ctx := t.Context()
+	const agentID = "edge-cert-heartbeat"
+	const domain = "heartbeat-generation.example.test"
+	if err := reader.SaveAgent(ctx, AgentRow{ID: agentID, AgentToken: "token", Platform: "linux-amd64", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	certRow := ManagedCertificateRow{
+		ID: 401, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		TargetAgentIDs: `["edge-cert-heartbeat"]`, Status: "active", MaterialHash: "old", Revision: 4,
+	}
+	if err := reader.SaveManagedCertificates(ctx, []ManagedCertificateRow{certRow}); err != nil {
+		t.Fatal(err)
+	}
+	oldBundle := ManagedCertificateBundle{ID: certRow.ID, Domain: domain, Revision: int64(certRow.Revision), CertPEM: "old-cert", KeyPEM: "old-key"}
+	active, err := reader.StageManagedCertificateGeneration(ctx, domain, oldBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.PromoteManagedCertificateGeneration(ctx, domain, active.ID, active.MaterialHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.SaveManagedCertificates(ctx, []ManagedCertificateRow{certRow}); err != nil {
+		t.Fatal(err)
+	}
+	overlay := func(ctx context.Context, tx *GormStore, _ string, snapshot Snapshot) (Snapshot, error) {
+		pending, found, err := tx.LoadPendingManagedCertificateGeneration(ctx, domain)
+		if err != nil || !found {
+			return snapshot, err
+		}
+		bundle := pending.Material
+		bundle.ID = certRow.ID
+		bundle.Domain = domain
+		bundle.Revision = int64(certRow.Revision)
+		replaced := false
+		for index := range snapshot.Certificates {
+			if snapshot.Certificates[index].ID == bundle.ID {
+				snapshot.Certificates[index] = bundle
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			snapshot.Certificates = append(snapshot.Certificates, bundle)
+		}
+		return snapshot, nil
+	}
+	before, err := reader.LoadAgentHeartbeatSnapshot(ctx, agentID, overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstAgentRead := make(chan struct{})
+	continueRead := make(chan struct{})
+	var intercept sync.Once
+	callbackName := "test:heartbeat-certificate-snapshot-" + operationPrefix
+	if err := reader.db.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement == nil || db.Statement.Table != (AgentRow{}).TableName() {
+			return
+		}
+		intercept.Do(func() {
+			close(firstAgentRead)
+			<-continueRead
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.db.Callback().Query().Remove(callbackName) })
+	readDone := make(chan struct {
+		result AgentHeartbeatSnapshot
+		err    error
+	}, 1)
+	go func() {
+		result, err := reader.LoadAgentHeartbeatSnapshot(ctx, agentID, overlay)
+		readDone <- struct {
+			result AgentHeartbeatSnapshot
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case <-firstAgentRead:
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatal("heartbeat certificate snapshot did not reach the agent-row boundary")
+	}
+	newBundle := ManagedCertificateBundle{ID: certRow.ID, Domain: domain, Revision: int64(certRow.Revision), CertPEM: "new-cert", KeyPEM: "new-key"}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := writer.StageManagedCertificateGeneration(ctx, domain, newBundle)
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			close(continueRead)
+			t.Fatalf("concurrent pending certificate stage error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatalf("concurrent %s pending certificate stage could not commit", operationPrefix)
+	}
+	close(continueRead)
+	read := <-readDone
+	if read.err != nil {
+		t.Fatal(read.err)
+	}
+	after, err := reader.LoadAgentHeartbeatSnapshot(ctx, agentID, overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := func(result AgentHeartbeatSnapshot) string {
+		encoded, _ := json.Marshal(result)
+		return string(encoded)
+	}
+	got, wantBefore, wantAfter := encode(read.result), encode(before), encode(after)
+	if got != wantBefore && got != wantAfter {
+		t.Fatalf("pending certificate overlay produced a hybrid generation %q; before=%q after=%q", got, wantBefore, wantAfter)
+	}
+	if wantBefore == wantAfter {
+		t.Fatal("fixture did not create distinct pending certificate snapshot generations")
+	}
+}
+
+func testAgentHeartbeatSnapshotUsesOneSnapshot(t *testing.T, reader, writer *GormStore, operationPrefix string) {
+	t.Helper()
+	ctx := t.Context()
+	beforeRow := AgentRow{
+		ID: "edge-heartbeat", AgentToken: "token", DesiredVersion: "1.0.0", DesiredRevision: 1,
+		CurrentRevision: 1, Platform: "linux-amd64", LastApplyStatus: "success",
+		OutboundProxyURL: "socks5://before.example.test:1080", TrafficStatsInterval: "30s", CapabilitiesJSON: `[]`,
+	}
+	if err := reader.SaveAgent(ctx, beforeRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.SaveHTTPRules(ctx, beforeRow.ID, []HTTPRuleRow{{
+		ID: 1, AgentID: beforeRow.ID, FrontendURL: "https://heartbeat.example.test", BackendsJSON: `[]`, Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	load := func(store *GormStore) (AgentHeartbeatSnapshot, error) {
+		return store.LoadAgentHeartbeatSnapshot(ctx, beforeRow.ID, nil)
+	}
+	before, err := load(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRow := beforeRow
+	afterRow.DesiredVersion = "2.0.0"
+	afterRow.DesiredRevision = 2
+	afterRow.Platform = "linux-arm64"
+	afterRow.OutboundProxyURL = "http://after.example.test:8080"
+	afterRow.TrafficStatsInterval = "2m"
+
+	firstAgentRead := make(chan struct{})
+	continueRead := make(chan struct{})
+	var intercept sync.Once
+	callbackName := "test:heartbeat-snapshot-" + operationPrefix
+	if err := reader.db.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement == nil || db.Statement.Table != (AgentRow{}).TableName() {
+			return
+		}
+		intercept.Do(func() {
+			close(firstAgentRead)
+			<-continueRead
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.db.Callback().Query().Remove(callbackName) })
+
+	readDone := make(chan struct {
+		result AgentHeartbeatSnapshot
+		err    error
+	}, 1)
+	go func() {
+		result, err := load(reader)
+		readDone <- struct {
+			result AgentHeartbeatSnapshot
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case <-firstAgentRead:
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatal("heartbeat snapshot reader did not reach the agent-row boundary")
+	}
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- writer.SaveAgent(ctx, afterRow) }()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			close(continueRead)
+			t.Fatalf("concurrent agent settings update error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatalf("concurrent %s agent settings update could not commit", operationPrefix)
+	}
+	close(continueRead)
+	read := <-readDone
+	if read.err != nil {
+		t.Fatalf("heartbeat snapshot read error = %v", read.err)
+	}
+	after, err := load(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := func(result AgentHeartbeatSnapshot) string {
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Sprintf("invalid:%v", err)
+		}
+		return string(encoded)
+	}
+	got, wantBefore, wantAfter := encode(read.result), encode(before), encode(after)
+	if got != wantBefore && got != wantAfter {
+		t.Fatalf("heartbeat snapshot produced a hybrid generation %q; before=%q after=%q", got, wantBefore, wantAfter)
+	}
+	if wantBefore == wantAfter {
+		t.Fatal("fixture did not create distinct heartbeat snapshot generations")
+	}
+
+	stale, err := reader.LoadAgentSnapshot(ctx, afterRow.ID, AgentSnapshotInput{
+		DesiredVersion: "stale", DesiredRevision: 99, CurrentRevision: 99, Platform: "stale-platform",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.DesiredVersion != afterRow.DesiredVersion || stale.AgentConfig.OutboundProxyURL != afterRow.OutboundProxyURL {
+		t.Fatalf("remote snapshot trusted caller-owned settings: %+v", stale)
+	}
+}
+
 func TestRevisionMutationSnapshotSeesOwnWrites(t *testing.T) {
 	dataRoot := t.TempDir()
 	store, err := NewSQLiteStore(dataRoot, "local")

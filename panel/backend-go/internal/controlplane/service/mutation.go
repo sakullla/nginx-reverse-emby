@@ -22,6 +22,12 @@ func newMutationExecutor(cfg config.Config, store revision.Store, options ...rev
 func newRevisionExecutor(cfg config.Config, store revision.Store, options ...revision.Option) *revision.Executor {
 	options = append(options,
 		revision.WithSnapshotDecorator(revision.SnapshotDecoratorFunc(
+			func(_ context.Context, _ *storage.GormStore, _ revision.Target, snapshot storage.Snapshot) (storage.Snapshot, error) {
+				snapshot.AgentConfig.TrafficStatsEnabled = heartbeatBoolPtr(agentTrafficStatsEnabled(cfg))
+				return snapshot, nil
+			},
+		)),
+		revision.WithSnapshotDecorator(revision.SnapshotDecoratorFunc(
 			func(ctx context.Context, tx *storage.GormStore, target revision.Target, snapshot storage.Snapshot) (storage.Snapshot, error) {
 				return overlayPendingManagedCertificateGenerationsForConfig(ctx, cfg, tx, target.AgentID, snapshot)
 			},
