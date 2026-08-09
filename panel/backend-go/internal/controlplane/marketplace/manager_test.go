@@ -547,7 +547,7 @@ func (r *memoryRepository) RenewRefreshLease(_ context.Context, operation Refres
 	}
 	return errors.New("stale lease")
 }
-func (r *memoryRepository) StagePackageAcquisition(context.Context, string, string, string) error {
+func (r *memoryRepository) StagePackageAcquisition(context.Context, string, string, string, SignatureTrust) error {
 	return nil
 }
 func (r *memoryRepository) CompletePackageAcquisitions(context.Context, string, string, bool) error {

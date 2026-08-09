@@ -76,7 +76,9 @@ type MarketplaceRefreshOperationRow struct {
 	SourceRevision    uint64     `gorm:"not null;default:1"`
 	RefKind           string     `gorm:"size:16;not null;default:'branch'"`
 	RefName           string     `gorm:"size:512;not null;default:''"`
+	SignerSourceKind  string     `gorm:"size:32;not null;default:''"`
 	SignerKeyID       string     `gorm:"size:190;not null;default:''"`
+	SignerPublicKey   string     `gorm:"size:64;not null;default:''"`
 	SignerFingerprint string     `gorm:"size:64;not null;default:''"`
 	Status            string     `gorm:"index;size:32;not null"`
 	ErrorClass        string     `gorm:"size:128;not null;default:''"`

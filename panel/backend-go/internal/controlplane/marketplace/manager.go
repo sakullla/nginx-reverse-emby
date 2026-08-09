@@ -191,7 +191,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		if err := checkRefresh(); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 		}
-		if err := m.repository.StagePackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID); err != nil {
+		if err := m.repository.StagePackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID, trust); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache_reservation", err)
 		}
 		if _, err := m.cache.StoreWithTrust(candidate, validator, trust); err != nil {

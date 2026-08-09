@@ -830,7 +830,7 @@ func TestStagePackageAcquisitionPersistsDerivedSourceTrustFingerprint(t *testing
 				t.Fatal(err)
 			}
 			digest := pluginTestDigest(fmt.Sprintf("%x", index+10))
-			if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID); err != nil {
+			if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, marketplaceTrustForTest(t, source)); err != nil {
 				t.Fatal(err)
 			}
 			var staged PluginPackageStagingRow
@@ -2377,11 +2377,11 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 		}
 		finished := time.Now().UTC()
 		op.Commit, op.Status, op.ErrorClass, op.Error, op.FinishedAt = oid, "failed", "fetch", "offline", &finished
-		if err := store.SaveRefreshOperation(ctx, op); err != nil {
-			t.Fatal(err)
+		if err := store.SaveRefreshOperation(ctx, op); err == nil {
+			t.Fatal("stale refresh worker rewrote the source-edit terminal operation")
 		}
 		metadata := readAudit(t, store, op.ID)
-		if metadata["source_revision"] != float64(1) || metadata["ref_kind"] != marketplace.GitRefKindBranch || metadata["ref_name"] != "main" || metadata["resolved_oid"] != oid || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
+		if metadata["source_revision"] != float64(1) || metadata["ref_kind"] != marketplace.GitRefKindBranch || metadata["ref_name"] != "main" || metadata["resolved_oid"] != "" || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
 			t.Fatalf("failure audit mixed rotated source provenance: %#v", metadata)
 		}
 	})
@@ -2512,6 +2512,123 @@ func TestAcquireRefreshLeaseRejectsPreLeaseSourceEditWithoutHybridState(t *testi
 	}
 }
 
+func TestMarketplaceSourceEditInvalidatesActiveRefreshAndCleansOperationSigner(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	source := newSignedStorageMarketplaceSource(t, "edit-active-refresh", "Edit Active Refresh", "https://example.com/edit-active.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	oldTrust := marketplaceTrustForTest(t, source)
+	started := time.Now().UTC()
+	old := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "edit-active-old", SourceID: source.ID, Status: "running", StartedAt: started,
+		LeaseToken: "edit-active-old-lease", LeaseExpiresAt: started.Add(5 * time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("e")
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, old.ID, oldTrust); err != nil {
+		t.Fatal(err)
+	}
+
+	rotated, err := marketplace.NewSignedCustomSource(source.ID, source.Name, source.URL, "release", "", 0, marketplace.SourceSigner{
+		KeyID: "edit-active-release-v2", SecretRef: "vault-edit-active-v2", PublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, ed25519.PublicKeySize)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated.ConfigRevision = source.ConfigRevision + 1
+	updated, err := store.UpdateMarketplaceSource(ctx, rotated, source.ConfigRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RefName != "release" || updated.ConfigRevision != 2 || updated.SignerFingerprint == oldTrust.Fingerprint || updated.LastResult != "refresh_required" || !updated.LeaseExpiresAt.IsZero() {
+		t.Fatalf("rotated source = %+v", updated)
+	}
+	var oldRow MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", old.ID).First(&oldRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if oldRow.Status != "failed" || oldRow.ErrorClass != "source_generation_changed" || oldRow.SignerKeyID != oldTrust.KeyID || oldRow.SignerFingerprint != oldTrust.Fingerprint || oldRow.SignerPublicKey != oldTrust.PublicKey {
+		t.Fatalf("old refresh operation was not terminalized with S1 trust: %+v", oldRow)
+	}
+
+	renewal := old
+	renewal.LeaseExpiresAt = time.Now().UTC().Add(10 * time.Minute)
+	if err := store.RenewRefreshLease(ctx, renewal); err == nil {
+		t.Fatal("old generation renewed after source edit")
+	}
+	if err := store.StagePackageAcquisition(ctx, source.ID, pluginTestDigest("f"), old.ID, oldTrust); err == nil {
+		t.Fatal("old generation staged a package after source edit")
+	}
+	finished := time.Now().UTC()
+	old.Status, old.ErrorClass, old.Error, old.FinishedAt = "failed", "fetch", "late failure", &finished
+	if err := store.SaveRefreshOperation(ctx, old); err == nil {
+		t.Fatal("old generation finalized after source edit")
+	}
+	staleSuccess := old
+	staleSuccess.Status, staleSuccess.ErrorClass, staleSuccess.Error = "succeeded", "", ""
+	staleSuccess.Commit = strings.Repeat("a", 40)
+	staleSnapshot := marketplace.Snapshot{ID: "edit-active-stale", SourceID: source.ID, Commit: staleSuccess.Commit, Path: "edit-active-stale", SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, ValidatedAt: finished}
+	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, staleSnapshot, staleSuccess); err == nil {
+		t.Fatal("old generation promoted after source edit")
+	}
+	afterStale, ok, err := store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok || afterStale.ConfigRevision != 2 || afterStale.RefName != "release" || afterStale.CurrentSnapshot != "" || afterStale.LastResult != "refresh_required" {
+		t.Fatalf("stale worker changed S2 source: %+v ok=%v err=%v", afterStale, ok, err)
+	}
+
+	now := time.Now().UTC()
+	fresh := refreshOperationForSource(afterStale, marketplace.RefreshOperation{
+		ID: "edit-active-fresh", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "edit-active-fresh-lease", LeaseExpiresAt: now.Add(5 * time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
+		t.Fatalf("fresh generation could not immediately acquire: %v", err)
+	}
+	if err := store.AbandonMarketplaceRefresh(ctx, source.ID, old.ID, old.LeaseToken, "late_cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	var stagedCount int64
+	if err := store.db.Model(&PluginPackageStagingRow{}).Where("source_id = ? AND operation_id = ?", source.ID, old.ID).Count(&stagedCount).Error; err != nil || stagedCount != 0 {
+		t.Fatalf("old acquisition staging count=%d err=%v", stagedCount, err)
+	}
+	var intent PluginCacheGCIntentRow
+	if err := store.db.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", source.ID, digest, oldTrust.Fingerprint).First(&intent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if intent.SignerKeyID != oldTrust.KeyID || intent.SignerPublicKey != oldTrust.PublicKey || intent.SignerSourceKind != oldTrust.SourceKind {
+		t.Fatalf("cache cleanup mixed S2 signer into S1 intent: %+v", intent)
+	}
+	var sourceRow MarketplaceSourceRow
+	if err := store.db.Where("id = ?", source.ID).First(&sourceRow).Error; err != nil || sourceRow.RefreshLeaseToken != fresh.LeaseToken || sourceRow.LastResult != "running" {
+		t.Fatalf("old cleanup changed fresh generation: %+v err=%v", sourceRow, err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, claimed, err := store.ClaimPackageGC(ctx, source.ID, digest, oldTrust.Fingerprint)
+	if err != nil || !claimed {
+		t.Fatalf("restart did not recover old signer cleanup: claimed=%v err=%v", claimed, err)
+	}
+	if claim.Trust.KeyID != oldTrust.KeyID || claim.Trust.PublicKey != oldTrust.PublicKey || claim.Trust.Fingerprint != oldTrust.Fingerprint {
+		t.Fatalf("restart cleanup trust = %+v, want %+v", claim.Trust, oldTrust)
+	}
+}
+
 func TestLegacyRefreshOperationWithoutSignerProvenanceFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
@@ -2591,7 +2708,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, marketplaceTrustForTest(t, source)); err != nil {
 		t.Fatal(err)
 	}
 	if err := validate(); err != nil {
@@ -2713,7 +2830,7 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := pluginTestDigest("d")
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, marketplaceTrustForTest(t, source)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
@@ -2966,7 +3083,7 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 		t.Fatal(err)
 	}
 	digest := pluginTestDigest("e")
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, marketplaceTrustForTest(t, source)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
@@ -3010,7 +3127,7 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.CompletePackageGC(ctx, claim, "expired failure"); err == nil {
 		t.Fatal("expired claim recorded failure before takeover")
 	}
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err == nil || !strings.Contains(err.Error(), "being deleted") {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, marketplaceTrustForTest(t, source)); err == nil || !strings.Contains(err.Error(), "being deleted") {
 		t.Fatalf("expired deleting digest was reacquired: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -3039,7 +3156,7 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.CompletePackageGC(ctx, replacement, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, marketplaceTrustForTest(t, source)); err != nil {
 		t.Fatalf("reacquire replacement-completed variant: %v", err)
 	}
 	marker := filepath.Join(livePath, "republished")
@@ -3670,6 +3787,15 @@ func refreshOperationForSource(source marketplace.Source, operation marketplace.
 	operation.RefKind = source.RefKind
 	operation.RefName = source.RefName
 	return operation
+}
+
+func marketplaceTrustForTest(t *testing.T, source marketplace.Source) marketplace.SignatureTrust {
+	t.Helper()
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trust
 }
 
 func pluginTestDigest(value string) string { return strings.Repeat(value, 64) }

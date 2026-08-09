@@ -717,7 +717,7 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, "refresh-failed"); err != nil {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, "refresh-failed", mustMarketplaceSignatureTrust(t, source)); err != nil {
 		t.Fatal(err)
 	}
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
@@ -749,6 +749,95 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 	}
 }
 
+func TestSourceEditDuringRefreshCleansOnlyOperationSignerCacheAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplaceTestSource("rotated-cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	oldTrust := mustMarketplaceSignatureTrust(t, source)
+	now := time.Now().UTC()
+	old := marketplace.RefreshOperation{
+		ID: "rotated-cache-old", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName,
+		Status: "running", StartedAt: now, LeaseToken: "rotated-cache-old-lease", LeaseExpiresAt: now.Add(time.Minute),
+	}
+	if err := store.AcquireRefreshLease(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("9", 64)
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, old.ID, oldTrust); err != nil {
+		t.Fatal(err)
+	}
+	rotatedSeed := sha256.Sum256([]byte("rotated-cache-v2"))
+	rotatedKey := ed25519.NewKeyFromSeed(rotatedSeed[:])
+	rotated, err := marketplace.NewSignedCustomSource(source.ID, source.Name, source.URL, "release", "", 0, marketplace.SourceSigner{
+		KeyID: "rotated-cache-v2", SecretRef: "vault-rotated-cache-v2", PublicKey: base64.StdEncoding.EncodeToString(rotatedKey.Public().(ed25519.PublicKey)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated.ConfigRevision = source.ConfigRevision + 1
+	rotated, err = store.UpdateMarketplaceSource(ctx, rotated, source.ConfigRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newTrust := mustMarketplaceSignatureTrust(t, rotated)
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
+	oldPath, err := marketplace.SignerCachePath(cacheRoot, digest, oldTrust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath, err := marketplace.SignerCachePath(cacheRoot, digest, newTrust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{oldPath, newPath} {
+		if err := os.MkdirAll(candidate, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CompletePackageAcquisitions(ctx, source.ID, old.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	fresh := marketplace.RefreshOperation{
+		ID: "rotated-cache-fresh", SourceID: source.ID, SourceRevision: rotated.ConfigRevision, RefKind: rotated.RefKind, RefName: rotated.RefName,
+		Status: "running", StartedAt: time.Now().UTC(), LeaseToken: "rotated-cache-fresh-lease", LeaseExpiresAt: time.Now().UTC().Add(time.Minute),
+	}
+	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
+		t.Fatalf("rotated source could not acquire after old generation cleanup: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("S1 signer cache remains after restart cleanup: %v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("S2 signer cache was removed by S1 cleanup: %v", err)
+	}
+	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 0 {
+		t.Fatalf("S1 cleanup intent remained after restart: %+v err=%v", intents, err)
+	}
+}
+
 func TestOfficialPartialRefreshFailureCollectsSignerAwareCache(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
@@ -771,7 +860,7 @@ func TestOfficialPartialRefreshFailureCollectsSignerAwareCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := strings.Repeat("e", 64)
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, mustMarketplaceSignatureTrust(t, source)); err != nil {
 		t.Fatal(err)
 	}
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
@@ -881,6 +970,15 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 
 func marketplaceTestSource(id string) (marketplace.Source, error) {
 	return marketplace.NewSignedCustomSource(id, strings.ToUpper(id[:1])+id[1:], "https://example.com/"+id+".git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-" + id, PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
+}
+
+func mustMarketplaceSignatureTrust(t *testing.T, source marketplace.Source) marketplace.SignatureTrust {
+	t.Helper()
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trust
 }
 
 func cleanupMarketplaceCache(t *testing.T, root string) {

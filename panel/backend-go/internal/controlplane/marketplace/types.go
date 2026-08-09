@@ -432,7 +432,7 @@ type Repository interface {
 	AcquireRefreshLease(context.Context, RefreshOperation) error
 	RenewRefreshLease(context.Context, RefreshOperation) error
 	RecordRefreshRejection(context.Context, string, OperationActor, string) error
-	StagePackageAcquisition(context.Context, string, string, string) error
+	StagePackageAcquisition(context.Context, string, string, string, SignatureTrust) error
 	CompletePackageAcquisitions(context.Context, string, string, bool) error
 	SaveRefreshOperation(context.Context, RefreshOperation) error
 	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error
