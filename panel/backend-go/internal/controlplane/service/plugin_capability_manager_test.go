@@ -462,20 +462,20 @@ func TestPluginCapabilityManagerResourceCallOutcomesAreDurableAndErrorsReachGues
 	// method for every planned call before delivering the exact results.
 	handle := mustIssueCapabilityResourceHandle(t, manager, request)
 	firstCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-1", ResourceHandle: handle, Operation: pluginsdk.RPCResourceInspect}
-	first, err := manager.executeDurableResourceCall(t.Context(), request, firstCall)
+	first, err := manager.executeDurableResourceCall(t.Context(), request, firstCall.ResourceHandle, firstCall)
 	if err != nil || first.Error != nil || string(first.Value) != `{"available":true}` {
 		t.Fatalf("first resource result=%+v error=%v", first, err)
 	}
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, firstCall)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, firstCall.ResourceHandle, firstCall)
 	if err != nil || replayed.Error != nil || string(replayed.Value) != string(first.Value) || store.resourceCalls[firstCall.RequestID] != 1 {
 		t.Fatalf("replayed resource result=%+v error=%v calls=%d", replayed, err, store.resourceCalls[firstCall.RequestID])
 	}
 	secondCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-2", ResourceHandle: handle, Operation: pluginsdk.RPCResourceInspect}
-	failed, err := manager.executeDurableResourceCall(t.Context(), request, secondCall)
+	failed, err := manager.executeDurableResourceCall(t.Context(), request, secondCall.ResourceHandle, secondCall)
 	if err != nil || failed.Error == nil || failed.Error.Code != pluginsdk.ErrorInvalidArgument {
 		t.Fatalf("failed resource result=%+v error=%v", failed, err)
 	}
-	failedReplay, err := manager.executeDurableResourceCall(t.Context(), request, secondCall)
+	failedReplay, err := manager.executeDurableResourceCall(t.Context(), request, secondCall.ResourceHandle, secondCall)
 	if err != nil || failedReplay.Error == nil || failedReplay.Error.Code != failed.Error.Code || store.resourceCalls[secondCall.RequestID] != 1 {
 		t.Fatalf("failed replay=%+v error=%v calls=%d", failedReplay, err, store.resourceCalls[secondCall.RequestID])
 	}
@@ -500,6 +500,28 @@ func TestPluginCapabilityManagerDeliversMultiCallPartialFailureAsTypedResult(t *
 	}
 }
 
+func TestPluginCapabilityManagerPersistsUnknownPlannedHandleAsTypedResult(t *testing.T) {
+	manager, store, runtime, request := newCapabilityManagerFixture(t)
+	runtime.plan = pluginsdk.RPCActionPlanResponse{Calls: []pluginsdk.RPCResourceCall{{
+		RequestID: "resource-call-unknown-handle", ResourceHandle: "foreign-handle", Operation: pluginsdk.RPCResourceInspect,
+	}}}
+	result, err := manager.InvokeDynamicAction(t.Context(), request)
+	if err != nil || result.Replayed {
+		t.Fatalf("unknown handle action result=%+v error=%v", result, err)
+	}
+	rpcRequest := runtime.request()
+	if len(rpcRequest.ResourceResults) != 1 || rpcRequest.ResourceResults[0].Error == nil || rpcRequest.ResourceResults[0].Error.Code != pluginsdk.ErrorPermissionDenied || rpcRequest.ResourceResults[0].Error.Retryable {
+		t.Fatalf("unknown handle typed result=%+v", rpcRequest.ResourceResults)
+	}
+	if store.resourceCalls["resource-call-unknown-handle"] != 0 {
+		t.Fatalf("unknown handle executed core operation %d time(s)", store.resourceCalls["resource-call-unknown-handle"])
+	}
+	replayed, err := manager.InvokeDynamicAction(t.Context(), request)
+	if err != nil || !replayed.Replayed || runtime.callCount() != 1 {
+		t.Fatalf("unknown handle replay=%+v error=%v calls=%d", replayed, err, runtime.callCount())
+	}
+}
+
 func TestPluginCapabilityManagerRecoveredResourceClaimDoesNotRepeatCoreOperation(t *testing.T) {
 	manager, store, _, request := newCapabilityManagerFixture(t)
 	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-recovered", ResourceHandle: mustIssueCapabilityResourceHandle(t, manager, request), Operation: pluginsdk.RPCResourceInspect}
@@ -516,11 +538,11 @@ func TestPluginCapabilityManagerRecoveredResourceClaimDoesNotRepeatCoreOperation
 	record.ExpiresAt = time.Now().Add(-time.Second)
 	store.operations[pluginCapabilityResourceCallScope+"\x00"+key] = record
 	store.mu.Unlock()
-	result, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	result, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call)
 	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorUnavailable || result.Error.Retryable || store.resourceCalls[call.RequestID] != 0 {
 		t.Fatalf("recovered resource result=%+v error=%v calls=%d", result, err, store.resourceCalls[call.RequestID])
 	}
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call)
 	if err != nil || replayed.Error == nil || replayed.Error.Message != result.Error.Message || store.resourceCalls[call.RequestID] != 0 {
 		t.Fatalf("recovered replay=%+v error=%v calls=%d", replayed, err, store.resourceCalls[call.RequestID])
 	}
@@ -532,7 +554,7 @@ func TestPluginCapabilityManagerCompletionFailureAfterSideEffectRecoversWithoutR
 	key := pluginCapabilityResourceCallKey(request.OperationID, call.RequestID)
 	mapKey := pluginCapabilityResourceCallScope + "\x00" + key
 	store.completeFails = map[string]int{mapKey: 1}
-	if _, err := manager.executeDurableResourceCall(t.Context(), request, call); err == nil || store.resourceCalls[call.RequestID] != 1 {
+	if _, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call); err == nil || store.resourceCalls[call.RequestID] != 1 {
 		t.Fatalf("first post-side-effect completion error=%v calls=%d", err, store.resourceCalls[call.RequestID])
 	}
 	store.mu.Lock()
@@ -540,11 +562,11 @@ func TestPluginCapabilityManagerCompletionFailureAfterSideEffectRecoversWithoutR
 	record.ExpiresAt = time.Now().Add(-time.Second)
 	store.operations[mapKey] = record
 	store.mu.Unlock()
-	result, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	result, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call)
 	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorUnavailable || store.resourceCalls[call.RequestID] != 1 {
 		t.Fatalf("recovered post-side-effect result=%+v error=%v calls=%d", result, err, store.resourceCalls[call.RequestID])
 	}
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call)
 	if err != nil || replayed.Error == nil || replayed.Error.Message != result.Error.Message || store.resourceCalls[call.RequestID] != 1 {
 		t.Fatalf("post-side-effect replay=%+v error=%v calls=%d", replayed, err, store.resourceCalls[call.RequestID])
 	}
@@ -568,7 +590,7 @@ func TestPluginCapabilityManagerClaimsBeforeHandleRevalidationAndReplaysRevocati
 	store.mu.Lock()
 	store.targetVersion = "target-version-2"
 	store.mu.Unlock()
-	result, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	result, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call)
 	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorPermissionDenied || result.Error.Retryable {
 		t.Fatalf("rotated handle result=%+v error=%v", result, err)
 	}
@@ -577,7 +599,7 @@ func TestPluginCapabilityManagerClaimsBeforeHandleRevalidationAndReplaysRevocati
 	}
 
 	call.ResourceHandle = mustIssueCapabilityResourceHandle(t, manager, request)
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call.ResourceHandle, call)
 	if err != nil || replayed.Error == nil || replayed.Error.Code != result.Error.Code || replayed.Error.Message != result.Error.Message {
 		t.Fatalf("revocation replay=%+v error=%v", replayed, err)
 	}

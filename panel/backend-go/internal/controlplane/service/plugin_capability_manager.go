@@ -194,10 +194,7 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 				return errors.New("resource-handle action did not request a typed core operation")
 			}
 			for _, resourceCall := range plan.Calls {
-				if resourceCall.ResourceHandle != resourceHandle {
-					return errors.New("plugin action plan used an unknown resource handle")
-				}
-				resourceResult, executeErr := manager.executeDurableResourceCall(callCtx, request, resourceCall)
+				resourceResult, executeErr := manager.executeDurableResourceCall(callCtx, request, resourceHandle, resourceCall)
 				if executeErr != nil {
 					return executeErr
 				}
@@ -256,7 +253,7 @@ type pluginCapabilityResourceCallOutcome struct {
 	Error     *pluginsdk.RuntimeError `json:"error,omitempty"`
 }
 
-func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.Context, request PluginDynamicActionRequest, call pluginsdk.RPCResourceCall) (pluginsdk.RPCResourceResult, error) {
+func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.Context, request PluginDynamicActionRequest, expectedHandle string, call pluginsdk.RPCResourceCall) (pluginsdk.RPCResourceResult, error) {
 	fingerprint, err := pluginCapabilityResourceCallFingerprint(request, call)
 	if err != nil {
 		return pluginsdk.RPCResourceResult{}, err
@@ -280,7 +277,13 @@ func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.C
 		result = pluginsdk.RPCResourceResult{RequestID: call.RequestID, Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "resource call outcome is unavailable after owner recovery", Retryable: false}}
 	} else {
 		var binding storage.PluginCapabilityTargetBinding
-		resolved, resolveErr := manager.ResolveResourceHandle(ctx, call.ResourceHandle, PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
+		var resolved any
+		var resolveErr error
+		if call.ResourceHandle != expectedHandle {
+			resolveErr = fmt.Errorf("%w: plugin action plan used an unknown resource handle", pluginhost.ErrCapabilityDenied)
+		} else {
+			resolved, resolveErr = manager.ResolveResourceHandle(ctx, call.ResourceHandle, PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
+		}
 		if resolveErr == nil {
 			reference, ok := resolved.(pluginResourceReference)
 			if !ok {
