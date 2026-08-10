@@ -9,6 +9,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const (
@@ -271,19 +273,19 @@ func knownPluginGrant(value string) bool {
 	switch value {
 	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
 		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage",
-		"dns.manage", "policy.atomic_state", "policy.monotonic_clock", "policy.trusted_source",
-		"service.revocable_resource_handle", "ui.dynamic_actions":
+		"dns.manage":
 		return true
 	default:
-		return false
+		return pluginsdk.HostCapability(value).Validate() == nil
 	}
 }
 
 func validatePluginGrants(grants []PluginGrantProjection) error {
 	seen := map[string]struct{}{}
 	for _, grant := range grants {
-		if !knownPluginGrant(grant.Name) || (grant.ResourceKind == "") != (grant.ResourceID == "") ||
-			(grant.ResourceKind != "" && (!validPluginIdentity(grant.ResourceKind) || !validPluginIdentity(grant.ResourceID))) {
+		if !knownPluginGrant(grant.Name) ||
+			(grant.ResourceKind != "" && (!validPluginIdentity(grant.ResourceKind) || grant.ResourceID == "")) ||
+			(grant.ResourceID != "" && !validPluginIdentity(grant.ResourceID)) {
 			return fmt.Errorf("grant %q is invalid", grant.Name)
 		}
 		key := grant.Name + "\x00" + grant.ResourceKind + "\x00" + grant.ResourceID

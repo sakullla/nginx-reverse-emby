@@ -24,6 +24,7 @@ type SyncRequest struct {
 	ManagedCertificateReports []storage.ManagedCertificateReport
 	LastSeenIPv4              string
 	LastSeenIPv6              string
+	PluginStatuses            []storage.PluginRuntimeStatus
 }
 
 type SnapshotStore interface {
@@ -49,6 +50,10 @@ type SyncSource struct {
 type localDDNSHeartbeatStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
+}
+
+type localPluginRuntimeReportStore interface {
+	RecordPluginAgentRuntimeReport(context.Context, storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error)
 }
 
 func NewSyncSource(store SnapshotStore, agentID string) *SyncSource {
@@ -88,6 +93,13 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	}
 	if err := s.persistDDNSAddresses(ctx, request.LastSeenIPv4, request.LastSeenIPv6); err != nil {
 		return Snapshot{}, err
+	}
+	if reportStore, ok := s.store.(localPluginRuntimeReportStore); ok {
+		for _, status := range request.PluginStatuses {
+			if _, _, err := reportStore.RecordPluginAgentRuntimeReport(ctx, pluginGenerationReportFromRuntimeStatus(s.agentID, status)); err != nil {
+				return Snapshot{}, err
+			}
+		}
 	}
 	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
 	if err != nil {
@@ -195,6 +207,7 @@ func (b *syncRequestBridge) Load() SyncRequest {
 
 func cloneSyncRequest(request SyncRequest) SyncRequest {
 	copyValue := request
+	copyValue.PluginStatuses = append([]storage.PluginRuntimeStatus(nil), request.PluginStatuses...)
 	if len(request.ManagedCertificateReports) > 0 {
 		copyValue.ManagedCertificateReports = append([]storage.ManagedCertificateReport(nil), request.ManagedCertificateReports...)
 	}
@@ -208,4 +221,14 @@ func cloneSyncRequest(request SyncRequest) SyncRequest {
 		}
 	}
 	return copyValue
+}
+
+func pluginGenerationReportFromRuntimeStatus(agentID string, status storage.PluginRuntimeStatus) storage.PluginGenerationReport {
+	return storage.PluginGenerationReport{
+		OperationID: status.OperationID, AgentID: agentID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+		Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest,
+		ArtifactDigest: status.ArtifactDigest, State: status.State, Sequence: status.Sequence,
+		ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail, Details: append(json.RawMessage(nil), status.Details...),
+		Budget: append(json.RawMessage(nil), status.Budget...), ReportedAt: time.Now().UTC(),
+	}
 }

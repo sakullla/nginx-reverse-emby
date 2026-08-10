@@ -268,6 +268,7 @@ func (c *SyncController) runtimeStateForPersistence() (RuntimeState, error) {
 	state := existing
 	state.Status = current.Status
 	state.CurrentRevision = current.CurrentRevision
+	state.PluginStatuses = reconcilePluginRuntimeStatuses(existing.PluginStatuses, current.PluginStatuses)
 	state.Metadata = ensureMetadata(existing.Metadata)
 	for key, value := range current.Metadata {
 		state.Metadata[key] = value

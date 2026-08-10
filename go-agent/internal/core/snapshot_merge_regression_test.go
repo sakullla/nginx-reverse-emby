@@ -79,3 +79,16 @@ func TestMergeAndCloneSnapshotPreserveIsolatedPluginPolicies(t *testing.T) {
 		t.Fatalf("runtime snapshot clone retained plugin policy backing storage: %+v", got)
 	}
 }
+
+func TestMergeSnapshotPayloadPreservesOmittedPluginGenerations(t *testing.T) {
+	previous := model.Snapshot{PluginGenerations: []model.PluginGeneration{{ID: "generation-1", InstanceID: "instance-1"}}}
+	merged := MergeSnapshotPayload(model.Snapshot{Revision: 7}, previous)
+	if len(merged.PluginGenerations) != 1 || merged.PluginGenerations[0].ID != "generation-1" {
+		t.Fatalf("merged plugin generations = %+v", merged.PluginGenerations)
+	}
+
+	explicit := MergeSnapshotPayload(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}, previous)
+	if explicit.PluginGenerations == nil || len(explicit.PluginGenerations) != 0 {
+		t.Fatalf("explicit empty plugin generations = %#v", explicit.PluginGenerations)
+	}
+}

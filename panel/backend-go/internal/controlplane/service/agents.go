@@ -68,6 +68,10 @@ type agentHeartbeatStore interface {
 	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
 }
 
+type agentPluginRuntimeReportStore interface {
+	RecordPluginAgentRuntimeReport(context.Context, storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error)
+}
+
 type agentCoherentHeartbeatSnapshotStore interface {
 	LoadAgentHeartbeatSnapshot(context.Context, string, storage.AgentHeartbeatSnapshotOverlay) (storage.AgentHeartbeatSnapshot, error)
 }
@@ -209,6 +213,7 @@ type HeartbeatRequest struct {
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
 	PKISecurityAck            *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
 	PKIEnrollmentRequests     []PKIControlEnrollmentRequest       `json:"pki_enrollment_requests,omitempty"`
+	PluginStatuses            []storage.PluginRuntimeStatus       `json:"plugin_statuses,omitempty"`
 	HasAgentURL               bool                                `json:"-"`
 	HasTags                   bool                                `json:"-"`
 	HasCapabilities           bool                                `json:"-"`
@@ -1383,6 +1388,20 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	} else {
 		if err := s.store.SaveAgent(ctx, row); err != nil {
 			return HeartbeatReply{}, err
+		}
+	}
+	if reportStore, ok := s.store.(agentPluginRuntimeReportStore); ok {
+		for _, status := range request.PluginStatuses {
+			report := storage.PluginGenerationReport{
+				OperationID: status.OperationID, AgentID: row.ID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+				Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest,
+				ArtifactDigest: status.ArtifactDigest, State: status.State, Sequence: status.Sequence,
+				ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail, Details: append(json.RawMessage(nil), status.Details...),
+				Budget: append(json.RawMessage(nil), status.Budget...), ReportedAt: s.now().UTC(),
+			}
+			if _, _, err := reportStore.RecordPluginAgentRuntimeReport(ctx, report); err != nil {
+				return HeartbeatReply{}, err
+			}
 		}
 	}
 	// Fire-and-forget: fresh reported IPs may warrant a master-side A/AAAA

@@ -131,6 +131,49 @@ func TestSyncControllerBuildSyncPlanIncludesApplyStatusStatsAndCertificateReport
 	}
 }
 
+func TestSyncControllerBuildSyncPlanPersistsMonotonicPluginRuntimeStatuses(t *testing.T) {
+	st := newSyncControllerStore()
+	runtime := NewRuntime()
+	base := model.PluginRuntimeStatus{
+		InstanceID: "instance", PluginID: "plugin", OperationID: "operation", Revision: 7,
+		GenerationID: "generation", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		RuntimeKind: model.PluginRuntimeRPCService, State: "active", Sequence: 1,
+	}
+	runtime.state.PluginStatuses = []model.PluginRuntimeStatus{base}
+	controller := &SyncController{Store: st, Runtime: runtime}
+
+	first, err := controller.BuildSyncPlan(context.Background(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := first.Request.PluginStatuses[0].Sequence; got != 1 {
+		t.Fatalf("first sequence = %d", got)
+	}
+	second, err := controller.BuildSyncPlan(context.Background(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Request.PluginStatuses[0].Sequence; got != 1 {
+		t.Fatalf("unchanged sequence = %d", got)
+	}
+
+	runtime.mu.Lock()
+	runtime.state.PluginStatuses[0].State = "degraded"
+	runtime.state.PluginStatuses[0].SafeDetail = "restart backoff"
+	runtime.mu.Unlock()
+	third, err := controller.BuildSyncPlan(context.Background(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := third.Request.PluginStatuses[0]; got.Sequence != 2 || got.State != "degraded" || got.SafeDetail != "restart backoff" {
+		t.Fatalf("changed status = %+v", got)
+	}
+	persisted, err := st.LoadRuntimeState()
+	if err != nil || persisted.PluginStatuses[0].Sequence != 2 {
+		t.Fatalf("persisted status = %+v err=%v", persisted.PluginStatuses, err)
+	}
+}
+
 func TestSyncControllerBuildSyncPlanReportsLegacyHeartbeatTransportErrorAsRecovered(t *testing.T) {
 	st := newSyncControllerStore()
 	heartbeatMessage := `Post "http://panel.example:8080/api/agents/heartbeat": dial tcp 192.0.2.10:8080: connect: connection refused`

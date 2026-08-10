@@ -60,6 +60,7 @@ func (s *InMemory) SaveRuntimeState(state RuntimeState) error {
 	defer s.mu.Unlock()
 	copyState := state
 	copyState.Metadata = cloneStringMap(state.Metadata)
+	copyState.PluginStatuses = clonePluginRuntimeStatuses(state.PluginStatuses)
 	s.runtime = copyState
 	return nil
 }
@@ -69,6 +70,7 @@ func (s *InMemory) LoadRuntimeState() (RuntimeState, error) {
 	defer s.mu.RUnlock()
 	result := s.runtime
 	result.Metadata = cloneStringMap(result.Metadata)
+	result.PluginStatuses = clonePluginRuntimeStatuses(result.PluginStatuses)
 	return result, nil
 }
 

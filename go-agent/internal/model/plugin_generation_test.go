@@ -51,6 +51,26 @@ func TestPluginGenerationMaterializedValidationRequiresLocalPath(t *testing.T) {
 	}
 }
 
+func TestPluginGenerationAcceptsCanonicalHostCapabilitiesAndResourceOnlySelectors(t *testing.T) {
+	generation := validPluginGenerationForTest()
+	generation.Grants = []PluginGrantProjection{
+		{Name: "policy.atomic-state", ResourceID: "tenant-a"},
+		{Name: "policy.monotonic-clock"},
+		{Name: "policy.trusted-source"},
+		{Name: "service.revocable-resource-handle"},
+		{Name: "ui.dynamic-actions"},
+	}
+	if err := generation.Validate(7, false); err != nil {
+		t.Fatalf("Validate() rejected canonical capabilities: %v", err)
+	}
+	for _, legacy := range []string{"policy.atomic_state", "policy.monotonic_clock", "policy.trusted_source", "service.revocable_resource_handle", "ui.dynamic_actions"} {
+		generation.Grants = []PluginGrantProjection{{Name: legacy}}
+		if err := generation.Validate(7, false); err == nil {
+			t.Fatalf("Validate() accepted noncanonical capability %q", legacy)
+		}
+	}
+}
+
 func validPluginGenerationForTest() PluginGeneration {
 	return PluginGeneration{
 		ID: "generation-7", InstanceID: "instance-7", OperationID: "operation-7", Revision: 7,

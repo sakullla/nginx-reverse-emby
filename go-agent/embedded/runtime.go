@@ -16,6 +16,8 @@ import (
 type Snapshot = model.Snapshot
 type PolicyRef = model.PolicyRef
 type PluginPolicy = model.PluginPolicy
+type PluginGeneration = model.PluginGeneration
+type PluginRuntimeStatus = model.PluginRuntimeStatus
 type RuntimeState = model.RuntimeState
 type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage
@@ -356,6 +358,11 @@ func sanitizeSnapshot(snapshot Snapshot) Snapshot {
 func copyRuntimeState(state RuntimeState) RuntimeState {
 	copyValue := state
 	copyValue.Metadata = cloneRuntimeMetadata(state.Metadata)
+	copyValue.PluginStatuses = append([]model.PluginRuntimeStatus(nil), state.PluginStatuses...)
+	for index := range copyValue.PluginStatuses {
+		copyValue.PluginStatuses[index].Details = append([]byte(nil), state.PluginStatuses[index].Details...)
+		copyValue.PluginStatuses[index].Budget = append([]byte(nil), state.PluginStatuses[index].Budget...)
+	}
 	return copyValue
 }
 

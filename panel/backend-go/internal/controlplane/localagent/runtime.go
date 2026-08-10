@@ -206,9 +206,10 @@ func (a stateSinkAdapter) Save(ctx context.Context, state goagentembedded.Runtim
 
 func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded := goagentembedded.Snapshot{
-		DesiredVersion: snapshot.DesiredVersion,
-		Revision:       snapshot.Revision,
-		PluginPolicies: toEmbeddedPluginPolicies(snapshot.PluginPolicies),
+		DesiredVersion:    snapshot.DesiredVersion,
+		Revision:          snapshot.Revision,
+		PluginGenerations: toEmbeddedPluginGenerations(snapshot.PluginGenerations),
+		PluginPolicies:    toEmbeddedPluginPolicies(snapshot.PluginPolicies),
 		AgentConfig: goagentembedded.AgentConfig{
 			OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
 			TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
@@ -383,6 +384,21 @@ func toEmbeddedPluginPolicies(policies []storage.PluginPolicy) []goagentembedded
 	return embedded
 }
 
+func toEmbeddedPluginGenerations(generations []storage.PluginGeneration) []goagentembedded.PluginGeneration {
+	if generations == nil {
+		return nil
+	}
+	data, err := json.Marshal(generations)
+	if err != nil {
+		return nil
+	}
+	var embedded []goagentembedded.PluginGeneration
+	if err := json.Unmarshal(data, &embedded); err != nil {
+		return nil
+	}
+	return embedded
+}
+
 func copyEmbeddedEgressProfiles(embedded *goagentembedded.Snapshot, profiles []storage.EgressProfile) {
 	data, err := json.Marshal(profiles)
 	if err != nil {
@@ -396,6 +412,9 @@ func fromEmbeddedRuntimeState(state goagentembedded.RuntimeState) RuntimeState {
 		NodeID:          state.NodeID,
 		CurrentRevision: state.CurrentRevision,
 		Status:          state.Status,
+	}
+	if data, err := json.Marshal(state.PluginStatuses); err == nil {
+		_ = json.Unmarshal(data, &copyValue.PluginStatuses)
 	}
 	if state.Metadata == nil {
 		return copyValue
@@ -418,6 +437,9 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastSeenIPv4:      request.LastSeenIPv4,
 		LastSeenIPv6:      request.LastSeenIPv6,
 		StatsPresent:      statsPresent,
+	}
+	if data, err := json.Marshal(request.PluginStatuses); err == nil {
+		_ = json.Unmarshal(data, &copyValue.PluginStatuses)
 	}
 	if statsPresent {
 		if data, err := json.Marshal(request.Stats); err == nil {

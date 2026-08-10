@@ -40,6 +40,7 @@ type Candidate struct {
 	Requirement                                           SandboxRequirement
 	Grants                                                []string
 	Deadline, GracePeriod                                 time.Duration
+	Restart                                               string
 	RestartLimit                                          int
 	RestartWindow                                         time.Duration
 	InitialBackoff                                        time.Duration
@@ -1037,7 +1038,8 @@ func (i *Instance) ProcessID() int {
 }
 
 func normalizeRestartCandidate(candidate Candidate) Candidate {
-	if candidate.RestartLimit <= 0 {
+	candidate.Restart = strings.TrimSpace(candidate.Restart)
+	if candidate.Restart == "" && candidate.RestartLimit <= 0 {
 		candidate.RestartLimit = 3
 	}
 	if candidate.RestartWindow <= 0 {
@@ -1171,7 +1173,7 @@ func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance,
 	defer instance.mu.Unlock()
 	instance.LastError = safeError(failure)
 	instance.PID = 0
-	if len(control.exits) > control.candidate.RestartLimit {
+	if control.candidate.Restart == "never" || len(control.exits) > control.candidate.RestartLimit {
 		instance.State, instance.CircuitOpen = "failed", true
 		return 0, false, true
 	}

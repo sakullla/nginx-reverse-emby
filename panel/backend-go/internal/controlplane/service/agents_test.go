@@ -47,6 +47,12 @@ type fakeStore struct {
 	issuedSnapshot      storage.Snapshot
 	issuedPayload       []byte
 	issuedDigest        string
+	pluginReports       []storage.PluginGenerationReport
+}
+
+func (f *fakeStore) RecordPluginAgentRuntimeReport(_ context.Context, report storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error) {
+	f.pluginReports = append(f.pluginReports, report)
+	return storage.PluginAgentRuntimeStatusRow{}, false, nil
 }
 
 func (f *fakeStore) GetAgentRevisionPointer(_ context.Context, agentID string) (storage.AgentRevisionPointerRow, bool, error) {
@@ -1363,9 +1369,17 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 		HasCapabilities:  true,
 		LastApplyStatus:  "success",
 		LastApplyMessage: "",
+		PluginStatuses: []storage.PluginRuntimeStatus{{
+			InstanceID: "instance", PluginID: "plugin", OperationID: "operation", Revision: 8,
+			GenerationID: strings.Repeat("d", 64), PackageDigest: strings.Repeat("e", 64), ArtifactDigest: strings.Repeat("f", 64),
+			State: "degraded", Sequence: 2, SafeDetail: "restart backoff",
+		}},
 	}, "token-remote-a")
 	if err != nil {
 		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if len(store.pluginReports) != 1 || store.pluginReports[0].AgentID != "remote-a" || store.pluginReports[0].SafeDetail != "restart backoff" {
+		t.Fatalf("authenticated plugin runtime reports = %+v", store.pluginReports)
 	}
 
 	if !reply.HasUpdate {

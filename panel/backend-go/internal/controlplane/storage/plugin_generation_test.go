@@ -130,6 +130,36 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 	}
 }
 
+func TestLoadAgentPluginGenerationsSkipsNonTargetBeforePackageResolution(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	if err := store.db.Create(&InstalledPluginRow{
+		PluginID: "windows.only", ActivePackageDigest: strings.Repeat("a", 64), ActivePackageIdentity: "missing@1",
+		DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: "operation", StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&PluginInstanceRow{
+		ID: "windows-instance", PluginID: "windows.only", ResourceGroupID: "group", TargetJSON: `["windows-agent"]`,
+		PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{}`, ConfigVersion: 1,
+		DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	generations, err := store.LoadAgentPluginGenerations(t.Context(), "linux-agent", "linux-amd64")
+	if err != nil {
+		t.Fatalf("non-targeted missing platform package blocked snapshot: %v", err)
+	}
+	if len(generations) != 0 {
+		t.Fatalf("non-targeted generations = %+v", generations)
+	}
+}
+
 func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -144,17 +174,29 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []PluginAgentRuntimeStatusRow{row}); err != nil {
 		t.Fatal(err)
 	}
-	report := PluginGenerationReport{OperationID: row.OperationID, AgentID: row.AgentID, InstanceID: row.InstanceID, PluginID: row.PluginID, Revision: row.Revision, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "active", Sequence: 1, Details: json.RawMessage(`{"ready":true}`), ReportedAt: time.Now().UTC()}
+	report := PluginGenerationReport{OperationID: row.OperationID, AgentID: row.AgentID, InstanceID: row.InstanceID, PluginID: row.PluginID, Revision: row.Revision, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "active", Sequence: 1, SafeDetail: "runtime ready", Details: json.RawMessage(`{"ready":true}`), ReportedAt: time.Now().UTC()}
 	updated, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), report)
 	if err != nil || replayed || updated.State != "active" {
 		t.Fatalf("first report = %+v replay=%v err=%v", updated, replayed, err)
 	}
+	if !strings.Contains(updated.DetailsJSON, `"safe_detail":"runtime ready"`) {
+		t.Fatalf("runtime safe detail was not persisted: %s", updated.DetailsJSON)
+	}
 	if _, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), report); err != nil || !replayed {
 		t.Fatalf("identical replay = %v, %v", replayed, err)
 	}
+	postAck := report
+	postAck.Sequence = 2
+	postAck.State = "degraded"
+	postAck.ErrorCode = "rpc_runtime_failed"
+	postAck.SafeDetail = "restart backoff"
+	updated, replayed, err = store.RecordPluginAgentRuntimeReport(t.Context(), postAck)
+	if err != nil || replayed || updated.State != "degraded" || updated.ReportSequence != 2 || !strings.Contains(updated.DetailsJSON, "restart backoff") {
+		t.Fatalf("post-ack runtime report = %+v replay=%v err=%v", updated, replayed, err)
+	}
 	stale := report
 	stale.GenerationID = strings.Repeat("f", 64)
-	stale.Sequence = 2
+	stale.Sequence = 3
 	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), stale); !errors.Is(err, ErrPluginGenerationStale) {
 		t.Fatalf("stale report error = %v", err)
 	}

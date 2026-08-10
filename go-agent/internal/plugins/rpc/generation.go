@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -248,10 +249,22 @@ func (t *generationTransaction) PluginRuntimeStatuses() []model.PluginRuntimeSta
 		}
 		if runtimeStatus.LastError != "" {
 			status.ErrorCode = "rpc_runtime_failed"
+			status.SafeDetail = pluginRuntimeSafeDetail(runtimeStatus.State)
 		}
 		statuses = append(statuses, status)
 	}
 	return statuses
+}
+
+func pluginRuntimeSafeDetail(state string) string {
+	switch strings.TrimSpace(state) {
+	case "backoff":
+		return "RPC plugin runtime is waiting for a bounded restart"
+	case "failed":
+		return "RPC plugin runtime stopped after a bounded failure"
+	default:
+		return "RPC plugin runtime is unavailable"
+	}
 }
 
 func pluginRuntimeReportState(state string) string {

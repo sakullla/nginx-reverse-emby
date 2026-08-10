@@ -65,6 +65,7 @@ type SyncRequest struct {
 	ManagedCertificateReports []model.ManagedCertificateReport
 	LastSeenIPv4              string
 	LastSeenIPv6              string
+	PluginStatuses            []model.PluginRuntimeStatus
 }
 
 func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
@@ -116,6 +117,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		RuntimePackage            model.RuntimePackage              `json:"runtime_package"`
 		PKISecurityAck            *model.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
 		PKIEnrollmentRequests     []model.PKIEnrollmentRequest      `json:"pki_enrollment_requests,omitempty"`
+		PluginStatuses            []model.PluginRuntimeStatus       `json:"plugin_statuses,omitempty"`
 	}{
 		Name:           c.cfg.AgentName,
 		AgentID:        c.cfg.AgentID,
@@ -139,6 +141,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	payload.ManagedCertificateReports = request.ManagedCertificateReports
 	payload.LastSeenIPv4 = request.LastSeenIPv4
 	payload.LastSeenIPv6 = request.LastSeenIPv6
+	payload.PluginStatuses = append([]model.PluginRuntimeStatus(nil), request.PluginStatuses...)
 
 	data, err := json.Marshal(payload)
 	if err != nil {

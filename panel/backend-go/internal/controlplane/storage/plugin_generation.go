@@ -37,6 +37,7 @@ type PluginGenerationReport struct {
 	State          string          `json:"state"`
 	Sequence       uint64          `json:"sequence"`
 	ErrorCode      string          `json:"error_code,omitempty"`
+	SafeDetail     string          `json:"safe_detail,omitempty"`
 	Details        json.RawMessage `json:"details,omitempty"`
 	Budget         json.RawMessage `json:"budget,omitempty"`
 	ReportedAt     time.Time       `json:"reported_at"`
@@ -66,6 +67,27 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 	}
 	result := make([]PluginGeneration, 0)
 	for _, plugin := range installed {
+		var instances []PluginInstanceRow
+		if err := s.db.WithContext(ctx).Where("plugin_id = ? AND desired_enabled = ?", plugin.PluginID, true).Order("id").Find(&instances).Error; err != nil {
+			return nil, err
+		}
+		targetedInstances := make([]PluginInstanceRow, 0, len(instances))
+		for _, instance := range instances {
+			targetJSON := instance.TargetJSON
+			if instance.PendingOperationID == plugin.PendingOperationID && strings.TrimSpace(instance.PendingTargetJSON) != "" {
+				targetJSON = instance.PendingTargetJSON
+			}
+			targets, err := pluginInstanceTargets(targetJSON, s.LocalAgentID())
+			if err != nil {
+				return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+			}
+			if pluginGenerationContainsString(targets, agentID) {
+				targetedInstances = append(targetedInstances, instance)
+			}
+		}
+		if len(targetedInstances) == 0 {
+			continue
+		}
 		packageIdentity, packageDigest := plugin.ActivePackageIdentity, plugin.ActivePackageDigest
 		if plugin.PendingOperationID != "" && plugin.StagedPackageIdentity != "" && plugin.StagedPackageDigest != "" {
 			packageIdentity, packageDigest = plugin.StagedPackageIdentity, plugin.StagedPackageDigest
@@ -101,22 +123,7 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 		if err != nil {
 			return nil, err
 		}
-		var instances []PluginInstanceRow
-		if err := s.db.WithContext(ctx).Where("plugin_id = ? AND desired_enabled = ?", plugin.PluginID, true).Order("id").Find(&instances).Error; err != nil {
-			return nil, err
-		}
-		for _, instance := range instances {
-			targetJSON := instance.TargetJSON
-			if instance.PendingOperationID == plugin.PendingOperationID && strings.TrimSpace(instance.PendingTargetJSON) != "" {
-				targetJSON = instance.PendingTargetJSON
-			}
-			targets, err := pluginInstanceTargets(targetJSON, s.LocalAgentID())
-			if err != nil {
-				return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
-			}
-			if !pluginGenerationContainsString(targets, agentID) {
-				continue
-			}
+		for _, instance := range targetedInstances {
 			generation, err := buildPluginGeneration(plugin, instance, packageRow, manifest, artifact, grants, agentID)
 			if err != nil {
 				return nil, err
@@ -424,6 +431,20 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 	if details == nil {
 		details = json.RawMessage(`{}`)
 	}
+	if detail := strings.TrimSpace(report.SafeDetail); detail != "" {
+		if len(detail) > 512 || strings.ContainsAny(detail, "\r\n\x00") {
+			return PluginAgentRuntimeStatusRow{}, false, errors.New("plugin generation report safe detail is invalid")
+		}
+		var detailFields map[string]any
+		if err := json.Unmarshal(details, &detailFields); err != nil || detailFields == nil {
+			return PluginAgentRuntimeStatusRow{}, false, errors.New("plugin generation report details must be an object")
+		}
+		detailFields["safe_detail"] = detail
+		details, err = canonicalPluginGenerationJSON(mustPluginGenerationJSON(detailFields), false)
+		if err != nil {
+			return PluginAgentRuntimeStatusRow{}, false, err
+		}
+	}
 	if budget == nil {
 		budget = json.RawMessage(`{}`)
 	}
@@ -463,6 +484,11 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		return tx.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, s.resolveAgentID(report.AgentID), report.InstanceID).First(&result).Error
 	})
 	return result, replayed, err
+}
+
+func mustPluginGenerationJSON(value any) json.RawMessage {
+	payload, _ := json.Marshal(value)
+	return payload
 }
 
 func (s *GormStore) ListPluginAgentRuntimeStatuses(ctx context.Context, operationID string) ([]PluginAgentRuntimeStatusRow, error) {

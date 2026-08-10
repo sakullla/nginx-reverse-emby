@@ -983,7 +983,7 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 			Identity:   pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
 			Config:     append([]byte(nil), generation.Config...), Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
 			Deadline: time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
-			RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
+			Restart: manifest.FailurePolicy.Restart, RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
 		})
 	}
 	return plan, nil

@@ -351,6 +351,7 @@ func TestHeartbeatSync(t *testing.T) {
 			},
 			UpdatedAt: "2026-04-11T00:00:00Z",
 		}},
+		PluginStatuses: []model.PluginRuntimeStatus{{InstanceID: "instance-heartbeat", Sequence: 2}},
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -463,6 +464,7 @@ func TestHeartbeatSync(t *testing.T) {
 			ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
 			Version                   string                           `json:"version"`
 			Platform                  string                           `json:"platform"`
+			PluginStatuses            []model.PluginRuntimeStatus      `json:"plugin_statuses"`
 		}
 		if err := json.NewDecoder(bytes.NewReader(req.Body)).Decode(&payload); err != nil {
 			t.Fatalf("failed to decode payload: %v", err)
@@ -492,6 +494,9 @@ func TestHeartbeatSync(t *testing.T) {
 		}
 		if len(payload.ManagedCertificateReports) != 1 || payload.ManagedCertificateReports[0].ID != 21 {
 			t.Fatalf("unexpected managed_certificate_reports payload %+v", payload.ManagedCertificateReports)
+		}
+		if len(payload.PluginStatuses) != 1 || payload.PluginStatuses[0].InstanceID != "instance-heartbeat" || payload.PluginStatuses[0].Sequence != 2 {
+			t.Fatalf("unexpected plugin_statuses payload %+v", payload.PluginStatuses)
 		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")

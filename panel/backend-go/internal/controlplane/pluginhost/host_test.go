@@ -1060,6 +1060,31 @@ func TestPluginHostCanceledWatcherLeavesReadyCrashAndLogForStopOrClose(t *testin
 	}
 }
 
+func TestNormalizeRestartCandidatePreservesExplicitZeroPolicy(t *testing.T) {
+	never := normalizeRestartCandidate(Candidate{Restart: "never", RestartLimit: 0})
+	if never.RestartLimit != 0 {
+		t.Fatalf("never restart limit = %d", never.RestartLimit)
+	}
+	onFailure := normalizeRestartCandidate(Candidate{Restart: "on-failure", RestartLimit: 0})
+	if onFailure.RestartLimit != 0 {
+		t.Fatalf("explicit zero on-failure restart limit = %d", onFailure.RestartLimit)
+	}
+	legacy := normalizeRestartCandidate(Candidate{})
+	if legacy.RestartLimit != 3 {
+		t.Fatalf("unspecified restart limit = %d", legacy.RestartLimit)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	neverWithBudget := normalizeRestartCandidate(Candidate{Restart: "never", RestartLimit: 2})
+	control := &runtimeControl{candidate: neverWithBudget, ctx: ctx, cancel: cancel, backoff: time.Millisecond}
+	instance := &Instance{ID: "instance", State: "healthy"}
+	host := &Host{active: map[string]*Instance{"instance": instance}}
+	_, retry, recorded := host.recordRestartFailure(control, instance, errors.New("crash"))
+	if !recorded || retry || instance.State != "failed" || !instance.CircuitOpen {
+		t.Fatalf("never restart crash result: recorded=%v retry=%v instance=%+v", recorded, retry, instance)
+	}
+}
+
 func TestPluginHostCanceledWatcherLeavesSimultaneousNormalExitClean(t *testing.T) {
 	for iteration := 0; iteration < 100; iteration++ {
 		processDone := make(chan struct{})

@@ -946,6 +946,22 @@ func TestSnapshotActivatorRestoresOutboundProxyOnRegistryFailure(t *testing.T) {
 
 type syncClientFunc func(context.Context, SyncRequest) (Snapshot, error)
 
+func TestRuntimePayloadCompleteRequiresPluginGenerations(t *testing.T) {
+	complete := Snapshot{
+		Rules: []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+		EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
+		PluginGenerations: []model.PluginGeneration{},
+	}
+	if !runtimePayloadComplete(complete) {
+		t.Fatal("explicit full plugin generation payload was incomplete")
+	}
+	complete.PluginGenerations = nil
+	if runtimePayloadComplete(complete) {
+		t.Fatal("nil plugin generation payload was accepted as complete")
+	}
+}
+
 func (f syncClientFunc) Sync(ctx context.Context, req SyncRequest) (Snapshot, error) {
 	return f(ctx, req)
 }

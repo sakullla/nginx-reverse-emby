@@ -3,6 +3,9 @@ package core
 import "github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 
 func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
+	if next.PluginGenerations == nil {
+		next.PluginGenerations = previous.PluginGenerations
+	}
 	merged := next
 	if next.VersionPackage == nil {
 		merged.VersionPackage = previous.VersionPackage

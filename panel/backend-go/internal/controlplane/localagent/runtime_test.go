@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -516,6 +517,27 @@ func TestToEmbeddedSnapshotEnablesRuntimeFilteredHTTPAndL4Rules(t *testing.T) {
 	}
 	if len(embedded.L4Rules) != 1 || !embedded.L4Rules[0].Enabled {
 		t.Fatalf("embedded L4 runtime rules = %+v, want one enabled rule", embedded.L4Rules)
+	}
+}
+
+func TestEmbeddedBridgePreservesPluginGenerationAndRuntimeStatus(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	embedded := toEmbeddedSnapshot(Snapshot{PluginGenerations: []storage.PluginGeneration{{
+		ID: digest, InstanceID: "instance", OperationID: "operation", Revision: 7, PluginID: "plugin", PackageDigest: digest,
+	}}})
+	if len(embedded.PluginGenerations) != 1 || embedded.PluginGenerations[0].OperationID != "operation" {
+		t.Fatalf("embedded plugin generations = %+v", embedded.PluginGenerations)
+	}
+
+	request := fromEmbeddedSyncRequest(goagentembedded.SyncRequest{PluginStatuses: []goagentembedded.PluginRuntimeStatus{{
+		InstanceID: "instance", OperationID: "operation", Sequence: 3, State: "degraded",
+	}}})
+	if len(request.PluginStatuses) != 1 || request.PluginStatuses[0].Sequence != 3 || request.PluginStatuses[0].State != "degraded" {
+		t.Fatalf("embedded plugin statuses = %+v", request.PluginStatuses)
+	}
+	state := fromEmbeddedRuntimeState(goagentembedded.RuntimeState{PluginStatuses: []goagentembedded.PluginRuntimeStatus{{InstanceID: "instance", Sequence: 4}}})
+	if len(state.PluginStatuses) != 1 || state.PluginStatuses[0].Sequence != 4 {
+		t.Fatalf("embedded runtime state statuses = %+v", state.PluginStatuses)
 	}
 }
 
