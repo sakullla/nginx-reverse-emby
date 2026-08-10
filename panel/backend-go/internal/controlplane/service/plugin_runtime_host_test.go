@@ -71,14 +71,24 @@ type runtimeQueueLauncher struct {
 }
 
 type blockingRuntimeLauncher struct {
-	started chan struct{}
-	release chan struct{}
+	started      chan struct{}
+	release      chan struct{}
+	returned     chan struct{}
+	startedOnce  sync.Once
+	returnedOnce sync.Once
 }
 
-func (l blockingRuntimeLauncher) Start(context.Context, string, []string, []string, io.Writer, pluginhost.Candidate) (pluginhost.Process, error) {
-	close(l.started)
-	<-l.release
-	return &runtimeProcess{done: make(chan error, 1)}, nil
+func (l *blockingRuntimeLauncher) Start(ctx context.Context, _ string, _ []string, _ []string, _ io.Writer, _ pluginhost.Candidate) (pluginhost.Process, error) {
+	l.startedOnce.Do(func() { close(l.started) })
+	select {
+	case <-l.release:
+		return &runtimeProcess{done: make(chan error, 1)}, nil
+	case <-ctx.Done():
+		if l.returned != nil {
+			l.returnedOnce.Do(func() { close(l.returned) })
+		}
+		return nil, ctx.Err()
+	}
 }
 
 func (l *runtimeQueueLauncher) Start(context.Context, string, []string, []string, io.Writer, pluginhost.Candidate) (pluginhost.Process, error) {
@@ -134,9 +144,21 @@ type runtimeRepo struct {
 	promoteStarted chan struct{}
 	promoteRelease chan struct{}
 	promoteOnce    sync.Once
+	stageStarted   chan struct{}
+	stageRelease   chan struct{}
+	stageOnce      sync.Once
+	failErr        error
 }
 
-func (r *runtimeRepo) StagePluginRuntime(_ context.Context, row storage.PluginRuntimeInstanceRow) error {
+func (r *runtimeRepo) StagePluginRuntime(ctx context.Context, row storage.PluginRuntimeInstanceRow) error {
+	if r.stageStarted != nil {
+		r.stageOnce.Do(func() { close(r.stageStarted) })
+		select {
+		case <-r.stageRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	row.ActiveGeneration, row.ActivePackageDigest, row.ActiveArtifactDigest = r.row.ActiveGeneration, r.row.ActivePackageDigest, r.row.ActiveArtifactDigest
@@ -164,7 +186,20 @@ func (r *runtimeRepo) PromotePluginRuntime(_ context.Context, id, generation str
 	}
 	return nil
 }
-func (r *runtimeRepo) FailPluginRuntimeCandidate(context.Context, string, string, error) error {
+func (r *runtimeRepo) FailPluginRuntimeCandidate(_ context.Context, _ string, generation string, failure error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.failErr != nil {
+		return r.failErr
+	}
+	if r.row.CandidateGeneration != generation {
+		return errors.New("candidate generation mismatch")
+	}
+	r.row.CandidateGeneration = ""
+	r.row.CandidateState = "failed"
+	if failure != nil {
+		r.row.CandidateLastError = failure.Error()
+	}
 	return nil
 }
 func (r *runtimeRepo) GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error) {
@@ -232,7 +267,7 @@ func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(payload)
-	launcher := blockingRuntimeLauncher{started: make(chan struct{}), release: make(chan struct{})}
+	launcher := &blockingRuntimeLauncher{started: make(chan struct{}), release: make(chan struct{})}
 	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +304,83 @@ func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
 	repo.mu.Unlock()
 	if row.State != "stopped" || row.PID != 0 || row.ActiveGeneration != "g1" {
 		t.Fatalf("serialized Stop did not persist terminal state: %+v", row)
+	}
+}
+
+func TestPluginRuntimeHostCloseCancelsAndJoinsBlockedRepositoryActivation(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{stageStarted: make(chan struct{}), stageRelease: make(chan struct{})}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-blocked-repository")
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-repo.stageStarted
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-activateDone; err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("blocked repository activation error = %v", err)
+	}
+	if launcher.process(0) != nil {
+		t.Fatal("repository-blocked activation launched a process after Close")
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("repository-blocked activation published after Close")
+	}
+	if _, err := service.Activate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("post-Close activation error = %v", err)
+	}
+}
+
+func TestPluginRuntimeHostCloseCancelsAndJoinsBlockedLauncherActivation(t *testing.T) {
+	root := t.TempDir()
+	launcher := &blockingRuntimeLauncher{started: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-blocked-launcher")
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-launcher.started
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-launcher.returned:
+	default:
+		t.Fatal("Close returned before the blocked launcher observed cancellation")
+	}
+	if err := <-activateDone; err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("blocked launcher activation error = %v", err)
+	}
+	repo.mu.Lock()
+	row := repo.row
+	repo.mu.Unlock()
+	if row.CandidateGeneration != "" || row.CandidateState != "failed" || !strings.Contains(row.CandidateLastError, "canceled") {
+		t.Fatalf("canceled launcher candidate was not rolled back: %+v", row)
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("launcher-blocked activation published after Close")
 	}
 }
 

@@ -24,7 +24,11 @@ type PluginRuntimeHost struct {
 	host         *pluginhost.Host
 	repository   PluginRuntimeRepository
 	locks        sync.Map
-	lifecycle    sync.RWMutex
+	stateMu      sync.Mutex
+	closeMu      sync.Mutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	operations   sync.WaitGroup
 	closed       bool
 	closeTargets map[string]string
 }
@@ -33,7 +37,8 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 	if host == nil || repository == nil {
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
-	service := &PluginRuntimeHost{host: host, repository: repository, closeTargets: make(map[string]string)}
+	ctx, cancel := context.WithCancel(context.Background())
+	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, closeTargets: make(map[string]string)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
 		return repository.UpdatePluginRuntimeHealth(context.Background(), status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
 	})
@@ -41,46 +46,81 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 }
 
 func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.Candidate) (*pluginhost.Instance, error) {
-	s.lifecycle.RLock()
-	defer s.lifecycle.RUnlock()
-	if s.closed {
-		return nil, errors.New("plugin runtime service is closed")
+	operationCtx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return nil, err
 	}
+	defer done()
 	lockValue, _ := s.locks.LoadOrStore(candidate.InstanceID, &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := operationCtx.Err(); err != nil {
+		return nil, errors.Join(errors.New("plugin runtime activation canceled"), err)
+	}
 	row := storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256}
-	if err := s.repository.StagePluginRuntime(ctx, row); err != nil {
+	if err := s.repository.StagePluginRuntime(operationCtx, row); err != nil {
 		return nil, fmt.Errorf("stage plugin runtime state: %w", err)
 	}
-	instance, err := s.host.PrepareCandidate(ctx, candidate)
+	instance, err := s.host.PrepareCandidate(operationCtx, candidate)
 	if err != nil {
-		if reportErr := s.repository.FailPluginRuntimeCandidate(ctx, candidate.InstanceID, candidate.Identity.Generation, err); reportErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if reportErr := s.repository.FailPluginRuntimeCandidate(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, err); reportErr != nil {
 			return nil, errors.Join(err, reportErr)
 		}
 		return nil, err
 	}
 	state, _ := instance.Status()
 	sandbox := instance.SandboxProvider
-	if err := s.repository.PromotePluginRuntime(ctx, candidate.InstanceID, candidate.Identity.Generation, instance.PID, sandbox); err != nil {
-		_ = instance.Stop(context.Background())
-		_ = s.repository.FailPluginRuntimeCandidate(context.Background(), candidate.InstanceID, candidate.Identity.Generation, err)
-		return nil, fmt.Errorf("promote plugin runtime state after %s: %w", state, err)
-	}
-	if err := s.host.Publish(instance); err != nil {
-		publishErr := fmt.Errorf("publish promoted plugin runtime: %w", err)
+	if err := s.repository.PromotePluginRuntime(operationCtx, candidate.InstanceID, candidate.Identity.Generation, instance.PID, sandbox); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		stopErr := instance.Stop(cleanupCtx)
-		terminalErr := retryRuntimeStopPersistence(cleanupCtx, s.repository, candidate.InstanceID, candidate.Identity.Generation)
-		if terminalErr != nil {
-			fallbackErr := s.repository.UpdatePluginRuntimeHealth(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, "failed", 0, 0, false, safeRuntimeError(errors.Join(publishErr, terminalErr)))
-			terminalErr = errors.Join(fmt.Errorf("terminalize promoted plugin runtime: %w", terminalErr), fallbackErr)
-		}
-		return nil, errors.Join(publishErr, stopErr, terminalErr)
+		reportErr := s.repository.FailPluginRuntimeCandidate(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, err)
+		return nil, errors.Join(fmt.Errorf("promote plugin runtime state after %s: %w", state, err), stopErr, reportErr)
+	}
+	if err := operationCtx.Err(); err != nil {
+		return nil, s.rollbackPromotedCandidate(instance, candidate, fmt.Errorf("publish canceled promoted plugin runtime: %w", err))
+	}
+	if err := s.host.Publish(instance); err != nil {
+		return nil, s.rollbackPromotedCandidate(instance, candidate, fmt.Errorf("publish promoted plugin runtime: %w", err))
 	}
 	return instance, nil
+}
+
+func (s *PluginRuntimeHost) beginOperation(ctx context.Context) (context.Context, func(), error) {
+	if ctx == nil {
+		return nil, nil, errors.New("plugin runtime operation context is required")
+	}
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return nil, nil, errors.New("plugin runtime service is closed")
+	}
+	s.operations.Add(1)
+	serviceCtx := s.ctx
+	s.stateMu.Unlock()
+	operationCtx, cancel := context.WithCancel(ctx)
+	stopServiceCancellation := context.AfterFunc(serviceCtx, cancel)
+	done := func() {
+		stopServiceCancellation()
+		cancel()
+		s.operations.Done()
+	}
+	return operationCtx, done, nil
+}
+
+func (s *PluginRuntimeHost) rollbackPromotedCandidate(instance *pluginhost.Instance, candidate pluginhost.Candidate, publishErr error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stopErr := instance.Stop(cleanupCtx)
+	terminalErr := retryRuntimeStopPersistence(cleanupCtx, s.repository, candidate.InstanceID, candidate.Identity.Generation)
+	if terminalErr != nil {
+		fallbackErr := s.repository.UpdatePluginRuntimeHealth(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, "failed", 0, 0, false, safeRuntimeError(errors.Join(publishErr, terminalErr)))
+		terminalErr = errors.Join(fmt.Errorf("terminalize promoted plugin runtime: %w", terminalErr), fallbackErr)
+	}
+	return errors.Join(publishErr, stopErr, terminalErr)
 }
 
 func safeRuntimeError(err error) string {
@@ -95,30 +135,45 @@ func safeRuntimeError(err error) string {
 }
 
 func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
-	s.lifecycle.RLock()
-	defer s.lifecycle.RUnlock()
-	if s.closed {
-		return errors.New("plugin runtime service is closed")
+	operationCtx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return err
 	}
+	defer done()
 	lockValue, _ := s.locks.LoadOrStore(instanceID, &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	lock.Lock()
 	defer lock.Unlock()
-	row, found, readErr := s.repository.GetPluginRuntime(ctx, instanceID)
+	if err := operationCtx.Err(); err != nil {
+		return errors.Join(errors.New("plugin runtime stop canceled"), err)
+	}
+	row, found, readErr := s.repository.GetPluginRuntime(operationCtx, instanceID)
 	if readErr != nil {
 		return fmt.Errorf("read plugin runtime before stop: %w", readErr)
 	}
-	stopErr := s.host.Stop(ctx, instanceID)
+	stopErr := s.host.Stop(operationCtx, instanceID)
 	if !found || row.ActiveGeneration == "" {
 		return stopErr
 	}
-	persistErr := retryRuntimeStopPersistence(ctx, s.repository, instanceID, row.ActiveGeneration)
+	persistCtx := operationCtx
+	cancelPersist := func() {}
+	if operationCtx.Err() != nil {
+		persistCtx, cancelPersist = context.WithTimeout(context.Background(), 5*time.Second)
+	}
+	defer cancelPersist()
+	persistErr := retryRuntimeStopPersistence(persistCtx, s.repository, instanceID, row.ActiveGeneration)
 	return errors.Join(stopErr, persistErr, s.host.StatusPersistenceError(instanceID))
 }
 func (s *PluginRuntimeHost) Close(ctx context.Context) error {
-	s.lifecycle.Lock()
-	defer s.lifecycle.Unlock()
-	s.closed = true
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	s.stateMu.Lock()
+	if !s.closed {
+		s.closed = true
+		s.cancel()
+	}
+	s.stateMu.Unlock()
+	s.operations.Wait()
 	for instanceID, generation := range s.host.ActiveGenerations() {
 		s.closeTargets[instanceID] = generation
 	}
