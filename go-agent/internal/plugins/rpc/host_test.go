@@ -313,6 +313,115 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 	}
 }
 
+func TestRPCHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = time.Millisecond
+	process := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{process}}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return nil, nil, errors.New("dial failed")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Activate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "dial failed") || !strings.Contains(err.Error(), "candidate kill failed") {
+		t.Fatalf("Activate setup error = %v", err)
+	}
+	host.mu.RLock()
+	pending := len(host.pending)
+	host.mu.RUnlock()
+	if pending != 1 {
+		t.Fatalf("launched setup failure ownership = %d, want 1", pending)
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry setup cleanup: %v", err)
+	}
+	select {
+	case <-process.stopped:
+	default:
+		t.Fatal("Close returned before setup-failed process terminated")
+	}
+}
+
+func TestRPCHostCrashRestartAttemptIsOwnedByStopBeforeHandshake(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	runner := &restartHostRunner{started: make(chan *hostProcess, 4)}
+	restartDialStarted := make(chan struct{})
+	var dialMu sync.Mutex
+	dials := 0
+	dial := func(ctx context.Context, _ DialConfig) (LifecycleClient, io.Closer, error) {
+		dialMu.Lock()
+		dials++
+		dialNumber := dials
+		dialMu.Unlock()
+		if dialNumber == 1 {
+			return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+		}
+		close(restartDialStarted)
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	first := nextHostProcess(t, runner.started)
+	first.done <- errors.New("crash")
+	second := nextHostProcess(t, runner.started)
+	<-restartDialStarted
+	if err := host.Stop(t.Context(), candidate.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-second.done:
+		t.Fatal("second process completion was not joined by supervisor")
+	default:
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Stop retained crash-restart setup attempt")
+	}
+}
+
+func TestRPCHostPreviousDrainKillFailureCanBeRetried(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = time.Millisecond
+	oldProcess := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
+	newProcess := &hostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{oldProcess, newProcess}}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Generation = "g2"
+	if _, err := host.Activate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "candidate kill failed") {
+		t.Fatalf("first drain error = %v", err)
+	}
+	active, ok := host.Active(candidate.InstanceID)
+	if !ok || active != first {
+		t.Fatal("failed drain lost old generation ownership")
+	}
+	if err := host.Stop(t.Context(), candidate.InstanceID); err != nil {
+		t.Fatalf("second drain Stop did not retry kill: %v", err)
+	}
+	select {
+	case <-oldProcess.stopped:
+	default:
+		t.Fatal("retried old generation did not terminate")
+	}
+}
+
 func TestRPCHostCutoverUsesOwnedDrainAfterPublicationContextCanceled(t *testing.T) {
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)

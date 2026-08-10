@@ -46,6 +46,18 @@ func TestIntegrationRunStopsCleanlyOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestRunPropagatesCleanupFailure(t *testing.T) {
+	cfg := config.Default()
+	application := New(cfg, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), log.New(io.Discard, "", 0), nil)
+	cleanupErr := errors.New("runtime cleanup failed")
+	application.SetCleanup(func() error { return cleanupErr })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); !errors.Is(err, cleanupErr) {
+		t.Fatalf("Run cleanup error = %v", err)
+	}
+}
+
 func TestNewWiresServerErrorLog(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()

@@ -37,6 +37,7 @@ type retryBackendKillProcess struct {
 	mu        sync.Mutex
 	killCalls int
 	failures  int
+	stopped   bool
 }
 
 func (p *retryBackendKillProcess) PID() int               { return 92 }
@@ -49,8 +50,14 @@ func (p *retryBackendKillProcess) Kill() error {
 	if p.killCalls <= p.failures {
 		return errors.New("first backend kill failed")
 	}
+	p.stopped = true
 	p.done <- nil
 	return nil
+}
+func (p *retryBackendKillProcess) isDone() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopped
 }
 
 func (p *controlledStopProcess) PID() int               { return 91 }
@@ -77,6 +84,31 @@ type testLauncher struct{}
 
 func (testLauncher) Start(context.Context, string, []string, []string, io.Writer, Candidate) (Process, error) {
 	return &testProcess{done: make(chan error, 1)}, nil
+}
+
+type singleProcessLauncher struct{ process Process }
+
+func (l singleProcessLauncher) Start(context.Context, string, []string, []string, io.Writer, Candidate) (Process, error) {
+	return l.process, nil
+}
+
+type processQueueLauncher struct {
+	mu        sync.Mutex
+	processes []Process
+}
+
+func (l *processQueueLauncher) Start(context.Context, string, []string, []string, io.Writer, Candidate) (Process, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	process := l.processes[0]
+	l.processes = l.processes[1:]
+	return process, nil
+}
+
+type failingDialer struct{ err error }
+
+func (d failingDialer) Dial(context.Context, Endpoint, time.Duration) (RPCClient, io.Closer, error) {
+	return nil, nil, d.err
 }
 
 type testCloser struct{}
@@ -241,6 +273,41 @@ func TestPluginHostHandshakeFailurePreservesActiveInstance(t *testing.T) {
 	}
 }
 
+func TestPluginHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("setup failure ownership")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	process := &retryBackendKillProcess{done: make(chan error, 1), failures: 1}
+	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, failingDialer{err: errors.New("dial failed")}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(digest[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(digest[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	if _, err := host.PrepareCandidate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "dial failed") || !strings.Contains(err.Error(), "first backend kill failed") {
+		t.Fatalf("PrepareCandidate error = %v", err)
+	}
+	host.mu.RLock()
+	prepared := len(host.prepared)
+	host.mu.RUnlock()
+	if prepared != 1 || process.isDone() {
+		t.Fatalf("launched setup failure ownership: prepared=%d done=%v", prepared, process.isDone())
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry setup cleanup: %v", err)
+	}
+	host.mu.RLock()
+	prepared = len(host.prepared)
+	host.mu.RUnlock()
+	if prepared != 0 || !process.isDone() {
+		t.Fatalf("Close cleanup result: prepared=%d done=%v", prepared, process.isDone())
+	}
+}
+
 type queuedLauncher struct {
 	mu        sync.Mutex
 	processes []*testProcess
@@ -304,6 +371,12 @@ func TestPluginHostCrashRestartsThroughHandshakeAndOpensCircuit(t *testing.T) {
 		active, _ := host.Active("instance")
 		state, last := active.Status()
 		t.Fatalf("restart not reached: state=%s last=%q handshakes=%d processes=%d", state, last, handshakes.Load(), len(launcher.processes))
+	}
+	host.mu.RLock()
+	preparedAfterRestart := len(host.prepared)
+	host.mu.RUnlock()
+	if preparedAfterRestart != 0 {
+		t.Fatalf("successful restart retained %d prepared owners", preparedAfterRestart)
 	}
 	launcher.process(1).done <- errors.New("crash two")
 	if !waitFor(t, func() bool {
@@ -483,6 +556,65 @@ func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
 		return strings.Contains(active.LastError, "cleanup")
 	}) {
 		t.Fatal("old generation cleanup concern was not recorded")
+	}
+}
+
+func TestPluginHostDrainingGenerationKillFailureIsRetriedByClose(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("draining ownership")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	oldProcess := &retryBackendKillProcess{done: make(chan error, 1), failures: 1}
+	newProcess := &testProcess{done: make(chan error, 1)}
+	launcher := &processQueueLauncher{processes: []Process{oldProcess, newProcess}}
+	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}, testRPC{abi: pluginsdk.RPCABIV1}}}
+	host, err := New(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(digest[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(digest[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Identity.Generation = "g2"
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, func() bool {
+		oldProcess.mu.Lock()
+		defer oldProcess.mu.Unlock()
+		return oldProcess.killCalls == 1
+	}) {
+		t.Fatal("old generation cleanup did not attempt first kill")
+	}
+	host.mu.RLock()
+	_, retained := host.prepared[func() *Instance {
+		for instance := range host.prepared {
+			if instance.Generation == "g1" {
+				return instance
+			}
+		}
+		return nil
+	}()]
+	host.mu.RUnlock()
+	if !retained {
+		t.Fatal("failed draining generation was not retained")
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry draining generation: %v", err)
+	}
+	if !oldProcess.isDone() {
+		t.Fatal("Close returned before draining generation terminated")
+	}
+	host.mu.RLock()
+	prepared := len(host.prepared)
+	host.mu.RUnlock()
+	if prepared != 0 {
+		t.Fatalf("Close retained %d completed generations", prepared)
 	}
 }
 

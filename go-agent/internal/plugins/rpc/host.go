@@ -156,30 +156,42 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	candidate.Process.Security.Requirement = candidate.Requirement
 	candidate.Process = normalizeRestartSpec(candidate.Process)
 
-	attempt, err := h.startAttempt(activationCtx, candidate)
-	if err != nil {
-		return nil, err
-	}
 	runCtx, cancel := context.WithCancel(hostCtx)
-	processStatus := attempt.handle.Status()
 	instance := &HostedInstance{
 		candidate:  candidate,
 		supervisor: h.supervisor,
 		dial:       h.dial,
-		attempt:    attempt,
 		status: RuntimeStatus{
-			InstanceID:      candidate.InstanceID,
-			Generation:      candidate.Generation,
-			State:           "healthy",
-			SandboxProvider: processStatus.Sandbox.Provider,
-			PID:             processStatus.PID,
+			InstanceID: candidate.InstanceID,
+			Generation: candidate.Generation,
+			State:      "starting",
 		},
 		backoff: candidate.Process.InitialBackoff,
 		cancel:  cancel,
 		done:    make(chan struct{}),
 	}
+	attempt, err := h.startAttempt(activationCtx, candidate, func(attempt *hostAttempt) {
+		instance.mu.Lock()
+		instance.attempt = attempt
+		instance.mu.Unlock()
+		h.mu.Lock()
+		h.pending[instance] = struct{}{}
+		h.mu.Unlock()
+	})
+	if err != nil {
+		cancel()
+		if attempt == nil {
+			return nil, err
+		}
+		return nil, errors.Join(err, h.stopPending(instance))
+	}
+	processStatus := attempt.handle.Status()
+	instance.mu.Lock()
+	instance.status.State = "healthy"
+	instance.status.SandboxProvider = processStatus.Sandbox.Provider
+	instance.status.PID = processStatus.PID
+	instance.mu.Unlock()
 	h.mu.Lock()
-	h.pending[instance] = struct{}{}
 	if h.closed {
 		h.mu.Unlock()
 		cancel()
@@ -226,7 +238,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	return instance, nil
 }
 
-func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate) (*hostAttempt, error) {
+func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt)) (*hostAttempt, error) {
 	security, err := provisionAttemptSecurity(filepath.Dir(candidate.Process.Executable), candidate.Dial)
 	if err != nil {
 		return nil, err
@@ -247,24 +259,19 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate) (*host
 	if err != nil {
 		return nil, err
 	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = h.supervisor.Stop(context.Background(), candidate.Process.ID)
-		}
-	}()
+	attempt := &hostAttempt{handle: handle, cleanup: security.cleanup}
+	failedSecurity = false
+	if launched != nil {
+		launched(attempt)
+	}
 	if err := processAttemptError(handle); err != nil {
-		return nil, err
+		return attempt, err
 	}
 	client, closer, err := h.dial(ctx, candidate.Dial)
 	if err != nil {
-		return nil, err
+		return attempt, err
 	}
-	defer func() {
-		if failed {
-			_ = closer.Close()
-		}
-	}()
+	attempt.client, attempt.closer = client, closer
 
 	handshake := pluginsdk.RPCHandshakeRequest{
 		ABI:            pluginsdk.RPCABIV1,
@@ -277,32 +284,30 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate) (*host
 	}
 	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {
-		return nil, err
+		return attempt, err
 	}
 	if err := ValidateHandshake(handshake, response); err != nil {
-		return nil, err
+		return attempt, err
 	}
 	lifecycle := pluginsdk.LifecycleRequest{Generation: candidate.Generation, Config: append([]byte(nil), candidate.Config...)}
 	prepared, err := client.Prepare(ctx, lifecycle)
 	if err != nil {
-		return nil, fmt.Errorf("Agent RPC plugin prepare: %w", err)
+		return attempt, fmt.Errorf("Agent RPC plugin prepare: %w", err)
 	}
 	if err := prepared.Validate(); err != nil {
-		return nil, fmt.Errorf("Agent RPC plugin prepare: %w", err)
+		return attempt, fmt.Errorf("Agent RPC plugin prepare: %w", err)
 	}
 	activated, err := client.Activate(ctx, lifecycle)
 	if err != nil {
-		return nil, fmt.Errorf("Agent RPC plugin activate: %w", err)
+		return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
 	}
 	if err := activated.Validate(); err != nil {
-		return nil, fmt.Errorf("Agent RPC plugin activate: %w", err)
+		return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
 	}
 	if err := processAttemptError(handle); err != nil {
-		return nil, err
+		return attempt, err
 	}
-	failed = false
-	failedSecurity = false
-	return &hostAttempt{handle: handle, client: client, closer: closer, cleanup: security.cleanup}, nil
+	return attempt, nil
 }
 
 func retryAgentHandshake(ctx context.Context, deadline time.Duration, handle *pluginprocess.Handle, client LifecycleClient, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
@@ -367,19 +372,28 @@ func (h *Host) Stop(ctx context.Context, id string) error {
 	defer lock.Unlock()
 	h.mu.Lock()
 	instance := h.active[id]
-	h.mu.Unlock()
-	if instance == nil {
-		return nil
+	pending := make([]*HostedInstance, 0)
+	for candidate := range h.pending {
+		if candidate.candidate.InstanceID == id {
+			pending = append(pending, candidate)
+		}
 	}
-	stopErr := instance.stop(ctx)
-	if instance.terminated() {
+	h.mu.Unlock()
+	var errs []error
+	if instance != nil {
+		errs = append(errs, instance.stop(ctx))
+	}
+	if instance != nil && instance.terminated() {
 		h.mu.Lock()
 		if h.active[id] == instance {
 			delete(h.active, id)
 		}
 		h.mu.Unlock()
 	}
-	return stopErr
+	for _, candidate := range pending {
+		errs = append(errs, h.stopPending(candidate))
+	}
+	return errors.Join(errs...)
 }
 
 func (h *Host) Close(ctx context.Context) error {
@@ -544,8 +558,28 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.State = "starting"
 			i.mu.Unlock()
 
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial}).startAttempt(ctx, i.candidate)
+			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+				i.mu.Lock()
+				i.attempt = replacement
+				i.mu.Unlock()
+			})
 			if err != nil {
+				if replacement != nil {
+					err = errors.Join(err, i.stopAttemptWithTimeout(replacement, true))
+					if attemptTerminated(replacement) {
+						i.mu.Lock()
+						if i.attempt == replacement {
+							i.attempt = nil
+						}
+						i.mu.Unlock()
+					} else {
+						i.mu.Lock()
+						i.status.State = "failed"
+						i.status.LastError = safeHostError(err)
+						i.mu.Unlock()
+						return
+					}
+				}
 				if ctx.Err() != nil {
 					return
 				}

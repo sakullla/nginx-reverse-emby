@@ -168,7 +168,7 @@ func (h *Host) StatusPersistenceError(instanceID string) error {
 	return h.observerErrors[instanceID]
 }
 
-func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Instance, error) {
+func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (instance *Instance, resultErr error) {
 	if h == nil {
 		return nil, errors.New("control-plane plugin host is required")
 	}
@@ -224,24 +224,40 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 		_ = logWriter.Close()
 		return nil, fmt.Errorf("start control-plane plugin process: %w", err)
 	}
-	cleanupProcess := true
+	if candidate.GracePeriod <= 0 {
+		candidate.GracePeriod = 5 * time.Second
+	}
+	provider := "platform"
+	if hasUnsandboxedGrant(candidate.Grants) {
+		provider = "unsandboxed"
+	}
+	instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "starting", SandboxProvider: provider, process: process, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt}
+	cleanupSecurity = false
+	keepAttempt = true
+	go instance.monitor()
+	h.mu.Lock()
+	h.prepared[instance] = struct{}{}
+	closed := h.closed
+	h.mu.Unlock()
+	ownedInstance := instance
 	defer func() {
-		if cleanupProcess {
-			_ = process.Kill()
-			_ = process.Wait()
-			_ = logWriter.Close()
+		if resultErr == nil {
+			return
 		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), hostProcessJoinTimeout(ownedInstance.grace))
+		defer cancel()
+		resultErr = errors.Join(resultErr, h.StopCandidate(cleanupCtx, ownedInstance))
 	}()
+	if closed {
+		return nil, errors.New("control-plane plugin host closed during candidate preparation")
+	}
 	client, closer, err := h.dialer.Dial(attemptCtx, candidate.Endpoint, candidate.Deadline)
 	if err != nil {
 		return nil, err
 	}
-	cleanupRPC := true
-	defer func() {
-		if cleanupRPC {
-			_ = closer.Close()
-		}
-	}()
+	instance.mu.Lock()
+	instance.client, instance.closer = client, closer
+	instance.mu.Unlock()
 	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Identity.Scopes...), Generation: candidate.Identity.Generation}
 	response, err := retryControlHandshake(attemptCtx, candidate.Deadline, process, client, handshake)
 	if err != nil {
@@ -260,25 +276,9 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	if err := attemptCtx.Err(); err != nil {
 		return nil, errors.Join(errors.New("control-plane plugin candidate preparation canceled"), err)
 	}
-	if candidate.GracePeriod <= 0 {
-		candidate.GracePeriod = 5 * time.Second
-	}
-	provider := "platform"
-	if hasUnsandboxedGrant(candidate.Grants) {
-		provider = "unsandboxed"
-	}
-	instance := &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "healthy", SandboxProvider: provider, process: process, client: client, closer: closer, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt}
-	cleanupProcess, cleanupRPC = false, false
-	cleanupSecurity = false
-	keepAttempt = true
-	go instance.monitor()
-	h.mu.Lock()
-	h.prepared[instance] = struct{}{}
-	if h.closed {
-		h.mu.Unlock()
-		return nil, errors.New("control-plane plugin host closed during candidate preparation")
-	}
-	h.mu.Unlock()
+	instance.mu.Lock()
+	instance.State = "healthy"
+	instance.mu.Unlock()
 	return instance, nil
 }
 
@@ -322,6 +322,9 @@ func (h *Host) Publish(instance *Instance) error {
 	if previous != nil && previous.control != nil {
 		previous.control.cancel()
 	}
+	if previous != nil && previous != instance {
+		h.prepared[previous] = struct{}{}
+	}
 	workers := 1
 	if previous != nil && previous != instance {
 		workers++
@@ -341,6 +344,11 @@ func (h *Host) Publish(instance *Instance) error {
 				instance.LastError = "previous generation cleanup: " + safeError(err)
 				instance.mu.Unlock()
 				h.notifyOwned(instance, control)
+			}
+			if previous.terminated() {
+				h.mu.Lock()
+				delete(h.prepared, previous)
+				h.mu.Unlock()
 			}
 		}()
 	}
@@ -395,19 +403,34 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 			instance.control.cancel()
 		}
 	}
-	h.mu.Unlock()
-	if instance == nil {
-		return nil
+	prepared := make([]*Instance, 0)
+	for candidate := range h.prepared {
+		if candidate.ID == instanceID && candidate != instance {
+			prepared = append(prepared, candidate)
+		}
 	}
-	stopErr := h.stopPublished(ctx, instance)
-	if instance.terminated() {
+	h.mu.Unlock()
+	var errs []error
+	if instance != nil {
+		errs = append(errs, h.stopPublished(ctx, instance))
+	}
+	if instance != nil && instance.terminated() {
 		h.mu.Lock()
 		if h.active[instanceID] == instance {
 			delete(h.active, instanceID)
 		}
 		h.mu.Unlock()
 	}
-	return stopErr
+	for _, candidate := range prepared {
+		stopErr := h.stopPublished(ctx, candidate)
+		if candidate.terminated() {
+			h.mu.Lock()
+			delete(h.prepared, candidate)
+			h.mu.Unlock()
+		}
+		errs = append(errs, stopErr)
+	}
+	return errors.Join(errs...)
 }
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
@@ -735,6 +758,7 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 			return
 		}
 		h.active[instance.ID] = replacement
+		delete(h.prepared, replacement)
 		h.mu.Unlock()
 		control.launchMu.Unlock()
 		if instance.closer != nil {

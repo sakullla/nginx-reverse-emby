@@ -38,6 +38,26 @@ type localAgentRuntime interface {
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
+type contextRuntimeCloser interface {
+	Close(context.Context) error
+}
+
+func closeRuntimeWithRetry(runtime contextRuntimeCloser) error {
+	if runtime == nil {
+		return nil
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lastErr = runtime.Close(ctx)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
 func main() {
 	if err := runMain(os.Args[1:]); err != nil {
 		log.Fatal(err)
@@ -563,8 +583,9 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		if runtimeStore != nil {
 			runtimeErr = runtimeStore.Close()
 		}
-		rpcErr := rpcRuntimeHost.Close(context.Background())
-		return errors.Join(pkiErr, taskErr, runtimeErr, rpcErr, serviceStore.Close())
+		rpcErr := closeRuntimeWithRetry(rpcRuntimeHost)
+		storeErr := serviceStore.Close()
+		return errors.Join(pkiErr, taskErr, runtimeErr, rpcErr, storeErr)
 	}
 
 	var runLocalAgent func(context.Context) error

@@ -81,8 +81,10 @@ type App struct {
 	policyWASM             *pluginwasm.Runtime
 	rpcProcesses           *pluginprocess.Supervisor
 	rpcHost                *pluginrpc.Host
+	rpcProcessesClose      func(context.Context) error
+	rpcHostClose           func(context.Context) error
 	relayTimeoutReset      func()
-	closeOnce              sync.Once
+	closeMu                sync.Mutex
 	syncMu                 sync.Mutex
 	runCtxMu               sync.RWMutex
 	runCtx                 context.Context
@@ -917,10 +919,9 @@ func (a *App) Close() error {
 	if a == nil {
 		return nil
 	}
-	a.closeOnce.Do(func() {
-		a.closeLocalRuntimes()
-	})
-	return nil
+	a.closeMu.Lock()
+	defer a.closeMu.Unlock()
+	return a.closeLocalRuntimes()
 }
 
 func (a *App) performSync(ctx context.Context) error {
@@ -951,37 +952,89 @@ func (a *App) GenerationDrainSnapshot() model.GenerationDrainSnapshot {
 	return snapshot
 }
 
-func (a *App) closeLocalRuntimes() {
+func (a *App) closeLocalRuntimes() error {
+	var errs []error
 	if a.generations != nil {
-		_ = a.generations.Close(context.Background())
-		a.generations = nil
+		if err := a.generations.Close(context.Background()); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.generations = nil
+		}
 	}
 	if a.moduleRegistry != nil {
-		_ = a.moduleRegistry.StopAll(context.Background())
-		a.moduleRegistry = nil
+		if err := a.moduleRegistry.StopAll(context.Background()); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.moduleRegistry = nil
+		}
 	}
 	if a.policyWASM != nil {
-		_ = a.policyWASM.Close(context.Background())
-		a.policyWASM = nil
+		if err := a.policyWASM.Close(context.Background()); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.policyWASM = nil
+		}
 	}
 	if a.rpcProcesses != nil {
+		var hostErr error
 		if a.rpcHost != nil {
-			_ = a.rpcHost.Close(context.Background())
-			a.rpcHost = nil
+			closeHost := a.rpcHostClose
+			if closeHost == nil {
+				closeHost = a.rpcHost.Close
+			}
+			hostErr = retryRuntimeClose(closeHost)
 		}
-		_ = a.rpcProcesses.Close(context.Background())
-		a.rpcProcesses = nil
+		closeProcesses := a.rpcProcessesClose
+		if closeProcesses == nil {
+			closeProcesses = a.rpcProcesses.Close
+		}
+		processErr := retryRuntimeClose(closeProcesses)
+		if processErr == nil && hostErr != nil && a.rpcHost != nil {
+			closeHost := a.rpcHostClose
+			if closeHost == nil {
+				closeHost = a.rpcHost.Close
+			}
+			hostErr = retryRuntimeClose(closeHost)
+		}
+		if hostErr == nil && processErr == nil {
+			a.rpcHost = nil
+			a.rpcProcesses = nil
+			a.rpcHostClose = nil
+			a.rpcProcessesClose = nil
+		} else {
+			errs = append(errs, hostErr, processErr)
+		}
 	}
 	if a.processStreams != nil {
-		_ = a.processStreams.Close()
-		a.processStreams = nil
+		if err := a.processStreams.Close(); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.processStreams = nil
+		}
 	}
 	if a.processPackets != nil {
-		_ = a.processPackets.Close()
-		a.processPackets = nil
+		if err := a.processPackets.Close(); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.processPackets = nil
+		}
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()
 		a.relayTimeoutReset = nil
 	}
+	return errors.Join(errs...)
+}
+
+func retryRuntimeClose(closeFn func(context.Context) error) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lastErr = closeFn(ctx)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
 }

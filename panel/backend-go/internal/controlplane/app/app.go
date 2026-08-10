@@ -39,10 +39,10 @@ func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocal
 	}
 }
 
-func (a *App) Run(ctx context.Context) error {
+func (a *App) Run(ctx context.Context) (runErr error) {
 	defer func() {
 		if a.cleanup != nil {
-			_ = a.cleanup()
+			runErr = errors.Join(runErr, a.cleanup())
 		}
 	}()
 
