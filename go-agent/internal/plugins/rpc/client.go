@@ -191,6 +191,7 @@ func (c *Client) InvokeAction(ctx context.Context, request pluginsdk.RPCActionRe
 	setString(message, "action_id", request.ActionID)
 	setString(message, "target_kind", request.TargetKind)
 	setString(message, "target_id", request.TargetID)
+	setString(message, "operation_id", request.OperationID)
 	response := dynamicpb.NewMessage(c.messages["ActionResponse"])
 	if err := c.invoke(ctx, "InvokeAction", message, response); err != nil {
 		return pluginsdk.RPCActionResponse{}, err
@@ -202,7 +203,7 @@ func (c *Client) InvokeAction(ctx context.Context, request pluginsdk.RPCActionRe
 	}
 	if response.Has(successField) {
 		success := response.Get(successField).Message()
-		return pluginsdk.RPCActionResponse{Accepted: success.Get(success.Descriptor().Fields().ByName("accepted")).Bool()}, nil
+		return pluginsdk.RPCActionResponse{Accepted: success.Get(success.Descriptor().Fields().ByName("accepted")).Bool(), OperationID: success.Get(success.Descriptor().Fields().ByName("operation_id")).String()}, nil
 	}
 	failure := response.Get(errorField).Message()
 	return pluginsdk.RPCActionResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorCode(failure.Get(failure.Descriptor().Fields().ByName("code")).Enum()), Message: failure.Get(failure.Descriptor().Fields().ByName("message")).String(), Retryable: failure.Get(failure.Descriptor().Fields().ByName("retryable")).Bool()}}, nil

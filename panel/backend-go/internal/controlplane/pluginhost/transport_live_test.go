@@ -52,7 +52,7 @@ func TestPluginHostRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 		if !ok {
 			t.Fatal("real RPC client omitted action dispatch")
 		}
-		action, err := actionClient.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"})
+		action, err := actionClient.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1", OperationID: "operation-1"})
 		if err != nil || action.Validate() != nil {
 			t.Fatalf("real mutual-TLS action dispatch failed: %+v, %v", action, err)
 		}
@@ -66,6 +66,10 @@ func TestPluginHostRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 }
 
 func startControlAttemptServer(security controlAttemptSecurity) (net.Listener, *grpc.Server, error) {
+	return startControlAttemptServerWithAction(security, nil)
+}
+
+func startControlAttemptServerWithAction(security controlAttemptSecurity, actionCallback func(context.Context)) (net.Listener, *grpc.Server, error) {
 	cert, err := tls.LoadX509KeyPair(filepath.Join(security.credentialDirectory, "server.crt"), filepath.Join(security.credentialDirectory, "server.key"))
 	if err != nil {
 		return nil, nil, err
@@ -83,12 +87,16 @@ func startControlAttemptServer(security controlAttemptSecurity) (net.Listener, *
 		return nil, nil, err
 	}
 	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientCAs: clientRoots, ClientAuth: tls.RequireAndVerifyClientCert})))
-	server.RegisterService(controlAttemptServiceDesc(security.endpoint.Cookie), struct{}{})
+	server.RegisterService(controlAttemptServiceDescWithAction(security.endpoint.Cookie, actionCallback), struct{}{})
 	go server.Serve(listener)
 	return listener, server, nil
 }
 
 func controlAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.ServiceDesc {
+	return controlAttemptServiceDescWithAction(cookie, nil, stopCallbacks...)
+}
+
+func controlAttemptServiceDescWithAction(cookie string, actionCallback func(context.Context), stopCallbacks ...func()) *grpc.ServiceDesc {
 	methods := []grpc.MethodDesc{{MethodName: "Handshake", Handler: func(_ any, ctx context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.HandshakeRequest")
 		if err != nil {
@@ -138,7 +146,7 @@ func controlAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Ser
 			return response, nil
 		}})
 	}
-	methods = append(methods, grpc.MethodDesc{MethodName: "InvokeAction", Handler: func(_ any, _ context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	methods = append(methods, grpc.MethodDesc{MethodName: "InvokeAction", Handler: func(_ any, ctx context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionRequest")
 		if err != nil {
 			return nil, err
@@ -147,6 +155,9 @@ func controlAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Ser
 		if err := decode(request); err != nil {
 			return nil, err
 		}
+		if actionCallback != nil {
+			actionCallback(ctx)
+		}
 		responseDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionResponse")
 		if err != nil {
 			return nil, err
@@ -154,7 +165,60 @@ func controlAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Ser
 		response := dynamicpb.NewMessage(responseDescriptor)
 		success := response.Mutable(responseDescriptor.Fields().ByName("success")).Message()
 		success.Set(success.Descriptor().Fields().ByName("accepted"), protoreflect.ValueOfBool(true))
+		success.Set(success.Descriptor().Fields().ByName("operation_id"), request.Get(requestDescriptor.Fields().ByName("operation_id")))
 		return response, nil
 	}})
 	return &grpc.ServiceDesc{ServiceName: "nre.plugin.rpc.v1.PluginRuntime", HandlerType: (*interface{})(nil), Methods: methods}
+}
+
+func TestPluginCapabilityGenerationRevokeCancelsRealActionRPC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real TLS process transport belongs to the full tier")
+	}
+	security, err := provisionControlAttemptSecurity(t.TempDir(), Endpoint{Network: "tcp", Address: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer security.cleanup()
+	started := make(chan struct{})
+	listener, server, err := startControlAttemptServerWithAction(security, func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	defer server.Stop()
+	security.endpoint.Address = listener.Addr().String()
+	client, closer, err := (GRPCDialer{}).Dial(t.Context(), security.endpoint, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+	actionClient := client.(ActionRPCClient)
+	call, policy, _, _ := testCapabilityPolicy()
+	policy.Declared = append(policy.Declared, pluginsdk.CapabilityUIDynamicActions)
+	policy.Granted = append(policy.Granted, pluginsdk.CapabilityUIDynamicActions)
+	policy.ActorCapabilities = append(policy.ActorCapabilities, pluginsdk.CapabilityUIDynamicActions)
+	action := pluginsdk.DynamicAction{ID: "rotate", Label: "Rotate", Capability: pluginsdk.CapabilityServiceRevocableResourceHandle, TargetKind: call.Target.Kind}
+	policy.DynamicActions = []pluginsdk.DynamicAction{action}
+	registry := NewDynamicActionRegistry()
+	done := make(chan error, 1)
+	go func() {
+		done <- registry.Dispatch(context.Background(), "operation-live", action, call, policy, func(ctx context.Context, _ pluginsdk.HostCapabilityCall) error {
+			_, invokeErr := actionClient.InvokeAction(ctx, pluginsdk.RPCActionRequest{Generation: call.Generation, ActionID: action.ID, TargetKind: call.Target.Kind, TargetID: call.Target.ID, OperationID: "operation-live"})
+			return invokeErr
+		})
+	}()
+	<-started
+	registry.RevokeGeneration(call.InstanceID, call.Generation)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCapabilityDenied) {
+			t.Fatalf("real revoked action error=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation revoke did not cancel the real Action RPC")
+	}
 }

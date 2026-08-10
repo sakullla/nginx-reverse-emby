@@ -19,6 +19,7 @@ func (d Dependencies) handlePluginDynamicAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	var input struct {
+		OperationID     string `json:"operation_id"`
 		TargetKind      string `json:"target_kind"`
 		TargetID        string `json:"target_id"`
 		ResourceGroupID string `json:"resource_group_id"`
@@ -29,13 +30,14 @@ func (d Dependencies) handlePluginDynamicAction(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin action request"))
 		return
 	}
-	err := d.PluginCapabilityService.InvokeDynamicAction(r.Context(), service.PluginDynamicActionRequest{
-		PluginID: r.PathValue("id"), InstanceID: r.PathValue("instance"), ActionID: r.PathValue("action"), Actor: actor,
+	result, err := d.PluginCapabilityService.InvokeDynamicAction(r.Context(), service.PluginDynamicActionRequest{
+		OperationID: input.OperationID,
+		PluginID:    r.PathValue("id"), InstanceID: r.PathValue("instance"), ActionID: r.PathValue("action"), Actor: actor,
 		Target: pluginsdk.HostTarget{Kind: input.TargetKind, ID: input.TargetID, ResourceGroupID: input.ResourceGroupID},
 	})
 	if err != nil {
 		writePluginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": true})
+	writeJSON(w, http.StatusOK, result)
 }

@@ -110,9 +110,9 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"LifecycleRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"config", 2, protoreflect.BytesKind, false, ""}}},
 		{"LifecycleResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.LifecycleSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
 		{"LifecycleSuccess", []fieldExpectation{{"ready", 1, protoreflect.BoolKind, false, ""}}},
-		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}}},
+		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}, {"operation_id", 5, protoreflect.StringKind, false, ""}}},
 		{"ActionResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
-		{"ActionSuccess", []fieldExpectation{{"accepted", 1, protoreflect.BoolKind, false, ""}}},
+		{"ActionSuccess", []fieldExpectation{{"accepted", 1, protoreflect.BoolKind, false, ""}, {"operation_id", 2, protoreflect.StringKind, false, ""}}},
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))

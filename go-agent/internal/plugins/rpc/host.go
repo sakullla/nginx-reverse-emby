@@ -423,6 +423,9 @@ func (h *Host) InvokeAction(ctx context.Context, id, generation string, request 
 	if err := response.Validate(); err != nil {
 		return fmt.Errorf("Agent RPC plugin action response: %w", err)
 	}
+	if response.OperationID != request.OperationID {
+		return errors.New("Agent RPC plugin action response operation identity mismatch")
+	}
 	h.mu.RLock()
 	stillActive := h.active[id] == instance && instance.candidate.Generation == generation
 	h.mu.RUnlock()

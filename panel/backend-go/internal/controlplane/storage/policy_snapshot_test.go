@@ -181,6 +181,36 @@ func TestActivePluginPolicyProjectsFromVerifiedDurableState(t *testing.T) {
 	}
 }
 
+func TestPolicySnapshotScopesIntersectSignedAndDurableTargetSelectors(t *testing.T) {
+	manifest := plugins.Manifest{Permissions: []plugins.Permission{
+		{Name: "policy.read"},
+		{Name: "policy.write", Resource: "instance-a"},
+		{Name: "event.emit", Resource: "edge-a"},
+		{Name: "storage.write", Resource: "edge-b"},
+		{Name: "policy.write", Resource: "edge-a"},
+	}}
+	rows := []PluginGrantRow{
+		{Permission: "policy.read"},
+		{Permission: "policy.write", ResourceSelector: "instance-a"},
+		{Permission: "policy.write", ResourceSelector: "edge-a"},
+		{Permission: "event.emit", ResourceSelector: "edge-b"},
+		{Permission: "storage.write", ResourceSelector: "edge-b"},
+	}
+	declared, granted, err := projectPolicyScopes(manifest, rows, "instance-a", "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(declared, ","), "event.emit,policy.read,policy.write"; got != want {
+		t.Fatalf("declared scopes = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(granted, ","), "policy.read,policy.write"; got != want {
+		t.Fatalf("granted scopes = %q, want %q", got, want)
+	}
+	if _, _, err := projectPolicyScopes(manifest, append(rows, PluginGrantRow{Permission: "undeclared"}), "instance-a", "edge-a"); err == nil {
+		t.Fatal("undeclared durable grant was accepted")
+	}
+}
+
 func TestAuthoritativePolicyCatalogGroupsSharedChainsAndUsesGlobalAgentRevision(t *testing.T) {
 	ctx := t.Context()
 	dataRoot := t.TempDir()

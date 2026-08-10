@@ -456,6 +456,9 @@ func (h *Host) InvokeAction(ctx context.Context, instanceID, generation string, 
 	if err := response.Validate(); err != nil {
 		return fmt.Errorf("control-plane plugin action response: %w", err)
 	}
+	if response.OperationID != request.OperationID {
+		return errors.New("control-plane plugin action response operation identity mismatch")
+	}
 	h.mu.RLock()
 	stillActive := h.active[instanceID] == instance && instance.Generation == generation
 	h.mu.RUnlock()

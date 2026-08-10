@@ -168,7 +168,7 @@ type AgentPluginArtifactService interface {
 }
 
 type PluginCapabilityAPI interface {
-	InvokeDynamicAction(context.Context, service.PluginDynamicActionRequest) error
+	InvokeDynamicAction(context.Context, service.PluginDynamicActionRequest) (service.PluginDynamicActionResult, error)
 }
 
 type Dependencies struct {

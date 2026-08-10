@@ -377,14 +377,15 @@ type LifecycleSuccess struct {
 }
 
 type RPCActionRequest struct {
-	Generation string
-	ActionID   string
-	TargetKind string
-	TargetID   string
+	Generation  string
+	ActionID    string
+	TargetKind  string
+	TargetID    string
+	OperationID string
 }
 
 func (request RPCActionRequest) Validate() error {
-	for name, value := range map[string]string{"generation": request.Generation, "action": request.ActionID, "target kind": request.TargetKind, "target": request.TargetID} {
+	for name, value := range map[string]string{"generation": request.Generation, "action": request.ActionID, "target kind": request.TargetKind, "target": request.TargetID, "operation": request.OperationID} {
 		if err := ValidatePolicyIdentity(value); err != nil {
 			return fmt.Errorf("%s identity: %w", name, err)
 		}
@@ -393,8 +394,9 @@ func (request RPCActionRequest) Validate() error {
 }
 
 type RPCActionResponse struct {
-	Accepted bool
-	Error    *RuntimeError
+	Accepted    bool
+	OperationID string
+	Error       *RuntimeError
 }
 
 func (response RPCActionResponse) Validate() error {
@@ -403,6 +405,9 @@ func (response RPCActionResponse) Validate() error {
 	}
 	if !response.Accepted {
 		return errors.New("action response was not accepted")
+	}
+	if err := ValidatePolicyIdentity(response.OperationID); err != nil {
+		return fmt.Errorf("action response operation identity: %w", err)
 	}
 	return nil
 }

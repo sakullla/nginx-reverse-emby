@@ -49,7 +49,7 @@ func TestRPCRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 		if _, err := client.Handshake(t.Context(), request); err != nil {
 			t.Fatal(err)
 		}
-		action, err := client.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"})
+		action, err := client.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1", OperationID: "operation-1"})
 		if err != nil || action.Validate() != nil {
 			t.Fatalf("real mutual-TLS action dispatch failed: %+v, %v", action, err)
 		}
@@ -152,6 +152,7 @@ func agentAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Servi
 		response := dynamicpb.NewMessage(responseDescriptor)
 		success := response.Mutable(responseDescriptor.Fields().ByName("success")).Message()
 		success.Set(success.Descriptor().Fields().ByName("accepted"), protoreflect.ValueOfBool(true))
+		success.Set(success.Descriptor().Fields().ByName("operation_id"), request.Get(requestDescriptor.Fields().ByName("operation_id")))
 		return response, nil
 	}})
 	return &grpc.ServiceDesc{ServiceName: rpcServiceName, HandlerType: (*interface{})(nil), Methods: methods}

@@ -62,6 +62,7 @@ message ActionRequest {
   string action_id = 2;
   string target_kind = 3;
   string target_id = 4;
+  string operation_id = 5;
 }
 
 message ActionResponse {
@@ -73,6 +74,7 @@ message ActionResponse {
 
 message ActionSuccess {
   bool accepted = 1;
+  string operation_id = 2;
 }
 
 message RuntimeError {

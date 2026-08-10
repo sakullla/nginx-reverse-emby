@@ -121,8 +121,12 @@ func TestPluginCapabilityRevocableResourceHandleLifecycle(t *testing.T) {
 	if _, err := broker.Resolve(t.Context(), token, call); !errors.Is(err, ErrCapabilityDenied) {
 		t.Fatalf("Resolve(after target delete/rotation) error = %v", err)
 	}
-	if _, err := broker.Issue(t.Context(), policy, call, resource); !errors.Is(err, ErrCapabilityDenied) {
-		t.Fatalf("Issue(after target delete/rotation) error = %v", err)
+	freshToken, err := broker.Issue(t.Context(), policy, call, resource)
+	if err != nil {
+		t.Fatalf("Issue(fresh target epoch) error = %v", err)
+	}
+	if _, err := broker.Resolve(t.Context(), freshToken, call); err != nil {
+		t.Fatalf("Resolve(fresh target epoch) error = %v", err)
 	}
 }
 

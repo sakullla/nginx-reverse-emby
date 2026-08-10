@@ -125,20 +125,21 @@ type ResourceHandleBroker struct {
 	mu                 sync.RWMutex
 	handles            map[string]*resourceHandle
 	revokedGenerations map[string]struct{}
-	revokedTargets     map[pluginsdk.HostTarget]struct{}
+	targetEpochs       map[pluginsdk.HostTarget]uint64
 	nextLease          uint64
 }
 
 type resourceHandle struct {
-	call     pluginsdk.HostCapabilityCall
-	policy   CapabilityPolicy
-	resource any
-	revoked  bool
-	leases   map[uint64]context.CancelFunc
+	call        pluginsdk.HostCapabilityCall
+	policy      CapabilityPolicy
+	resource    any
+	targetEpoch uint64
+	revoked     bool
+	leases      map[uint64]context.CancelFunc
 }
 
 func NewResourceHandleBroker() *ResourceHandleBroker {
-	return &ResourceHandleBroker{handles: make(map[string]*resourceHandle), revokedGenerations: make(map[string]struct{}), revokedTargets: make(map[pluginsdk.HostTarget]struct{})}
+	return &ResourceHandleBroker{handles: make(map[string]*resourceHandle), revokedGenerations: make(map[string]struct{}), targetEpochs: make(map[pluginsdk.HostTarget]uint64)}
 }
 
 func (broker *ResourceHandleBroker) Issue(ctx context.Context, policy CapabilityPolicy, call pluginsdk.HostCapabilityCall, resource any) (string, error) {
@@ -149,6 +150,9 @@ func (broker *ResourceHandleBroker) Issue(ctx context.Context, policy Capability
 	if err := policy.Authorize(ctx, call); err != nil {
 		return "", err
 	}
+	broker.mu.RLock()
+	targetEpoch := broker.targetEpochs[call.Target]
+	broker.mu.RUnlock()
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
@@ -159,16 +163,26 @@ func (broker *ResourceHandleBroker) Issue(ctx context.Context, policy Capability
 		broker.mu.Unlock()
 		return "", fmt.Errorf("%w: plugin generation is drained", ErrCapabilityDenied)
 	}
-	if _, revoked := broker.revokedTargets[call.Target]; revoked {
+	if broker.targetEpochs[call.Target] != targetEpoch {
 		broker.mu.Unlock()
-		return "", fmt.Errorf("%w: resource target is revoked", ErrCapabilityDenied)
+		return "", fmt.Errorf("%w: resource target changed during handle issue", ErrCapabilityDenied)
 	}
-	broker.handles[token] = &resourceHandle{call: call, policy: policy, resource: resource, leases: make(map[uint64]context.CancelFunc)}
+	broker.handles[token] = &resourceHandle{call: call, policy: policy, resource: resource, targetEpoch: targetEpoch, leases: make(map[uint64]context.CancelFunc)}
 	broker.mu.Unlock()
 	return token, nil
 }
 
 func (broker *ResourceHandleBroker) Resolve(ctx context.Context, token string, call pluginsdk.HostCapabilityCall) (any, error) {
+	return broker.resolve(ctx, token, call, nil)
+}
+
+// ResolveWithPolicy uses a freshly projected durable policy while preserving
+// the immutable handle owner and revocation fences captured at issue time.
+func (broker *ResourceHandleBroker) ResolveWithPolicy(ctx context.Context, token string, call pluginsdk.HostCapabilityCall, policy CapabilityPolicy) (any, error) {
+	return broker.resolve(ctx, token, call, &policy)
+}
+
+func (broker *ResourceHandleBroker) resolve(ctx context.Context, token string, call pluginsdk.HostCapabilityCall, currentPolicy *CapabilityPolicy) (any, error) {
 	if broker == nil {
 		return nil, errors.New("resource handle broker is unavailable")
 	}
@@ -186,11 +200,18 @@ func (broker *ResourceHandleBroker) Resolve(ctx context.Context, token string, c
 		broker.mu.Unlock()
 		return nil, fmt.Errorf("%w: resource handle owner mismatch", ErrCapabilityDenied)
 	}
+	if handle.targetEpoch != broker.targetEpochs[call.Target] {
+		broker.mu.Unlock()
+		return nil, fmt.Errorf("%w: resource target generation changed", ErrCapabilityDenied)
+	}
 	broker.nextLease++
 	leaseID := broker.nextLease
 	leaseCtx, cancel := context.WithCancel(ctx)
 	handle.leases[leaseID] = cancel
 	policy, resource := handle.policy, handle.resource
+	if currentPolicy != nil {
+		policy = *currentPolicy
+	}
 	broker.mu.Unlock()
 	err := policy.Authorize(leaseCtx, call)
 	broker.mu.Lock()
@@ -227,8 +248,32 @@ func (broker *ResourceHandleBroker) RevokeTarget(target pluginsdk.HostTarget) {
 		return
 	}
 	broker.mu.Lock()
-	broker.revokedTargets[target] = struct{}{}
+	broker.targetEpochs[target]++
 	cancels := broker.revoke(func(handle *resourceHandle) bool { return handle.call.Target == target })
+	broker.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+// Release removes one opaque handle without revoking future handles for the
+// same target generation.
+func (broker *ResourceHandleBroker) Release(token string) {
+	if broker == nil {
+		return
+	}
+	broker.mu.Lock()
+	handle, ok := broker.handles[token]
+	if ok {
+		handle.revoked = true
+		delete(broker.handles, token)
+	}
+	var cancels []context.CancelFunc
+	if ok {
+		for _, cancel := range handle.leases {
+			cancels = append(cancels, cancel)
+		}
+	}
 	broker.mu.Unlock()
 	for _, cancel := range cancels {
 		cancel()
@@ -253,20 +298,22 @@ type DynamicActionRegistry struct {
 	mu                 sync.RWMutex
 	actions            map[string]registeredDynamicAction
 	revokedGenerations map[string]struct{}
+	targetEpochs       map[pluginsdk.HostTarget]uint64
 	nextLease          uint64
 }
 
 type registeredDynamicAction struct {
-	action  pluginsdk.DynamicAction
-	call    pluginsdk.HostCapabilityCall
-	policy  CapabilityPolicy
-	handler func(context.Context, pluginsdk.HostCapabilityCall) error
-	revoked bool
-	leases  map[uint64]context.CancelFunc
+	action      pluginsdk.DynamicAction
+	call        pluginsdk.HostCapabilityCall
+	policy      CapabilityPolicy
+	handler     func(context.Context, pluginsdk.HostCapabilityCall) error
+	revoked     bool
+	targetEpoch uint64
+	leases      map[uint64]context.CancelFunc
 }
 
 func NewDynamicActionRegistry() *DynamicActionRegistry {
-	return &DynamicActionRegistry{actions: make(map[string]registeredDynamicAction), revokedGenerations: make(map[string]struct{})}
+	return &DynamicActionRegistry{actions: make(map[string]registeredDynamicAction), revokedGenerations: make(map[string]struct{}), targetEpochs: make(map[pluginsdk.HostTarget]uint64)}
 }
 
 func (registry *DynamicActionRegistry) Register(action pluginsdk.DynamicAction, call pluginsdk.HostCapabilityCall, policy CapabilityPolicy, handler func(context.Context, pluginsdk.HostCapabilityCall) error) error {
@@ -292,12 +339,55 @@ func (registry *DynamicActionRegistry) Register(action pluginsdk.DynamicAction, 
 	if _, exists := registry.actions[key]; exists {
 		return errors.New("dynamic action is already registered")
 	}
-	registry.actions[key] = registeredDynamicAction{action: action, call: call, policy: policy, handler: handler, leases: make(map[uint64]context.CancelFunc)}
+	registry.actions[key] = registeredDynamicAction{action: action, call: call, policy: policy, handler: handler, targetEpoch: registry.targetEpochs[call.Target], leases: make(map[uint64]context.CancelFunc)}
 	return nil
 }
 
 func (registry *DynamicActionRegistry) Invoke(ctx context.Context, instanceID, generation, actionID string, actor pluginsdk.HostActor) error {
 	key := instanceID + "\x00" + generation + "\x00" + actionID
+	return registry.invokeKey(ctx, key, actor)
+}
+
+// Dispatch registers one immutable, operation-scoped action lease. Generation
+// revocation cancels authorization or the guest handler without retaining a
+// stale policy between durable grant reads.
+func (registry *DynamicActionRegistry) Dispatch(ctx context.Context, operationID string, action pluginsdk.DynamicAction, call pluginsdk.HostCapabilityCall, policy CapabilityPolicy, handler func(context.Context, pluginsdk.HostCapabilityCall) error) error {
+	if err := pluginsdk.ValidatePolicyIdentity(operationID); err != nil {
+		return fmt.Errorf("dynamic action operation id: %w", err)
+	}
+	if err := action.Validate(); err != nil {
+		return err
+	}
+	if handler == nil || call.Target.Kind != action.TargetKind {
+		return errors.New("dynamic action handler and exact target kind are required")
+	}
+	declared := false
+	for _, candidate := range policy.DynamicActions {
+		declared = declared || candidate == action
+	}
+	if !declared {
+		return errors.New("dynamic action differs from the signed validated UI schema")
+	}
+	key := call.InstanceID + "\x00" + call.Generation + "\x00" + action.ID + "\x00" + operationID
+	registry.mu.Lock()
+	if _, revoked := registry.revokedGenerations[call.InstanceID+"\x00"+call.Generation]; revoked {
+		registry.mu.Unlock()
+		return errors.New("dynamic action generation is drained")
+	}
+	if _, exists := registry.actions[key]; exists {
+		registry.mu.Unlock()
+		return errors.New("dynamic action operation is already in flight")
+	}
+	registry.actions[key] = registeredDynamicAction{action: action, call: call, policy: policy, handler: handler, targetEpoch: registry.targetEpochs[call.Target], leases: make(map[uint64]context.CancelFunc)}
+	registry.mu.Unlock()
+	err := registry.invokeKey(ctx, key, call.Actor)
+	registry.mu.Lock()
+	delete(registry.actions, key)
+	registry.mu.Unlock()
+	return err
+}
+
+func (registry *DynamicActionRegistry) invokeKey(ctx context.Context, key string, actor pluginsdk.HostActor) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -357,12 +447,37 @@ func (registry *DynamicActionRegistry) RevokeGeneration(instanceID, generation s
 	}
 }
 
+// RevokeTarget cancels every in-flight action bound to the previous target
+// epoch. Future calls may re-authorize the same canonical target against fresh
+// durable state.
+func (registry *DynamicActionRegistry) RevokeTarget(target pluginsdk.HostTarget) {
+	if registry == nil {
+		return
+	}
+	registry.mu.Lock()
+	registry.targetEpochs[target]++
+	var cancels []context.CancelFunc
+	for key, action := range registry.actions {
+		if action.call.Target == target {
+			action.revoked = true
+			for _, cancel := range action.leases {
+				cancels = append(cancels, cancel)
+			}
+			delete(registry.actions, key)
+		}
+	}
+	registry.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
 func (registry *DynamicActionRegistry) actionLeaseValid(key string, leaseID uint64) bool {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
 	action, ok := registry.actions[key]
 	_, leased := action.leases[leaseID]
-	return ok && !action.revoked && leased
+	return ok && !action.revoked && leased && action.targetEpoch == registry.targetEpochs[action.call.Target]
 }
 
 func (registry *DynamicActionRegistry) finishActionLease(key string, leaseID uint64, cancel context.CancelFunc) bool {

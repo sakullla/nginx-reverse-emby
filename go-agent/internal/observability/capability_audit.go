@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,14 +16,20 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-const maxCapabilityAuditBytes int64 = 8 << 20
+const (
+	maxCapabilityAuditBytes    int64 = 8 << 20
+	maxCapabilityAuditArchives       = 4
+)
 
 var capabilityAuditIdentityPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,255}$`)
 
 type CapabilityAuditJournal struct {
-	mu     sync.Mutex
-	file   *os.File
-	closed bool
+	mu       sync.Mutex
+	file     *os.File
+	path     string
+	maxBytes int64
+	archives int
+	closed   bool
 }
 
 type capabilityAuditRecord struct {
@@ -40,18 +47,28 @@ type capabilityAuditRecord struct {
 }
 
 func NewCapabilityAuditJournal(path string) (*CapabilityAuditJournal, error) {
+	return newCapabilityAuditJournal(path, maxCapabilityAuditBytes, maxCapabilityAuditArchives)
+}
+
+func newCapabilityAuditJournal(path string, maxBytes int64, archives int) (*CapabilityAuditJournal, error) {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("capability audit path must be absolute")
 	}
+	if maxBytes <= 0 || archives <= 0 {
+		return nil, errors.New("capability audit retention limits must be positive")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create capability audit directory: %w", err)
+	}
+	if err := recoverCapabilityAudit(path, maxBytes, archives); err != nil {
+		return nil, err
 	}
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open capability audit journal: %w", err)
 	}
-	return &CapabilityAuditJournal{file: file}, nil
+	return &CapabilityAuditJournal{file: file, path: path, maxBytes: maxBytes, archives: archives}, nil
 }
 
 func (journal *CapabilityAuditJournal) Audit(_ context.Context, event hostapi.AuditEvent) error {
@@ -79,8 +96,10 @@ func (journal *CapabilityAuditJournal) Audit(_ context.Context, event hostapi.Au
 	if err != nil {
 		return err
 	}
-	if info.Size()+int64(len(encoded)) > maxCapabilityAuditBytes {
-		return errors.New("capability audit journal capacity exhausted")
+	if info.Size()+int64(len(encoded)) > journal.maxBytes {
+		if err := journal.rotateLocked(); err != nil {
+			return fmt.Errorf("rotate capability audit journal: %w", err)
+		}
 	}
 	written, err := journal.file.Write(encoded)
 	if err != nil {
@@ -90,6 +109,85 @@ func (journal *CapabilityAuditJournal) Audit(_ context.Context, event hostapi.Au
 		return errors.New("capability audit journal short write")
 	}
 	return journal.file.Sync()
+}
+
+func (journal *CapabilityAuditJournal) rotateLocked() error {
+	if journal.file == nil {
+		return errors.New("capability audit journal is unavailable")
+	}
+	if err := journal.file.Sync(); err != nil {
+		return err
+	}
+	if err := journal.file.Close(); err != nil {
+		return err
+	}
+	journal.file = nil
+	if err := rotateCapabilityAuditFiles(journal.path, journal.archives); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(journal.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	journal.file = file
+	return syncAuditDirectory(filepath.Dir(journal.path))
+}
+
+func recoverCapabilityAudit(path string, maxBytes int64, archives int) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("recover capability audit journal: %w", err)
+	}
+	if err == nil {
+		if last := strings.LastIndexByte(string(data), '\n'); last+1 < len(data) {
+			if err := truncateAndSyncCapabilityAudit(path, int64(last+1)); err != nil {
+				return fmt.Errorf("truncate unacknowledged capability audit tail: %w", err)
+			}
+		}
+		if int64(lastCompleteAuditLength(data)) >= maxBytes {
+			if err := rotateCapabilityAuditFiles(path, archives); err != nil {
+				return fmt.Errorf("rotate recovered capability audit journal: %w", err)
+			}
+		}
+	}
+	return syncAuditDirectory(filepath.Dir(path))
+}
+
+func truncateAndSyncCapabilityAudit(path string, size int64) error {
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Truncate(size); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func lastCompleteAuditLength(data []byte) int {
+	last := strings.LastIndexByte(string(data), '\n')
+	if last < 0 {
+		return 0
+	}
+	return last + 1
+}
+
+func rotateCapabilityAuditFiles(path string, archives int) error {
+	oldest := fmt.Sprintf("%s.%d", path, archives)
+	if err := os.Remove(oldest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for index := archives - 1; index >= 1; index-- {
+		from, to := fmt.Sprintf("%s.%d", path, index), fmt.Sprintf("%s.%d", path, index+1)
+		if err := durableAuditRename(from, to); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := durableAuditRename(path, path+".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncAuditDirectory(filepath.Dir(path))
 }
 
 func (journal *CapabilityAuditJournal) Close() error {

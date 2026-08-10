@@ -812,18 +812,13 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 		if !json.Valid(config) {
 			return nil, fmt.Errorf("plugin instance %s config is invalid", instance.ID)
 		}
-		grantedScopes, err := s.activePolicyGrantedScopes(ctx, installed, manifest)
+		declaredScopes, grantedScopes, err := s.activePolicyScopes(ctx, installed, manifest, instance.ID, agentID)
 		if err != nil {
 			return nil, fmt.Errorf("plugin instance %s grants: %w", instance.ID, err)
 		}
 		if agentID != s.LocalAgentID() {
 			artifactPath = ""
 		}
-		declaredScopes := make([]string, 0, len(manifest.Permissions))
-		for _, permission := range manifest.Permissions {
-			declaredScopes = append(declaredScopes, permission.Name)
-		}
-		sort.Strings(declaredScopes)
 		targetsJSON, _ := json.Marshal(targets)
 		stage := PolicyStage{
 			Kind: kind, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version,
@@ -1057,32 +1052,54 @@ func policyEntryArtifact(artifacts []PluginArtifactRow, entryPath string) (Plugi
 	return PluginArtifactRow{}, false
 }
 
-func (s *GormStore) activePolicyGrantedScopes(ctx context.Context, installed InstalledPluginRow, manifest plugins.Manifest) ([]string, error) {
+func (s *GormStore) activePolicyScopes(ctx context.Context, installed InstalledPluginRow, manifest plugins.Manifest, instanceID, agentID string) ([]string, []string, error) {
 	var rows []PluginGrantRow
 	if err := s.db.WithContext(ctx).
 		Where("plugin_id = ? AND package_identity = ? AND package_digest = ?", installed.PluginID, installed.ActivePackageIdentity, installed.ActivePackageDigest).
 		Order("permission").Find(&rows).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	return projectPolicyScopes(manifest, rows, instanceID, agentID)
+}
+
+func projectPolicyScopes(manifest plugins.Manifest, rows []PluginGrantRow, instanceID, agentID string) ([]string, []string, error) {
+	allDeclared := make(map[string]struct{}, len(manifest.Permissions))
 	declared := make(map[string]struct{}, len(manifest.Permissions))
 	for _, permission := range manifest.Permissions {
-		declared[strings.TrimSpace(permission.Name)] = struct{}{}
+		name := strings.TrimSpace(permission.Name)
+		allDeclared[name] = struct{}{}
+		if policySelectorApplies(permission.Resource, instanceID, agentID) {
+			declared[name] = struct{}{}
+		}
 	}
-	result := make([]string, 0, len(rows))
+	declaredResult := make([]string, 0, len(declared))
+	for permission := range declared {
+		declaredResult = append(declaredResult, permission)
+	}
+	grantedResult := make([]string, 0, len(rows))
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
 		permission := strings.TrimSpace(row.Permission)
-		if _, ok := declared[permission]; !ok {
-			return nil, fmt.Errorf("permission %q is not declared by the active manifest", permission)
+		if _, ok := allDeclared[permission]; !ok {
+			return nil, nil, fmt.Errorf("permission %q is not declared by the active manifest", permission)
+		}
+		if _, ok := declared[permission]; !ok || !policySelectorApplies(row.ResourceSelector, instanceID, agentID) {
+			continue
 		}
 		if _, ok := seen[permission]; ok {
 			continue
 		}
 		seen[permission] = struct{}{}
-		result = append(result, permission)
+		grantedResult = append(grantedResult, permission)
 	}
-	sort.Strings(result)
-	return result, nil
+	sort.Strings(declaredResult)
+	sort.Strings(grantedResult)
+	return declaredResult, grantedResult, nil
+}
+
+func policySelectorApplies(selector, instanceID, agentID string) bool {
+	selector = strings.TrimSpace(selector)
+	return selector == "" || selector == strings.TrimSpace(instanceID) || selector == strings.TrimSpace(agentID)
 }
 
 func containsPluginTarget(targets []string, agentID string) bool {
