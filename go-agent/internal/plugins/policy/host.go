@@ -10,6 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/hostapi"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -99,13 +100,32 @@ type requestHost struct {
 	stage        model.PolicyStage
 	state        *generationState
 	observer     observability.Observer
+	clock        *hostapi.MonotonicClock
+	authorizer   *hostapi.Authorizer
 }
 
-func (host *requestHost) ReadField(_ context.Context, name string) ([]byte, error) {
+func (host *requestHost) ReadField(ctx context.Context, name string) ([]byte, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "clock.monotonic_ns" {
+		if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyMonotonicClock); err != nil {
+			return nil, err
+		}
+		if host.clock == nil {
+			host.clock = hostapi.NewMonotonicClock()
+		}
+		return []byte(strconv.FormatInt(host.clock.NowNanoseconds(), 10)), nil
+	}
 	if !host.granted(inspectScope(host.input.extensionPoint)) {
 		return nil, permissionDenied("request field access is not granted")
 	}
-	name = strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(name, "source.") {
+		if _, err := hostapi.NewTrustedSource(host.input.metadata.source, host.input.metadata.peer, string(host.input.metadata.kind), host.input.metadata.authorized); err != nil {
+			return nil, permissionDenied("trusted source metadata is unavailable")
+		}
+		if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyTrustedSource); err != nil {
+			return nil, err
+		}
+	}
 	var value string
 	switch name {
 	case "source.ip":
@@ -146,9 +166,12 @@ func (host *requestHost) ReadBodyWindow(_ context.Context, offset, length uint32
 	return append([]byte(nil), host.input.body.prefix[int(offset):int(end)]...), nil
 }
 
-func (host *requestHost) StateGet(_ context.Context, key string) ([]byte, bool, error) {
+func (host *requestHost) StateGet(ctx context.Context, key string) ([]byte, bool, error) {
 	if !host.granted("policy.read") {
 		return nil, false, permissionDenied("policy state read is not granted")
+	}
+	if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyAtomicState); err != nil {
+		return nil, false, err
 	}
 	if len(key) == 0 || len(key) > maxStateKeyBytes {
 		return nil, false, resourceExhausted("state-key-budget", "state key is missing or too large")
@@ -160,9 +183,12 @@ func (host *requestHost) StateGet(_ context.Context, key string) ([]byte, bool, 
 	return value, ok, nil
 }
 
-func (host *requestHost) StatePut(_ context.Context, key string, value []byte) error {
+func (host *requestHost) StatePut(ctx context.Context, key string, value []byte) error {
 	if !host.granted("policy.write") {
 		return permissionDenied("policy state write is not granted")
+	}
+	if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyAtomicState); err != nil {
+		return err
 	}
 	if host.state == nil {
 		return errors.New("generation state is unavailable")
@@ -210,6 +236,60 @@ func (host *requestHost) granted(scope string) bool {
 		}
 	}
 	return false
+}
+
+func (host *requestHost) authorizeCapability(ctx context.Context, capability pluginsdk.HostCapability) error {
+	if host == nil {
+		return permissionDenied("plugin Host API is unavailable")
+	}
+	if host.authorizer == nil {
+		quota, _ := hostapi.NewCallQuota(128)
+		actor := pluginsdk.HostActor{ID: host.stage.PluginID, ResourceGroupID: host.stage.ResourceGroupID}
+		target := pluginsdk.HostTarget{Kind: "plugin.instance", ID: host.instanceID, ResourceGroupID: host.stage.ResourceGroupID}
+		host.authorizer = &hostapi.Authorizer{
+			PluginID: host.stage.PluginID, InstanceID: host.instanceID, Generation: host.generationID,
+			Declared: capabilityProjection(host.stage.DeclaredScopes), Granted: capabilityProjection(host.stage.GrantedScopes),
+			Actor: actor, ActorCapabilities: capabilityProjection(host.stage.GrantedScopes), Targets: []pluginsdk.HostTarget{target},
+			Quota: quota, Auditor: policyCapabilityAuditor{host: host},
+		}
+	}
+	call := pluginsdk.HostCapabilityCall{
+		PluginID: host.stage.PluginID, InstanceID: host.instanceID, Generation: host.generationID,
+		Capability: capability, Actor: host.authorizer.Actor, Target: host.authorizer.Targets[0], QuotaMetric: "host.calls", QuotaUnits: 1,
+	}
+	if err := host.authorizer.Authorize(ctx, call); err != nil {
+		return permissionDenied("plugin Host API capability is denied")
+	}
+	return nil
+}
+
+func capabilityProjection(scopes []string) []pluginsdk.HostCapability {
+	result := make([]pluginsdk.HostCapability, 0, len(scopes))
+	for _, scope := range scopes {
+		capability := pluginsdk.HostCapability(scope)
+		if capability.Validate() != nil {
+			continue
+		}
+		found := false
+		for _, existing := range result {
+			found = found || existing == capability
+		}
+		if !found {
+			result = append(result, capability)
+		}
+	}
+	return result
+}
+
+type policyCapabilityAuditor struct{ host *requestHost }
+
+func (auditor policyCapabilityAuditor) Audit(ctx context.Context, event hostapi.AuditEvent) error {
+	reason := string(event.Call.Capability)
+	if event.Reason != "" {
+		reason += ":" + event.Reason
+	}
+	auditor.host.observe(ctx, observability.Event{Name: observability.PolicyHostCapability, Outcome: event.Outcome, Reason: reason})
+	return nil
 }
 
 func inspectScope(extensionPoint string) string {

@@ -819,6 +819,11 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 		if agentID != s.LocalAgentID() {
 			artifactPath = ""
 		}
+		declaredScopes := make([]string, 0, len(manifest.Permissions))
+		for _, permission := range manifest.Permissions {
+			declaredScopes = append(declaredScopes, permission.Name)
+		}
+		sort.Strings(declaredScopes)
 		targetsJSON, _ := json.Marshal(targets)
 		stage := PolicyStage{
 			Kind: kind, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version,
@@ -831,7 +836,8 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 			SignatureVerified: true,
 			SignerKeyID:       installed.ActiveSignatureKeyID, SignerFingerprint: installed.ActiveSignatureFingerprint,
 			ABI: packageRow.RuntimeABI, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...),
-			GrantedScopes: grantedScopes, Config: append(json.RawMessage(nil), config...),
+			DeclaredScopes: declaredScopes, GrantedScopes: grantedScopes, ResourceGroupID: instance.ResourceGroupID,
+			Config: append(json.RawMessage(nil), config...),
 			ResourceBudget: PolicyResourceBudget{
 				TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes,
 				Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes,

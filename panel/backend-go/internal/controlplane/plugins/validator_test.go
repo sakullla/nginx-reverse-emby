@@ -81,6 +81,20 @@ func TestRuntimePolicyKindIsRequiredOnlyForWASMPolicy(t *testing.T) {
 }
 
 func TestSignatureCanonicalKeyIDAndExactTrustValidator(t *testing.T) {
+	official := OfficialSignerIdentity()
+	if official.KeyID != OfficialSignatureKeyID || len(official.PublicKey) != ed25519.PublicKeySize {
+		t.Fatalf("official signer identity = %+v", official)
+	}
+	official.PublicKey[0] ^= 0xff
+	if bytes.Equal(official.PublicKey, OfficialSignerIdentity().PublicKey) {
+		t.Fatal("official signer identity returned mutable shared key storage")
+	}
+	forgedOfficial := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7f}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	validatorWithForgery := NewValidator(ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{OfficialSignatureKeyID: forgedOfficial}})
+	if bytes.Equal(validatorWithForgery.trustedSigners[OfficialSignatureKeyID], forgedOfficial) {
+		t.Fatal("caller replaced the canonical official signing root")
+	}
+
 	for _, value := range []string{"release-key", "release.key-2026", OfficialSignatureKeyID} {
 		if err := ValidateSignerKeyID(value); err != nil {
 			t.Errorf("ValidateSignerKeyID(%q): %v", value, err)

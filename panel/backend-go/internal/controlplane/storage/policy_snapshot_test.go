@@ -176,8 +176,8 @@ func TestActivePluginPolicyProjectsFromVerifiedDurableState(t *testing.T) {
 		stage.ArtifactSource.SizeBytes != artifacts[0].SizeBytes {
 		t.Fatalf("artifact source = %+v", stage.ArtifactSource)
 	}
-	if len(stage.GrantedScopes) != 1 || stage.GrantedScopes[0] != "http.inspect" || stage.ResourceBudget.TimeoutMS != 2 {
-		t.Fatalf("projected grants/budget = %+v / %+v", stage.GrantedScopes, stage.ResourceBudget)
+	if len(stage.DeclaredScopes) != 1 || stage.DeclaredScopes[0] != "http.inspect" || len(stage.GrantedScopes) != 1 || stage.GrantedScopes[0] != "http.inspect" || stage.ResourceGroupID != instance.ResourceGroupID || stage.ResourceBudget.TimeoutMS != 2 {
+		t.Fatalf("projected signed declarations/grants/group/budget = %+v / %+v / %q / %+v", stage.DeclaredScopes, stage.GrantedScopes, stage.ResourceGroupID, stage.ResourceBudget)
 	}
 }
 

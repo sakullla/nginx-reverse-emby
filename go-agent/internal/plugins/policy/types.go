@@ -85,7 +85,7 @@ type Evaluator interface {
 }
 
 // Host is the complete request-scoped nre:policy/v1 host surface. It does not
-// expose files, network, processes, clocks, credentials, or host memory.
+// expose files, network, processes, wall clocks, credentials, or host memory.
 type Host interface {
 	// ReadField returns nil for a missing field and a non-nil slice, including
 	// an empty slice, for a present field.

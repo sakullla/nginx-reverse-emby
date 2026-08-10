@@ -10,6 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/hostapi"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -19,6 +20,7 @@ type GenerationEvaluator struct {
 	modules      ModuleEvaluator
 	observer     observability.Observer
 	state        *generationState
+	clock        *hostapi.MonotonicClock
 }
 
 func NewGenerationEvaluator(generationID string, definitions []model.PluginPolicy, modules ModuleEvaluator, observer observability.Observer) (*GenerationEvaluator, error) {
@@ -53,6 +55,7 @@ func NewGenerationEvaluator(generationID string, definitions []model.PluginPolic
 		modules:      modules,
 		observer:     observer,
 		state:        newGenerationState(),
+		clock:        hostapi.NewMonotonicClock(),
 	}, nil
 }
 
@@ -96,6 +99,7 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 			stage:        stage,
 			state:        e.state,
 			observer:     e.observer,
+			clock:        e.clock,
 		}
 		deadline := time.Duration(stage.ResourceBudget.TimeoutMS) * time.Millisecond
 		stageCtx, cancel := context.WithTimeout(ctx, deadline)

@@ -417,7 +417,9 @@ type PolicyStage struct {
 	SignerFingerprint string               `json:"signer_fingerprint"`
 	ABI               string               `json:"abi"`
 	ExtensionPoints   []string             `json:"extension_points"`
+	DeclaredScopes    []string             `json:"declared_scopes"`
 	GrantedScopes     []string             `json:"granted_scopes"`
+	ResourceGroupID   string               `json:"resource_group_id"`
 	Config            json.RawMessage      `json:"config,omitempty"`
 	ResourceBudget    PolicyResourceBudget `json:"resource_budget"`
 	FailurePolicy     PolicyFailurePolicy  `json:"failure_policy"`

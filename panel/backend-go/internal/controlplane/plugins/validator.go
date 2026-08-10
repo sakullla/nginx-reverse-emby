@@ -129,6 +129,18 @@ type Validator struct {
 	snapshotHook    func(stage, sourceRoot, snapshotRoot string)
 }
 
+// SignerIdentity is an immutable projection of a trusted signing root.
+// PublicKey is always cloned when it crosses the validator boundary.
+type SignerIdentity struct {
+	KeyID     string
+	PublicKey ed25519.PublicKey
+}
+
+func OfficialSignerIdentity() SignerIdentity {
+	key, _ := hex.DecodeString(officialSignaturePublicKeyHex)
+	return SignerIdentity{KeyID: OfficialSignatureKeyID, PublicKey: append(ed25519.PublicKey(nil), key...)}
+}
+
 func NewValidator(options ValidatorOptions) *Validator {
 	if options.MaxFiles <= 0 {
 		options.MaxFiles = 4096
@@ -153,6 +165,9 @@ func NewValidator(options ValidatorOptions) *Validator {
 			"agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond",
 			"l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use",
 			"storage.read", "storage.write", "container.read", "container.manage", "dns.manage",
+			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
+			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
+			string(pluginsdk.CapabilityUIDynamicActions),
 		}
 	}
 	if len(options.AllowedExtensionPoints) == 0 {
@@ -168,10 +183,11 @@ func NewValidator(options ValidatorOptions) *Validator {
 		options: options, permissions: map[string]struct{}{}, extensionPoints: map[string]struct{}{},
 		trustedSigners: map[string]ed25519.PublicKey{}, supportedABIs: map[string]struct{}{},
 	}
-	officialKey, _ := hex.DecodeString(officialSignaturePublicKeyHex)
+	official := OfficialSignerIdentity()
+	officialKey := official.PublicKey
 	validTrustPolicy := options.TrustedSignerPolicy == TrustedSignerPolicyOfficialRoot || options.TrustedSignerPolicy == TrustedSignerPolicyExact
 	if options.TrustedSignerPolicy == TrustedSignerPolicyOfficialRoot {
-		v.trustedSigners[OfficialSignatureKeyID] = ed25519.PublicKey(officialKey)
+		v.trustedSigners[official.KeyID] = append(ed25519.PublicKey(nil), officialKey...)
 	}
 	for _, name := range options.AllowedPermissions {
 		v.permissions[strings.TrimSpace(name)] = struct{}{}
@@ -228,8 +244,8 @@ func (v *Validator) WithTrustedSigners(signers map[string]ed25519.PublicKey, pol
 // DefaultTrustedSigners returns a copy of the built-in official verification
 // roots. Custom-market keys must be explicitly supplied in ValidatorOptions.
 func DefaultTrustedSigners() map[string]ed25519.PublicKey {
-	key, _ := hex.DecodeString(officialSignaturePublicKeyHex)
-	return map[string]ed25519.PublicKey{OfficialSignatureKeyID: key}
+	official := OfficialSignerIdentity()
+	return map[string]ed25519.PublicKey{official.KeyID: append(ed25519.PublicKey(nil), official.PublicKey...)}
 }
 
 func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (result ValidatedPackage, resultErr error) {
@@ -343,6 +359,7 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 	if err := validateJSONSchema(schema); err != nil {
 		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
 	}
+	dynamicActions := []pluginsdk.DynamicAction(nil)
 	if manifest.UISchema != "" {
 		uiPath, err := securePackagePath(root, manifest.UISchema)
 		if err != nil {
@@ -352,7 +369,7 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 		if err != nil {
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
-		if err := validateDeclarativeUI(uiData, schema); err != nil {
+		if err := validateDeclarativeUIWithActions(uiData, schema, manifest.Permissions, &dynamicActions); err != nil {
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
 	}
@@ -381,7 +398,7 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 	if expected.Capabilities != nil && !sameStringSet(expected.Capabilities, manifest.ExtensionPoints) {
 		return ValidatedPackage{}, validationError("capability_mismatch", PackageManifestFile, errors.New("market capabilities differ from signed manifest extension points"))
 	}
-	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema}, nil
+	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema, DynamicActions: dynamicActions}, nil
 }
 
 func (v *Validator) verifyPackageSignature(root string, manifest Manifest, digest, expectedKeyID string) error {

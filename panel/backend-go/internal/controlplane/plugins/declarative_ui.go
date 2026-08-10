@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const (
@@ -125,6 +127,15 @@ type declarativeUIResetAction struct {
 	Confirm string `json:"confirm,omitempty"`
 }
 
+type declarativeUIDynamicAction struct {
+	Type       string                   `json:"type"`
+	ID         string                   `json:"id"`
+	Label      string                   `json:"label"`
+	Capability pluginsdk.HostCapability `json:"capability"`
+	TargetKind string                   `json:"target_kind"`
+	Confirm    string                   `json:"confirm,omitempty"`
+}
+
 type declarativeUIValidation struct {
 	componentCount int
 	optionCount    int
@@ -132,7 +143,9 @@ type declarativeUIValidation struct {
 	ids            map[string]struct{}
 	bindings       map[string]struct{}
 	actionTypes    map[string]struct{}
+	permissions    map[string]struct{}
 	configSchema   map[string]any
+	dynamicActions *[]pluginsdk.DynamicAction
 }
 
 type declarativeUIBinding struct {
@@ -142,6 +155,14 @@ type declarativeUIBinding struct {
 }
 
 func validateDeclarativeUI(data []byte, configSchema map[string]any) error {
+	return validateDeclarativeUIWithActions(data, configSchema, nil, nil)
+}
+
+func validateDeclarativeUIForPermissions(data []byte, configSchema map[string]any, permissions []Permission) error {
+	return validateDeclarativeUIWithActions(data, configSchema, permissions, nil)
+}
+
+func validateDeclarativeUIWithActions(data []byte, configSchema map[string]any, permissions []Permission, actions *[]pluginsdk.DynamicAction) error {
 	if len(data) == 0 || len(data) > maxDeclarativeUIBytes {
 		return fmt.Errorf("UI schema exceeds the %d-byte document budget", maxDeclarativeUIBytes)
 	}
@@ -162,10 +183,15 @@ func validateDeclarativeUI(data []byte, configSchema map[string]any) error {
 		return fmt.Errorf("UI schema requires 1 to %d host actions", maxDeclarativeUIActions)
 	}
 	state := &declarativeUIValidation{
-		ids:          make(map[string]struct{}),
-		bindings:     make(map[string]struct{}),
-		actionTypes:  make(map[string]struct{}),
-		configSchema: configSchema,
+		ids:            make(map[string]struct{}),
+		bindings:       make(map[string]struct{}),
+		actionTypes:    make(map[string]struct{}),
+		configSchema:   configSchema,
+		permissions:    make(map[string]struct{}, len(permissions)),
+		dynamicActions: actions,
+	}
+	for _, permission := range permissions {
+		state.permissions[permission.Name] = struct{}{}
 	}
 	if configSchema == nil {
 		return errors.New("UI schema requires the validated config schema")
@@ -413,10 +439,20 @@ func (state *declarativeUIValidation) action(raw []byte) error {
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("action must be an object: %w", err)
 	}
-	if _, duplicate := state.actionTypes[envelope.Type]; duplicate {
+	actionKey := envelope.Type
+	if envelope.Type == UIActionDynamic {
+		var identity struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &identity); err != nil {
+			return fmt.Errorf("dynamic action must be an object: %w", err)
+		}
+		actionKey += ":" + identity.ID
+	}
+	if _, duplicate := state.actionTypes[actionKey]; duplicate {
 		return fmt.Errorf("duplicate host action type %q", envelope.Type)
 	}
-	state.actionTypes[envelope.Type] = struct{}{}
+	state.actionTypes[actionKey] = struct{}{}
 	switch envelope.Type {
 	case UIActionSubmit:
 		var action declarativeUISubmitAction
@@ -433,6 +469,27 @@ func (state *declarativeUIValidation) action(raw []byte) error {
 			return err
 		}
 		return state.text("confirmation", action.Confirm, false, 512)
+	case UIActionDynamic:
+		var action declarativeUIDynamicAction
+		if err := decodeStrictUIObject(raw, &action, "type", "id", "label", "capability", "target_kind", "confirm"); err != nil {
+			return err
+		}
+		if err := state.commonAction(action.ID, action.Label); err != nil {
+			return err
+		}
+		if err := (pluginsdk.DynamicAction{ID: action.ID, Label: action.Label, Capability: action.Capability, TargetKind: action.TargetKind, Confirm: action.Confirm}).Validate(); err != nil {
+			return err
+		}
+		if _, ok := state.permissions[string(pluginsdk.CapabilityUIDynamicActions)]; !ok {
+			return errors.New("dynamic action requires signed ui.dynamic-actions permission")
+		}
+		if _, ok := state.permissions[string(action.Capability)]; !ok {
+			return errors.New("dynamic action capability is absent from signed permissions")
+		}
+		if state.dynamicActions != nil {
+			*state.dynamicActions = append(*state.dynamicActions, pluginsdk.DynamicAction{ID: action.ID, Label: action.Label, Capability: action.Capability, TargetKind: action.TargetKind, Confirm: action.Confirm})
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported host action type %q", envelope.Type)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,8 +31,9 @@ const (
 	UIComponentSelect   = "select"
 	UIComponentNotice   = "notice"
 
-	UIActionSubmit = "submit"
-	UIActionReset  = "reset"
+	UIActionSubmit  = "submit"
+	UIActionReset   = "reset"
+	UIActionDynamic = "dynamic"
 )
 
 // Manifest is the single runtime-aware control-plane contract. There is no
@@ -218,12 +220,13 @@ type PackageExpectation struct {
 }
 
 type ValidatedPackage struct {
-	Manifest     Manifest
-	Digest       string
-	Root         string
-	FileCount    int
-	Size         int64
-	ConfigSchema map[string]any
+	Manifest       Manifest
+	Digest         string
+	Root           string
+	FileCount      int
+	Size           int64
+	ConfigSchema   map[string]any
+	DynamicActions []pluginsdk.DynamicAction
 }
 
 type ValidatedMarket struct {

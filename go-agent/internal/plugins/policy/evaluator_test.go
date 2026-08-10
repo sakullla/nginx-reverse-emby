@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/hostapi"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -158,7 +160,10 @@ func TestPolicyBodyWindowAndCanonicalSourceAreBoundedHostOwnedInputs(t *testing.
 	if err != nil {
 		t.Fatalf("NewInput() error = %v", err)
 	}
-	host := &requestHost{input: input, instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{GrantedScopes: []string{"http.inspect"}}}
+	host := &requestHost{
+		input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(),
+		stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyTrustedSource)}, GrantedScopes: []string{"http.inspect", string(pluginsdk.CapabilityPolicyTrustedSource)}},
+	}
 	source, _ := host.ReadField(context.Background(), "source.ip")
 	complete, _ := host.ReadField(context.Background(), "body.complete")
 	skip, _ := host.ReadField(context.Background(), "body.skip_reason")
@@ -309,7 +314,7 @@ func TestPolicyWireFrameBudgetExactBoundariesAndDimensions(t *testing.T) {
 
 func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
-	host := &requestHost{input: input, instanceID: "instance", state: newGenerationState()}
+	host := &requestHost{input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a"}}
 	if _, err := host.ReadField(context.Background(), FieldRequestPath); !isPermissionDenied(err) {
 		t.Fatalf("ReadField() error = %v", err)
 	}
@@ -319,12 +324,67 @@ func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	if err := host.EmitEvent(context.Background(), pluginsdk.PolicySecurityEvent{Code: pluginsdk.PolicySecurityEventCodeWAFRuleMatch, Action: pluginsdk.PolicySecurityEventActionDeny}); !isPermissionDenied(err) {
 		t.Fatalf("EmitEvent() error = %v", err)
 	}
-	host.stage.GrantedScopes = []string{"http.inspect", "policy.read", "policy.write", "event.emit"}
+	host.stage.DeclaredScopes = []string{string(pluginsdk.CapabilityPolicyAtomicState)}
+	host.stage.GrantedScopes = []string{"http.inspect", "policy.read", "policy.write", "event.emit", string(pluginsdk.CapabilityPolicyAtomicState)}
+	host.authorizer = nil
 	if _, err := host.ReadField(context.Background(), FieldRequestPath); err != nil {
 		t.Fatalf("granted ReadField() error = %v", err)
 	}
 	if err := host.StatePut(context.Background(), "bucket", []byte("value")); err != nil {
 		t.Fatalf("granted StatePut() error = %v", err)
+	}
+}
+
+func TestPolicyHostCapabilitiesUseSignedProjectionAndNodeLocalPrimitives(t *testing.T) {
+	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
+	capabilities := []string{
+		string(pluginsdk.CapabilityPolicyAtomicState),
+		string(pluginsdk.CapabilityPolicyMonotonicClock),
+		string(pluginsdk.CapabilityPolicyTrustedSource),
+	}
+	newHost := func() *requestHost {
+		return &requestHost{
+			input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
+			stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: append([]string(nil), capabilities...), GrantedScopes: append([]string{"http.inspect", "policy.read", "policy.write"}, capabilities...)},
+			state: newGenerationState(), clock: hostapi.NewMonotonicClock(),
+		}
+	}
+	host := newHost()
+	if source, err := host.ReadField(t.Context(), "source.ip"); err != nil || len(source) == 0 {
+		t.Fatalf("trusted source = %q, %v", source, err)
+	}
+	first, err := host.ReadField(t.Context(), "clock.monotonic_ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := host.ReadField(t.Context(), "clock.monotonic_ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstValue, _ := strconv.ParseInt(string(first), 10, 64)
+	secondValue, _ := strconv.ParseInt(string(second), 10, 64)
+	if secondValue < firstValue {
+		t.Fatalf("monotonic clock moved backwards: %d then %d", firstValue, secondValue)
+	}
+	if err := host.StatePut(t.Context(), "bucket", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if value, found, err := host.StateGet(t.Context(), "bucket"); err != nil || !found || string(value) != "value" {
+		t.Fatalf("atomic state = %q, %v, %v", value, found, err)
+	}
+
+	for name, mutate := range map[string]func(*requestHost){
+		"missing declaration": func(candidate *requestHost) { candidate.stage.DeclaredScopes = nil },
+		"missing grant":       func(candidate *requestHost) { candidate.stage.GrantedScopes = []string{"http.inspect"} },
+		"missing group":       func(candidate *requestHost) { candidate.stage.ResourceGroupID = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := newHost()
+			mutate(candidate)
+			if _, err := candidate.ReadField(t.Context(), "source.ip"); !isPermissionDenied(err) {
+				t.Fatalf("trusted source denial error = %v", err)
+			}
+		})
 	}
 }
 
@@ -413,7 +473,9 @@ func testPolicy(id string, kinds ...model.PolicyKind) model.PluginPolicy {
 			Kind: kind, PolicyID: id + "-" + string(kind), PluginID: "official." + string(kind), PluginVersion: "1.0.0",
 			InstanceID: id + "-instance-" + string(kind), PackageDigest: "package-digest", ArtifactPath: "verified/policy.wasm",
 			ArtifactDigest: "artifact-digest", SignatureVerified: true, SignerKeyID: "official-release", SignerFingerprint: "signer-fingerprint",
-			ABI: model.PolicyABIV1, ExtensionPoints: extensions, GrantedScopes: []string{"policy.read"},
+			ABI: model.PolicyABIV1, ExtensionPoints: extensions,
+			DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock), string(pluginsdk.CapabilityPolicyTrustedSource)},
+			GrantedScopes:  []string{"policy.read", string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock), string(pluginsdk.CapabilityPolicyTrustedSource)}, ResourceGroupID: "group-a",
 			ResourceBudget: model.PolicyResourceBudget{TimeoutMS: 2, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 1024},
 			FailurePolicy:  model.PolicyFailurePolicy{OnError: "fail-open", OnBudget: "fail-open", Restart: "never", CoreFallback: "preserve"},
 		})

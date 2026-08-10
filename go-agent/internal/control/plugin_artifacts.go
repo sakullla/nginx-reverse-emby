@@ -43,6 +43,9 @@ func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model
 		var policyErr error
 		for stageIndex := range definition.Stages {
 			stage := &definition.Stages[stageIndex]
+			stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
+			stage.DeclaredScopes = append([]string(nil), stage.DeclaredScopes...)
+			stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
 			if cacheDir == "" {
 				policyErr = errors.New("plugin policy snapshot requires an Agent artifact cache")
 				break

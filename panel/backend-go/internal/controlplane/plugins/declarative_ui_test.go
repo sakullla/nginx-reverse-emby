@@ -6,7 +6,60 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+func TestValidatorBackedDynamicActionsRequireSignedCapabilities(t *testing.T) {
+	action := map[string]any{
+		"type": UIActionDynamic, "id": "rotate", "label": "Rotate",
+		"capability":  string(pluginsdk.CapabilityServiceRevocableResourceHandle),
+		"target_kind": "plugin.instance", "confirm": "Rotate this resource?",
+	}
+	data := mutateDeclarativeUI(func(document map[string]any) {
+		document["actions"] = append(document["actions"].([]any), action)
+	})(t)
+	permissions := []Permission{
+		{Name: string(pluginsdk.CapabilityUIDynamicActions)},
+		{Name: string(pluginsdk.CapabilityServiceRevocableResourceHandle)},
+	}
+	if err := validateDeclarativeUIForPermissions(data, validDeclarativeUIConfigSchema(t), permissions); err != nil {
+		t.Fatalf("signed dynamic action rejected: %v", err)
+	}
+	for name, denied := range map[string][]Permission{
+		"missing ui grant":     {{Name: string(pluginsdk.CapabilityServiceRevocableResourceHandle)}},
+		"missing action grant": {{Name: string(pluginsdk.CapabilityUIDynamicActions)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateDeclarativeUIForPermissions(data, validDeclarativeUIConfigSchema(t), denied); err == nil {
+				t.Fatal("dynamic action without both signed capabilities was accepted")
+			}
+		})
+	}
+
+	root := newPackageFixture(t)
+	manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), "permissions: [http.inspect]", "permissions: [http.inspect, ui.dynamic-actions, service.revocable-resource-handle]", 1)
+	writeFixture(t, root, PackageManifestFile, manifest+"ui_schema: "+UISchemaFile+"\n")
+	writeFixtureBytes(t, root, ConfigSchemaFile, mustMarshalJSON(t, validDeclarativeUIConfigSchema(t)))
+	writeFixtureBytes(t, root, UISchemaFile, data)
+	refreshFixtureDigest(t, root)
+	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("signed package dynamic action rejected: %v", err)
+	}
+	if len(validated.DynamicActions) != 1 || validated.DynamicActions[0].ID != "rotate" {
+		t.Fatalf("validated dynamic action projection = %+v", validated.DynamicActions)
+	}
+
+	unsafeData := mutateDeclarativeUI(func(document map[string]any) {
+		actions := document["actions"].([]any)
+		actions = append(actions, map[string]any{"type": UIActionDynamic, "id": "unsafe", "label": "Unsafe", "capability": string(pluginsdk.CapabilityPolicyAtomicState), "target_kind": "plugin.instance", "javascript": "alert(1)"})
+		document["actions"] = actions
+	})(t)
+	if err := validateDeclarativeUIForPermissions(unsafeData, validDeclarativeUIConfigSchema(t), append(permissions, Permission{Name: string(pluginsdk.CapabilityPolicyAtomicState)})); err == nil {
+		t.Fatal("dynamic action with executable content was accepted")
+	}
+}
 
 func TestValidatorAcceptsSingleTypedDeclarativeUISchema(t *testing.T) {
 	data := validDeclarativeUIJSON(t)
