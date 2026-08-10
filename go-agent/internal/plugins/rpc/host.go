@@ -57,7 +57,8 @@ type hostAttempt struct {
 	rpcStopErr  error
 	closeOnce   sync.Once
 	closeErr    error
-	cleanupOnce sync.Once
+	cleanupMu   sync.Mutex
+	cleanupDone bool
 	cleanupErr  error
 }
 
@@ -72,24 +73,27 @@ type HostedInstance struct {
 	backoff        time.Duration
 	cancel         context.CancelFunc
 	done           chan struct{}
+	runStarted     bool
 	stopMu         sync.Mutex
 	stopErr        error
 	stoppedAttempt *hostAttempt
+	afterStartOnce func()
 }
 
 type Host struct {
-	mu           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	closed       bool
-	activationWG sync.WaitGroup
-	installer    pluginprocess.Installer
-	install      func(context.Context, string, pluginprocess.Artifact) (string, error)
-	supervisor   *pluginprocess.Supervisor
-	dial         DialFunc
-	active       map[string]*HostedInstance
-	pending      map[*HostedInstance]struct{}
-	locks        sync.Map
+	mu             sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closed         bool
+	activationWG   sync.WaitGroup
+	installer      pluginprocess.Installer
+	install        func(context.Context, string, pluginprocess.Artifact) (string, error)
+	supervisor     *pluginprocess.Supervisor
+	dial           DialFunc
+	active         map[string]*HostedInstance
+	pending        map[*HostedInstance]struct{}
+	locks          sync.Map
+	afterStartOnce func()
 }
 
 func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Supervisor, dial DialFunc) (*Host, error) {
@@ -166,9 +170,10 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 			Generation: candidate.Generation,
 			State:      "starting",
 		},
-		backoff: candidate.Process.InitialBackoff,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		backoff:        candidate.Process.InitialBackoff,
+		cancel:         cancel,
+		done:           make(chan struct{}),
+		afterStartOnce: h.afterStartOnce,
 	}
 	attempt, err := h.startAttempt(activationCtx, candidate, func(attempt *hostAttempt) {
 		instance.mu.Lock()
@@ -234,6 +239,9 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		delete(h.pending, instance)
 		h.mu.Unlock()
 	}
+	instance.mu.Lock()
+	instance.runStarted = true
+	instance.mu.Unlock()
 	go instance.run(runCtx)
 	return instance, nil
 }
@@ -258,6 +266,9 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 	handle, err := h.supervisor.StartOnce(ctx, candidate.Process)
 	if err != nil {
 		return nil, err
+	}
+	if h.afterStartOnce != nil {
+		h.afterStartOnce()
 	}
 	attempt := &hostAttempt{handle: handle, cleanup: security.cleanup}
 	failedSecurity = false
@@ -470,14 +481,29 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 	i.mu.Lock()
 	i.status.State = "stopping"
 	i.cancel()
-	attempt := i.stoppedAttempt
-	if attempt == nil {
-		attempt = i.attempt
-		i.stoppedAttempt = attempt
-	}
+	runStarted := i.runStarted
 	i.mu.Unlock()
-	stopErr := i.stopAttempt(ctx, attempt, true)
-	terminated := attemptTerminated(attempt)
+	runJoined := !runStarted
+	var runJoinErr error
+	if runStarted {
+		waitCtx, cancel := context.WithTimeout(context.Background(), hostDrainTimeout(i.candidate.Process.GracePeriod))
+		select {
+		case <-i.done:
+			runJoined = true
+		case <-waitCtx.Done():
+			runJoinErr = fmt.Errorf("join Agent RPC plugin restart work: %w", waitCtx.Err())
+		}
+		cancel()
+	}
+	i.mu.Lock()
+	attempt := i.attempt
+	if attempt == nil {
+		attempt = i.stoppedAttempt
+	}
+	i.stoppedAttempt = attempt
+	i.mu.Unlock()
+	stopErr := errors.Join(runJoinErr, i.stopAttempt(ctx, attempt, true))
+	terminated := runJoined && attemptTerminal(attempt)
 	i.mu.Lock()
 	i.stopErr = stopErr
 	if terminated {
@@ -490,7 +516,7 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 		}
 	}
 	i.mu.Unlock()
-	if !attemptTerminated(attempt) {
+	if !attemptTerminal(attempt) {
 		return errors.Join(stopErr, errors.New("Agent RPC plugin process did not terminate"))
 	}
 	return stopErr
@@ -502,7 +528,7 @@ func (i *HostedInstance) terminated() bool {
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.status.State == "stopped" && i.status.PID == 0 && attemptTerminated(i.stoppedAttempt)
+	return i.status.State == "stopped" && i.status.PID == 0 && attemptTerminal(i.stoppedAttempt)
 }
 
 func (i *HostedInstance) run(ctx context.Context) {
@@ -533,7 +559,15 @@ func (i *HostedInstance) run(ctx context.Context) {
 		i.status.PID = 0
 		i.status.LastError = safeHostError(failure)
 		i.mu.Unlock()
-		_ = i.stopAttempt(context.Background(), attempt, false)
+		cleanupErr := i.stopAttempt(context.Background(), attempt, false)
+		if !attemptTerminal(attempt) {
+			i.mu.Lock()
+			i.stoppedAttempt = attempt
+			i.status.State = "failed"
+			i.status.LastError = safeHostError(cleanupErr)
+			i.mu.Unlock()
+			return
+		}
 
 		for {
 			backoff, retry := i.recordFailure(time.Now().UTC(), failure)
@@ -558,7 +592,7 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.State = "starting"
 			i.mu.Unlock()
 
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, afterStartOnce: i.afterStartOnce}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()
@@ -566,7 +600,7 @@ func (i *HostedInstance) run(ctx context.Context) {
 			if err != nil {
 				if replacement != nil {
 					err = errors.Join(err, i.stopAttemptWithTimeout(replacement, true))
-					if attemptTerminated(replacement) {
+					if attemptTerminal(replacement) {
 						i.mu.Lock()
 						if i.attempt == replacement {
 							i.attempt = nil
@@ -642,13 +676,17 @@ func (i *HostedInstance) stopAttempt(ctx context.Context, attempt *hostAttempt, 
 		attempt.rpcStopOnce.Do(func() { attempt.rpcStopErr = i.stopRPC(ctx, attempt) })
 	}
 	processErr := i.supervisor.Stop(ctx, i.candidate.Process.ID)
-	if attemptTerminated(attempt) {
+	if attemptProcessDone(attempt) {
 		attempt.closeTransport()
-		attempt.cleanupOnce.Do(func() {
+		attempt.cleanupMu.Lock()
+		if !attempt.cleanupDone {
+			attempt.cleanupErr = nil
 			if attempt.cleanup != nil {
 				attempt.cleanupErr = attempt.cleanup()
 			}
-		})
+			attempt.cleanupDone = attempt.cleanupErr == nil
+		}
+		attempt.cleanupMu.Unlock()
 	}
 	return errors.Join(attempt.rpcStopErr, processErr, attempt.closeErr, attempt.cleanupErr)
 }
@@ -697,7 +735,7 @@ func (i *HostedInstance) stopAttemptWithTimeout(attempt *hostAttempt, intentiona
 	return i.stopAttempt(ctx, attempt, intentional)
 }
 
-func attemptTerminated(attempt *hostAttempt) bool {
+func attemptProcessDone(attempt *hostAttempt) bool {
 	if attempt == nil || attempt.handle == nil {
 		return true
 	}
@@ -709,13 +747,25 @@ func attemptTerminated(attempt *hostAttempt) bool {
 	}
 }
 
+func attemptTerminal(attempt *hostAttempt) bool {
+	if !attemptProcessDone(attempt) {
+		return false
+	}
+	if attempt == nil {
+		return true
+	}
+	attempt.cleanupMu.Lock()
+	defer attempt.cleanupMu.Unlock()
+	return attempt.cleanup == nil || attempt.cleanupDone
+}
+
 func hostDrainTimeout(grace time.Duration) time.Duration {
 	if grace <= 0 {
 		grace = 5 * time.Second
 	}
 	timeout := grace * 3
-	if timeout < 100*time.Millisecond {
-		return 100 * time.Millisecond
+	if timeout < 250*time.Millisecond {
+		return 250 * time.Millisecond
 	}
 	if timeout > 30*time.Second {
 		return 30 * time.Second

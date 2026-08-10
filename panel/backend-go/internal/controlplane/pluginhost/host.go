@@ -136,6 +136,9 @@ type Instance struct {
 	candidate                  Candidate
 	control                    *runtimeControl
 	securityCleanup            func() error
+	cleanupMu                  sync.Mutex
+	cleanupDone                bool
+	cleanupErr                 error
 	processCancel              context.CancelFunc
 }
 
@@ -499,9 +502,6 @@ func (i *Instance) monitor() {
 	if i.logCloser != nil {
 		err = errors.Join(err, i.logCloser.Close())
 	}
-	if i.securityCleanup != nil {
-		err = errors.Join(err, i.securityCleanup())
-	}
 	i.mu.Lock()
 	i.waitErr = err
 	if i.State != "stopping" && i.State != "stopped" {
@@ -537,6 +537,7 @@ func (i *Instance) stop(ctx context.Context) error {
 	var signalErr, killErr, joinErr, waitErr error
 	terminated := false
 	alreadyExited := false
+	terminationRequested := false
 	if i.process != nil {
 		select {
 		case <-i.done:
@@ -553,6 +554,7 @@ func (i *Instance) stop(ctx context.Context) error {
 			i.gracefulOnce.Do(func() {
 				graceful = true
 				i.signalErr = i.process.Signal(os.Interrupt)
+				terminationRequested = i.signalErr == nil
 			})
 			if graceful {
 				timer := time.NewTimer(grace)
@@ -571,6 +573,7 @@ func (i *Instance) stop(ctx context.Context) error {
 			}
 			if !terminated {
 				killErr = i.process.Kill()
+				terminationRequested = terminationRequested || killErr == nil
 				if i.processCancel != nil {
 					i.processCancel()
 				}
@@ -584,33 +587,55 @@ func (i *Instance) stop(ctx context.Context) error {
 				cancel()
 			}
 		}
-		if terminated && !alreadyExited {
+		if terminated && !alreadyExited && !terminationRequested {
 			i.mu.RLock()
 			waitErr = i.waitErr
 			i.mu.RUnlock()
 		}
 	}
-	var closeErr error
+	var closeErr, cleanupErr error
 	if terminated {
 		i.closeTransport()
 		closeErr = i.closeErr
-	}
-	if terminated && i.logCloser != nil {
-		closeErr = errors.Join(closeErr, i.logCloser.Close())
+		cleanupErr = i.cleanupSecurity()
 	}
 	i.mu.Lock()
-	if terminated || i.process == nil {
+	if (terminated || i.process == nil) && cleanupErr == nil {
 		i.State = "stopped"
 		i.PID = 0
 	} else {
 		i.State = "failed"
-		i.LastError = safeError(errors.Join(killErr, joinErr))
+		if terminated {
+			i.PID = 0
+		}
+		i.LastError = safeError(errors.Join(killErr, joinErr, cleanupErr))
 	}
 	i.mu.Unlock()
 	if (terminated || i.process == nil) && i.processCancel != nil {
 		i.processCancel()
 	}
-	return errors.Join(i.rpcStopErr, i.signalErr, signalErr, killErr, joinErr, waitErr, closeErr)
+	return errors.Join(i.rpcStopErr, i.signalErr, signalErr, killErr, joinErr, waitErr, closeErr, cleanupErr)
+}
+
+func (i *Instance) cleanupSecurity() error {
+	i.cleanupMu.Lock()
+	defer i.cleanupMu.Unlock()
+	if i.cleanupDone || i.securityCleanup == nil {
+		i.cleanupDone = true
+		i.cleanupErr = nil
+		return nil
+	}
+	i.cleanupErr = i.securityCleanup()
+	if i.cleanupErr == nil {
+		i.cleanupDone = true
+	}
+	return i.cleanupErr
+}
+
+func (i *Instance) cleanupComplete() bool {
+	i.cleanupMu.Lock()
+	defer i.cleanupMu.Unlock()
+	return i.securityCleanup == nil || i.cleanupDone
 }
 
 func (i *Instance) stopRPC(ctx context.Context) error {
@@ -668,7 +693,7 @@ func (i *Instance) terminated() bool {
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.State == "stopped" && i.PID == 0
+	return i.State == "stopped" && i.PID == 0 && i.cleanupComplete()
 }
 
 func (i *Instance) Terminated() bool { return i.terminated() }
@@ -713,6 +738,15 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 			instance.mu.RUnlock()
 			if failure == nil {
 				failure = errors.New("control-plane plugin process exited unexpectedly")
+			}
+			if cleanupErr := instance.cleanupSecurity(); cleanupErr != nil {
+				instance.mu.Lock()
+				instance.State = "failed"
+				instance.PID = 0
+				instance.LastError = safeError(cleanupErr)
+				instance.mu.Unlock()
+				h.notifyOwned(instance, control)
+				return
 			}
 		}
 		backoff, retry := h.recordRestartFailure(control, instance, failure)

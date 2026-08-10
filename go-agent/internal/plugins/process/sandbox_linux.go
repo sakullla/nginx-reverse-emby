@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -80,8 +81,25 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	cmd.ExtraFiles = append(cmd.ExtraFiles, filter)
 	cmd.SysProcAttr = linuxSandboxSysProcAttr(int(cgroupFile.Fd()))
 	startCleanup := func() error { return errors.Join(filter.Close(), cgroupFile.Close()) }
-	processCleanup := func() error { return os.Remove(cgroupDir) }
+	processCleanup := func() error { return removeLinuxCgroup(cgroupDir) }
 	return startCleanup, processCleanup, func(int) error { return nil }, nil
+}
+
+func removeLinuxCgroup(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.kill"), []byte("1"), 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("kill plugin cgroup: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Remove(dir)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if (!errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.ENOTEMPTY)) || time.Now().After(deadline) {
+			return fmt.Errorf("remove plugin cgroup: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func linuxSandboxArguments(bwrap, prlimit, executable string, originalArgs, environment []string, security Security, filterFD int) []string {

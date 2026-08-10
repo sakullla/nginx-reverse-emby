@@ -387,6 +387,110 @@ func TestRPCHostCrashRestartAttemptIsOwnedByStopBeforeHandshake(t *testing.T) {
 	}
 }
 
+func TestRPCHostStopJoinsRestartPublishedAfterStopSnapshotWindow(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = 50 * time.Millisecond
+	first := &hostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
+	replacement := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{first, replacement}}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartReturned := make(chan struct{})
+	releasePublication := make(chan struct{})
+	var hookMu sync.Mutex
+	hookCalls := 0
+	host.afterStartOnce = func() {
+		hookMu.Lock()
+		hookCalls++
+		call := hookCalls
+		hookMu.Unlock()
+		if call == 2 {
+			close(restartReturned)
+			<-releasePublication
+		}
+	}
+	instance, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.done <- errors.New("crash")
+	select {
+	case <-restartReturned:
+	case <-time.After(time.Second):
+		t.Fatal("restart StartOnce did not return")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- host.Stop(context.Background(), candidate.InstanceID) }()
+	deadline := time.Now().Add(time.Second)
+	for instance.Status().State != "stopping" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if instance.Status().State != "stopping" {
+		t.Fatal("Stop did not cancel restart work")
+	}
+	close(releasePublication)
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop did not retry the replacement termination: %v", err)
+	}
+	replacement.mu.Lock()
+	killCalls := replacement.killCalls
+	replacement.mu.Unlock()
+	if killCalls != 2 {
+		t.Fatalf("replacement Kill calls = %d, want 2", killCalls)
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Stop returned with the restart replacement still owned")
+	}
+}
+
+func TestRPCHostCredentialCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	supervisor := pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, supervisor, func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.mu.RLock()
+	attempt := instance.attempt
+	instance.mu.RUnlock()
+	originalCleanup := attempt.cleanup
+	cleanupCalls := 0
+	attempt.cleanup = func() error {
+		cleanupCalls++
+		if cleanupCalls == 1 {
+			return errors.New("credential cleanup failed")
+		}
+		return originalCleanup()
+	}
+	if err := host.Stop(t.Context(), candidate.InstanceID); err == nil || !strings.Contains(err.Error(), "credential cleanup failed") {
+		t.Fatalf("first Stop error = %v", err)
+	}
+	if _, active := host.Active(candidate.InstanceID); !active {
+		t.Fatal("credential cleanup failure removed the active owner")
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry credential cleanup: %v", err)
+	}
+	if cleanupCalls != 2 {
+		t.Fatalf("credential cleanup calls = %d, want 2", cleanupCalls)
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("successful cleanup retry retained the active owner")
+	}
+}
+
 func TestRPCHostPreviousDrainKillFailureCanBeRetried(t *testing.T) {
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)

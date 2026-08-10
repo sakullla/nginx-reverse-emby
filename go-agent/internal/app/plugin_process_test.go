@@ -7,9 +7,31 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
+
+type failingLoadStore struct {
+	*core.InMemory
+	appliedErr error
+	desiredErr error
+}
+
+func (s *failingLoadStore) LoadAppliedSnapshot() (core.Snapshot, error) {
+	if s.appliedErr != nil {
+		return core.Snapshot{}, s.appliedErr
+	}
+	return s.InMemory.LoadAppliedSnapshot()
+}
+
+func (s *failingLoadStore) LoadDesiredSnapshot() (core.Snapshot, error) {
+	if s.desiredErr != nil {
+		return core.Snapshot{}, s.desiredErr
+	}
+	return s.InMemory.LoadDesiredSnapshot()
+}
 
 func TestRPCProcessSupervisorIsAppOwnedAndDrained(t *testing.T) {
 	app := newAppWithAllDeps(Config{}, nil, nil, nil, nil)
@@ -68,6 +90,42 @@ func TestAppCloseCanRetryAfterFailure(t *testing.T) {
 	}
 	if application.rpcHost != nil || application.rpcProcesses != nil {
 		t.Fatal("successful retry retained runtime references")
+	}
+}
+
+func TestAppRunJoinsExhaustedRuntimeCloseError(t *testing.T) {
+	loadErr := errors.New("load applied failed")
+	closeErr := errors.New("runtime close retries exhausted")
+	host, supervisor := testAppRPCRuntimes(t)
+	application := &App{
+		store:             &failingLoadStore{InMemory: core.NewInMemory(), appliedErr: loadErr},
+		runtime:           core.NewRuntime(),
+		rpcHost:           host,
+		rpcProcesses:      supervisor,
+		rpcHostClose:      func(context.Context) error { return closeErr },
+		rpcProcessesClose: func(context.Context) error { return nil },
+	}
+	err := application.Run(t.Context())
+	if !errors.Is(err, loadErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("Run error = %v, want load and exhausted Close errors", err)
+	}
+}
+
+func TestAppRunHotRestartChildJoinsExhaustedRuntimeCloseError(t *testing.T) {
+	loadErr := errors.New("load desired failed")
+	closeErr := errors.New("runtime close retries exhausted")
+	host, supervisor := testAppRPCRuntimes(t)
+	application := &App{
+		store:             &failingLoadStore{InMemory: core.NewInMemory(), desiredErr: loadErr},
+		runtime:           core.NewRuntime(),
+		rpcHost:           host,
+		rpcProcesses:      supervisor,
+		rpcHostClose:      func(context.Context) error { return closeErr },
+		rpcProcessesClose: func(context.Context) error { return nil },
+	}
+	err := application.RunHotRestartChild(t.Context(), &hotrestart.ChildSession{})
+	if !errors.Is(err, loadErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("RunHotRestartChild error = %v, want load and exhausted Close errors", err)
 	}
 }
 

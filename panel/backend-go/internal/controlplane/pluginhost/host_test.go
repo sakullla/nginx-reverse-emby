@@ -24,6 +24,22 @@ type testProcess struct {
 	once sync.Once
 }
 
+type expectedSignalExitProcess struct {
+	done chan error
+	once sync.Once
+}
+
+func (p *expectedSignalExitProcess) PID() int    { return 78 }
+func (p *expectedSignalExitProcess) Wait() error { return <-p.done }
+func (p *expectedSignalExitProcess) Signal(os.Signal) error {
+	p.once.Do(func() { p.done <- errors.New("signal: interrupt") })
+	return nil
+}
+func (p *expectedSignalExitProcess) Kill() error {
+	p.once.Do(func() { p.done <- errors.New("signal: killed") })
+	return nil
+}
+
 type controlledStopProcess struct {
 	done       chan error
 	killCalled chan struct{}
@@ -305,6 +321,51 @@ func TestPluginHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.
 	host.mu.RUnlock()
 	if prepared != 0 || !process.isDone() {
 		t.Fatalf("Close cleanup result: prepared=%d done=%v", prepared, process.isDone())
+	}
+}
+
+func TestPluginHostCredentialCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("credential cleanup retry")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	instance, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCleanup := instance.securityCleanup
+	cleanupCalls := 0
+	instance.securityCleanup = func() error {
+		cleanupCalls++
+		if cleanupCalls == 1 {
+			return errors.New("credential cleanup failed")
+		}
+		return originalCleanup()
+	}
+	if err := host.Stop(t.Context(), candidate.InstanceID); err == nil || !strings.Contains(err.Error(), "credential cleanup failed") {
+		t.Fatalf("first Stop error = %v", err)
+	}
+	if _, active := host.Active(candidate.InstanceID); !active {
+		t.Fatal("credential cleanup failure removed the active owner")
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry credential cleanup: %v", err)
+	}
+	if cleanupCalls != 2 {
+		t.Fatalf("credential cleanup calls = %d, want 2", cleanupCalls)
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("successful cleanup retry retained the active owner")
 	}
 }
 
@@ -628,6 +689,18 @@ func TestPluginHostStopReturnsWhenProcessAlreadyExited(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
 		t.Fatalf("Stop waited for grace after process exit: %v", elapsed)
+	}
+}
+
+func TestPluginHostStopAcceptsExpectedSignalExit(t *testing.T) {
+	process := &expectedSignalExitProcess{done: make(chan error, 1)}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Second, done: make(chan struct{})}
+	go instance.monitor()
+	if err := instance.Stop(t.Context()); err != nil {
+		t.Fatalf("expected signal exit reported as Stop failure: %v", err)
+	}
+	if !instance.terminated() {
+		t.Fatalf("signal-terminated instance retained status: %+v", instance)
 	}
 }
 

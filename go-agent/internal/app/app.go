@@ -638,9 +638,9 @@ func (a *App) snapshotDiagnosticModule(ctx context.Context, snapshot Snapshot) (
 	return diagnosticModule, nil
 }
 
-func (a *App) Run(ctx context.Context) error {
+func (a *App) Run(ctx context.Context) (runErr error) {
 	defer func() {
-		_ = a.Close()
+		runErr = errors.Join(runErr, a.Close())
 	}()
 	a.setRunContext(ctx)
 	a.bindRelayTunnelCredentialProvider()
@@ -669,12 +669,12 @@ func (a *App) Run(ctx context.Context) error {
 	return a.runControlLoop(ctx, applied)
 }
 
-func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSession) error {
+func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSession) (runErr error) {
 	if a == nil || child == nil {
 		return errors.New("hot restart child app and session are required")
 	}
 	defer func() {
-		_ = a.Close()
+		runErr = errors.Join(runErr, a.Close())
 	}()
 	a.hotRestartChild = true
 	a.setRunContext(ctx)

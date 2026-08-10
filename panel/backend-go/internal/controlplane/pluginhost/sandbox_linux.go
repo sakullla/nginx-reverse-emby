@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const backendCgroupRoot = "/sys/fs/cgroup"
@@ -60,8 +61,25 @@ func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(in
 	cmd.ExtraFiles = append(cmd.ExtraFiles, filter)
 	cmd.SysProcAttr = backendLinuxSandboxSysProcAttr(int(cgroup.Fd()))
 	startCleanup := func() error { return errors.Join(filter.Close(), cgroup.Close()) }
-	attach := func(int) (func() error, error) { return func() error { return os.Remove(dir) }, nil }
+	attach := func(int) (func() error, error) { return func() error { return removeBackendCgroup(dir) }, nil }
 	return startCleanup, attach, nil
+}
+
+func removeBackendCgroup(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.kill"), []byte("1"), 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("kill control-plane plugin cgroup: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Remove(dir)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if (!errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.ENOTEMPTY)) || time.Now().After(deadline) {
+			return fmt.Errorf("remove control-plane plugin cgroup: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func backendLinuxSandboxArguments(bwrap, prlimit, executable string, original, environment []string, c Candidate, filterFD int) []string {
