@@ -406,6 +406,7 @@ func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
 		PluginGenerations: []model.PluginGeneration{{InstanceID: "rpc-instance", Config: []byte(`{"port":53}`),
 			ExtensionPoints: []string{"dns.provider"}, Grants: []model.PluginGrantProjection{{Name: "dns.manage"}},
 			SecretHandles: []model.PluginSecretHandle{{ID: "secret", Version: 1}}}},
+		PluginDependencies: []model.PluginDependencyEdge{{Consumer: model.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "rpc-instance"}},
 	}
 	ctx, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
 	if err != nil {
@@ -421,6 +422,7 @@ func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
 	snapshot.PluginGenerations[0].ExtensionPoints[0] = "changed"
 	snapshot.PluginGenerations[0].Grants[0].Name = "changed"
 	snapshot.PluginGenerations[0].SecretHandles[0].ID = "changed"
+	snapshot.PluginDependencies[0].ProviderInstanceID = "changed"
 
 	first := ctx.Snapshot()
 	first.Rules[0].PolicyRef.Overlay[0] = 'y'
@@ -429,7 +431,7 @@ func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
 	first.PluginPolicies[0].Stages[0].Config[0] = 'y'
 	first.PluginGenerations[0].Config[0] = 'y'
 	second := ctx.Snapshot()
-	if string(second.Rules[0].PolicyRef.Overlay) != `{"level":1}` || second.Rules[0].TrustedProxyRanges[0] != "192.0.2.0/24" || second.L4Rules[0].Tuning.ProxyProtocol.TrustedPeers[0] != "198.51.100.10" || second.PluginPolicies[0].Stages[0].ExtensionPoints[0] != "http.request" || second.PluginPolicies[0].Stages[0].GrantedScopes[0] != "http.inspect" || string(second.PluginPolicies[0].Stages[0].Config) != `{"mode":"block"}` || string(second.PluginGenerations[0].Config) != `{"port":53}` || second.PluginGenerations[0].ExtensionPoints[0] != "dns.provider" || second.PluginGenerations[0].Grants[0].Name != "dns.manage" || second.PluginGenerations[0].SecretHandles[0].ID != "secret" {
+	if string(second.Rules[0].PolicyRef.Overlay) != `{"level":1}` || second.Rules[0].TrustedProxyRanges[0] != "192.0.2.0/24" || second.L4Rules[0].Tuning.ProxyProtocol.TrustedPeers[0] != "198.51.100.10" || second.PluginPolicies[0].Stages[0].ExtensionPoints[0] != "http.request" || second.PluginPolicies[0].Stages[0].GrantedScopes[0] != "http.inspect" || string(second.PluginPolicies[0].Stages[0].Config) != `{"mode":"block"}` || string(second.PluginGenerations[0].Config) != `{"port":53}` || second.PluginGenerations[0].ExtensionPoints[0] != "dns.provider" || second.PluginGenerations[0].Grants[0].Name != "dns.manage" || second.PluginGenerations[0].SecretHandles[0].ID != "secret" || second.PluginDependencies[0].ProviderInstanceID != "rpc-instance" {
 		t.Fatalf("generation context leaked plugin policy backing storage: %+v", second)
 	}
 }

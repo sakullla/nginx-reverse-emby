@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,12 +17,33 @@ type Snapshot struct {
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	PluginGenerations   []PluginGeneration         `json:"plugin_generations"`
+	PluginDependencies  []PluginDependencyEdge     `json:"plugin_dependencies"`
 	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	PKISecurity         *PKISecuritySnapshot       `json:"pki_security,omitempty"`
+}
+
+// PluginDependencyEdge makes a core resource's required RPC provider part of
+// the signed snapshot. Generations without an edge are optional and may fail
+// without blocking the core snapshot.
+type PluginDependencyEdge struct {
+	Consumer           PluginDependencyConsumer `json:"consumer"`
+	ProviderInstanceID string                   `json:"provider_instance_id"`
+	Target             PluginDependencyTarget   `json:"target"`
+}
+
+type PluginDependencyConsumer struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+type PluginDependencyTarget struct {
+	AgentID         string `json:"agent_id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         uint64 `json:"version"`
 }
 
 // PluginGeneration is the complete, target-specific runtime projection. It
@@ -283,6 +305,32 @@ func filterSupportedSnapshotResources(snapshot Snapshot, excludedRelayIDs, exclu
 			continue
 		}
 		filtered.L4Rules = append(filtered.L4Rules, rule)
+	}
+	retainedHTTP := make(map[string]struct{}, len(filtered.Rules))
+	for _, rule := range filtered.Rules {
+		retainedHTTP[strconv.Itoa(rule.ID)] = struct{}{}
+	}
+	retainedL4 := make(map[string]struct{}, len(filtered.L4Rules))
+	for _, rule := range filtered.L4Rules {
+		retainedL4[strconv.Itoa(rule.ID)] = struct{}{}
+	}
+	filtered.PluginDependencies = nil
+	if snapshot.PluginDependencies != nil {
+		filtered.PluginDependencies = make([]PluginDependencyEdge, 0, len(snapshot.PluginDependencies))
+	}
+	for _, edge := range snapshot.PluginDependencies {
+		keep := false
+		switch edge.Consumer.Kind {
+		case PluginDependencyConsumerHTTPRule:
+			_, keep = retainedHTTP[edge.Consumer.ID]
+		case PluginDependencyConsumerL4Rule:
+			_, keep = retainedL4[edge.Consumer.ID]
+		}
+		if !keep {
+			changed = true
+			continue
+		}
+		filtered.PluginDependencies = append(filtered.PluginDependencies, edge)
 	}
 
 	return filtered, changed

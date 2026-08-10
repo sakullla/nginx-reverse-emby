@@ -262,7 +262,7 @@ func TestFilesystemStorePersistsDesiredSnapshot(t *testing.T) {
 	}
 }
 
-func TestFilesystemStorePreservesExplicitEmptyCertificateSlices(t *testing.T) {
+func TestFilesystemStorePreservesExplicitEmptyRevisionSlices(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewFilesystem(dir)
 	if err != nil {
@@ -274,6 +274,9 @@ func TestFilesystemStorePreservesExplicitEmptyCertificateSlices(t *testing.T) {
 		Revision:            12,
 		Certificates:        []model.ManagedCertificateBundle{},
 		CertificatePolicies: []model.ManagedCertificatePolicy{},
+		PluginGenerations:   []model.PluginGeneration{},
+		PluginDependencies:  []model.PluginDependencyEdge{},
+		PluginPolicies:      []model.PluginPolicy{},
 	}
 	if err := s.SaveDesiredSnapshot(expected); err != nil {
 		t.Fatalf("SaveDesiredSnapshot returned error: %v", err)
@@ -293,6 +296,9 @@ func TestFilesystemStorePreservesExplicitEmptyCertificateSlices(t *testing.T) {
 	}
 	if got.CertificatePolicies == nil || len(got.CertificatePolicies) != 0 {
 		t.Fatalf("expected explicit empty certificate policies slice, got %+v", got.CertificatePolicies)
+	}
+	if got.PluginGenerations == nil || got.PluginDependencies == nil || got.PluginPolicies == nil {
+		t.Fatalf("expected explicit empty plugin graph slices, got generations=%#v dependencies=%#v policies=%#v", got.PluginGenerations, got.PluginDependencies, got.PluginPolicies)
 	}
 }
 

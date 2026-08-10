@@ -72,6 +72,26 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 		}
 		return left.ID < right.ID
 	})
+	result.PluginDependencies = nonNil(result.PluginDependencies)
+	sort.SliceStable(result.PluginDependencies, func(i, j int) bool {
+		left, right := result.PluginDependencies[i], result.PluginDependencies[j]
+		if left.Consumer.Kind != right.Consumer.Kind {
+			return left.Consumer.Kind < right.Consumer.Kind
+		}
+		if left.Consumer.ID != right.Consumer.ID {
+			return left.Consumer.ID < right.Consumer.ID
+		}
+		if left.ProviderInstanceID != right.ProviderInstanceID {
+			return left.ProviderInstanceID < right.ProviderInstanceID
+		}
+		if left.Target.AgentID != right.Target.AgentID {
+			return left.Target.AgentID < right.Target.AgentID
+		}
+		if left.Target.ResourceGroupID != right.Target.ResourceGroupID {
+			return left.Target.ResourceGroupID < right.Target.ResourceGroupID
+		}
+		return left.Target.Version < right.Target.Version
+	})
 	result.PluginPolicies = nonNil(result.PluginPolicies)
 	for i := range result.PluginPolicies {
 		if err := storage.ValidatePluginPolicyIdentity(result.PluginPolicies[i].ID); err != nil {

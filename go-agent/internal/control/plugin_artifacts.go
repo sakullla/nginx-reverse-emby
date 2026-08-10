@@ -24,7 +24,13 @@ const maxPluginArtifactIdentityBytes = 256
 var pluginArtifactMaterializeLocks [64]sync.Mutex
 
 func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model.Snapshot, revision int64, snapshotDigest string) error {
-	if snapshot == nil || (len(snapshot.PluginGenerations) == 0 && len(snapshot.PluginPolicies) == 0) {
+	if snapshot == nil {
+		return nil
+	}
+	if err := model.ValidatePluginDependencies(*snapshot); err != nil {
+		return err
+	}
+	if len(snapshot.PluginGenerations) == 0 && len(snapshot.PluginPolicies) == 0 {
 		return nil
 	}
 	snapshotDigest = strings.ToLower(strings.TrimSpace(snapshotDigest))

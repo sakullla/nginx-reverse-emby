@@ -30,6 +30,7 @@ func TestPluginGenerationStrictValidationAndWirePresence(t *testing.T) {
 		"signature": func(value *PluginGeneration) { value.Artifact.SignatureVerified = false },
 		"runtime":   func(value *PluginGeneration) { value.Runtime.Kind = PluginRuntimeWASMPolicy },
 		"local":     func(value *PluginGeneration) { value.Artifact.LocalPath = "already-materialized" },
+		"target":    func(value *PluginGeneration) { value.Target.Version++ },
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := generation
@@ -72,23 +73,70 @@ func TestPluginGenerationAcceptsCanonicalHostCapabilitiesAndResourceOnlySelector
 	}
 }
 
-func TestRequiredPluginInstanceIDsUsesEnabledSignedDependencyGraph(t *testing.T) {
-	snapshot := Snapshot{
-		Rules: []HTTPRule{
-			{Enabled: true, PolicyRef: &PolicyRef{ID: "shared"}},
-			{Enabled: false, PolicyRef: &PolicyRef{ID: "disabled"}},
-		},
-		L4Rules: []L4Rule{{Enabled: true, PolicyRef: &PolicyRef{ID: "transport"}}},
-		PluginPolicies: []PluginPolicy{
-			{ID: "shared", Stages: []PolicyStage{{InstanceID: "instance-b"}, {InstanceID: "instance-a"}}},
-			{ID: "transport", Stages: []PolicyStage{{InstanceID: "instance-a"}}},
-			{ID: "disabled", Stages: []PolicyStage{{InstanceID: "instance-c"}}},
-			{ID: "catalog-only", Stages: []PolicyStage{{InstanceID: "instance-d"}}},
+func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t *testing.T) {
+	httpProvider := validPluginGenerationForTest()
+	httpProvider.InstanceID = "instance-b"
+	l4Provider := validPluginGenerationForTest()
+	l4Provider.ID, l4Provider.InstanceID, l4Provider.OperationID = "generation-l4", "instance-a", "operation-l4"
+	l4Provider.ExtensionPoints = []string{"l4.accept"}
+	snapshot := Snapshot{Revision: 7,
+		Rules:             []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}},
+		L4Rules:           []L4Rule{{ID: 12, AgentID: "edge-7", Enabled: true}},
+		PluginGenerations: []PluginGeneration{httpProvider, l4Provider},
+		PluginDependencies: []PluginDependencyEdge{
+			{Consumer: PluginDependencyConsumer{Kind: "http_rule", ID: "11"}, ProviderInstanceID: httpProvider.InstanceID, Target: pluginDependencyTargetForTest(httpProvider)},
+			{Consumer: PluginDependencyConsumer{Kind: "l4_rule", ID: "12"}, ProviderInstanceID: l4Provider.InstanceID, Target: pluginDependencyTargetForTest(l4Provider)},
 		},
 	}
-	if got := RequiredPluginInstanceIDs(snapshot); !slices.Equal(got, []string{"instance-a", "instance-b"}) {
+	if err := ValidatePluginGenerations(snapshot, false); err != nil {
+		t.Fatalf("ValidatePluginGenerations() error = %v", err)
+	}
+	got, err := RequiredPluginInstanceIDs(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"instance-a", "instance-b"}) {
 		t.Fatalf("RequiredPluginInstanceIDs() = %v", got)
 	}
+}
+
+func TestPluginDependenciesRejectDanglingDuplicateCrossTargetAndInvalidConsumers(t *testing.T) {
+	provider := validPluginGenerationForTest()
+	base := Snapshot{Revision: 7, Rules: []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}}, PluginGenerations: []PluginGeneration{provider}}
+	valid := PluginDependencyEdge{Consumer: PluginDependencyConsumer{Kind: "http_rule", ID: "11"}, ProviderInstanceID: provider.InstanceID, Target: pluginDependencyTargetForTest(provider)}
+	for name, mutate := range map[string]func(*Snapshot, *PluginDependencyEdge){
+		"dangling provider": func(_ *Snapshot, edge *PluginDependencyEdge) { edge.ProviderInstanceID = "missing" },
+		"cross target":      func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Target.AgentID = "edge-8" },
+		"disabled consumer": func(snapshot *Snapshot, _ *PluginDependencyEdge) { snapshot.Rules[0].Enabled = false },
+		"wrong agent":       func(snapshot *Snapshot, _ *PluginDependencyEdge) { snapshot.Rules[0].AgentID = "edge-8" },
+		"unsupported kind":  func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.Kind = "relay_listener" },
+		"noncanonical id":   func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.ID = "011" },
+		"wrong extension": func(snapshot *Snapshot, _ *PluginDependencyEdge) {
+			snapshot.PluginGenerations[0].ExtensionPoints = []string{"dns.provider"}
+		},
+		"duplicate": func(snapshot *Snapshot, edge *PluginDependencyEdge) {
+			snapshot.PluginDependencies = append(snapshot.PluginDependencies, *edge)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			snapshot := base
+			snapshot.Rules = append([]HTTPRule(nil), base.Rules...)
+			snapshot.PluginGenerations = append([]PluginGeneration(nil), base.PluginGenerations...)
+			edge := valid
+			snapshot.PluginDependencies = []PluginDependencyEdge{edge}
+			mutate(&snapshot, &snapshot.PluginDependencies[0])
+			if err := ValidatePluginDependencies(snapshot); err == nil {
+				t.Fatal("ValidatePluginDependencies() accepted invalid graph")
+			}
+			if _, err := RequiredPluginInstanceIDs(snapshot); err == nil {
+				t.Fatal("RequiredPluginInstanceIDs() derived required state from an invalid graph")
+			}
+		})
+	}
+}
+
+func pluginDependencyTargetForTest(generation PluginGeneration) PluginDependencyTarget {
+	return PluginDependencyTarget{AgentID: generation.Target.ID, ResourceGroupID: generation.Target.ResourceGroupID, Version: generation.Target.Version}
 }
 
 func validPluginGenerationForTest() PluginGeneration {

@@ -63,7 +63,11 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 	host := m.host
 	m.mu.RUnlock()
 	requiredInstances := make(map[string]struct{})
-	for _, instanceID := range model.RequiredPluginInstanceIDs(request.Next) {
+	requiredIDs, err := model.RequiredPluginInstanceIDs(request.Next)
+	if err != nil {
+		return nil, err
+	}
+	for _, instanceID := range requiredIDs {
 		requiredInstances[instanceID] = struct{}{}
 	}
 	transaction := &generationTransaction{module: m, host: host, generationID: generationContext.ID()}

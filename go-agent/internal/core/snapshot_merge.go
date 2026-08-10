@@ -6,6 +6,9 @@ func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if next.PluginGenerations == nil {
 		next.PluginGenerations = previous.PluginGenerations
 	}
+	if next.PluginDependencies == nil {
+		next.PluginDependencies = previous.PluginDependencies
+	}
 	merged := next
 	if next.VersionPackage == nil {
 		merged.VersionPackage = previous.VersionPackage

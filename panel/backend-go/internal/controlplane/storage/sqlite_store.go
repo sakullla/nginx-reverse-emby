@@ -474,6 +474,12 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	snapshotRules := snapshotHTTPRules(httpRows, !runtimeFiltered)
+	snapshotL4 := snapshotL4Rules(l4Rows, !runtimeFiltered)
+	pluginDependencies, err := s.loadAgentPluginDependencies(ctx, resolvedAgentID, pluginGenerations, snapshotRules, snapshotL4)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	desiredRevision := int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision, highestPluginPolicyRevision(pluginPolicies), highestPluginGenerationRevision(pluginGenerations)))
 	for index := range pluginGenerations {
 		pluginGenerations[index].Revision = desiredRevision
@@ -485,13 +491,14 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
-		Rules:               snapshotHTTPRules(httpRows, !runtimeFiltered),
-		L4Rules:             snapshotL4Rules(l4Rows, !runtimeFiltered),
+		Rules:               snapshotRules,
+		L4Rules:             snapshotL4,
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
 		PluginGenerations:   pluginGenerations,
+		PluginDependencies:  pluginDependencies,
 		PluginPolicies:      pluginPolicies,
 		PKISecurity:         pkiSecurity,
 	}, nil

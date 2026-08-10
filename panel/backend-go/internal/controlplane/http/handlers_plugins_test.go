@@ -208,7 +208,7 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 		t.Fatalf("package detail status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
 	}
 
-	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":["shared"],"config":{"mode":"observe"}}`))
+	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":["shared"],"bindings":[{"consumer":{"kind":"http_rule","id":"1"},"target_agent_id":"local"}],"config":{"mode":"observe"}}`))
 	configureRequest.SetPathValue("id", installed.PluginID)
 	configureRequest.SetPathValue("action", "configure")
 	configureResponse := httptest.NewRecorder()
@@ -231,6 +231,9 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	}
 	if pluginAPI.configureIn.PolicyChains == nil || len(*pluginAPI.configureIn.PolicyChains) != 1 || (*pluginAPI.configureIn.PolicyChains)[0] != "shared" {
 		t.Fatalf("configure policy chains = %v", pluginAPI.configureIn.PolicyChains)
+	}
+	if pluginAPI.configureIn.Bindings == nil || len(*pluginAPI.configureIn.Bindings) != 1 || (*pluginAPI.configureIn.Bindings)[0].Consumer.Kind != "http_rule" {
+		t.Fatalf("configure bindings = %v", pluginAPI.configureIn.Bindings)
 	}
 	omittedChains := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{"mode":"observe"}}`))
 	omittedChains.SetPathValue("id", installed.PluginID)

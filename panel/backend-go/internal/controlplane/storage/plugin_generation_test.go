@@ -91,7 +91,7 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 		SchemaVersion: 1, ID: "runtime.rpc", Version: "1.2.3", Name: "Runtime RPC",
 		Runtime:         plugins.Runtime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "artifacts/linux-amd64/plugin"},
 		Artifacts:       []plugins.Artifact{{Path: "artifacts/linux-amd64/plugin", SHA256: artifactDigest, Size: 42, Mode: "executable", GOOS: "linux", GOARCH: "amd64"}},
-		ExtensionPoints: []string{"relay.manage", "relay.manage"},
+		ExtensionPoints: []string{"http.request", "http.request"},
 		ResourceBudget:  plugins.ResourceBudget{TimeoutMS: 100, MemoryBytes: 4096, Concurrency: 1, InputBytes: 1024, OutputBytes: 512, CPUMillis: 10, Restarts: 2},
 		FailurePolicy:   plugins.FailurePolicy{OnError: "preserve-old", OnBudget: "preserve-old", Restart: "bounded", CoreFallback: "continue"},
 		Signature:       plugins.Signature{Algorithm: "ed25519", KeyID: "release", File: "package.sig"},
@@ -105,8 +105,10 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 		&packageRow,
 		&artifacts,
 		&InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: packageDigest, ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: "operation-active", StateVersion: 1, InstalledAt: now, UpdatedAt: now},
-		&PluginInstanceRow{ID: "instance-rpc", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[{"id":"secret-1","version":2,"digest":"` + strings.Repeat("d", 64) + `","purpose":"token"}]`, BindingsJSON: `[]`, ConfigJSON: `{"enabled":true}`, ConfigVersion: 7, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
+		&PluginInstanceRow{ID: "instance-rpc", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[{"id":"secret-1","version":2,"digest":"` + strings.Repeat("d", 64) + `","purpose":"token"}]`, BindingsJSON: `[{"consumer":{"kind":"http_rule","id":"1"},"target_agent_id":"local"}]`, ConfigJSON: `{"enabled":true}`, ConfigVersion: 7, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
+		&PluginInstanceRow{ID: "instance-optional", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{"enabled":true}`, ConfigVersion: 8, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
 		&PluginGrantRow{ID: "grant-rpc", PluginID: manifest.ID, PackageDigest: packageDigest, PackageIdentity: packageRow.Identity, Permission: "relay.manage", ResourceSelector: "relay:public", GrantedBy: "admin", GrantedAt: now},
+		&HTTPRuleRow{ID: 1, AgentID: "local", FrontendURL: "https://plugin.example.test", BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, Enabled: true, Revision: 3},
 	}
 	for _, row := range rows {
 		if err := store.db.Create(row).Error; err != nil {
@@ -117,16 +119,37 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(generations) != 1 {
+	if len(generations) != 2 {
 		t.Fatalf("generations = %+v", generations)
 	}
-	generation := generations[0]
+	generation := generations[1]
 	if generation.PluginID != manifest.ID || generation.OperationID != "operation-active" || generation.Artifact.PackageIdentity != packageRow.Identity || !generation.Artifact.SignatureVerified || generation.Target.ID != "local" || generation.Target.Version != 7 || len(generation.SecretHandles) != 1 || generation.Grants[0].ResourceKind != "relay" {
 		t.Fatalf("generation projection = %+v", generation)
 	}
 	encoded, _ := json.Marshal(generation)
 	if strings.Contains(string(encoded), "private") || strings.Contains(string(encoded), "cache_path") || generation.Artifact.LocalPath != "" {
 		t.Fatalf("generation leaked local package location: %s", encoded)
+	}
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{Platform: "linux-amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.PluginGenerations) != 2 || len(snapshot.PluginDependencies) != 1 {
+		t.Fatalf("production plugin projection generations=%+v dependencies=%+v", snapshot.PluginGenerations, snapshot.PluginDependencies)
+	}
+	edge := snapshot.PluginDependencies[0]
+	if edge.Consumer.Kind != PluginDependencyConsumerHTTPRule || edge.Consumer.ID != "1" || edge.ProviderInstanceID != "instance-rpc" || edge.Target.AgentID != "local" || edge.Target.ResourceGroupID != "group-a" || edge.Target.Version != 7 {
+		t.Fatalf("production plugin dependency = %+v", edge)
+	}
+	if err := store.db.Model(&HTTPRuleRow{}).Where("agent_id = ? AND id = ?", "local", 1).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{Platform: "linux-amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.PluginGenerations) != 2 || len(snapshot.PluginDependencies) != 0 {
+		t.Fatalf("disabled core consumer projection generations=%+v dependencies=%+v", snapshot.PluginGenerations, snapshot.PluginDependencies)
 	}
 }
 

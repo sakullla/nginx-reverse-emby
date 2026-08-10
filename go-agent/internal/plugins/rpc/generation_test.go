@@ -165,7 +165,7 @@ func TestRPCGenerationRequiredPrepareFailureCleansCandidateWithoutPublishing(t *
 		t.Fatal(err)
 	}
 	moduleUnderTest := NewGenerationModule(host)
-	next := rpcSnapshotWithRequiredInstance(2, []model.PluginGeneration{generation}, generation.InstanceID)
+	next := rpcSnapshotWithRequiredInstance(t, 2, []model.PluginGeneration{generation}, generation.InstanceID)
 	_, err = moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Next: next})
 	if err == nil {
 		t.Fatal("Prepare() accepted failed candidate")
@@ -178,6 +178,70 @@ func TestRPCGenerationRequiredPrepareFailureCleansCandidateWithoutPublishing(t *
 	host.mu.RUnlock()
 	if pending != 0 {
 		t.Fatalf("failed candidate pending ownership = %d", pending)
+	}
+}
+
+func TestRPCGenerationRequiredReadinessFailureAbortsPublication(t *testing.T) {
+	root := t.TempDir()
+	generation := rpcPluginGenerationForTest(t, root, 23, "operation-23")
+	runner := &generationControlledRunner{}
+	client := &generationLifecycleClient{}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := rpcSnapshotWithRequiredInstance(t, 23, []model.PluginGeneration{generation}, generation.InstanceID)
+	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: next})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := prepared.(*generationTransaction)
+	runner.Fail(context.DeadlineExceeded)
+	select {
+	case <-transaction.candidates[0].instance.attempt.handle.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("controlled required candidate did not reach failed readiness")
+	}
+	if err := transaction.Ready(t.Context()); err == nil {
+		t.Fatal("Ready() accepted required provider failure")
+	}
+	if err := transaction.Destroy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, active := host.Active(generation.InstanceID); active {
+		t.Fatal("required readiness failure became active")
+	}
+}
+
+func TestRPCGenerationRequiredActivationFailureAbortsPublication(t *testing.T) {
+	root := t.TempDir()
+	generation := rpcPluginGenerationForTest(t, root, 24, "operation-24")
+	client := &generationLifecycleClient{activateErr: context.DeadlineExceeded}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := rpcSnapshotWithRequiredInstance(t, 24, []model.PluginGeneration{generation}, generation.InstanceID)
+	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: next})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := prepared.(*generationTransaction)
+	if err := transaction.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.PrepareGenerationPublication(t.Context()); err == nil {
+		t.Fatal("PrepareGenerationPublication() accepted required activation failure")
+	}
+	if err := transaction.Destroy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, active := host.Active(generation.InstanceID); active {
+		t.Fatal("required activation failure became active")
 	}
 }
 
@@ -455,15 +519,45 @@ func rpcPluginGenerationForTest(t *testing.T, root string, revision int64, opera
 	}
 }
 
-func rpcSnapshotWithRequiredInstance(revision int64, generations []model.PluginGeneration, instanceID string) model.Snapshot {
-	return model.Snapshot{
-		Revision: revision,
-		Rules:    []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "required-policy"}}},
-		PluginPolicies: []model.PluginPolicy{{ID: "required-policy", Revision: revision, Stages: []model.PolicyStage{{
-			InstanceID: instanceID,
-		}}}},
-		PluginGenerations: generations,
+func rpcSnapshotWithRequiredInstance(t *testing.T, revision int64, generations []model.PluginGeneration, instanceID string) model.Snapshot {
+	t.Helper()
+	var provider model.PluginGeneration
+	for _, generation := range generations {
+		if generation.InstanceID == instanceID {
+			provider = generation
+			break
+		}
 	}
+	snapshot := model.Snapshot{
+		Revision:            revision,
+		Rules:               []model.HTTPRule{{ID: 1, AgentID: provider.Target.ID, Enabled: true}},
+		L4Rules:             []model.L4Rule{},
+		RelayListeners:      []model.RelayListener{},
+		EgressProfiles:      []model.EgressProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+		PluginGenerations:   generations,
+		PluginDependencies: []model.PluginDependencyEdge{{
+			Consumer: model.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: instanceID,
+			Target: model.PluginDependencyTarget{AgentID: provider.Target.ID, ResourceGroupID: provider.Target.ResourceGroupID, Version: provider.Target.Version},
+		}},
+		PluginPolicies: []model.PluginPolicy{},
+	}
+	wire, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"plugin_dependencies":[{"consumer":{"kind":"http_rule","id":"1"},"provider_instance_id":"`+instanceID+`"`) {
+		t.Fatalf("backend-realistic dependency wire = %s", wire)
+	}
+	var decoded model.Snapshot
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.HasFullRevisionPayload() {
+		t.Fatalf("backend-realistic dependency snapshot is incomplete: %s", wire)
+	}
+	return decoded
 }
 
 func assertOptionalFailureStatus(t *testing.T, statuses []model.PluginRuntimeStatus, generation model.PluginGeneration, state, errorCode string) {

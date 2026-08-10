@@ -957,6 +957,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 		clonedGeneration.Grants = slices.Clone(generation.Grants)
 		clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
 	}
+	cloned.PluginDependencies = slices.Clone(snapshot.PluginDependencies)
 	return cloned
 }
 

@@ -270,6 +270,7 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.Certificates) == 0 &&
 		len(s.CertificatePolicies) == 0 &&
 		len(s.PluginGenerations) == 0 &&
+		len(s.PluginDependencies) == 0 &&
 		len(s.PluginPolicies) == 0
 }
 
@@ -350,6 +351,9 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			clonedGeneration.Grants = slices.Clone(generation.Grants)
 			clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
 		}
+	}
+	if snapshot.PluginDependencies != nil {
+		cloned.PluginDependencies = slices.Clone(snapshot.PluginDependencies)
 	}
 	return cloned
 }

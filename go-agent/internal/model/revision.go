@@ -32,6 +32,7 @@ func (s Snapshot) HasFullRevisionPayload() bool {
 		s.Certificates != nil &&
 		s.CertificatePolicies != nil &&
 		s.PluginGenerations != nil &&
+		s.PluginDependencies != nil &&
 		s.PluginPolicies != nil
 }
 

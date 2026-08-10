@@ -142,6 +142,22 @@ func TestIntegrationRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing
 	}
 }
 
+func TestSanitizeSnapshotPreservesPluginDependencyPresence(t *testing.T) {
+	empty := sanitizeSnapshot(Snapshot{PluginDependencies: []PluginDependencyEdge{}})
+	if empty.PluginDependencies == nil || len(empty.PluginDependencies) != 0 {
+		t.Fatalf("explicit empty dependencies = %#v", empty.PluginDependencies)
+	}
+	edge := PluginDependencyEdge{Consumer: PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "rpc-1", Target: PluginDependencyTarget{AgentID: "local", ResourceGroupID: "default", Version: 1}}
+	populated := sanitizeSnapshot(Snapshot{PluginDependencies: []PluginDependencyEdge{edge}})
+	if len(populated.PluginDependencies) != 1 || populated.PluginDependencies[0] != edge {
+		t.Fatalf("sanitized dependencies = %+v", populated.PluginDependencies)
+	}
+	missing := sanitizeSnapshot(Snapshot{})
+	if missing.PluginDependencies != nil {
+		t.Fatalf("missing dependencies became present: %#v", missing.PluginDependencies)
+	}
+}
+
 func TestIntegrationRunDoesNotApplyUnapprovedSourceSnapshot(t *testing.T) {
 	source := newRuntimeTestSource(Snapshot{Revision: 9})
 	sink := newRuntimeTestSink()

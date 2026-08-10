@@ -3413,6 +3413,21 @@ func normalizePluginInstancePolicyChains(instance *PluginInstanceRow) error {
 		}
 		*field = canonical
 	}
+	for label, field := range map[string]*string{
+		"bindings":          &instance.BindingsJSON,
+		"pending bindings":  &instance.PendingBindingsJSON,
+		"rollback bindings": &instance.RollbackBindingsJSON,
+	} {
+		bindings, err := CanonicalPluginInstanceBindings(*field)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, label, err)
+		}
+		canonical, err := EncodePluginInstanceBindings(bindings)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, label, err)
+		}
+		*field = canonical
+	}
 	return nil
 }
 

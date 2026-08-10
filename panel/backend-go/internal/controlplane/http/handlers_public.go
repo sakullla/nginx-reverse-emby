@@ -150,6 +150,8 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 	if reply.HasUpdate {
 		payload["rules"] = reply.Rules
 		payload["l4_rules"] = reply.L4Rules
+		payload["plugin_generations"] = reply.PluginGenerations
+		payload["plugin_dependencies"] = reply.PluginDependencies
 		payload["plugin_policies"] = remotePluginPolicies(reply.PluginPolicies)
 		payload["certificates"] = reply.Certificates
 		payload["certificate_policies"] = reply.CertificatePolicies

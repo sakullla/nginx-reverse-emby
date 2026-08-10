@@ -268,7 +268,7 @@ func TestRevisionSyncCarriesLeaseDrainTimeoutIntoGenerationCutover(t *testing.T)
 			Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 			EgressProfiles: []model.EgressProfile{},
 			Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-			PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
+			PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 		}
 		digest, err := revisionSnapshotDigest(snapshot)
 		if err != nil {
@@ -302,7 +302,7 @@ func TestRevisionSyncBoundsActivationByLeaseDeadline(t *testing.T) {
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{},
 		Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
+		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 	}
 	digest, err := revisionSnapshotDigest(snapshot)
 	if err != nil {
@@ -352,7 +352,7 @@ func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
 				Rules:          []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 				EgressProfiles: []model.EgressProfile{},
 				Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-				PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
+				PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 			}
 			digest, err := revisionSnapshotDigest(snapshot)
 			if err != nil {
@@ -414,7 +414,7 @@ func TestRevisionSyncReplaysPersistedFailedReport(t *testing.T) {
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{},
 		Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
+		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 	}
 	digest, err := revisionSnapshotDigest(snapshot)
 	if err != nil {

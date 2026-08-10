@@ -304,9 +304,11 @@ type PluginInstanceRow struct {
 	PendingResourceGroupID   string    `gorm:"size:64;not null;default:''" json:"pending_resource_group_id,omitempty"`
 	PendingTargetJSON        string    `gorm:"type:text;not null" json:"pending_targets,omitempty"`
 	PendingPolicyChainsJSON  string    `gorm:"type:text;not null;default:'[]'" json:"pending_policy_chains,omitempty"`
+	PendingBindingsJSON      string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	RollbackConfigJSON       string    `gorm:"type:text;not null" json:"-"`
 	RollbackVersion          uint64    `gorm:"not null;default:0" json:"-"`
 	RollbackPolicyChainsJSON string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	RollbackBindingsJSON     string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	DesiredEnabled           bool      `gorm:"not null;default:false" json:"desired_enabled"`
 	CurrentState             string    `gorm:"index;size:32;not null" json:"current_state"`
 	StatusSummaryJSON        string    `gorm:"type:text;not null" json:"status_summary"`

@@ -943,7 +943,8 @@ func runtimePayloadComplete(snapshot Snapshot) bool {
 		snapshot.Certificates != nil &&
 		snapshot.CertificatePolicies != nil &&
 		snapshot.PluginPolicies != nil &&
-		snapshot.PluginGenerations != nil
+		snapshot.PluginGenerations != nil &&
+		snapshot.PluginDependencies != nil
 }
 
 func (a *App) Close() error {

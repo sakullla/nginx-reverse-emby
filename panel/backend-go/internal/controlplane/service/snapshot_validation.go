@@ -83,6 +83,51 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 	return nil
 }
 
+func validatePluginDependencies(snapshot storage.Snapshot, httpIDs, l4IDs map[int]struct{}) error {
+	providers := make(map[string]storage.PluginGeneration, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		providers[generation.InstanceID] = generation
+	}
+	seen := make(map[string]struct{}, len(snapshot.PluginDependencies))
+	for _, edge := range snapshot.PluginDependencies {
+		if edge.Consumer.Kind != strings.TrimSpace(edge.Consumer.Kind) || edge.Consumer.ID != strings.TrimSpace(edge.Consumer.ID) || edge.ProviderInstanceID != strings.TrimSpace(edge.ProviderInstanceID) || edge.Target.AgentID != strings.TrimSpace(edge.Target.AgentID) || edge.Target.ResourceGroupID != strings.TrimSpace(edge.Target.ResourceGroupID) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin dependency contains non-canonical text", nil)
+		}
+		consumerID, err := strconv.Atoi(edge.Consumer.ID)
+		if err != nil || consumerID <= 0 || strconv.Itoa(consumerID) != edge.Consumer.ID {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin dependency consumer id is invalid", err)
+		}
+		switch edge.Consumer.Kind {
+		case storage.PluginDependencyConsumerHTTPRule:
+			if _, ok := httpIDs[consumerID]; !ok {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency HTTP consumer %d is missing", consumerID), nil)
+			}
+		case storage.PluginDependencyConsumerL4Rule:
+			if _, ok := l4IDs[consumerID]; !ok {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency L4 consumer %d is missing", consumerID), nil)
+			}
+		default:
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency consumer kind %q is unsupported", edge.Consumer.Kind), nil)
+		}
+		provider, ok := providers[edge.ProviderInstanceID]
+		if !ok {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q is missing", edge.ProviderInstanceID), nil)
+		}
+		if provider.Runtime.Kind != "rpc-service" || provider.Runtime.HostScope != "agent" || !storage.PluginDependencyConsumerSupportsExtensions(edge.Consumer.Kind, provider.ExtensionPoints) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q is incompatible with consumer kind %q", edge.ProviderInstanceID, edge.Consumer.Kind), nil)
+		}
+		if edge.Target.AgentID != provider.Target.ID || edge.Target.ResourceGroupID != provider.Target.ResourceGroupID || edge.Target.Version != provider.Target.Version || provider.Target.Kind != "agent" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q target is mismatched", edge.ProviderInstanceID), nil)
+		}
+		key := edge.Consumer.Kind + "\x00" + edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
+		if _, duplicate := seen[key]; duplicate {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("plugin dependency for %s %s and provider %s is duplicated", edge.Consumer.Kind, edge.Consumer.ID, edge.ProviderInstanceID), nil)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
 func validateSnapshotDDNS(config *storage.DDNSConfig) error {
 	if config == nil || !config.Enabled {
 		return nil
@@ -178,6 +223,9 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has an invalid backend", rule.ID), nil)
 			}
 		}
+	}
+	if err := validatePluginDependencies(snapshot, httpIDs, l4IDs); err != nil {
+		return err
 	}
 
 	if err := validateUniqueSnapshotIDs("relay listener", relaySnapshotIDs(snapshot.RelayListeners)); err != nil {

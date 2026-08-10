@@ -206,10 +206,11 @@ func (a stateSinkAdapter) Save(ctx context.Context, state goagentembedded.Runtim
 
 func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded := goagentembedded.Snapshot{
-		DesiredVersion:    snapshot.DesiredVersion,
-		Revision:          snapshot.Revision,
-		PluginGenerations: toEmbeddedPluginGenerations(snapshot.PluginGenerations),
-		PluginPolicies:    toEmbeddedPluginPolicies(snapshot.PluginPolicies),
+		DesiredVersion:     snapshot.DesiredVersion,
+		Revision:           snapshot.Revision,
+		PluginGenerations:  toEmbeddedPluginGenerations(snapshot.PluginGenerations),
+		PluginDependencies: toEmbeddedPluginDependencies(snapshot.PluginDependencies),
+		PluginPolicies:     toEmbeddedPluginPolicies(snapshot.PluginPolicies),
 		AgentConfig: goagentembedded.AgentConfig{
 			OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
 			TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
@@ -393,6 +394,21 @@ func toEmbeddedPluginGenerations(generations []storage.PluginGeneration) []goage
 		return nil
 	}
 	var embedded []goagentembedded.PluginGeneration
+	if err := json.Unmarshal(data, &embedded); err != nil {
+		return nil
+	}
+	return embedded
+}
+
+func toEmbeddedPluginDependencies(dependencies []storage.PluginDependencyEdge) []goagentembedded.PluginDependencyEdge {
+	if dependencies == nil {
+		return nil
+	}
+	data, err := json.Marshal(dependencies)
+	if err != nil {
+		return nil
+	}
+	var embedded []goagentembedded.PluginDependencyEdge
 	if err := json.Unmarshal(data, &embedded); err != nil {
 		return nil
 	}

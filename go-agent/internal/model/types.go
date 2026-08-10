@@ -69,6 +69,7 @@ type Snapshot struct {
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	PluginGenerations   []PluginGeneration         `json:"plugin_generations"`
+	PluginDependencies  []PluginDependencyEdge     `json:"plugin_dependencies"`
 	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	agentConfigPresent  bool
 }

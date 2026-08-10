@@ -42,7 +42,7 @@ func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
 		CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
-		PluginGenerations: []model.PluginGeneration{},
+		PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 	}
 	payload, err := json.Marshal(immutable)
 	if err != nil {
@@ -327,7 +327,7 @@ func TestRevisionSyncMigratesLegacyTrafficEnabledFromAppliedArtifact(t *testing.
 				Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 				EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
 				CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
-				PluginGenerations: []model.PluginGeneration{},
+				PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 			}
 			store := &trafficRevisionStore{InMemory: core.NewInMemory()}
 			if err := store.SaveAppliedSnapshot(immutable); err != nil {
@@ -396,7 +396,7 @@ func newTrafficRevisionRuntime(t *testing.T, enabled, blocked bool, reason strin
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
 		CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
-		PluginGenerations: []model.PluginGeneration{},
+		PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 	}
 	config := model.AgentConfig{TrafficStatsEnabled: &enabled, TrafficBlocked: blocked, TrafficBlockReason: reason}
 	if err := runtime.ApplyWithTrafficRuntime(t.Context(), model.Snapshot{}, immutable, 0, config); err != nil {

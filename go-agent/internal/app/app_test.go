@@ -946,12 +946,12 @@ func TestSnapshotActivatorRestoresOutboundProxyOnRegistryFailure(t *testing.T) {
 
 type syncClientFunc func(context.Context, SyncRequest) (Snapshot, error)
 
-func TestRuntimePayloadCompleteRequiresPluginGenerations(t *testing.T) {
+func TestRuntimePayloadCompleteRequiresPluginGenerationsAndDependencies(t *testing.T) {
 	complete := Snapshot{
 		Rules: []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
 		CertificatePolicies: []model.ManagedCertificatePolicy{}, PluginPolicies: []model.PluginPolicy{},
-		PluginGenerations: []model.PluginGeneration{},
+		PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{},
 	}
 	if !runtimePayloadComplete(complete) {
 		t.Fatal("explicit full plugin generation payload was incomplete")
@@ -959,6 +959,11 @@ func TestRuntimePayloadCompleteRequiresPluginGenerations(t *testing.T) {
 	complete.PluginGenerations = nil
 	if runtimePayloadComplete(complete) {
 		t.Fatal("nil plugin generation payload was accepted as complete")
+	}
+	complete.PluginGenerations = []model.PluginGeneration{}
+	complete.PluginDependencies = nil
+	if runtimePayloadComplete(complete) {
+		t.Fatal("nil plugin dependency payload was accepted as complete")
 	}
 }
 

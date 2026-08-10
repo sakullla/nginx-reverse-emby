@@ -26,13 +26,19 @@ type pluginArtifactServiceStub struct {
 
 func TestHeartbeatProjectsStableArtifactIdentityWithoutServerFilesystemPath(t *testing.T) {
 	snapshotDigest := strings.Repeat("a", 64)
-	reply := service.HeartbeatReply{HasUpdate: true, DesiredRevision: 7, SnapshotDigest: snapshotDigest, PluginPolicies: []storage.PluginPolicy{{ID: "shared", Stages: []storage.PolicyStage{{
+	reply := service.HeartbeatReply{HasUpdate: true, DesiredRevision: 7, SnapshotDigest: snapshotDigest, PluginGenerations: []storage.PluginGeneration{}, PluginDependencies: []storage.PluginDependencyEdge{}, PluginPolicies: []storage.PluginPolicy{{ID: "shared", Stages: []storage.PolicyStage{{
 		ArtifactPath:   `C:\panel\data\plugins\packages\secret\policy.wasm`,
 		ArtifactSource: storage.PolicyArtifactSource{ArtifactID: "artifact-1"},
 	}}}}}
 	payload := heartbeatSyncPayload(reply, "https://control.example")
 	if payload["desired_revision"] != int64(7) || payload["snapshot_digest"] != snapshotDigest {
 		t.Fatalf("heartbeat revision binding = %v/%v", payload["desired_revision"], payload["snapshot_digest"])
+	}
+	if generations, ok := payload["plugin_generations"].([]storage.PluginGeneration); !ok || generations == nil {
+		t.Fatalf("heartbeat plugin_generations presence = %#v", payload["plugin_generations"])
+	}
+	if dependencies, ok := payload["plugin_dependencies"].([]storage.PluginDependencyEdge); !ok || dependencies == nil {
+		t.Fatalf("heartbeat plugin_dependencies presence = %#v", payload["plugin_dependencies"])
 	}
 	encoded, err := json.Marshal(payload["plugin_policies"])
 	if err != nil {

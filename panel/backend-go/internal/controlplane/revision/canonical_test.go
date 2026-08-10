@@ -73,10 +73,16 @@ func TestCanonicalSnapshotNormalizesPluginGenerations(t *testing.T) {
 	first := storage.Snapshot{Revision: 4, PluginGenerations: []storage.PluginGeneration{
 		generation("z", 4, []string{"relay.write", "relay.read", "relay.read"}, `{"b":2,"a":1}`, []storage.PluginGenerationGrant{{Name: "write"}, {Name: "read"}}),
 		generation("a", 4, nil, `{}`, nil),
+	}, PluginDependencies: []storage.PluginDependencyEdge{
+		{Consumer: storage.PluginDependencyConsumer{Kind: "l4_rule", ID: "2"}, ProviderInstanceID: "z", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
+		{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "a", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
 	}}
 	second := storage.Snapshot{Revision: 99, PluginGenerations: []storage.PluginGeneration{
 		generation("a", 99, []string{}, `{ }`, []storage.PluginGenerationGrant{}),
 		generation("z", 99, []string{"relay.read", "relay.write"}, `{"a":1,"b":2}`, []storage.PluginGenerationGrant{{Name: "read"}, {Name: "write"}}),
+	}, PluginDependencies: []storage.PluginDependencyEdge{
+		{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "a", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
+		{Consumer: storage.PluginDependencyConsumer{Kind: "l4_rule", ID: "2"}, ProviderInstanceID: "z", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
 	}}
 	left, err := SemanticSnapshotDigest(first)
 	if err != nil {
@@ -99,6 +105,9 @@ func TestCanonicalSnapshotNormalizesPluginGenerations(t *testing.T) {
 	}
 	if delivered.PluginGenerations[0].InstanceID != "a" || !reflect.DeepEqual(delivered.PluginGenerations[1].ExtensionPoints, []string{"relay.read", "relay.write"}) {
 		t.Fatalf("canonical plugin generations = %+v", delivered.PluginGenerations)
+	}
+	if delivered.PluginDependencies == nil || len(delivered.PluginDependencies) != 2 || delivered.PluginDependencies[0].Consumer.Kind != "http_rule" {
+		t.Fatalf("canonical plugin dependencies = %+v", delivered.PluginDependencies)
 	}
 }
 

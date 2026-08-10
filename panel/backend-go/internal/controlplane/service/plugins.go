@@ -63,6 +63,7 @@ type PluginConfigureRequest struct {
 	ResourceGroupID string
 	Targets         any
 	PolicyChains    *[]string
+	Bindings        *[]storage.PluginInstanceBinding
 	Config          json.RawMessage
 	ActorID         string
 }
@@ -193,24 +194,26 @@ type PluginSummary struct {
 }
 
 type PluginInstanceDetail struct {
-	ID                     string          `json:"id"`
-	PluginID               string          `json:"plugin_id"`
-	ResourceGroupID        string          `json:"resource_group_id"`
-	Targets                []string        `json:"targets"`
-	PolicyChains           []string        `json:"policy_chains"`
-	Config                 json.RawMessage `json:"config"`
-	ConfigVersion          uint64          `json:"config_version"`
-	PendingConfig          json.RawMessage `json:"pending_config,omitempty"`
-	PendingVersion         uint64          `json:"pending_version,omitempty"`
-	PendingOperationID     string          `json:"pending_operation_id,omitempty"`
-	PendingResourceGroupID string          `json:"pending_resource_group_id,omitempty"`
-	PendingTargets         []string        `json:"pending_targets,omitempty"`
-	PendingPolicyChains    []string        `json:"pending_policy_chains,omitempty"`
-	DesiredEnabled         bool            `json:"desired_enabled"`
-	CurrentState           string          `json:"current_state"`
-	StatusSummary          json.RawMessage `json:"status_summary"`
-	StateVersion           uint64          `json:"state_version"`
-	UpdatedAt              time.Time       `json:"updated_at"`
+	ID                     string                          `json:"id"`
+	PluginID               string                          `json:"plugin_id"`
+	ResourceGroupID        string                          `json:"resource_group_id"`
+	Targets                []string                        `json:"targets"`
+	PolicyChains           []string                        `json:"policy_chains"`
+	Bindings               []storage.PluginInstanceBinding `json:"bindings"`
+	Config                 json.RawMessage                 `json:"config"`
+	ConfigVersion          uint64                          `json:"config_version"`
+	PendingConfig          json.RawMessage                 `json:"pending_config,omitempty"`
+	PendingVersion         uint64                          `json:"pending_version,omitempty"`
+	PendingOperationID     string                          `json:"pending_operation_id,omitempty"`
+	PendingResourceGroupID string                          `json:"pending_resource_group_id,omitempty"`
+	PendingTargets         []string                        `json:"pending_targets,omitempty"`
+	PendingPolicyChains    []string                        `json:"pending_policy_chains,omitempty"`
+	PendingBindings        []storage.PluginInstanceBinding `json:"pending_bindings,omitempty"`
+	DesiredEnabled         bool                            `json:"desired_enabled"`
+	CurrentState           string                          `json:"current_state"`
+	StatusSummary          json.RawMessage                 `json:"status_summary"`
+	StateVersion           uint64                          `json:"state_version"`
+	UpdatedAt              time.Time                       `json:"updated_at"`
 }
 
 type PluginGrantDetail struct {
@@ -283,6 +286,10 @@ type pluginLifecycleStore interface {
 
 type pluginRuntimeStatusStore interface {
 	ListPluginAgentRuntimeStatuses(context.Context, string) ([]storage.PluginAgentRuntimeStatusRow, error)
+}
+
+type pluginDependencyConsumerStore interface {
+	PluginDependencyConsumerState(context.Context, storage.PluginInstanceBinding) (bool, bool, error)
 }
 
 type PluginService struct {
@@ -1115,18 +1122,56 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid policy chain memberships: %v", ErrInvalidArgument, err))
 	}
+	bindings := []storage.PluginInstanceBinding{}
+	if request.Bindings != nil {
+		bindings = append(bindings, (*request.Bindings)...)
+	} else if exists {
+		bindings, err = storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+		if err != nil {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: persisted plugin bindings are invalid", ErrInvalidArgument))
+		}
+	}
+	bindingsJSON, err := storage.EncodePluginInstanceBindings(bindings)
+	if err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin bindings: %v", ErrInvalidArgument, err))
+	}
+	bindings, err = storage.CanonicalPluginInstanceBindings(bindingsJSON)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	if len(bindings) > 0 && (manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "agent") {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: core consumer bindings require an Agent rpc-service plugin", ErrInvalidArgument))
+	}
+	if err := storage.ValidatePluginInstanceBindingScope(bindings, targetIDs, manifest.ExtensionPoints); err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrInvalidArgument, err))
+	}
+	if consumerStore, ok := s.store.(pluginDependencyConsumerStore); ok {
+		for _, binding := range bindings {
+			exists, _, err := consumerStore.PluginDependencyConsumerState(ctx, binding)
+			if err != nil {
+				return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+			}
+			if !exists {
+				return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin binding consumer %s %s does not exist on Agent %s", ErrInvalidArgument, binding.Consumer.Kind, binding.Consumer.ID, binding.TargetAgentID))
+			}
+			if err := authorizeReferencedResource(ctx, s.store, binding.Consumer.Kind, binding.TargetAgentID+":"+binding.Consumer.ID); err != nil {
+				return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrPluginResourceAuthorization, err))
+			}
+		}
+	}
 	now := s.now()
 	version := instance.ConfigVersion + 1
 	if instance.PendingVersion >= version {
 		version = instance.PendingVersion + 1
 	}
 	if !exists {
-		instance = storage.PluginInstanceRow{ID: request.InstanceID, PluginID: request.PluginID, ResourceGroupID: request.ResourceGroupID, TargetJSON: string(targetJSON), PolicyChainsJSON: "[]", ConfigJSON: "{}", StatusSummaryJSON: "{}"}
+		instance = storage.PluginInstanceRow{ID: request.InstanceID, PluginID: request.PluginID, ResourceGroupID: request.ResourceGroupID, TargetJSON: string(targetJSON), PolicyChainsJSON: "[]", BindingsJSON: "[]", ConfigJSON: "{}", StatusSummaryJSON: "{}"}
 	}
 	instance.PendingConfigJSON = string(request.Config)
 	instance.PendingResourceGroupID = request.ResourceGroupID
 	instance.PendingTargetJSON = string(targetJSON)
 	instance.PendingPolicyChainsJSON = policyChainsJSON
+	instance.PendingBindingsJSON = bindingsJSON
 	instance.PendingVersion = version
 	instance.PendingOperationID = operation.ID
 	instance.DesiredEnabled = installed.DesiredLifecycle == "enabled"
@@ -1178,6 +1223,7 @@ func (s *PluginService) CompleteConfigure(ctx context.Context, applyResult Plugi
 		instance.ConfigJSON, instance.ConfigVersion = instance.PendingConfigJSON, instance.PendingVersion
 		instance.ResourceGroupID, instance.TargetJSON = instance.PendingResourceGroupID, instance.PendingTargetJSON
 		instance.PolicyChainsJSON = instance.PendingPolicyChainsJSON
+		instance.BindingsJSON = instance.PendingBindingsJSON
 		clearPendingInstance(&instance)
 		if installed.CurrentLifecycle == "active" {
 			instance.CurrentState = "active"
@@ -1261,6 +1307,9 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 		if err := s.validateAgentTargets(ctx, request.Package.Package.Manifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 		}
+		if err := s.validateStoredPluginBindings(ctx, instance, request.Package.Package.Manifest); err != nil {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+		}
 	}
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
@@ -1276,6 +1325,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 		}
 		instances[index].PendingConfigJSON = string(staged)
 		instances[index].PendingPolicyChainsJSON = instances[index].PolicyChainsJSON
+		instances[index].PendingBindingsJSON = instances[index].BindingsJSON
 		instances[index].PendingVersion = instances[index].ConfigVersion + 1
 		instances[index].PendingOperationID = operation.ID
 		instances[index].CurrentState = "applying"
@@ -1379,8 +1429,10 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
 			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
+			instances[index].RollbackBindingsJSON = instances[index].BindingsJSON
 			instances[index].ConfigJSON, instances[index].ConfigVersion = instances[index].PendingConfigJSON, instances[index].PendingVersion
 			instances[index].PolicyChainsJSON = instances[index].PendingPolicyChainsJSON
+			instances[index].BindingsJSON = instances[index].PendingBindingsJSON
 			clearPendingInstance(&instances[index])
 			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
 			instances[index].UpdatedAt = now
@@ -1460,6 +1512,9 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 		if err := s.validateAgentTargets(ctx, rollbackManifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
+		if err := s.validateStoredPluginBindings(ctx, instance, rollbackManifest); err != nil {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
+		}
 	}
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
@@ -1468,6 +1523,7 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 		}
 		instances[index].PendingConfigJSON = instances[index].RollbackConfigJSON
 		instances[index].PendingPolicyChainsJSON = instances[index].RollbackPolicyChainsJSON
+		instances[index].PendingBindingsJSON = instances[index].RollbackBindingsJSON
 		instances[index].PendingVersion = instances[index].RollbackVersion
 		instances[index].PendingOperationID = operation.ID
 		instances[index].CurrentState = "applying"
@@ -1561,8 +1617,10 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
 			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
+			instances[index].RollbackBindingsJSON = instances[index].BindingsJSON
 			instances[index].ConfigJSON, instances[index].ConfigVersion = instances[index].PendingConfigJSON, instances[index].PendingVersion
 			instances[index].PolicyChainsJSON = instances[index].PendingPolicyChainsJSON
+			instances[index].BindingsJSON = instances[index].PendingBindingsJSON
 			clearPendingInstance(&instances[index])
 			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
 			instances[index].UpdatedAt = now
@@ -1937,8 +1995,34 @@ func clearPendingInstance(instance *storage.PluginInstanceRow) {
 	instance.PendingResourceGroupID = ""
 	instance.PendingTargetJSON = ""
 	instance.PendingPolicyChainsJSON = "[]"
+	instance.PendingBindingsJSON = "[]"
 	instance.PendingVersion = 0
 	instance.PendingOperationID = ""
+}
+
+func (s *PluginService) validateStoredPluginBindings(ctx context.Context, instance storage.PluginInstanceRow, manifest plugins.Manifest) error {
+	bindings, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	if err != nil {
+		return fmt.Errorf("plugin instance %s bindings are invalid: %w", instance.ID, err)
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	if manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "agent" {
+		return fmt.Errorf("plugin instance %s core consumer bindings require an Agent rpc-service package", instance.ID)
+	}
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return err
+	}
+	targetIDs, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON), defaultTargetID)
+	if err != nil {
+		return err
+	}
+	if err := storage.ValidatePluginInstanceBindingScope(bindings, targetIDs, manifest.ExtensionPoints); err != nil {
+		return fmt.Errorf("plugin instance %s bindings are incompatible: %w", instance.ID, err)
+	}
+	return nil
 }
 
 func (s *PluginService) failPendingPackagePromotion(ctx context.Context, installed storage.InstalledPluginRow, operation storage.PluginOperationRow, cause error) error {
@@ -2196,7 +2280,11 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
-		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, PolicyChains: policyChains, Config: config, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
+		bindings, err := storage.CanonicalPluginInstanceBindings(row.BindingsJSON)
+		if err != nil {
+			return nil, ErrPluginReadProjection
+		}
+		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, PolicyChains: policyChains, Bindings: bindings, Config: config, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
 		if strings.TrimSpace(row.PendingConfigJSON) != "" {
 			detail.PendingConfig, err = pluginReadJSONObject(row.PendingConfigJSON)
 			if err != nil {
@@ -2211,6 +2299,10 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		}
 		if row.PendingOperationID != "" {
 			detail.PendingPolicyChains, err = storage.CanonicalPluginPolicyChains(row.PendingPolicyChainsJSON)
+			if err != nil {
+				return nil, ErrPluginReadProjection
+			}
+			detail.PendingBindings, err = storage.CanonicalPluginInstanceBindings(row.PendingBindingsJSON)
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}

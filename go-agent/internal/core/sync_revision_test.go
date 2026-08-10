@@ -1687,7 +1687,7 @@ func revisionPull(revision int64, leaseID, digest string) model.RevisionPull {
 }
 
 func revisionSnapshot(revision int64) model.Snapshot {
-	payload := fmt.Sprintf(`{"desired_version":"v%d","desired_revision":%d,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[],"plugin_generations":[],"plugin_policies":[]}`, revision, revision)
+	payload := fmt.Sprintf(`{"desired_version":"v%d","desired_revision":%d,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[],"plugin_generations":[],"plugin_dependencies":[],"plugin_policies":[]}`, revision, revision)
 	var snapshot model.Snapshot
 	if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
 		panic(err)

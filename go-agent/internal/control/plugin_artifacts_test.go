@@ -328,7 +328,7 @@ func TestPluginArtifactPreparationAuthAndDigestFailuresPreserveLastKnownGood(t *
 }
 
 func pluginArtifactSnapshot(artifactID, digest string, size int64) model.Snapshot {
-	return model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}, PluginGenerations: []model.PluginGeneration{}, PluginPolicies: []model.PluginPolicy{{ID: "shared", Stages: []model.PolicyStage{{
+	return model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}, PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{}, PluginPolicies: []model.PluginPolicy{{ID: "shared", Stages: []model.PolicyStage{{
 		InstanceID: "instance-1", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: digest,
 		ArtifactSource: model.PolicyArtifactSource{
 			ArtifactID: artifactID, PackageIdentity: strings.Repeat("b", 64), PackageDigest: strings.Repeat("a", 64),

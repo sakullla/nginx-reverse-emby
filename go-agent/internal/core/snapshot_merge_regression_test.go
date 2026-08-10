@@ -81,14 +81,20 @@ func TestMergeAndCloneSnapshotPreserveIsolatedPluginPolicies(t *testing.T) {
 }
 
 func TestMergeSnapshotPayloadPreservesOmittedPluginGenerations(t *testing.T) {
-	previous := model.Snapshot{PluginGenerations: []model.PluginGeneration{{ID: "generation-1", InstanceID: "instance-1"}}}
+	previous := model.Snapshot{PluginGenerations: []model.PluginGeneration{{ID: "generation-1", InstanceID: "instance-1"}}, PluginDependencies: []model.PluginDependencyEdge{{ProviderInstanceID: "instance-1"}}}
 	merged := MergeSnapshotPayload(model.Snapshot{Revision: 7}, previous)
 	if len(merged.PluginGenerations) != 1 || merged.PluginGenerations[0].ID != "generation-1" {
 		t.Fatalf("merged plugin generations = %+v", merged.PluginGenerations)
 	}
+	if len(merged.PluginDependencies) != 1 || merged.PluginDependencies[0].ProviderInstanceID != "instance-1" {
+		t.Fatalf("merged plugin dependencies = %+v", merged.PluginDependencies)
+	}
 
-	explicit := MergeSnapshotPayload(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}, previous)
+	explicit := MergeSnapshotPayload(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}, PluginDependencies: []model.PluginDependencyEdge{}}, previous)
 	if explicit.PluginGenerations == nil || len(explicit.PluginGenerations) != 0 {
 		t.Fatalf("explicit empty plugin generations = %#v", explicit.PluginGenerations)
+	}
+	if explicit.PluginDependencies == nil || len(explicit.PluginDependencies) != 0 {
+		t.Fatalf("explicit empty plugin dependencies = %#v", explicit.PluginDependencies)
 	}
 }

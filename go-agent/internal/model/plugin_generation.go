@@ -9,6 +9,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -103,6 +104,27 @@ type PluginFailurePolicy struct {
 	CoreFallback string `json:"core_fallback"`
 }
 
+// PluginDependencyEdge is an immutable direct dependency from one enabled
+// core traffic consumer to an Agent-hosted rpc-service instance. The target
+// fence prevents an edge issued for another Agent, resource group, or config
+// generation from making a local provider required.
+type PluginDependencyEdge struct {
+	Consumer           PluginDependencyConsumer `json:"consumer"`
+	ProviderInstanceID string                   `json:"provider_instance_id"`
+	Target             PluginDependencyTarget   `json:"target"`
+}
+
+type PluginDependencyConsumer struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+type PluginDependencyTarget struct {
+	AgentID         string `json:"agent_id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         uint64 `json:"version"`
+}
+
 // PluginRuntimeStatus is fenced by the lifecycle operation, immutable
 // revision, and package digest. A controller must match all three values before
 // treating the observation as completion of a pending lifecycle mutation.
@@ -144,39 +166,20 @@ func ValidatePluginGenerations(snapshot Snapshot, materialized bool) error {
 			return fmt.Errorf("plugin generation %d (%q): %w", index, generation.InstanceID, err)
 		}
 	}
-	return nil
+	return ValidatePluginDependencies(snapshot)
 }
 
-// RequiredPluginInstanceIDs returns the stable set of plugin instances reached
-// by enabled core traffic references. The signed snapshot graph is
-// HTTP/L4 PolicyRef -> PluginPolicy -> PolicyStage.InstanceID; catalog entries
-// which are not reached by that graph remain optional generation providers.
-func RequiredPluginInstanceIDs(snapshot Snapshot) []string {
-	requiredPolicyIDs := make(map[string]struct{})
-	for _, rule := range snapshot.Rules {
-		if rule.Enabled && rule.PolicyRef != nil {
-			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
-				requiredPolicyIDs[id] = struct{}{}
-			}
-		}
+// RequiredPluginInstanceIDs validates the signed dependency graph before
+// returning its stable provider set, so required state cannot be derived from
+// dangling, cross-target, or otherwise malformed edges.
+func RequiredPluginInstanceIDs(snapshot Snapshot) ([]string, error) {
+	if err := ValidatePluginDependencies(snapshot); err != nil {
+		return nil, err
 	}
-	for _, rule := range snapshot.L4Rules {
-		if rule.Enabled && rule.PolicyRef != nil {
-			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
-				requiredPolicyIDs[id] = struct{}{}
-			}
-		}
-	}
-
 	requiredInstances := make(map[string]struct{})
-	for _, policy := range snapshot.PluginPolicies {
-		if _, required := requiredPolicyIDs[policy.ID]; !required {
-			continue
-		}
-		for _, stage := range policy.Stages {
-			if id := strings.TrimSpace(stage.InstanceID); id != "" {
-				requiredInstances[id] = struct{}{}
-			}
+	for _, edge := range snapshot.PluginDependencies {
+		if edge.ProviderInstanceID != "" {
+			requiredInstances[edge.ProviderInstanceID] = struct{}{}
 		}
 	}
 	ids := make([]string, 0, len(requiredInstances))
@@ -184,7 +187,79 @@ func RequiredPluginInstanceIDs(snapshot Snapshot) []string {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	return ids
+	return ids, nil
+}
+
+func ValidatePluginDependencies(snapshot Snapshot) error {
+	providers := make(map[string]PluginGeneration, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		providers[generation.InstanceID] = generation
+	}
+	seen := make(map[string]struct{}, len(snapshot.PluginDependencies))
+	for index, edge := range snapshot.PluginDependencies {
+		if !validPluginIdentity(edge.ProviderInstanceID) || !validPluginIdentity(edge.Consumer.Kind) ||
+			!validPluginIdentity(edge.Consumer.ID) || !validPluginIdentity(edge.Target.AgentID) ||
+			!validPluginIdentity(edge.Target.ResourceGroupID) || edge.Target.Version == 0 {
+			return fmt.Errorf("plugin dependency %d has an invalid identity", index)
+		}
+		provider, exists := providers[edge.ProviderInstanceID]
+		if !exists {
+			return fmt.Errorf("plugin dependency %d references missing provider %q", index, edge.ProviderInstanceID)
+		}
+		if provider.Runtime.Kind != PluginRuntimeRPCService || provider.Runtime.HostScope != "agent" {
+			return fmt.Errorf("plugin dependency %d provider %q is not rpc-service", index, edge.ProviderInstanceID)
+		}
+		if provider.Target.Kind != "agent" || provider.Target.ID != edge.Target.AgentID ||
+			provider.Target.ResourceGroupID != edge.Target.ResourceGroupID || provider.Target.Version != edge.Target.Version {
+			return fmt.Errorf("plugin dependency %d provider %q crosses its target fence", index, edge.ProviderInstanceID)
+		}
+		key := edge.Consumer.Kind + "\x00" + edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("plugin dependency %d duplicates consumer %s/%s and provider %q", index, edge.Consumer.Kind, edge.Consumer.ID, edge.ProviderInstanceID)
+		}
+		seen[key] = struct{}{}
+		if err := validatePluginDependencyConsumer(snapshot, edge, provider); err != nil {
+			return fmt.Errorf("plugin dependency %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validatePluginDependencyConsumer(snapshot Snapshot, edge PluginDependencyEdge, provider PluginGeneration) error {
+	id, err := strconv.Atoi(edge.Consumer.ID)
+	if err != nil || id <= 0 || strconv.Itoa(id) != edge.Consumer.ID {
+		return errors.New("consumer id must be a positive canonical decimal")
+	}
+	switch edge.Consumer.Kind {
+	case "http_rule":
+		if !slices.Contains(provider.ExtensionPoints, "http.request") && !slices.Contains(provider.ExtensionPoints, "http.response") {
+			return errors.New("http rule provider lacks an HTTP extension point")
+		}
+		for _, rule := range snapshot.Rules {
+			if rule.ID == id && rule.Enabled {
+				if rule.AgentID != "" && rule.AgentID != edge.Target.AgentID {
+					return errors.New("http rule belongs to another Agent")
+				}
+				return nil
+			}
+		}
+		return fmt.Errorf("http rule %d is missing or disabled", id)
+	case "l4_rule":
+		if !slices.Contains(provider.ExtensionPoints, "l4.accept") {
+			return errors.New("l4 rule provider lacks l4.accept")
+		}
+		for _, rule := range snapshot.L4Rules {
+			if rule.ID == id && rule.Enabled {
+				if rule.AgentID != "" && rule.AgentID != edge.Target.AgentID {
+					return errors.New("l4 rule belongs to another Agent")
+				}
+				return nil
+			}
+		}
+		return fmt.Errorf("l4 rule %d is missing or disabled", id)
+	default:
+		return fmt.Errorf("consumer kind %q is unsupported", edge.Consumer.Kind)
+	}
 }
 
 func (generation PluginGeneration) Validate(snapshotRevision int64, materialized bool) error {
@@ -248,7 +323,7 @@ func (generation PluginGeneration) Validate(snapshotRevision int64, materialized
 		return err
 	}
 	if !validPluginIdentity(generation.Target.Kind) || !validPluginIdentity(generation.Target.ID) ||
-		!validPluginIdentity(generation.Target.ResourceGroupID) || generation.Target.Version == 0 {
+		!validPluginIdentity(generation.Target.ResourceGroupID) || generation.Target.Version == 0 || generation.Target.Version != generation.ConfigVersion {
 		return errors.New("target binding is invalid")
 	}
 	if !slices.Contains([]string{"fail-open", "fail-closed", "degraded"}, generation.FailurePolicy.OnError) ||
