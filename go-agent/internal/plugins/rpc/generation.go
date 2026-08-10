@@ -62,20 +62,39 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 	m.mu.RLock()
 	host := m.host
 	m.mu.RUnlock()
-	if len(request.Next.PluginGenerations) > 0 && host == nil {
-		return nil, errors.New("RPC plugin host is unavailable")
+	requiredInstances := make(map[string]struct{})
+	for _, instanceID := range model.RequiredPluginInstanceIDs(request.Next) {
+		requiredInstances[instanceID] = struct{}{}
 	}
-	transaction := &generationTransaction{module: m, host: host, generationID: generationContext.ID(), specs: clonePluginGenerations(request.Next.PluginGenerations)}
-	for _, generation := range request.Next.PluginGenerations {
+	transaction := &generationTransaction{module: m, host: host, generationID: generationContext.ID()}
+	for _, generation := range clonePluginGenerations(request.Next.PluginGenerations) {
+		_, required := requiredInstances[generation.InstanceID]
+		transaction.candidates = append(transaction.candidates, generationCandidate{spec: generation, required: required})
+		index := len(transaction.candidates) - 1
+		if host == nil {
+			if required {
+				return nil, errors.Join(fmt.Errorf("required RPC plugin instance %q: host is unavailable", generation.InstanceID), transaction.Destroy(context.WithoutCancel(ctx)))
+			}
+			transaction.failOptionalCandidate(index, "prepare")
+			continue
+		}
 		candidate, candidateErr := hostCandidateFromGeneration(generation, generationContext.ID())
 		if candidateErr != nil {
-			return nil, errors.Join(candidateErr, transaction.Destroy(context.WithoutCancel(ctx)))
+			if required {
+				return nil, errors.Join(fmt.Errorf("required RPC plugin instance %q: %w", generation.InstanceID, candidateErr), transaction.Destroy(context.WithoutCancel(ctx)))
+			}
+			transaction.failOptionalCandidate(index, "prepare")
+			continue
 		}
 		instance, prepareErr := host.PrepareCandidate(ctx, candidate)
 		if prepareErr != nil {
-			return nil, errors.Join(fmt.Errorf("prepare RPC plugin instance %q: %w", generation.InstanceID, prepareErr), transaction.Destroy(context.WithoutCancel(ctx)))
+			if required {
+				return nil, errors.Join(fmt.Errorf("prepare required RPC plugin instance %q: %w", generation.InstanceID, prepareErr), transaction.Destroy(context.WithoutCancel(ctx)))
+			}
+			transaction.failOptionalCandidate(index, "prepare")
+			continue
 		}
-		transaction.instances = append(transaction.instances, instance)
+		transaction.candidates[index].instance = instance
 	}
 	return transaction, nil
 }
@@ -114,8 +133,7 @@ type generationTransaction struct {
 	module       *GenerationModule
 	host         *Host
 	generationID string
-	specs        []model.PluginGeneration
-	instances    []*HostedInstance
+	candidates   []generationCandidate
 	publication  *PreparedHostGeneration
 
 	mu        sync.Mutex
@@ -123,13 +141,36 @@ type generationTransaction struct {
 	closed    bool
 }
 
+type generationCandidate struct {
+	spec     model.PluginGeneration
+	instance *HostedInstance
+	required bool
+	failure  *model.PluginRuntimeStatus
+}
+
 func (t *generationTransaction) Ready(_ context.Context) error {
 	if t == nil {
 		return errors.New("RPC plugin generation transaction is nil")
 	}
-	for _, instance := range t.instances {
-		if err := t.host.ReadyCandidate(instance); err != nil {
-			return fmt.Errorf("RPC plugin candidate readiness: %w", err)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return errors.New("RPC plugin generation transaction is closed")
+	}
+	for index := range t.candidates {
+		candidate := &t.candidates[index]
+		if candidate.instance == nil {
+			continue
+		}
+		if err := t.host.ReadyCandidate(candidate.instance); err != nil {
+			if candidate.required {
+				return fmt.Errorf("required RPC plugin instance %q readiness: %w", candidate.spec.InstanceID, err)
+			}
+			if cleanupErr := t.host.DestroyCandidate(candidate.instance); cleanupErr != nil {
+				return errors.Join(fmt.Errorf("optional RPC plugin instance %q readiness: %w", candidate.spec.InstanceID, err), cleanupErr)
+			}
+			candidate.instance = nil
+			t.failOptionalCandidate(index, "readiness")
 		}
 	}
 	return nil
@@ -144,18 +185,32 @@ func (t *generationTransaction) PrepareGenerationPublication(ctx context.Context
 	if t.closed {
 		return errors.New("RPC plugin generation transaction is closed")
 	}
-	if t.host == nil && len(t.instances) == 0 {
+	if t.host == nil {
 		return nil
 	}
 	if t.publication != nil {
 		return nil
 	}
-	for index, instance := range t.instances {
-		if err := t.host.ActivatePreparedCandidate(ctx, instance); err != nil {
-			return fmt.Errorf("activate RPC plugin instance %q: %w", t.specs[index].InstanceID, err)
+	instances := make([]*HostedInstance, 0, len(t.candidates))
+	for index := range t.candidates {
+		candidate := &t.candidates[index]
+		if candidate.instance == nil {
+			continue
 		}
+		if err := t.host.ActivatePreparedCandidate(ctx, candidate.instance); err != nil {
+			if candidate.required {
+				return fmt.Errorf("activate required RPC plugin instance %q: %w", candidate.spec.InstanceID, err)
+			}
+			if cleanupErr := t.host.DestroyCandidate(candidate.instance); cleanupErr != nil {
+				return errors.Join(fmt.Errorf("activate optional RPC plugin instance %q: %w", candidate.spec.InstanceID, err), cleanupErr)
+			}
+			candidate.instance = nil
+			t.failOptionalCandidate(index, "activation")
+			continue
+		}
+		instances = append(instances, candidate.instance)
 	}
-	publication, err := t.host.PrepareGenerationPublication(t.generationID, t.instances)
+	publication, err := t.host.PrepareGenerationPublication(t.generationID, instances)
 	if err != nil {
 		return err
 	}
@@ -207,13 +262,17 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 		t.publication.Abort()
 		t.publication = nil
 	}
-	instances := append([]*HostedInstance(nil), t.instances...)
-	t.instances = nil
-	for index := range t.specs {
-		t.specs[index].Config = nil
-		t.specs[index].SecretHandles = nil
+	instances := make([]*HostedInstance, 0, len(t.candidates))
+	for index := range t.candidates {
+		candidate := &t.candidates[index]
+		if candidate.instance != nil {
+			instances = append(instances, candidate.instance)
+			candidate.instance = nil
+		}
+		candidate.spec.Config = nil
+		candidate.spec.SecretHandles = nil
 	}
-	t.specs = nil
+	t.candidates = nil
 	t.mu.Unlock()
 	var errs []error
 	for _, instance := range instances {
@@ -230,10 +289,18 @@ func (t *generationTransaction) PluginRuntimeStatuses() []model.PluginRuntimeSta
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	statuses := make([]model.PluginRuntimeStatus, 0, len(t.instances))
-	for index, instance := range t.instances {
-		runtimeStatus := instance.Status()
-		spec := t.specs[index]
+	statuses := make([]model.PluginRuntimeStatus, 0, len(t.candidates))
+	for index := range t.candidates {
+		candidate := &t.candidates[index]
+		if candidate.failure != nil {
+			statuses = append(statuses, clonePluginRuntimeStatus(*candidate.failure))
+			continue
+		}
+		if candidate.instance == nil {
+			continue
+		}
+		runtimeStatus := candidate.instance.Status()
+		spec := candidate.spec
 		details, _ := json.Marshal(struct {
 			SandboxProvider string `json:"sandbox_provider,omitempty"`
 			RestartCount    int    `json:"restart_count,omitempty"`
@@ -254,6 +321,36 @@ func (t *generationTransaction) PluginRuntimeStatuses() []model.PluginRuntimeSta
 		statuses = append(statuses, status)
 	}
 	return statuses
+}
+
+func (t *generationTransaction) failOptionalCandidate(index int, phase string) {
+	if index < 0 || index >= len(t.candidates) {
+		return
+	}
+	candidate := &t.candidates[index]
+	state := "failed"
+	if candidate.spec.FailurePolicy.OnError == "degraded" || candidate.spec.FailurePolicy.OnError == "fail-open" {
+		state = "degraded"
+	}
+	details, _ := json.Marshal(struct {
+		Phase    string `json:"phase"`
+		Required bool   `json:"required"`
+	}{Phase: phase, Required: false})
+	budget, _ := json.Marshal(candidate.spec.ResourceBudget)
+	status := model.PluginRuntimeStatus{
+		InstanceID: candidate.spec.InstanceID, PluginID: candidate.spec.PluginID, OperationID: candidate.spec.OperationID,
+		Revision: candidate.spec.Revision, GenerationID: candidate.spec.ID, PackageDigest: candidate.spec.PackageDigest,
+		ArtifactDigest: candidate.spec.Artifact.SHA256, ConfigVersion: candidate.spec.ConfigVersion, RuntimeKind: candidate.spec.Runtime.Kind,
+		State: state, Sequence: 1, ErrorCode: "rpc_" + phase + "_failed",
+		SafeDetail: "Optional RPC plugin candidate failed and was excluded from publication", Details: details, Budget: budget,
+	}
+	candidate.failure = &status
+}
+
+func clonePluginRuntimeStatus(status model.PluginRuntimeStatus) model.PluginRuntimeStatus {
+	status.Details = append([]byte(nil), status.Details...)
+	status.Budget = append([]byte(nil), status.Budget...)
+	return status
 }
 
 func pluginRuntimeSafeDetail(state string) string {

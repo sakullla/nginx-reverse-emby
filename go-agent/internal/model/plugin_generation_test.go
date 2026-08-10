@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,25 @@ func TestPluginGenerationAcceptsCanonicalHostCapabilitiesAndResourceOnlySelector
 		if err := generation.Validate(7, false); err == nil {
 			t.Fatalf("Validate() accepted noncanonical capability %q", legacy)
 		}
+	}
+}
+
+func TestRequiredPluginInstanceIDsUsesEnabledSignedDependencyGraph(t *testing.T) {
+	snapshot := Snapshot{
+		Rules: []HTTPRule{
+			{Enabled: true, PolicyRef: &PolicyRef{ID: "shared"}},
+			{Enabled: false, PolicyRef: &PolicyRef{ID: "disabled"}},
+		},
+		L4Rules: []L4Rule{{Enabled: true, PolicyRef: &PolicyRef{ID: "transport"}}},
+		PluginPolicies: []PluginPolicy{
+			{ID: "shared", Stages: []PolicyStage{{InstanceID: "instance-b"}, {InstanceID: "instance-a"}}},
+			{ID: "transport", Stages: []PolicyStage{{InstanceID: "instance-a"}}},
+			{ID: "disabled", Stages: []PolicyStage{{InstanceID: "instance-c"}}},
+			{ID: "catalog-only", Stages: []PolicyStage{{InstanceID: "instance-d"}}},
+		},
+	}
+	if got := RequiredPluginInstanceIDs(snapshot); !slices.Equal(got, []string{"instance-a", "instance-b"}) {
+		t.Fatalf("RequiredPluginInstanceIDs() = %v", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"sort"
 	"strings"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -144,6 +145,46 @@ func ValidatePluginGenerations(snapshot Snapshot, materialized bool) error {
 		}
 	}
 	return nil
+}
+
+// RequiredPluginInstanceIDs returns the stable set of plugin instances reached
+// by enabled core traffic references. The signed snapshot graph is
+// HTTP/L4 PolicyRef -> PluginPolicy -> PolicyStage.InstanceID; catalog entries
+// which are not reached by that graph remain optional generation providers.
+func RequiredPluginInstanceIDs(snapshot Snapshot) []string {
+	requiredPolicyIDs := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		if rule.Enabled && rule.PolicyRef != nil {
+			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				requiredPolicyIDs[id] = struct{}{}
+			}
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if rule.Enabled && rule.PolicyRef != nil {
+			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				requiredPolicyIDs[id] = struct{}{}
+			}
+		}
+	}
+
+	requiredInstances := make(map[string]struct{})
+	for _, policy := range snapshot.PluginPolicies {
+		if _, required := requiredPolicyIDs[policy.ID]; !required {
+			continue
+		}
+		for _, stage := range policy.Stages {
+			if id := strings.TrimSpace(stage.InstanceID); id != "" {
+				requiredInstances[id] = struct{}{}
+			}
+		}
+	}
+	ids := make([]string, 0, len(requiredInstances))
+	for id := range requiredInstances {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (generation PluginGeneration) Validate(snapshotRevision int64, materialized bool) error {

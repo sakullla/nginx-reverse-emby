@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -29,6 +30,28 @@ type generationLifecycleClient struct {
 }
 
 type generationTestSandbox struct{}
+
+type generationControlledRunner struct {
+	mu      sync.Mutex
+	process *hostProcess
+}
+
+func (r *generationControlledRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
+	process := &hostProcess{done: make(chan error, 1)}
+	r.mu.Lock()
+	r.process = process
+	r.mu.Unlock()
+	return process, func() error { return nil }, nil
+}
+
+func (r *generationControlledRunner) Fail(err error) {
+	r.mu.Lock()
+	process := r.process
+	r.mu.Unlock()
+	if process != nil {
+		process.once.Do(func() { process.done <- err })
+	}
+}
 
 func (generationTestSandbox) Available() bool                       { return true }
 func (generationTestSandbox) Provider() string                      { return "generation-test" }
@@ -131,7 +154,7 @@ func TestRPCGenerationPrepareReadyAtomicPublishAndDestroy(t *testing.T) {
 	}
 }
 
-func TestRPCGenerationPrepareFailureCleansCandidateWithoutPublishing(t *testing.T) {
+func TestRPCGenerationRequiredPrepareFailureCleansCandidateWithoutPublishing(t *testing.T) {
 	root := t.TempDir()
 	generation := rpcPluginGenerationForTest(t, root, 2, "operation-2")
 	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
@@ -142,7 +165,8 @@ func TestRPCGenerationPrepareFailureCleansCandidateWithoutPublishing(t *testing.
 		t.Fatal(err)
 	}
 	moduleUnderTest := NewGenerationModule(host)
-	_, err = moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 2, PluginGenerations: []model.PluginGeneration{generation}}})
+	next := rpcSnapshotWithRequiredInstance(2, []model.PluginGeneration{generation}, generation.InstanceID)
+	_, err = moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Next: next})
 	if err == nil {
 		t.Fatal("Prepare() accepted failed candidate")
 	}
@@ -157,7 +181,127 @@ func TestRPCGenerationPrepareFailureCleansCandidateWithoutPublishing(t *testing.
 	}
 }
 
-func TestRPCGenerationActivationFailureCleansAllCandidatesAndPublishesNone(t *testing.T) {
+func TestRPCGenerationOptionalPrepareFailurePublishesFencedDegradedStatus(t *testing.T) {
+	root := t.TempDir()
+	generation := rpcPluginGenerationForTest(t, root, 20, "operation-20")
+	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 20, PluginGenerations: []model.PluginGeneration{generation}}})
+	if err != nil {
+		t.Fatalf("optional Prepare() error = %v", err)
+	}
+	transaction := prepared.(*generationTransaction)
+	if err := transaction.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.PrepareGenerationPublication(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	transaction.FinalizeGenerationPublication()
+	statuses := transaction.PluginRuntimeStatuses()
+	assertOptionalFailureStatus(t, statuses, generation, "degraded", "rpc_prepare_failed")
+	if _, active := host.Active(generation.InstanceID); active {
+		t.Fatal("optional prepare failure became active")
+	}
+	host.mu.RLock()
+	pending := len(host.pending)
+	host.mu.RUnlock()
+	if pending != 0 {
+		t.Fatalf("optional prepare failure pending ownership = %d", pending)
+	}
+}
+
+func TestRPCGenerationOptionalPrepareFailureDoesNotShiftSiblingIdentity(t *testing.T) {
+	root := t.TempDir()
+	failed := rpcPluginGenerationForTest(t, root, 22, "operation-22a")
+	failed.InstanceID = "instance-failed"
+	healthy := rpcPluginGenerationForTest(t, root, 22, "operation-22b")
+	healthy.InstanceID = "instance-healthy"
+	clients := []LifecycleClient{
+		&generationLifecycleClient{prepareErr: context.DeadlineExceeded},
+		&generationLifecycleClient{},
+	}
+	var clientsMu sync.Mutex
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		clientsMu.Lock()
+		defer clientsMu.Unlock()
+		client := clients[0]
+		clients = clients[1:]
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 22, PluginGenerations: []model.PluginGeneration{failed, healthy}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := prepared.(*generationTransaction)
+	if err := transaction.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.PrepareGenerationPublication(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	transaction.FinalizeGenerationPublication()
+	statuses := transaction.PluginRuntimeStatuses()
+	if len(statuses) != 2 || statuses[0].InstanceID != failed.InstanceID || statuses[0].GenerationID != failed.ID || statuses[0].State != "degraded" ||
+		statuses[1].InstanceID != healthy.InstanceID || statuses[1].GenerationID != healthy.ID || statuses[1].OperationID != healthy.OperationID || statuses[1].State != "active" {
+		t.Fatalf("runtime statuses shifted across optional failure = %+v", statuses)
+	}
+	if _, active := host.Active(failed.InstanceID); active {
+		t.Fatal("failed optional instance became active")
+	}
+	if _, active := host.Active(healthy.InstanceID); !active {
+		t.Fatal("healthy sibling was not published")
+	}
+	if err := transaction.Destroy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRPCGenerationOptionalReadinessFailureIsCleanedAndExcluded(t *testing.T) {
+	root := t.TempDir()
+	generation := rpcPluginGenerationForTest(t, root, 21, "operation-21")
+	runner := &generationControlledRunner{}
+	client := &generationLifecycleClient{}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 21, PluginGenerations: []model.PluginGeneration{generation}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := prepared.(*generationTransaction)
+	runner.Fail(context.DeadlineExceeded)
+	instance := transaction.candidates[0].instance
+	select {
+	case <-instance.attempt.handle.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("controlled candidate did not reach failed readiness")
+	}
+	if err := transaction.Ready(t.Context()); err != nil {
+		t.Fatalf("optional Ready() error = %v", err)
+	}
+	if err := transaction.PrepareGenerationPublication(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	transaction.FinalizeGenerationPublication()
+	assertOptionalFailureStatus(t, transaction.PluginRuntimeStatuses(), generation, "degraded", "rpc_readiness_failed")
+	if _, active := host.Active(generation.InstanceID); active {
+		t.Fatal("optional readiness failure became active")
+	}
+}
+
+func TestRPCGenerationOptionalActivationFailurePublishesHealthySibling(t *testing.T) {
 	root := t.TempDir()
 	first := rpcPluginGenerationForTest(t, root, 3, "operation-3a")
 	first.InstanceID = "instance-a"
@@ -178,28 +322,57 @@ func TestRPCGenerationActivationFailureCleansAllCandidatesAndPublishesNone(t *te
 		t.Fatal(err)
 	}
 	moduleUnderTest := NewGenerationModule(host)
-	prepared, err := moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 3, PluginGenerations: []model.PluginGeneration{first, second}}})
+	registry := module.NewRegistry()
+	if err := registry.Register(generationCoreTestModule{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(moduleUnderTest); err != nil {
+		t.Fatal(err)
+	}
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, model.Snapshot{Revision: 3, PluginGenerations: []model.PluginGeneration{first, second}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	transaction := prepared.(*generationTransaction)
-	if err := transaction.Ready(t.Context()); err != nil {
+	prepared, err := registry.PrepareGeneration(t.Context(), generationContext)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := transaction.PrepareGenerationPublication(t.Context()); err == nil {
-		t.Fatal("PrepareGenerationPublication() accepted activation failure")
+	if err := prepared.Ready(t.Context()); err != nil {
+		t.Fatal(err)
 	}
-	if err := transaction.Destroy(t.Context()); err != nil {
-		t.Fatalf("Destroy() error = %v", err)
+	publication, ok := prepared.(interface{ PreparePublication(context.Context) error })
+	if !ok {
+		t.Fatal("prepared generation has no publication barrier")
 	}
-	if _, active := host.Active(first.InstanceID); active {
-		t.Fatal("first candidate became active after sibling failure")
+	if err := publication.PreparePublication(t.Context()); err != nil {
+		t.Fatalf("PrepareGenerationPublication() error = %v", err)
+	}
+	active, _ := prepared.Publish()
+	if coreRevision, ok := active.Resolve(generationCoreTestProvider); !ok || coreRevision != int64(3) {
+		t.Fatalf("unrelated core provider = %v/%v, want revision 3", coreRevision, ok)
+	}
+	if _, active := host.Active(first.InstanceID); !active {
+		t.Fatal("healthy sibling was not published")
 	}
 	if _, active := host.Active(second.InstanceID); active {
 		t.Fatal("failed sibling became active")
 	}
+	statuses := active.PluginRuntimeStatuses()
+	if len(statuses) != 2 || statuses[0].InstanceID != first.InstanceID || statuses[0].State != "active" ||
+		statuses[1].InstanceID != second.InstanceID || statuses[1].State != "degraded" || statuses[1].ErrorCode != "rpc_activation_failed" || statuses[1].Sequence != 1 {
+		t.Fatalf("runtime statuses = %+v", statuses)
+	}
+	if _, _, _, stops := firstClient.counts(); stops != 0 {
+		t.Fatalf("healthy sibling stops = %d before generation drain", stops)
+	}
+	if _, _, _, stops := secondClient.counts(); stops != 1 {
+		t.Fatalf("failed optional sibling stops = %d, want isolated cleanup", stops)
+	}
+	if err := active.Destroy(t.Context()); err != nil {
+		t.Fatalf("Destroy() error = %v", err)
+	}
 	if _, _, _, stops := firstClient.counts(); stops != 1 {
-		t.Fatalf("first candidate stops = %d, want cleanup", stops)
+		t.Fatalf("healthy sibling stops after generation drain = %d", stops)
 	}
 }
 
@@ -281,3 +454,56 @@ func rpcPluginGenerationForTest(t *testing.T, root string, revision int64, opera
 		FailurePolicy:  model.PluginFailurePolicy{OnError: "degraded", OnBudget: "fail-closed", Restart: "on-failure", CoreFallback: "preserve"},
 	}
 }
+
+func rpcSnapshotWithRequiredInstance(revision int64, generations []model.PluginGeneration, instanceID string) model.Snapshot {
+	return model.Snapshot{
+		Revision: revision,
+		Rules:    []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "required-policy"}}},
+		PluginPolicies: []model.PluginPolicy{{ID: "required-policy", Revision: revision, Stages: []model.PolicyStage{{
+			InstanceID: instanceID,
+		}}}},
+		PluginGenerations: generations,
+	}
+}
+
+func assertOptionalFailureStatus(t *testing.T, statuses []model.PluginRuntimeStatus, generation model.PluginGeneration, state, errorCode string) {
+	t.Helper()
+	if len(statuses) != 1 {
+		t.Fatalf("runtime statuses = %+v", statuses)
+	}
+	status := statuses[0]
+	if status.InstanceID != generation.InstanceID || status.PluginID != generation.PluginID || status.OperationID != generation.OperationID ||
+		status.Revision != generation.Revision || status.GenerationID != generation.ID || status.PackageDigest != generation.PackageDigest ||
+		status.ArtifactDigest != generation.Artifact.SHA256 || status.ConfigVersion != generation.ConfigVersion || status.RuntimeKind != generation.Runtime.Kind ||
+		status.Sequence != 1 || status.State != state || status.ErrorCode != errorCode {
+		t.Fatalf("runtime status = %+v", status)
+	}
+}
+
+const generationCoreTestProvider module.ProviderRef = "test.core.runtime"
+
+type generationCoreTestModule struct{}
+
+func (generationCoreTestModule) Name() string { return "core-test" }
+func (generationCoreTestModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: "core-test", Provides: []module.ProviderRef{generationCoreTestProvider}}
+}
+func (generationCoreTestModule) RegisterProviders(registry module.ProviderRegistry) error {
+	return registry.Provide(generationCoreTestProvider, int64(0))
+}
+func (generationCoreTestModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+func (generationCoreTestModule) Apply(context.Context, module.ApplyRequest) error     { return nil }
+func (generationCoreTestModule) Stop(context.Context) error                           { return nil }
+func (generationCoreTestModule) Prepare(_ context.Context, request module.ApplyRequest) (module.ModuleTransaction, error) {
+	return generationCoreTestTransaction{revision: request.Next.Revision}, nil
+}
+
+type generationCoreTestTransaction struct{ revision int64 }
+
+func (transaction generationCoreTestTransaction) RegisterProviders(registry module.ProviderRegistry) error {
+	return registry.Provide(generationCoreTestProvider, transaction.revision)
+}
+func (generationCoreTestTransaction) Ready(context.Context) error   { return nil }
+func (generationCoreTestTransaction) Destroy(context.Context) error { return nil }
+func (generationCoreTestTransaction) Commit() error                 { return nil }
+func (generationCoreTestTransaction) Rollback() error               { return nil }
