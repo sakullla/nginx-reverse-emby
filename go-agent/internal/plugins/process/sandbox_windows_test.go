@@ -27,17 +27,17 @@ func TestWindowsSandboxLiveProcess(t *testing.T) {
 	}
 	sandbox := newPlatformSandbox()
 	deniedPath := filepath.Join(t.TempDir(), "must-not-write")
+	digest, err := fileDigest(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement := canonicalNonprivilegedRequirement(t, digest)
 	process, cleanup, err := (ExecRunner{}).Start(context.Background(), InstanceSpec{
 		ID:          "sandbox-live",
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestWindowsSandboxGuest$"},
 		Environment: []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath},
-		Security: Security{Requirement: testSandboxRequirement(Budget{
-			CPUMillis:   1000,
-			MemoryBytes: 256 << 20,
-			Processes:   2,
-			Network:     true,
-		}, false, false)},
+		Security:    Security{Requirement: requirement},
 	}, sandbox, io.Discard)
 	if err != nil {
 		t.Fatal(err)

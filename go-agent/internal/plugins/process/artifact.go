@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -27,6 +28,16 @@ type Installer struct {
 }
 
 func (i Installer) Install(instanceID string, artifact Artifact) (string, error) {
+	return i.InstallContext(context.Background(), instanceID, artifact)
+}
+
+func (i Installer) InstallContext(ctx context.Context, instanceID string, artifact Artifact) (string, error) {
+	if ctx == nil {
+		return "", errors.New("plugin process install context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(instanceID) == "" || strings.ContainsAny(instanceID, `/\\`) || instanceID == "." || instanceID == ".." {
 		return "", errors.New("plugin process instance id is invalid")
 	}
@@ -92,10 +103,13 @@ func (i Installer) Install(instanceID string, artifact Artifact) (string, error)
 		return "", fmt.Errorf("open plugin process cache artifact: %w", err)
 	}
 	hash := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(temporary, hash), sourceFile)
+	_, copyErr := io.Copy(io.MultiWriter(temporary, hash), contextReader{ctx: ctx, reader: sourceFile})
 	closeSourceErr := sourceFile.Close()
 	if copyErr != nil || closeSourceErr != nil {
 		return "", errors.Join(copyErr, closeSourceErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), want) {
 		return "", errors.New("plugin process artifact digest changed while copying from cache")
@@ -127,6 +141,20 @@ func (i Installer) Install(instanceID string, artifact Artifact) (string, error)
 		return "", errors.New("plugin process runtime artifact digest mismatch")
 	}
 	return target, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+		return r.reader.Read(p)
+	}
 }
 
 func parseDigest(value string) (string, error) {

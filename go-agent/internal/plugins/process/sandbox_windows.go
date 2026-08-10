@@ -32,6 +32,9 @@ func (windowsJobSandbox) Validate(security Security) error {
 	if security.Requirement.RequiresPrivilegeBoundary() {
 		return errors.New("windows plugin sandbox is unavailable for privileged manifest requirements")
 	}
+	if security.Requirement.RequiresFilesystemBoundary() {
+		return errors.New("windows plugin sandbox cannot enforce a manifest filesystem boundary")
+	}
 	budget := security.Requirement.Budget()
 	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("windows plugin sandbox requires cpu_millis within 1..1000")
@@ -41,9 +44,6 @@ func (windowsJobSandbox) Validate(security Security) error {
 	}
 	if budget.Processes <= 0 {
 		return errors.New("windows plugin sandbox requires a positive process limit")
-	}
-	if budget.Files > 0 {
-		return errors.New("windows plugin sandbox cannot enforce a per-process file-handle budget")
 	}
 	if security.Requirement.RequiresNetworkIsolation() {
 		return errors.New("windows plugin sandbox cannot enforce network denial")

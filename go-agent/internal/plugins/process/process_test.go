@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -190,6 +191,50 @@ func (crashRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer) (Man
 	p := &immediateProcess{done: make(chan error, 1)}
 	p.done <- io.EOF
 	return p, func() error { return nil }, nil
+}
+
+type closeBlockingRunner struct {
+	started  chan struct{}
+	returned chan struct{}
+	once     sync.Once
+}
+
+func (r *closeBlockingRunner) Start(ctx context.Context, _ InstanceSpec, _ Sandbox, _ io.Writer) (ManagedProcess, func() error, error) {
+	r.once.Do(func() { close(r.started) })
+	<-ctx.Done()
+	close(r.returned)
+	return nil, nil, ctx.Err()
+}
+
+func TestSupervisorCloseCancelsAndJoinsBlockedStart(t *testing.T) {
+	runner := &closeBlockingRunner{started: make(chan struct{}), returned: make(chan struct{})}
+	supervisor := NewSupervisor(runner, fakeSandbox{available: true}, io.Discard)
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := supervisor.StartOnce(context.Background(), InstanceSpec{ID: "blocked", Executable: "unused"})
+		startDone <- err
+	}()
+	<-runner.started
+	if err := supervisor.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.returned:
+	default:
+		t.Fatal("Close returned before the blocked Runner.Start exited")
+	}
+	if err := <-startDone; err == nil {
+		t.Fatal("blocked start succeeded after supervisor Close")
+	}
+	supervisor.mu.Lock()
+	remaining := len(supervisor.handles)
+	supervisor.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("Close left %d supervised handles", remaining)
+	}
+	if _, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "late", Executable: "unused"}); !errors.Is(err, ErrSupervisorClosed) {
+		t.Fatalf("post-Close start error = %v", err)
+	}
 }
 
 func TestProcessCrashLoopOpensCircuit(t *testing.T) {

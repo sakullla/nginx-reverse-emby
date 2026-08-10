@@ -15,6 +15,7 @@ type SandboxRequirement struct {
 	budget        ProcessBudget
 	privileged    bool
 	networkBound  bool
+	filesystem    bool
 }
 
 func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (SandboxRequirement, error) {
@@ -27,7 +28,7 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 	if budget.TimeoutMS <= 0 || budget.TimeoutMS > 300000 || budget.MemoryBytes < 65536 || budget.MemoryBytes > plugins.MaxRuntimeMemoryBytes || budget.Concurrency <= 0 || budget.Concurrency > 4096 || budget.InputBytes <= 0 || budget.InputBytes > plugins.MaxRuntimeIOBytes || budget.OutputBytes <= 0 || budget.OutputBytes > plugins.MaxRuntimeIOBytes || budget.CPUMillis <= 0 || budget.CPUMillis > 100000 || budget.Restarts < 0 || budget.Restarts > 100 {
 		return SandboxRequirement{}, errors.New("sandbox requirement requires a bounded canonical rpc-service resource budget")
 	}
-	requirement := SandboxRequirement{packageDigest: digest, networkBound: true}
+	requirement := SandboxRequirement{packageDigest: digest}
 	seenPermissions := map[string]struct{}{}
 	for _, permission := range manifest.Permissions {
 		if permission.Name != strings.TrimSpace(permission.Name) || !knownControlSandboxPermission(permission.Name) {
@@ -40,6 +41,9 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		switch permission.Name {
 		case "container.manage", "dns.manage", "secret.use", "storage.write":
 			requirement.privileged = true
+		}
+		if permission.Name == "storage.read" || permission.Name == "storage.write" {
+			requirement.filesystem = true
 		}
 	}
 	seenExtensions := map[string]struct{}{}
@@ -64,6 +68,7 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 	if _, ok := seenPermissions["dns.manage"]; ok {
 		network = true
 	}
+	requirement.networkBound = network
 	processes := budget.Concurrency + 4
 	if processes < 8 {
 		processes = 8
@@ -80,7 +85,8 @@ func (r SandboxRequirement) Budget() ProcessBudget { return r.budget }
 func (r SandboxRequirement) HighRisk() bool {
 	return r.privileged || r.networkBound || r.budget.Processes > 0 || r.budget.Files > 0
 }
-func (r SandboxRequirement) RequiresPrivilegeBoundary() bool { return r.privileged }
+func (r SandboxRequirement) RequiresPrivilegeBoundary() bool  { return r.privileged }
+func (r SandboxRequirement) RequiresFilesystemBoundary() bool { return r.filesystem }
 func (r SandboxRequirement) RequiresNetworkIsolation() bool {
 	return r.networkBound && !r.budget.Network
 }

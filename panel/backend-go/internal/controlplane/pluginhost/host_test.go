@@ -88,6 +88,19 @@ type blockedRestartLauncher struct {
 	blocked chan struct{}
 }
 
+type blockedInitialLauncher struct {
+	started  chan struct{}
+	returned chan struct{}
+	once     sync.Once
+}
+
+func (l *blockedInitialLauncher) Start(ctx context.Context, _ string, _ []string, _ []string, _ io.Writer, _ Candidate) (Process, error) {
+	l.once.Do(func() { close(l.started) })
+	<-ctx.Done()
+	close(l.returned)
+	return nil, ctx.Err()
+}
+
 func (l *blockedRestartLauncher) Start(ctx context.Context, _ string, _ []string, _ []string, _ io.Writer, _ Candidate) (Process, error) {
 	l.mu.Lock()
 	l.starts++
@@ -307,6 +320,51 @@ func TestPluginHostStopAndCloseJoinRestartWork(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPluginHostCloseCancelsAndJoinsBlockedInitialLaunch(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("blocked initial launch")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	launcher := &blockedInitialLauncher{started: make(chan struct{}), returned: make(chan struct{})}
+	host, err := New(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{
+		InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH},
+		Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}},
+		Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond,
+	}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, encoded)
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := host.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-launcher.started
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-launcher.returned:
+	default:
+		t.Fatal("Close returned before blocked launcher exited")
+	}
+	if err := <-activateDone; err == nil {
+		t.Fatal("blocked launch activated after Close")
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Close left a candidate active")
+	}
+	if _, err := host.Activate(t.Context(), candidate); err == nil {
+		t.Fatal("activation was accepted after Close")
 	}
 }
 

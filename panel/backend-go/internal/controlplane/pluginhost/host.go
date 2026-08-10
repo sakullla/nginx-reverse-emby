@@ -79,7 +79,10 @@ type Launcher interface {
 
 type Host struct {
 	mu             sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
 	closed         bool
+	prepareWG      sync.WaitGroup
 	runtimeRoot    string
 	launcher       Launcher
 	dialer         RPCDialer
@@ -125,6 +128,7 @@ type Instance struct {
 	candidate                  Candidate
 	control                    *runtimeControl
 	securityCleanup            func() error
+	processCancel              context.CancelFunc
 }
 
 func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer) (*Host, error) {
@@ -140,7 +144,8 @@ func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer
 	if logs == nil {
 		logs = io.Discard
 	}
-	return &Host{runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance), observerErrors: make(map[string]error)}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance), observerErrors: make(map[string]error)}, nil
 }
 
 func (h *Host) SetStatusObserver(observer func(RuntimeStatus) error) {
@@ -162,12 +167,26 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	if candidate.Identity.Generation == "" || candidate.InstanceID == "" {
 		return nil, errors.New("control-plane plugin instance and generation are required")
 	}
-	h.mu.RLock()
-	closed := h.closed
-	h.mu.RUnlock()
-	if closed {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
 		return nil, errors.New("control-plane plugin host is closed")
 	}
+	h.prepareWG.Add(1)
+	hostCtx := h.ctx
+	h.mu.Unlock()
+	defer h.prepareWG.Done()
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	stopHostCancellation := context.AfterFunc(hostCtx, cancelAttempt)
+	stopCallerCancellation := context.AfterFunc(ctx, cancelAttempt)
+	keepAttempt := false
+	defer func() {
+		stopHostCancellation()
+		stopCallerCancellation()
+		if !keepAttempt {
+			cancelAttempt()
+		}
+	}()
 	if err := authorizeSandbox(candidate); err != nil {
 		return nil, err
 	}
@@ -192,7 +211,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 		return nil, err
 	}
 	logWriter := newRedactor(h.logs, []string{candidate.Endpoint.Cookie})
-	process, err := h.launcher.Start(ctx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
+	process, err := h.launcher.Start(attemptCtx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
 	if err != nil {
 		_ = logWriter.Close()
 		return nil, fmt.Errorf("start control-plane plugin process: %w", err)
@@ -205,7 +224,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 			_ = logWriter.Close()
 		}
 	}()
-	client, closer, err := h.dialer.Dial(ctx, candidate.Endpoint, candidate.Deadline)
+	client, closer, err := h.dialer.Dial(attemptCtx, candidate.Endpoint, candidate.Deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +235,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 		}
 	}()
 	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Identity.Scopes...), Generation: candidate.Identity.Generation}
-	response, err := retryControlHandshake(ctx, candidate.Deadline, process, client, handshake)
+	response, err := retryControlHandshake(attemptCtx, candidate.Deadline, process, client, handshake)
 	if err != nil {
 		return nil, err
 	}
@@ -224,11 +243,14 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 		return nil, err
 	}
 	request := pluginsdk.LifecycleRequest{Generation: candidate.Identity.Generation, Config: append([]byte(nil), candidate.Config...)}
-	if response, err := client.Prepare(ctx, request); err != nil || response.Validate() != nil {
+	if response, err := client.Prepare(attemptCtx, request); err != nil || response.Validate() != nil {
 		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err, response.Validate())
 	}
-	if response, err := client.Activate(ctx, request); err != nil || response.Validate() != nil {
+	if response, err := client.Activate(attemptCtx, request); err != nil || response.Validate() != nil {
 		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err, response.Validate())
+	}
+	if err := attemptCtx.Err(); err != nil {
+		return nil, errors.Join(errors.New("control-plane plugin candidate preparation canceled"), err)
 	}
 	if candidate.GracePeriod <= 0 {
 		candidate.GracePeriod = 5 * time.Second
@@ -237,9 +259,10 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	if hasUnsandboxedGrant(candidate.Grants) {
 		provider = "unsandboxed"
 	}
-	instance := &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "healthy", SandboxProvider: provider, process: process, client: client, closer: closer, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate, securityCleanup: security.cleanup}
+	instance := &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "healthy", SandboxProvider: provider, process: process, client: client, closer: closer, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt}
 	cleanupProcess, cleanupRPC = false, false
 	cleanupSecurity = false
+	keepAttempt = true
 	go instance.monitor()
 	return instance, nil
 }
@@ -342,7 +365,10 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 }
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
-	h.closed = true
+	if !h.closed {
+		h.closed = true
+		h.cancel()
+	}
 	instances := make([]*Instance, 0, len(h.active))
 	for _, instance := range h.active {
 		instances = append(instances, instance)
@@ -356,6 +382,7 @@ func (h *Host) Close(ctx context.Context) error {
 	for _, instance := range instances {
 		errs = append(errs, h.stopPublished(ctx, instance))
 	}
+	h.prepareWG.Wait()
 	return errors.Join(errs...)
 }
 
@@ -450,6 +477,9 @@ func (i *Instance) Stop(ctx context.Context) error {
 	i.State = "stopped"
 	i.PID = 0
 	i.mu.Unlock()
+	if i.processCancel != nil {
+		i.processCancel()
+	}
 	return errors.Join(rpcErr, closeErr)
 }
 

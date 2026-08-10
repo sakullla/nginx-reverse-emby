@@ -59,6 +59,19 @@ type restartHostRunner struct {
 	count   int
 }
 
+type blockingHostRunner struct {
+	started  chan struct{}
+	returned chan struct{}
+	once     sync.Once
+}
+
+func (r *blockingHostRunner) Start(ctx context.Context, _ pluginprocess.InstanceSpec, _ pluginprocess.Sandbox, _ io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
+	r.once.Do(func() { close(r.started) })
+	<-ctx.Done()
+	close(r.returned)
+	return nil, nil, ctx.Err()
+}
+
 func (r *restartHostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
 	r.mu.Lock()
 	r.count++
@@ -288,6 +301,80 @@ func TestRPCHostRepeatedCrashesOpenCircuit(t *testing.T) {
 	handshakes, prepares, activations, _ := counts.snapshot()
 	if handshakes != 2 || prepares != 2 || activations != 2 {
 		t.Fatalf("circuit lifecycle counts = handshake %d, prepare %d, activate %d; want 2 each", handshakes, prepares, activations)
+	}
+}
+
+func TestRPCHostCloseCancelsAndJoinsBlockedInstall(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installStarted := make(chan struct{})
+	installReturned := make(chan struct{})
+	host.install = func(ctx context.Context, _ string, _ pluginprocess.Artifact) (string, error) {
+		close(installStarted)
+		<-ctx.Done()
+		close(installReturned)
+		return "", ctx.Err()
+	}
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := host.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-installStarted
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-installReturned:
+	default:
+		t.Fatal("Close returned before blocked artifact installation exited")
+	}
+	if err := <-activateDone; err == nil {
+		t.Fatal("blocked installation published after Close")
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Close left an active entry after blocked installation")
+	}
+	if _, err := host.Activate(t.Context(), candidate); err == nil {
+		t.Fatal("activation was accepted after host Close")
+	}
+}
+
+func TestRPCHostCloseCancelsAndJoinsBlockedProcessStart(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	runner := &blockingHostRunner{started: make(chan struct{}), returned: make(chan struct{})}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := host.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-runner.started
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.returned:
+	default:
+		t.Fatal("Close returned before blocked process start exited")
+	}
+	if err := <-activateDone; err == nil {
+		t.Fatal("blocked process start published after Close")
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Close left an active entry after blocked process start")
 	}
 }
 

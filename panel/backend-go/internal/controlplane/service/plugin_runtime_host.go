@@ -61,9 +61,29 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 		return nil, fmt.Errorf("promote plugin runtime state after %s: %w", state, err)
 	}
 	if err := s.host.Publish(instance); err != nil {
-		return nil, fmt.Errorf("publish promoted plugin runtime: %w", err)
+		publishErr := fmt.Errorf("publish promoted plugin runtime: %w", err)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		stopErr := instance.Stop(cleanupCtx)
+		terminalErr := retryRuntimeStopPersistence(cleanupCtx, s.repository, candidate.InstanceID, candidate.Identity.Generation)
+		if terminalErr != nil {
+			fallbackErr := s.repository.UpdatePluginRuntimeHealth(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, "failed", 0, 0, false, safeRuntimeError(errors.Join(publishErr, terminalErr)))
+			terminalErr = errors.Join(fmt.Errorf("terminalize promoted plugin runtime: %w", terminalErr), fallbackErr)
+		}
+		return nil, errors.Join(publishErr, stopErr, terminalErr)
 	}
 	return instance, nil
+}
+
+func safeRuntimeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	value := err.Error()
+	if len(value) > 256 {
+		return value[:256]
+	}
+	return value
 }
 
 func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {

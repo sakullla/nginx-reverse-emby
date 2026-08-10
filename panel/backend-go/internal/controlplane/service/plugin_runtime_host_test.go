@@ -21,8 +21,10 @@ import (
 )
 
 type runtimeProcess struct {
-	done chan error
-	once sync.Once
+	done    chan error
+	once    sync.Once
+	mu      sync.Mutex
+	stopped bool
 }
 
 func runtimeSandboxRequirement(t *testing.T, digest string) pluginhost.SandboxRequirement {
@@ -39,10 +41,23 @@ func runtimeSandboxRequirement(t *testing.T, digest string) pluginhost.SandboxRe
 	return requirement
 }
 
-func (p *runtimeProcess) PID() int               { return 18 }
-func (p *runtimeProcess) Wait() error            { return <-p.done }
-func (p *runtimeProcess) Signal(os.Signal) error { p.once.Do(func() { p.done <- nil }); return nil }
-func (p *runtimeProcess) Kill() error            { p.once.Do(func() { p.done <- nil }); return nil }
+func (p *runtimeProcess) PID() int    { return 18 }
+func (p *runtimeProcess) Wait() error { return <-p.done }
+func (p *runtimeProcess) Signal(os.Signal) error {
+	p.once.Do(func() {
+		p.mu.Lock()
+		p.stopped = true
+		p.mu.Unlock()
+		p.done <- nil
+	})
+	return nil
+}
+func (p *runtimeProcess) Kill() error { return p.Signal(os.Kill) }
+func (p *runtimeProcess) isStopped() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopped
+}
 
 type runtimeLauncher struct{}
 
@@ -116,6 +131,9 @@ type runtimeRepo struct {
 	stopCalls      int
 	healthFailures int
 	healthCalls    int
+	promoteStarted chan struct{}
+	promoteRelease chan struct{}
+	promoteOnce    sync.Once
 }
 
 func (r *runtimeRepo) StagePluginRuntime(_ context.Context, row storage.PluginRuntimeInstanceRow) error {
@@ -129,19 +147,29 @@ func (r *runtimeRepo) StagePluginRuntime(_ context.Context, row storage.PluginRu
 }
 func (r *runtimeRepo) PromotePluginRuntime(_ context.Context, id, generation string, pid int, sandbox string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.promoteErr != nil {
+		r.mu.Unlock()
 		return r.promoteErr
 	}
 	r.row.ActiveGeneration = generation
 	r.row.CandidateGeneration = ""
 	r.row.State, r.row.PID, r.row.SandboxProvider = "healthy", pid, sandbox
+	started, release := r.promoteStarted, r.promoteRelease
+	r.mu.Unlock()
+	if started != nil {
+		r.promoteOnce.Do(func() { close(started) })
+	}
+	if release != nil {
+		<-release
+	}
 	return nil
 }
 func (r *runtimeRepo) FailPluginRuntimeCandidate(context.Context, string, string, error) error {
 	return nil
 }
 func (r *runtimeRepo) GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.row, true, nil
 }
 func (r *runtimeRepo) UpdatePluginRuntimeHealth(_ context.Context, id, generation, state string, pid, restartCount int, circuitOpen bool, lastError string) error {
@@ -243,6 +271,93 @@ func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
 		t.Fatalf("serialized Stop did not persist terminal state: %+v", row)
 	}
 }
+
+func TestPluginRuntimeHostPublishFailureAfterCloseTerminalizesPromotion(t *testing.T) {
+	service, host, repo, launcher, candidate := newRuntimePublishRaceFixture(t)
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-repo.promoteStarted
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	close(repo.promoteRelease)
+	if err := <-activateDone; err == nil || !strings.Contains(err.Error(), "host is closed") {
+		t.Fatalf("Close race did not reject publish: %v", err)
+	}
+	process := launcher.process(0)
+	if process == nil || !process.isStopped() {
+		t.Fatal("prepared candidate was not stopped after publish failure")
+	}
+	repo.mu.Lock()
+	row := repo.row
+	repo.mu.Unlock()
+	if row.ActiveGeneration != "g1" || row.State != "stopped" || row.PID != 0 {
+		t.Fatalf("promoted row was not generation-fenced terminalized: %+v", row)
+	}
+	if _, active := host.Active("instance"); active {
+		t.Fatal("failed candidate remained active")
+	}
+}
+
+func TestPluginRuntimeHostPublishFailureSurfacesRollbackPersistenceFailure(t *testing.T) {
+	service, host, repo, launcher, candidate := newRuntimePublishRaceFixture(t)
+	repo.stopErr = errors.New("terminal persistence failed")
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-repo.promoteStarted
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	close(repo.promoteRelease)
+	activationErr := <-activateDone
+	if activationErr == nil || !strings.Contains(activationErr.Error(), "terminal persistence failed") {
+		t.Fatalf("rollback persistence failure was not surfaced: %v", activationErr)
+	}
+	if repo.stopCalls != 3 {
+		t.Fatalf("rollback persistence was not retried: %d", repo.stopCalls)
+	}
+	if process := launcher.process(0); process == nil || !process.isStopped() {
+		t.Fatal("candidate process survived rollback persistence failure")
+	}
+	repo.mu.Lock()
+	row := repo.row
+	repo.mu.Unlock()
+	if row.State != "failed" || row.PID != 0 || row.ActiveGeneration != "g1" {
+		t.Fatalf("fallback terminal state is unsafe: %+v", row)
+	}
+}
+
+func newRuntimePublishRaceFixture(t *testing.T) (*PluginRuntimeHost, *pluginhost.Host, *runtimeRepo, *runtimeQueueLauncher, pluginhost.Candidate) {
+	t.Helper()
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("runtime publish close race")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{promoteStarted: make(chan struct{}), promoteRelease: make(chan struct{})}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := hex.EncodeToString(sum[:])
+	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: digest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: digest, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, digest)
+	return service, host, repo, launcher, candidate
+}
+
 func (r *runtimeRepo) StopPluginRuntime(_ context.Context, id, generation string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

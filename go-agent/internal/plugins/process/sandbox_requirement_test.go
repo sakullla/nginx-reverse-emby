@@ -9,6 +9,20 @@ func testSandboxRequirement(budget Budget, privileged, networkBound bool) Sandbo
 	return SandboxRequirement{packageDigest: "test-package", budget: budget, privileged: privileged, networkBound: networkBound}
 }
 
+func canonicalNonprivilegedRequirement(t *testing.T, digest string) SandboxRequirement {
+	t.Helper()
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest:   digest,
+		Permissions:     []SandboxPermission{PermissionAgentRead},
+		ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPRequest},
+		ResourceBudget:  ManifestResourceBudget{TimeoutMS: 1000, MemoryBytes: 256 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requirement
+}
+
 func TestSandboxRequirementCanonicalAdmission(t *testing.T) {
 	base := SandboxRequirementProjection{
 		PackageDigest:   strings.Repeat("a", 64),

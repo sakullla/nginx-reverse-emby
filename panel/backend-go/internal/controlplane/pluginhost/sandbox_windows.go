@@ -19,6 +19,9 @@ func validatePlatformSandbox(c Candidate) error {
 	if c.Requirement.RequiresPrivilegeBoundary() {
 		return errors.New("windows control-plane plugin sandbox is unavailable for privileged manifest requirements")
 	}
+	if c.Requirement.RequiresFilesystemBoundary() {
+		return errors.New("windows control-plane plugin sandbox cannot enforce a manifest filesystem boundary")
+	}
 	budget := c.Requirement.Budget()
 	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("windows control-plane plugin sandbox requires cpu_millis within 1..1000")
@@ -26,8 +29,8 @@ func validatePlatformSandbox(c Candidate) error {
 	if budget.MemoryBytes <= 0 || budget.Processes <= 0 {
 		return errors.New("windows control-plane plugin sandbox requires memory and process budgets")
 	}
-	if budget.Files > 0 || c.Requirement.RequiresNetworkIsolation() {
-		return errors.New("windows control-plane plugin sandbox cannot enforce requested files/network budget")
+	if c.Requirement.RequiresNetworkIsolation() {
+		return errors.New("windows control-plane plugin sandbox cannot enforce requested network isolation")
 	}
 	return nil
 }

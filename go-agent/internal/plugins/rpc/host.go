@@ -69,12 +69,17 @@ type HostedInstance struct {
 }
 
 type Host struct {
-	mu         sync.RWMutex
-	installer  pluginprocess.Installer
-	supervisor *pluginprocess.Supervisor
-	dial       DialFunc
-	active     map[string]*HostedInstance
-	locks      sync.Map
+	mu           sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	closed       bool
+	activationWG sync.WaitGroup
+	installer    pluginprocess.Installer
+	install      func(context.Context, string, pluginprocess.Artifact) (string, error)
+	supervisor   *pluginprocess.Supervisor
+	dial         DialFunc
+	active       map[string]*HostedInstance
+	locks        sync.Map
 }
 
 func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Supervisor, dial DialFunc) (*Host, error) {
@@ -90,7 +95,8 @@ func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Superv
 			return client, closeFunc(closeFn), nil
 		}
 	}
-	return &Host{installer: installer, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}}, nil
 }
 
 func (h *Host) instanceLock(id string) *sync.Mutex {
@@ -102,14 +108,33 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	if h == nil {
 		return nil, errors.New("RPC plugin host is required")
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil, errors.New("RPC plugin host is closed")
+	}
+	h.activationWG.Add(1)
+	hostCtx := h.ctx
+	h.mu.Unlock()
+	defer h.activationWG.Done()
+	activationCtx, cancelActivation := context.WithCancel(ctx)
+	stopHostCancellation := context.AfterFunc(hostCtx, cancelActivation)
+	defer func() {
+		stopHostCancellation()
+		cancelActivation()
+	}()
+
 	lock := h.instanceLock(candidate.InstanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := activationCtx.Err(); err != nil {
+		return nil, errors.Join(errors.New("RPC plugin host activation canceled"), err)
+	}
 	if err := candidate.Requirement.ValidatePackageDigest(candidate.PackageDigest); err != nil {
 		return nil, err
 	}
 
-	executable, err := h.installer.Install(candidate.InstanceID+"-"+candidate.Generation, candidate.Artifact)
+	executable, err := h.install(activationCtx, candidate.InstanceID+"-"+candidate.Generation, candidate.Artifact)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +146,11 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	candidate.Process.Security.Requirement = candidate.Requirement
 	candidate.Process = normalizeRestartSpec(candidate.Process)
 
-	attempt, err := h.startAttempt(ctx, candidate)
+	attempt, err := h.startAttempt(activationCtx, candidate)
 	if err != nil {
 		return nil, err
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(hostCtx)
 	processStatus := attempt.handle.Status()
 	instance := &HostedInstance{
 		candidate:  candidate,
@@ -144,12 +169,18 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		done:    make(chan struct{}),
 	}
 	h.mu.Lock()
+	if h.closed || activationCtx.Err() != nil {
+		h.mu.Unlock()
+		cancel()
+		_ = instance.stopAttempt(context.Background(), attempt, true)
+		return nil, errors.Join(errors.New("RPC plugin host closed before candidate publication"), activationCtx.Err())
+	}
 	previous := h.active[candidate.InstanceID]
 	h.active[candidate.InstanceID] = instance
 	h.mu.Unlock()
 	go instance.run(runCtx)
 	if previous != nil {
-		_ = previous.stop(context.Background())
+		_ = previous.stop(activationCtx)
 	}
 	return instance, nil
 }
@@ -304,16 +335,25 @@ func (h *Host) Stop(ctx context.Context, id string) error {
 }
 
 func (h *Host) Close(ctx context.Context) error {
-	h.mu.RLock()
-	ids := make([]string, 0, len(h.active))
-	for id := range h.active {
-		ids = append(ids, id)
+	if h == nil {
+		return nil
 	}
-	h.mu.RUnlock()
+	h.mu.Lock()
+	if !h.closed {
+		h.closed = true
+		h.cancel()
+	}
+	instances := make([]*HostedInstance, 0, len(h.active))
+	for id, instance := range h.active {
+		instances = append(instances, instance)
+		delete(h.active, id)
+	}
+	h.mu.Unlock()
 	var errs []error
-	for _, id := range ids {
-		errs = append(errs, h.Stop(ctx, id))
+	for _, instance := range instances {
+		errs = append(errs, instance.stop(ctx))
 	}
+	h.activationWG.Wait()
 	return errors.Join(errs...)
 }
 

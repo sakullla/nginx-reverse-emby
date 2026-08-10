@@ -76,7 +76,7 @@ func TestPluginHostSandboxRequirementUsesValidatedCanonicalManifest(t *testing.T
 }
 
 func TestPluginHostSandboxRequirementProjectsSignedValidatorResult(t *testing.T) {
-	root, key := writeSignedSandboxPackage(t, "container.provider")
+	root, key := writeSignedSandboxPackage(t, "secret.use", "container.provider")
 	validator := plugins.NewValidator(plugins.ValidatorOptions{
 		HostVersion: "1.0.0", AgentVersion: "1.0.0", TargetGOOS: runtime.GOOS, TargetGOARCH: runtime.GOARCH,
 		MaxPackageBytes: 256 << 20, MaxFileBytes: 256 << 20,
@@ -91,7 +91,7 @@ func TestPluginHostSandboxRequirementProjectsSignedValidatorResult(t *testing.T)
 		t.Fatalf("signed validator projection = %+v, %v", requirement, err)
 	}
 
-	invalidRoot, invalidKey := writeSignedSandboxPackage(t, "invalid.extension")
+	invalidRoot, invalidKey := writeSignedSandboxPackage(t, "agent.read", "invalid.extension")
 	invalidValidator := plugins.NewValidator(plugins.ValidatorOptions{
 		HostVersion: "1.0.0", AgentVersion: "1.0.0", TargetGOOS: runtime.GOOS, TargetGOARCH: runtime.GOARCH,
 		MaxPackageBytes: 256 << 20, MaxFileBytes: 256 << 20,
@@ -102,7 +102,7 @@ func TestPluginHostSandboxRequirementProjectsSignedValidatorResult(t *testing.T)
 	}
 }
 
-func writeSignedSandboxPackage(t *testing.T, extension string) (string, ed25519.PrivateKey) {
+func writeSignedSandboxPackage(t *testing.T, permission, extension string) (string, ed25519.PrivateKey) {
 	t.Helper()
 	root := t.TempDir()
 	artifact, err := os.ReadFile(os.Args[0])
@@ -124,13 +124,13 @@ runtime: {kind: rpc-service, abi: "nre:rpc/v1", host_scope: control-plane, entry
 artifacts:
   - {path: %s, sha256: %s, size: %d, mode: executable, goos: %s, goarch: %s}
 extension_points: [%s]
-permissions: [secret.use]
+permissions: [%s]
 config_schema: config.schema.json
-resource_budget: {timeout_ms: 1000, memory_bytes: 1048576, concurrency: 2, input_bytes: 4096, output_bytes: 4096, cpu_millis: 100, restarts: 2}
+resource_budget: {timeout_ms: 1000, memory_bytes: 268435456, concurrency: 2, input_bytes: 4096, output_bytes: 4096, cpu_millis: 1000, restarts: 2}
 failure_policy: {on_error: degraded, on_budget: fail-closed, restart: on-failure, core_fallback: preserve}
 signature: {algorithm: ed25519, key_id: sandbox-test, file: package.sig}
 cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete, shared_refs: retain, audit_events: retain}
-`, artifactPath, hex.EncodeToString(artifactDigest[:]), len(artifact), runtime.GOOS, runtime.GOARCH, extension)
+`, artifactPath, hex.EncodeToString(artifactDigest[:]), len(artifact), runtime.GOOS, runtime.GOARCH, extension, permission)
 	writeSandboxFixture(t, root, plugins.PackageManifestFile, []byte(manifest))
 	writeSandboxFixture(t, root, plugins.ConfigSchemaFile, []byte(`{"type":"object"}`))
 	writeSandboxFixture(t, root, artifactPath, artifact)
@@ -143,6 +143,21 @@ cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete,
 	writeSandboxFixture(t, root, plugins.PackageDigestFile, []byte(digest+"\n"))
 	writeSandboxFixture(t, root, plugins.PackageSignatureFile, []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte(digest)))+"\n"))
 	return root, key
+}
+
+func validatedSignedSandboxPackage(t *testing.T, permission, extension string) plugins.ValidatedPackage {
+	t.Helper()
+	root, key := writeSignedSandboxPackage(t, permission, extension)
+	validator := plugins.NewValidator(plugins.ValidatorOptions{
+		HostVersion: "1.0.0", AgentVersion: "1.0.0", TargetGOOS: runtime.GOOS, TargetGOARCH: runtime.GOARCH,
+		MaxPackageBytes: 256 << 20, MaxFileBytes: 256 << 20,
+		TrustedSigners: map[string]ed25519.PublicKey{"sandbox-test": key.Public().(ed25519.PublicKey)}, TrustedSignerPolicy: plugins.TrustedSignerPolicyExact,
+	})
+	validated, err := validator.ValidatePackage(root, plugins.PackageExpectation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return validated
 }
 
 func writeSandboxFixture(t *testing.T, root, name string, content []byte) {

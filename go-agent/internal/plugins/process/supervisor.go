@@ -193,11 +193,17 @@ func (p execManagedProcess) Kill() error                   { return p.cmd.Proces
 
 type Supervisor struct {
 	mu      sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	closed  bool
+	startWG sync.WaitGroup
 	runner  Runner
 	sandbox Sandbox
 	output  io.Writer
 	handles map[string]*Handle
 }
+
+var ErrSupervisorClosed = errors.New("plugin process supervisor is closed")
 
 func NewSupervisor(runner Runner, sandbox Sandbox, output io.Writer) *Supervisor {
 	if runner == nil {
@@ -209,7 +215,8 @@ func NewSupervisor(runner Runner, sandbox Sandbox, output io.Writer) *Supervisor
 	if output == nil {
 		output = io.Discard
 	}
-	return &Supervisor{runner: runner, sandbox: sandbox, output: output, handles: make(map[string]*Handle)}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Supervisor{ctx: ctx, cancel: cancel, runner: runner, sandbox: sandbox, output: output, handles: make(map[string]*Handle)}
 }
 
 type Handle struct {
@@ -263,11 +270,17 @@ func (s *Supervisor) start(ctx context.Context, spec InstanceSpec, once bool) (*
 		spec.MaximumBackoff = 5 * time.Second
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrSupervisorClosed
+	}
 	if _, exists := s.handles[spec.ID]; exists {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("plugin process %q is already supervised", spec.ID)
 	}
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	s.startWG.Add(1)
+	defer s.startWG.Done()
+	runCtx, cancel := context.WithCancel(s.ctx)
 	handle := &Handle{spec: spec, status: Status{State: "starting", Sandbox: decision}, cancel: cancel, done: make(chan struct{}), started: make(chan error, 1), once: once}
 	s.handles[spec.ID] = handle
 	s.mu.Unlock()
@@ -277,6 +290,14 @@ func (s *Supervisor) start(ctx context.Context, spec InstanceSpec, once bool) (*
 		if err != nil {
 			s.remove(spec.ID, handle)
 			return nil, err
+		}
+		s.mu.Lock()
+		owned := !s.closed && s.handles[spec.ID] == handle
+		s.mu.Unlock()
+		if !owned {
+			_ = handle.Stop(context.Background())
+			s.remove(spec.ID, handle)
+			return nil, ErrSupervisorClosed
 		}
 		return handle, nil
 	case <-ctx.Done():
@@ -440,9 +461,14 @@ func (s *Supervisor) Close(ctx context.Context) error {
 		return nil
 	}
 	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		s.cancel()
+	}
 	handles := make([]*Handle, 0, len(s.handles))
-	for _, h := range s.handles {
+	for id, h := range s.handles {
 		handles = append(handles, h)
+		delete(s.handles, id)
 	}
 	s.mu.Unlock()
 	var errs []error
@@ -450,8 +476,8 @@ func (s *Supervisor) Close(ctx context.Context) error {
 		if err := handle.Stop(ctx); err != nil {
 			errs = append(errs, err)
 		}
-		s.remove(handle.spec.ID, handle)
 	}
+	s.startWG.Wait()
 	return errors.Join(errs...)
 }
 
