@@ -810,6 +810,80 @@ func TestRevisionAPIMapsAuthenticatedPluginStatusToLifecycleCompletion(t *testin
 	}
 }
 
+type retryLifecycleCompletion struct {
+	*lifecycleCompletionRecorder
+	fail  bool
+	calls int
+}
+
+func (r *retryLifecycleCompletion) CompleteLifecycleApply(ctx context.Context, result PluginApplyResult) (storage.InstalledPluginRow, error) {
+	r.calls++
+	if r.fail {
+		return storage.InstalledPluginRow{}, errors.New("injected completion failure")
+	}
+	return r.lifecycleCompletionRecorder.CompleteLifecycleApply(ctx, result)
+}
+
+func TestRevisionAPIRetriesLifecycleCompletionFromPersistedTerminalStatus(t *testing.T) {
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	digest := strings.Repeat("c", 64)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "operation-plugin-retry", Now: now,
+		States: map[string]string{"edge-plugin-retry": storage.AgentRevisionStatePending},
+	})
+	operation := storage.PluginOperationRow{ID: "operation-plugin-retry", PluginID: "retry.plugin", Kind: "enable", Status: "applying", TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
+	if err := store.RecordPluginOperation(t.Context(), operation, storage.AuditEventRow{ID: "audit-plugin-retry", ActorID: "admin", Action: "plugin.enable", TargetKind: "plugin", TargetID: operation.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	staged := storage.PluginAgentRuntimeStatusRow{OperationID: operation.ID, AgentID: "edge-plugin-retry", InstanceID: "instance-retry", PluginID: operation.PluginID, Revision: 1, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: 1}
+	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []storage.PluginAgentRuntimeStatusRow{staged}); err != nil {
+		t.Fatal(err)
+	}
+	completion := &retryLifecycleCompletion{lifecycleCompletionRecorder: &lifecycleCompletionRecorder{}, fail: true}
+	reconciler, err := NewPluginLifecycleReconciler(store, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := newRevisionAPITestService(t, store)
+	api.SetPluginLifecycleReconciler(reconciler)
+	pull, err := api.PullRemoteRevision(t.Context(), staged.AgentID)
+	if err != nil || pull.Lease == nil {
+		t.Fatalf("pull = %+v err=%v", pull, err)
+	}
+	start := RemoteRevisionStart{AgentID: staged.AgentID, Revision: 1, RetryCycle: pull.Lease.RetryCycle, Attempt: pull.Lease.Attempt, LeaseID: pull.Lease.LeaseID, GenerationID: "runtime-generation-retry"}
+	if _, err := api.StartRemoteRevision(t.Context(), staged.AgentID, start); err != nil {
+		t.Fatal(err)
+	}
+	report := RemoteRevisionReport{
+		AgentID: staged.AgentID, Revision: 1, RetryCycle: pull.Lease.RetryCycle, Attempt: pull.Lease.Attempt,
+		LeaseID: pull.Lease.LeaseID, GenerationID: start.GenerationID, Status: storage.AgentRevisionStateApplied,
+		PluginStatuses: []storage.PluginRuntimeStatus{{
+			InstanceID: staged.InstanceID, PluginID: staged.PluginID, OperationID: staged.OperationID, Revision: staged.Revision,
+			GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: staged.ConfigVersion,
+			RuntimeKind: "rpc-service", State: "active", Sequence: 1, SafeDetail: "runtime ready", Details: json.RawMessage(`{"healthy":true}`), Budget: json.RawMessage(`{}`),
+		}},
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), staged.AgentID, report); err == nil {
+		t.Fatal("first applied report unexpectedly completed")
+	}
+	statuses, err := store.ListPluginAgentRuntimeStatuses(t.Context(), operation.ID)
+	if err != nil || len(statuses) != 1 || statuses[0].State != "active" || statuses[0].ReportSequence != 1 {
+		t.Fatalf("persisted terminal status = %+v, %v", statuses, err)
+	}
+	completion.fail = false
+	if _, err := api.ReportRemoteRevision(t.Context(), staged.AgentID, report); err != nil {
+		t.Fatalf("replayed applied report error = %v", err)
+	}
+	if completion.calls != 2 || completion.kind != "lifecycle" || !completion.result.Applied {
+		t.Fatalf("completion retry = calls %d kind %q result %+v", completion.calls, completion.kind, completion.result)
+	}
+}
+
 func TestRevisionAPICompletesPolicyOnlyPluginFromExactRevisionResult(t *testing.T) {
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {

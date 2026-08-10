@@ -835,6 +835,15 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 	}
 	for instanceID, row := range expected {
 		if (row.State == "active" || row.State == "drained" || row.State == "failed" || row.State == "degraded") && row.ReportSequence > 0 {
+			report := storage.PluginGenerationReport{
+				OperationID: row.OperationID, AgentID: row.AgentID, InstanceID: row.InstanceID, PluginID: row.PluginID,
+				Revision: row.Revision, GenerationID: row.GenerationID, PackageDigest: row.PackageDigest,
+				ArtifactDigest: row.ArtifactDigest, State: row.State, Sequence: row.ReportSequence,
+				ErrorCode: row.ErrorCode, Details: json.RawMessage(row.DetailsJSON), Budget: json.RawMessage(row.BudgetJSON),
+			}
+			if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil {
+				return err
+			}
 			continue
 		}
 		report := storage.PluginGenerationReport{
