@@ -3,6 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +19,15 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
+type capabilityManagerTargetStore struct {
+	*capabilityManagerStore
+	targets *storage.SQLiteStore
+}
+
+func (store *capabilityManagerTargetStore) PluginCapabilityTargetBinding(ctx context.Context, kind, id string) (storage.PluginCapabilityTargetBinding, bool, error) {
+	return store.targets.PluginCapabilityTargetBinding(ctx, kind, id)
+}
+
 type capabilityManagerStore struct {
 	capabilityTestStore
 	mu            sync.Mutex
@@ -26,6 +39,9 @@ type capabilityManagerStore struct {
 	targetVersion string
 	targetGroup   string
 	targetExists  bool
+	resourceCalls map[string]int
+	resourceErrs  map[string]error
+	completeFails map[string]int
 }
 
 func (store *capabilityManagerStore) ClaimPluginCapabilityOperation(_ context.Context, scope, key, fingerprint, operationID, claimToken string, now, expiresAt time.Time) (storage.IdempotencyRecordRow, bool, error) {
@@ -41,6 +57,15 @@ func (store *capabilityManagerStore) ClaimPluginCapabilityOperation(_ context.Co
 		}
 		return existing, false, nil
 	}
+	if existing, ok := store.operations[mapKey]; ok {
+		if existing.RequestFingerprint != fingerprint || existing.OperationID != operationID {
+			return storage.IdempotencyRecordRow{}, false, storage.ErrPluginCapabilityOperationConflict
+		}
+		existing.ResponseJSON = `{"status":"pending","claim_token":"` + claimToken + `","recovered":true}`
+		existing.ExpiresAt = expiresAt
+		store.operations[mapKey] = existing
+		return existing, true, nil
+	}
 	record := storage.IdempotencyRecordRow{Scope: scope, Key: key, RequestFingerprint: fingerprint, OperationID: operationID, ResponseJSON: `{"status":"pending","claim_token":"` + claimToken + `"}`, CreatedAt: now, ExpiresAt: expiresAt}
 	store.operations[mapKey] = record
 	return record, true, nil
@@ -50,6 +75,10 @@ func (store *capabilityManagerStore) CompletePluginCapabilityOperation(_ context
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	mapKey := scope + "\x00" + key
+	if store.completeFails[mapKey] > 0 {
+		store.completeFails[mapKey]--
+		return errors.New("injected operation completion failure")
+	}
 	record, ok := store.operations[mapKey]
 	if !ok || record.OperationID != operationID {
 		return errors.New("operation owner missing")
@@ -107,10 +136,28 @@ func (store *capabilityManagerStore) PluginCapabilityTargetBinding(_ context.Con
 }
 
 func (store *capabilityManagerStore) ExecutePluginCapabilityResourceCall(_ context.Context, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) ([]byte, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.resourceCalls == nil {
+		store.resourceCalls = make(map[string]int)
+	}
+	store.resourceCalls[call.RequestID]++
 	if binding.Version != store.targetVersion || call.ResourceHandle == "" {
 		return nil, errors.New("stale resource adapter call")
 	}
+	if err := store.resourceErrs[call.RequestID]; err != nil {
+		return nil, err
+	}
 	return []byte(`{"available":true}`), nil
+}
+
+type capabilityTrafficSummaryStub struct {
+	summary TrafficSummary
+	err     error
+}
+
+func (stub capabilityTrafficSummaryStub) Summary(context.Context, string) (TrafficSummary, error) {
+	return stub.summary, stub.err
 }
 
 type capabilityRuntimeStub struct {
@@ -134,7 +181,17 @@ func (runtime *capabilityRuntimeStub) ActiveGeneration(string) (string, bool) {
 }
 
 func (runtime *capabilityRuntimeStub) PlanAction(_ context.Context, _, _ string, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
-	if runtime.plan.Error != nil || len(runtime.plan.Calls) != 0 || request.ResourceHandle == "" {
+	if runtime.plan.Error != nil || len(runtime.plan.Calls) != 0 {
+		plan := runtime.plan
+		plan.Calls = append([]pluginsdk.RPCResourceCall(nil), plan.Calls...)
+		for index := range plan.Calls {
+			if plan.Calls[index].ResourceHandle == "" {
+				plan.Calls[index].ResourceHandle = request.ResourceHandle
+			}
+		}
+		return plan, nil
+	}
+	if request.ResourceHandle == "" {
 		return runtime.plan, nil
 	}
 	return pluginsdk.RPCActionPlanResponse{Calls: []pluginsdk.RPCResourceCall{{RequestID: "resource-call-1", ResourceHandle: request.ResourceHandle, Operation: pluginsdk.RPCResourceInspect}}}, nil
@@ -395,6 +452,189 @@ func TestPluginCapabilityManagerReconcilesCommittedLostResponseAndUsesOpaqueHand
 	result, err = manager.InvokeDynamicAction(t.Context(), request)
 	if err != nil || !result.Replayed || runtime.callCount() != 1 {
 		t.Fatalf("durable replay result=%+v error=%v calls=%d", result, err, runtime.callCount())
+	}
+}
+
+func TestPluginCapabilityManagerResourceCallOutcomesAreDurableAndErrorsReachGuest(t *testing.T) {
+	manager, store, _, request := newCapabilityManagerFixture(t)
+	store.resourceErrs = map[string]error{"resource-call-2": errors.New("resource request is invalid")}
+	// Directly exercise the durable host boundary; InvokeDynamicAction uses this
+	// method for every planned call before delivering the exact results.
+	binding := storage.PluginCapabilityTargetBinding{Kind: request.Target.Kind, ID: request.Target.ID, ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
+	firstCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-1", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
+	first, err := manager.executeDurableResourceCall(t.Context(), request, binding, firstCall)
+	if err != nil || first.Error != nil || string(first.Value) != `{"available":true}` {
+		t.Fatalf("first resource result=%+v error=%v", first, err)
+	}
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, binding, firstCall)
+	if err != nil || replayed.Error != nil || string(replayed.Value) != string(first.Value) || store.resourceCalls[firstCall.RequestID] != 1 {
+		t.Fatalf("replayed resource result=%+v error=%v calls=%d", replayed, err, store.resourceCalls[firstCall.RequestID])
+	}
+	secondCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-2", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
+	failed, err := manager.executeDurableResourceCall(t.Context(), request, binding, secondCall)
+	if err != nil || failed.Error == nil || failed.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("failed resource result=%+v error=%v", failed, err)
+	}
+	failedReplay, err := manager.executeDurableResourceCall(t.Context(), request, binding, secondCall)
+	if err != nil || failedReplay.Error == nil || failedReplay.Error.Code != failed.Error.Code || store.resourceCalls[secondCall.RequestID] != 1 {
+		t.Fatalf("failed replay=%+v error=%v calls=%d", failedReplay, err, store.resourceCalls[secondCall.RequestID])
+	}
+}
+
+func TestPluginCapabilityManagerDeliversMultiCallPartialFailureAsTypedResult(t *testing.T) {
+	manager, store, runtime, request := newCapabilityManagerFixture(t)
+	store.resourceErrs = map[string]error{"resource-call-2": errors.New("resource request is invalid")}
+	runtime.plan = pluginsdk.RPCActionPlanResponse{Calls: []pluginsdk.RPCResourceCall{
+		{RequestID: "resource-call-1", Operation: pluginsdk.RPCResourceInspect},
+		{RequestID: "resource-call-2", Operation: pluginsdk.RPCResourceInspect},
+	}}
+	if _, err := manager.InvokeDynamicAction(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	rpcRequest := runtime.request()
+	if len(rpcRequest.ResourceResults) != 2 || rpcRequest.ResourceResults[0].Error != nil || rpcRequest.ResourceResults[1].Error == nil || rpcRequest.ResourceResults[1].Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("guest resource results=%+v", rpcRequest.ResourceResults)
+	}
+	if store.resourceCalls["resource-call-1"] != 1 || store.resourceCalls["resource-call-2"] != 1 {
+		t.Fatalf("resource call counts=%v", store.resourceCalls)
+	}
+}
+
+func TestPluginCapabilityManagerRecoveredResourceClaimDoesNotRepeatCoreOperation(t *testing.T) {
+	manager, store, _, request := newCapabilityManagerFixture(t)
+	binding := storage.PluginCapabilityTargetBinding{Kind: request.Target.Kind, ID: request.Target.ID, ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
+	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-recovered", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
+	fingerprint, err := pluginCapabilityResourceCallFingerprint(request.OperationID, binding, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := request.OperationID + ":" + call.RequestID
+	if _, claimed, err := store.ClaimPluginCapabilityOperation(t.Context(), pluginCapabilityResourceCallScope, key, fingerprint, request.OperationID, "lost-owner", time.Now(), time.Now().Add(time.Hour)); err != nil || !claimed {
+		t.Fatalf("seed lost claim claimed=%t error=%v", claimed, err)
+	}
+	store.mu.Lock()
+	record := store.operations[pluginCapabilityResourceCallScope+"\x00"+key]
+	record.ExpiresAt = time.Now().Add(-time.Second)
+	store.operations[pluginCapabilityResourceCallScope+"\x00"+key] = record
+	store.mu.Unlock()
+	result, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorUnavailable || result.Error.Retryable || store.resourceCalls[call.RequestID] != 0 {
+		t.Fatalf("recovered resource result=%+v error=%v calls=%d", result, err, store.resourceCalls[call.RequestID])
+	}
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	if err != nil || replayed.Error == nil || replayed.Error.Message != result.Error.Message || store.resourceCalls[call.RequestID] != 0 {
+		t.Fatalf("recovered replay=%+v error=%v calls=%d", replayed, err, store.resourceCalls[call.RequestID])
+	}
+}
+
+func TestPluginCapabilityManagerCompletionFailureAfterSideEffectRecoversWithoutReexecution(t *testing.T) {
+	manager, store, _, request := newCapabilityManagerFixture(t)
+	binding := storage.PluginCapabilityTargetBinding{Kind: request.Target.Kind, ID: request.Target.ID, ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
+	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-side-effect", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
+	key := request.OperationID + ":" + call.RequestID
+	mapKey := pluginCapabilityResourceCallScope + "\x00" + key
+	store.completeFails = map[string]int{mapKey: 1}
+	if _, err := manager.executeDurableResourceCall(t.Context(), request, binding, call); err == nil || store.resourceCalls[call.RequestID] != 1 {
+		t.Fatalf("first post-side-effect completion error=%v calls=%d", err, store.resourceCalls[call.RequestID])
+	}
+	store.mu.Lock()
+	record := store.operations[mapKey]
+	record.ExpiresAt = time.Now().Add(-time.Second)
+	store.operations[mapKey] = record
+	store.mu.Unlock()
+	result, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorUnavailable || store.resourceCalls[call.RequestID] != 1 {
+		t.Fatalf("recovered post-side-effect result=%+v error=%v calls=%d", result, err, store.resourceCalls[call.RequestID])
+	}
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	if err != nil || replayed.Error == nil || replayed.Error.Message != result.Error.Message || store.resourceCalls[call.RequestID] != 1 {
+		t.Fatalf("post-side-effect replay=%+v error=%v calls=%d", replayed, err, store.resourceCalls[call.RequestID])
+	}
+}
+
+func TestPluginCapabilityTrafficSummaryUsesExplicitTrafficOnlyProjection(t *testing.T) {
+	manager, store, _, request := newCapabilityManagerFixture(t)
+	quota := int64(4096)
+	remaining := int64(1024)
+	manager.SetTrafficSummaryProvider(capabilityTrafficSummaryStub{summary: TrafficSummary{
+		AgentID: "edge-a", CycleStart: "2026-08-01", CycleEnd: "2026-09-01", RXBytes: 100, TXBytes: 200,
+		AccountedBytes: 300, UsedBytes: 3072, MonthlyQuotaBytes: &quota, QuotaPercent: 75, RemainingBytes: &remaining,
+		Blocked: true, BlockReason: "private operator note", HostTotal: TrafficSummaryBreakdown{ScopeType: "host", ScopeID: "host-private", RXBytes: 999},
+	}})
+	binding := storage.PluginCapabilityTargetBinding{Kind: "agent", ID: "edge-a", ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
+	value, err := manager.executeResourceCall(t.Context(), request, binding, pluginsdk.RPCResourceCall{RequestID: "traffic-1", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceTrafficSummary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := string(value)
+	for _, forbidden := range []string{"host_total", "host-private", "block_reason", "private operator note", "policy", "http_rules", "l4_rules", "relay_listeners"} {
+		if strings.Contains(projection, forbidden) {
+			t.Fatalf("traffic projection leaked %q: %s", forbidden, projection)
+		}
+	}
+	for _, required := range []string{`"agent_id":"edge-a"`, `"rx_bytes":100`, `"tx_bytes":200`, `"blocked":true`} {
+		if !strings.Contains(projection, required) {
+			t.Fatalf("traffic projection missing %q: %s", required, projection)
+		}
+	}
+}
+
+func TestPluginCapabilityManagerUsesProductionOwnedDockerSocketBinding(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("Unix Docker adapter is unavailable on Windows")
+	}
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestSeen := make(chan struct{}, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/_ping" {
+			t.Errorf("Docker request=%s %s", request.Method, request.URL.Path)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requestSeen <- struct{}{}
+		writer.WriteHeader(http.StatusOK)
+	})}
+	go server.Serve(listener)
+	defer server.Close()
+
+	targetStore, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.EnsurePluginCapabilityDockerSocketBinding(t.Context(), "default", socketPath); err != nil {
+		t.Fatal(err)
+	}
+	manager, baseStore, runtimeHost, request := newCapabilityManagerFixture(t)
+	manager.store = &capabilityManagerTargetStore{capabilityManagerStore: baseStore, targets: targetStore}
+	manager.dockerSocket = socketPath
+	request.Target = pluginsdk.HostTarget{Kind: storage.PluginCapabilityDockerSocketKind, ID: storage.PluginCapabilityDockerSocketID, ResourceGroupID: "default"}
+	request.Actor.VisibleResourceGroups = []string{"default"}
+	baseStore.instance.ResourceGroupID = "default"
+	loadPackage := manager.loadPackage
+	manager.loadPackage = func(ctx context.Context, row storage.PluginPackageRow) (plugins.ValidatedPackage, error) {
+		validated, loadErr := loadPackage(ctx, row)
+		validated.DynamicActions[0].TargetKind = storage.PluginCapabilityDockerSocketKind
+		return validated, loadErr
+	}
+	runtimeHost.plan = pluginsdk.RPCActionPlanResponse{Calls: []pluginsdk.RPCResourceCall{{RequestID: "docker-ping", Operation: pluginsdk.RPCResourceDockerRequest, Input: []byte(`{"action":"ping"}`)}}}
+	handle, err := manager.IssueResourceHandle(t.Context(), PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
+	if err != nil || handle == "" {
+		t.Fatalf("issue production Docker handle=%q error=%v", handle, err)
+	}
+	manager.handles.Release(handle)
+	if _, err := manager.InvokeDynamicAction(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-requestSeen:
+	case <-time.After(time.Second):
+		t.Fatal("fixed Docker adapter did not reach the production-owned endpoint")
 	}
 }
 

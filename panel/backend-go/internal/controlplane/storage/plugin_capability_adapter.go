@@ -38,19 +38,7 @@ func (s *GormStore) ExecutePluginCapabilityResourceCall(ctx context.Context, bin
 		_ = connection.Close()
 		return boundedPluginResourceJSON(map[string]any{"available": true, "latency_ms": time.Since(started).Milliseconds()})
 	case pluginsdk.RPCResourceTrafficSummary:
-		if current.Kind != "agent" {
-			return nil, errors.New("traffic summary requires an agent resource")
-		}
-		var row AgentRow
-		result := s.db.WithContext(ctx).Where("id = ?", current.ID).Limit(1).Find(&row)
-		if result.Error != nil || result.RowsAffected != 1 {
-			return nil, errors.Join(errors.New("traffic resource is unavailable"), result.Error)
-		}
-		var summary any = map[string]any{}
-		if strings.TrimSpace(row.LastReportedStatsJSON) != "" && json.Unmarshal([]byte(row.LastReportedStatsJSON), &summary) != nil {
-			return nil, errors.New("traffic summary is invalid")
-		}
-		return boundedPluginResourceJSON(summary)
+		return nil, errors.New("traffic summary requires the canonical traffic service adapter")
 	case pluginsdk.RPCResourceDNSApply, pluginsdk.RPCResourceDockerRequest:
 		return nil, errors.New("privileged resource operation has no configured core adapter")
 	default:

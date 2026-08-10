@@ -51,8 +51,9 @@ func TestPluginCapabilityOperationLeaseTakeoverFencesOldCompleter(t *testing.T) 
 	if _, claimed, err := store.ClaimPluginCapabilityOperation(t.Context(), "plugin.action", "operation-2", "fingerprint-2", "operation-2", "claim-early", now.Add(time.Second), now.Add(time.Hour)); err != nil || claimed {
 		t.Fatalf("early claim claimed=%v error=%v", claimed, err)
 	}
-	if _, claimed, err := store.ClaimPluginCapabilityOperation(t.Context(), "plugin.action", "operation-2", "fingerprint-2", "operation-2", "claim-new", now.Add(PluginCapabilityOperationLease+time.Second), now.Add(time.Hour)); err != nil || !claimed {
-		t.Fatalf("takeover claim claimed=%v error=%v", claimed, err)
+	takenOver, claimed, err := store.ClaimPluginCapabilityOperation(t.Context(), "plugin.action", "operation-2", "fingerprint-2", "operation-2", "claim-new", now.Add(PluginCapabilityOperationLease+time.Second), now.Add(time.Hour))
+	if err != nil || !claimed || !PluginCapabilityOperationRecovered(takenOver) {
+		t.Fatalf("takeover claim record=%+v claimed=%v error=%v", takenOver, claimed, err)
 	}
 	if err := store.CompletePluginCapabilityOperation(t.Context(), "plugin.action", "operation-2", "operation-2", "claim-old", `{"status":"succeeded"}`); err == nil {
 		t.Fatal("expired claim completed after takeover")

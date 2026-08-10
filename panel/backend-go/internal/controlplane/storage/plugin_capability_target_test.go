@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"net"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -51,5 +54,39 @@ func TestPluginCapabilityTargetVersionTracksSecretAndRelayMutation(t *testing.T)
 	binding, ok, err := store.PluginCapabilityTargetBinding(t.Context(), "relay", "local:7")
 	if err != nil || !ok || binding.ResourceGroupID != "group-a" || binding.Version != relaySecond {
 		t.Fatalf("relay binding=%+v found=%t error=%v", binding, ok, err)
+	}
+}
+
+func TestEnsurePluginCapabilityDockerSocketBindingOwnsLiveEndpointAndRevokesRotation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix Docker socket ownership is unavailable on Windows")
+	}
+	store := newStorageMigrationTestStore(t, "local")
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsurePluginCapabilityDockerSocketBinding(t.Context(), "default", socketPath); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := store.PluginCapabilityTargetBinding(t.Context(), PluginCapabilityDockerSocketKind, PluginCapabilityDockerSocketID)
+	if err != nil || !ok || first.ResourceGroupID != "default" || first.Version == "" {
+		t.Fatalf("initial Docker binding=%+v found=%t error=%v", first, ok, err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if binding, exists, bindingErr := store.PluginCapabilityTargetBinding(t.Context(), PluginCapabilityDockerSocketKind, PluginCapabilityDockerSocketID); bindingErr != nil || exists || binding.Version != "" {
+		t.Fatalf("closed Docker binding=%+v found=%t error=%v", binding, exists, bindingErr)
+	}
+	replacement, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	second, ok, err := store.PluginCapabilityTargetBinding(t.Context(), PluginCapabilityDockerSocketKind, PluginCapabilityDockerSocketID)
+	if err != nil || !ok || second.Version == "" || second.Version == first.Version {
+		t.Fatalf("replacement Docker binding=%+v initial=%+v found=%t error=%v", second, first, ok, err)
 	}
 }

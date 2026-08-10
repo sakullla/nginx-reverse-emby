@@ -20,6 +20,7 @@ type pluginCapabilityPendingClaim struct {
 	Status         string    `json:"status"`
 	ClaimToken     string    `json:"claim_token"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	Recovered      bool      `json:"recovered,omitempty"`
 }
 
 func (s *GormStore) ClaimPluginCapabilityOperation(ctx context.Context, scope, key, fingerprint, operationID, claimToken string, now, expiresAt time.Time) (IdempotencyRecordRow, bool, error) {
@@ -27,7 +28,8 @@ func (s *GormStore) ClaimPluginCapabilityOperation(ctx context.Context, scope, k
 	if scope == "" || key == "" || fingerprint == "" || operationID == "" || claimToken == "" || !expiresAt.After(now) {
 		return IdempotencyRecordRow{}, false, errors.New("plugin capability operation claim is incomplete")
 	}
-	pendingJSON, err := json.Marshal(pluginCapabilityPendingClaim{Status: "pending", ClaimToken: claimToken, LeaseExpiresAt: now.Add(PluginCapabilityOperationLease).UTC()})
+	pending := pluginCapabilityPendingClaim{Status: "pending", ClaimToken: claimToken, LeaseExpiresAt: now.Add(PluginCapabilityOperationLease).UTC()}
+	pendingJSON, err := json.Marshal(pending)
 	if err != nil {
 		return IdempotencyRecordRow{}, false, err
 	}
@@ -40,10 +42,15 @@ func (s *GormStore) ClaimPluginCapabilityOperation(ctx context.Context, scope, k
 			if existing.RequestFingerprint != fingerprint || existing.OperationID != operationID {
 				return ErrPluginCapabilityOperationConflict
 			}
-			var pending pluginCapabilityPendingClaim
-			if json.Unmarshal([]byte(existing.ResponseJSON), &pending) != nil || pending.Status != "pending" || pending.LeaseExpiresAt.After(now) {
+			var previous pluginCapabilityPendingClaim
+			if json.Unmarshal([]byte(existing.ResponseJSON), &previous) != nil || previous.Status != "pending" || previous.LeaseExpiresAt.After(now) {
 				result = existing
 				return nil
+			}
+			pending.Recovered = true
+			pendingJSON, err = json.Marshal(pending)
+			if err != nil {
+				return err
 			}
 			updated := tx.Model(&IdempotencyRecordRow{}).
 				Where("scope = ? AND key = ? AND response_json = ?", scope, key, existing.ResponseJSON).
@@ -74,6 +81,14 @@ func (s *GormStore) ClaimPluginCapabilityOperation(ctx context.Context, scope, k
 		return nil
 	})
 	return result, claimed, err
+}
+
+// PluginCapabilityOperationRecovered reports whether a successful claim took
+// over an expired owner. Callers use this fence to avoid repeating an
+// externally visible side effect whose prior outcome is unknowable.
+func PluginCapabilityOperationRecovered(record IdempotencyRecordRow) bool {
+	var pending pluginCapabilityPendingClaim
+	return json.Unmarshal([]byte(record.ResponseJSON), &pending) == nil && pending.Status == "pending" && pending.Recovered
 }
 
 func (s *GormStore) RenewPluginCapabilityOperation(ctx context.Context, scope, key, operationID, claimToken string, now time.Time) error {

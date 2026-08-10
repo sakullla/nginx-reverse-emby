@@ -45,6 +45,10 @@ type PluginCapabilityRuntime interface {
 	QueryAction(context.Context, string, string, pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error)
 }
 
+type PluginCapabilityTrafficSummaryProvider interface {
+	Summary(context.Context, string) (TrafficSummary, error)
+}
+
 type PluginDynamicActionRequest struct {
 	OperationID string
 	PluginID    string
@@ -81,6 +85,7 @@ type PluginCapabilityManager struct {
 	operationLocksMu   sync.Mutex
 	operationLocks     map[string]*pluginCapabilityOperationLock
 	secretVault        *secrets.Vault
+	trafficSummary     PluginCapabilityTrafficSummaryProvider
 	cloudflare         cloudflareDNSClient
 	dockerSocket       string
 }
@@ -94,7 +99,7 @@ func NewPluginCapabilityManager(store PluginCapabilityManagerStore, resourceAuth
 	if store == nil || resourceAuthorizer == nil || runtime == nil || packages == nil {
 		return nil, errors.New("plugin capability durable store, authorization owner, package validator, and runtime are required")
 	}
-	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock), cloudflare: newHTTPCloudflareClient("", 10*time.Second), dockerSocket: "/var/run/docker.sock"}
+	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock), cloudflare: newHTTPCloudflareClient("", 10*time.Second), dockerSocket: storage.PluginCapabilityDockerSocketPath}
 	manager.loadPackage = packages.loadValidatedCapabilityPackage
 	return manager, nil
 }
@@ -102,6 +107,12 @@ func NewPluginCapabilityManager(store PluginCapabilityManagerStore, resourceAuth
 func (manager *PluginCapabilityManager) SetCoreResourceVault(vault *secrets.Vault) {
 	if manager != nil {
 		manager.secretVault = vault
+	}
+}
+
+func (manager *PluginCapabilityManager) SetTrafficSummaryProvider(provider PluginCapabilityTrafficSummaryProvider) {
+	if manager != nil {
+		manager.trafficSummary = provider
 	}
 }
 
@@ -194,11 +205,11 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 				if !ok {
 					return errors.New("plugin action resource handle projection is invalid")
 				}
-				value, executeErr := manager.executeResourceCall(callCtx, request, storage.PluginCapabilityTargetBinding{Kind: reference.Target.Kind, ID: reference.Target.ID, ResourceGroupID: reference.Target.ResourceGroupID, Version: reference.Version}, resourceCall)
+				resourceResult, executeErr := manager.executeDurableResourceCall(callCtx, request, storage.PluginCapabilityTargetBinding{Kind: reference.Target.Kind, ID: reference.Target.ID, ResourceGroupID: reference.Target.ResourceGroupID, Version: reference.Version}, resourceCall)
 				if executeErr != nil {
 					return executeErr
 				}
-				rpcRequest.ResourceResults = append(rpcRequest.ResourceResults, pluginsdk.RPCResourceResult{RequestID: resourceCall.RequestID, Value: value})
+				rpcRequest.ResourceResults = append(rpcRequest.ResourceResults, resourceResult)
 			}
 		}
 		return manager.runtime.InvokeAction(callCtx, request.InstanceID, generation, rpcRequest)
@@ -244,8 +255,120 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 	return manager.retainPendingPluginAction(ctx, request.OperationID, claimToken, errors.Join(dispatchErr, reconcileErr))
 }
 
+const pluginCapabilityResourceCallScope = "plugin.action.resource"
+
+type pluginCapabilityResourceCallOutcome struct {
+	Status    string                  `json:"status"`
+	RequestID string                  `json:"request_id"`
+	Value     []byte                  `json:"value,omitempty"`
+	Error     *pluginsdk.RuntimeError `json:"error,omitempty"`
+}
+
+func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.Context, request PluginDynamicActionRequest, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) (pluginsdk.RPCResourceResult, error) {
+	fingerprint, err := pluginCapabilityResourceCallFingerprint(request.OperationID, binding, call)
+	if err != nil {
+		return pluginsdk.RPCResourceResult{}, err
+	}
+	key := request.OperationID + ":" + call.RequestID
+	claimToken := capabilityAuditID()
+	now := time.Now().UTC()
+	record, claimed, err := manager.store.ClaimPluginCapabilityOperation(ctx, pluginCapabilityResourceCallScope, key, fingerprint, request.OperationID, claimToken, now, now.Add(24*time.Hour))
+	if err != nil {
+		return pluginsdk.RPCResourceResult{}, err
+	}
+	if !claimed {
+		if pluginActionOutcomePending(record.ResponseJSON) {
+			return pluginsdk.RPCResourceResult{}, pluginActionPendingError(errors.New("plugin resource call result is pending"))
+		}
+		return decodePluginCapabilityResourceCallOutcome(record.ResponseJSON, call.RequestID)
+	}
+
+	var result pluginsdk.RPCResourceResult
+	if storage.PluginCapabilityOperationRecovered(record) {
+		result = pluginsdk.RPCResourceResult{RequestID: call.RequestID, Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "resource call outcome is unavailable after owner recovery", Retryable: false}}
+	} else {
+		value, executeErr := manager.executeResourceCall(ctx, request, binding, call)
+		result = pluginsdk.RPCResourceResult{RequestID: call.RequestID, Value: value}
+		if executeErr != nil {
+			result.Value = nil
+			result.Error = pluginCapabilityResourceRuntimeError(executeErr)
+		}
+	}
+	if err := result.Validate(); err != nil {
+		return pluginsdk.RPCResourceResult{}, err
+	}
+	encoded, err := json.Marshal(pluginCapabilityResourceCallOutcome{Status: "complete", RequestID: result.RequestID, Value: result.Value, Error: result.Error})
+	if err != nil {
+		return pluginsdk.RPCResourceResult{}, err
+	}
+	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := manager.store.CompletePluginCapabilityOperation(commitCtx, pluginCapabilityResourceCallScope, key, request.OperationID, claimToken, string(encoded)); err != nil {
+		return pluginsdk.RPCResourceResult{}, errors.Join(errors.New("persist plugin resource call outcome"), err)
+	}
+	return result, nil
+}
+
+func pluginCapabilityResourceCallFingerprint(operationID string, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) (string, error) {
+	payload, err := json.Marshal(struct {
+		OperationID, RequestID, Kind, ID, Group, Version string
+		Operation                                        pluginsdk.RPCResourceOperation
+		Input                                            []byte
+	}{operationID, call.RequestID, binding.Kind, binding.ID, binding.ResourceGroupID, binding.Version, call.Operation, call.Input})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func decodePluginCapabilityResourceCallOutcome(value, requestID string) (pluginsdk.RPCResourceResult, error) {
+	var outcome pluginCapabilityResourceCallOutcome
+	if err := json.Unmarshal([]byte(value), &outcome); err != nil || outcome.Status != "complete" || outcome.RequestID != requestID {
+		return pluginsdk.RPCResourceResult{}, errors.New("durable plugin resource call outcome is invalid")
+	}
+	result := pluginsdk.RPCResourceResult{RequestID: outcome.RequestID, Value: outcome.Value, Error: outcome.Error}
+	if err := result.Validate(); err != nil {
+		return pluginsdk.RPCResourceResult{}, err
+	}
+	return result, nil
+}
+
+func pluginCapabilityResourceRuntimeError(err error) *pluginsdk.RuntimeError {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "invalid") || strings.Contains(message, "unsupported") || strings.Contains(message, "unknown") || strings.Contains(message, "requires") {
+		return &pluginsdk.RuntimeError{Code: pluginsdk.ErrorInvalidArgument, Message: "resource call request is invalid", Retryable: false}
+	}
+	return &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "resource call is unavailable", Retryable: true}
+}
+
 func (manager *PluginCapabilityManager) executeResourceCall(ctx context.Context, request PluginDynamicActionRequest, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) ([]byte, error) {
 	switch call.Operation {
+	case pluginsdk.RPCResourceTrafficSummary:
+		if binding.Kind != "agent" || manager.trafficSummary == nil {
+			return nil, errors.New("traffic summary resource adapter is unavailable")
+		}
+		summary, err := manager.trafficSummary.Summary(ctx, binding.ID)
+		if err != nil {
+			return nil, err
+		}
+		return pluginCapabilityResourceJSON(struct {
+			AgentID           string  `json:"agent_id"`
+			CycleStart        string  `json:"cycle_start"`
+			CycleEnd          string  `json:"cycle_end"`
+			RXBytes           uint64  `json:"rx_bytes"`
+			TXBytes           uint64  `json:"tx_bytes"`
+			AccountedBytes    uint64  `json:"accounted_bytes"`
+			UsedBytes         uint64  `json:"used_bytes"`
+			MonthlyQuotaBytes *int64  `json:"monthly_quota_bytes"`
+			QuotaPercent      float64 `json:"quota_percent"`
+			RemainingBytes    *int64  `json:"remaining_bytes"`
+			OverQuota         bool    `json:"over_quota"`
+			Blocked           bool    `json:"blocked"`
+		}{summary.AgentID, summary.CycleStart, summary.CycleEnd, summary.RXBytes, summary.TXBytes, summary.AccountedBytes, summary.UsedBytes, summary.MonthlyQuotaBytes, summary.QuotaPercent, summary.RemainingBytes, summary.OverQuota, summary.Blocked})
 	case pluginsdk.RPCResourceDNSApply:
 		if manager.secretVault == nil || manager.cloudflare == nil || (binding.Kind != "secret" && binding.Kind != "vault.secret") {
 			return nil, errors.New("Cloudflare DNS resource adapter is unavailable")

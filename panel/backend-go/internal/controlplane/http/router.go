@@ -663,11 +663,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if !ok {
 			return Dependencies{}, errors.New("plugin capability manager requires the production plugin service")
 		}
+		if err := store.EnsurePluginCapabilityDockerSocketBinding(context.Background(), authz.DefaultResourceGroup, storage.PluginCapabilityDockerSocketPath); err != nil {
+			return Dependencies{}, fmt.Errorf("register local Docker capability endpoint: %w", err)
+		}
 		manager, managerErr := service.NewPluginCapabilityManager(store, d.AccessManager, d.PluginRuntimeHost, pluginService)
 		if managerErr != nil {
 			return Dependencies{}, fmt.Errorf("initialize plugin capability manager: %w", managerErr)
 		}
 		d.PluginCapabilityService = manager
+		manager.SetTrafficSummaryProvider(d.TrafficService)
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 		if d.SecretVault != nil {
 			manager.SetCoreResourceVault(d.SecretVault)
