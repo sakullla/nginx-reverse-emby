@@ -112,6 +112,10 @@ type runtimeControl struct {
 
 type Instance struct {
 	mu                         sync.RWMutex
+	stopMu                     sync.Mutex
+	stopStarted                bool
+	stopDone                   chan struct{}
+	stopErr                    error
 	ID, Generation, Executable string
 	PID                        int
 	RestartCount               int
@@ -363,7 +367,6 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	h.mu.Lock()
 	instance := h.active[instanceID]
 	if instance != nil {
-		delete(h.active, instanceID)
 		if instance.control != nil {
 			instance.control.cancel()
 		}
@@ -372,7 +375,15 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	if instance == nil {
 		return nil
 	}
-	return h.stopPublished(ctx, instance)
+	stopErr := h.stopPublished(ctx, instance)
+	if instance.terminated() {
+		h.mu.Lock()
+		if h.active[instanceID] == instance {
+			delete(h.active, instanceID)
+		}
+		h.mu.Unlock()
+	}
+	return stopErr
 }
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
@@ -387,11 +398,17 @@ func (h *Host) Close(ctx context.Context) error {
 			instance.control.cancel()
 		}
 	}
-	h.active = make(map[string]*Instance)
 	h.mu.Unlock()
 	var errs []error
 	for _, instance := range instances {
 		errs = append(errs, h.stopPublished(ctx, instance))
+		if instance.terminated() {
+			h.mu.Lock()
+			if h.active[instance.ID] == instance {
+				delete(h.active, instance.ID)
+			}
+			h.mu.Unlock()
+		}
 	}
 	h.prepareWG.Wait()
 	return errors.Join(errs...)
@@ -444,6 +461,31 @@ func (i *Instance) Stop(ctx context.Context) error {
 	if i == nil {
 		return nil
 	}
+	i.stopMu.Lock()
+	if i.stopStarted {
+		done := i.stopDone
+		i.stopMu.Unlock()
+		<-done
+		i.stopMu.Lock()
+		err := i.stopErr
+		i.stopMu.Unlock()
+		return err
+	}
+	i.stopStarted = true
+	i.stopDone = make(chan struct{})
+	i.stopMu.Unlock()
+	err := i.stop(ctx)
+	i.stopMu.Lock()
+	i.stopErr = err
+	close(i.stopDone)
+	i.stopMu.Unlock()
+	return err
+}
+
+func (i *Instance) stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	i.mu.Lock()
 	if i.State == "stopped" {
 		i.mu.Unlock()
@@ -456,42 +498,85 @@ func (i *Instance) Stop(ctx context.Context) error {
 	if i.client != nil {
 		_, rpcErr = i.client.Stop(ctx, request)
 	}
+	var signalErr, killErr, joinErr, waitErr error
+	terminated := false
+	alreadyExited := false
 	if i.process != nil {
-		_ = i.process.Signal(os.Interrupt)
-		timer := time.NewTimer(i.grace)
 		select {
 		case <-i.done:
-		case <-ctx.Done():
-			_ = i.process.Kill()
-		case <-timer.C:
-			_ = i.process.Kill()
+			terminated = true
+			alreadyExited = true
+		default:
 		}
-		select {
-		case <-i.done:
-		case <-ctx.Done():
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
+		if !terminated {
+			signalErr = i.process.Signal(os.Interrupt)
+			grace := i.grace
+			if grace <= 0 {
+				grace = 5 * time.Second
 			}
+			timer := time.NewTimer(grace)
+			select {
+			case <-i.done:
+				terminated = true
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			if !terminated {
+				killErr = i.process.Kill()
+				if i.processCancel != nil {
+					i.processCancel()
+				}
+				joinCtx, cancel := context.WithTimeout(context.Background(), grace)
+				select {
+				case <-i.done:
+					terminated = true
+				case <-joinCtx.Done():
+					joinErr = fmt.Errorf("join terminated control-plane plugin process: %w", joinCtx.Err())
+				}
+				cancel()
+			}
+		}
+		if terminated && !alreadyExited {
+			i.mu.RLock()
+			waitErr = i.waitErr
+			i.mu.RUnlock()
 		}
 	}
 	var closeErr error
 	if i.closer != nil {
 		closeErr = i.closer.Close()
 	}
-	if i.logCloser != nil {
+	if terminated && i.logCloser != nil {
 		closeErr = errors.Join(closeErr, i.logCloser.Close())
 	}
 	i.mu.Lock()
-	i.State = "stopped"
-	i.PID = 0
+	if terminated || i.process == nil {
+		i.State = "stopped"
+		i.PID = 0
+	} else {
+		i.State = "failed"
+		i.LastError = safeError(errors.Join(killErr, joinErr))
+	}
 	i.mu.Unlock()
-	if i.processCancel != nil {
+	if (terminated || i.process == nil) && i.processCancel != nil {
 		i.processCancel()
 	}
-	return errors.Join(rpcErr, closeErr)
+	return errors.Join(rpcErr, signalErr, killErr, joinErr, waitErr, closeErr)
+}
+
+func (i *Instance) terminated() bool {
+	if i == nil {
+		return true
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.State == "stopped" && i.PID == 0
 }
 
 func normalizeRestartCandidate(candidate Candidate) Candidate {

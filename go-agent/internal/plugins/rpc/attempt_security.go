@@ -106,7 +106,16 @@ func cleanupAttemptDirectory(runtimeDirectory, root string) error {
 	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(filepath.Base(relative), ".rpc-attempt-") {
 		return errors.New("refusing to clean RPC attempt outside managed runtime directory")
 	}
-	return os.RemoveAll(root)
+	var removeErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if removeErr = os.RemoveAll(root); removeErr == nil {
+			return nil
+		}
+		if attempt < 4 {
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+		}
+	}
+	return removeErr
 }
 
 func writeAttemptTLS(directory string) (*tls.Config, []string, error) {

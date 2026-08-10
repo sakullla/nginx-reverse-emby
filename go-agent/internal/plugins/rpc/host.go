@@ -55,17 +55,19 @@ type hostAttempt struct {
 }
 
 type HostedInstance struct {
-	mu         sync.RWMutex
-	candidate  HostCandidate
-	supervisor *pluginprocess.Supervisor
-	dial       DialFunc
-	attempt    *hostAttempt
-	status     RuntimeStatus
-	exits      []time.Time
-	backoff    time.Duration
-	cancel     context.CancelFunc
-	done       chan struct{}
-	stopOnce   sync.Once
+	mu             sync.RWMutex
+	candidate      HostCandidate
+	supervisor     *pluginprocess.Supervisor
+	dial           DialFunc
+	attempt        *hostAttempt
+	status         RuntimeStatus
+	exits          []time.Time
+	backoff        time.Duration
+	cancel         context.CancelFunc
+	done           chan struct{}
+	stopOnce       sync.Once
+	stopErr        error
+	stoppedAttempt *hostAttempt
 }
 
 type Host struct {
@@ -176,12 +178,35 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		return nil, errors.Join(errors.New("RPC plugin host closed before candidate publication"), activationCtx.Err())
 	}
 	previous := h.active[candidate.InstanceID]
-	h.active[candidate.InstanceID] = instance
-	h.mu.Unlock()
-	go instance.run(runCtx)
-	if previous != nil {
-		_ = previous.stop(activationCtx)
+	if previous == nil {
+		h.active[candidate.InstanceID] = instance
 	}
+	h.mu.Unlock()
+	if previous != nil {
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), hostDrainTimeout(previous.candidate.Process.GracePeriod))
+		drainErr := previous.stop(drainCtx)
+		cancelDrain()
+		if drainErr != nil || !previous.terminated() {
+			cleanupErr := instance.stopAttemptWithTimeout(attempt, true)
+			cancel()
+			return nil, errors.Join(errors.New("drain previous Agent RPC plugin generation"), drainErr, cleanupErr)
+		}
+		if err := processAttemptError(attempt.handle); err != nil {
+			cleanupErr := instance.stopAttemptWithTimeout(attempt, true)
+			cancel()
+			return nil, errors.Join(err, cleanupErr)
+		}
+		h.mu.Lock()
+		if h.closed || h.active[candidate.InstanceID] != previous {
+			h.mu.Unlock()
+			cleanupErr := instance.stopAttemptWithTimeout(attempt, true)
+			cancel()
+			return nil, errors.Join(errors.New("RPC plugin host ownership changed during generation drain"), cleanupErr)
+		}
+		h.active[candidate.InstanceID] = instance
+		h.mu.Unlock()
+	}
+	go instance.run(runCtx)
 	return instance, nil
 }
 
@@ -326,12 +351,19 @@ func (h *Host) Stop(ctx context.Context, id string) error {
 	defer lock.Unlock()
 	h.mu.Lock()
 	instance := h.active[id]
-	delete(h.active, id)
 	h.mu.Unlock()
 	if instance == nil {
 		return nil
 	}
-	return instance.stop(ctx)
+	stopErr := instance.stop(ctx)
+	if instance.terminated() {
+		h.mu.Lock()
+		if h.active[id] == instance {
+			delete(h.active, id)
+		}
+		h.mu.Unlock()
+	}
+	return stopErr
 }
 
 func (h *Host) Close(ctx context.Context) error {
@@ -344,14 +376,20 @@ func (h *Host) Close(ctx context.Context) error {
 		h.cancel()
 	}
 	instances := make([]*HostedInstance, 0, len(h.active))
-	for id, instance := range h.active {
+	for _, instance := range h.active {
 		instances = append(instances, instance)
-		delete(h.active, id)
 	}
 	h.mu.Unlock()
 	var errs []error
 	for _, instance := range instances {
 		errs = append(errs, instance.stop(ctx))
+		if instance.terminated() {
+			h.mu.Lock()
+			if h.active[instance.candidate.InstanceID] == instance {
+				delete(h.active, instance.candidate.InstanceID)
+			}
+			h.mu.Unlock()
+		}
 	}
 	h.activationWG.Wait()
 	return errors.Join(errs...)
@@ -370,25 +408,48 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 	if i == nil {
 		return nil
 	}
-	var stopErr error
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	i.stopOnce.Do(func() {
 		i.mu.Lock()
 		i.status.State = "stopping"
 		i.cancel()
 		attempt := i.attempt
-		i.attempt = nil
+		i.stoppedAttempt = attempt
 		i.mu.Unlock()
-		stopErr = i.stopAttempt(ctx, attempt, true)
-	})
-	select {
-	case <-i.done:
+		stopErr := i.stopAttempt(ctx, attempt, true)
+		terminated := attemptTerminated(attempt)
 		i.mu.Lock()
-		i.status.State, i.status.PID = "stopped", 0
+		i.stopErr = stopErr
+		if terminated {
+			i.attempt = nil
+			i.status.State, i.status.PID = "stopped", 0
+		} else {
+			i.status.State = "failed"
+			if stopErr != nil {
+				i.status.LastError = safeHostError(stopErr)
+			}
+		}
 		i.mu.Unlock()
-		return stopErr
-	case <-ctx.Done():
-		return errors.Join(stopErr, ctx.Err())
+	})
+	i.mu.RLock()
+	stopErr := i.stopErr
+	attempt := i.stoppedAttempt
+	i.mu.RUnlock()
+	if !attemptTerminated(attempt) {
+		return errors.Join(stopErr, errors.New("Agent RPC plugin process did not terminate"))
 	}
+	return stopErr
+}
+
+func (i *HostedInstance) terminated() bool {
+	if i == nil {
+		return true
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.status.State == "stopped" && i.status.PID == 0 && attemptTerminated(i.stoppedAttempt)
 }
 
 func (i *HostedInstance) run(ctx context.Context) {
@@ -520,6 +581,38 @@ func (i *HostedInstance) stopAttempt(ctx context.Context, attempt *hostAttempt, 
 		securityErr = attempt.cleanup()
 	}
 	return errors.Join(rpcErr, processErr, closeErr, securityErr)
+}
+
+func (i *HostedInstance) stopAttemptWithTimeout(attempt *hostAttempt, intentional bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), hostDrainTimeout(i.candidate.Process.GracePeriod))
+	defer cancel()
+	return i.stopAttempt(ctx, attempt, intentional)
+}
+
+func attemptTerminated(attempt *hostAttempt) bool {
+	if attempt == nil || attempt.handle == nil {
+		return true
+	}
+	select {
+	case <-attempt.handle.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func hostDrainTimeout(grace time.Duration) time.Duration {
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	timeout := grace * 3
+	if timeout < 100*time.Millisecond {
+		return 100 * time.Millisecond
+	}
+	if timeout > 30*time.Second {
+		return 30 * time.Second
+	}
+	return timeout
 }
 
 func normalizeRestartSpec(spec pluginprocess.InstanceSpec) pluginprocess.InstanceSpec {

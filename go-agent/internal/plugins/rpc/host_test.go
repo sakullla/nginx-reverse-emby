@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,9 +19,10 @@ import (
 )
 
 type hostProcess struct {
-	done chan error
-	once sync.Once
-	pid  int
+	done    chan error
+	once    sync.Once
+	pid     int
+	stopped chan struct{}
 }
 
 func agentSandboxRequirement(t *testing.T, digest string) pluginprocess.SandboxRequirement {
@@ -43,14 +45,69 @@ func (p *hostProcess) PID() int {
 	}
 	return p.pid
 }
-func (p *hostProcess) Wait() error            { return <-p.done }
-func (p *hostProcess) Signal(os.Signal) error { p.once.Do(func() { p.done <- nil }); return nil }
-func (p *hostProcess) Kill() error            { p.once.Do(func() { p.done <- nil }); return nil }
+func (p *hostProcess) Wait() error { return <-p.done }
+func (p *hostProcess) Signal(os.Signal) error {
+	p.once.Do(func() {
+		if p.stopped != nil {
+			close(p.stopped)
+		}
+		p.done <- nil
+	})
+	return nil
+}
+func (p *hostProcess) Kill() error {
+	p.once.Do(func() {
+		if p.stopped != nil {
+			close(p.stopped)
+		}
+		p.done <- nil
+	})
+	return nil
+}
 
 type hostRunner struct{}
 
 func (hostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
 	return &hostProcess{done: make(chan error, 1)}, func() error { return nil }, nil
+}
+
+type drainHostProcess struct {
+	done       chan error
+	killCalled chan struct{}
+	killDelay  time.Duration
+	killErr    error
+	once       sync.Once
+}
+
+func (p *drainHostProcess) PID() int               { return 71 }
+func (p *drainHostProcess) Wait() error            { return <-p.done }
+func (p *drainHostProcess) Signal(os.Signal) error { return nil }
+func (p *drainHostProcess) Kill() error {
+	p.once.Do(func() { close(p.killCalled) })
+	if p.killErr != nil {
+		return p.killErr
+	}
+	go func() {
+		time.Sleep(p.killDelay)
+		p.done <- nil
+	}()
+	return nil
+}
+
+type queuedHostRunner struct {
+	mu        sync.Mutex
+	processes []pluginprocess.ManagedProcess
+}
+
+func (r *queuedHostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.processes) == 0 {
+		return nil, nil, errors.New("unexpected process start")
+	}
+	process := r.processes[0]
+	r.processes = r.processes[1:]
+	return process, func() error { return nil }, nil
 }
 
 type restartHostRunner struct {
@@ -94,6 +151,18 @@ func (hostCloser) Close() error { return nil }
 type hostClient struct {
 	abi        string
 	prepareErr error
+}
+
+type cancelOnStopHostClient struct {
+	hostClient
+	onStop func()
+}
+
+func (c cancelOnStopHostClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	if c.onStop != nil {
+		c.onStop()
+	}
+	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
 
 func (c hostClient) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
@@ -200,6 +269,97 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 	if active != next || active == first {
 		t.Fatal("successful candidate did not cut over")
 	}
+}
+
+func TestRPCHostCutoverUsesOwnedDrainAfterPublicationContextCanceled(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = 5 * time.Millisecond
+	oldProcess := &drainHostProcess{done: make(chan error, 1), killCalled: make(chan struct{}), killDelay: 20 * time.Millisecond}
+	newProcess := &hostProcess{done: make(chan error, 1), pid: 72, stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{oldProcess, newProcess}}
+	var cancelPublication context.CancelFunc
+	clients := []LifecycleClient{
+		cancelOnStopHostClient{hostClient: hostClient{abi: pluginsdk.RPCABIV1}, onStop: func() {
+			if cancelPublication != nil {
+				cancelPublication()
+			}
+		}},
+		hostClient{abi: pluginsdk.RPCABIV1},
+	}
+	dial := func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		client := clients[0]
+		clients = clients[1:]
+		return client, hostCloser{}, nil
+	}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Generation = "g2"
+	publicationCtx, cancel := context.WithCancel(context.Background())
+	cancelPublication = cancel
+	started := time.Now()
+	next, err := host.Activate(publicationCtx, candidate)
+	if err != nil {
+		t.Fatalf("cutover failed after publication context cancellation: %v", err)
+	}
+	if time.Since(started) < oldProcess.killDelay {
+		t.Fatal("candidate published before old generation termination joined")
+	}
+	select {
+	case <-oldProcess.done:
+		t.Fatal("process completion was consumed outside supervisor")
+	default:
+	}
+	active, ok := host.Active(candidate.InstanceID)
+	if !ok || active != next || active.candidate.Generation != "g2" {
+		t.Fatalf("new generation not published: %+v", active)
+	}
+	if err := host.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRPCHostCutoverFailureRetainsOldGenerationAndStopsCandidate(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = 5 * time.Millisecond
+	oldProcess := &drainHostProcess{done: make(chan error, 1), killCalled: make(chan struct{}), killErr: errors.New("kill failed")}
+	newProcess := &hostProcess{done: make(chan error, 1), pid: 72, stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{oldProcess, newProcess}}
+	clients := []LifecycleClient{hostClient{abi: pluginsdk.RPCABIV1}, hostClient{abi: pluginsdk.RPCABIV1}}
+	dial := func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		client := clients[0]
+		clients = clients[1:]
+		return client, hostCloser{}, nil
+	}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Generation = "g2"
+	_, err = host.Activate(t.Context(), candidate)
+	if err == nil || !strings.Contains(err.Error(), "kill failed") {
+		t.Fatalf("cutover error = %v", err)
+	}
+	active, ok := host.Active(candidate.InstanceID)
+	if !ok || active != first || active.candidate.Generation != "g1" {
+		t.Fatalf("failed cutover changed publication: %+v", active)
+	}
+	select {
+	case <-newProcess.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("failed cutover did not stop candidate process")
+	}
+	oldProcess.done <- nil
 }
 
 func TestRPCHostCrashStartsFreshProcessAndRepeatsLifecycle(t *testing.T) {

@@ -134,20 +134,25 @@ func (runtimeDialer) Dial(context.Context, pluginhost.Endpoint, time.Duration) (
 }
 
 type runtimeRepo struct {
-	mu             sync.Mutex
-	row            storage.PluginRuntimeInstanceRow
-	promoteErr     error
-	stopErr        error
-	stopCalls      int
-	healthFailures int
-	healthCalls    int
-	promoteStarted chan struct{}
-	promoteRelease chan struct{}
-	promoteOnce    sync.Once
-	stageStarted   chan struct{}
-	stageRelease   chan struct{}
-	stageOnce      sync.Once
-	failErr        error
+	mu               sync.Mutex
+	row              storage.PluginRuntimeInstanceRow
+	promoteErr       error
+	stopErr          error
+	stopCalls        int
+	healthFailures   int
+	healthCalls      int
+	healthStarted    chan struct{}
+	healthRelease    chan struct{}
+	healthReturned   chan struct{}
+	healthOnce       sync.Once
+	healthReturnOnce sync.Once
+	promoteStarted   chan struct{}
+	promoteRelease   chan struct{}
+	promoteOnce      sync.Once
+	stageStarted     chan struct{}
+	stageRelease     chan struct{}
+	stageOnce        sync.Once
+	failErr          error
 }
 
 func (r *runtimeRepo) StagePluginRuntime(ctx context.Context, row storage.PluginRuntimeInstanceRow) error {
@@ -207,7 +212,18 @@ func (r *runtimeRepo) GetPluginRuntime(context.Context, string) (storage.PluginR
 	defer r.mu.Unlock()
 	return r.row, true, nil
 }
-func (r *runtimeRepo) UpdatePluginRuntimeHealth(_ context.Context, id, generation, state string, pid, restartCount int, circuitOpen bool, lastError string) error {
+func (r *runtimeRepo) UpdatePluginRuntimeHealth(ctx context.Context, id, generation, state string, pid, restartCount int, circuitOpen bool, lastError string) error {
+	if r.healthStarted != nil {
+		r.healthOnce.Do(func() { close(r.healthStarted) })
+		select {
+		case <-r.healthRelease:
+		case <-ctx.Done():
+			if r.healthReturned != nil {
+				r.healthReturnOnce.Do(func() { close(r.healthReturned) })
+			}
+			return ctx.Err()
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.healthCalls++
@@ -381,6 +397,47 @@ func TestPluginRuntimeHostCloseCancelsAndJoinsBlockedLauncherActivation(t *testi
 	}
 	if _, active := host.Active(candidate.InstanceID); active {
 		t.Fatal("launcher-blocked activation published after Close")
+	}
+}
+
+func TestPluginRuntimeHostCloseCancelsAndJoinsBlockedHealthWrite(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{healthStarted: make(chan struct{}), healthRelease: make(chan struct{}), healthReturned: make(chan struct{})}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-blocked-health")
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-repo.healthStarted
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-repo.healthReturned:
+	default:
+		t.Fatal("Close returned before the blocked health write observed cancellation")
+	}
+	if err := <-activateDone; err != nil {
+		t.Fatalf("published activation failed while Close drained it: %v", err)
+	}
+	repo.mu.Lock()
+	row := repo.row
+	repo.mu.Unlock()
+	if row.ActiveGeneration != candidate.Identity.Generation || row.State != "stopped" || row.PID != 0 {
+		t.Fatalf("Close did not replace canceled health observation with terminal persistence: %+v", row)
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Close retained a terminated runtime after health-write cancellation")
 	}
 }
 

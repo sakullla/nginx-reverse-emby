@@ -20,6 +20,8 @@ type PluginRuntimeRepository interface {
 	StopPluginRuntime(context.Context, string, string) error
 }
 
+const pluginRuntimeHealthWriteTimeout = 5 * time.Second
+
 type PluginRuntimeHost struct {
 	host         *pluginhost.Host
 	repository   PluginRuntimeRepository
@@ -40,7 +42,13 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, closeTargets: make(map[string]string)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
-		return repository.UpdatePluginRuntimeHealth(context.Background(), status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
+		observerCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
+		defer cancel()
+		err := repository.UpdatePluginRuntimeHealth(observerCtx, status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
+		if errors.Is(err, context.Canceled) && service.ctx.Err() != nil {
+			return nil
+		}
+		return err
 	})
 	return service, nil
 }
@@ -179,7 +187,12 @@ func (s *PluginRuntimeHost) Close(ctx context.Context) error {
 	}
 	hostErr := s.host.Close(ctx)
 	errs := []error{hostErr}
+	remaining := s.host.ActiveGenerations()
 	for instanceID, generation := range s.closeTargets {
+		if remaining[instanceID] == generation {
+			errs = append(errs, fmt.Errorf("plugin runtime %s generation %s remains owned after failed termination", instanceID, generation))
+			continue
+		}
 		if err := retryRuntimeStopPersistence(ctx, s.repository, instanceID, generation); err != nil {
 			errs = append(errs, fmt.Errorf("persist closed plugin runtime %s generation %s: %w", instanceID, generation, err))
 			continue

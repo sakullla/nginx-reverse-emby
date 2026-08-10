@@ -24,6 +24,29 @@ type testProcess struct {
 	once sync.Once
 }
 
+type controlledStopProcess struct {
+	done       chan error
+	killCalled chan struct{}
+	release    <-chan struct{}
+	killErr    error
+	once       sync.Once
+}
+
+func (p *controlledStopProcess) PID() int               { return 91 }
+func (p *controlledStopProcess) Wait() error            { return <-p.done }
+func (p *controlledStopProcess) Signal(os.Signal) error { return nil }
+func (p *controlledStopProcess) Kill() error {
+	p.once.Do(func() { close(p.killCalled) })
+	if p.killErr != nil {
+		return p.killErr
+	}
+	go func() {
+		<-p.release
+		p.done <- nil
+	}()
+	return nil
+}
+
 func (p *testProcess) PID() int               { return 77 }
 func (p *testProcess) Wait() error            { return <-p.done }
 func (p *testProcess) Signal(os.Signal) error { p.once.Do(func() { p.done <- nil }); return nil }
@@ -421,6 +444,79 @@ func TestPluginHostStopReturnsWhenProcessAlreadyExited(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
 		t.Fatalf("Stop waited for grace after process exit: %v", elapsed)
+	}
+}
+
+func TestPluginHostCanceledStopForcesKillAndJoinsProcess(t *testing.T) {
+	release := make(chan struct{})
+	process := &controlledStopProcess{done: make(chan error, 1), killCalled: make(chan struct{}), release: release}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Second, done: make(chan struct{})}
+	go instance.monitor()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- instance.Stop(ctx) }()
+	<-process.killCalled
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned before killed process exited: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-stopped; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stop error = %v", err)
+	}
+	if !instance.terminated() {
+		t.Fatalf("terminated instance retained status: %+v", instance)
+	}
+}
+
+func TestPluginHostFailedKillRetainsPIDAndOwnership(t *testing.T) {
+	process := &controlledStopProcess{done: make(chan error), killCalled: make(chan struct{}), killErr: errors.New("kill failed")}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: 10 * time.Millisecond, done: make(chan struct{})}
+	go instance.monitor()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := instance.Stop(ctx)
+	if err == nil || !strings.Contains(err.Error(), "kill failed") || !strings.Contains(err.Error(), "join terminated") {
+		t.Fatalf("Stop error = %v", err)
+	}
+	if instance.terminated() || instance.PID != process.PID() {
+		t.Fatalf("failed termination cleared PID: state=%q pid=%d", instance.State, instance.PID)
+	}
+}
+
+func TestPluginHostCloseJoinsInflightStopBeforeRemovingOwnership(t *testing.T) {
+	release := make(chan struct{})
+	process := &controlledStopProcess{done: make(chan error, 1), killCalled: make(chan struct{}), release: release}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Second, done: make(chan struct{})}
+	go instance.monitor()
+	hostCtx, cancelHost := context.WithCancel(context.Background())
+	host := &Host{ctx: hostCtx, cancel: cancelHost, active: map[string]*Instance{"instance": instance}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- host.Stop(ctx, "instance") }()
+	<-process.killCalled
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- host.Close(context.Background()) }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before in-flight Stop joined: %v", err)
+	default:
+	}
+	if _, ok := host.Active("instance"); !ok {
+		t.Fatal("host removed process ownership before termination")
+	}
+	close(release)
+	if err := <-stopDone; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stop error = %v", err)
+	}
+	if err := <-closeDone; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close error = %v", err)
+	}
+	if _, ok := host.Active("instance"); ok {
+		t.Fatal("host retained terminated process ownership")
 	}
 }
 

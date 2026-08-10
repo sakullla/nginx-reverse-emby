@@ -232,6 +232,7 @@ type Handle struct {
 	cleanup  func() error
 	started  chan error
 	stopOnce sync.Once
+	stopErr  error
 	once     bool
 }
 
@@ -408,23 +409,29 @@ func (h *Handle) Stop(ctx context.Context) error {
 		if proc == nil {
 			return
 		}
-		_ = proc.Signal(os.Interrupt)
+		signalErr := proc.Signal(os.Interrupt)
 		timer := time.NewTimer(grace)
 		defer timer.Stop()
+		var killErr error
 		select {
 		case <-h.done:
-			return
 		case <-timer.C:
-			_ = proc.Kill()
+			killErr = proc.Kill()
 		case <-ctx.Done():
-			_ = proc.Kill()
+			killErr = proc.Kill()
 		}
+		h.mu.Lock()
+		h.stopErr = errors.Join(signalErr, killErr)
+		h.mu.Unlock()
 	})
+	h.mu.RLock()
+	stopErr := h.stopErr
+	h.mu.RUnlock()
 	select {
 	case <-h.done:
-		return nil
+		return stopErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(stopErr, ctx.Err())
 	}
 }
 
@@ -455,7 +462,11 @@ func (s *Supervisor) Stop(ctx context.Context, id string) error {
 		return nil
 	}
 	err := handle.Stop(ctx)
-	s.remove(id, handle)
+	select {
+	case <-handle.Done():
+		s.remove(id, handle)
+	default:
+	}
 	return err
 }
 
@@ -469,15 +480,19 @@ func (s *Supervisor) Close(ctx context.Context) error {
 		s.cancel()
 	}
 	handles := make([]*Handle, 0, len(s.handles))
-	for id, h := range s.handles {
+	for _, h := range s.handles {
 		handles = append(handles, h)
-		delete(s.handles, id)
 	}
 	s.mu.Unlock()
 	var errs []error
 	for _, handle := range handles {
 		if err := handle.Stop(ctx); err != nil {
 			errs = append(errs, err)
+		}
+		select {
+		case <-handle.Done():
+			s.remove(handle.spec.ID, handle)
+		default:
 		}
 	}
 	s.startWG.Wait()
