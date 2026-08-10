@@ -499,6 +499,7 @@ func TestPluginHostSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	host.SetStatusObserver(func(RuntimeStatus) error { return nil })
 	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
 	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	if _, err := host.Activate(t.Context(), candidate); err != nil {
@@ -535,6 +536,7 @@ func TestPluginHostNaturalExitSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	host.SetStatusObserver(func(RuntimeStatus) error { return nil })
 	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
 	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	if _, err := host.Activate(t.Context(), candidate); err != nil {
@@ -678,6 +680,7 @@ func TestPluginHostCrashRestartsThroughHandshakeAndOpensCircuit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	host.SetStatusObserver(func(RuntimeStatus) error { return nil })
 	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(digest[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(digest[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix", Address: filepath.Join(root, "runtime", "instance-g1", "rpc.sock"), Cookie: "cookie"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond, RestartLimit: 1, RestartWindow: time.Minute, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond}
 	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	first, err := host.Activate(t.Context(), candidate)

@@ -84,6 +84,19 @@ func (runtimeLauncher) Start(context.Context, string, []string, []string, io.Wri
 	return &runtimeProcess{done: make(chan error, 1)}, nil
 }
 
+type crashingLogRuntimeLauncher struct{ process *runtimeProcess }
+
+func (l crashingLogRuntimeLauncher) Start(_ context.Context, _ string, _ []string, _ []string, output io.Writer, _ pluginhost.Candidate) (pluginhost.Process, error) {
+	_, _ = output.Write([]byte("buffered shutdown log"))
+	return l.process, nil
+}
+
+type runtimeLogErrorWriter struct{}
+
+func (runtimeLogErrorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("shutdown log flush failed")
+}
+
 type runtimeQueueLauncher struct {
 	mu           sync.Mutex
 	processes    []*runtimeProcess
@@ -459,6 +472,66 @@ func TestPluginRuntimeHostCloseCancelsAndJoinsBlockedHealthWrite(t *testing.T) {
 	}
 	if _, active := host.Active(candidate.InstanceID); active {
 		t.Fatal("Close retained a terminated runtime after health-write cancellation")
+	}
+}
+
+func TestPluginRuntimeHostCloseSurfacesCrashBetweenServiceAndHostCancellation(t *testing.T) {
+	root := t.TempDir()
+	process := &runtimeProcess{done: make(chan error, 1)}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), crashingLogRuntimeLauncher{process: process}, runtimeDialer{}, runtimeLogErrorWriter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-shutdown-crash")
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	repo.healthStarted = make(chan struct{})
+	repo.healthRelease = make(chan struct{})
+	repo.healthReturned = make(chan struct{})
+	_, operationDone, err := service.beginOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- service.Close(context.Background()) }()
+	select {
+	case <-service.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel the service context")
+	}
+	process.done <- errors.New("shutdown process crash")
+	select {
+	case <-repo.healthReturned:
+	case <-time.After(time.Second):
+		t.Fatal("crash health write did not observe service cancellation")
+	}
+	deadline := time.Now().Add(time.Second)
+	for host.StatusPersistenceError(candidate.InstanceID) == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if host.StatusPersistenceError(candidate.InstanceID) == nil {
+		t.Fatal("canceled crash health write was treated as acknowledged")
+	}
+	close(repo.healthRelease)
+	operationDone()
+	closeErr := <-closeDone
+	if closeErr == nil || !strings.Contains(closeErr.Error(), "shutdown process crash") || !strings.Contains(closeErr.Error(), "shutdown log flush failed") {
+		t.Fatalf("Close error = %v", closeErr)
+	}
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if row.State != "failed" || row.PID != 0 || !strings.Contains(row.LastError, "shutdown process crash") || !strings.Contains(row.LastError, "shutdown log flush failed") {
+		t.Fatalf("crash was overwritten by clean terminal persistence: %+v", row)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("crash close wrote clean terminal state %d times", stopCalls)
 	}
 }
 

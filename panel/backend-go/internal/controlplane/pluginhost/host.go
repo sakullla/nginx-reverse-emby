@@ -361,7 +361,7 @@ func (h *Host) Publish(instance *Instance) error {
 	h.active[instance.ID] = instance
 	delete(h.prepared, instance)
 	h.mu.Unlock()
-	h.notifyOwned(instance, control)
+	h.notifyOwned(instance, control, false)
 	go h.watch(control, instance)
 	if previous != nil && previous != instance {
 		go func() {
@@ -370,7 +370,7 @@ func (h *Host) Publish(instance *Instance) error {
 				instance.mu.Lock()
 				instance.LastError = "previous generation cleanup: " + safeError(err)
 				instance.mu.Unlock()
-				h.notifyOwned(instance, control)
+				h.notifyOwned(instance, control, false)
 			}
 			if previous.terminated() {
 				h.mu.Lock()
@@ -822,21 +822,30 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 			instance.mu.RUnlock()
 			if failure == nil {
 				failure = errors.New("control-plane plugin process exited unexpectedly")
+				instance.mu.Lock()
+				if !instance.exitErrorConsumed && instance.processWaitErr == nil && instance.logErr == nil {
+					instance.processWaitErr = failure
+				}
+				instance.mu.Unlock()
 			}
 			if cleanupErr := instance.cleanupSecurity(); cleanupErr != nil {
 				if !h.recordCleanupFailure(control, instance, errors.Join(failure, cleanupErr)) {
 					return
 				}
-				h.notifyOwned(instance, control)
+				h.notifyOwned(instance, control, true)
 				return
 			}
 		}
-		backoff, retry := h.recordRestartFailure(control, instance, failure)
-		if !retry {
-			h.notifyOwned(instance, control)
+		backoff, retry, recorded := h.recordRestartFailure(control, instance, failure)
+		if !recorded {
 			return
 		}
-		h.notifyOwned(instance, control)
+		if !h.notifyOwned(instance, control, true) {
+			return
+		}
+		if !retry {
+			return
+		}
 		timer := time.NewTimer(backoff)
 		select {
 		case <-control.ctx.Done():
@@ -880,17 +889,17 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 		if instance.closer != nil {
 			_ = instance.closer.Close()
 		}
-		h.notifyOwned(replacement, control)
+		h.notifyOwned(replacement, control, false)
 		instance = replacement
 		failure = nil
 	}
 }
 
-func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance, failure error) (time.Duration, bool) {
+func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance, failure error) (time.Duration, bool, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if control.ctx.Err() != nil || h.active[instance.ID] != instance {
-		return 0, false
+		return 0, false, false
 	}
 	now := time.Now().UTC()
 	cutoff := now.Add(-control.candidate.RestartWindow)
@@ -903,12 +912,11 @@ func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance,
 	control.exits = append(kept, now)
 	instance.mu.Lock()
 	defer instance.mu.Unlock()
-	instance.exitErrorConsumed = true
 	instance.LastError = safeError(failure)
 	instance.PID = 0
 	if len(control.exits) > control.candidate.RestartLimit {
 		instance.State, instance.CircuitOpen = "failed", true
-		return 0, false
+		return 0, false, true
 	}
 	control.restarts++
 	backoff := control.backoff
@@ -918,7 +926,7 @@ func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance,
 	}
 	instance.State = "backoff"
 	instance.RestartCount = control.restarts
-	return backoff, true
+	return backoff, true, true
 }
 
 func (h *Host) recordCleanupFailure(control *runtimeControl, instance *Instance, cleanupErr error) bool {
@@ -929,11 +937,27 @@ func (h *Host) recordCleanupFailure(control *runtimeControl, instance *Instance,
 	}
 	instance.mu.Lock()
 	defer instance.mu.Unlock()
-	instance.exitErrorConsumed = true
 	instance.State = "failed"
 	instance.PID = 0
 	instance.LastError = safeError(cleanupErr)
 	return true
+}
+
+func (i *Instance) PendingExitError() error {
+	if i == nil {
+		return nil
+	}
+	i.mu.RLock()
+	if i.exitErrorConsumed {
+		i.mu.RUnlock()
+		return nil
+	}
+	exitErr := errors.Join(i.processWaitErr, i.logErr)
+	i.mu.RUnlock()
+	i.cleanupMu.Lock()
+	cleanupErr := i.cleanupErr
+	i.cleanupMu.Unlock()
+	return errors.Join(exitErr, cleanupErr)
 }
 
 func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {
@@ -942,9 +966,9 @@ func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {
 	return !h.closed && control.ctx.Err() == nil && h.active[instance.ID] == instance
 }
 
-func (h *Host) notifyOwned(instance *Instance, control *runtimeControl) {
+func (h *Host) notifyOwned(instance *Instance, control *runtimeControl, consumeExit bool) bool {
 	if instance == nil || control == nil {
-		return
+		return false
 	}
 	control.observerMu.Lock()
 	defer control.observerMu.Unlock()
@@ -953,7 +977,7 @@ func (h *Host) notifyOwned(instance *Instance, control *runtimeControl) {
 	owned := !h.closed && control.ctx.Err() == nil && h.active[instance.ID] == instance
 	h.mu.RUnlock()
 	if observer == nil || !owned {
-		return
+		return false
 	}
 	instance.mu.RLock()
 	status := RuntimeStatus{InstanceID: instance.ID, Generation: instance.Generation, State: instance.State, LastError: instance.LastError, SandboxProvider: instance.SandboxProvider, PID: instance.PID, RestartCount: instance.RestartCount, CircuitOpen: instance.CircuitOpen}
@@ -961,22 +985,29 @@ func (h *Host) notifyOwned(instance *Instance, control *runtimeControl) {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if control.ctx.Err() != nil || !h.ownsRuntime(instance, control) {
-			return
+			return false
 		}
 		if err = observer(status); err == nil {
 			h.mu.Lock()
+			acknowledged := false
 			if control.ctx.Err() == nil && h.active[instance.ID] == instance {
+				if consumeExit {
+					instance.mu.Lock()
+					instance.exitErrorConsumed = true
+					instance.mu.Unlock()
+				}
 				delete(h.observerErrors, instance.ID)
+				acknowledged = true
 			}
 			h.mu.Unlock()
-			return
+			return acknowledged
 		}
 		if attempt < 2 {
 			timer := time.NewTimer(time.Duration(attempt+1) * 10 * time.Millisecond)
 			select {
 			case <-control.ctx.Done():
 				timer.Stop()
-				return
+				return false
 			case <-timer.C:
 			}
 		}
@@ -989,6 +1020,7 @@ func (h *Host) notifyOwned(instance *Instance, control *runtimeControl) {
 	instance.mu.Lock()
 	instance.LastError = safeError(errors.Join(errors.New("runtime status persistence failed"), err))
 	instance.mu.Unlock()
+	return false
 }
 
 type ExecLauncher struct {
