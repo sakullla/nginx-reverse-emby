@@ -32,7 +32,16 @@ type controlAttemptSecurity struct {
 	cleanup             func() error
 }
 
+type controlAttemptSecurityOps struct {
+	writeTLS func(string) (*tls.Config, []string, error)
+	cleanup  func(string, string) error
+}
+
 func provisionControlAttemptSecurity(runtimeDirectory string, endpoint Endpoint) (controlAttemptSecurity, error) {
+	return provisionControlAttemptSecurityWithOps(runtimeDirectory, endpoint, controlAttemptSecurityOps{})
+}
+
+func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint Endpoint, ops controlAttemptSecurityOps) (controlAttemptSecurity, error) {
 	runtimeDirectory, err := filepath.Abs(runtimeDirectory)
 	if err != nil || strings.TrimSpace(runtimeDirectory) == "" {
 		return controlAttemptSecurity{}, errors.New("control-plane plugin attempt requires a managed runtime directory")
@@ -41,38 +50,41 @@ func provisionControlAttemptSecurity(runtimeDirectory string, endpoint Endpoint)
 	if err != nil {
 		return controlAttemptSecurity{}, err
 	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = cleanupControlAttemptDirectory(runtimeDirectory, root)
-		}
-	}()
+	cleanup := ops.cleanup
+	if cleanup == nil {
+		cleanup = cleanupControlAttemptDirectory
+	}
+	security := controlAttemptSecurity{endpoint: endpoint, cleanup: func() error { return cleanup(runtimeDirectory, root) }}
 	if err := os.Chmod(root, 0o700); err != nil {
-		return controlAttemptSecurity{}, err
+		return security, err
 	}
 	endpointDirectory := filepath.Join(root, "endpoint")
 	credentialDirectory := filepath.Join(root, "credentials")
+	security.endpointDirectory = endpointDirectory
+	security.credentialDirectory = credentialDirectory
 	if err := os.Mkdir(endpointDirectory, 0o700); err != nil {
-		return controlAttemptSecurity{}, err
+		return security, err
 	}
 	if err := os.Mkdir(credentialDirectory, 0o700); err != nil {
-		return controlAttemptSecurity{}, err
+		return security, err
 	}
 	cookieBytes := make([]byte, 32)
 	if _, err := rand.Read(cookieBytes); err != nil {
-		return controlAttemptSecurity{}, err
+		return security, err
 	}
 	endpoint.Cookie = hex.EncodeToString(cookieBytes)
 	cookieFile := filepath.Join(credentialDirectory, "cookie")
 	if err := os.WriteFile(cookieFile, []byte(endpoint.Cookie), 0o600); err != nil {
-		return controlAttemptSecurity{}, err
+		return security, err
 	}
 	environment := []string{"NRE_PLUGIN_COOKIE_FILE=" + cookieFile}
 	guestEndpoint := ""
 	if strings.EqualFold(endpoint.Network, "unix") {
 		endpoint.Address = filepath.Join(endpointDirectory, "rpc.sock")
 		if runtime.GOOS != "windows" && len(endpoint.Address) >= 104 {
-			return controlAttemptSecurity{}, errors.New("control-plane plugin managed unix endpoint path is too long")
+			security.endpoint = endpoint
+			security.environment = environment
+			return security, errors.New("control-plane plugin managed unix endpoint path is too long")
 		}
 		guestEndpoint = controlGuestEndpointDirectory + "/rpc.sock"
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT=unix:"+endpoint.Address)
@@ -80,15 +92,24 @@ func provisionControlAttemptSecurity(runtimeDirectory string, endpoint Endpoint)
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+endpoint.Network+":"+endpoint.Address)
 	}
 	if strings.EqualFold(endpoint.Network, "tcp") {
-		clientTLS, tlsEnvironment, err := writeControlAttemptTLS(credentialDirectory)
+		writeTLS := ops.writeTLS
+		if writeTLS == nil {
+			writeTLS = writeControlAttemptTLS
+		}
+		clientTLS, tlsEnvironment, err := writeTLS(credentialDirectory)
 		if err != nil {
-			return controlAttemptSecurity{}, err
+			security.endpoint = endpoint
+			security.guestEndpoint = guestEndpoint
+			security.environment = environment
+			return security, err
 		}
 		endpoint.TLSConfig = clientTLS
 		environment = append(environment, tlsEnvironment...)
 	}
-	failed = false
-	return controlAttemptSecurity{endpoint: endpoint, endpointDirectory: endpointDirectory, credentialDirectory: credentialDirectory, guestEndpoint: guestEndpoint, environment: environment, cleanup: func() error { return cleanupControlAttemptDirectory(runtimeDirectory, root) }}, nil
+	security.endpoint = endpoint
+	security.guestEndpoint = guestEndpoint
+	security.environment = environment
+	return security, nil
 }
 
 func cleanupControlAttemptDirectory(runtimeDirectory, root string) error {

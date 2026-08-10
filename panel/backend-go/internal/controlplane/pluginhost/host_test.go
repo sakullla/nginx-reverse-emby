@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -340,6 +341,102 @@ func TestPluginHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.
 	host.mu.RUnlock()
 	if prepared != 0 || !process.isDone() {
 		t.Fatalf("Close cleanup result: prepared=%d done=%v", prepared, process.isDone())
+	}
+}
+
+func newBackendHostCandidate(t *testing.T, root string) Candidate {
+	t.Helper()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("backend host candidate")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	return candidate
+}
+
+func TestPluginHostProvisionFailureRetainsCredentialOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newBackendHostCandidate(t, root)
+	candidate.Endpoint = Endpoint{Network: "tcp", Address: "127.0.0.1:12345"}
+	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, &testDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupErr := errors.New("provision setup failed")
+	cleanupErr := errors.New("credential cleanup failed")
+	cleanupCalls := 0
+	host.provision = func(runtimeDirectory string, endpoint Endpoint) (controlAttemptSecurity, error) {
+		return provisionControlAttemptSecurityWithOps(runtimeDirectory, endpoint, controlAttemptSecurityOps{
+			writeTLS: func(string) (*tls.Config, []string, error) { return nil, nil, setupErr },
+			cleanup: func(runtimeRoot, attemptRoot string) error {
+				cleanupCalls++
+				if cleanupCalls == 1 {
+					return cleanupErr
+				}
+				return cleanupControlAttemptDirectory(runtimeRoot, attemptRoot)
+			},
+		})
+	}
+	if _, err := host.PrepareCandidate(t.Context(), candidate); !errors.Is(err, setupErr) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("PrepareCandidate provision error = %v", err)
+	}
+	host.mu.RLock()
+	prepared := len(host.prepared)
+	host.mu.RUnlock()
+	if prepared != 1 {
+		t.Fatalf("provision failure ownership = %d, want 1", prepared)
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry partial provision cleanup: %v", err)
+	}
+	if cleanupCalls != 2 {
+		t.Fatalf("credential cleanup calls = %d, want 2", cleanupCalls)
+	}
+}
+
+type retryPrestartCleanupLauncher struct {
+	mu           sync.Mutex
+	cleanupCalls int
+}
+
+func (l *retryPrestartCleanupLauncher) Start(context.Context, string, []string, []string, io.Writer, Candidate) (Process, error) {
+	return nil, &launchCleanupError{err: errors.New("process pre-start cleanup failed"), cleanup: func() error {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.cleanupCalls++
+		return nil
+	}}
+}
+
+func TestPluginHostPrestartFailureRetainsCleanupOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newBackendHostCandidate(t, root)
+	launcher := &retryPrestartCleanupLauncher{}
+	host, err := New(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.PrepareCandidate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "process pre-start cleanup failed") {
+		t.Fatalf("PrepareCandidate pre-start error = %v", err)
+	}
+	host.mu.RLock()
+	prepared := len(host.prepared)
+	host.mu.RUnlock()
+	if prepared != 1 {
+		t.Fatalf("pre-start failure ownership = %d, want 1", prepared)
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry pre-start cleanup: %v", err)
+	}
+	launcher.mu.Lock()
+	cleanupCalls := launcher.cleanupCalls
+	launcher.mu.Unlock()
+	if cleanupCalls != 1 {
+		t.Fatalf("pre-start cleanup retry calls = %d, want 1", cleanupCalls)
 	}
 }
 
@@ -879,6 +976,39 @@ func TestPluginHostStopStillSurfacesPreexistingCrash(t *testing.T) {
 	}
 	if err := instance.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "preexisting crash") {
 		t.Fatalf("preexisting crash error = %v", err)
+	}
+}
+
+func TestPluginHostCanceledWatcherLeavesReadyCrashAndLogForStopOrClose(t *testing.T) {
+	for _, operation := range []string{"stop", "close"} {
+		t.Run(operation, func(t *testing.T) {
+			processDone := make(chan struct{})
+			close(processDone)
+			controlCtx, cancelControl := context.WithCancel(context.Background())
+			control := &runtimeControl{candidate: normalizeRestartCandidate(Candidate{}), ctx: controlCtx, cancel: cancelControl}
+			instance := &Instance{ID: "instance", Generation: "g1", PID: 77, State: "failed", process: &testProcess{done: make(chan error, 1)}, grace: time.Millisecond, done: processDone, processWaitErr: errors.New("ready crash"), logErr: errors.New("ready log failure"), control: control}
+			hostCtx, cancelHost := context.WithCancel(context.Background())
+			host := &Host{ctx: hostCtx, cancel: cancelHost, active: map[string]*Instance{"instance": instance}, prepared: map[*Instance]struct{}{}, observerErrors: map[string]error{}}
+			control.wg.Add(1)
+			cancelControl()
+			go host.watch(control, instance)
+			control.wg.Wait()
+			instance.mu.RLock()
+			consumed := instance.exitErrorConsumed
+			instance.mu.RUnlock()
+			if consumed {
+				t.Fatal("canceled watcher consumed an exit it could not record or notify")
+			}
+			var err error
+			if operation == "stop" {
+				err = host.Stop(t.Context(), instance.ID)
+			} else {
+				err = host.Close(t.Context())
+			}
+			if err == nil || !strings.Contains(err.Error(), "ready crash") || !strings.Contains(err.Error(), "ready log failure") {
+				t.Fatalf("%s error = %v", operation, err)
+			}
+		})
 	}
 }
 

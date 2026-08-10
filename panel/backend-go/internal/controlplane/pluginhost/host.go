@@ -86,6 +86,7 @@ type Host struct {
 	runtimeRoot    string
 	launcher       Launcher
 	dialer         RPCDialer
+	provision      func(string, Endpoint) (controlAttemptSecurity, error)
 	logs           io.Writer
 	active         map[string]*Instance
 	prepared       map[*Instance]struct{}
@@ -141,10 +142,13 @@ type Instance struct {
 	control                    *runtimeControl
 	securityCleanup            func() error
 	processCleanup             func() error
+	processCleanupPendingErr   error
 	cleanupMu                  sync.Mutex
 	cleanupDone                bool
 	cleanupErr                 error
 	processCancel              context.CancelFunc
+	setupDone                  chan struct{}
+	setupOnce                  sync.Once
 }
 
 func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer) (*Host, error) {
@@ -161,7 +165,7 @@ func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer
 		logs = io.Discard
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance), prepared: make(map[*Instance]struct{}), observerErrors: make(map[string]error)}, nil
+	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, provision: provisionControlAttemptSecurity, logs: logs, active: make(map[string]*Instance), prepared: make(map[*Instance]struct{}), observerErrors: make(map[string]error)}, nil
 }
 
 func (h *Host) SetStatusObserver(observer func(RuntimeStatus) error) {
@@ -210,19 +214,42 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if err != nil {
 		return nil, err
 	}
-	security, err := provisionControlAttemptSecurity(filepath.Dir(executable), candidate.Endpoint)
-	if err != nil {
-		return nil, err
+	provision := h.provision
+	if provision == nil {
+		provision = provisionControlAttemptSecurity
 	}
-	cleanupSecurity := true
-	defer func() {
-		if cleanupSecurity {
-			_ = security.cleanup()
-		}
-	}()
+	security, provisionErr := provision(filepath.Dir(executable), candidate.Endpoint)
+	if candidate.GracePeriod <= 0 {
+		candidate.GracePeriod = 5 * time.Second
+	}
 	candidate.Endpoint = security.endpoint
 	candidate.endpointDirectory, candidate.credentialDirectory, candidate.guestEndpoint = security.endpointDirectory, security.credentialDirectory, security.guestEndpoint
 	candidate.attemptEnvironment = security.environment
+	if security.cleanup != nil {
+		instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "starting", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt, setupDone: make(chan struct{})}
+		h.mu.Lock()
+		h.prepared[instance] = struct{}{}
+		closed := h.closed
+		h.mu.Unlock()
+		ownedInstance := instance
+		defer func() {
+			if resultErr != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), hostProcessJoinTimeout(ownedInstance.grace))
+				defer cancel()
+				resultErr = errors.Join(resultErr, h.StopCandidate(cleanupCtx, ownedInstance))
+			}
+		}()
+		defer instance.finishSetup()
+		if closed {
+			return nil, errors.New("control-plane plugin host closed during candidate preparation")
+		}
+	}
+	if provisionErr != nil {
+		return nil, provisionErr
+	}
+	if instance == nil {
+		return nil, errors.New("control-plane plugin attempt security has no cleanup owner")
+	}
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
@@ -232,50 +259,25 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		_ = logWriter.Close()
 		var cleanupOwner *launchCleanupError
 		if errors.As(err, &cleanupOwner) {
-			if candidate.GracePeriod <= 0 {
-				candidate.GracePeriod = 5 * time.Second
-			}
-			credentialCleanupErr := security.cleanup()
-			credentialCleanup := security.cleanup
-			if credentialCleanupErr == nil {
-				credentialCleanup = nil
-			}
-			instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "failed", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: credentialCleanup, processCleanup: cleanupOwner.cleanup, processCancel: cancelAttempt}
-			cleanupSecurity = false
-			h.mu.Lock()
-			h.prepared[instance] = struct{}{}
-			h.mu.Unlock()
-			return nil, errors.Join(fmt.Errorf("start control-plane plugin process: %w", err), credentialCleanupErr)
+			instance.processCleanup = cleanupOwner.cleanup
+			instance.processCleanupPendingErr = cleanupOwner.err
 		}
 		return nil, fmt.Errorf("start control-plane plugin process: %w", err)
-	}
-	if candidate.GracePeriod <= 0 {
-		candidate.GracePeriod = 5 * time.Second
 	}
 	provider := "platform"
 	if hasUnsandboxedGrant(candidate.Grants) {
 		provider = "unsandboxed"
 	}
-	instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "starting", SandboxProvider: provider, process: process, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt}
-	cleanupSecurity = false
+	instance.mu.Lock()
+	instance.PID = process.PID()
+	instance.SandboxProvider = provider
+	instance.process = process
+	instance.logCloser = logWriter
+	instance.done = make(chan struct{})
+	instance.candidate = candidate
+	instance.mu.Unlock()
 	keepAttempt = true
 	go instance.monitor()
-	h.mu.Lock()
-	h.prepared[instance] = struct{}{}
-	closed := h.closed
-	h.mu.Unlock()
-	ownedInstance := instance
-	defer func() {
-		if resultErr == nil {
-			return
-		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), hostProcessJoinTimeout(ownedInstance.grace))
-		defer cancel()
-		resultErr = errors.Join(resultErr, h.StopCandidate(cleanupCtx, ownedInstance))
-	}()
-	if closed {
-		return nil, errors.New("control-plane plugin host closed during candidate preparation")
-	}
 	client, closer, err := h.dialer.Dial(attemptCtx, candidate.Endpoint, candidate.Deadline)
 	if err != nil {
 		return nil, err
@@ -546,9 +548,38 @@ func (i *Instance) Stop(ctx context.Context) error {
 	return i.stop(ctx)
 }
 
+func (i *Instance) finishSetup() {
+	if i == nil || i.setupDone == nil {
+		return
+	}
+	i.setupOnce.Do(func() { close(i.setupDone) })
+}
+
 func (i *Instance) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if i.setupDone != nil {
+		select {
+		case <-i.setupDone:
+		default:
+			if i.processCancel != nil {
+				i.processCancel()
+			}
+			setupCtx, cancel := context.WithTimeout(context.Background(), hostProcessJoinTimeout(i.grace))
+			select {
+			case <-i.setupDone:
+			case <-setupCtx.Done():
+				cancel()
+				err := fmt.Errorf("join control-plane plugin process setup: %w", setupCtx.Err())
+				i.mu.Lock()
+				i.State = "failed"
+				i.LastError = safeError(err)
+				i.mu.Unlock()
+				return err
+			}
+			cancel()
+		}
 	}
 	i.mu.Lock()
 	if i.State == "stopped" {
@@ -667,7 +698,10 @@ func (i *Instance) cleanupSecurity() error {
 		return nil
 	}
 	var processCleanupErr, credentialCleanupErr error
-	if i.processCleanup != nil {
+	if i.processCleanupPendingErr != nil {
+		processCleanupErr = i.processCleanupPendingErr
+		i.processCleanupPendingErr = nil
+	} else if i.processCleanup != nil {
 		processCleanupErr = i.processCleanup()
 	} else if process, ok := i.process.(interface{ Cleanup() error }); ok {
 		processCleanupErr = process.Cleanup()
@@ -783,19 +817,16 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 				return
 			case <-instance.done:
 			}
-			instance.mu.Lock()
+			instance.mu.RLock()
 			failure = errors.Join(instance.processWaitErr, instance.logErr)
-			instance.exitErrorConsumed = true
-			instance.mu.Unlock()
+			instance.mu.RUnlock()
 			if failure == nil {
 				failure = errors.New("control-plane plugin process exited unexpectedly")
 			}
 			if cleanupErr := instance.cleanupSecurity(); cleanupErr != nil {
-				instance.mu.Lock()
-				instance.State = "failed"
-				instance.PID = 0
-				instance.LastError = safeError(cleanupErr)
-				instance.mu.Unlock()
+				if !h.recordCleanupFailure(control, instance, errors.Join(failure, cleanupErr)) {
+					return
+				}
 				h.notifyOwned(instance, control)
 				return
 			}
@@ -872,6 +903,7 @@ func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance,
 	control.exits = append(kept, now)
 	instance.mu.Lock()
 	defer instance.mu.Unlock()
+	instance.exitErrorConsumed = true
 	instance.LastError = safeError(failure)
 	instance.PID = 0
 	if len(control.exits) > control.candidate.RestartLimit {
@@ -887,6 +919,21 @@ func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance,
 	instance.State = "backoff"
 	instance.RestartCount = control.restarts
 	return backoff, true
+}
+
+func (h *Host) recordCleanupFailure(control *runtimeControl, instance *Instance, cleanupErr error) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || control.ctx.Err() != nil || h.active[instance.ID] != instance {
+		return false
+	}
+	instance.mu.Lock()
+	defer instance.mu.Unlock()
+	instance.exitErrorConsumed = true
+	instance.State = "failed"
+	instance.PID = 0
+	instance.LastError = safeError(cleanupErr)
+	return true
 }
 
 func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {

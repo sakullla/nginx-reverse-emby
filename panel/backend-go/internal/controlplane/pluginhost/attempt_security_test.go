@@ -1,10 +1,47 @@
 package pluginhost
 
 import (
+	"crypto/tls"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestPluginHostAttemptSetupFailureReturnsRetryableCleanupOwner(t *testing.T) {
+	runtimeDirectory := t.TempDir()
+	setupErr := errors.New("TLS setup failed")
+	cleanupErr := errors.New("credential cleanup failed")
+	cleanupCalls := 0
+	attempt, err := provisionControlAttemptSecurityWithOps(runtimeDirectory, Endpoint{Network: "tcp", Address: "127.0.0.1:12345"}, controlAttemptSecurityOps{
+		writeTLS: func(string) (*tls.Config, []string, error) { return nil, nil, setupErr },
+		cleanup: func(runtimeRoot, attemptRoot string) error {
+			cleanupCalls++
+			if cleanupCalls == 1 {
+				return cleanupErr
+			}
+			return cleanupControlAttemptDirectory(runtimeRoot, attemptRoot)
+		},
+	})
+	if !errors.Is(err, setupErr) {
+		t.Fatalf("setup error = %v", err)
+	}
+	if attempt.cleanup == nil || attempt.credentialDirectory == "" {
+		t.Fatalf("setup failure did not return its partial owner: %+v", attempt)
+	}
+	if err := attempt.cleanup(); !errors.Is(err, cleanupErr) {
+		t.Fatalf("first cleanup error = %v", err)
+	}
+	if _, err := os.Stat(attempt.credentialDirectory); err != nil {
+		t.Fatalf("failed cleanup lost retryable credential owner: %v", err)
+	}
+	if err := attempt.cleanup(); err != nil {
+		t.Fatalf("cleanup retry: %v", err)
+	}
+	if _, err := os.Stat(attempt.credentialDirectory); !os.IsNotExist(err) {
+		t.Fatalf("credential directory survived retry: %v", err)
+	}
+}
 
 func TestPluginHostAttemptSecurityIsFreshAndDestroyed(t *testing.T) {
 	runtimeDirectory := t.TempDir()
