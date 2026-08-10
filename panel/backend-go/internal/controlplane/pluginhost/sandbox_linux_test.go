@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,6 +41,34 @@ func TestPluginHostLinuxSandboxLiveProcess(t *testing.T) {
 	}
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPluginHostLinuxSandboxCleanupKillsResidualProcess(t *testing.T) {
+	if os.Getenv("NRE_TEST_LINUX_SANDBOX") != "1" {
+		t.Skip("set NRE_TEST_LINUX_SANDBOX=1 on a Linux cgroup v2 host")
+	}
+	dir, cgroup, err := prepareBackendCgroup(ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 8, Files: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = backendLinuxSandboxSysProcAttr(int(cgroup.Fd()))
+	if err := cmd.Start(); err != nil {
+		_ = cgroup.Close()
+		_ = removeBackendCgroup(dir)
+		t.Fatal(err)
+	}
+	if err := cgroup.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeBackendCgroup(dir); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("residual cgroup process exited without cgroup.kill")
 	}
 }
 

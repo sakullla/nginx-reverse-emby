@@ -81,7 +81,7 @@ func startAgentAttemptServer(security attemptSecurity) (net.Listener, *grpc.Serv
 	return listener, server, nil
 }
 
-func agentAttemptServiceDesc(cookie string) *grpc.ServiceDesc {
+func agentAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.ServiceDesc {
 	methods := []grpc.MethodDesc{{MethodName: "Handshake", Handler: func(_ any, ctx context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.HandshakeRequest")
 		if err != nil {
@@ -124,6 +124,11 @@ func agentAttemptServiceDesc(cookie string) *grpc.ServiceDesc {
 			successField := responseDescriptor.Fields().ByName("success")
 			success := response.Mutable(successField).Message()
 			success.Set(success.Descriptor().Fields().ByName("ready"), protoreflect.ValueOfBool(true))
+			if methodName == "Stop" {
+				for _, callback := range stopCallbacks {
+					go callback()
+				}
+			}
 			return response, nil
 		}})
 	}

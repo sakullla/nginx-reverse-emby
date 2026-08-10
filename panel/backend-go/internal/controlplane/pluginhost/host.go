@@ -136,6 +136,7 @@ type Instance struct {
 	candidate                  Candidate
 	control                    *runtimeControl
 	securityCleanup            func() error
+	processCleanup             func() error
 	cleanupMu                  sync.Mutex
 	cleanupDone                bool
 	cleanupErr                 error
@@ -225,6 +226,23 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	process, err := h.launcher.Start(attemptCtx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
 	if err != nil {
 		_ = logWriter.Close()
+		var cleanupOwner *launchCleanupError
+		if errors.As(err, &cleanupOwner) {
+			if candidate.GracePeriod <= 0 {
+				candidate.GracePeriod = 5 * time.Second
+			}
+			credentialCleanupErr := security.cleanup()
+			credentialCleanup := security.cleanup
+			if credentialCleanupErr == nil {
+				credentialCleanup = nil
+			}
+			instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "failed", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: credentialCleanup, processCleanup: cleanupOwner.cleanup, processCancel: cancelAttempt}
+			cleanupSecurity = false
+			h.mu.Lock()
+			h.prepared[instance] = struct{}{}
+			h.mu.Unlock()
+			return nil, errors.Join(fmt.Errorf("start control-plane plugin process: %w", err), credentialCleanupErr)
+		}
 		return nil, fmt.Errorf("start control-plane plugin process: %w", err)
 	}
 	if candidate.GracePeriod <= 0 {
@@ -537,24 +555,37 @@ func (i *Instance) stop(ctx context.Context) error {
 	var signalErr, killErr, joinErr, waitErr error
 	terminated := false
 	alreadyExited := false
-	terminationRequested := false
 	if i.process != nil {
+		grace := i.grace
+		if grace <= 0 {
+			grace = 5 * time.Second
+		}
 		select {
 		case <-i.done:
 			terminated = true
 			alreadyExited = true
 		default:
 		}
-		if !terminated {
-			grace := i.grace
-			if grace <= 0 {
-				grace = 5 * time.Second
+		if !terminated && i.rpcStopErr == nil && i.client != nil {
+			timer := time.NewTimer(grace)
+			select {
+			case <-i.done:
+				terminated = true
+			case <-ctx.Done():
+			case <-timer.C:
 			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
+		if !terminated {
 			graceful := false
 			i.gracefulOnce.Do(func() {
 				graceful = true
 				i.signalErr = i.process.Signal(os.Interrupt)
-				terminationRequested = i.signalErr == nil
 			})
 			if graceful {
 				timer := time.NewTimer(grace)
@@ -573,7 +604,6 @@ func (i *Instance) stop(ctx context.Context) error {
 			}
 			if !terminated {
 				killErr = i.process.Kill()
-				terminationRequested = terminationRequested || killErr == nil
 				if i.processCancel != nil {
 					i.processCancel()
 				}
@@ -587,20 +617,21 @@ func (i *Instance) stop(ctx context.Context) error {
 				cancel()
 			}
 		}
-		if terminated && !alreadyExited && !terminationRequested {
+		if terminated && !alreadyExited {
 			i.mu.RLock()
 			waitErr = i.waitErr
 			i.mu.RUnlock()
 		}
 	}
 	var closeErr, cleanupErr error
-	if terminated {
+	processExited := terminated || i.process == nil
+	if processExited {
 		i.closeTransport()
 		closeErr = i.closeErr
 		cleanupErr = i.cleanupSecurity()
 	}
 	i.mu.Lock()
-	if (terminated || i.process == nil) && cleanupErr == nil {
+	if processExited && cleanupErr == nil {
 		i.State = "stopped"
 		i.PID = 0
 	} else {
@@ -611,7 +642,7 @@ func (i *Instance) stop(ctx context.Context) error {
 		i.LastError = safeError(errors.Join(killErr, joinErr, cleanupErr))
 	}
 	i.mu.Unlock()
-	if (terminated || i.process == nil) && i.processCancel != nil {
+	if processExited && i.processCancel != nil {
 		i.processCancel()
 	}
 	return errors.Join(i.rpcStopErr, i.signalErr, signalErr, killErr, joinErr, waitErr, closeErr, cleanupErr)
@@ -620,12 +651,19 @@ func (i *Instance) stop(ctx context.Context) error {
 func (i *Instance) cleanupSecurity() error {
 	i.cleanupMu.Lock()
 	defer i.cleanupMu.Unlock()
-	if i.cleanupDone || i.securityCleanup == nil {
-		i.cleanupDone = true
-		i.cleanupErr = nil
+	if i.cleanupDone {
 		return nil
 	}
-	i.cleanupErr = i.securityCleanup()
+	var processCleanupErr, credentialCleanupErr error
+	if i.processCleanup != nil {
+		processCleanupErr = i.processCleanup()
+	} else if process, ok := i.process.(interface{ Cleanup() error }); ok {
+		processCleanupErr = process.Cleanup()
+	}
+	if i.securityCleanup != nil {
+		credentialCleanupErr = i.securityCleanup()
+	}
+	i.cleanupErr = errors.Join(processCleanupErr, credentialCleanupErr)
 	if i.cleanupErr == nil {
 		i.cleanupDone = true
 	}
@@ -635,7 +673,7 @@ func (i *Instance) cleanupSecurity() error {
 func (i *Instance) cleanupComplete() bool {
 	i.cleanupMu.Lock()
 	defer i.cleanupMu.Unlock()
-	return i.securityCleanup == nil || i.cleanupDone
+	return i.cleanupDone
 }
 
 func (i *Instance) stopRPC(ctx context.Context) error {
@@ -893,9 +931,11 @@ func (h *Host) notifyOwned(instance *Instance, control *runtimeControl) {
 	instance.mu.Unlock()
 }
 
-type ExecLauncher struct{}
+type ExecLauncher struct {
+	configure func(*exec.Cmd, Candidate) (func() error, func() error, func(int) error, error)
+}
 
-func (ExecLauncher) Start(ctx context.Context, executable string, args, environment []string, output io.Writer, candidate Candidate) (Process, error) {
+func (l ExecLauncher) Start(ctx context.Context, executable string, args, environment []string, output io.Writer, candidate Candidate) (Process, error) {
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = filepath.Dir(executable)
 	processEnvironment, err := buildPluginEnvironment(environment, candidate.attemptEnvironment)
@@ -904,21 +944,69 @@ func (ExecLauncher) Start(ctx context.Context, executable string, args, environm
 	}
 	cmd.Env = processEnvironment
 	cmd.Stdout, cmd.Stderr = output, output
-	prepareCleanup, attach, err := configurePlatformSandbox(cmd, candidate)
+	configure := l.configure
+	if configure == nil {
+		configure = configurePlatformSandbox
+	}
+	prepareCleanup, processCleanup, attach, err := configure(cmd, candidate)
 	if err != nil {
 		return nil, err
 	}
-	defer prepareCleanup()
+	startResources := newBackendCleanupTask(prepareCleanup)
+	processResources := newBackendCleanupTask(processCleanup)
+	failedStart := func(startErr error) (Process, error) {
+		cleanupErr := errors.Join(startResources.run(), processResources.run())
+		resultErr := errors.Join(startErr, cleanupErr)
+		if cleanupErr != nil {
+			return nil, &launchCleanupError{err: resultErr, cleanup: func() error { return errors.Join(startResources.run(), processResources.run()) }}
+		}
+		return nil, resultErr
+	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return failedStart(err)
 	}
-	cleanup, err := attach(cmd.Process.Pid)
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, err
+	if err := attach(cmd.Process.Pid); err != nil {
+		return failedStart(errors.Join(err, cmd.Process.Kill(), cmd.Wait()))
 	}
-	return execProcess{cmd: cmd, cleanup: cleanup}, nil
+	if err := startResources.run(); err != nil {
+		processCleanupErr := processResources.run()
+		resultErr := errors.Join(err, cmd.Process.Kill(), cmd.Wait(), processCleanupErr)
+		return nil, &launchCleanupError{err: resultErr, cleanup: func() error { return errors.Join(startResources.run(), processResources.run()) }}
+	}
+	return &execProcess{cmd: cmd, cleanup: processResources}, nil
+}
+
+type launchCleanupError struct {
+	err     error
+	cleanup func() error
+}
+
+func (e *launchCleanupError) Error() string { return e.err.Error() }
+func (e *launchCleanupError) Unwrap() error { return e.err }
+
+type backendCleanupTask struct {
+	mu   sync.Mutex
+	fn   func() error
+	done bool
+	err  error
+}
+
+func newBackendCleanupTask(fn func() error) *backendCleanupTask {
+	return &backendCleanupTask{fn: fn, done: fn == nil}
+}
+
+func (c *backendCleanupTask) run() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return nil
+	}
+	c.err = c.fn()
+	c.done = c.err == nil
+	return c.err
 }
 
 func buildPluginEnvironment(candidate, generated []string) ([]string, error) {
@@ -982,13 +1070,14 @@ func isSensitiveEnvironment(key string) bool {
 
 type execProcess struct {
 	cmd     *exec.Cmd
-	cleanup func() error
+	cleanup *backendCleanupTask
 }
 
-func (p execProcess) PID() int                 { return p.cmd.Process.Pid }
-func (p execProcess) Wait() error              { return errors.Join(p.cmd.Wait(), p.cleanup()) }
-func (p execProcess) Signal(s os.Signal) error { return p.cmd.Process.Signal(s) }
-func (p execProcess) Kill() error              { return p.cmd.Process.Kill() }
+func (p *execProcess) PID() int                 { return p.cmd.Process.Pid }
+func (p *execProcess) Wait() error              { return p.cmd.Wait() }
+func (p *execProcess) Signal(s os.Signal) error { return p.cmd.Process.Signal(s) }
+func (p *execProcess) Kill() error              { return p.cmd.Process.Kill() }
+func (p *execProcess) Cleanup() error           { return p.cleanup.run() }
 
 func authorizeSandbox(candidate Candidate) error {
 	if err := candidate.Requirement.validatePackageDigest(candidate.Identity.PackageDigest); err != nil {

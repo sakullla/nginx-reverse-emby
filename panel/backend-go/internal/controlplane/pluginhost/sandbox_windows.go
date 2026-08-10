@@ -28,56 +28,49 @@ func validateWindowsDefenseBudget(c Candidate) error {
 	}
 	return nil
 }
-func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(int) (func() error, error), error) {
+func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func() error, func(int) error, error) {
 	if !hasUnsandboxedGrant(c.Grants) {
-		return nil, nil, validatePlatformSandbox(c)
+		return nil, nil, nil, validatePlatformSandbox(c)
 	}
 	if err := validateWindowsDefenseBudget(c); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var source windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_DUPLICATE|windows.TOKEN_ASSIGN_PRIMARY|windows.TOKEN_QUERY, &source); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer source.Close()
 	var restricted windows.Token
 	ok, _, callErr := backendCreateRestrictedToken.Call(uintptr(source), 0x1|0x4|0x8, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&restricted)))
 	if ok == 0 {
-		return nil, nil, callErr
+		return nil, nil, nil, callErr
 	}
 	job, err := newBackendJob(c.Requirement.Budget())
 	if err != nil {
 		restricted.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cmd.SysProcAttr = backendSandboxSysProcAttr(restricted)
-	attach := func(pid int) (cleanup func() error, resultErr error) {
-		failed := true
-		defer func() {
-			if failed {
-				_ = windows.CloseHandle(job)
-			}
-		}()
+	attach := func(pid int) error {
 		processHandle, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer windows.CloseHandle(processHandle)
 		if err := windows.AssignProcessToJobObject(job, processHandle); err != nil {
-			return nil, fmt.Errorf("assign suspended plugin job: %w", err)
+			return fmt.Errorf("assign suspended plugin job: %w", err)
 		}
 		thread, err := backendSuspendedThread(uint32(pid))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer windows.CloseHandle(thread)
 		if _, err := windows.ResumeThread(thread); err != nil {
-			return nil, fmt.Errorf("resume sandboxed plugin: %w", err)
+			return fmt.Errorf("resume sandboxed plugin: %w", err)
 		}
-		failed = false
-		return func() error { return windows.CloseHandle(job) }, nil
+		return nil
 	}
-	return restricted.Close, attach, nil
+	return restricted.Close, func() error { return windows.CloseHandle(job) }, attach, nil
 }
 
 func backendSandboxSysProcAttr(token windows.Token) *syscall.SysProcAttr {

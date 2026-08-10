@@ -80,7 +80,7 @@ func startControlAttemptServer(security controlAttemptSecurity) (net.Listener, *
 	return listener, server, nil
 }
 
-func controlAttemptServiceDesc(cookie string) *grpc.ServiceDesc {
+func controlAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.ServiceDesc {
 	methods := []grpc.MethodDesc{{MethodName: "Handshake", Handler: func(_ any, ctx context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.HandshakeRequest")
 		if err != nil {
@@ -122,6 +122,11 @@ func controlAttemptServiceDesc(cookie string) *grpc.ServiceDesc {
 			response := dynamicpb.NewMessage(responseDescriptor)
 			success := response.Mutable(responseDescriptor.Fields().ByName("success")).Message()
 			success.Set(success.Descriptor().Fields().ByName("ready"), protoreflect.ValueOfBool(true))
+			if methodName == "Stop" {
+				for _, callback := range stopCallbacks {
+					go callback()
+				}
+			}
 			return response, nil
 		}})
 	}

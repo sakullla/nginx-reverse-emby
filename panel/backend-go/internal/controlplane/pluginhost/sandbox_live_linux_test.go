@@ -82,7 +82,7 @@ func runControlLinuxSandboxGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	server.RegisterService(controlAttemptServiceDesc(string(cookieBytes)), struct{}{})
+	server.RegisterService(controlAttemptServiceDesc(string(cookieBytes), server.GracefulStop), struct{}{})
 	if err := server.Serve(listener); err != nil {
 		t.Fatal(err)
 	}

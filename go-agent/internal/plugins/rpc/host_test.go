@@ -121,6 +121,24 @@ type queuedHostRunner struct {
 	processes []pluginprocess.ManagedProcess
 }
 
+type cleanupRetryHostRunner struct {
+	process      *hostProcess
+	mu           sync.Mutex
+	cleanupCalls int
+}
+
+func (r *cleanupRetryHostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
+	return r.process, func() error {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.cleanupCalls++
+		if r.cleanupCalls == 1 {
+			return errors.New("sandbox cleanup failed")
+		}
+		return nil
+	}, nil
+}
+
 func (r *queuedHostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -488,6 +506,38 @@ func TestRPCHostCredentialCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T
 	}
 	if _, active := host.Active(candidate.InstanceID); active {
 		t.Fatal("successful cleanup retry retained the active owner")
+	}
+}
+
+func TestRPCHostNaturalExitSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	process := &hostProcess{done: make(chan error, 1)}
+	runner := &cleanupRetryHostRunner{process: process}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	process.done <- errors.New("crash")
+	waitHostStatus(t, host, candidate.InstanceID, func(status RuntimeStatus) bool {
+		return status.State == "failed" && strings.Contains(status.LastError, "sandbox cleanup failed")
+	})
+	if _, active := host.Active(candidate.InstanceID); !active {
+		t.Fatal("natural cleanup failure released RPC host ownership")
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry sandbox cleanup: %v", err)
+	}
+	runner.mu.Lock()
+	cleanupCalls := runner.cleanupCalls
+	runner.mu.Unlock()
+	if cleanupCalls != 2 {
+		t.Fatalf("sandbox cleanup calls = %d, want 2", cleanupCalls)
 	}
 }
 

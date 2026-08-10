@@ -80,17 +80,51 @@ func (ExecRunner) Start(ctx context.Context, spec InstanceSpec, sandbox Sandbox,
 			return nil, nil, err
 		}
 	}
-	defer prepareCleanup()
+	startResources := newCleanupTask(prepareCleanup)
+	processResources := newCleanupTask(cleanup)
+	failedStart := func(startErr error) (ManagedProcess, func() error, error) {
+		cleanupErr := errors.Join(startResources.run(), processResources.run())
+		if cleanupErr != nil {
+			return nil, func() error { return errors.Join(startResources.run(), processResources.run()) }, errors.Join(startErr, cleanupErr)
+		}
+		return nil, nil, startErr
+	}
 	if err := cmd.Start(); err != nil {
-		return nil, nil, err
+		return failedStart(err)
 	}
 	if err := afterStart(cmd.Process.Pid); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		_ = cleanup()
-		return nil, nil, err
+		return failedStart(errors.Join(err, cmd.Process.Kill(), cmd.Wait()))
 	}
-	return execManagedProcess{cmd: cmd}, cleanup, nil
+	if err := startResources.run(); err != nil {
+		processCleanupErr := processResources.run()
+		return nil, func() error { return errors.Join(startResources.run(), processResources.run()) }, errors.Join(err, cmd.Process.Kill(), cmd.Wait(), processCleanupErr)
+	}
+	return execManagedProcess{cmd: cmd}, processResources.run, nil
+}
+
+type cleanupTask struct {
+	mu   sync.Mutex
+	fn   func() error
+	done bool
+	err  error
+}
+
+func newCleanupTask(fn func() error) *cleanupTask {
+	return &cleanupTask{fn: fn, done: fn == nil}
+}
+
+func (c *cleanupTask) run() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return nil
+	}
+	c.err = c.fn()
+	c.done = c.err == nil
+	return c.err
 }
 
 func validateProcessLocation(spec InstanceSpec) error {
@@ -223,18 +257,24 @@ func NewSupervisor(runner Runner, sandbox Sandbox, output io.Writer) *Supervisor
 }
 
 type Handle struct {
-	mu         sync.RWMutex
-	spec       InstanceSpec
-	status     Status
-	cancel     context.CancelFunc
-	done       chan struct{}
-	process    ManagedProcess
-	cleanup    func() error
-	started    chan error
-	stopMu     sync.Mutex
-	signalOnce sync.Once
-	signalErr  error
-	once       bool
+	mu          sync.RWMutex
+	spec        InstanceSpec
+	status      Status
+	cancel      context.CancelFunc
+	done        chan struct{}
+	doneOnce    sync.Once
+	runDone     chan struct{}
+	process     ManagedProcess
+	processDone chan struct{}
+	cleanup     func() error
+	cleanupMu   sync.Mutex
+	cleanupDone bool
+	cleanupErr  error
+	started     chan error
+	stopMu      sync.Mutex
+	signalOnce  sync.Once
+	signalErr   error
+	once        bool
 }
 
 func (s *Supervisor) Start(ctx context.Context, spec InstanceSpec) (*Handle, error) {
@@ -286,14 +326,17 @@ func (s *Supervisor) start(ctx context.Context, spec InstanceSpec, once bool) (*
 	s.startWG.Add(1)
 	defer s.startWG.Done()
 	runCtx, cancel := context.WithCancel(s.ctx)
-	handle := &Handle{spec: spec, status: Status{State: "starting", Sandbox: decision}, cancel: cancel, done: make(chan struct{}), started: make(chan error, 1), once: once}
+	handle := &Handle{spec: spec, status: Status{State: "starting", Sandbox: decision}, cancel: cancel, done: make(chan struct{}), runDone: make(chan struct{}), cleanupDone: true, started: make(chan error, 1), once: once}
 	s.handles[spec.ID] = handle
 	s.mu.Unlock()
 	go s.run(runCtx, handle)
 	select {
 	case err := <-handle.started:
 		if err != nil {
-			s.remove(spec.ID, handle)
+			<-handle.runDone
+			if handle.terminal() {
+				s.remove(spec.ID, handle)
+			}
 			return nil, err
 		}
 		s.mu.Lock()
@@ -307,12 +350,18 @@ func (s *Supervisor) start(ctx context.Context, spec InstanceSpec, once bool) (*
 		return handle, nil
 	case <-ctx.Done():
 		_ = handle.Stop(context.Background())
+		if handle.terminal() {
+			s.remove(spec.ID, handle)
+		}
 		return nil, ctx.Err()
 	}
 }
 
 func (s *Supervisor) run(ctx context.Context, handle *Handle) {
-	defer close(handle.done)
+	defer func() {
+		close(handle.runDone)
+		handle.maybeFinish()
+	}()
 	first := true
 	backoff := handle.spec.InitialBackoff
 	exits := make([]time.Time, 0, handle.spec.RestartLimit+1)
@@ -321,6 +370,7 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 		proc, cleanup, err := s.runner.Start(ctx, handle.spec, s.sandbox, output)
 		if err != nil {
 			_ = output.Close()
+			handle.setCleanup(cleanup, cleanup == nil, err)
 			handle.setExit(err, true)
 			if first {
 				handle.started <- err
@@ -328,32 +378,42 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 			}
 			return
 		}
+		processDone := make(chan struct{})
+		handle.setCleanup(cleanup, cleanup == nil, nil)
 		handle.mu.Lock()
-		handle.process, handle.cleanup = proc, cleanup
+		handle.process, handle.processDone = proc, processDone
 		handle.status.State, handle.status.PID, handle.status.StartedAt = "running", proc.PID(), time.Now().UTC()
 		handle.mu.Unlock()
 		if first {
 			handle.started <- nil
 			first = false
 		}
-		err = proc.Wait()
-		err = errors.Join(err, output.Close())
-		if cleanup != nil {
-			err = errors.Join(err, cleanup())
-		}
+		err = errors.Join(proc.Wait(), output.Close())
 		now := time.Now().UTC()
 		handle.mu.Lock()
-		handle.process, handle.cleanup = nil, nil
+		handle.process = nil
 		handle.status.PID, handle.status.LastExitAt = 0, now
 		handle.mu.Unlock()
 		if ctx.Err() != nil {
-			handle.setExit(nil, false)
+			handle.mu.Lock()
+			handle.status.State = "stopping"
+			handle.mu.Unlock()
+			close(processDone)
+			return
+		}
+		cleanupErr := handle.retryCleanup()
+		err = errors.Join(err, cleanupErr)
+		if cleanupErr != nil {
+			handle.setExit(err, true)
+			close(processDone)
 			return
 		}
 		if handle.once {
 			handle.setExit(err, true)
+			close(processDone)
 			return
 		}
+		close(processDone)
 		exits = append(exits, now)
 		cutoff := now.Add(-handle.spec.RestartWindow)
 		kept := exits[:0]
@@ -398,6 +458,26 @@ func (h *Handle) Done() <-chan struct{} {
 	return h.done
 }
 
+// ProcessDone closes after the current process exits and its first sandbox
+// cleanup attempt has completed. Done additionally requires cleanup success.
+func (h *Handle) ProcessDone() <-chan struct{} {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.processDone
+}
+
+func (h *Handle) CleanupComplete() bool {
+	if h == nil {
+		return true
+	}
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
+	return h.cleanupDone
+}
+
 func (h *Handle) Stop(ctx context.Context) error {
 	if h == nil {
 		return nil
@@ -414,12 +494,15 @@ func (h *Handle) Stop(ctx context.Context) error {
 	default:
 	}
 	h.mu.RLock()
-	proc, grace := h.process, h.spec.GracePeriod
+	proc, processDone, grace := h.process, h.processDone, h.spec.GracePeriod
 	h.mu.RUnlock()
 	if proc == nil {
 		select {
-		case <-h.done:
-			return nil
+		case <-h.runDone:
+			cleanupErr := h.retryCleanup()
+			h.setExit(cleanupErr, cleanupErr != nil)
+			h.maybeFinish()
+			return cleanupErr
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -432,9 +515,9 @@ func (h *Handle) Stop(ctx context.Context) error {
 	if graceful {
 		timer := time.NewTimer(grace)
 		select {
-		case <-h.done:
+		case <-processDone:
 			timer.Stop()
-			return h.signalErr
+			return h.finishStop(h.signalErr)
 		case <-timer.C:
 		case <-ctx.Done():
 		}
@@ -449,10 +532,62 @@ func (h *Handle) Stop(ctx context.Context) error {
 	joinCtx, cancel := context.WithTimeout(context.Background(), processJoinTimeout(grace))
 	defer cancel()
 	select {
-	case <-h.done:
-		return errors.Join(h.signalErr, killErr)
+	case <-processDone:
+		return h.finishStop(errors.Join(h.signalErr, killErr))
 	case <-joinCtx.Done():
 		return errors.Join(h.signalErr, killErr, fmt.Errorf("join Agent plugin process: %w", joinCtx.Err()))
+	}
+}
+
+func (h *Handle) finishStop(processErr error) error {
+	<-h.runDone
+	cleanupErr := h.retryCleanup()
+	h.setExit(cleanupErr, cleanupErr != nil)
+	h.maybeFinish()
+	return errors.Join(processErr, cleanupErr)
+}
+
+func (h *Handle) setCleanup(cleanup func() error, done bool, cleanupErr error) {
+	h.cleanupMu.Lock()
+	h.cleanup = cleanup
+	h.cleanupDone = done
+	h.cleanupErr = cleanupErr
+	h.cleanupMu.Unlock()
+}
+
+func (h *Handle) retryCleanup() error {
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
+	if h.cleanupDone || h.cleanup == nil {
+		h.cleanupDone = true
+		h.cleanupErr = nil
+		return nil
+	}
+	h.cleanupErr = h.cleanup()
+	h.cleanupDone = h.cleanupErr == nil
+	return h.cleanupErr
+}
+
+func (h *Handle) maybeFinish() {
+	select {
+	case <-h.runDone:
+	default:
+		return
+	}
+	h.cleanupMu.Lock()
+	cleanupDone := h.cleanupDone
+	h.cleanupMu.Unlock()
+	if cleanupDone {
+		h.doneOnce.Do(func() { close(h.done) })
+	}
+}
+
+func (h *Handle) terminal() bool {
+	select {
+	case <-h.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -473,7 +608,7 @@ func (h *Handle) setExit(err error, failed bool) {
 	if failed {
 		h.status.State, h.status.LastError = "failed", safeError(err)
 	} else {
-		h.status.State = "stopped"
+		h.status.State, h.status.LastError = "stopped", ""
 	}
 }
 
@@ -493,10 +628,8 @@ func (s *Supervisor) Stop(ctx context.Context, id string) error {
 		return nil
 	}
 	err := handle.Stop(ctx)
-	select {
-	case <-handle.Done():
+	if handle.terminal() {
 		s.remove(id, handle)
-	default:
 	}
 	return err
 }
@@ -520,10 +653,8 @@ func (s *Supervisor) Close(ctx context.Context) error {
 		if err := handle.Stop(ctx); err != nil {
 			errs = append(errs, err)
 		}
-		select {
-		case <-handle.Done():
+		if handle.terminal() {
 			s.remove(handle.spec.ID, handle)
-		default:
 		}
 	}
 	s.startWG.Wait()

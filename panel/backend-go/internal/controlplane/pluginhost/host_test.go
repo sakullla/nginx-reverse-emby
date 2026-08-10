@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -27,6 +28,22 @@ type testProcess struct {
 type expectedSignalExitProcess struct {
 	done chan error
 	once sync.Once
+}
+
+type cleanupRetryBackendProcess struct {
+	*testProcess
+	mu           sync.Mutex
+	cleanupCalls int
+}
+
+func (p *cleanupRetryBackendProcess) Cleanup() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cleanupCalls++
+	if p.cleanupCalls == 1 {
+		return errors.New("sandbox cleanup failed")
+	}
+	return nil
 }
 
 func (p *expectedSignalExitProcess) PID() int    { return 78 }
@@ -369,6 +386,150 @@ func TestPluginHostCredentialCleanupFailureRetainsOwnerUntilCloseRetry(t *testin
 	}
 }
 
+func TestPluginHostSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("sandbox cleanup retry")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	process := &cleanupRetryBackendProcess{testProcess: &testProcess{done: make(chan error, 1)}}
+	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Stop(t.Context(), candidate.InstanceID); err == nil || !strings.Contains(err.Error(), "sandbox cleanup failed") {
+		t.Fatalf("first Stop error = %v", err)
+	}
+	if _, active := host.Active(candidate.InstanceID); !active {
+		t.Fatal("sandbox cleanup failure removed active ownership")
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry sandbox cleanup: %v", err)
+	}
+	process.mu.Lock()
+	cleanupCalls := process.cleanupCalls
+	process.mu.Unlock()
+	if cleanupCalls != 2 {
+		t.Fatalf("sandbox cleanup calls = %d, want 2", cleanupCalls)
+	}
+}
+
+func TestPluginHostNaturalExitSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("natural sandbox cleanup retry")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	process := &cleanupRetryBackendProcess{testProcess: &testProcess{done: make(chan error, 1)}}
+	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	process.done <- errors.New("crash")
+	if !waitFor(t, func() bool {
+		active, ok := host.Active(candidate.InstanceID)
+		if !ok {
+			return false
+		}
+		state, lastErr := active.Status()
+		return state == "failed" && strings.Contains(lastErr, "sandbox cleanup failed")
+	}) {
+		t.Fatal("natural sandbox cleanup failure was not retained as failed")
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry natural sandbox cleanup: %v", err)
+	}
+	process.mu.Lock()
+	cleanupCalls := process.cleanupCalls
+	process.mu.Unlock()
+	if cleanupCalls != 2 {
+		t.Fatalf("sandbox cleanup calls = %d, want 2", cleanupCalls)
+	}
+}
+
+type prestartCleanupLauncher struct {
+	mu           sync.Mutex
+	cleanupCalls int
+}
+
+func (l *prestartCleanupLauncher) Start(context.Context, string, []string, []string, io.Writer, Candidate) (Process, error) {
+	l.mu.Lock()
+	l.cleanupCalls++
+	l.mu.Unlock()
+	return nil, &launchCleanupError{err: errors.New("cmd.Start failed: sandbox cleanup failed"), cleanup: func() error {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.cleanupCalls++
+		return nil
+	}}
+}
+
+func TestPluginHostPrestartCleanupFailureIsRetriedByClose(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("prestart cleanup retry")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	launcher := &prestartCleanupLauncher{}
+	host, err := New(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1"}, Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
+	if _, err := host.Activate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "sandbox cleanup failed") {
+		t.Fatalf("Activate error = %v", err)
+	}
+	host.mu.RLock()
+	prepared := len(host.prepared)
+	host.mu.RUnlock()
+	if prepared != 1 {
+		t.Fatalf("pre-start cleanup owner count = %d, want 1", prepared)
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry pre-start cleanup: %v", err)
+	}
+	launcher.mu.Lock()
+	cleanupCalls := launcher.cleanupCalls
+	launcher.mu.Unlock()
+	if cleanupCalls != 2 {
+		t.Fatalf("pre-start cleanup calls = %d, want 2", cleanupCalls)
+	}
+}
+
+func TestExecLauncherStartFailureExecutesPlatformCleanup(t *testing.T) {
+	startCalls, processCalls := 0, 0
+	launcher := ExecLauncher{configure: func(*exec.Cmd, Candidate) (func() error, func() error, func(int) error, error) {
+		return func() error { startCalls++; return nil }, func() error { processCalls++; return nil }, func(int) error { return nil }, nil
+	}}
+	_, err := launcher.Start(t.Context(), filepath.Join(t.TempDir(), "missing"), nil, nil, io.Discard, Candidate{})
+	if err == nil {
+		t.Fatal("missing executable started")
+	}
+	if startCalls != 1 || processCalls != 1 {
+		t.Fatalf("pre-start cleanup calls = start %d process %d, want 1 each", startCalls, processCalls)
+	}
+}
+
 type queuedLauncher struct {
 	mu        sync.Mutex
 	processes []*testProcess
@@ -692,12 +853,12 @@ func TestPluginHostStopReturnsWhenProcessAlreadyExited(t *testing.T) {
 	}
 }
 
-func TestPluginHostStopAcceptsExpectedSignalExit(t *testing.T) {
+func TestPluginHostStopSurfacesSignalWaitError(t *testing.T) {
 	process := &expectedSignalExitProcess{done: make(chan error, 1)}
 	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Second, done: make(chan struct{})}
 	go instance.monitor()
-	if err := instance.Stop(t.Context()); err != nil {
-		t.Fatalf("expected signal exit reported as Stop failure: %v", err)
+	if err := instance.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "signal: interrupt") {
+		t.Fatalf("signal wait error was not surfaced: %v", err)
 	}
 	if !instance.terminated() {
 		t.Fatalf("signal-terminated instance retained status: %+v", instance)

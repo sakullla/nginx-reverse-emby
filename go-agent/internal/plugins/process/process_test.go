@@ -211,6 +211,150 @@ func (r retryKillRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer
 	return r.process, func() error { return nil }, nil
 }
 
+type cleanupRetryRunner struct {
+	process      *hostStoppingProcess
+	cleanupCalls int
+	mu           sync.Mutex
+}
+
+type hostStoppingProcess struct {
+	done chan error
+	once sync.Once
+}
+
+func (p *hostStoppingProcess) PID() int    { return 44 }
+func (p *hostStoppingProcess) Wait() error { return <-p.done }
+func (p *hostStoppingProcess) Signal(os.Signal) error {
+	p.once.Do(func() { p.done <- nil })
+	return nil
+}
+func (p *hostStoppingProcess) Kill() error {
+	p.once.Do(func() { p.done <- nil })
+	return nil
+}
+
+func (r *cleanupRetryRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer) (ManagedProcess, func() error, error) {
+	return r.process, func() error {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.cleanupCalls++
+		if r.cleanupCalls == 1 {
+			return errors.New("sandbox cleanup failed")
+		}
+		return nil
+	}, nil
+}
+
+func TestSupervisorIntentionalStopRetainsCleanupUntilCloseRetry(t *testing.T) {
+	runner := &cleanupRetryRunner{process: &hostStoppingProcess{done: make(chan error, 1)}}
+	supervisor := NewSupervisor(runner, fakeSandbox{available: true}, io.Discard)
+	handle, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "cleanup-retry", Executable: "unused", GracePeriod: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Stop(t.Context(), "cleanup-retry"); err == nil || !strings.Contains(err.Error(), "sandbox cleanup failed") {
+		t.Fatalf("first Stop error = %v", err)
+	}
+	select {
+	case <-handle.Done():
+		t.Fatal("cleanup failure marked handle terminal")
+	default:
+	}
+	supervisor.mu.Lock()
+	_, owned := supervisor.handles["cleanup-retry"]
+	supervisor.mu.Unlock()
+	if !owned {
+		t.Fatal("cleanup failure removed supervisor ownership")
+	}
+	if err := supervisor.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry cleanup: %v", err)
+	}
+	select {
+	case <-handle.Done():
+	default:
+		t.Fatal("successful cleanup retry did not close terminal Done")
+	}
+}
+
+func TestSupervisorNaturalExitRetainsCleanupUntilCloseRetry(t *testing.T) {
+	process := &hostStoppingProcess{done: make(chan error, 1)}
+	runner := &cleanupRetryRunner{process: process}
+	supervisor := NewSupervisor(runner, fakeSandbox{available: true}, io.Discard)
+	handle, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "natural-cleanup", Executable: "unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.done <- io.EOF
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(handle.Status().LastError, "sandbox cleanup failed") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(handle.Status().LastError, "sandbox cleanup failed") {
+		t.Fatalf("natural cleanup failure status = %+v", handle.Status())
+	}
+	select {
+	case <-handle.Done():
+		t.Fatal("natural cleanup failure marked handle terminal")
+	default:
+	}
+	if err := supervisor.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry natural-exit cleanup: %v", err)
+	}
+}
+
+type startFailureCleanupSandbox struct {
+	startCalls, processCalls int
+	failStart                bool
+}
+
+func (*startFailureCleanupSandbox) Available() bool         { return true }
+func (*startFailureCleanupSandbox) Provider() string        { return "cleanup-test" }
+func (*startFailureCleanupSandbox) Validate(Security) error { return nil }
+func (s *startFailureCleanupSandbox) Configure(*exec.Cmd, Security) (func() error, func() error, func(int) error, error) {
+	return func() error {
+		s.startCalls++
+		if s.failStart && s.startCalls == 1 {
+			return errors.New("start resource cleanup failed")
+		}
+		return nil
+	}, func() error { s.processCalls++; return nil }, func(int) error { return nil }, nil
+}
+
+func TestSupervisorRetainsStartedProcessCleanupFailureUntilClose(t *testing.T) {
+	sandbox := &startFailureCleanupSandbox{failStart: true}
+	supervisor := NewSupervisor(ExecRunner{}, sandbox, io.Discard)
+	_, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "start-resource-cleanup", Executable: os.Args[0], Args: []string{"-test.run=^$"}, GracePeriod: time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "start resource cleanup failed") {
+		t.Fatalf("StartOnce error = %v", err)
+	}
+	if sandbox.startCalls != 1 {
+		t.Fatalf("start cleanup calls before Close = %d, want 1", sandbox.startCalls)
+	}
+	supervisor.mu.Lock()
+	_, owned := supervisor.handles["start-resource-cleanup"]
+	supervisor.mu.Unlock()
+	if !owned {
+		t.Fatal("start resource cleanup failure removed ownership")
+	}
+	if err := supervisor.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry start resource cleanup: %v", err)
+	}
+	if sandbox.startCalls != 2 {
+		t.Fatalf("start cleanup calls after Close = %d, want 2", sandbox.startCalls)
+	}
+}
+
+func TestExecRunnerStartFailureExecutesSandboxCleanup(t *testing.T) {
+	sandbox := &startFailureCleanupSandbox{}
+	_, _, err := (ExecRunner{}).Start(t.Context(), InstanceSpec{ID: "start-failure", Executable: filepath.Join(t.TempDir(), "missing")}, sandbox, io.Discard)
+	if err == nil {
+		t.Fatal("missing executable started")
+	}
+	if sandbox.startCalls != 1 || sandbox.processCalls != 1 {
+		t.Fatalf("pre-start cleanup calls = start %d process %d, want 1 each", sandbox.startCalls, sandbox.processCalls)
+	}
+}
+
 func TestSupervisorStopRetriesKillUntilProcessDone(t *testing.T) {
 	process := &retryKillProcess{done: make(chan error, 1)}
 	supervisor := NewSupervisor(retryKillRunner{process: process}, fakeSandbox{available: true}, io.Discard)

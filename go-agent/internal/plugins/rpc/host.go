@@ -349,7 +349,7 @@ func retryAgentHandshake(ctx context.Context, deadline time.Duration, handle *pl
 
 func processAttemptError(handle *pluginprocess.Handle) error {
 	select {
-	case <-handle.Done():
+	case <-handle.ProcessDone():
 		status := handle.Status()
 		if status.LastError != "" {
 			return fmt.Errorf("Agent RPC plugin process exited: %s", status.LastError)
@@ -543,7 +543,7 @@ func (i *HostedInstance) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-attempt.handle.Done():
+		case <-attempt.handle.ProcessDone():
 		}
 		processStatus := attempt.handle.Status()
 		failure := errors.New("Agent RPC plugin process exited unexpectedly")
@@ -559,6 +559,13 @@ func (i *HostedInstance) run(ctx context.Context) {
 		i.status.PID = 0
 		i.status.LastError = safeHostError(failure)
 		i.mu.Unlock()
+		if !attempt.handle.CleanupComplete() {
+			i.mu.Lock()
+			i.stoppedAttempt = attempt
+			i.status.State = "failed"
+			i.mu.Unlock()
+			return
+		}
 		cleanupErr := i.stopAttempt(context.Background(), attempt, false)
 		if !attemptTerminal(attempt) {
 			i.mu.Lock()

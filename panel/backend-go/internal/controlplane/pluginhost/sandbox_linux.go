@@ -34,24 +34,24 @@ func validatePlatformSandbox(c Candidate) error {
 	}
 	return nil
 }
-func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(int) (func() error, error), error) {
+func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func() error, func(int) error, error) {
 	if hasUnsandboxedGrant(c.Grants) {
-		return func() error { return nil }, func(int) (func() error, error) { return func() error { return nil }, nil }, nil
+		return func() error { return nil }, func() error { return nil }, func(int) error { return nil }, nil
 	}
 	if err := validatePlatformSandbox(c); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	bwrap, _ := exec.LookPath("bwrap")
 	prlimit, _ := exec.LookPath("prlimit")
 	budget := c.Requirement.Budget()
 	filter, err := backendSeccomp(budget.Network)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	dir, cgroup, err := prepareBackendCgroup(budget)
 	if err != nil {
 		filter.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	original := append([]string(nil), cmd.Args[1:]...)
 	fd := 3 + len(cmd.ExtraFiles)
@@ -61,8 +61,8 @@ func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(in
 	cmd.ExtraFiles = append(cmd.ExtraFiles, filter)
 	cmd.SysProcAttr = backendLinuxSandboxSysProcAttr(int(cgroup.Fd()))
 	startCleanup := func() error { return errors.Join(filter.Close(), cgroup.Close()) }
-	attach := func(int) (func() error, error) { return func() error { return removeBackendCgroup(dir) }, nil }
-	return startCleanup, attach, nil
+	processCleanup := func() error { return removeBackendCgroup(dir) }
+	return startCleanup, processCleanup, func(int) error { return nil }, nil
 }
 
 func removeBackendCgroup(dir string) error {
