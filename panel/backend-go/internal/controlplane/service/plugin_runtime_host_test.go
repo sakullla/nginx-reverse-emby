@@ -443,6 +443,97 @@ func TestPluginRuntimeHostPersistsRestartAndCircuitState(t *testing.T) {
 	}
 }
 
+func TestPluginRuntimeHostClosePersistsActiveGenerationInRepository(t *testing.T) {
+	root := t.TempDir()
+	store, err := storage.NewSQLiteStore(filepath.Join(root, "data"), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewPluginRuntimeHost(host, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-close")
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	before, found, err := store.GetPluginRuntime(t.Context(), candidate.InstanceID)
+	if err != nil || !found || before.ActiveGeneration != candidate.Identity.Generation || before.PID == 0 || before.State != "healthy" {
+		t.Fatalf("active repository row = %+v, found=%v, err=%v", before, found, err)
+	}
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	after, found, err := store.GetPluginRuntime(t.Context(), candidate.InstanceID)
+	if err != nil || !found {
+		t.Fatalf("read closed repository row: found=%v err=%v", found, err)
+	}
+	if after.ActiveGeneration != candidate.Identity.Generation || after.State != "stopped" || after.PID != 0 {
+		t.Fatalf("clean shutdown lost generation-fenced terminal state: %+v", after)
+	}
+	if process := launcher.process(0); process == nil || !process.isStopped() {
+		t.Fatal("clean shutdown returned before the active process stopped")
+	}
+}
+
+func TestPluginRuntimeHostCloseSurfacesAndRetriesTerminalPersistence(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-persist")
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	repo.stopErr = errors.New("close persistence unavailable")
+	if err := service.Close(t.Context()); err == nil || !strings.Contains(err.Error(), "close persistence unavailable") || !strings.Contains(err.Error(), candidate.Identity.Generation) {
+		t.Fatalf("Close persistence failure was not generation-qualified: %v", err)
+	}
+	if repo.stopCalls != 3 {
+		t.Fatalf("Close persistence failure was not retried: %d", repo.stopCalls)
+	}
+	if process := launcher.process(0); process == nil || !process.isStopped() {
+		t.Fatal("process remained alive after durable Close failure")
+	}
+	repo.stopErr = nil
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatalf("second Close did not retry retained generation: %v", err)
+	}
+	repo.mu.Lock()
+	row, calls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if calls != 4 || row.ActiveGeneration != candidate.Identity.Generation || row.State != "stopped" || row.PID != 0 {
+		t.Fatalf("retained Close target was not durably retried: calls=%d row=%+v", calls, row)
+	}
+}
+
+func runtimeCloseCandidate(t *testing.T, root, generation string) pluginhost.Candidate {
+	t.Helper()
+	cache := filepath.Join(root, "cache-"+generation)
+	payload := []byte("runtime close " + generation)
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+	candidate := pluginhost.Candidate{InstanceID: "close-instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: digest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: digest, Generation: generation, Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, digest)
+	return candidate
+}
+
 func waitRuntimeRow(t *testing.T, repo *runtimeRepo, ready func(storage.PluginRuntimeInstanceRow) bool) storage.PluginRuntimeInstanceRow {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

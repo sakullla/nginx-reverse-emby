@@ -37,7 +37,7 @@ func TestWindowsSandboxLiveProcess(t *testing.T) {
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestWindowsSandboxGuest$"},
 		Environment: []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath},
-		Security:    Security{Requirement: requirement},
+		Security:    Security{Requirement: requirement, Grants: []string{UnsandboxedGrant}},
 	}, sandbox, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -59,21 +59,30 @@ func TestWindowsSandboxGuest(t *testing.T) {
 	}
 }
 
-func TestWindowsSandboxRejectsHighRiskBoundary(t *testing.T) {
-	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+func TestWindowsSandboxRejectsCanonicalRequirementsWithoutExplicitGrant(t *testing.T) {
+	ordinary := canonicalNonprivilegedRequirement(t, strings.Repeat("a", 64))
+	privileged, err := NewSandboxRequirement(SandboxRequirementProjection{
 		PackageDigest: strings.Repeat("a", 64), Permissions: []SandboxPermission{PermissionSecretUse}, ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPRequest},
 		ResourceBudget: ManifestResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 100, Restarts: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	security := Security{Requirement: requirement}
-	if _, err := DecideSandbox(windowsJobSandbox{}, security); err == nil {
-		t.Fatal("high-risk capability was admitted without an enforceable Windows boundary")
+	sandbox := windowsJobSandbox{}
+	if sandbox.Available() {
+		t.Fatal("Windows defense-in-depth controls were advertised as a complete sandbox")
 	}
-	security.Grants = []string{UnsandboxedGrant}
-	decision, err := DecideSandbox(windowsJobSandbox{}, security)
-	if err != nil || decision.Sandboxed || decision.Provider != "unsandboxed" {
-		t.Fatalf("explicit Windows unsandboxed admission = %+v, %v", decision, err)
+	for name, requirement := range map[string]SandboxRequirement{"ordinary": ordinary, "privileged": privileged} {
+		t.Run(name, func(t *testing.T) {
+			security := Security{Requirement: requirement}
+			if _, err := DecideSandbox(sandbox, security); err == nil {
+				t.Fatal("canonical requirement was admitted without an enforceable Windows boundary")
+			}
+			security.Grants = []string{UnsandboxedGrant}
+			decision, err := DecideSandbox(sandbox, security)
+			if err != nil || decision.Sandboxed || decision.Provider != "unsandboxed" {
+				t.Fatalf("explicit Windows unsandboxed admission = %+v, %v", decision, err)
+			}
+		})
 	}
 }

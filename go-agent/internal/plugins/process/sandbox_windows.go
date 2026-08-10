@@ -25,16 +25,16 @@ const (
 	jobObjectCPUHardCap = 0x4
 )
 
-func newPlatformSandbox() Sandbox          { return windowsJobSandbox{} }
-func (windowsJobSandbox) Available() bool  { return true }
-func (windowsJobSandbox) Provider() string { return "windows-restricted-token-job-object" }
-func (windowsJobSandbox) Validate(security Security) error {
-	if security.Requirement.RequiresPrivilegeBoundary() {
-		return errors.New("windows plugin sandbox is unavailable for privileged manifest requirements")
-	}
-	if security.Requirement.RequiresFilesystemBoundary() {
-		return errors.New("windows plugin sandbox cannot enforce a manifest filesystem boundary")
-	}
+func newPlatformSandbox() Sandbox         { return windowsJobSandbox{} }
+func (windowsJobSandbox) Available() bool { return false }
+func (windowsJobSandbox) Provider() string {
+	return "windows-restricted-token-job-object-defense-in-depth"
+}
+func (windowsJobSandbox) DefenseInDepth() bool { return true }
+func (windowsJobSandbox) Validate(Security) error {
+	return errors.New("windows restricted token and Job Object do not provide a complete plugin sandbox boundary")
+}
+func validateWindowsDefenseBudget(security Security) error {
 	budget := security.Requirement.Budget()
 	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("windows plugin sandbox requires cpu_millis within 1..1000")
@@ -45,16 +45,16 @@ func (windowsJobSandbox) Validate(security Security) error {
 	if budget.Processes <= 0 {
 		return errors.New("windows plugin sandbox requires a positive process limit")
 	}
-	if security.Requirement.RequiresNetworkIsolation() {
-		return errors.New("windows plugin sandbox cannot enforce network denial")
-	}
 	return nil
 }
 func (windowsJobSandbox) Configure(cmd *exec.Cmd, security Security) (func() error, func() error, func(int) error, error) {
 	if cmd == nil {
 		return nil, nil, nil, errors.New("plugin process command is required")
 	}
-	if err := (windowsJobSandbox{}).Validate(security); err != nil {
+	if !hasUnsandboxedGrant(security.Grants) {
+		return nil, nil, nil, errors.New("windows plugin process requires explicit plugin.process.unsandboxed authorization")
+	}
+	if err := validateWindowsDefenseBudget(security); err != nil {
 		return nil, nil, nil, err
 	}
 	var source windows.Token

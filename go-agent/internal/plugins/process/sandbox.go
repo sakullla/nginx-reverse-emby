@@ -35,6 +35,15 @@ type Sandbox interface {
 	Configure(*exec.Cmd, Security) (startCleanup func() error, processCleanup func() error, afterStart func(int) error, err error)
 }
 
+type defenseInDepthSandbox interface {
+	DefenseInDepth() bool
+}
+
+func requiresDefenseInDepth(sandbox Sandbox, security Security) bool {
+	defense, ok := sandbox.(defenseInDepthSandbox)
+	return ok && defense.DefenseInDepth() && hasUnsandboxedGrant(security.Grants)
+}
+
 func DecideSandbox(sandbox Sandbox, security Security) (SandboxDecision, error) {
 	if sandbox != nil && sandbox.Available() {
 		if err := sandbox.Validate(security); err == nil {

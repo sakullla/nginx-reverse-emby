@@ -16,12 +16,9 @@ var backendCreateRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewP
 type backendJobCPU struct{ Flags, Rate uint32 }
 
 func validatePlatformSandbox(c Candidate) error {
-	if c.Requirement.RequiresPrivilegeBoundary() {
-		return errors.New("windows control-plane plugin sandbox is unavailable for privileged manifest requirements")
-	}
-	if c.Requirement.RequiresFilesystemBoundary() {
-		return errors.New("windows control-plane plugin sandbox cannot enforce a manifest filesystem boundary")
-	}
+	return errors.New("windows restricted token and Job Object do not provide a complete control-plane plugin sandbox boundary")
+}
+func validateWindowsDefenseBudget(c Candidate) error {
 	budget := c.Requirement.Budget()
 	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("windows control-plane plugin sandbox requires cpu_millis within 1..1000")
@@ -29,16 +26,13 @@ func validatePlatformSandbox(c Candidate) error {
 	if budget.MemoryBytes <= 0 || budget.Processes <= 0 {
 		return errors.New("windows control-plane plugin sandbox requires memory and process budgets")
 	}
-	if c.Requirement.RequiresNetworkIsolation() {
-		return errors.New("windows control-plane plugin sandbox cannot enforce requested network isolation")
-	}
 	return nil
 }
 func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(int) (func() error, error), error) {
-	if hasUnsandboxedGrant(c.Grants) {
-		return func() error { return nil }, func(int) (func() error, error) { return func() error { return nil }, nil }, nil
+	if !hasUnsandboxedGrant(c.Grants) {
+		return nil, nil, validatePlatformSandbox(c)
 	}
-	if err := validatePlatformSandbox(c); err != nil {
+	if err := validateWindowsDefenseBudget(c); err != nil {
 		return nil, nil, err
 	}
 	var source windows.Token

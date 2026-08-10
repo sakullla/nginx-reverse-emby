@@ -21,16 +21,19 @@ type PluginRuntimeRepository interface {
 }
 
 type PluginRuntimeHost struct {
-	host       *pluginhost.Host
-	repository PluginRuntimeRepository
-	locks      sync.Map
+	host         *pluginhost.Host
+	repository   PluginRuntimeRepository
+	locks        sync.Map
+	lifecycle    sync.RWMutex
+	closed       bool
+	closeTargets map[string]string
 }
 
 func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeRepository) (*PluginRuntimeHost, error) {
 	if host == nil || repository == nil {
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
-	service := &PluginRuntimeHost{host: host, repository: repository}
+	service := &PluginRuntimeHost{host: host, repository: repository, closeTargets: make(map[string]string)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
 		return repository.UpdatePluginRuntimeHealth(context.Background(), status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
 	})
@@ -38,6 +41,11 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 }
 
 func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.Candidate) (*pluginhost.Instance, error) {
+	s.lifecycle.RLock()
+	defer s.lifecycle.RUnlock()
+	if s.closed {
+		return nil, errors.New("plugin runtime service is closed")
+	}
 	lockValue, _ := s.locks.LoadOrStore(candidate.InstanceID, &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	lock.Lock()
@@ -87,6 +95,11 @@ func safeRuntimeError(err error) string {
 }
 
 func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
+	s.lifecycle.RLock()
+	defer s.lifecycle.RUnlock()
+	if s.closed {
+		return errors.New("plugin runtime service is closed")
+	}
 	lockValue, _ := s.locks.LoadOrStore(instanceID, &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	lock.Lock()
@@ -102,7 +115,27 @@ func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
 	persistErr := retryRuntimeStopPersistence(ctx, s.repository, instanceID, row.ActiveGeneration)
 	return errors.Join(stopErr, persistErr, s.host.StatusPersistenceError(instanceID))
 }
-func (s *PluginRuntimeHost) Close(ctx context.Context) error { return s.host.Close(ctx) }
+func (s *PluginRuntimeHost) Close(ctx context.Context) error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	s.closed = true
+	for instanceID, generation := range s.host.ActiveGenerations() {
+		s.closeTargets[instanceID] = generation
+	}
+	hostErr := s.host.Close(ctx)
+	errs := []error{hostErr}
+	for instanceID, generation := range s.closeTargets {
+		if err := retryRuntimeStopPersistence(ctx, s.repository, instanceID, generation); err != nil {
+			errs = append(errs, fmt.Errorf("persist closed plugin runtime %s generation %s: %w", instanceID, generation, err))
+			continue
+		}
+		delete(s.closeTargets, instanceID)
+		if observerErr := s.host.StatusPersistenceError(instanceID); observerErr != nil {
+			errs = append(errs, observerErr)
+		}
+	}
+	return errors.Join(errs...)
+}
 
 func retryRuntimeStopPersistence(ctx context.Context, repository PluginRuntimeRepository, instanceID, generation string) error {
 	var lastErr error

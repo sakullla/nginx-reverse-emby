@@ -29,7 +29,7 @@ func TestPluginHostWindowsSandboxLiveProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := Candidate{Identity: Identity{PackageDigest: validated.Digest}, Requirement: requirement, attemptEnvironment: []string{"NRE_PLUGIN_TEST=1"}}
+	candidate := Candidate{Identity: Identity{PackageDigest: validated.Digest}, Requirement: requirement, Grants: []string{UnsandboxedGrant}, attemptEnvironment: []string{"NRE_PLUGIN_TEST=1"}}
 	process, err := (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostWindowsSandboxGuest$"}, []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath}, io.Discard, candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -51,18 +51,22 @@ func TestPluginHostWindowsSandboxGuest(t *testing.T) {
 	}
 }
 
-func TestPluginHostWindowsSandboxRejectsHighRiskBoundary(t *testing.T) {
-	validated := validatedSignedSandboxPackage(t, "secret.use", "http.request")
-	requirement, err := SandboxRequirementFromValidatedPackage(validated)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate := Candidate{Identity: Identity{PackageDigest: validated.Digest}, Requirement: requirement}
-	if err := authorizeSandbox(candidate); err == nil {
-		t.Fatal("high-risk capability was admitted without an enforceable Windows boundary")
-	}
-	candidate.Grants = []string{UnsandboxedGrant}
-	if err := authorizeSandbox(candidate); err != nil {
-		t.Fatalf("explicit Windows unsandboxed admission failed: %v", err)
+func TestPluginHostWindowsSandboxRejectsSignedRequirementsWithoutExplicitGrant(t *testing.T) {
+	for name, permission := range map[string]string{"ordinary": "agent.read", "privileged": "secret.use"} {
+		t.Run(name, func(t *testing.T) {
+			validated := validatedSignedSandboxPackage(t, permission, "http.request")
+			requirement, err := SandboxRequirementFromValidatedPackage(validated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := Candidate{Identity: Identity{PackageDigest: validated.Digest}, Requirement: requirement}
+			if err := authorizeSandbox(candidate); err == nil {
+				t.Fatal("signed requirement was admitted without an enforceable Windows boundary")
+			}
+			candidate.Grants = []string{UnsandboxedGrant}
+			if err := authorizeSandbox(candidate); err != nil {
+				t.Fatalf("explicit Windows unsandboxed admission failed: %v", err)
+			}
+		})
 	}
 }

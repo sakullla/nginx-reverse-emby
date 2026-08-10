@@ -348,6 +348,17 @@ func (h *Host) Active(instanceID string) (*Instance, bool) {
 	instance, ok := h.active[instanceID]
 	return instance, ok
 }
+func (h *Host) ActiveGenerations() map[string]string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	result := make(map[string]string, len(h.active))
+	for instanceID, instance := range h.active {
+		if instance != nil && instance.Generation != "" {
+			result[instanceID] = instance.Generation
+		}
+	}
+	return result
+}
 func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	h.mu.Lock()
 	instance := h.active[instanceID]

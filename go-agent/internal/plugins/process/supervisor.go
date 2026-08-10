@@ -59,6 +59,9 @@ func (ExecRunner) Start(ctx context.Context, spec InstanceSpec, sandbox Sandbox,
 	if err := validateProcessLocation(spec); err != nil {
 		return nil, nil, err
 	}
+	if _, err := DecideSandbox(sandbox, spec.Security); err != nil {
+		return nil, nil, err
+	}
 	cmd := exec.CommandContext(ctx, spec.Executable, spec.Args...)
 	cmd.Dir = filepath.Dir(spec.Executable)
 	environment, err := buildProcessEnvironment(spec.Environment, spec.GeneratedEnvironment)
@@ -70,7 +73,7 @@ func (ExecRunner) Start(ctx context.Context, spec InstanceSpec, sandbox Sandbox,
 	prepareCleanup := func() error { return nil }
 	cleanup := func() error { return nil }
 	afterStart := func(int) error { return nil }
-	if sandbox != nil && sandbox.Available() && !hasUnsandboxedGrant(spec.Security.Grants) {
+	if sandbox != nil && ((sandbox.Available() && !hasUnsandboxedGrant(spec.Security.Grants)) || requiresDefenseInDepth(sandbox, spec.Security)) {
 		var err error
 		prepareCleanup, cleanup, afterStart, err = sandbox.Configure(cmd, spec.Security)
 		if err != nil {
