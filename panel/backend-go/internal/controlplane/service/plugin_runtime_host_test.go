@@ -21,10 +21,13 @@ import (
 )
 
 type runtimeProcess struct {
-	done    chan error
-	once    sync.Once
-	mu      sync.Mutex
-	stopped bool
+	done         chan error
+	once         sync.Once
+	mu           sync.Mutex
+	stopped      bool
+	signalNoop   bool
+	killFailures int
+	killCalls    int
 }
 
 func runtimeSandboxRequirement(t *testing.T, digest string) pluginhost.SandboxRequirement {
@@ -44,6 +47,23 @@ func runtimeSandboxRequirement(t *testing.T, digest string) pluginhost.SandboxRe
 func (p *runtimeProcess) PID() int    { return 18 }
 func (p *runtimeProcess) Wait() error { return <-p.done }
 func (p *runtimeProcess) Signal(os.Signal) error {
+	if p.signalNoop {
+		return nil
+	}
+	return p.complete()
+}
+func (p *runtimeProcess) Kill() error {
+	p.mu.Lock()
+	p.killCalls++
+	if p.killFailures > 0 {
+		p.killFailures--
+		p.mu.Unlock()
+		return errors.New("runtime kill failed")
+	}
+	p.mu.Unlock()
+	return p.complete()
+}
+func (p *runtimeProcess) complete() error {
 	p.once.Do(func() {
 		p.mu.Lock()
 		p.stopped = true
@@ -52,7 +72,6 @@ func (p *runtimeProcess) Signal(os.Signal) error {
 	})
 	return nil
 }
-func (p *runtimeProcess) Kill() error { return p.Signal(os.Kill) }
 func (p *runtimeProcess) isStopped() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -66,8 +85,10 @@ func (runtimeLauncher) Start(context.Context, string, []string, []string, io.Wri
 }
 
 type runtimeQueueLauncher struct {
-	mu        sync.Mutex
-	processes []*runtimeProcess
+	mu           sync.Mutex
+	processes    []*runtimeProcess
+	signalNoop   bool
+	killFailures int
 }
 
 type blockingRuntimeLauncher struct {
@@ -94,7 +115,7 @@ func (l *blockingRuntimeLauncher) Start(ctx context.Context, _ string, _ []strin
 func (l *runtimeQueueLauncher) Start(context.Context, string, []string, []string, io.Writer, pluginhost.Candidate) (pluginhost.Process, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	process := &runtimeProcess{done: make(chan error, 1)}
+	process := &runtimeProcess{done: make(chan error, 1), signalNoop: l.signalNoop, killFailures: l.killFailures}
 	l.processes = append(l.processes, process)
 	return process, nil
 }
@@ -573,6 +594,85 @@ func TestPluginRuntimeHostDurablePromotionFailurePreservesOldProcess(t *testing.
 	active, ok := host.Active("instance")
 	if !ok || active != first || active.Generation != "g1" {
 		t.Fatalf("old active process was replaced: %+v", active)
+	}
+}
+
+func TestPluginRuntimeHostPromotionFailureRetainsCandidateUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{signalNoop: true, killFailures: 1}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{promoteErr: errors.New("promotion unavailable")}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-promotion-failed")
+	if _, err := service.Activate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "runtime kill failed") {
+		t.Fatalf("activation error = %v", err)
+	}
+	process := launcher.process(0)
+	if process == nil || process.isStopped() || len(service.pending) != 1 {
+		t.Fatalf("failed cleanup was not retained: process=%+v pending=%d", process, len(service.pending))
+	}
+	repo.mu.Lock()
+	stopCalls, row := repo.stopCalls, repo.row
+	repo.mu.Unlock()
+	if stopCalls != 0 || row.PID == 0 && row.State == "stopped" {
+		t.Fatalf("unpublished candidate was falsely terminalized: calls=%d row=%+v", stopCalls, row)
+	}
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry candidate termination: %v", err)
+	}
+	if !process.isStopped() || len(service.pending) != 0 {
+		t.Fatalf("Close did not release retained candidate: stopped=%v pending=%d", process.isStopped(), len(service.pending))
+	}
+	repo.mu.Lock()
+	stopCalls = repo.stopCalls
+	repo.mu.Unlock()
+	if stopCalls != 0 {
+		t.Fatalf("unpromoted candidate wrote stopped state %d times", stopCalls)
+	}
+}
+
+func TestPluginRuntimeHostPublishRollbackFailureRetainsPIDUntilCloseRetry(t *testing.T) {
+	service, host, repo, launcher, candidate := newRuntimePublishRaceFixture(t)
+	launcher.signalNoop = true
+	launcher.killFailures = 2
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-repo.promoteStarted
+	if err := host.Close(t.Context()); err == nil || !strings.Contains(err.Error(), "runtime kill failed") {
+		t.Fatalf("first host Close error = %v", err)
+	}
+	close(repo.promoteRelease)
+	activationErr := <-activateDone
+	if activationErr == nil || !strings.Contains(activationErr.Error(), "runtime kill failed") {
+		t.Fatalf("publish rollback error = %v", activationErr)
+	}
+	process := launcher.process(0)
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if process == nil || process.isStopped() || len(service.pending) != 1 {
+		t.Fatalf("failed publish rollback was not retained: stopped=%v pending=%d", process != nil && process.isStopped(), len(service.pending))
+	}
+	if row.State != "failed" || row.PID != process.PID() || stopCalls != 0 {
+		t.Fatalf("live rollback candidate was falsely terminalized: calls=%d row=%+v", stopCalls, row)
+	}
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatalf("service Close did not retry rollback termination: %v", err)
+	}
+	repo.mu.Lock()
+	row, stopCalls = repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if !process.isStopped() || len(service.pending) != 0 || row.State != "stopped" || row.PID != 0 || stopCalls != 1 {
+		t.Fatalf("Close retry result: stopped=%v pending=%d calls=%d row=%+v", process.isStopped(), len(service.pending), stopCalls, row)
 	}
 }
 

@@ -88,6 +88,7 @@ type Host struct {
 	dialer         RPCDialer
 	logs           io.Writer
 	active         map[string]*Instance
+	prepared       map[*Instance]struct{}
 	observer       func(RuntimeStatus) error
 	observerErrors map[string]error
 }
@@ -113,9 +114,12 @@ type runtimeControl struct {
 type Instance struct {
 	mu                         sync.RWMutex
 	stopMu                     sync.Mutex
-	stopStarted                bool
-	stopDone                   chan struct{}
-	stopErr                    error
+	gracefulOnce               sync.Once
+	signalErr                  error
+	rpcStopOnce                sync.Once
+	rpcStopErr                 error
+	closeOnce                  sync.Once
+	closeErr                   error
 	ID, Generation, Executable string
 	PID                        int
 	RestartCount               int
@@ -149,7 +153,7 @@ func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer
 		logs = io.Discard
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance), observerErrors: make(map[string]error)}, nil
+	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance), prepared: make(map[*Instance]struct{}), observerErrors: make(map[string]error)}, nil
 }
 
 func (h *Host) SetStatusObserver(observer func(RuntimeStatus) error) {
@@ -268,6 +272,13 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	cleanupSecurity = false
 	keepAttempt = true
 	go instance.monitor()
+	h.mu.Lock()
+	h.prepared[instance] = struct{}{}
+	if h.closed {
+		h.mu.Unlock()
+		return nil, errors.New("control-plane plugin host closed during candidate preparation")
+	}
+	h.mu.Unlock()
 	return instance, nil
 }
 
@@ -318,6 +329,7 @@ func (h *Host) Publish(instance *Instance) error {
 	control.wg.Add(workers)
 	instance.control = control
 	h.active[instance.ID] = instance
+	delete(h.prepared, instance)
 	h.mu.Unlock()
 	h.notifyOwned(instance, control)
 	go h.watch(control, instance)
@@ -340,10 +352,22 @@ func (h *Host) Activate(ctx context.Context, candidate Candidate) (*Instance, er
 		return nil, err
 	}
 	if err := h.Publish(instance); err != nil {
-		_ = instance.Stop(context.Background())
+		_ = h.StopCandidate(context.Background(), instance)
 		return nil, err
 	}
 	return instance, nil
+}
+func (h *Host) StopCandidate(ctx context.Context, instance *Instance) error {
+	if h == nil || instance == nil {
+		return nil
+	}
+	stopErr := instance.Stop(ctx)
+	if instance.terminated() {
+		h.mu.Lock()
+		delete(h.prepared, instance)
+		h.mu.Unlock()
+	}
+	return stopErr
 }
 
 func (h *Host) Active(instanceID string) (*Instance, bool) {
@@ -391,12 +415,19 @@ func (h *Host) Close(ctx context.Context) error {
 		h.closed = true
 		h.cancel()
 	}
+	h.mu.Unlock()
+	h.prepareWG.Wait()
+	h.mu.Lock()
 	instances := make([]*Instance, 0, len(h.active))
 	for _, instance := range h.active {
 		instances = append(instances, instance)
 		if instance.control != nil {
 			instance.control.cancel()
 		}
+	}
+	prepared := make([]*Instance, 0, len(h.prepared))
+	for instance := range h.prepared {
+		prepared = append(prepared, instance)
 	}
 	h.mu.Unlock()
 	var errs []error
@@ -410,7 +441,9 @@ func (h *Host) Close(ctx context.Context) error {
 			h.mu.Unlock()
 		}
 	}
-	h.prepareWG.Wait()
+	for _, instance := range prepared {
+		errs = append(errs, h.StopCandidate(ctx, instance))
+	}
 	return errors.Join(errs...)
 }
 
@@ -462,24 +495,8 @@ func (i *Instance) Stop(ctx context.Context) error {
 		return nil
 	}
 	i.stopMu.Lock()
-	if i.stopStarted {
-		done := i.stopDone
-		i.stopMu.Unlock()
-		<-done
-		i.stopMu.Lock()
-		err := i.stopErr
-		i.stopMu.Unlock()
-		return err
-	}
-	i.stopStarted = true
-	i.stopDone = make(chan struct{})
-	i.stopMu.Unlock()
-	err := i.stop(ctx)
-	i.stopMu.Lock()
-	i.stopErr = err
-	close(i.stopDone)
-	i.stopMu.Unlock()
-	return err
+	defer i.stopMu.Unlock()
+	return i.stop(ctx)
 }
 
 func (i *Instance) stop(ctx context.Context) error {
@@ -493,11 +510,7 @@ func (i *Instance) stop(ctx context.Context) error {
 	}
 	i.State = "stopping"
 	i.mu.Unlock()
-	request := pluginsdk.LifecycleRequest{Generation: i.Generation}
-	var rpcErr error
-	if i.client != nil {
-		_, rpcErr = i.client.Stop(ctx, request)
-	}
+	i.rpcStopOnce.Do(func() { i.rpcStopErr = i.stopRPC(ctx) })
 	var signalErr, killErr, joinErr, waitErr error
 	terminated := false
 	alreadyExited := false
@@ -509,22 +522,28 @@ func (i *Instance) stop(ctx context.Context) error {
 		default:
 		}
 		if !terminated {
-			signalErr = i.process.Signal(os.Interrupt)
 			grace := i.grace
 			if grace <= 0 {
 				grace = 5 * time.Second
 			}
-			timer := time.NewTimer(grace)
-			select {
-			case <-i.done:
-				terminated = true
-			case <-ctx.Done():
-			case <-timer.C:
-			}
-			if !timer.Stop() {
+			graceful := false
+			i.gracefulOnce.Do(func() {
+				graceful = true
+				i.signalErr = i.process.Signal(os.Interrupt)
+			})
+			if graceful {
+				timer := time.NewTimer(grace)
 				select {
+				case <-i.done:
+					terminated = true
+				case <-ctx.Done():
 				case <-timer.C:
-				default:
+				}
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 			}
 			if !terminated {
@@ -532,7 +551,7 @@ func (i *Instance) stop(ctx context.Context) error {
 				if i.processCancel != nil {
 					i.processCancel()
 				}
-				joinCtx, cancel := context.WithTimeout(context.Background(), grace)
+				joinCtx, cancel := context.WithTimeout(context.Background(), hostProcessJoinTimeout(grace))
 				select {
 				case <-i.done:
 					terminated = true
@@ -549,8 +568,9 @@ func (i *Instance) stop(ctx context.Context) error {
 		}
 	}
 	var closeErr error
-	if i.closer != nil {
-		closeErr = i.closer.Close()
+	if terminated {
+		i.closeTransport()
+		closeErr = i.closeErr
 	}
 	if terminated && i.logCloser != nil {
 		closeErr = errors.Join(closeErr, i.logCloser.Close())
@@ -567,7 +587,56 @@ func (i *Instance) stop(ctx context.Context) error {
 	if (terminated || i.process == nil) && i.processCancel != nil {
 		i.processCancel()
 	}
-	return errors.Join(rpcErr, signalErr, killErr, joinErr, waitErr, closeErr)
+	return errors.Join(i.rpcStopErr, i.signalErr, signalErr, killErr, joinErr, waitErr, closeErr)
+}
+
+func (i *Instance) stopRPC(ctx context.Context) error {
+	if i.client == nil {
+		return nil
+	}
+	grace := hostStopTimeout(i.grace)
+	rpcCtx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		response, err := i.client.Stop(rpcCtx, pluginsdk.LifecycleRequest{Generation: i.Generation})
+		if err == nil {
+			err = response.Validate()
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-rpcCtx.Done():
+		i.closeTransport()
+		return fmt.Errorf("control-plane plugin lifecycle stop: %w", rpcCtx.Err())
+	}
+}
+
+func (i *Instance) closeTransport() {
+	i.closeOnce.Do(func() {
+		if i.closer != nil {
+			i.closeErr = i.closer.Close()
+		}
+	})
+}
+
+func hostStopTimeout(grace time.Duration) time.Duration {
+	if grace <= 0 {
+		return 5 * time.Second
+	}
+	return grace
+}
+
+func hostProcessJoinTimeout(grace time.Duration) time.Duration {
+	if grace < 100*time.Millisecond {
+		return 100 * time.Millisecond
+	}
+	if grace > 30*time.Second {
+		return 30 * time.Second
+	}
+	return grace
 }
 
 func (i *Instance) terminated() bool {
@@ -577,6 +646,17 @@ func (i *Instance) terminated() bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.State == "stopped" && i.PID == 0
+}
+
+func (i *Instance) Terminated() bool { return i.terminated() }
+
+func (i *Instance) ProcessID() int {
+	if i == nil {
+		return 0
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.PID
 }
 
 func normalizeRestartCandidate(candidate Candidate) Candidate {

@@ -33,6 +33,13 @@ type PluginRuntimeHost struct {
 	operations   sync.WaitGroup
 	closed       bool
 	closeTargets map[string]string
+	pendingMu    sync.Mutex
+	pending      map[*pluginhost.Instance]pendingRuntimeCleanup
+}
+
+type pendingRuntimeCleanup struct {
+	candidate pluginhost.Candidate
+	promoted  bool
 }
 
 func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeRepository) (*PluginRuntimeHost, error) {
@@ -40,7 +47,7 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, closeTargets: make(map[string]string)}
+	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, closeTargets: make(map[string]string), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
 		observerCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
 		defer cancel()
@@ -84,7 +91,7 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 	if err := s.repository.PromotePluginRuntime(operationCtx, candidate.InstanceID, candidate.Identity.Generation, instance.PID, sandbox); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stopErr := instance.Stop(cleanupCtx)
+		stopErr := s.stopPreparedCandidate(cleanupCtx, instance, candidate, false)
 		reportErr := s.repository.FailPluginRuntimeCandidate(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, err)
 		return nil, errors.Join(fmt.Errorf("promote plugin runtime state after %s: %w", state, err), stopErr, reportErr)
 	}
@@ -122,13 +129,29 @@ func (s *PluginRuntimeHost) beginOperation(ctx context.Context) (context.Context
 func (s *PluginRuntimeHost) rollbackPromotedCandidate(instance *pluginhost.Instance, candidate pluginhost.Candidate, publishErr error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stopErr := instance.Stop(cleanupCtx)
+	stopErr := s.stopPreparedCandidate(cleanupCtx, instance, candidate, true)
+	if !instance.Terminated() {
+		healthErr := s.repository.UpdatePluginRuntimeHealth(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, "failed", instance.ProcessID(), 0, false, safeRuntimeError(errors.Join(publishErr, stopErr)))
+		return errors.Join(publishErr, stopErr, healthErr)
+	}
 	terminalErr := retryRuntimeStopPersistence(cleanupCtx, s.repository, candidate.InstanceID, candidate.Identity.Generation)
 	if terminalErr != nil {
 		fallbackErr := s.repository.UpdatePluginRuntimeHealth(cleanupCtx, candidate.InstanceID, candidate.Identity.Generation, "failed", 0, 0, false, safeRuntimeError(errors.Join(publishErr, terminalErr)))
 		terminalErr = errors.Join(fmt.Errorf("terminalize promoted plugin runtime: %w", terminalErr), fallbackErr)
 	}
 	return errors.Join(publishErr, stopErr, terminalErr)
+}
+
+func (s *PluginRuntimeHost) stopPreparedCandidate(ctx context.Context, instance *pluginhost.Instance, candidate pluginhost.Candidate, promoted bool) error {
+	stopErr := s.host.StopCandidate(ctx, instance)
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if !instance.Terminated() {
+		s.pending[instance] = pendingRuntimeCleanup{candidate: candidate, promoted: promoted}
+	} else {
+		delete(s.pending, instance)
+	}
+	return stopErr
 }
 
 func safeRuntimeError(err error) string {
@@ -163,6 +186,9 @@ func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
 	if !found || row.ActiveGeneration == "" {
 		return stopErr
 	}
+	if s.host.ActiveGenerations()[instanceID] == row.ActiveGeneration {
+		return errors.Join(stopErr, fmt.Errorf("plugin runtime %s generation %s remains owned after failed termination", instanceID, row.ActiveGeneration))
+	}
 	persistCtx := operationCtx
 	cancelPersist := func() {}
 	if operationCtx.Err() != nil {
@@ -187,6 +213,21 @@ func (s *PluginRuntimeHost) Close(ctx context.Context) error {
 	}
 	hostErr := s.host.Close(ctx)
 	errs := []error{hostErr}
+	s.pendingMu.Lock()
+	for instance, pending := range s.pending {
+		if !instance.Terminated() {
+			errs = append(errs, fmt.Errorf("plugin runtime candidate %s generation %s remains owned after failed termination", pending.candidate.InstanceID, pending.candidate.Identity.Generation))
+			continue
+		}
+		if pending.promoted {
+			if err := retryRuntimeStopPersistence(ctx, s.repository, pending.candidate.InstanceID, pending.candidate.Identity.Generation); err != nil {
+				errs = append(errs, fmt.Errorf("persist stopped rollback candidate %s generation %s: %w", pending.candidate.InstanceID, pending.candidate.Identity.Generation, err))
+				continue
+			}
+		}
+		delete(s.pending, instance)
+	}
+	s.pendingMu.Unlock()
 	remaining := s.host.ActiveGenerations()
 	for instanceID, generation := range s.closeTargets {
 		if remaining[instanceID] == generation {

@@ -185,6 +185,58 @@ func (p *immediateProcess) Wait() error            { return <-p.done }
 func (p *immediateProcess) Signal(os.Signal) error { return nil }
 func (p *immediateProcess) Kill() error            { return nil }
 
+type retryKillProcess struct {
+	done      chan error
+	mu        sync.Mutex
+	killCalls int
+}
+
+func (p *retryKillProcess) PID() int               { return 43 }
+func (p *retryKillProcess) Wait() error            { return <-p.done }
+func (p *retryKillProcess) Signal(os.Signal) error { return nil }
+func (p *retryKillProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.killCalls++
+	if p.killCalls == 1 {
+		return errors.New("first kill failed")
+	}
+	p.done <- nil
+	return nil
+}
+
+type retryKillRunner struct{ process *retryKillProcess }
+
+func (r retryKillRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer) (ManagedProcess, func() error, error) {
+	return r.process, func() error { return nil }, nil
+}
+
+func TestSupervisorStopRetriesKillUntilProcessDone(t *testing.T) {
+	process := &retryKillProcess{done: make(chan error, 1)}
+	supervisor := NewSupervisor(retryKillRunner{process: process}, fakeSandbox{available: true}, io.Discard)
+	if _, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "retry-kill", Executable: "unused", GracePeriod: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Stop(t.Context(), "retry-kill"); err == nil || !strings.Contains(err.Error(), "first kill failed") {
+		t.Fatalf("first Stop error = %v", err)
+	}
+	if err := supervisor.Stop(t.Context(), "retry-kill"); err != nil {
+		t.Fatalf("second Stop did not retry successful kill: %v", err)
+	}
+	process.mu.Lock()
+	kills := process.killCalls
+	process.mu.Unlock()
+	if kills != 2 {
+		t.Fatalf("kill calls = %d, want 2", kills)
+	}
+	supervisor.mu.Lock()
+	_, owned := supervisor.handles["retry-kill"]
+	supervisor.mu.Unlock()
+	if owned {
+		t.Fatal("supervisor retained process after retry succeeded")
+	}
+}
+
 type crashRunner struct{}
 
 func (crashRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer) (ManagedProcess, func() error, error) {

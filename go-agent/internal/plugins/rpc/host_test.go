@@ -79,6 +79,28 @@ type drainHostProcess struct {
 	once       sync.Once
 }
 
+type retryDrainHostProcess struct {
+	done      chan error
+	mu        sync.Mutex
+	killCalls int
+	stopped   chan struct{}
+}
+
+func (p *retryDrainHostProcess) PID() int               { return 73 }
+func (p *retryDrainHostProcess) Wait() error            { return <-p.done }
+func (p *retryDrainHostProcess) Signal(os.Signal) error { return nil }
+func (p *retryDrainHostProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.killCalls++
+	if p.killCalls == 1 {
+		return errors.New("candidate kill failed")
+	}
+	close(p.stopped)
+	p.done <- nil
+	return nil
+}
+
 func (p *drainHostProcess) PID() int               { return 71 }
 func (p *drainHostProcess) Wait() error            { return <-p.done }
 func (p *drainHostProcess) Signal(os.Signal) error { return nil }
@@ -148,6 +170,16 @@ type hostCloser struct{}
 
 func (hostCloser) Close() error { return nil }
 
+type unblockHostCloser struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *unblockHostCloser) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
 type hostClient struct {
 	abi        string
 	prepareErr error
@@ -156,6 +188,16 @@ type hostClient struct {
 type cancelOnStopHostClient struct {
 	hostClient
 	onStop func()
+}
+
+type blockingStopHostClient struct {
+	hostClient
+	released <-chan struct{}
+}
+
+func (c blockingStopHostClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	<-c.released
+	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
 
 func (c cancelOnStopHostClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
@@ -360,6 +402,124 @@ func TestRPCHostCutoverFailureRetainsOldGenerationAndStopsCandidate(t *testing.T
 		t.Fatal("failed cutover did not stop candidate process")
 	}
 	oldProcess.done <- nil
+}
+
+func TestRPCHostCloseBoundsBlockedLifecycleStopAndKillsProcess(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = 5 * time.Millisecond
+	released := make(chan struct{})
+	process := &drainHostProcess{done: make(chan error, 1), killCalled: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{process}}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return blockingStopHostClient{hostClient: hostClient{abi: pluginsdk.RPCABIV1}, released: released}, &unblockHostCloser{closed: released}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = host.Close(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "lifecycle stop") || time.Since(started) > time.Second {
+		t.Fatalf("Close blocked Stop result = %v after %v", err, time.Since(started))
+	}
+	select {
+	case <-process.killCalled:
+	default:
+		t.Fatal("Close did not force-kill process after lifecycle timeout")
+	}
+	if _, active := host.Active(candidate.InstanceID); active {
+		t.Fatal("Close retained terminated process")
+	}
+}
+
+func TestRPCHostCutoverBoundsBlockedLifecycleStopAndRejectsCandidate(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = 5 * time.Millisecond
+	released := make(chan struct{})
+	oldProcess := &drainHostProcess{done: make(chan error, 1), killCalled: make(chan struct{})}
+	newProcess := &hostProcess{done: make(chan error, 1), pid: 72, stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{oldProcess, newProcess}}
+	clients := []LifecycleClient{blockingStopHostClient{hostClient: hostClient{abi: pluginsdk.RPCABIV1}, released: released}, hostClient{abi: pluginsdk.RPCABIV1}}
+	closers := []io.Closer{&unblockHostCloser{closed: released}, hostCloser{}}
+	dial := func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		client, closer := clients[0], closers[0]
+		clients, closers = clients[1:], closers[1:]
+		return client, closer, nil
+	}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Generation = "g2"
+	started := time.Now()
+	_, err = host.Activate(context.Background(), candidate)
+	if err == nil || !strings.Contains(err.Error(), "lifecycle stop") || time.Since(started) > time.Second {
+		t.Fatalf("cutover blocked Stop result = %v after %v", err, time.Since(started))
+	}
+	active, ok := host.Active(candidate.InstanceID)
+	if !ok || active != first {
+		t.Fatal("blocked old lifecycle Stop changed published ownership")
+	}
+	select {
+	case <-newProcess.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("rejected candidate process was not terminated")
+	}
+	_ = host.Close(context.Background())
+}
+
+func TestRPCHostFailedCandidateCleanupIsRetriedByClose(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Process.GracePeriod = 5 * time.Millisecond
+	released := make(chan struct{})
+	oldProcess := &drainHostProcess{done: make(chan error, 1), killCalled: make(chan struct{})}
+	candidateProcess := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
+	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{oldProcess, candidateProcess}}
+	clients := []LifecycleClient{blockingStopHostClient{hostClient: hostClient{abi: pluginsdk.RPCABIV1}, released: released}, hostClient{abi: pluginsdk.RPCABIV1}}
+	closers := []io.Closer{&unblockHostCloser{closed: released}, hostCloser{}}
+	dial := func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		client, closer := clients[0], closers[0]
+		clients, closers = clients[1:], closers[1:]
+		return client, closer, nil
+	}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Generation = "g2"
+	if _, err := host.Activate(context.Background(), candidate); err == nil || !strings.Contains(err.Error(), "candidate kill failed") {
+		t.Fatalf("candidate cleanup error = %v", err)
+	}
+	host.mu.RLock()
+	pending := len(host.pending)
+	host.mu.RUnlock()
+	if pending != 1 {
+		t.Fatalf("failed candidate cleanup ownership = %d, want 1", pending)
+	}
+	_ = host.Close(context.Background())
+	select {
+	case <-candidateProcess.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not retry candidate kill")
+	}
+	host.mu.RLock()
+	pending = len(host.pending)
+	host.mu.RUnlock()
+	if pending != 0 {
+		t.Fatalf("Close retained %d terminated candidates", pending)
+	}
 }
 
 func TestRPCHostCrashStartsFreshProcessAndRepeatsLifecycle(t *testing.T) {

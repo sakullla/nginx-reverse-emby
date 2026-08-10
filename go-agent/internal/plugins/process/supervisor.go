@@ -223,17 +223,18 @@ func NewSupervisor(runner Runner, sandbox Sandbox, output io.Writer) *Supervisor
 }
 
 type Handle struct {
-	mu       sync.RWMutex
-	spec     InstanceSpec
-	status   Status
-	cancel   context.CancelFunc
-	done     chan struct{}
-	process  ManagedProcess
-	cleanup  func() error
-	started  chan error
-	stopOnce sync.Once
-	stopErr  error
-	once     bool
+	mu         sync.RWMutex
+	spec       InstanceSpec
+	status     Status
+	cancel     context.CancelFunc
+	done       chan struct{}
+	process    ManagedProcess
+	cleanup    func() error
+	started    chan error
+	stopMu     sync.Mutex
+	signalOnce sync.Once
+	signalErr  error
+	once       bool
 }
 
 func (s *Supervisor) Start(ctx context.Context, spec InstanceSpec) (*Handle, error) {
@@ -401,38 +402,68 @@ func (h *Handle) Stop(ctx context.Context) error {
 	if h == nil {
 		return nil
 	}
-	h.stopOnce.Do(func() {
-		h.cancel()
-		h.mu.RLock()
-		proc, grace := h.process, h.spec.GracePeriod
-		h.mu.RUnlock()
-		if proc == nil {
-			return
-		}
-		signalErr := proc.Signal(os.Interrupt)
-		timer := time.NewTimer(grace)
-		defer timer.Stop()
-		var killErr error
-		select {
-		case <-h.done:
-		case <-timer.C:
-			killErr = proc.Kill()
-		case <-ctx.Done():
-			killErr = proc.Kill()
-		}
-		h.mu.Lock()
-		h.stopErr = errors.Join(signalErr, killErr)
-		h.mu.Unlock()
-	})
-	h.mu.RLock()
-	stopErr := h.stopErr
-	h.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.stopMu.Lock()
+	defer h.stopMu.Unlock()
+	h.cancel()
 	select {
 	case <-h.done:
-		return stopErr
-	case <-ctx.Done():
-		return errors.Join(stopErr, ctx.Err())
+		return nil
+	default:
 	}
+	h.mu.RLock()
+	proc, grace := h.process, h.spec.GracePeriod
+	h.mu.RUnlock()
+	if proc == nil {
+		select {
+		case <-h.done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	graceful := false
+	h.signalOnce.Do(func() {
+		graceful = true
+		h.signalErr = proc.Signal(os.Interrupt)
+	})
+	if graceful {
+		timer := time.NewTimer(grace)
+		select {
+		case <-h.done:
+			timer.Stop()
+			return h.signalErr
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+	killErr := proc.Kill()
+	joinCtx, cancel := context.WithTimeout(context.Background(), processJoinTimeout(grace))
+	defer cancel()
+	select {
+	case <-h.done:
+		return errors.Join(h.signalErr, killErr)
+	case <-joinCtx.Done():
+		return errors.Join(h.signalErr, killErr, fmt.Errorf("join Agent plugin process: %w", joinCtx.Err()))
+	}
+}
+
+func processJoinTimeout(grace time.Duration) time.Duration {
+	if grace < 100*time.Millisecond {
+		return 100 * time.Millisecond
+	}
+	if grace > 30*time.Second {
+		return 30 * time.Second
+	}
+	return grace
 }
 
 func (h *Handle) setExit(err error, failed bool) {

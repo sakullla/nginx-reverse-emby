@@ -32,6 +32,27 @@ type controlledStopProcess struct {
 	once       sync.Once
 }
 
+type retryBackendKillProcess struct {
+	done      chan error
+	mu        sync.Mutex
+	killCalls int
+	failures  int
+}
+
+func (p *retryBackendKillProcess) PID() int               { return 92 }
+func (p *retryBackendKillProcess) Wait() error            { return <-p.done }
+func (p *retryBackendKillProcess) Signal(os.Signal) error { return nil }
+func (p *retryBackendKillProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.killCalls++
+	if p.killCalls <= p.failures {
+		return errors.New("first backend kill failed")
+	}
+	p.done <- nil
+	return nil
+}
+
 func (p *controlledStopProcess) PID() int               { return 91 }
 func (p *controlledStopProcess) Wait() error            { return <-p.done }
 func (p *controlledStopProcess) Signal(os.Signal) error { return nil }
@@ -62,9 +83,20 @@ type testCloser struct{}
 
 func (testCloser) Close() error { return nil }
 
+type unblockCloser struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *unblockCloser) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
 type testDialer struct {
 	mu        sync.Mutex
 	clients   []RPCClient
+	closers   []io.Closer
 	endpoints []Endpoint
 }
 
@@ -74,7 +106,12 @@ func (d *testDialer) Dial(_ context.Context, endpoint Endpoint, _ time.Duration)
 	d.endpoints = append(d.endpoints, endpoint)
 	client := d.clients[0]
 	d.clients = d.clients[1:]
-	return client, testCloser{}, nil
+	closer := io.Closer(testCloser{})
+	if len(d.closers) > 0 {
+		closer = d.closers[0]
+		d.closers = d.closers[1:]
+	}
+	return client, closer, nil
 }
 
 type testRPC struct {
@@ -84,6 +121,22 @@ type testRPC struct {
 	stopBlock   <-chan struct{}
 	handshakes  *atomic.Int32
 	activations *atomic.Int32
+}
+
+type blockingStopRPC struct{ released <-chan struct{} }
+
+func (blockingStopRPC) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	return pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{"relay.read"}}, nil
+}
+func (blockingStopRPC) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
+}
+func (blockingStopRPC) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
+}
+func (c blockingStopRPC) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	<-c.released
+	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
 
 func (c testRPC) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
@@ -400,7 +453,7 @@ func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
 	}
 	digest := sha256.Sum256(payload)
 	stopBlock := make(chan struct{})
-	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, stopBlock: stopBlock, stopErr: errors.New("old stop failed")}, testRPC{abi: pluginsdk.RPCABIV1}}}
+	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, stopBlock: stopBlock, stopErr: errors.New("old stop failed")}, testRPC{abi: pluginsdk.RPCABIV1}}, closers: []io.Closer{&unblockCloser{closed: stopBlock}, testCloser{}}}
 	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +477,6 @@ func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
 		t.Fatalf("publish waited for old generation cleanup: %v", elapsed)
 	}
-	close(stopBlock)
 	if !waitFor(t, func() bool {
 		active.mu.RLock()
 		defer active.mu.RUnlock()
@@ -483,6 +535,53 @@ func TestPluginHostFailedKillRetainsPIDAndOwnership(t *testing.T) {
 	}
 	if instance.terminated() || instance.PID != process.PID() {
 		t.Fatalf("failed termination cleared PID: state=%q pid=%d", instance.State, instance.PID)
+	}
+}
+
+func TestPluginHostStopRetriesKillUntilProcessDone(t *testing.T) {
+	process := &retryBackendKillProcess{done: make(chan error, 1), failures: 1}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Millisecond, done: make(chan struct{})}
+	go instance.monitor()
+	if err := instance.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "first backend kill failed") {
+		t.Fatalf("first Stop error = %v", err)
+	}
+	if instance.Terminated() || instance.ProcessID() == 0 {
+		t.Fatal("first failed kill cleared ownership")
+	}
+	if err := instance.Stop(t.Context()); err != nil {
+		t.Fatalf("second Stop did not retry successful kill: %v", err)
+	}
+	if !instance.Terminated() {
+		t.Fatal("successful retry did not reconcile process completion")
+	}
+	process.mu.Lock()
+	kills := process.killCalls
+	process.mu.Unlock()
+	if kills != 2 {
+		t.Fatalf("kill calls = %d, want 2", kills)
+	}
+}
+
+func TestPluginHostCloseBoundsBlockedLifecycleStopAndKillsProcess(t *testing.T) {
+	released := make(chan struct{})
+	closer := &unblockCloser{closed: released}
+	process := &retryBackendKillProcess{done: make(chan error, 1)}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, client: blockingStopRPC{released: released}, closer: closer, grace: 5 * time.Millisecond, done: make(chan struct{})}
+	go instance.monitor()
+	hostCtx, cancel := context.WithCancel(context.Background())
+	host := &Host{ctx: hostCtx, cancel: cancel, active: map[string]*Instance{"instance": instance}, prepared: map[*Instance]struct{}{}, observerErrors: map[string]error{}}
+	started := time.Now()
+	err := host.Close(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "lifecycle stop") || time.Since(started) > time.Second {
+		t.Fatalf("Close blocked Stop result = %v after %v", err, time.Since(started))
+	}
+	if !instance.Terminated() {
+		t.Fatal("Close returned before forced process termination")
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("Close did not close blocked RPC transport")
 	}
 }
 
