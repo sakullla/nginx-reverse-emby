@@ -59,6 +59,14 @@ Compatible additions retain the ABI identifier. A breaking wire or semantic
 change requires a new major ABI identifier and a new versioned IDL directory;
 it must never silently rewrite either `v1` contract.
 
+Additive RPC extensions are activated only through the handshake feature list.
+Hosts request `rpc.durable-actions.v1` before activating a package that declares
+dynamic actions or revocable resource handles; the guest must acknowledge it
+exactly. This preserves legacy `nre:rpc/v1` lifecycle-only guests while failing
+older action guests before cutover. Under that feature, `PlanAction` requests
+bounded typed operations against opaque handles, and `InvokeAction` receives
+only bounded results—never raw resource identity, sockets, or credentials.
+
 Packages use the repository's single `plugin.yaml`/`market.yaml` schema. Their
 canonical digest excludes `package.sha256` and `package.sig`, includes each
 declared artifact mode, and the digest text is signed by a trusted Ed25519 key.

@@ -232,8 +232,8 @@ func (c cancelOnStopHostClient) Stop(context.Context, pluginsdk.LifecycleRequest
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
 
-func (c hostClient) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
-	return pluginsdk.RPCHandshakeResponse{ABI: c.abi, Capabilities: []string{"relay.read"}}, nil
+func (c hostClient) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	return pluginsdk.RPCHandshakeResponse{ABI: c.abi, Capabilities: []string{"relay.read"}, Features: append([]string(nil), request.RequiredFeatures...)}, nil
 }
 func (c hostClient) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	if c.prepareErr != nil {
@@ -246,6 +246,10 @@ func (hostClient) Activate(context.Context, pluginsdk.LifecycleRequest) (plugins
 }
 func (hostClient) InvokeAction(_ context.Context, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error) {
 	return pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}, nil
+}
+
+func (hostClient) PlanAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
+	return pluginsdk.RPCActionPlanResponse{}, nil
 }
 
 func (hostClient) QueryAction(_ context.Context, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
@@ -269,11 +273,11 @@ func (c *hostLifecycleCounts) snapshot() (int, int, int, int) {
 
 type countingHostClient struct{ counts *hostLifecycleCounts }
 
-func (c countingHostClient) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+func (c countingHostClient) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
 	c.counts.mu.Lock()
 	c.counts.handshakes++
 	c.counts.mu.Unlock()
-	return pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{"relay.read"}}, nil
+	return pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{"relay.read"}, Features: append([]string(nil), request.RequiredFeatures...)}, nil
 }
 func (c countingHostClient) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	c.counts.mu.Lock()

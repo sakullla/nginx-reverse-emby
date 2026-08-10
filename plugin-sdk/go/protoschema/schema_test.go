@@ -98,19 +98,22 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 	if got := string(file.Package()); got != "nre.plugin.rpc.v1" {
 		t.Fatalf("RPC package = %q", got)
 	}
-	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 1 || file.Extensions().Len() != 0 || file.Enums().Len() != 1 {
+	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 1 || file.Extensions().Len() != 0 || file.Enums().Len() != 2 {
 		t.Fatalf("RPC file surface changed: syntax=%s services=%d extensions=%d enums=%d", file.Syntax(), file.Services().Len(), file.Extensions().Len(), file.Enums().Len())
 	}
 	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/rpcv1" {
 		t.Fatalf("RPC go_package = %q", got)
 	}
 	assertMessages(t, file.Messages(), []messageExpectation{
-		{"HandshakeRequest", []fieldExpectation{{"abi", 1, protoreflect.StringKind, false, ""}, {"plugin_id", 2, protoreflect.StringKind, false, ""}, {"plugin_version", 3, protoreflect.StringKind, false, ""}, {"package_digest", 4, protoreflect.StringKind, false, ""}, {"artifact_digest", 5, protoreflect.StringKind, false, ""}, {"granted_scopes", 6, protoreflect.StringKind, true, ""}, {"generation", 7, protoreflect.StringKind, false, ""}}},
-		{"HandshakeResponse", []fieldExpectation{{"abi", 1, protoreflect.StringKind, false, ""}, {"capabilities", 2, protoreflect.StringKind, true, ""}}},
+		{"HandshakeRequest", []fieldExpectation{{"abi", 1, protoreflect.StringKind, false, ""}, {"plugin_id", 2, protoreflect.StringKind, false, ""}, {"plugin_version", 3, protoreflect.StringKind, false, ""}, {"package_digest", 4, protoreflect.StringKind, false, ""}, {"artifact_digest", 5, protoreflect.StringKind, false, ""}, {"granted_scopes", 6, protoreflect.StringKind, true, ""}, {"generation", 7, protoreflect.StringKind, false, ""}, {"required_features", 8, protoreflect.StringKind, true, ""}}},
+		{"HandshakeResponse", []fieldExpectation{{"abi", 1, protoreflect.StringKind, false, ""}, {"capabilities", 2, protoreflect.StringKind, true, ""}, {"features", 3, protoreflect.StringKind, true, ""}}},
 		{"LifecycleRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"config", 2, protoreflect.BytesKind, false, ""}}},
 		{"LifecycleResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.LifecycleSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
 		{"LifecycleSuccess", []fieldExpectation{{"ready", 1, protoreflect.BoolKind, false, ""}}},
-		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}, {"operation_id", 5, protoreflect.StringKind, false, ""}, {"resource_handle", 6, protoreflect.StringKind, false, ""}}},
+		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}, {"operation_id", 5, protoreflect.StringKind, false, ""}, {"resource_handle", 6, protoreflect.StringKind, false, ""}, {"resource_results", 7, protoreflect.MessageKind, true, "nre.plugin.rpc.v1.ResourceResult"}}},
+		{"ResourceCall", []fieldExpectation{{"request_id", 1, protoreflect.StringKind, false, ""}, {"resource_handle", 2, protoreflect.StringKind, false, ""}, {"operation", 3, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.ResourceOperation"}, {"input", 4, protoreflect.BytesKind, false, ""}}},
+		{"ResourceResult", []fieldExpectation{{"request_id", 1, protoreflect.StringKind, false, ""}, {"value", 2, protoreflect.BytesKind, false, ""}, {"error", 3, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
+		{"ActionPlanResponse", []fieldExpectation{{"calls", 1, protoreflect.MessageKind, true, "nre.plugin.rpc.v1.ResourceCall"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
 		{"ActionResponse", []fieldExpectation{{"operation_id", 3, protoreflect.StringKind, false, ""}, {"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}, {"pending", 4, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionPending"}, {"missing", 5, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionMissing"}}},
 		{"ActionSuccess", []fieldExpectation{{"accepted", 1, protoreflect.BoolKind, false, ""}}},
 		{"ActionPending", []fieldExpectation{}},
@@ -119,8 +122,10 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
+	assertEnum(t, file.Enums().ByName("ResourceOperation"), []enumValueExpectation{{"RESOURCE_OPERATION_UNSPECIFIED", 0}, {"RESOURCE_OPERATION_INSPECT", 1}, {"RESOURCE_OPERATION_PROBE", 2}, {"RESOURCE_OPERATION_TRAFFIC_SUMMARY", 3}, {"RESOURCE_OPERATION_DNS_APPLY", 4}, {"RESOURCE_OPERATION_DOCKER_REQUEST", 5}})
 	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"), 2, nil)
 	assertExclusiveResult(t, file.Messages().ByName("ActionResponse"), 4, map[protoreflect.Name]struct{}{"operation_id": {}})
+	assertExclusiveResult(t, file.Messages().ByName("ResourceResult"), 2, map[protoreflect.Name]struct{}{"request_id": {}})
 	services := file.Services()
 	if services.Len() != 1 || services.Get(0).Name() != "PluginRuntime" {
 		t.Fatalf("RPC services changed: %v", services.Len())
@@ -130,6 +135,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"Handshake", "nre.plugin.rpc.v1.HandshakeRequest", "nre.plugin.rpc.v1.HandshakeResponse"},
 		{"Prepare", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
 		{"Activate", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
+		{"PlanAction", "nre.plugin.rpc.v1.ActionRequest", "nre.plugin.rpc.v1.ActionPlanResponse"},
 		{"InvokeAction", "nre.plugin.rpc.v1.ActionRequest", "nre.plugin.rpc.v1.ActionResponse"},
 		{"QueryAction", "nre.plugin.rpc.v1.ActionQueryRequest", "nre.plugin.rpc.v1.ActionResponse"},
 		{"Stop", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},

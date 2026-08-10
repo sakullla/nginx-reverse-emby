@@ -140,7 +140,7 @@ func NewClient(conn grpc.ClientConnInterface, cookie string, deadline time.Durat
 	if deadline <= 0 {
 		deadline = 5 * time.Second
 	}
-	names := []string{"HandshakeRequest", "HandshakeResponse", "LifecycleRequest", "LifecycleResponse", "ActionRequest", "ActionQueryRequest", "ActionResponse"}
+	names := []string{"HandshakeRequest", "HandshakeResponse", "LifecycleRequest", "LifecycleResponse", "ActionRequest", "ActionPlanResponse", "ActionQueryRequest", "ActionResponse"}
 	messages := make(map[string]protoreflect.MessageDescriptor, len(names))
 	for _, name := range names {
 		descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.rpc.v1." + name))
@@ -161,11 +161,12 @@ func (c *Client) Handshake(ctx context.Context, request pluginsdk.RPCHandshakeRe
 	setString(message, "artifact_digest", request.ArtifactDigest)
 	setStrings(message, "granted_scopes", request.GrantedScopes)
 	setString(message, "generation", request.Generation)
+	setStrings(message, "required_features", request.RequiredFeatures)
 	response := dynamicpb.NewMessage(c.messages["HandshakeResponse"])
 	if err := c.invoke(ctx, "Handshake", message, response); err != nil {
 		return pluginsdk.RPCHandshakeResponse{}, err
 	}
-	result := pluginsdk.RPCHandshakeResponse{ABI: getString(response, "abi"), Capabilities: getStrings(response, "capabilities")}
+	result := pluginsdk.RPCHandshakeResponse{ABI: getString(response, "abi"), Capabilities: getStrings(response, "capabilities"), Features: getStrings(response, "features")}
 	if err := ValidateHandshake(request, result); err != nil {
 		return pluginsdk.RPCHandshakeResponse{}, err
 	}
@@ -186,18 +187,70 @@ func (c *Client) InvokeAction(ctx context.Context, request pluginsdk.RPCActionRe
 	if err := request.Validate(); err != nil {
 		return pluginsdk.RPCActionResponse{}, err
 	}
-	message := dynamicpb.NewMessage(c.messages["ActionRequest"])
+	message := encodeActionRequest(c.messages["ActionRequest"], request)
+	response := dynamicpb.NewMessage(c.messages["ActionResponse"])
+	if err := c.invoke(ctx, "InvokeAction", message, response); err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	return decodeActionResponse(response)
+}
+
+func (c *Client) PlanAction(ctx context.Context, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
+	if err := request.Validate(); err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, err
+	}
+	input := encodeActionRequest(c.messages["ActionRequest"], request)
+	output := dynamicpb.NewMessage(c.messages["ActionPlanResponse"])
+	if err := c.invoke(ctx, "PlanAction", input, output); err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, err
+	}
+	return decodeActionPlanResponse(output)
+}
+
+func encodeActionRequest(descriptor protoreflect.MessageDescriptor, request pluginsdk.RPCActionRequest) *dynamicpb.Message {
+	message := dynamicpb.NewMessage(descriptor)
 	setString(message, "generation", request.Generation)
 	setString(message, "action_id", request.ActionID)
 	setString(message, "target_kind", request.TargetKind)
 	setString(message, "target_id", request.TargetID)
 	setString(message, "operation_id", request.OperationID)
 	setString(message, "resource_handle", request.ResourceHandle)
-	response := dynamicpb.NewMessage(c.messages["ActionResponse"])
-	if err := c.invoke(ctx, "InvokeAction", message, response); err != nil {
-		return pluginsdk.RPCActionResponse{}, err
+	resultsField := descriptor.Fields().ByName("resource_results")
+	results := message.Mutable(resultsField).List()
+	for _, result := range request.ResourceResults {
+		wire := dynamicpb.NewMessage(resultsField.Message())
+		setString(wire, "request_id", result.RequestID)
+		if result.Error == nil {
+			setBytes(wire, "value", result.Value)
+		} else {
+			failureField := wire.Descriptor().Fields().ByName("error")
+			failure := dynamicpb.NewMessage(failureField.Message())
+			failure.Set(failure.Descriptor().Fields().ByName("code"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(result.Error.Code)))
+			setString(failure, "message", result.Error.Message)
+			failure.Set(failure.Descriptor().Fields().ByName("retryable"), protoreflect.ValueOfBool(result.Error.Retryable))
+			wire.Set(failureField, protoreflect.ValueOfMessage(failure))
+		}
+		results.Append(protoreflect.ValueOfMessage(wire))
 	}
-	return decodeActionResponse(response)
+	return message
+}
+
+func decodeActionPlanResponse(message *dynamicpb.Message) (pluginsdk.RPCActionPlanResponse, error) {
+	result := pluginsdk.RPCActionPlanResponse{}
+	errorField := message.Descriptor().Fields().ByName("error")
+	if message.Has(errorField) {
+		failure := message.Get(errorField).Message()
+		result.Error = &pluginsdk.RuntimeError{Code: pluginsdk.ErrorCode(failure.Get(failure.Descriptor().Fields().ByName("code")).Enum()), Message: failure.Get(failure.Descriptor().Fields().ByName("message")).String(), Retryable: failure.Get(failure.Descriptor().Fields().ByName("retryable")).Bool()}
+	}
+	calls := message.Get(message.Descriptor().Fields().ByName("calls")).List()
+	for index := 0; index < calls.Len(); index++ {
+		call := calls.Get(index).Message()
+		result.Calls = append(result.Calls, pluginsdk.RPCResourceCall{RequestID: call.Get(call.Descriptor().Fields().ByName("request_id")).String(), ResourceHandle: call.Get(call.Descriptor().Fields().ByName("resource_handle")).String(), Operation: pluginsdk.RPCResourceOperation(call.Get(call.Descriptor().Fields().ByName("operation")).Enum()), Input: append([]byte(nil), call.Get(call.Descriptor().Fields().ByName("input")).Bytes()...)})
+	}
+	if err := result.Validate(); err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, fmt.Errorf("Agent RPC plugin action plan response: %w", err)
+	}
+	return result, nil
 }
 
 func (c *Client) QueryAction(ctx context.Context, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
@@ -280,6 +333,9 @@ func ValidateHandshake(request pluginsdk.RPCHandshakeRequest, response pluginsdk
 	}
 	if strings.TrimSpace(request.PluginID) == "" || strings.TrimSpace(request.PluginVersion) == "" || strings.TrimSpace(request.PackageDigest) == "" || strings.TrimSpace(request.ArtifactDigest) == "" || strings.TrimSpace(request.Generation) == "" {
 		return errors.New("RPC plugin handshake identity is incomplete")
+	}
+	if err := pluginsdk.ValidateRPCFeatures(request.RequiredFeatures, response.Features); err != nil {
+		return fmt.Errorf("RPC plugin handshake features: %w", err)
 	}
 	granted := make(map[string]struct{}, len(request.GrantedScopes))
 	for _, scope := range request.GrantedScopes {

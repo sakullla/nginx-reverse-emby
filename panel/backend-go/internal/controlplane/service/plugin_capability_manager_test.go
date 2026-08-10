@@ -24,6 +24,7 @@ type capabilityManagerStore struct {
 	grants        []storage.PluginGrantRow
 	operations    map[string]storage.IdempotencyRecordRow
 	targetVersion string
+	targetGroup   string
 	targetExists  bool
 }
 
@@ -95,10 +96,21 @@ func (store *capabilityManagerStore) GetPluginInstance(context.Context, string) 
 	return store.instance, true, nil
 }
 
-func (store *capabilityManagerStore) PluginCapabilityTargetVersion(context.Context, string, string) (string, bool, error) {
+func (store *capabilityManagerStore) PluginCapabilityTargetBinding(_ context.Context, kind, id string) (storage.PluginCapabilityTargetBinding, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return store.targetVersion, store.targetExists, nil
+	groupID := store.targetGroup
+	if groupID == "" {
+		groupID = store.instance.ResourceGroupID
+	}
+	return storage.PluginCapabilityTargetBinding{Kind: kind, ID: id, ResourceGroupID: groupID, Version: store.targetVersion}, store.targetExists, nil
+}
+
+func (store *capabilityManagerStore) ExecutePluginCapabilityResourceCall(_ context.Context, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) ([]byte, error) {
+	if binding.Version != store.targetVersion || call.ResourceHandle == "" {
+		return nil, errors.New("stale resource adapter call")
+	}
+	return []byte(`{"available":true}`), nil
 }
 
 type capabilityRuntimeStub struct {
@@ -114,10 +126,18 @@ type capabilityRuntimeStub struct {
 	block       bool
 	results     map[string]pluginsdk.RPCActionResponse
 	queryErr    error
+	plan        pluginsdk.RPCActionPlanResponse
 }
 
 func (runtime *capabilityRuntimeStub) ActiveGeneration(string) (string, bool) {
 	return runtime.generation, runtime.generation != ""
+}
+
+func (runtime *capabilityRuntimeStub) PlanAction(_ context.Context, _, _ string, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
+	if runtime.plan.Error != nil || len(runtime.plan.Calls) != 0 || request.ResourceHandle == "" {
+		return runtime.plan, nil
+	}
+	return pluginsdk.RPCActionPlanResponse{Calls: []pluginsdk.RPCResourceCall{{RequestID: "resource-call-1", ResourceHandle: request.ResourceHandle, Operation: pluginsdk.RPCResourceInspect}}}, nil
 }
 
 func (runtime *capabilityRuntimeStub) InvokeAction(ctx context.Context, _, generation string, request pluginsdk.RPCActionRequest) error {
@@ -369,6 +389,9 @@ func TestPluginCapabilityManagerReconcilesCommittedLostResponseAndUsesOpaqueHand
 	if rpcRequest.ResourceHandle == "" || rpcRequest.TargetKind != "" || rpcRequest.TargetID != "" {
 		t.Fatalf("guest received raw resource identity: %+v", rpcRequest)
 	}
+	if len(rpcRequest.ResourceResults) != 1 || rpcRequest.ResourceResults[0].RequestID != "resource-call-1" || string(rpcRequest.ResourceResults[0].Value) != `{"available":true}` {
+		t.Fatalf("guest typed resource results=%+v", rpcRequest.ResourceResults)
+	}
 	result, err = manager.InvokeDynamicAction(t.Context(), request)
 	if err != nil || !result.Replayed || runtime.callCount() != 1 {
 		t.Fatalf("durable replay result=%+v error=%v calls=%d", result, err, runtime.callCount())
@@ -565,4 +588,16 @@ func newCapabilityManagerFixture(t *testing.T) (*PluginCapabilityManager, *capab
 	}
 	actor := authz.Actor{ID: "operator", Permissions: []string{authz.PermissionResourceWrite}, VisibleResourceGroups: []string{target.ResourceGroupID}}
 	return manager, store, runtime, PluginDynamicActionRequest{OperationID: "action-operation", PluginID: pluginID, InstanceID: "instance-1", ActionID: action.ID, Actor: actor, Target: target}
+}
+
+func TestPluginCapabilityManagerRejectsCallerSpoofedResourceGroupBeforeGuestDispatch(t *testing.T) {
+	manager, store, runtime, request := newCapabilityManagerFixture(t)
+	store.targetGroup = "group-b"
+	request.Actor.VisibleResourceGroups = []string{"group-a", "group-b"}
+	if _, err := manager.InvokeDynamicAction(t.Context(), request); err == nil || !strings.Contains(err.Error(), "resource group is not authoritative") {
+		t.Fatalf("cross-group spoof error=%v", err)
+	}
+	if runtime.calls != 0 {
+		t.Fatalf("guest calls=%d, want zero", runtime.calls)
+	}
 }

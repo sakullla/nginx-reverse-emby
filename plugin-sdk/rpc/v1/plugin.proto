@@ -22,6 +22,9 @@ service PluginRuntime {
   rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
   rpc Prepare(LifecycleRequest) returns (LifecycleResponse);
   rpc Activate(LifecycleRequest) returns (LifecycleResponse);
+  // PlanAction lets a guest request bounded typed operations against opaque
+  // host resource handles before the durable action side effect executes.
+  rpc PlanAction(ActionRequest) returns (ActionPlanResponse);
   rpc InvokeAction(ActionRequest) returns (ActionResponse);
   // QueryAction is the recovery half of InvokeAction. Implementations MUST
   // durably claim operation_id before applying a side effect and replay the
@@ -39,11 +42,15 @@ message HandshakeRequest {
   string artifact_digest = 5;
   repeated string granted_scopes = 6;
   string generation = 7;
+  // required_features are additive protocol extensions which the guest must
+  // explicitly acknowledge before the host may activate this generation.
+  repeated string required_features = 8;
 }
 
 message HandshakeResponse {
   string abi = 1;
   repeated string capabilities = 2;
+  repeated string features = 3;
 }
 
 message LifecycleRequest {
@@ -71,6 +78,36 @@ message ActionRequest {
   // resource_handle is an opaque, revocable host authority. When set, raw
   // target_kind/target_id MUST be empty and the guest must not infer them.
   string resource_handle = 6;
+  repeated ResourceResult resource_results = 7;
+}
+
+enum ResourceOperation {
+  RESOURCE_OPERATION_UNSPECIFIED = 0;
+  RESOURCE_OPERATION_INSPECT = 1;
+  RESOURCE_OPERATION_PROBE = 2;
+  RESOURCE_OPERATION_TRAFFIC_SUMMARY = 3;
+  RESOURCE_OPERATION_DNS_APPLY = 4;
+  RESOURCE_OPERATION_DOCKER_REQUEST = 5;
+}
+
+message ResourceCall {
+  string request_id = 1;
+  string resource_handle = 2;
+  ResourceOperation operation = 3;
+  bytes input = 4;
+}
+
+message ResourceResult {
+  string request_id = 1;
+  oneof result {
+    bytes value = 2;
+    RuntimeError error = 3;
+  }
+}
+
+message ActionPlanResponse {
+  repeated ResourceCall calls = 1;
+  RuntimeError error = 2;
 }
 
 message ActionResponse {

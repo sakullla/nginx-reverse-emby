@@ -34,6 +34,9 @@ func TestPluginCapabilityTargetVersionTracksSecretAndRelayMutation(t *testing.T)
 	if err := store.db.Create(&relay).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	relayFirst, ok, err := store.PluginCapabilityTargetVersion(t.Context(), "relay", "local:7")
 	if err != nil || !ok || relayFirst == "" {
 		t.Fatalf("initial relay version=%q found=%t error=%v", relayFirst, ok, err)
@@ -44,5 +47,9 @@ func TestPluginCapabilityTargetVersionTracksSecretAndRelayMutation(t *testing.T)
 	relaySecond, ok, err := store.PluginCapabilityTargetVersion(t.Context(), "relay.listener", "local:7")
 	if err != nil || !ok || relaySecond == relayFirst {
 		t.Fatalf("updated relay version=%q initial=%q found=%t error=%v", relaySecond, relayFirst, ok, err)
+	}
+	binding, ok, err := store.PluginCapabilityTargetBinding(t.Context(), "relay", "local:7")
+	if err != nil || !ok || binding.ResourceGroupID != "group-a" || binding.Version != relaySecond {
+		t.Fatalf("relay binding=%+v found=%t error=%v", binding, ok, err)
 	}
 }

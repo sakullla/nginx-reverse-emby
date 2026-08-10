@@ -65,9 +65,46 @@ type RPCClient interface {
 	Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error)
 }
 type ActionRPCClient interface {
+	PlanAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error)
 	InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error)
 	QueryAction(context.Context, pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error)
 }
+
+func (h *Host) PlanAction(ctx context.Context, instanceID, generation string, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
+	if h == nil || ctx == nil || request.Generation != generation {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("control-plane plugin action plan ownership is invalid")
+	}
+	if err := request.Validate(); err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, err
+	}
+	h.mu.RLock()
+	instance := h.active[instanceID]
+	h.mu.RUnlock()
+	if instance == nil || instance.Generation != generation {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("control-plane plugin action plan generation is not active")
+	}
+	instance.mu.RLock()
+	client, ok := instance.client.(ActionRPCClient)
+	instance.mu.RUnlock()
+	if !ok {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("control-plane plugin runtime does not implement action planning")
+	}
+	response, err := client.PlanAction(ctx, request)
+	if err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, err
+	}
+	if response.Error != nil {
+		return pluginsdk.RPCActionPlanResponse{}, response.Error
+	}
+	h.mu.RLock()
+	stillActive := h.active[instanceID] == instance && instance.Generation == generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("control-plane plugin action generation drained during planning")
+	}
+	return response, nil
+}
+
 type RPCDialer interface {
 	Dial(context.Context, Endpoint, time.Duration) (RPCClient, io.Closer, error)
 }
@@ -299,7 +336,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	instance.mu.Lock()
 	instance.client, instance.closer = client, closer
 	instance.mu.Unlock()
-	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Identity.Scopes...), Generation: candidate.Identity.Generation}
+	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Identity.Scopes...), Generation: candidate.Identity.Generation, RequiredFeatures: pluginsdk.RequiredRPCFeatures(candidate.Identity.Scopes)}
 	response, err := retryControlHandshake(attemptCtx, candidate.Deadline, process, client, handshake)
 	if err != nil {
 		return nil, err
@@ -1340,6 +1377,9 @@ func validateHandshake(request pluginsdk.RPCHandshakeRequest, response pluginsdk
 	}
 	if strings.TrimSpace(request.PluginID) == "" || strings.TrimSpace(request.PluginVersion) == "" || strings.TrimSpace(request.PackageDigest) == "" || strings.TrimSpace(request.ArtifactDigest) == "" || strings.TrimSpace(request.Generation) == "" {
 		return errors.New("control-plane plugin handshake identity is incomplete")
+	}
+	if err := pluginsdk.ValidateRPCFeatures(request.RequiredFeatures, response.Features); err != nil {
+		return fmt.Errorf("control-plane plugin handshake features: %w", err)
 	}
 	grants := map[string]struct{}{}
 	for _, scope := range request.GrantedScopes {

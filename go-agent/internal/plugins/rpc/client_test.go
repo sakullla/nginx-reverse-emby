@@ -26,6 +26,18 @@ func TestRPCHandshakeRejectsIdentityAndCapabilityMismatch(t *testing.T) {
 	}
 }
 
+func TestRPCHandshakeRequiresDurableActionFeatureBeforeActivation(t *testing.T) {
+	request := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: "plugin", PluginVersion: "1.0.0", PackageDigest: "package", ArtifactDigest: "artifact", Generation: "generation", GrantedScopes: []string{string(pluginsdk.CapabilityUIDynamicActions)}, RequiredFeatures: []string{pluginsdk.RPCFeatureDurableActionsV1}}
+	response := pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: append([]string(nil), request.GrantedScopes...)}
+	if err := ValidateHandshake(request, response); err == nil {
+		t.Fatal("expected old v1 action guest to fail feature negotiation")
+	}
+	response.Features = append([]string(nil), request.RequiredFeatures...)
+	if err := ValidateHandshake(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRPCDialSecurityRejectsUntrustedTLSAndExternalUnixSocket(t *testing.T) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: true, ServerName: "plugin", RootCAs: x509.NewCertPool(), Certificates: []tls.Certificate{{Certificate: [][]byte{{1}}}}}
 	if _, _, err := Dial(t.Context(), DialConfig{Network: "tcp", Address: "127.0.0.1:1", Cookie: "cookie", TLSConfig: tlsConfig}); err == nil {

@@ -193,8 +193,14 @@ type testRPC struct {
 
 type blockingStopRPC struct{ released <-chan struct{} }
 
-func (blockingStopRPC) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
-	return pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{"relay.read"}}, nil
+type oldActionRPC struct{ testRPC }
+
+func (oldActionRPC) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	return pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: append([]string(nil), request.GrantedScopes...)}, nil
+}
+
+func (blockingStopRPC) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	return pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{"relay.read"}, Features: append([]string(nil), request.RequiredFeatures...)}, nil
 }
 func (blockingStopRPC) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
@@ -207,11 +213,11 @@ func (c blockingStopRPC) Stop(context.Context, pluginsdk.LifecycleRequest) (plug
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
 
-func (c testRPC) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+func (c testRPC) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
 	if c.handshakes != nil {
 		c.handshakes.Add(1)
 	}
-	return pluginsdk.RPCHandshakeResponse{ABI: c.abi, Capabilities: []string{"relay.read"}}, nil
+	return pluginsdk.RPCHandshakeResponse{ABI: c.abi, Capabilities: []string{"relay.read"}, Features: append([]string(nil), request.RequiredFeatures...)}, nil
 }
 func (testRPC) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
@@ -227,6 +233,10 @@ func (c testRPC) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsd
 }
 func (testRPC) InvokeAction(_ context.Context, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error) {
 	return pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}, nil
+}
+
+func (testRPC) PlanAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
+	return pluginsdk.RPCActionPlanResponse{}, nil
 }
 
 func (testRPC) QueryAction(_ context.Context, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
@@ -319,6 +329,24 @@ func TestPluginHostHandshakeFailurePreservesActiveInstance(t *testing.T) {
 	}
 	if err := host.InvokeAction(t.Context(), "instance", "g2", pluginsdk.RPCActionRequest{Generation: "g2", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1", OperationID: "operation-2"}); err == nil {
 		t.Fatal("InvokeAction accepted inactive generation")
+	}
+}
+
+func TestPluginHostRejectsOldActionGuestBeforeActivation(t *testing.T) {
+	root := t.TempDir()
+	candidate := newBackendHostCandidate(t, root)
+	candidate.Identity.Scopes = []string{string(pluginsdk.CapabilityUIDynamicActions), string(pluginsdk.CapabilityServiceRevocableResourceHandle)}
+	dialer := &testDialer{clients: []RPCClient{oldActionRPC{testRPC{abi: pluginsdk.RPCABIV1}}}}
+	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	if _, err := host.Activate(t.Context(), candidate); err == nil || !strings.Contains(err.Error(), "required RPC feature") {
+		t.Fatalf("old action guest activation error=%v", err)
+	}
+	if _, ok := host.Active(candidate.InstanceID); ok {
+		t.Fatal("incompatible action guest became active")
 	}
 }
 
@@ -1307,6 +1335,15 @@ func TestPluginHostHandshakeIdentityNegativeMatrix(t *testing.T) {
 		if err := validateHandshake(base, pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: capabilities}); err == nil {
 			t.Fatalf("invalid capabilities %q accepted", capabilities)
 		}
+	}
+	actionRequest := base
+	actionRequest.GrantedScopes = []string{string(pluginsdk.CapabilityUIDynamicActions)}
+	actionRequest.RequiredFeatures = pluginsdk.RequiredRPCFeatures(actionRequest.GrantedScopes)
+	if err := validateHandshake(actionRequest, pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: actionRequest.GrantedScopes}); err == nil {
+		t.Fatal("old v1 action guest without recovery feature was accepted")
+	}
+	if err := validateHandshake(actionRequest, pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: actionRequest.GrantedScopes, Features: actionRequest.RequiredFeatures}); err != nil {
+		t.Fatalf("feature-aware action guest rejected: %v", err)
 	}
 }
 

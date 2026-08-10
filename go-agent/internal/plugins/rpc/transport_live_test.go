@@ -49,7 +49,11 @@ func TestRPCRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 		if _, err := client.Handshake(t.Context(), request); err != nil {
 			t.Fatal(err)
 		}
-		action, err := client.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1", OperationID: "operation-1"})
+		plan, err := client.PlanAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", OperationID: "operation-plan", ResourceHandle: "handle-plan"})
+		if err != nil || len(plan.Calls) != 1 || plan.Calls[0].ResourceHandle != "handle-plan" || plan.Calls[0].Operation != pluginsdk.RPCResourceInspect {
+			t.Fatalf("real mutual-TLS resource plan=%+v error=%v", plan, err)
+		}
+		action, err := client.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", OperationID: "operation-1", ResourceHandle: "handle-plan", ResourceResults: []pluginsdk.RPCResourceResult{{RequestID: "resource-call-1", Value: []byte(`{"available":true}`)}}})
 		if err != nil || action.Validate() != nil {
 			t.Fatalf("real mutual-TLS action dispatch failed: %+v, %v", action, err)
 		}
@@ -118,8 +122,38 @@ func agentAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Servi
 		response.Set(responseDescriptor.Fields().ByName(protoreflect.Name("abi")), protoreflect.ValueOfString(pluginsdk.RPCABIV1))
 		capabilities := response.Mutable(responseDescriptor.Fields().ByName("capabilities")).List()
 		capabilities.Append(protoreflect.ValueOfString("relay.read"))
+		features := response.Mutable(responseDescriptor.Fields().ByName("features")).List()
+		requestFeatures := request.Get(requestDescriptor.Fields().ByName("required_features")).List()
+		for index := 0; index < requestFeatures.Len(); index++ {
+			features.Append(requestFeatures.Get(index))
+		}
 		return response, nil
 	}}}
+	methods = append(methods, grpc.MethodDesc{MethodName: "PlanAction", Handler: func(_ any, _ context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionRequest")
+		if err != nil {
+			return nil, err
+		}
+		request := dynamicpb.NewMessage(requestDescriptor)
+		if err := decode(request); err != nil {
+			return nil, err
+		}
+		responseDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionPlanResponse")
+		if err != nil {
+			return nil, err
+		}
+		response := dynamicpb.NewMessage(responseDescriptor)
+		handle := request.Get(requestDescriptor.Fields().ByName("resource_handle")).String()
+		if handle != "" {
+			callsField := responseDescriptor.Fields().ByName("calls")
+			call := dynamicpb.NewMessage(callsField.Message())
+			call.Set(call.Descriptor().Fields().ByName("request_id"), protoreflect.ValueOfString("resource-call-1"))
+			call.Set(call.Descriptor().Fields().ByName("resource_handle"), protoreflect.ValueOfString(handle))
+			call.Set(call.Descriptor().Fields().ByName("operation"), protoreflect.ValueOfEnum(1))
+			response.Mutable(callsField).List().Append(protoreflect.ValueOfMessage(call))
+		}
+		return response, nil
+	}})
 	for _, name := range []string{"Prepare", "Activate", "Stop"} {
 		methodName := name
 		methods = append(methods, grpc.MethodDesc{MethodName: methodName, Handler: func(_ any, _ context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

@@ -22,8 +22,48 @@ type LifecycleClient interface {
 }
 
 type ActionClient interface {
+	PlanAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error)
 	InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error)
 	QueryAction(context.Context, pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error)
+}
+
+func (h *Host) PlanAction(ctx context.Context, id, generation string, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionPlanResponse, error) {
+	if h == nil || ctx == nil || request.Generation != generation {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("Agent RPC plugin action plan ownership is invalid")
+	}
+	if err := request.Validate(); err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, err
+	}
+	h.mu.RLock()
+	instance := h.active[id]
+	h.mu.RUnlock()
+	if instance == nil || instance.candidate.Generation != generation {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("Agent RPC plugin action plan generation is not active")
+	}
+	instance.mu.RLock()
+	attempt := instance.attempt
+	var client ActionClient
+	if attempt != nil {
+		client, _ = attempt.client.(ActionClient)
+	}
+	instance.mu.RUnlock()
+	if client == nil {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("Agent RPC plugin runtime does not implement action planning")
+	}
+	response, err := client.PlanAction(ctx, request)
+	if err != nil {
+		return pluginsdk.RPCActionPlanResponse{}, err
+	}
+	if response.Error != nil {
+		return pluginsdk.RPCActionPlanResponse{}, response.Error
+	}
+	h.mu.RLock()
+	stillActive := h.active[id] == instance && instance.candidate.Generation == generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return pluginsdk.RPCActionPlanResponse{}, errors.New("Agent RPC plugin action generation drained during planning")
+	}
+	return response, nil
 }
 
 type DialFunc func(context.Context, DialConfig) (LifecycleClient, io.Closer, error)
@@ -297,13 +337,14 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 	attempt.client, attempt.closer = client, closer
 
 	handshake := pluginsdk.RPCHandshakeRequest{
-		ABI:            pluginsdk.RPCABIV1,
-		PluginID:       candidate.PluginID,
-		PluginVersion:  candidate.PluginVersion,
-		PackageDigest:  candidate.PackageDigest,
-		ArtifactDigest: candidate.Artifact.SHA256,
-		GrantedScopes:  append([]string(nil), candidate.Scopes...),
-		Generation:     candidate.Generation,
+		ABI:              pluginsdk.RPCABIV1,
+		PluginID:         candidate.PluginID,
+		PluginVersion:    candidate.PluginVersion,
+		PackageDigest:    candidate.PackageDigest,
+		ArtifactDigest:   candidate.Artifact.SHA256,
+		GrantedScopes:    append([]string(nil), candidate.Scopes...),
+		Generation:       candidate.Generation,
+		RequiredFeatures: pluginsdk.RequiredRPCFeatures(candidate.Scopes),
 	}
 	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {

@@ -353,18 +353,20 @@ type PolicyHost interface {
 }
 
 type RPCHandshakeRequest struct {
-	ABI            string
-	PluginID       string
-	PluginVersion  string
-	PackageDigest  string
-	ArtifactDigest string
-	GrantedScopes  []string
-	Generation     string
+	ABI              string
+	PluginID         string
+	PluginVersion    string
+	PackageDigest    string
+	ArtifactDigest   string
+	GrantedScopes    []string
+	Generation       string
+	RequiredFeatures []string
 }
 
 type RPCHandshakeResponse struct {
 	ABI          string
 	Capabilities []string
+	Features     []string
 }
 
 type LifecycleRequest struct {
@@ -377,12 +379,13 @@ type LifecycleSuccess struct {
 }
 
 type RPCActionRequest struct {
-	Generation     string
-	ActionID       string
-	TargetKind     string
-	TargetID       string
-	OperationID    string
-	ResourceHandle string
+	Generation      string
+	ActionID        string
+	TargetKind      string
+	TargetID        string
+	OperationID     string
+	ResourceHandle  string
+	ResourceResults []RPCResourceResult
 }
 
 func (request RPCActionRequest) Validate() error {
@@ -398,12 +401,114 @@ func (request RPCActionRequest) Validate() error {
 		if err := ValidatePolicyIdentity(request.ResourceHandle); err != nil {
 			return fmt.Errorf("resource handle identity: %w", err)
 		}
-		return nil
+		return validateRPCResourceResults(request.ResourceResults)
+	}
+	if len(request.ResourceResults) != 0 {
+		return errors.New("action request resource results require an opaque resource handle")
 	}
 	for name, value := range map[string]string{"target kind": request.TargetKind, "target": request.TargetID} {
 		if err := ValidatePolicyIdentity(value); err != nil {
 			return fmt.Errorf("%s identity: %w", name, err)
 		}
+	}
+	return nil
+}
+
+type RPCResourceOperation int32
+
+const (
+	RPCResourceInspect        RPCResourceOperation = 1
+	RPCResourceProbe          RPCResourceOperation = 2
+	RPCResourceTrafficSummary RPCResourceOperation = 3
+	RPCResourceDNSApply       RPCResourceOperation = 4
+	RPCResourceDockerRequest  RPCResourceOperation = 5
+)
+
+const RPCResourcePayloadMaxBytes = 4096
+
+type RPCResourceCall struct {
+	RequestID      string
+	ResourceHandle string
+	Operation      RPCResourceOperation
+	Input          []byte
+}
+
+func (call RPCResourceCall) Validate() error {
+	if err := ValidatePolicyIdentity(call.RequestID); err != nil {
+		return fmt.Errorf("resource call request identity: %w", err)
+	}
+	if err := ValidatePolicyIdentity(call.ResourceHandle); err != nil {
+		return fmt.Errorf("resource call handle identity: %w", err)
+	}
+	if call.Operation < RPCResourceInspect || call.Operation > RPCResourceDockerRequest {
+		return errors.New("resource call operation is unspecified or unknown")
+	}
+	if len(call.Input) > RPCResourcePayloadMaxBytes {
+		return errors.New("resource call input exceeds the canonical bound")
+	}
+	return nil
+}
+
+type RPCResourceResult struct {
+	RequestID string
+	Value     []byte
+	Error     *RuntimeError
+}
+
+func (result RPCResourceResult) Validate() error {
+	if err := ValidatePolicyIdentity(result.RequestID); err != nil {
+		return fmt.Errorf("resource result request identity: %w", err)
+	}
+	if (result.Error == nil) == (result.Value == nil) {
+		return errors.New("resource result must contain exactly one value or error")
+	}
+	if len(result.Value) > RPCResourcePayloadMaxBytes {
+		return errors.New("resource result value exceeds the canonical bound")
+	}
+	if result.Error != nil {
+		return result.Error.Validate()
+	}
+	return nil
+}
+
+type RPCActionPlanResponse struct {
+	Calls []RPCResourceCall
+	Error *RuntimeError
+}
+
+func (response RPCActionPlanResponse) Validate() error {
+	if response.Error != nil {
+		if len(response.Calls) != 0 {
+			return errors.New("action plan cannot combine calls with an error")
+		}
+		return response.Error.Validate()
+	}
+	if len(response.Calls) > 16 {
+		return errors.New("action plan exceeds the canonical call bound")
+	}
+	seen := make(map[string]struct{}, len(response.Calls))
+	for _, call := range response.Calls {
+		if err := call.Validate(); err != nil {
+			return err
+		}
+		if _, exists := seen[call.RequestID]; exists {
+			return errors.New("action plan contains a duplicate request identity")
+		}
+		seen[call.RequestID] = struct{}{}
+	}
+	return nil
+}
+
+func validateRPCResourceResults(results []RPCResourceResult) error {
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		if err := result.Validate(); err != nil {
+			return err
+		}
+		if _, exists := seen[result.RequestID]; exists {
+			return errors.New("action request contains a duplicate resource result")
+		}
+		seen[result.RequestID] = struct{}{}
 	}
 	return nil
 }

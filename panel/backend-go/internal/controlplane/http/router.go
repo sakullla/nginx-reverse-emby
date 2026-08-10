@@ -670,6 +670,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.PluginCapabilityService = manager
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 		if d.SecretVault != nil {
+			manager.SetCoreResourceVault(d.SecretVault)
 			d.SecretVault.SetPluginCapabilityTargetRevoker(manager)
 		}
 	}
