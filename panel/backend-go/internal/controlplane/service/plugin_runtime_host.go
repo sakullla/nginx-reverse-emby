@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -16,6 +17,7 @@ type PluginRuntimeRepository interface {
 	FailPluginRuntimeCandidate(context.Context, string, string, error) error
 	GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error)
 	UpdatePluginRuntimeHealth(context.Context, string, string, string, int, int, bool, string) error
+	StopPluginRuntime(context.Context, string, string) error
 }
 
 type PluginRuntimeHost struct {
@@ -29,8 +31,8 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
 	service := &PluginRuntimeHost{host: host, repository: repository}
-	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) {
-		_ = repository.UpdatePluginRuntimeHealth(context.Background(), status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
+	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
+		return repository.UpdatePluginRuntimeHealth(context.Background(), status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
 	})
 	return service, nil
 }
@@ -65,6 +67,38 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 }
 
 func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
-	return s.host.Stop(ctx, instanceID)
+	lockValue, _ := s.locks.LoadOrStore(instanceID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	row, found, readErr := s.repository.GetPluginRuntime(ctx, instanceID)
+	if readErr != nil {
+		return fmt.Errorf("read plugin runtime before stop: %w", readErr)
+	}
+	stopErr := s.host.Stop(ctx, instanceID)
+	if !found || row.ActiveGeneration == "" {
+		return stopErr
+	}
+	persistErr := retryRuntimeStopPersistence(ctx, s.repository, instanceID, row.ActiveGeneration)
+	return errors.Join(stopErr, persistErr, s.host.StatusPersistenceError(instanceID))
 }
 func (s *PluginRuntimeHost) Close(ctx context.Context) error { return s.host.Close(ctx) }
+
+func retryRuntimeStopPersistence(ctx context.Context, repository PluginRuntimeRepository, instanceID, generation string) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if lastErr = repository.StopPluginRuntime(ctx, instanceID, generation); lastErr == nil {
+			return nil
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(attempt+1) * 10 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return errors.Join(lastErr, ctx.Err())
+			case <-timer.C:
+			}
+		}
+	}
+	return lastErr
+}

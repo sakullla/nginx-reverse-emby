@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -19,6 +20,8 @@ var createRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewProc("Cr
 
 const (
 	disableMaxPrivilege = 0x1
+	luaToken            = 0x4
+	writeRestricted     = 0x8
 	jobObjectCPUEnable  = 0x1
 	jobObjectCPUHardCap = 0x4
 )
@@ -27,6 +30,12 @@ func newPlatformSandbox() Sandbox          { return windowsJobSandbox{} }
 func (windowsJobSandbox) Available() bool  { return true }
 func (windowsJobSandbox) Provider() string { return "windows-restricted-token-job-object" }
 func (windowsJobSandbox) Validate(security Security) error {
+	for _, capability := range security.Capabilities {
+		capability = strings.ToLower(strings.TrimSpace(capability))
+		if strings.HasPrefix(capability, "docker.") || strings.HasPrefix(capability, "filesystem.host") || strings.HasPrefix(capability, "process.") || strings.HasPrefix(capability, "network.") {
+			return errors.New("windows plugin sandbox is unavailable for high-risk host capabilities")
+		}
+	}
 	if security.Budget.CPUMillis <= 0 || security.Budget.CPUMillis > 1000 {
 		return errors.New("windows plugin sandbox requires cpu_millis within 1..1000")
 	}
@@ -57,7 +66,7 @@ func (windowsJobSandbox) Configure(cmd *exec.Cmd, security Security) (func() err
 	}
 	defer source.Close()
 	var restricted windows.Token
-	result, _, callErr := createRestrictedToken.Call(uintptr(source), disableMaxPrivilege, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&restricted)))
+	result, _, callErr := createRestrictedToken.Call(uintptr(source), disableMaxPrivilege|luaToken|writeRestricted, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&restricted)))
 	if result == 0 {
 		return nil, nil, nil, fmt.Errorf("create restricted plugin process token: %w", callErr)
 	}

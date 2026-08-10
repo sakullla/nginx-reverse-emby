@@ -180,7 +180,12 @@ func TestRPCHostCrashStartsFreshProcessAndRepeatsLifecycle(t *testing.T) {
 	candidate.Process.RestartLimit = 2
 	runner := &restartHostRunner{started: make(chan *hostProcess, 4)}
 	counts := &hostLifecycleCounts{}
-	dial := func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	var cookieMu sync.Mutex
+	var cookies []string
+	dial := func(_ context.Context, config DialConfig) (LifecycleClient, io.Closer, error) {
+		cookieMu.Lock()
+		cookies = append(cookies, config.Cookie)
+		cookieMu.Unlock()
 		return countingHostClient{counts: counts}, hostCloser{}, nil
 	}
 	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
@@ -204,6 +209,12 @@ func TestRPCHostCrashStartsFreshProcessAndRepeatsLifecycle(t *testing.T) {
 	handshakes, prepares, activations, _ := counts.snapshot()
 	if handshakes != 2 || prepares != 2 || activations != 2 {
 		t.Fatalf("restart lifecycle counts = handshake %d, prepare %d, activate %d; want 2 each", handshakes, prepares, activations)
+	}
+	cookieMu.Lock()
+	cookieSnapshot := append([]string(nil), cookies...)
+	cookieMu.Unlock()
+	if len(cookieSnapshot) != 2 || cookieSnapshot[0] == "" || cookieSnapshot[0] == cookieSnapshot[1] {
+		t.Fatalf("restart reused host cookie: %q", cookieSnapshot)
 	}
 	if active, ok := host.Active(candidate.InstanceID); !ok || active != instance {
 		t.Fatal("restarted lifecycle was not reflected as active")

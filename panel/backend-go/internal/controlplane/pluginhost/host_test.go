@@ -40,13 +40,15 @@ type testCloser struct{}
 func (testCloser) Close() error { return nil }
 
 type testDialer struct {
-	mu      sync.Mutex
-	clients []RPCClient
+	mu        sync.Mutex
+	clients   []RPCClient
+	endpoints []Endpoint
 }
 
-func (d *testDialer) Dial(context.Context, Endpoint, time.Duration) (RPCClient, io.Closer, error) {
+func (d *testDialer) Dial(_ context.Context, endpoint Endpoint, _ time.Duration) (RPCClient, io.Closer, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.endpoints = append(d.endpoints, endpoint)
 	client := d.clients[0]
 	d.clients = d.clients[1:]
 	return client, testCloser{}, nil
@@ -191,6 +193,12 @@ func TestPluginHostCrashRestartsThroughHandshakeAndOpensCircuit(t *testing.T) {
 	if state != "failed" || handshakes.Load() != 2 {
 		t.Fatalf("circuit state=%q handshakes=%d", state, handshakes.Load())
 	}
+	dialer.mu.Lock()
+	endpoints := append([]Endpoint(nil), dialer.endpoints...)
+	dialer.mu.Unlock()
+	if len(endpoints) != 2 || endpoints[0].Cookie == "" || endpoints[0].Cookie == endpoints[1].Cookie || endpoints[0].Address == endpoints[1].Address {
+		t.Fatalf("restart reused control-plane transport identity: %+v", endpoints)
+	}
 }
 
 func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
@@ -261,6 +269,30 @@ func TestPluginHostEnvironmentDoesNotInheritSecrets(t *testing.T) {
 	for _, entry := range []string{"NRE_PLUGIN_COOKIE=override", "AWS_SECRET_ACCESS_KEY=value", "API_TOKEN=value", "PATH=override"} {
 		if _, err := buildPluginEnvironment([]string{entry}, nil); err == nil {
 			t.Fatalf("reserved environment %q accepted", entry)
+		}
+	}
+}
+
+func TestPluginHostHandshakeIdentityNegativeMatrix(t *testing.T) {
+	base := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: "plugin", PluginVersion: "1", PackageDigest: "package", ArtifactDigest: "artifact", Generation: "g1", GrantedScopes: []string{"relay.read"}}
+	valid := pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{" relay.read "}}
+	if err := validateHandshake(base, valid); err != nil {
+		t.Fatalf("valid normalized handshake rejected: %v", err)
+	}
+	requests := []pluginsdk.RPCHandshakeRequest{base, base, base, base, base}
+	requests[0].PluginID = ""
+	requests[1].PluginVersion = " "
+	requests[2].PackageDigest = ""
+	requests[3].ArtifactDigest = ""
+	requests[4].Generation = ""
+	for index, request := range requests {
+		if err := validateHandshake(request, valid); err == nil {
+			t.Fatalf("incomplete identity case %d accepted", index)
+		}
+	}
+	for _, capabilities := range [][]string{{""}, {"relay.read", " relay.read "}, {"ungranted"}} {
+		if err := validateHandshake(base, pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: capabilities}); err == nil {
+			t.Fatalf("invalid capabilities %q accepted", capabilities)
 		}
 	}
 }

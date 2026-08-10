@@ -47,9 +47,10 @@ type RuntimeStatus struct {
 }
 
 type hostAttempt struct {
-	handle *pluginprocess.Handle
-	client LifecycleClient
-	closer io.Closer
+	handle  *pluginprocess.Handle
+	client  LifecycleClient
+	closer  io.Closer
+	cleanup func() error
 }
 
 type HostedInstance struct {
@@ -113,11 +114,6 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	}
 	candidate.Process.ID = candidate.InstanceID + "-" + candidate.Generation
 	candidate.Process.Executable = executable
-	candidate.Process.SensitiveValues = append(candidate.Process.SensitiveValues, candidate.Dial.Cookie)
-	candidate.Process.GeneratedEnvironment = append(candidate.Process.GeneratedEnvironment,
-		"NRE_PLUGIN_COOKIE="+candidate.Dial.Cookie,
-		"NRE_PLUGIN_ENDPOINT="+candidate.Dial.Network+":"+candidate.Dial.Address,
-	)
 	candidate.Process = normalizeRestartSpec(candidate.Process)
 
 	attempt, err := h.startAttempt(ctx, candidate)
@@ -154,6 +150,22 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 }
 
 func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate) (*hostAttempt, error) {
+	security, err := provisionAttemptSecurity(filepath.Dir(candidate.Process.Executable), candidate.Dial)
+	if err != nil {
+		return nil, err
+	}
+	failedSecurity := true
+	defer func() {
+		if failedSecurity {
+			_ = security.cleanup()
+		}
+	}()
+	candidate.Dial = security.dial
+	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
+	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
+	candidate.Process.Security.GuestEndpoint = security.guestEndpoint
+	candidate.Process.GeneratedEnvironment = replaceGeneratedEnvironment(candidate.Process.GeneratedEnvironment, security.environment)
+	candidate.Process.SensitiveValues = append(candidate.Process.SensitiveValues, candidate.Dial.Cookie)
 	handle, err := h.supervisor.StartOnce(ctx, candidate.Process)
 	if err != nil {
 		return nil, err
@@ -186,9 +198,9 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate) (*host
 		GrantedScopes:  append([]string(nil), candidate.Scopes...),
 		Generation:     candidate.Generation,
 	}
-	response, err := client.Handshake(ctx, handshake)
+	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {
-		return nil, fmt.Errorf("Agent RPC plugin handshake: %w", err)
+		return nil, err
 	}
 	if err := ValidateHandshake(handshake, response); err != nil {
 		return nil, err
@@ -212,7 +224,34 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate) (*host
 		return nil, err
 	}
 	failed = false
-	return &hostAttempt{handle: handle, client: client, closer: closer}, nil
+	failedSecurity = false
+	return &hostAttempt{handle: handle, client: client, closer: closer, cleanup: security.cleanup}, nil
+}
+
+func retryAgentHandshake(ctx context.Context, deadline time.Duration, handle *pluginprocess.Handle, client LifecycleClient, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	if deadline <= 0 {
+		deadline = 5 * time.Second
+	}
+	retryCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	var lastErr error
+	for {
+		response, err := client.Handshake(retryCtx, request)
+		if err == nil {
+			return response, nil
+		}
+		lastErr = err
+		if processErr := processAttemptError(handle); processErr != nil {
+			return pluginsdk.RPCHandshakeResponse{}, errors.Join(fmt.Errorf("Agent RPC plugin handshake: %w", lastErr), processErr)
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-retryCtx.Done():
+			timer.Stop()
+			return pluginsdk.RPCHandshakeResponse{}, fmt.Errorf("Agent RPC plugin handshake: %w", errors.Join(lastErr, retryCtx.Err()))
+		case <-timer.C:
+		}
+	}
 }
 
 func processAttemptError(handle *pluginprocess.Handle) error {
@@ -428,7 +467,11 @@ func (i *HostedInstance) stopAttempt(ctx context.Context, attempt *hostAttempt, 
 	if attempt.closer != nil {
 		closeErr = attempt.closer.Close()
 	}
-	return errors.Join(rpcErr, processErr, closeErr)
+	var securityErr error
+	if attempt.cleanup != nil {
+		securityErr = attempt.cleanup()
+	}
+	return errors.Join(rpcErr, processErr, closeErr, securityErr)
 }
 
 func normalizeRestartSpec(spec pluginprocess.InstanceSpec) pluginprocess.InstanceSpec {

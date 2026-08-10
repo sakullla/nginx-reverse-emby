@@ -17,9 +17,10 @@ type Budget struct {
 }
 
 type Security struct {
-	Capabilities []string
-	Grants       []string
-	Budget       Budget
+	Capabilities                                          []string
+	Grants                                                []string
+	Budget                                                Budget
+	EndpointDirectory, CredentialDirectory, GuestEndpoint string
 }
 
 type SandboxDecision struct {

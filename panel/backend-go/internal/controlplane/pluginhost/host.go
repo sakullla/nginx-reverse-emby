@@ -31,19 +31,21 @@ type Identity struct {
 	Scopes                                       []string
 }
 type Candidate struct {
-	InstanceID            string
-	Artifact              Artifact
-	Identity              Identity
-	Config                []byte
-	Args, Environment     []string
-	Endpoint              Endpoint
-	Capabilities, Grants  []string
-	Budget                ProcessBudget
-	Deadline, GracePeriod time.Duration
-	RestartLimit          int
-	RestartWindow         time.Duration
-	InitialBackoff        time.Duration
-	MaximumBackoff        time.Duration
+	InstanceID                                            string
+	Artifact                                              Artifact
+	Identity                                              Identity
+	Config                                                []byte
+	Args, Environment                                     []string
+	Endpoint                                              Endpoint
+	Capabilities, Grants                                  []string
+	Budget                                                ProcessBudget
+	Deadline, GracePeriod                                 time.Duration
+	RestartLimit                                          int
+	RestartWindow                                         time.Duration
+	InitialBackoff                                        time.Duration
+	MaximumBackoff                                        time.Duration
+	endpointDirectory, credentialDirectory, guestEndpoint string
+	attemptEnvironment                                    []string
 }
 type ProcessBudget struct {
 	CPUMillis, MemoryBytes int64
@@ -76,13 +78,14 @@ type Launcher interface {
 }
 
 type Host struct {
-	mu          sync.RWMutex
-	runtimeRoot string
-	launcher    Launcher
-	dialer      RPCDialer
-	logs        io.Writer
-	active      map[string]*Instance
-	observer    func(RuntimeStatus)
+	mu             sync.RWMutex
+	runtimeRoot    string
+	launcher       Launcher
+	dialer         RPCDialer
+	logs           io.Writer
+	active         map[string]*Instance
+	observer       func(RuntimeStatus) error
+	observerErrors map[string]error
 }
 
 type RuntimeStatus struct {
@@ -115,6 +118,7 @@ type Instance struct {
 	waitErr                    error
 	candidate                  Candidate
 	control                    *runtimeControl
+	securityCleanup            func() error
 }
 
 func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer) (*Host, error) {
@@ -130,13 +134,19 @@ func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer
 	if logs == nil {
 		logs = io.Discard
 	}
-	return &Host{runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance)}, nil
+	return &Host{runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, logs: logs, active: make(map[string]*Instance), observerErrors: make(map[string]error)}, nil
 }
 
-func (h *Host) SetStatusObserver(observer func(RuntimeStatus)) {
+func (h *Host) SetStatusObserver(observer func(RuntimeStatus) error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.observer = observer
+}
+
+func (h *Host) StatusPersistenceError(instanceID string) error {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.observerErrors[instanceID]
 }
 
 func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Instance, error) {
@@ -153,6 +163,19 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	if err != nil {
 		return nil, err
 	}
+	security, err := provisionControlAttemptSecurity(filepath.Dir(executable), candidate.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	cleanupSecurity := true
+	defer func() {
+		if cleanupSecurity {
+			_ = security.cleanup()
+		}
+	}()
+	candidate.Endpoint = security.endpoint
+	candidate.endpointDirectory, candidate.credentialDirectory, candidate.guestEndpoint = security.endpointDirectory, security.credentialDirectory, security.guestEndpoint
+	candidate.attemptEnvironment = security.environment
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
@@ -181,9 +204,9 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 		}
 	}()
 	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Identity.Scopes...), Generation: candidate.Identity.Generation}
-	response, err := client.Handshake(ctx, handshake)
+	response, err := retryControlHandshake(ctx, candidate.Deadline, process, client, handshake)
 	if err != nil {
-		return nil, fmt.Errorf("control-plane plugin handshake: %w", err)
+		return nil, err
 	}
 	if err := validateHandshake(handshake, response); err != nil {
 		return nil, err
@@ -202,10 +225,34 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	if hasUnsandboxedGrant(candidate.Grants) {
 		provider = "unsandboxed"
 	}
-	instance := &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "healthy", SandboxProvider: provider, process: process, client: client, closer: closer, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate}
+	instance := &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, PID: process.PID(), State: "healthy", SandboxProvider: provider, process: process, client: client, closer: closer, grace: candidate.GracePeriod, logCloser: logWriter, done: make(chan struct{}), candidate: candidate, securityCleanup: security.cleanup}
 	cleanupProcess, cleanupRPC = false, false
+	cleanupSecurity = false
 	go instance.monitor()
 	return instance, nil
+}
+
+func retryControlHandshake(ctx context.Context, deadline time.Duration, _ Process, client RPCClient, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	if deadline <= 0 {
+		deadline = 5 * time.Second
+	}
+	retryCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	var lastErr error
+	for {
+		response, err := client.Handshake(retryCtx, request)
+		if err == nil {
+			return response, nil
+		}
+		lastErr = err
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-retryCtx.Done():
+			timer.Stop()
+			return pluginsdk.RPCHandshakeResponse{}, fmt.Errorf("control-plane plugin handshake: %w", errors.Join(lastErr, retryCtx.Err()))
+		case <-timer.C:
+		}
+	}
 }
 
 func (h *Host) Publish(instance *Instance) error {
@@ -285,6 +332,9 @@ func (i *Instance) monitor() {
 	err := i.process.Wait()
 	if i.logCloser != nil {
 		err = errors.Join(err, i.logCloser.Close())
+	}
+	if i.securityCleanup != nil {
+		err = errors.Join(err, i.securityCleanup())
 	}
 	i.mu.Lock()
 	i.waitErr = err
@@ -454,7 +504,24 @@ func (h *Host) notify(instance *Instance) {
 	instance.mu.RLock()
 	status := RuntimeStatus{InstanceID: instance.ID, Generation: instance.Generation, State: instance.State, LastError: instance.LastError, SandboxProvider: instance.SandboxProvider, PID: instance.PID, RestartCount: instance.RestartCount, CircuitOpen: instance.CircuitOpen}
 	instance.mu.RUnlock()
-	observer(status)
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = observer(status); err == nil {
+			h.mu.Lock()
+			delete(h.observerErrors, instance.ID)
+			h.mu.Unlock()
+			return
+		}
+		if attempt < 2 {
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+		}
+	}
+	h.mu.Lock()
+	h.observerErrors[instance.ID] = err
+	h.mu.Unlock()
+	instance.mu.Lock()
+	instance.LastError = safeError(errors.Join(errors.New("runtime status persistence failed"), err))
+	instance.mu.Unlock()
 }
 
 type ExecLauncher struct{}
@@ -462,7 +529,7 @@ type ExecLauncher struct{}
 func (ExecLauncher) Start(_ context.Context, executable string, args, environment []string, output io.Writer, candidate Candidate) (Process, error) {
 	cmd := exec.Command(executable, args...)
 	cmd.Dir = filepath.Dir(executable)
-	processEnvironment, err := buildPluginEnvironment(environment, []string{"NRE_PLUGIN_COOKIE=" + candidate.Endpoint.Cookie, "NRE_PLUGIN_ENDPOINT=" + candidate.Endpoint.Network + ":" + candidate.Endpoint.Address})
+	processEnvironment, err := buildPluginEnvironment(environment, candidate.attemptEnvironment)
 	if err != nil {
 		return nil, err
 	}
@@ -572,14 +639,26 @@ func validateHandshake(request pluginsdk.RPCHandshakeRequest, response pluginsdk
 	if request.ABI != pluginsdk.RPCABIV1 || response.ABI != request.ABI {
 		return errors.New("control-plane plugin handshake ABI mismatch")
 	}
+	if strings.TrimSpace(request.PluginID) == "" || strings.TrimSpace(request.PluginVersion) == "" || strings.TrimSpace(request.PackageDigest) == "" || strings.TrimSpace(request.ArtifactDigest) == "" || strings.TrimSpace(request.Generation) == "" {
+		return errors.New("control-plane plugin handshake identity is incomplete")
+	}
 	grants := map[string]struct{}{}
 	for _, scope := range request.GrantedScopes {
-		grants[scope] = struct{}{}
+		grants[strings.TrimSpace(scope)] = struct{}{}
 	}
+	seen := map[string]struct{}{}
 	for _, capability := range response.Capabilities {
+		capability = strings.TrimSpace(capability)
+		if capability == "" {
+			return errors.New("control-plane plugin returned an empty capability")
+		}
 		if _, ok := grants[capability]; !ok {
 			return fmt.Errorf("control-plane plugin returned ungranted capability %q", capability)
 		}
+		if _, ok := seen[capability]; ok {
+			return fmt.Errorf("control-plane plugin returned duplicate capability %q", capability)
+		}
+		seen[capability] = struct{}{}
 	}
 	return nil
 }

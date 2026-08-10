@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"golang.org/x/sys/windows"
 	"os/exec"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -16,6 +17,12 @@ var backendCreateRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewP
 type backendJobCPU struct{ Flags, Rate uint32 }
 
 func validatePlatformSandbox(c Candidate) error {
+	for _, capability := range c.Capabilities {
+		capability = strings.ToLower(strings.TrimSpace(capability))
+		if strings.HasPrefix(capability, "docker.") || strings.HasPrefix(capability, "filesystem.host") || strings.HasPrefix(capability, "process.") || strings.HasPrefix(capability, "network.") {
+			return errors.New("windows control-plane plugin sandbox is unavailable for high-risk host capabilities")
+		}
+	}
 	if c.Budget.CPUMillis <= 0 || c.Budget.CPUMillis > 1000 {
 		return errors.New("windows control-plane plugin sandbox requires cpu_millis within 1..1000")
 	}
@@ -40,7 +47,7 @@ func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(in
 	}
 	defer source.Close()
 	var restricted windows.Token
-	ok, _, callErr := backendCreateRestrictedToken.Call(uintptr(source), 1, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&restricted)))
+	ok, _, callErr := backendCreateRestrictedToken.Call(uintptr(source), 0x1|0x4|0x8, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&restricted)))
 	if ok == 0 {
 		return nil, nil, callErr
 	}

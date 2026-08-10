@@ -20,6 +20,8 @@ type PluginRuntimeInstanceRow struct {
 	CandidateGeneration     string    `gorm:"index;size:128;not null;default:''" json:"candidate_generation,omitempty"`
 	CandidatePackageDigest  string    `gorm:"size:64;not null;default:''" json:"candidate_package_digest,omitempty"`
 	CandidateArtifactDigest string    `gorm:"size:64;not null;default:''" json:"candidate_artifact_digest,omitempty"`
+	CandidateState          string    `gorm:"index;size:32;not null;default:''" json:"candidate_state,omitempty"`
+	CandidateLastError      string    `gorm:"type:text;not null;default:''" json:"candidate_last_error,omitempty"`
 	State                   string    `gorm:"index;size:32;not null" json:"state"`
 	PID                     int       `gorm:"column:pid;not null;default:0" json:"pid,omitempty"`
 	SandboxProvider         string    `gorm:"size:64;not null;default:''" json:"sandbox_provider,omitempty"`
@@ -47,20 +49,21 @@ func (s *GormStore) StagePluginRuntime(ctx context.Context, row PluginRuntimeIns
 	}
 	now := time.Now().UTC()
 	row.UpdatedAt = now
-	row.State = "starting"
-	row.PID = 0
-	row.LastError = ""
-	row.CircuitOpen = false
+	row.CandidateState = "starting"
+	row.CandidateLastError = ""
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		var current PluginRuntimeInstanceRow
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ?", row.InstanceID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if row.State == "" {
+				row.State = "stopped"
+			}
 			return tx.Create(&row).Error
 		}
 		if err != nil {
 			return err
 		}
-		return tx.Model(&current).Updates(map[string]any{"plugin_id": row.PluginID, "host_scope": row.HostScope, "candidate_generation": row.CandidateGeneration, "candidate_package_digest": row.CandidatePackageDigest, "candidate_artifact_digest": row.CandidateArtifactDigest, "state": "starting", "pid": 0, "last_error": "", "circuit_open": false, "updated_at": now}).Error
+		return tx.Model(&current).Updates(map[string]any{"plugin_id": row.PluginID, "host_scope": row.HostScope, "candidate_generation": row.CandidateGeneration, "candidate_package_digest": row.CandidatePackageDigest, "candidate_artifact_digest": row.CandidateArtifactDigest, "candidate_state": "starting", "candidate_last_error": "", "updated_at": now}).Error
 	})
 }
 
@@ -76,7 +79,7 @@ func (s *GormStore) PromotePluginRuntime(ctx context.Context, instanceID, genera
 		if row.CandidateGeneration != generation {
 			return errors.New("plugin runtime candidate generation changed before promotion")
 		}
-		updates := map[string]any{"active_generation": row.CandidateGeneration, "active_package_digest": row.CandidatePackageDigest, "active_artifact_digest": row.CandidateArtifactDigest, "candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "state": "healthy", "pid": pid, "sandbox_provider": sandbox, "last_error": "", "circuit_open": false, "updated_at": time.Now().UTC()}
+		updates := map[string]any{"active_generation": row.CandidateGeneration, "active_package_digest": row.CandidatePackageDigest, "active_artifact_digest": row.CandidateArtifactDigest, "candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "candidate_state": "", "candidate_last_error": "", "state": "healthy", "pid": pid, "sandbox_provider": sandbox, "last_error": "", "circuit_open": false, "updated_at": time.Now().UTC()}
 		return tx.Model(&row).Updates(updates).Error
 	})
 }
@@ -100,12 +103,27 @@ func (s *GormStore) FailPluginRuntimeCandidate(ctx context.Context, instanceID, 
 		if row.CandidateGeneration != generation {
 			return errors.New("plugin runtime candidate generation changed before failure report")
 		}
-		state := "failed"
-		if row.ActiveGeneration != "" {
-			state = "degraded"
-		}
-		return tx.Model(&row).Updates(map[string]any{"candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "state": state, "last_error": message, "updated_at": time.Now().UTC()}).Error
+		return tx.Model(&row).Updates(map[string]any{"candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "candidate_state": "failed", "candidate_last_error": message, "updated_at": time.Now().UTC()}).Error
 	})
+}
+
+func (s *GormStore) StopPluginRuntime(ctx context.Context, instanceID, generation string) error {
+	if strings.TrimSpace(instanceID) == "" || strings.TrimSpace(generation) == "" {
+		return errors.New("plugin runtime instance and active generation are required")
+	}
+	if err := s.ensurePluginRuntimeSchema(ctx); err != nil {
+		return err
+	}
+	result := s.db.WithContext(ctx).Model(&PluginRuntimeInstanceRow{}).
+		Where("instance_id = ? AND active_generation = ?", instanceID, generation).
+		Updates(map[string]any{"state": "stopped", "pid": 0, "circuit_open": false, "last_error": "", "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("plugin runtime active generation changed before stop")
+	}
+	return nil
 }
 
 func (s *GormStore) GetPluginRuntime(ctx context.Context, instanceID string) (PluginRuntimeInstanceRow, bool, error) {

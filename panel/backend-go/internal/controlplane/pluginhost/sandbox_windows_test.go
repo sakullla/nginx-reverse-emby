@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -22,18 +23,31 @@ func TestPluginHostWindowsSandboxLiveProcess(t *testing.T) {
 	if os.Getenv("NRE_TEST_WINDOWS_SANDBOX") != "1" {
 		t.Skip("set NRE_TEST_WINDOWS_SANDBOX=1 to exercise the restricted process")
 	}
-	candidate := Candidate{Budget: ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 2, Network: true}}
-	process, err := (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostWindowsSandboxGuest$"}, []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1"}, io.Discard, candidate)
+	deniedPath := filepath.Join(t.TempDir(), "must-not-write")
+	candidate := Candidate{Budget: ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 2, Network: true}, attemptEnvironment: []string{"NRE_PLUGIN_TEST=1"}}
+	process, err := (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostWindowsSandboxGuest$"}, []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath}, io.Discard, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(deniedPath); !os.IsNotExist(err) {
+		t.Fatal("restricted guest wrote host-private file")
+	}
 }
 
 func TestPluginHostWindowsSandboxGuest(t *testing.T) {
 	if os.Getenv("NRE_TEST_WINDOWS_SANDBOX_GUEST") != "1" {
 		t.Skip("sandbox guest helper")
+	}
+	if err := os.WriteFile(os.Getenv("NRE_TEST_WINDOWS_DENIED_PATH"), []byte("denied"), 0o600); err == nil {
+		t.Fatal("restricted token retained host file write access")
+	}
+}
+
+func TestPluginHostWindowsSandboxRejectsHighRiskBoundary(t *testing.T) {
+	if err := validatePlatformSandbox(Candidate{Capabilities: []string{"docker.socket"}, Budget: ProcessBudget{CPUMillis: 100, MemoryBytes: 1, Processes: 1, Network: true}}); err == nil {
+		t.Fatal("high-risk capability was admitted without an enforceable Windows boundary")
 	}
 }

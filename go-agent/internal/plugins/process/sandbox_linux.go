@@ -84,6 +84,12 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 
 func linuxSandboxArguments(bwrap, prlimit, executable string, originalArgs, environment []string, security Security, filterFD int) []string {
 	args := []string{bwrap, "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--clearenv", "--dir", "/plugin", "--ro-bind", executable, "/plugin/plugin", "--dir", "/runtime", "--ro-bind", prlimit, "/runtime/prlimit", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"}
+	if security.EndpointDirectory != "" {
+		args = append(args, "--dir", "/run", "--bind", security.EndpointDirectory, "/run/nre-plugin")
+	}
+	if security.CredentialDirectory != "" {
+		args = append(args, "--ro-bind", security.CredentialDirectory, "/run/nre-plugin-credentials")
+	}
 	for _, directory := range []string{"/lib", "/lib64", "/usr/lib", "/usr/lib64"} {
 		if info, statErr := os.Stat(directory); statErr == nil && info.IsDir() {
 			args = append(args, "--ro-bind", directory, directory)
@@ -107,6 +113,17 @@ func linuxSandboxArguments(bwrap, prlimit, executable string, originalArgs, envi
 		if ok {
 			args = append(args, "--setenv", key, value)
 		}
+	}
+	if security.GuestEndpoint != "" {
+		args = append(args, "--setenv", "NRE_PLUGIN_ENDPOINT", "unix:"+security.GuestEndpoint)
+	}
+	if security.CredentialDirectory != "" {
+		args = append(args,
+			"--setenv", "NRE_PLUGIN_COOKIE_FILE", "/run/nre-plugin-credentials/cookie",
+			"--setenv", "NRE_PLUGIN_TLS_CA_FILE", "/run/nre-plugin-credentials/ca.crt",
+			"--setenv", "NRE_PLUGIN_TLS_CERT_FILE", "/run/nre-plugin-credentials/server.crt",
+			"--setenv", "NRE_PLUGIN_TLS_KEY_FILE", "/run/nre-plugin-credentials/server.key",
+		)
 	}
 	args = append(args, "--chdir", "/plugin")
 	args = append(args, "--seccomp", strconv.Itoa(filterFD), "--")
@@ -175,11 +192,8 @@ func enableLinuxCgroupControllers(root string) error {
 	return nil
 }
 
-func createSeccompFilter(networkAllowed bool) (*os.File, error) {
+func createSeccompFilter(_ bool) (*os.File, error) {
 	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF}
-	if !networkAllowed {
-		denied = append(denied, unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN, unix.SYS_ACCEPT, unix.SYS_ACCEPT4)
-	}
 	filters := []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
 	for _, number := range denied {
 		filters = append(filters, unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 1, K: number}, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)})

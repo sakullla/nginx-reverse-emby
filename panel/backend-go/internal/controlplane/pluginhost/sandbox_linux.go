@@ -64,6 +64,12 @@ func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(in
 
 func backendLinuxSandboxArguments(bwrap, prlimit, executable string, original, environment []string, c Candidate, filterFD int) []string {
 	args := []string{bwrap, "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--clearenv", "--dir", "/plugin", "--ro-bind", executable, "/plugin/plugin", "--dir", "/runtime", "--ro-bind", prlimit, "/runtime/prlimit", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"}
+	if c.endpointDirectory != "" {
+		args = append(args, "--dir", "/run", "--bind", c.endpointDirectory, controlGuestEndpointDirectory)
+	}
+	if c.credentialDirectory != "" {
+		args = append(args, "--ro-bind", c.credentialDirectory, controlGuestCredentialDirectory)
+	}
 	for _, library := range []string{"/lib", "/lib64", "/usr/lib", "/usr/lib64"} {
 		if info, e := os.Stat(library); e == nil && info.IsDir() {
 			args = append(args, "--ro-bind", library, library)
@@ -86,6 +92,17 @@ func backendLinuxSandboxArguments(bwrap, prlimit, executable string, original, e
 		if key, value, ok := strings.Cut(entry, "="); ok {
 			args = append(args, "--setenv", key, value)
 		}
+	}
+	if c.guestEndpoint != "" {
+		args = append(args, "--setenv", "NRE_PLUGIN_ENDPOINT", "unix:"+c.guestEndpoint)
+	}
+	if c.credentialDirectory != "" {
+		args = append(args,
+			"--setenv", "NRE_PLUGIN_COOKIE_FILE", controlGuestCredentialDirectory+"/cookie",
+			"--setenv", "NRE_PLUGIN_TLS_CA_FILE", controlGuestCredentialDirectory+"/ca.crt",
+			"--setenv", "NRE_PLUGIN_TLS_CERT_FILE", controlGuestCredentialDirectory+"/server.crt",
+			"--setenv", "NRE_PLUGIN_TLS_KEY_FILE", controlGuestCredentialDirectory+"/server.key",
+		)
 	}
 	args = append(args, "--chdir", "/plugin")
 	args = append(args, "--seccomp", strconv.Itoa(filterFD), "--", "/runtime/prlimit", "--nofile="+strconv.Itoa(c.Budget.Files)+":"+strconv.Itoa(c.Budget.Files), "--", "/plugin/plugin")
@@ -146,11 +163,8 @@ func enableBackendCgroupControllers(root string) error {
 	}
 	return nil
 }
-func backendSeccomp(network bool) (*os.File, error) {
+func backendSeccomp(_ bool) (*os.File, error) {
 	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT}
-	if !network {
-		denied = append(denied, unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN, unix.SYS_ACCEPT, unix.SYS_ACCEPT4)
-	}
 	filters := []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
 	for _, n := range denied {
 		filters = append(filters, unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: n}, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)})

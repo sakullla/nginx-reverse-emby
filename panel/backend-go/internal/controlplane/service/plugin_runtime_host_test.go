@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +38,17 @@ func (runtimeLauncher) Start(context.Context, string, []string, []string, io.Wri
 type runtimeQueueLauncher struct {
 	mu        sync.Mutex
 	processes []*runtimeProcess
+}
+
+type blockingRuntimeLauncher struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (l blockingRuntimeLauncher) Start(context.Context, string, []string, []string, io.Writer, pluginhost.Candidate) (pluginhost.Process, error) {
+	close(l.started)
+	<-l.release
+	return &runtimeProcess{done: make(chan error, 1)}, nil
 }
 
 func (l *runtimeQueueLauncher) Start(context.Context, string, []string, []string, io.Writer, pluginhost.Candidate) (pluginhost.Process, error) {
@@ -82,15 +94,21 @@ func (runtimeDialer) Dial(context.Context, pluginhost.Endpoint, time.Duration) (
 }
 
 type runtimeRepo struct {
-	mu         sync.Mutex
-	row        storage.PluginRuntimeInstanceRow
-	promoteErr error
+	mu             sync.Mutex
+	row            storage.PluginRuntimeInstanceRow
+	promoteErr     error
+	stopErr        error
+	stopCalls      int
+	healthFailures int
+	healthCalls    int
 }
 
 func (r *runtimeRepo) StagePluginRuntime(_ context.Context, row storage.PluginRuntimeInstanceRow) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	row.ActiveGeneration = r.row.ActiveGeneration
+	row.ActiveGeneration, row.ActivePackageDigest, row.ActiveArtifactDigest = r.row.ActiveGeneration, r.row.ActivePackageDigest, r.row.ActiveArtifactDigest
+	row.State, row.PID, row.RestartCount, row.CircuitOpen, row.LastError = r.row.State, r.row.PID, r.row.RestartCount, r.row.CircuitOpen, r.row.LastError
+	row.CandidateState = "starting"
 	r.row = row
 	return nil
 }
@@ -102,6 +120,7 @@ func (r *runtimeRepo) PromotePluginRuntime(_ context.Context, id, generation str
 	}
 	r.row.ActiveGeneration = generation
 	r.row.CandidateGeneration = ""
+	r.row.State, r.row.PID, r.row.SandboxProvider = "healthy", pid, sandbox
 	return nil
 }
 func (r *runtimeRepo) FailPluginRuntimeCandidate(context.Context, string, string, error) error {
@@ -113,10 +132,111 @@ func (r *runtimeRepo) GetPluginRuntime(context.Context, string) (storage.PluginR
 func (r *runtimeRepo) UpdatePluginRuntimeHealth(_ context.Context, id, generation, state string, pid, restartCount int, circuitOpen bool, lastError string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.healthCalls++
+	if r.healthFailures > 0 {
+		r.healthFailures--
+		return errors.New("health persistence failed")
+	}
 	if r.row.ActiveGeneration != generation {
 		return errors.New("generation mismatch")
 	}
 	r.row.State, r.row.PID, r.row.RestartCount, r.row.CircuitOpen, r.row.LastError = state, pid, restartCount, circuitOpen, lastError
+	return nil
+}
+
+func TestPluginRuntimeHostRetriesAndSurfacesHealthPersistence(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("runtime observer")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), runtimeLauncher{}, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{healthFailures: 2}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: hex.EncodeToString(sum[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if repo.healthCalls != 3 || host.StatusPersistenceError("instance") != nil {
+		t.Fatalf("transient observer error was not retried: calls=%d err=%v", repo.healthCalls, host.StatusPersistenceError("instance"))
+	}
+	repo.stopErr = errors.New("terminal persistence failed")
+	if err := service.Stop(t.Context(), "instance"); err == nil || !strings.Contains(err.Error(), "terminal persistence failed") {
+		t.Fatalf("terminal persistence failure was not surfaced: %v", err)
+	}
+	if repo.stopCalls != 3 {
+		t.Fatalf("terminal persistence failure was not retried: calls=%d", repo.stopCalls)
+	}
+	if _, active := host.Active("instance"); active {
+		t.Fatal("runtime remained active after process stop")
+	}
+}
+
+func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("runtime serialization")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	launcher := blockingRuntimeLauncher{started: make(chan struct{}), release: make(chan struct{})}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: hex.EncodeToString(sum[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	activateDone := make(chan error, 1)
+	go func() {
+		_, err := service.Activate(context.Background(), candidate)
+		activateDone <- err
+	}()
+	<-launcher.started
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- service.Stop(context.Background(), "instance") }()
+	select {
+	case err := <-stopDone:
+		t.Fatalf("Stop raced ahead of candidate prepare/promotion: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(launcher.release)
+	if err := <-activateDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopDone; err != nil {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	row := repo.row
+	repo.mu.Unlock()
+	if row.State != "stopped" || row.PID != 0 || row.ActiveGeneration != "g1" {
+		t.Fatalf("serialized Stop did not persist terminal state: %+v", row)
+	}
+}
+func (r *runtimeRepo) StopPluginRuntime(_ context.Context, id, generation string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopCalls++
+	if r.stopErr != nil {
+		return r.stopErr
+	}
+	if r.row.ActiveGeneration != generation {
+		return errors.New("generation mismatch")
+	}
+	r.row.State, r.row.PID = "stopped", 0
 	return nil
 }
 

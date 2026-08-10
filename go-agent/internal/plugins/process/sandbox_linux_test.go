@@ -13,13 +13,13 @@ import (
 )
 
 func TestLinuxSandboxBindsCgroupBeforeExecAndUsesMinimalFilesystem(t *testing.T) {
-	security := Security{Budget: Budget{Files: 32, Network: false}}
+	security := Security{Budget: Budget{Files: 32, Network: false}, EndpointDirectory: "/managed/attempt/endpoint", CredentialDirectory: "/managed/attempt/credentials", GuestEndpoint: "/run/nre-plugin/rpc.sock"}
 	args := linuxSandboxArguments("/usr/bin/bwrap", "/usr/bin/prlimit", "/managed/instance/plugin", []string{"--guest"}, []string{"PATH=/usr/bin:/bin"}, security, 3)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--ro-bind / /") || strings.Contains(joined, "/home") || strings.Contains(joined, "/root") || strings.Contains(joined, "/panel") {
 		t.Fatalf("sandbox exposed host filesystem: %s", joined)
 	}
-	for _, required := range []string{"--ro-bind /managed/instance/plugin /plugin/plugin", "--unshare-net", "--seccomp 3", "/runtime/prlimit --nofile=32:32 -- /plugin/plugin"} {
+	for _, required := range []string{"--ro-bind /managed/instance/plugin /plugin/plugin", "--bind /managed/attempt/endpoint /run/nre-plugin", "--ro-bind /managed/attempt/credentials /run/nre-plugin-credentials", "NRE_PLUGIN_ENDPOINT unix:/run/nre-plugin/rpc.sock", "--unshare-net", "--seccomp 3", "/runtime/prlimit --nofile=32:32 -- /plugin/plugin"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("sandbox argument %q missing from %s", required, joined)
 		}
