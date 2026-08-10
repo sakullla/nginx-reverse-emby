@@ -55,6 +55,18 @@ func TestPluginHostSandboxRequirementUsesValidatedCanonicalManifest(t *testing.T
 			t.Fatalf("permission %q requirement = %+v, %v", permission, got, err)
 		}
 	}
+	for _, capability := range []pluginsdk.HostCapability{
+		pluginsdk.CapabilityPolicyAtomicState,
+		pluginsdk.CapabilityPolicyMonotonicClock,
+		pluginsdk.CapabilityPolicyTrustedSource,
+		pluginsdk.CapabilityServiceRevocableResourceHandle,
+		pluginsdk.CapabilityUIDynamicActions,
+	} {
+		got, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{string(capability)}, []string{"http.request"}))
+		if err != nil || got.RequiresPrivilegeBoundary() || got.RequiresFilesystemBoundary() || got.Budget().Network {
+			t.Fatalf("host capability %q requirement = %+v, %v", capability, got, err)
+		}
+	}
 	for _, extension := range []string{"container.provider", "dns.provider", "tunnel.provider"} {
 		got, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"agent.read"}, []string{extension}))
 		if err != nil || !got.RequiresPrivilegeBoundary() || !got.Budget().Network {
@@ -99,6 +111,32 @@ func TestPluginHostSandboxRequirementProjectsSignedValidatorResult(t *testing.T)
 	})
 	if _, err := invalidValidator.ValidatePackage(invalidRoot, plugins.PackageExpectation{}); err == nil {
 		t.Fatal("validator accepted a non-canonical sandbox extension")
+	}
+}
+
+func TestPluginHostSandboxRequirementAcceptsSignedCanonicalHostCapabilities(t *testing.T) {
+	for _, capability := range []pluginsdk.HostCapability{
+		pluginsdk.CapabilityPolicyAtomicState,
+		pluginsdk.CapabilityPolicyMonotonicClock,
+		pluginsdk.CapabilityPolicyTrustedSource,
+		pluginsdk.CapabilityServiceRevocableResourceHandle,
+		pluginsdk.CapabilityUIDynamicActions,
+	} {
+		t.Run(string(capability), func(t *testing.T) {
+			root, key := writeSignedSandboxPackage(t, string(capability), "http.request")
+			validator := plugins.NewValidator(plugins.ValidatorOptions{
+				HostVersion: "1.0.0", AgentVersion: "1.0.0", TargetGOOS: runtime.GOOS, TargetGOARCH: runtime.GOARCH,
+				MaxPackageBytes: 256 << 20, MaxFileBytes: 256 << 20,
+				TrustedSigners: map[string]ed25519.PublicKey{"sandbox-test": key.Public().(ed25519.PublicKey)}, TrustedSignerPolicy: plugins.TrustedSignerPolicyExact,
+			})
+			validated, err := validator.ValidatePackage(root, plugins.PackageExpectation{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := SandboxRequirementFromValidatedPackage(validated); err != nil {
+				t.Fatalf("signed capability %q was rejected by sandbox projection: %v", capability, err)
+			}
+		})
 	}
 }
 

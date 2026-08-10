@@ -3,6 +3,8 @@ package process
 import (
 	"strings"
 	"testing"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func testSandboxRequirement(budget Budget, privileged, networkBound bool) SandboxRequirement {
@@ -40,6 +42,20 @@ func TestSandboxRequirementCanonicalAdmission(t *testing.T) {
 		got, err := NewSandboxRequirement(projection)
 		if err != nil || !got.RequiresPrivilegeBoundary() {
 			t.Fatalf("permission %q requirement = %+v, %v", permission, got, err)
+		}
+	}
+	for _, capability := range []pluginsdk.HostCapability{
+		pluginsdk.CapabilityPolicyAtomicState,
+		pluginsdk.CapabilityPolicyMonotonicClock,
+		pluginsdk.CapabilityPolicyTrustedSource,
+		pluginsdk.CapabilityServiceRevocableResourceHandle,
+		pluginsdk.CapabilityUIDynamicActions,
+	} {
+		projection := base
+		projection.Permissions = []SandboxPermission{SandboxPermission(capability)}
+		got, err := NewSandboxRequirement(projection)
+		if err != nil || got.RequiresPrivilegeBoundary() || got.RequiresFilesystemBoundary() || got.Budget().Network {
+			t.Fatalf("host capability %q requirement = %+v, %v", capability, got, err)
 		}
 	}
 	for _, extension := range []SandboxExtensionPoint{ExtensionContainerProvider, ExtensionDNSProvider, ExtensionTunnelProvider} {

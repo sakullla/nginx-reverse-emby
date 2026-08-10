@@ -375,6 +375,39 @@ func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	}
 }
 
+func TestPolicyV1StatePreservesLegacyGrantAndNegotiatesAtomicCapability(t *testing.T) {
+	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
+	legacy := &requestHost{
+		input: input, generationID: "generation-1", instanceID: "legacy-instance", state: newGenerationState(),
+		stage:             model.PolicyStage{PluginID: "official.legacy-policy", ResourceGroupID: "group-a", GrantedScopes: []string{"policy.read", "policy.write"}},
+		capabilityAuditor: acknowledgedCapabilityAudit{err: errors.New("new capability audit must not run for a legacy v1 package")},
+	}
+	if err := legacy.StatePut(t.Context(), "bucket", []byte("legacy")); err != nil {
+		t.Fatalf("legacy StatePut() error = %v", err)
+	}
+	if value, found, err := legacy.StateGet(t.Context(), "bucket"); err != nil || !found || string(value) != "legacy" {
+		t.Fatalf("legacy StateGet() = %q, %v, %v", value, found, err)
+	}
+
+	negotiated := &requestHost{
+		input: input, generationID: "generation-1", instanceID: "negotiated-instance", state: newGenerationState(),
+		stage: model.PolicyStage{
+			PluginID: "official.atomic-policy", ResourceGroupID: "group-a",
+			DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyAtomicState)},
+			GrantedScopes:  []string{"policy.read", "policy.write"},
+		},
+		capabilityAuditor: acknowledgedCapabilityAudit{},
+	}
+	if err := negotiated.StatePut(t.Context(), "bucket", []byte("value")); !isPermissionDenied(err) {
+		t.Fatalf("negotiated StatePut() without capability grant error = %v", err)
+	}
+	negotiated.stage.GrantedScopes = append(negotiated.stage.GrantedScopes, string(pluginsdk.CapabilityPolicyAtomicState))
+	negotiated.authorizer = nil
+	if err := negotiated.StatePut(t.Context(), "bucket", []byte("value")); err != nil {
+		t.Fatalf("negotiated StatePut() with capability grant error = %v", err)
+	}
+}
+
 func TestPolicyHostCapabilitiesUseSignedProjectionAndNodeLocalPrimitives(t *testing.T) {
 	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
 	capabilities := []string{

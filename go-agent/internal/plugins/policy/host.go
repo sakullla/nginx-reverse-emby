@@ -171,8 +171,14 @@ func (host *requestHost) StateGet(ctx context.Context, key string) ([]byte, bool
 	if !host.granted("policy.read") {
 		return nil, false, permissionDenied("policy state read is not granted")
 	}
-	if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyAtomicState); err != nil {
-		return nil, false, err
+	// nre:policy/v1 shipped StateGet under policy.read. A signed declaration of
+	// policy.atomic-state is the additive feature negotiation which opts a
+	// package into the stronger dual declaration/grant/audit boundary; packages
+	// without that declaration retain the v1 authorization contract.
+	if host.declaresCapability(pluginsdk.CapabilityPolicyAtomicState) {
+		if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyAtomicState); err != nil {
+			return nil, false, err
+		}
 	}
 	if len(key) == 0 || len(key) > maxStateKeyBytes {
 		return nil, false, resourceExhausted("state-key-budget", "state key is missing or too large")
@@ -188,8 +194,10 @@ func (host *requestHost) StatePut(ctx context.Context, key string, value []byte)
 	if !host.granted("policy.write") {
 		return permissionDenied("policy state write is not granted")
 	}
-	if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyAtomicState); err != nil {
-		return err
+	if host.declaresCapability(pluginsdk.CapabilityPolicyAtomicState) {
+		if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyAtomicState); err != nil {
+			return err
+		}
 	}
 	if host.state == nil {
 		return errors.New("generation state is unavailable")
@@ -233,6 +241,18 @@ func (host *requestHost) granted(scope string) bool {
 	}
 	for _, granted := range host.stage.GrantedScopes {
 		if granted == scope {
+			return true
+		}
+	}
+	return false
+}
+
+func (host *requestHost) declaresCapability(capability pluginsdk.HostCapability) bool {
+	if host == nil {
+		return false
+	}
+	for _, declared := range host.stage.DeclaredScopes {
+		if declared == string(capability) {
 			return true
 		}
 	}

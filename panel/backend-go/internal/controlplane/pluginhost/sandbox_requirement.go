@@ -41,6 +41,11 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		switch permission.Name {
 		case "container.manage", "dns.manage", "secret.use", "storage.write":
 			requirement.privileged = true
+		case string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
+			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
+			string(pluginsdk.CapabilityUIDynamicActions):
+			// These operations remain host-mediated and grant the guest no
+			// ambient filesystem, network, or process authority.
 		}
 		if permission.Name == "storage.read" || permission.Name == "storage.write" {
 			requirement.filesystem = true
@@ -111,7 +116,10 @@ func knownControlSandboxPermission(value string) bool {
 		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage", "dns.manage":
 		return true
 	default:
-		return false
+		// Canonical Host capabilities are mediated by the host broker. They do
+		// not grant the guest direct filesystem, network, or process authority,
+		// so their sandbox projection adds no ambient privilege.
+		return pluginsdk.HostCapability(value).Validate() == nil
 	}
 }
 

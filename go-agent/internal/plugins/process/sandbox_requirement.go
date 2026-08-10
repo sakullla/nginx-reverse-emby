@@ -5,27 +5,34 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type SandboxPermission string
 type SandboxExtensionPoint string
 
 const (
-	PermissionAgentRead       SandboxPermission = "agent.read"
-	PermissionAgentConfigure  SandboxPermission = "agent.configure"
-	PermissionEventEmit       SandboxPermission = "event.emit"
-	PermissionHTTPInspect     SandboxPermission = "http.inspect"
-	PermissionHTTPRespond     SandboxPermission = "http.respond"
-	PermissionL4Inspect       SandboxPermission = "l4.inspect"
-	PermissionL4Respond       SandboxPermission = "l4.respond"
-	PermissionPolicyRead      SandboxPermission = "policy.read"
-	PermissionPolicyWrite     SandboxPermission = "policy.write"
-	PermissionSecretUse       SandboxPermission = "secret.use"
-	PermissionStorageRead     SandboxPermission = "storage.read"
-	PermissionStorageWrite    SandboxPermission = "storage.write"
-	PermissionContainerRead   SandboxPermission = "container.read"
-	PermissionContainerManage SandboxPermission = "container.manage"
-	PermissionDNSManage       SandboxPermission = "dns.manage"
+	PermissionAgentRead                      SandboxPermission = "agent.read"
+	PermissionAgentConfigure                 SandboxPermission = "agent.configure"
+	PermissionEventEmit                      SandboxPermission = "event.emit"
+	PermissionHTTPInspect                    SandboxPermission = "http.inspect"
+	PermissionHTTPRespond                    SandboxPermission = "http.respond"
+	PermissionL4Inspect                      SandboxPermission = "l4.inspect"
+	PermissionL4Respond                      SandboxPermission = "l4.respond"
+	PermissionPolicyRead                     SandboxPermission = "policy.read"
+	PermissionPolicyWrite                    SandboxPermission = "policy.write"
+	PermissionSecretUse                      SandboxPermission = "secret.use"
+	PermissionStorageRead                    SandboxPermission = "storage.read"
+	PermissionStorageWrite                   SandboxPermission = "storage.write"
+	PermissionContainerRead                  SandboxPermission = "container.read"
+	PermissionContainerManage                SandboxPermission = "container.manage"
+	PermissionDNSManage                      SandboxPermission = "dns.manage"
+	PermissionPolicyAtomicState              SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyAtomicState)
+	PermissionPolicyMonotonicClock           SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyMonotonicClock)
+	PermissionPolicyTrustedSource            SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyTrustedSource)
+	PermissionServiceRevocableResourceHandle SandboxPermission = SandboxPermission(pluginsdk.CapabilityServiceRevocableResourceHandle)
+	PermissionUIDynamicActions               SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamicActions)
 
 	ExtensionHTTPRequest       SandboxExtensionPoint = "http.request"
 	ExtensionHTTPResponse      SandboxExtensionPoint = "http.response"
@@ -79,6 +86,10 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		switch permission {
 		case PermissionContainerManage, PermissionDNSManage, PermissionSecretUse, PermissionStorageWrite:
 			requirement.privileged = true
+		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
+			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
+			// These operations remain host-mediated and grant the guest no
+			// ambient filesystem, network, or process authority.
 		}
 		if permission == PermissionStorageRead || permission == PermissionStorageWrite {
 			requirement.filesystem = true
@@ -147,7 +158,9 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	switch value {
 	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
-		PermissionStorageRead, PermissionStorageWrite, PermissionContainerRead, PermissionContainerManage, PermissionDNSManage:
+		PermissionStorageRead, PermissionStorageWrite, PermissionContainerRead, PermissionContainerManage, PermissionDNSManage,
+		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
+		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
 		return true
 	default:
 		return false
