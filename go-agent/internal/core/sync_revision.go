@@ -142,7 +142,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		if journal.Active.Acknowledged || journal.Active.AppliedReportRejected {
 			return nil
 		}
-		if err := resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
+		if err := c.resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
 			return c.recordRuntimeError(err)
 		}
 		return store.SaveGenerationJournal(journal)
@@ -429,17 +429,21 @@ func (c *SyncController) recoverActiveRevisionAcknowledgement(
 	// Applied reports are replayable: the first response may have been lost
 	// after the coordinator committed the transition. The server accepts this
 	// exact lease/generation identity idempotently.
-	if err := resolveAppliedRevisionReport(ctx, client, active); err != nil {
+	if err := c.resolveAppliedRevisionReport(ctx, client, active); err != nil {
 		return err
 	}
 	return store.SaveGenerationJournal(*journal)
 }
 
-func resolveAppliedRevisionReport(ctx context.Context, client RevisionSyncClient, active *model.GenerationRecord) error {
+func (c *SyncController) resolveAppliedRevisionReport(ctx context.Context, client RevisionSyncClient, active *model.GenerationRecord) error {
 	if active == nil {
 		return errors.New("active generation is required for applied report")
 	}
-	err := reportRevisionApplied(ctx, client, active.Lease, active.GenerationID)
+	var statuses []model.PluginRuntimeStatus
+	if c != nil && c.Runtime != nil {
+		statuses = c.Runtime.State().PluginStatuses
+	}
+	err := reportRevisionApplied(ctx, client, active.Lease, active.GenerationID, statuses)
 	switch {
 	case err == nil:
 		active.Acknowledged = true
@@ -526,7 +530,7 @@ func (c *SyncController) finishRevisionAcknowledgement(
 	if err := store.SaveGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
 	}
-	if err := resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
+	if err := c.resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
 		return c.recordRuntimeError(err)
 	}
 	if err := store.SaveGenerationJournal(journal); err != nil {
@@ -883,10 +887,10 @@ func sameGenerationLease(record model.GenerationRecord, lease model.RevisionLeas
 		record.Lease.LeaseID == lease.LeaseID
 }
 
-func reportRevisionApplied(ctx context.Context, client RevisionSyncClient, lease model.RevisionLease, generationID string) error {
+func reportRevisionApplied(ctx context.Context, client RevisionSyncClient, lease model.RevisionLease, generationID string, statuses []model.PluginRuntimeStatus) error {
 	return client.ReportRevision(ctx, model.RevisionReport{
 		AgentID: lease.AgentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle,
 		Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: generationID,
-		Status: "applied",
+		Status: "applied", PluginStatuses: append([]model.PluginRuntimeStatus(nil), statuses...),
 	})
 }

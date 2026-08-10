@@ -1,0 +1,513 @@
+package storage
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+var (
+	ErrPluginGenerationConflict = errors.New("plugin generation identity conflict")
+	ErrPluginGenerationStale    = errors.New("plugin generation report is stale")
+)
+
+const PluginGenerationCapability = "plugin_generation_v1"
+
+type PluginGenerationReport struct {
+	OperationID    string          `json:"operation_id"`
+	AgentID        string          `json:"agent_id"`
+	InstanceID     string          `json:"instance_id"`
+	PluginID       string          `json:"plugin_id"`
+	Revision       int64           `json:"revision"`
+	GenerationID   string          `json:"generation_id"`
+	PackageDigest  string          `json:"package_digest"`
+	ArtifactDigest string          `json:"artifact_digest"`
+	State          string          `json:"state"`
+	Sequence       uint64          `json:"sequence"`
+	ErrorCode      string          `json:"error_code,omitempty"`
+	Details        json.RawMessage `json:"details,omitempty"`
+	Budget         json.RawMessage `json:"budget,omitempty"`
+	ReportedAt     time.Time       `json:"reported_at"`
+}
+
+// LoadAgentPluginGenerations returns the effective candidate projection for
+// one Agent. It can be used independently by revision/report wiring; snapshot
+// loads call the transaction-scoped helper so the whole graph is coherent.
+func (s *GormStore) LoadAgentPluginGenerations(ctx context.Context, agentID, platform string) ([]PluginGeneration, error) {
+	if s.transactionScoped {
+		return s.loadAgentPluginGenerations(ctx, agentID, platform)
+	}
+	var generations []PluginGeneration
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var err error
+		generations, err = scoped.loadAgentPluginGenerations(ctx, agentID, platform)
+		return err
+	})
+	return generations, err
+}
+
+func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, platform string) ([]PluginGeneration, error) {
+	agentID = s.resolveAgentID(agentID)
+	var installed []InstalledPluginRow
+	if err := s.db.WithContext(ctx).Where("desired_lifecycle = ?", "enabled").Order("plugin_id").Find(&installed).Error; err != nil {
+		return nil, err
+	}
+	result := make([]PluginGeneration, 0)
+	for _, plugin := range installed {
+		packageIdentity, packageDigest := plugin.ActivePackageIdentity, plugin.ActivePackageDigest
+		if plugin.PendingOperationID != "" && plugin.StagedPackageIdentity != "" && plugin.StagedPackageDigest != "" {
+			packageIdentity, packageDigest = plugin.StagedPackageIdentity, plugin.StagedPackageDigest
+		}
+		var packageRow PluginPackageRow
+		query := s.db.WithContext(ctx).Where("identity = ? AND digest = ?", packageIdentity, packageDigest)
+		if packageIdentity == "" {
+			query = s.db.WithContext(ctx).Where("digest = ?", packageDigest)
+		}
+		if err := query.Order("identity").First(&packageRow).Error; err != nil {
+			return nil, fmt.Errorf("load plugin %s generation package: %w", plugin.PluginID, err)
+		}
+		if packageRow.PluginID != plugin.PluginID {
+			return nil, fmt.Errorf("%w: package plugin identity differs from installed plugin", ErrPluginGenerationConflict)
+		}
+		var manifest plugins.Manifest
+		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+			return nil, fmt.Errorf("decode plugin %s generation manifest: %w", plugin.PluginID, err)
+		}
+		if manifest.ID != plugin.PluginID || manifest.Version != packageRow.Version {
+			return nil, fmt.Errorf("%w: package manifest identity differs from durable projection", ErrPluginGenerationConflict)
+		}
+		// WASM execution remains owned by the existing PluginPolicies projection.
+		// Publishing it through both contracts would instantiate it twice.
+		if strings.TrimSpace(manifest.Runtime.HostScope) != "agent" || strings.TrimSpace(manifest.Runtime.Kind) != "rpc-service" {
+			continue
+		}
+		artifact, err := s.selectPluginGenerationArtifact(ctx, packageRow, manifest, platform)
+		if err != nil {
+			return nil, fmt.Errorf("select plugin %s generation artifact: %w", plugin.PluginID, err)
+		}
+		grants, err := s.loadPluginGenerationGrants(ctx, plugin, packageRow)
+		if err != nil {
+			return nil, err
+		}
+		var instances []PluginInstanceRow
+		if err := s.db.WithContext(ctx).Where("plugin_id = ? AND desired_enabled = ?", plugin.PluginID, true).Order("id").Find(&instances).Error; err != nil {
+			return nil, err
+		}
+		for _, instance := range instances {
+			targetJSON := instance.TargetJSON
+			if instance.PendingOperationID == plugin.PendingOperationID && strings.TrimSpace(instance.PendingTargetJSON) != "" {
+				targetJSON = instance.PendingTargetJSON
+			}
+			targets, err := pluginInstanceTargets(targetJSON, s.LocalAgentID())
+			if err != nil {
+				return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+			}
+			if !pluginGenerationContainsString(targets, agentID) {
+				continue
+			}
+			generation, err := buildPluginGeneration(plugin, instance, packageRow, manifest, artifact, grants, agentID)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, generation)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].InstanceID != result[j].InstanceID {
+			return result[i].InstanceID < result[j].InstanceID
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result, nil
+}
+
+func (s *GormStore) selectPluginGenerationArtifact(ctx context.Context, packageRow PluginPackageRow, manifest plugins.Manifest, platform string) (PluginArtifactRow, error) {
+	var artifacts []PluginArtifactRow
+	if err := s.db.WithContext(ctx).Where("package_identity = ? AND package_digest = ?", packageRow.Identity, packageRow.Digest).Order("path").Find(&artifacts).Error; err != nil {
+		return PluginArtifactRow{}, err
+	}
+	goos, goarch := splitPluginPlatform(platform)
+	for _, artifact := range artifacts {
+		if artifact.Path != manifest.Runtime.Entry || artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope {
+			continue
+		}
+		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
+			continue
+		}
+		return artifact, nil
+	}
+	return PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", ErrPluginGenerationConflict, platform)
+}
+
+func (s *GormStore) loadPluginGenerationGrants(ctx context.Context, plugin InstalledPluginRow, packageRow PluginPackageRow) ([]PluginGenerationGrant, error) {
+	if plugin.PendingOperationID != "" && plugin.StagedPackageIdentity == packageRow.Identity && plugin.StagedPackageDigest == packageRow.Digest {
+		return decodePluginGenerationList[PluginGenerationGrant](plugin.PendingGrantsJSON)
+	}
+	var rows []PluginGrantRow
+	if err := s.db.WithContext(ctx).Where("plugin_id = ? AND package_digest = ?", plugin.PluginID, packageRow.Digest).Order("permission, resource_selector").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	grants := make([]PluginGenerationGrant, 0, len(rows))
+	for _, row := range rows {
+		if row.PackageIdentity != "" && row.PackageIdentity != packageRow.Identity {
+			continue
+		}
+		resourceKind, resourceID := splitPluginGrantSelector(row.ResourceSelector)
+		grants = append(grants, PluginGenerationGrant{Name: strings.TrimSpace(row.Permission), ResourceKind: resourceKind, ResourceID: resourceID})
+	}
+	return grants, nil
+}
+
+func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstanceRow, packageRow PluginPackageRow, manifest plugins.Manifest, artifact PluginArtifactRow, grants []PluginGenerationGrant, agentID string) (PluginGeneration, error) {
+	config := instance.ConfigJSON
+	configVersion := instance.ConfigVersion
+	resourceGroupID := instance.ResourceGroupID
+	operationID := installed.PendingOperationID
+	if operationID == "" {
+		operationID = installed.LastOperationID
+	}
+	if instance.PendingOperationID != "" && instance.PendingOperationID == installed.PendingOperationID && instance.PendingVersion != 0 {
+		config, configVersion = instance.PendingConfigJSON, instance.PendingVersion
+		if instance.PendingResourceGroupID != "" {
+			resourceGroupID = instance.PendingResourceGroupID
+		}
+	}
+	canonicalConfig, err := canonicalPluginGenerationJSON(json.RawMessage(config), true)
+	if err != nil {
+		return PluginGeneration{}, fmt.Errorf("plugin instance %s config: %w", instance.ID, err)
+	}
+	secretHandles, err := decodePluginGenerationList[PluginGenerationSecretHandle](instance.SecretHandlesJSON)
+	if err != nil {
+		return PluginGeneration{}, fmt.Errorf("plugin instance %s secret handles: %w", instance.ID, err)
+	}
+	generation := PluginGeneration{
+		OperationID: operationID, InstanceID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
+		Artifact:        PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
+		Runtime:         PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
+		ExtensionPoints: canonicalPluginGenerationStrings(manifest.ExtensionPoints),
+		ConfigVersion:   configVersion, Config: canonicalConfig, Grants: append([]PluginGenerationGrant(nil), grants...), SecretHandles: secretHandles,
+		ResourceBudget: PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
+		Target:         PluginGenerationTarget{Kind: "agent", ID: agentID, ResourceGroupID: resourceGroupID, Version: configVersion},
+		FailurePolicy:  PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
+	}
+	canonicalizePluginGeneration(&generation, false)
+	generation.ID, err = PluginGenerationIdentity(generation)
+	if err != nil {
+		return PluginGeneration{}, err
+	}
+	return generation, nil
+}
+
+func splitPluginGrantSelector(selector string) (string, string) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return "", ""
+	}
+	parts := strings.SplitN(selector, ":", 2)
+	if len(parts) == 1 {
+		return "", parts[0]
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+func splitPluginPlatform(platform string) (string, string) {
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(platform)), "-", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+func pluginGenerationContainsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func decodePluginGenerationList[T any](raw string) ([]T, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []T{}, nil
+	}
+	var result []T
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, err
+	}
+	if result == nil {
+		result = []T{}
+	}
+	return result, nil
+}
+
+func canonicalPluginGenerationJSON(raw json.RawMessage, requireObject bool) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		if requireObject {
+			return nil, errors.New("JSON object is required")
+		}
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("trailing JSON value")
+	}
+	if requireObject {
+		if _, ok := value.(map[string]any); !ok {
+			return nil, errors.New("JSON object is required")
+		}
+	}
+	return json.Marshal(value)
+}
+
+func canonicalPluginGenerationStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	if len(result) == 0 {
+		return []string{}
+	}
+	write := 1
+	for _, value := range result[1:] {
+		if value != result[write-1] {
+			result[write] = value
+			write++
+		}
+	}
+	return result[:write]
+}
+
+func canonicalizePluginGeneration(generation *PluginGeneration, stripRevision bool) {
+	if stripRevision {
+		generation.Revision = 0
+	}
+	generation.ExtensionPoints = canonicalPluginGenerationStrings(generation.ExtensionPoints)
+	sort.Slice(generation.Grants, func(i, j int) bool {
+		if generation.Grants[i].Name != generation.Grants[j].Name {
+			return generation.Grants[i].Name < generation.Grants[j].Name
+		}
+		if generation.Grants[i].ResourceKind != generation.Grants[j].ResourceKind {
+			return generation.Grants[i].ResourceKind < generation.Grants[j].ResourceKind
+		}
+		return generation.Grants[i].ResourceID < generation.Grants[j].ResourceID
+	})
+	if generation.Grants == nil {
+		generation.Grants = []PluginGenerationGrant{}
+	}
+	sort.Slice(generation.SecretHandles, func(i, j int) bool {
+		if generation.SecretHandles[i].ID != generation.SecretHandles[j].ID {
+			return generation.SecretHandles[i].ID < generation.SecretHandles[j].ID
+		}
+		return generation.SecretHandles[i].Version < generation.SecretHandles[j].Version
+	})
+	if generation.SecretHandles == nil {
+		generation.SecretHandles = []PluginGenerationSecretHandle{}
+	}
+}
+
+// CanonicalizePluginGeneration exposes the single generation canonicalizer to
+// revision payload construction without duplicating ordering rules.
+func CanonicalizePluginGeneration(generation *PluginGeneration, stripRevision bool) {
+	canonicalizePluginGeneration(generation, stripRevision)
+}
+
+func PluginGenerationIdentity(generation PluginGeneration) (string, error) {
+	generation.ID = ""
+	generation.Revision = 0
+	canonicalizePluginGeneration(&generation, false)
+	config, err := canonicalPluginGenerationJSON(generation.Config, true)
+	if err != nil {
+		return "", err
+	}
+	generation.Config = config
+	payload, err := json.Marshal(generation)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func BuildPluginAgentRuntimeStatuses(agentID string, revision int64, generations []PluginGeneration) ([]PluginAgentRuntimeStatusRow, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || revision <= 0 {
+		return nil, errors.New("plugin generation target Agent and revision are required")
+	}
+	rows := make([]PluginAgentRuntimeStatusRow, 0, len(generations))
+	for _, generation := range generations {
+		row := PluginAgentRuntimeStatusRow{
+			OperationID: generation.OperationID, AgentID: agentID, InstanceID: generation.InstanceID, PluginID: generation.PluginID,
+			Revision: revision, GenerationID: generation.ID, PackageDigest: generation.PackageDigest,
+			ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion,
+		}
+		if generation.Revision != revision || generation.Target.ID != agentID {
+			return nil, ErrPluginGenerationConflict
+		}
+		if err := validatePluginAgentRuntimeStatusIdentity(row); err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// StagePluginAgentRuntimeStatuses installs the exact report fences before a
+// candidate revision is dispatched. Repeating an identical stage is safe.
+func (s *GormStore) StagePluginAgentRuntimeStatuses(ctx context.Context, rows []PluginAgentRuntimeStatusRow) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		for _, row := range rows {
+			if err := validatePluginAgentRuntimeStatusIdentity(row); err != nil {
+				return err
+			}
+			if row.State == "" {
+				row.State = "applying"
+			}
+			if row.State != "applying" && row.State != "draining" {
+				return errors.New("plugin Agent runtime status must start applying or draining")
+			}
+			row.DetailsJSON, row.BudgetJSON = "{}", "{}"
+			row.UpdatedAt = time.Now().UTC()
+			var current PluginAgentRuntimeStatusRow
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", row.OperationID, row.AgentID, row.InstanceID).First(&current).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if !samePluginAgentRuntimeFence(current, row) {
+				return ErrPluginGenerationConflict
+			}
+		}
+		return nil
+	})
+}
+
+func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report PluginGenerationReport) (PluginAgentRuntimeStatusRow, bool, error) {
+	report.State = strings.ToLower(strings.TrimSpace(report.State))
+	if !validPluginGenerationReportState(report.State) || report.Sequence == 0 {
+		return PluginAgentRuntimeStatusRow{}, false, errors.New("plugin generation report state and sequence are required")
+	}
+	details, err := canonicalPluginGenerationJSON(report.Details, false)
+	if err != nil {
+		return PluginAgentRuntimeStatusRow{}, false, fmt.Errorf("plugin generation report details: %w", err)
+	}
+	budget, err := canonicalPluginGenerationJSON(report.Budget, false)
+	if err != nil {
+		return PluginAgentRuntimeStatusRow{}, false, fmt.Errorf("plugin generation report budget: %w", err)
+	}
+	if details == nil {
+		details = json.RawMessage(`{}`)
+	}
+	if budget == nil {
+		budget = json.RawMessage(`{}`)
+	}
+	digestPayload := report
+	digestPayload.Details, digestPayload.Budget = details, budget
+	digestBytes, _ := json.Marshal(digestPayload)
+	reportDigest := sha256.Sum256(digestBytes)
+	digest := hex.EncodeToString(reportDigest[:])
+	var result PluginAgentRuntimeStatusRow
+	replayed := false
+	err = s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, s.resolveAgentID(report.AgentID), report.InstanceID).First(&result).Error; err != nil {
+			return err
+		}
+		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: s.resolveAgentID(report.AgentID), InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest}
+		if !samePluginAgentRuntimeFence(result, expected) {
+			return ErrPluginGenerationStale
+		}
+		if report.Sequence < result.ReportSequence {
+			return ErrPluginGenerationStale
+		}
+		if report.Sequence == result.ReportSequence {
+			if result.ReportDigest != digest {
+				return ErrPluginGenerationConflict
+			}
+			replayed = true
+			return nil
+		}
+		reportedAt := report.ReportedAt.UTC()
+		if reportedAt.IsZero() {
+			reportedAt = time.Now().UTC()
+		}
+		updates := map[string]any{"state": report.State, "report_sequence": report.Sequence, "report_digest": digest, "error_code": strings.TrimSpace(report.ErrorCode), "details_json": string(details), "budget_json": string(budget), "reported_at": reportedAt, "updated_at": time.Now().UTC()}
+		if err := tx.Model(&result).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, s.resolveAgentID(report.AgentID), report.InstanceID).First(&result).Error
+	})
+	return result, replayed, err
+}
+
+func (s *GormStore) ListPluginAgentRuntimeStatuses(ctx context.Context, operationID string) ([]PluginAgentRuntimeStatusRow, error) {
+	var rows []PluginAgentRuntimeStatusRow
+	if err := s.db.WithContext(ctx).Where("operation_id = ?", strings.TrimSpace(operationID)).Order("agent_id, instance_id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *GormStore) GetPluginOperation(ctx context.Context, operationID string) (PluginOperationRow, bool, error) {
+	var row PluginOperationRow
+	err := s.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(operationID)).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PluginOperationRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func validatePluginAgentRuntimeStatusIdentity(row PluginAgentRuntimeStatusRow) error {
+	if strings.TrimSpace(row.OperationID) == "" || strings.TrimSpace(row.AgentID) == "" || strings.TrimSpace(row.InstanceID) == "" || strings.TrimSpace(row.PluginID) == "" || row.Revision <= 0 || !validSHA256(row.GenerationID) || !validSHA256(row.PackageDigest) || !validSHA256(row.ArtifactDigest) {
+		return errors.New("complete plugin Agent runtime status identity is required")
+	}
+	return nil
+}
+
+func samePluginAgentRuntimeFence(left, right PluginAgentRuntimeStatusRow) bool {
+	return left.OperationID == right.OperationID && left.AgentID == right.AgentID && left.InstanceID == right.InstanceID && left.PluginID == right.PluginID && left.Revision == right.Revision && left.ConfigVersion == right.ConfigVersion && strings.EqualFold(left.GenerationID, right.GenerationID) && strings.EqualFold(left.PackageDigest, right.PackageDigest) && strings.EqualFold(left.ArtifactDigest, right.ArtifactDigest)
+}
+
+func validPluginGenerationReportState(state string) bool {
+	switch state {
+	case "prepared", "active", "degraded", "failed", "drained":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func ValidPluginGenerationDigest(value string) bool { return validSHA256(value) }

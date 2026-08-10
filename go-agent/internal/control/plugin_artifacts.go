@@ -24,7 +24,7 @@ const maxPluginArtifactIdentityBytes = 256
 var pluginArtifactMaterializeLocks [64]sync.Mutex
 
 func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model.Snapshot, revision int64, snapshotDigest string) error {
-	if snapshot == nil || len(snapshot.PluginPolicies) == 0 {
+	if snapshot == nil || (len(snapshot.PluginGenerations) == 0 && len(snapshot.PluginPolicies) == 0) {
 		return nil
 	}
 	snapshotDigest = strings.ToLower(strings.TrimSpace(snapshotDigest))
@@ -36,6 +36,31 @@ func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model
 		required[id] = struct{}{}
 	}
 	cacheDir := strings.TrimSpace(c.cfg.PluginCacheDir)
+	if len(snapshot.PluginGenerations) > 0 {
+		if err := model.ValidatePluginGenerations(*snapshot, false); err != nil {
+			return fmt.Errorf("validate plugin generations: %w", err)
+		}
+		generations := make([]model.PluginGeneration, 0, len(snapshot.PluginGenerations))
+		for index := range snapshot.PluginGenerations {
+			generation := clonePluginGeneration(snapshot.PluginGenerations[index])
+			if cacheDir == "" {
+				return errors.New("plugin generation snapshot requires an Agent artifact cache")
+			}
+			localPath, err := c.materializePluginGenerationArtifact(ctx, cacheDir, revision, snapshotDigest, generation)
+			if err != nil {
+				return fmt.Errorf("prepare required plugin generation %q: %w", generation.InstanceID, err)
+			}
+			generation.Artifact.LocalPath = localPath
+			if err := generation.Validate(revision, true); err != nil {
+				return fmt.Errorf("validate materialized plugin generation %q: %w", generation.InstanceID, err)
+			}
+			generations = append(generations, generation)
+		}
+		snapshot.PluginGenerations = generations
+		if len(snapshot.PluginPolicies) == 0 {
+			return nil
+		}
+	}
 	materialized := make([]model.PluginPolicy, 0, len(snapshot.PluginPolicies))
 	for policyIndex := range snapshot.PluginPolicies {
 		definition := snapshot.PluginPolicies[policyIndex]
@@ -69,23 +94,44 @@ func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model
 	return nil
 }
 
+func (c *SyncClient) materializePluginGenerationArtifact(ctx context.Context, cacheDir string, revision int64, snapshotDigest string, generation model.PluginGeneration) (string, error) {
+	artifact := generation.Artifact
+	extension := ".wasm"
+	if generation.Runtime.Kind == model.PluginRuntimeRPCService {
+		extension = ".bin"
+	}
+	return c.materializePluginArtifactSource(ctx, cacheDir, revision, snapshotDigest, artifact.ArtifactID, generation.PackageDigest,
+		artifact.PackageIdentity, artifact.RelativePath, artifact.SHA256, artifact.SizeBytes, extension)
+}
+
 func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir string, revision int64, snapshotDigest string, stage model.PolicyStage) (string, error) {
 	source := stage.ArtifactSource
-	artifactID := strings.TrimSpace(source.ArtifactID)
-	digest := strings.ToLower(strings.TrimSpace(source.SHA256))
+	return c.materializePluginArtifactSource(ctx, cacheDir, revision, snapshotDigest, source.ArtifactID, stage.PackageDigest,
+		source.PackageIdentity, source.RelativePath, source.SHA256, source.SizeBytes, ".wasm")
+}
+
+func (c *SyncClient) materializePluginArtifactSource(ctx context.Context, cacheDir string, revision int64, snapshotDigest, artifactID, packageDigest, packageIdentity, relativePath, artifactDigest string, sizeBytes int64, extension string) (string, error) {
+	artifactID = strings.TrimSpace(artifactID)
+	digest := strings.ToLower(strings.TrimSpace(artifactDigest))
 	if artifactID == "" || len(artifactID) > maxPluginArtifactIdentityBytes || strings.ContainsAny(artifactID, "/\\\r\n\x00") {
 		return "", errors.New("artifact identity is invalid")
 	}
-	if !validSHA256Hex(digest) || !strings.EqualFold(strings.TrimSpace(stage.ArtifactDigest), digest) {
+	if !validSHA256Hex(digest) {
 		return "", errors.New("artifact digest identity is invalid")
 	}
-	if source.SizeBytes <= 0 {
+	if sizeBytes <= 0 {
 		return "", errors.New("artifact size identity is invalid")
 	}
-	if strings.TrimSpace(source.PackageIdentity) == "" ||
-		!strings.EqualFold(strings.TrimSpace(source.PackageDigest), strings.TrimSpace(stage.PackageDigest)) ||
-		strings.TrimSpace(source.RelativePath) == "" {
+	if !validPluginArtifactPackageIdentity(packageIdentity) ||
+		!validSHA256Hex(strings.ToLower(strings.TrimSpace(packageDigest))) || strings.TrimSpace(relativePath) == "" {
 		return "", errors.New("artifact package identity is incomplete")
+	}
+	if extension != ".wasm" && extension != ".bin" {
+		return "", errors.New("artifact cache mode is invalid")
+	}
+	accept := "application/wasm"
+	if extension == ".bin" {
+		accept = "application/octet-stream"
 	}
 
 	targetDir := filepath.Join(cacheDir, "sha256", digest[:2])
@@ -95,8 +141,8 @@ func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir str
 	if err := os.MkdirAll(targetDir, 0o700); err != nil {
 		return "", fmt.Errorf("create artifact cache: %w", err)
 	}
-	target := filepath.Join(targetDir, digest+".wasm")
-	if matches, err := pluginArtifactFileMatches(target, digest, source.SizeBytes); err != nil {
+	target := filepath.Join(targetDir, digest+extension)
+	if matches, err := pluginArtifactFileMatches(target, digest, sizeBytes); err != nil {
 		return "", err
 	} else if matches {
 		return target, nil
@@ -116,7 +162,7 @@ func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir str
 		_ = temporary.Close()
 		return "", err
 	}
-	if err := c.downloadPluginArtifact(ctx, endpoint, temporary, digest, source.SizeBytes); err != nil {
+	if err := c.downloadPluginArtifact(ctx, endpoint, temporary, digest, sizeBytes, accept); err != nil {
 		_ = temporary.Close()
 		return "", err
 	}
@@ -133,13 +179,34 @@ func (c *SyncClient) materializePluginArtifact(ctx context.Context, cacheDir str
 	return target, nil
 }
 
-func (c *SyncClient) downloadPluginArtifact(ctx context.Context, endpoint string, target io.Writer, digest string, size int64) error {
+func validPluginArtifactPackageIdentity(value string) bool {
+	if value == "" || len(value) > maxPluginArtifactIdentityBytes || value != strings.TrimSpace(value) {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._:@+-/", char) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func clonePluginGeneration(generation model.PluginGeneration) model.PluginGeneration {
+	generation.Config = append([]byte(nil), generation.Config...)
+	generation.ExtensionPoints = append([]string(nil), generation.ExtensionPoints...)
+	generation.Grants = append([]model.PluginGrantProjection(nil), generation.Grants...)
+	generation.SecretHandles = append([]model.PluginSecretHandle(nil), generation.SecretHandles...)
+	return generation
+}
+
+func (c *SyncClient) downloadPluginArtifact(ctx context.Context, endpoint string, target io.Writer, digest string, size int64, accept string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("build artifact request: %w", err)
 	}
 	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
-	req.Header.Set("Accept", "application/wasm")
+	req.Header.Set("Accept", accept)
 	client := *c.client
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)

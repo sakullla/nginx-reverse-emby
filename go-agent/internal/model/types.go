@@ -68,6 +68,7 @@ type Snapshot struct {
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+	PluginGenerations   []PluginGeneration         `json:"plugin_generations"`
 	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	agentConfigPresent  bool
 }
@@ -94,10 +95,11 @@ func (s *Snapshot) UnmarshalJSON(data []byte) error {
 }
 
 type RuntimeState struct {
-	NodeID          string            `json:"node_id,omitempty"`
-	CurrentRevision int64             `json:"current_revision,omitempty"`
-	Status          string            `json:"status,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	NodeID          string                `json:"node_id,omitempty"`
+	CurrentRevision int64                 `json:"current_revision,omitempty"`
+	Status          string                `json:"status,omitempty"`
+	PluginStatuses  []PluginRuntimeStatus `json:"plugin_statuses,omitempty"`
+	Metadata        map[string]string     `json:"metadata,omitempty"`
 }
 
 type EgressProfile struct {

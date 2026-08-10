@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -72,18 +73,23 @@ type closeFunc func() error
 func (fn closeFunc) Close() error { return fn() }
 
 type HostCandidate struct {
-	InstanceID, PluginID, PluginVersion, PackageDigest, Generation string
-	Artifact                                                       pluginprocess.Artifact
-	Requirement                                                    pluginprocess.SandboxRequirement
-	Scopes                                                         []string
-	Config                                                         []byte
-	Process                                                        pluginprocess.InstanceSpec
-	Dial                                                           DialConfig
+	InstanceID, PluginID, PluginVersion, PackageDigest, Generation, OperationID string
+	Revision                                                                    int64
+	Artifact                                                                    pluginprocess.Artifact
+	Requirement                                                                 pluginprocess.SandboxRequirement
+	Scopes                                                                      []string
+	Restart                                                                     string
+	Config                                                                      []byte
+	Process                                                                     pluginprocess.InstanceSpec
+	Dial                                                                        DialConfig
 }
 
 type RuntimeStatus struct {
 	InstanceID      string
 	Generation      string
+	OperationID     string
+	Revision        int64
+	PackageDigest   string
 	State           string
 	LastError       string
 	SandboxProvider string
@@ -120,6 +126,11 @@ type HostedInstance struct {
 	cancel         context.CancelFunc
 	done           chan struct{}
 	runStarted     bool
+	runContext     context.Context
+	prepared       bool
+	activated      bool
+	cleanupRuntime bool
+	runtimeDir     string
 	stopMu         sync.Mutex
 	stopErr        error
 	stoppedAttempt *hostAttempt
@@ -141,6 +152,12 @@ type Host struct {
 	pending        map[*HostedInstance]struct{}
 	locks          sync.Map
 	afterStartOnce func()
+}
+
+type PreparedHostGeneration struct {
+	host      *Host
+	instances []*HostedInstance
+	done      bool
 }
 
 func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Supervisor, dial DialFunc) (*Host, error) {
@@ -205,7 +222,11 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	candidate.Process.ID = candidate.InstanceID + "-" + candidate.Generation
 	candidate.Process.Executable = executable
 	candidate.Process.Security.Requirement = candidate.Requirement
+	restartLimit := candidate.Process.RestartLimit
 	candidate.Process = normalizeRestartSpec(candidate.Process)
+	if candidate.Restart != "" {
+		candidate.Process.RestartLimit = restartLimit
+	}
 
 	runCtx, cancel := context.WithCancel(hostCtx)
 	instance := &HostedInstance{
@@ -294,7 +315,222 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	return instance, nil
 }
 
+// PrepareCandidate starts and handshakes one isolated rpc-service candidate,
+// then invokes Prepare without making the instance visible through Host.
+func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*HostedInstance, error) {
+	if h == nil || ctx == nil {
+		return nil, errors.New("RPC plugin host and candidate context are required")
+	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil, errors.New("RPC plugin host is closed")
+	}
+	h.activationWG.Add(1)
+	hostCtx := h.ctx
+	h.mu.Unlock()
+	defer h.activationWG.Done()
+	if err := candidate.Requirement.ValidatePackageDigest(candidate.PackageDigest); err != nil {
+		return nil, err
+	}
+	lock := h.instanceLock(candidate.InstanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	executable, err := h.install(ctx, candidate.InstanceID+"-"+candidate.Generation, candidate.Artifact)
+	if err != nil {
+		return nil, err
+	}
+	if strings.EqualFold(candidate.Dial.Network, "unix") {
+		candidate.Dial.RuntimeRoot = filepath.Dir(executable)
+	}
+	candidate.Process.ID = candidate.InstanceID + "-" + candidate.Generation
+	candidate.Process.Executable = executable
+	candidate.Process.Security.Requirement = candidate.Requirement
+	restartLimit := candidate.Process.RestartLimit
+	candidate.Process = normalizeRestartSpec(candidate.Process)
+	if candidate.Restart != "" {
+		candidate.Process.RestartLimit = restartLimit
+	}
+	runCtx, cancel := context.WithCancel(hostCtx)
+	instance := &HostedInstance{
+		candidate: candidate, supervisor: h.supervisor, dial: h.dial, provision: h.provision,
+		status: RuntimeStatus{InstanceID: candidate.InstanceID, Generation: candidate.Generation, OperationID: candidate.OperationID,
+			Revision: candidate.Revision, PackageDigest: candidate.PackageDigest, State: "preparing"},
+		backoff: candidate.Process.InitialBackoff, cancel: cancel, done: make(chan struct{}), runContext: runCtx,
+		cleanupRuntime: true, runtimeDir: filepath.Dir(executable), afterStartOnce: h.afterStartOnce,
+	}
+	attempt, err := h.startAttemptMode(ctx, candidate, func(attempt *hostAttempt) {
+		instance.mu.Lock()
+		instance.attempt = attempt
+		instance.mu.Unlock()
+		h.mu.Lock()
+		h.pending[instance] = struct{}{}
+		h.mu.Unlock()
+	}, false)
+	if err != nil {
+		cancel()
+		if attempt == nil {
+			_ = os.RemoveAll(instance.runtimeDir)
+			return nil, err
+		}
+		return nil, errors.Join(err, h.stopPending(instance))
+	}
+	processStatus := attempt.handle.Status()
+	instance.mu.Lock()
+	instance.prepared = true
+	instance.status.State = "prepared"
+	instance.status.SandboxProvider = processStatus.Sandbox.Provider
+	instance.status.PID = processStatus.PID
+	instance.mu.Unlock()
+	return instance, nil
+}
+
+func (h *Host) ReadyCandidate(instance *HostedInstance) error {
+	if h == nil || instance == nil {
+		return errors.New("RPC plugin candidate is required")
+	}
+	h.mu.RLock()
+	_, pending := h.pending[instance]
+	closed := h.closed
+	h.mu.RUnlock()
+	instance.mu.RLock()
+	prepared, attempt := instance.prepared, instance.attempt
+	instance.mu.RUnlock()
+	if closed || !pending || !prepared || attempt == nil {
+		return errors.New("RPC plugin candidate ownership is invalid")
+	}
+	return processAttemptError(attempt.handle)
+}
+
+// ActivatePreparedCandidate performs the rollback-capable lifecycle step. The
+// Host still does not publish the candidate until the generation view swaps.
+func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedInstance) error {
+	if err := h.ReadyCandidate(instance); err != nil {
+		return err
+	}
+	instance.mu.Lock()
+	if instance.activated {
+		instance.mu.Unlock()
+		return nil
+	}
+	attempt := instance.attempt
+	candidate := instance.candidate
+	instance.mu.Unlock()
+	response, err := attempt.client.Activate(ctx, pluginsdk.LifecycleRequest{Generation: candidate.Generation, Config: append([]byte(nil), candidate.Config...)})
+	if err != nil {
+		return fmt.Errorf("Agent RPC plugin activate: %w", err)
+	}
+	if err := response.Validate(); err != nil {
+		return fmt.Errorf("Agent RPC plugin activate: %w", err)
+	}
+	if err := processAttemptError(attempt.handle); err != nil {
+		return err
+	}
+	instance.mu.Lock()
+	instance.activated = true
+	instance.status.State = "ready"
+	instance.mu.Unlock()
+	return nil
+}
+
+// PublishPreparedGeneration changes Host visibility for every rpc-service
+// instance in one lock acquisition. Retired instances remain alive until the
+// owning previous GenerationView is drained and destroyed.
+func (h *Host) PublishPreparedGeneration(generation string, instances []*HostedInstance) error {
+	prepared, err := h.PrepareGenerationPublication(generation, instances)
+	if err != nil {
+		return err
+	}
+	prepared.Publish()
+	return nil
+}
+
+func (h *Host) PrepareGenerationPublication(generation string, instances []*HostedInstance) (*PreparedHostGeneration, error) {
+	if h == nil || generation == "" {
+		return nil, errors.New("RPC plugin generation publication identity is invalid")
+	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil, errors.New("RPC plugin host is closed")
+	}
+	seen := make(map[string]struct{}, len(instances))
+	for _, instance := range instances {
+		if instance == nil || instance.candidate.Generation != generation {
+			h.mu.Unlock()
+			return nil, errors.New("RPC plugin candidate generation differs from publication")
+		}
+		instance.mu.RLock()
+		activated := instance.activated
+		instance.mu.RUnlock()
+		if !activated {
+			h.mu.Unlock()
+			return nil, errors.New("RPC plugin candidate is not activated")
+		}
+		if _, duplicate := seen[instance.candidate.InstanceID]; duplicate {
+			h.mu.Unlock()
+			return nil, errors.New("RPC plugin generation duplicates an instance")
+		}
+		if _, pending := h.pending[instance]; !pending {
+			h.mu.Unlock()
+			return nil, errors.New("RPC plugin candidate is no longer pending")
+		}
+		seen[instance.candidate.InstanceID] = struct{}{}
+	}
+	return &PreparedHostGeneration{host: h, instances: append([]*HostedInstance(nil), instances...)}, nil
+}
+
+func (prepared *PreparedHostGeneration) Publish() {
+	if prepared == nil || prepared.host == nil || prepared.done {
+		return
+	}
+	h := prepared.host
+	next := make(map[string]*HostedInstance, len(prepared.instances))
+	for _, instance := range prepared.instances {
+		next[instance.candidate.InstanceID] = instance
+	}
+	h.active = next
+	for _, instance := range prepared.instances {
+		delete(h.pending, instance)
+		instance.mu.Lock()
+		instance.status.State = "healthy"
+		instance.runStarted = true
+		runCtx := instance.runContext
+		instance.mu.Unlock()
+		go instance.run(runCtx)
+	}
+	prepared.done = true
+	h.mu.Unlock()
+}
+
+func (prepared *PreparedHostGeneration) Abort() {
+	if prepared == nil || prepared.host == nil || prepared.done {
+		return
+	}
+	prepared.done = true
+	prepared.host.mu.Unlock()
+}
+
+func (h *Host) DestroyCandidate(instance *HostedInstance) error {
+	err := h.stopPending(instance)
+	if instance != nil && instance.terminated() {
+		h.mu.Lock()
+		if h.active[instance.candidate.InstanceID] == instance {
+			delete(h.active, instance.candidate.InstanceID)
+		}
+		h.mu.Unlock()
+	}
+	return err
+}
+
 func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt)) (*hostAttempt, error) {
+	return h.startAttemptMode(ctx, candidate, launched, true)
+}
+
+func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt), activate bool) (*hostAttempt, error) {
 	provision := h.provision
 	if provision == nil {
 		provision = provisionAttemptSecurity
@@ -361,12 +597,14 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 	if err := prepared.Validate(); err != nil {
 		return attempt, fmt.Errorf("Agent RPC plugin prepare: %w", err)
 	}
-	activated, err := client.Activate(ctx, lifecycle)
-	if err != nil {
-		return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
-	}
-	if err := activated.Validate(); err != nil {
-		return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
+	if activate {
+		activated, err := client.Activate(ctx, lifecycle)
+		if err != nil {
+			return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
+		}
+		if err := activated.Validate(); err != nil {
+			return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
+		}
 	}
 	if err := processAttemptError(handle); err != nil {
 		return attempt, err
@@ -670,6 +908,11 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 	if !attemptTerminal(attempt) {
 		return errors.Join(stopErr, errors.New("Agent RPC plugin process did not terminate"))
 	}
+	if i.cleanupRuntime && i.runtimeDir != "" {
+		if err := os.RemoveAll(i.runtimeDir); err != nil {
+			return errors.Join(stopErr, fmt.Errorf("remove Agent RPC plugin runtime directory: %w", err))
+		}
+	}
 	return stopErr
 }
 
@@ -723,6 +966,15 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.stoppedAttempt = attempt
 			i.status.State = "failed"
 			i.status.LastError = safeHostError(cleanupErr)
+			i.mu.Unlock()
+			return
+		}
+		if i.candidate.Restart == "never" {
+			i.mu.Lock()
+			i.status.State = "failed"
+			i.status.LastError = safeHostError(failure)
+			i.status.PID = 0
+			i.status.CircuitOpen = true
 			i.mu.Unlock()
 			return
 		}

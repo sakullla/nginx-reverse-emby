@@ -79,6 +79,7 @@ type App struct {
 	ddns                   *moduleddns.Module
 	generations            *core.GenerationManager
 	policyWASM             *pluginwasm.Runtime
+	rpcGeneration          *pluginrpc.GenerationModule
 	capabilityAudit        *observability.CapabilityAuditJournal
 	rpcProcesses           *pluginprocess.Supervisor
 	rpcHost                *pluginrpc.Host
@@ -201,6 +202,7 @@ type configuredModules struct {
 	ddns            *moduleddns.Module
 	generations     *core.GenerationManager
 	policyWASM      *pluginwasm.Runtime
+	rpcGeneration   *pluginrpc.GenerationModule
 	capabilityAudit *observability.CapabilityAuditJournal
 	processStreams  *ingress.ProcessStreamRegistry
 	processPackets  *ingress.ProcessPacketRegistry
@@ -310,6 +312,7 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 	} else {
 		policyModule = policy.NewValidationModule(capabilityObserver)
 	}
+	rpcGenerationModule := pluginrpc.NewGenerationModule(nil)
 	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
 		Interfaces:         cfg.TrafficInterfaces,
@@ -346,6 +349,7 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
+		rpcGenerationModule,
 		policyModule,
 		httpModule,
 		relayModule,
@@ -375,6 +379,7 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 		ddns:            ddnsModule,
 		generations:     generations,
 		policyWASM:      policyRuntime,
+		rpcGeneration:   rpcGenerationModule,
 		capabilityAudit: capabilityAudit,
 		processStreams:  processStreams,
 		processPackets:  processPackets,
@@ -513,6 +518,7 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 		{Name: "local_acme", Enabled: true},
 		{Name: "l4", Enabled: true},
 		{Name: "relay_quic", Enabled: true},
+		{Name: pluginrpc.GenerationCapability, Enabled: true, Metadata: map[string]string{"abi": model.PluginRPCABIV1}},
 	}
 	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
 	if s.cfg.HTTP3Enabled {
@@ -575,6 +581,10 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.ddns = modules.ddns
 	a.generations = modules.generations
 	a.policyWASM = modules.policyWASM
+	a.rpcGeneration = modules.rpcGeneration
+	if a.rpcGeneration != nil {
+		a.rpcGeneration.SetHost(a.rpcHost)
+	}
 	a.capabilityAudit = modules.capabilityAudit
 	a.processStreams = modules.processStreams
 	a.processPackets = modules.processPackets

@@ -137,3 +137,30 @@ func TestPluginRuntimeHealthUpdateUsesActiveGenerationCAS(t *testing.T) {
 		t.Fatalf("durable runtime health not updated: %+v", got)
 	}
 }
+
+func TestPluginRuntimeBatchPromotionIsAtomic(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	rows := []PluginRuntimeInstanceRow{
+		{InstanceID: "a", PluginID: "plugin", HostScope: "control-plane", CandidateGeneration: "a1", CandidatePackageDigest: "package-a1", CandidateArtifactDigest: "artifact-a1"},
+		{InstanceID: "b", PluginID: "plugin", HostScope: "control-plane", CandidateGeneration: "b1", CandidatePackageDigest: "package-b1", CandidateArtifactDigest: "artifact-b1"},
+	}
+	if err := store.StagePluginRuntimeBatch(t.Context(), rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromotePluginRuntimeBatch(t.Context(), []PluginRuntimePromotion{{InstanceID: "a", Generation: "a1", PID: 1}, {InstanceID: "b", Generation: "stale", PID: 2}}); err == nil {
+		t.Fatal("stale batch promotion was accepted")
+	}
+	for _, instanceID := range []string{"a", "b"} {
+		row, _, err := store.GetPluginRuntime(t.Context(), instanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.ActiveGeneration != "" || row.CandidateGeneration == "" {
+			t.Fatalf("partial batch promotion for %s: %+v", instanceID, row)
+		}
+	}
+}

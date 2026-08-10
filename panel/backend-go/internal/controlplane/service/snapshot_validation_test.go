@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
@@ -16,6 +18,30 @@ func TestFullSnapshotValidatorAcceptsCompleteResourceGraph(t *testing.T) {
 		Snapshot: snapshot,
 	}); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestFullSnapshotValidatorPluginGenerationCapabilityFailsClosed(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	generation := storage.PluginGeneration{
+		InstanceID: "instance", OperationID: "operation", Revision: 7,
+		PluginID: "runtime.rpc", PluginVersion: "1.0.0", PackageDigest: digest,
+		Runtime:       storage.PluginGenerationRuntime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "plugin"},
+		Artifact:      storage.PluginGenerationArtifact{ArtifactID: digest, PackageIdentity: digest, RelativePath: "plugin", SHA256: digest, SizeBytes: 1, Mode: "executable", GOOS: "linux", GOARCH: "amd64", SignatureVerified: true, SignerKeyID: "release", SignerFingerprint: digest},
+		ConfigVersion: 1, Config: json.RawMessage(`{}`), Grants: []storage.PluginGenerationGrant{}, SecretHandles: []storage.PluginGenerationSecretHandle{},
+		ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: 10, MemoryBytes: 1024, Concurrency: 1, InputBytes: 128, OutputBytes: 128},
+		Target:         storage.PluginGenerationTarget{Kind: "agent", ID: "edge-1", ResourceGroupID: "group", Version: 1},
+		FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: "preserve-old", OnBudget: "preserve-old", Restart: "bounded", CoreFallback: "continue"},
+	}
+	generation.ID, _ = storage.PluginGenerationIdentity(generation)
+	snapshot := storage.Snapshot{Revision: 7, PluginGenerations: []storage.PluginGeneration{generation}}
+	validator := FullSnapshotValidator{}
+	err := validator.Validate(t.Context(), revision.SnapshotValidation{Target: revision.Target{AgentID: "edge-1"}, Snapshot: snapshot})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable || !strings.Contains(err.Error(), storage.PluginGenerationCapability) {
+		t.Fatalf("missing capability error = %v", err)
+	}
+	if err := validator.Validate(t.Context(), revision.SnapshotValidation{Target: revision.Target{AgentID: "edge-1", Capabilities: []string{storage.PluginGenerationCapability}}, Snapshot: snapshot}); err != nil {
+		t.Fatalf("capable Agent rejected generation: %v", err)
 	}
 }
 

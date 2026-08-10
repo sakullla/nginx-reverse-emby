@@ -7,13 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -79,7 +84,9 @@ type PluginRollbackRequest struct {
 type PluginUninstallRequest struct {
 	PluginID string
 	ActorID  string
-	Drained  bool
+	// Drained is retained for wire compatibility only. Uninstall authority is
+	// the durable, trusted lifecycle state produced by revision reconciliation.
+	Drained bool
 }
 
 type PluginPermissionDiff struct {
@@ -134,6 +141,14 @@ type PluginAgentStatus struct {
 	LastApplyRevision int             `json:"last_apply_revision,omitempty"`
 	LastApplyStatus   string          `json:"last_apply_status,omitempty"`
 	LastApplyMessage  string          `json:"last_apply_message,omitempty"`
+	GenerationID      string          `json:"generation_id,omitempty"`
+	PackageDigest     string          `json:"package_digest,omitempty"`
+	ArtifactDigest    string          `json:"artifact_digest,omitempty"`
+	RuntimeState      string          `json:"runtime_state,omitempty"`
+	RuntimeErrorCode  string          `json:"runtime_error_code,omitempty"`
+	RuntimeDetails    json.RawMessage `json:"runtime_details,omitempty"`
+	RuntimeBudget     json.RawMessage `json:"runtime_budget,omitempty"`
+	ReportedAt        *time.Time      `json:"reported_at,omitempty"`
 }
 
 type PluginSummary struct {
@@ -266,11 +281,25 @@ type pluginLifecycleStore interface {
 	LocalAgentBuild(context.Context) (string, string, bool, error)
 }
 
+type pluginRuntimeStatusStore interface {
+	ListPluginAgentRuntimeStatuses(context.Context, string) ([]storage.PluginAgentRuntimeStatusRow, error)
+}
+
 type PluginService struct {
-	store     pluginLifecycleStore
-	validator *plugins.Validator
-	cacheRoot string
-	now       func() time.Time
+	store            pluginLifecycleStore
+	validator        *plugins.Validator
+	cacheRoot        string
+	now              func() time.Time
+	cfg              config.Config
+	mutationExecutor *revision.Executor
+	revisionMutation bool
+	revisionNumbers  map[string]int64
+}
+
+type controlPlanePluginRuntimePlan struct {
+	Controlled      bool
+	Candidates      []pluginhost.Candidate
+	StopInstanceIDs []string
 }
 
 func NewPluginService(store pluginLifecycleStore, cacheRoot string) *PluginService {
@@ -280,6 +309,14 @@ func NewPluginService(store pluginLifecycleStore, cacheRoot string) *PluginServi
 
 func NewPluginServiceWithValidator(store pluginLifecycleStore, validator *plugins.Validator, cacheRoot string) *PluginService {
 	return &PluginService{store: store, validator: validator, cacheRoot: cacheRoot, now: func() time.Time { return time.Now().UTC() }}
+}
+
+func (s *PluginService) ConfigureRevisionMutations(cfg config.Config, store revision.Store) {
+	if s == nil {
+		return
+	}
+	s.cfg = cfg
+	s.mutationExecutor = newMutationExecutor(cfg, store)
 }
 
 func (s *PluginService) installedPlugin(ctx context.Context, pluginID string) (storage.InstalledPluginRow, error) {
@@ -440,16 +477,46 @@ func (s *PluginService) InstallMutation(ctx context.Context, request PluginInsta
 }
 
 func (s *PluginService) EnableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
-	row, err := s.Enable(ctx, pluginID, actorID)
+	if s.mutationExecutor == nil || s.revisionMutation {
+		row, err := s.Enable(ctx, pluginID, actorID)
+		return pluginSummary(row), err
+	}
+	var row storage.InstalledPluginRow
+	err := s.executeRevisionLifecycleMutation(ctx, pluginID, "plugin.enable", struct {
+		PluginID string `json:"plugin_id"`
+	}{pluginID}, nil, func(txService *PluginService, mutationCtx context.Context) error {
+		var err error
+		row, err = txService.Enable(mutationCtx, pluginID, actorID)
+		return err
+	})
 	return pluginSummary(row), err
 }
 
 func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
-	row, err := s.Disable(ctx, pluginID, actorID)
+	if s.mutationExecutor == nil || s.revisionMutation {
+		row, err := s.Disable(ctx, pluginID, actorID)
+		return pluginSummary(row), err
+	}
+	var row storage.InstalledPluginRow
+	err := s.executeRevisionLifecycleMutation(ctx, pluginID, "plugin.disable", struct {
+		PluginID string `json:"plugin_id"`
+	}{pluginID}, nil, func(txService *PluginService, mutationCtx context.Context) error {
+		var err error
+		row, err = txService.Disable(mutationCtx, pluginID, actorID)
+		return err
+	})
 	return pluginSummary(row), err
 }
 
 func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
+	if s.mutationExecutor != nil && !s.revisionMutation {
+		var prospective PluginInstanceDetail
+		err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.configure", request, &request, func(txService *PluginService, mutationCtx context.Context) error {
+			_, err := txService.configureWithProspectiveDetail(mutationCtx, request, &prospective)
+			return err
+		})
+		return prospective, err
+	}
 	var prospective PluginInstanceDetail
 	_, err := s.configureWithProspectiveDetail(ctx, request, &prospective)
 	if err != nil {
@@ -459,13 +526,140 @@ func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginCon
 }
 
 func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgradeRequest) (PluginSummary, error) {
-	row, err := s.Upgrade(ctx, request)
+	if s.mutationExecutor == nil || s.revisionMutation {
+		row, err := s.Upgrade(ctx, request)
+		return pluginSummary(row), err
+	}
+	var row storage.InstalledPluginRow
+	err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.upgrade", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
+		var err error
+		row, err = txService.Upgrade(mutationCtx, request)
+		return err
+	})
 	return pluginSummary(row), err
 }
 
 func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRollbackRequest) (PluginSummary, error) {
-	row, err := s.Rollback(ctx, request)
+	if s.mutationExecutor == nil || s.revisionMutation {
+		row, err := s.Rollback(ctx, request)
+		return pluginSummary(row), err
+	}
+	var row storage.InstalledPluginRow
+	err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.rollback", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
+		var err error
+		row, err = txService.Rollback(mutationCtx, request)
+		return err
+	})
 	return pluginSummary(row), err
+}
+
+type pluginLifecycleOperationContextKey struct{}
+
+func (s *PluginService) executeRevisionLifecycleMutation(
+	ctx context.Context,
+	pluginID, kind string,
+	request any,
+	configure *PluginConfigureRequest,
+	mutate func(*PluginService, context.Context) error,
+) error {
+	if s == nil || s.mutationExecutor == nil || mutate == nil {
+		return errors.New("plugin revision mutation is unavailable")
+	}
+	operationID := lifecycleID("pluginop")
+	targetIDs, err := s.pluginLifecycleTargetIDs(ctx, pluginID, configure)
+	if err != nil {
+		return err
+	}
+	dependencyAction := revision.DependencyActionApply
+	if strings.HasSuffix(kind, ".disable") {
+		dependencyAction = revision.DependencyActionDelete
+	}
+	mutationCtx := context.WithValue(ctx, pluginLifecycleOperationContextKey{}, operationID)
+	_, err = s.mutationExecutor.Execute(mutationCtx, revision.MutationRequest{
+		OperationID:      operationID,
+		Kind:             kind,
+		DependencyAction: dependencyAction,
+		Request:          request,
+		Targets:          configMutationTargets(s.cfg, targetIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			installed, found, err := tx.GetInstalledPlugin(ctx, pluginID)
+			if err != nil {
+				return nil, err
+			}
+			instances, err := tx.ListPluginInstances(ctx, pluginID)
+			if err != nil {
+				return nil, err
+			}
+			return struct {
+				Found     bool                        `json:"found"`
+				Installed storage.InstalledPluginRow  `json:"installed"`
+				Instances []storage.PluginInstanceRow `json:"instances"`
+			}{Found: found, Installed: installed, Instances: instances}, nil
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &PluginService{
+				store: tx, validator: s.validator, cacheRoot: s.cacheRoot, now: s.now, cfg: s.cfg,
+				revisionMutation: true, revisionNumbers: revisions,
+			}
+			return mutate(txService, ctx)
+		},
+	})
+	return err
+}
+
+func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID string, configure *PluginConfigureRequest) ([]string, error) {
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	instances, err := s.store.ListPluginInstances(ctx, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0)
+	for _, instance := range instances {
+		active, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON), defaultTargetID)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, active...)
+		if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+			pending, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), defaultTargetID)
+			if err != nil {
+				return nil, err
+			}
+			ids = append(ids, pending...)
+		}
+	}
+	if configure != nil {
+		payload, err := json.Marshal(configure.Targets)
+		if err != nil {
+			return nil, err
+		}
+		requested, err := pluginTargetIDs(payload, defaultTargetID)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, requested...)
+	}
+	ids = uniqueAgentIDs(ids)
+	if len(ids) == 0 {
+		ids = []string{defaultTargetID}
+	}
+	return ids, nil
+}
+
+func pluginLifecycleTargetRevision(revisions map[string]int64, fallback int64) int64 {
+	if len(revisions) == 0 {
+		return fallback
+	}
+	result := int64(0)
+	for _, revision := range revisions {
+		if revision > result {
+			result = revision
+		}
+	}
+	return result
 }
 
 func (s *PluginService) Install(ctx context.Context, request PluginInstallRequest) (storage.InstalledPluginRow, error) {
@@ -540,14 +734,14 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 	}
+	instances, err := s.store.ListPluginInstances(ctx, pluginID)
+	if err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	if kind == "enable" {
 		var manifest plugins.Manifest
 		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
-		}
-		instances, err := s.store.ListPluginInstances(ctx, pluginID)
-		if err != nil {
-			return storage.InstalledPluginRow{}, err
 		}
 		for _, instance := range instances {
 			if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
@@ -562,12 +756,17 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 	}
 	now := s.now()
+	for index := range instances {
+		instances[index].DesiredEnabled = desired == "enabled"
+		instances[index].CurrentState = "applying"
+		instances[index].UpdatedAt = now
+	}
 	installed.DesiredLifecycle, installed.CurrentLifecycle, installed.UpdatedAt = desired, "applying", now
 	installed.LastOperationID = operation.ID
-	operation.TargetRevision = int64(installed.StateVersion + 1)
+	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	setPendingOperation(&installed, operation)
 	operation.Status = "applying"
-	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, Operation: operation, Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now)})
+	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstances: instances, Operation: operation, Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now)})
 	return installed, err
 }
 
@@ -590,6 +789,10 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 		return storage.InstalledPluginRow{}, err
 	}
 	now := s.now()
+	instances, err := s.store.ListPluginInstances(ctx, installed.PluginID)
+	if err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	operation.AgentResultsJSON, operation.CompletedAt = encodedResults, &now
 	if applyResult.Applied {
 		operation.Status = "succeeded"
@@ -598,9 +801,18 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 		} else {
 			installed.CurrentLifecycle = "disabled"
 		}
+		for index := range instances {
+			instances[index].DesiredEnabled = installed.DesiredLifecycle == "enabled"
+			instances[index].CurrentState = lifecycleCurrentState(installed.DesiredLifecycle)
+			instances[index].UpdatedAt = now
+		}
 	} else {
 		operation.Status, operation.ErrorClass, operation.Error = "failed", "agent_apply", "one or more target agents failed to apply plugin lifecycle"
 		installed.CurrentLifecycle = "degraded"
+		for index := range instances {
+			instances[index].CurrentState = "degraded"
+			instances[index].UpdatedAt = now
+		}
 	}
 	clearPendingOperation(&installed)
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
@@ -608,8 +820,203 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 	if !applyResult.Applied {
 		auditResult = "failure"
 	}
-	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, ExpectedPendingOperationID: operation.ID, Installed: &installed, Operation: operation, CompleteOperation: true, Audit: pluginLifecycleAudit(operation, applyResult.ActorID, auditResult, operation.ErrorClass, now)})
+	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, ExpectedPendingOperationID: operation.ID, Installed: &installed, ReplaceInstances: instances, Operation: operation, CompleteOperation: true, Audit: pluginLifecycleAudit(operation, applyResult.ActorID, auditResult, operation.ErrorClass, now)})
 	return installed, err
+}
+
+// CompleteTrustedRevisionOperation closes a plugin operation that has no
+// dedicated RPC runtime status rows (for example a WASM policy generation or
+// a configuration change while disabled). The caller must have already
+// authenticated and reconciled every revision belonging to operation.
+func (s *PluginService) CompleteTrustedRevisionOperation(ctx context.Context, operation storage.PluginOperationRow, applied bool, agentResults any) error {
+	installed, ok, err := s.store.GetInstalledPlugin(ctx, operation.PluginID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrPluginNotInstalled
+	}
+	if operation.ID == "" || installed.PendingOperationID != operation.ID || operation.TargetRevision <= 0 {
+		return fmt.Errorf("%w: trusted plugin revision operation is stale", ErrPluginConflict)
+	}
+	result := PluginApplyResult{
+		PluginID: operation.PluginID, OperationID: operation.ID,
+		TargetRevision: operation.TargetRevision, TargetDigest: operation.TargetPackageDigest,
+		ActorID: operation.ActorID, Applied: applied, AgentResults: agentResults,
+	}
+	switch operation.Kind {
+	case "enable", "disable":
+		_, err = s.CompleteLifecycleApply(ctx, result)
+	case "configure":
+		instances, listErr := s.store.ListPluginInstances(ctx, operation.PluginID)
+		if listErr != nil {
+			return listErr
+		}
+		for _, instance := range instances {
+			if instance.PendingOperationID != operation.ID {
+				continue
+			}
+			if result.InstanceID != "" {
+				return storage.ErrPluginGenerationConflict
+			}
+			result.InstanceID, result.ConfigVersion = instance.ID, instance.PendingVersion
+		}
+		if result.InstanceID == "" || result.ConfigVersion == 0 {
+			return storage.ErrPluginGenerationStale
+		}
+		_, err = s.CompleteConfigure(ctx, result)
+	case "upgrade":
+		_, err = s.CompleteUpgrade(ctx, result)
+	case "rollback":
+		_, err = s.CompleteRollback(ctx, result)
+	default:
+		return fmt.Errorf("unsupported trusted plugin revision operation %q", operation.Kind)
+	}
+	return err
+}
+
+func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation storage.PluginOperationRow) (controlPlanePluginRuntimePlan, error) {
+	installed, ok, err := s.store.GetInstalledPlugin(ctx, operation.PluginID)
+	if err != nil || !ok {
+		return controlPlanePluginRuntimePlan{}, err
+	}
+	packageIdentity, packageDigest := installed.ActivePackageIdentity, installed.ActivePackageDigest
+	if installed.StagedPackageIdentity != "" && installed.PendingOperationID == operation.ID {
+		packageIdentity, packageDigest = installed.StagedPackageIdentity, installed.StagedPackageDigest
+	}
+	packageRow, found, err := s.storedPackage(ctx, packageIdentity, packageDigest)
+	if err != nil || !found {
+		return controlPlanePluginRuntimePlan{}, err
+	}
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return controlPlanePluginRuntimePlan{}, err
+	}
+	if manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "control-plane" {
+		return controlPlanePluginRuntimePlan{}, nil
+	}
+	plan := controlPlanePluginRuntimePlan{Controlled: true}
+	instances, err := s.store.ListPluginInstances(ctx, operation.PluginID)
+	if err != nil {
+		return plan, err
+	}
+	if operation.Kind == "disable" {
+		for _, instance := range instances {
+			plan.StopInstanceIDs = append(plan.StopInstanceIDs, instance.ID)
+		}
+		return plan, nil
+	}
+	if installed.DesiredLifecycle != "enabled" {
+		return plan, nil
+	}
+	if s.validator == nil {
+		return plan, errors.New("control-plane plugin runtime validator is unavailable")
+	}
+	validated, err := s.validator.ValidatePackage(packageRow.CachePath, plugins.PackageExpectation{ID: manifest.ID, Version: manifest.Version, SHA256: packageRow.Digest, SignatureKeyID: manifest.Signature.KeyID})
+	if err != nil {
+		return plan, err
+	}
+	requirement, err := pluginhost.SandboxRequirementFromValidatedPackage(validated)
+	if err != nil {
+		return plan, err
+	}
+	artifacts, err := s.storedArtifacts(ctx, packageRow.Identity, packageRow.Digest)
+	if err != nil {
+		return plan, err
+	}
+	var runtimeArtifact storage.PluginArtifactRow
+	for _, artifact := range artifacts {
+		if artifact.Path == manifest.Runtime.Entry && artifact.RuntimeKind == manifest.Runtime.Kind && artifact.RuntimeABI == manifest.Runtime.ABI && artifact.HostScope == manifest.Runtime.HostScope && artifact.GOOS == runtime.GOOS && artifact.GOARCH == runtime.GOARCH {
+			runtimeArtifact = artifact
+			break
+		}
+	}
+	if runtimeArtifact.ID == "" {
+		return plan, errors.New("control-plane plugin runtime artifact is unavailable for this platform")
+	}
+	grants, err := s.controlPlaneGenerationGrants(ctx, installed, packageRow)
+	if err != nil {
+		return plan, err
+	}
+	declared := make([]string, 0, len(manifest.Permissions))
+	for _, permission := range manifest.Permissions {
+		declared = append(declared, strings.TrimSpace(permission.Name))
+	}
+	granted := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		granted = append(granted, grant.Name)
+	}
+	sort.Strings(declared)
+	sort.Strings(granted)
+	for _, instance := range instances {
+		if !instance.DesiredEnabled {
+			continue
+		}
+		config, configVersion, resourceGroupID := instance.ConfigJSON, instance.ConfigVersion, instance.ResourceGroupID
+		if instance.PendingOperationID == operation.ID && instance.PendingVersion > 0 {
+			config, configVersion = instance.PendingConfigJSON, instance.PendingVersion
+			if instance.PendingResourceGroupID != "" {
+				resourceGroupID = instance.PendingResourceGroupID
+			}
+		}
+		var secretHandles []storage.PluginGenerationSecretHandle
+		if err := json.Unmarshal([]byte(pluginDefaultJSONArray(instance.SecretHandlesJSON)), &secretHandles); err != nil {
+			return plan, err
+		}
+		generation := storage.PluginGeneration{
+			InstanceID: instance.ID, OperationID: operation.ID, Revision: operation.TargetRevision,
+			PluginID: manifest.ID, PluginVersion: manifest.Version, PackageDigest: packageRow.Digest,
+			Runtime:         storage.PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
+			Artifact:        storage.PluginGenerationArtifact{ArtifactID: runtimeArtifact.ID, PackageIdentity: packageRow.Identity, RelativePath: runtimeArtifact.Path, SHA256: runtimeArtifact.SHA256, SizeBytes: runtimeArtifact.SizeBytes, Mode: runtimeArtifact.Mode, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
+			ExtensionPoints: manifest.ExtensionPoints, ConfigVersion: configVersion, Config: json.RawMessage(config), Grants: grants, SecretHandles: secretHandles,
+			ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
+			Target:         storage.PluginGenerationTarget{Kind: "control-plane", ID: "control-plane", ResourceGroupID: resourceGroupID, Version: configVersion},
+			FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
+		}
+		generation.ID, err = storage.PluginGenerationIdentity(generation)
+		if err != nil {
+			return plan, err
+		}
+		plan.Candidates = append(plan.Candidates, pluginhost.Candidate{
+			InstanceID: instance.ID,
+			Artifact:   pluginhost.Artifact{CachePath: filepath.Join(packageRow.CachePath, filepath.FromSlash(runtimeArtifact.Path)), SHA256: runtimeArtifact.SHA256, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH},
+			Identity:   pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
+			Config:     append([]byte(nil), generation.Config...), Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
+			Deadline: time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
+			RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
+		})
+	}
+	return plan, nil
+}
+
+func (s *PluginService) controlPlaneGenerationGrants(ctx context.Context, installed storage.InstalledPluginRow, packageRow storage.PluginPackageRow) ([]storage.PluginGenerationGrant, error) {
+	if installed.PendingOperationID != "" && installed.StagedPackageIdentity == packageRow.Identity && installed.StagedPackageDigest == packageRow.Digest {
+		var pending []storage.PluginGenerationGrant
+		if err := json.Unmarshal([]byte(pluginDefaultJSONArray(installed.PendingGrantsJSON)), &pending); err != nil {
+			return nil, err
+		}
+		return pending, nil
+	}
+	rows, err := s.store.ListPluginGrants(ctx, installed.PluginID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]storage.PluginGenerationGrant, 0, len(rows))
+	for _, row := range rows {
+		if !strings.EqualFold(row.PackageDigest, packageRow.Digest) || (row.PackageIdentity != "" && row.PackageIdentity != packageRow.Identity) {
+			continue
+		}
+		kind, id := splitPluginResourceSelector(row.ResourceSelector)
+		result = append(result, storage.PluginGenerationGrant{Name: row.Permission, ResourceKind: kind, ResourceID: id})
+	}
+	return result, nil
+}
+
+func pluginDefaultJSONArray(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "[]"
+	}
+	return value
 }
 
 func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRequest) (storage.PluginInstanceRow, error) {
@@ -726,7 +1133,7 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	instance.CurrentState = "applying"
 	instance.UpdatedAt = now
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
-	operation.TargetRevision = int64(installed.StateVersion + 1)
+	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	setPendingOperation(&installed, operation)
 	operation.Status = "applying"
 	projectedInstance := instance
@@ -855,7 +1262,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 		}
 	}
-	operation.TargetRevision = int64(installed.StateVersion + 1)
+	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
 		staged := json.RawMessage(instances[index].ConfigJSON)
 		if len(request.Package.Package.Manifest.Migrations) > 0 {
@@ -886,6 +1293,8 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = packageRow.SourceID, packageRow.SourceKind, packageRow.SourceRiskLabel
 	installed.StagedSourceRevision, installed.StagedSourceRefKind, installed.StagedSourceRefName, installed.StagedSourceResolvedOID = packageRow.SourceRevision, packageRow.SourceRefKind, packageRow.SourceRefName, packageRow.SourceResolvedOID
 	installed.StagedSignatureKeyID, installed.StagedSignaturePublicKey, installed.StagedSignatureFingerprint = packageRow.SignatureKeyID, packageRow.SignaturePublicKey, packageRow.SignatureFingerprint
+	pendingGrants, _ := json.Marshal(pluginGenerationGrants(request.Package.Package.Manifest.Permissions))
+	installed.PendingGrantsJSON = string(pendingGrants)
 	installed.CurrentLifecycle = "upgrading"
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
 	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
@@ -1052,7 +1461,7 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 	}
-	operation.TargetRevision = int64(installed.StateVersion + 1)
+	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
 		if instances[index].RollbackVersion == 0 || plugins.ValidateConfig(rollbackSchema, json.RawMessage(instances[index].RollbackConfigJSON)) != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, fmt.Errorf("rollback config for instance %s is unavailable or invalid", instances[index].ID))
@@ -1069,6 +1478,8 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = installed.RollbackSourceID, installed.RollbackSourceKind, installed.RollbackSourceRiskLabel
 	installed.StagedSourceRevision, installed.StagedSourceRefKind, installed.StagedSourceRefName, installed.StagedSourceResolvedOID = installed.RollbackSourceRevision, installed.RollbackSourceRefKind, installed.RollbackSourceRefName, installed.RollbackSourceResolvedOID
 	installed.StagedSignatureKeyID, installed.StagedSignaturePublicKey, installed.StagedSignatureFingerprint = installed.RollbackSignatureKeyID, installed.RollbackSignaturePublicKey, installed.RollbackSignatureFingerprint
+	pendingGrants, _ := json.Marshal(pluginGenerationGrants(rollbackManifest.Permissions))
+	installed.PendingGrantsJSON = string(pendingGrants)
 	installed.CurrentLifecycle = "rolling_back"
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
 	setPendingOperation(&installed, operation)
@@ -1199,7 +1610,7 @@ func (s *PluginService) Uninstall(ctx context.Context, request PluginUninstallRe
 	if !exists {
 		return s.recordFailure(ctx, operation, request.ActorID, errors.New("active plugin package is unavailable"))
 	}
-	if installed.CurrentLifecycle != "disabled" || !request.Drained {
+	if installed.CurrentLifecycle != "disabled" {
 		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginUninstallBlocked)
 	}
 	if err := ensureNoPendingOperation(installed); err != nil {
@@ -1224,6 +1635,9 @@ func (s *PluginService) Uninstall(ctx context.Context, request PluginUninstallRe
 
 func (s *PluginService) operation(ctx context.Context, pluginID, kind, digest, fallbackActorID string) storage.PluginOperationRow {
 	id := lifecycleID("pluginop")
+	if boundID, ok := ctx.Value(pluginLifecycleOperationContextKey{}).(string); ok && strings.TrimSpace(boundID) != "" {
+		id = strings.TrimSpace(boundID)
+	}
 	actorID, sessionID, correlationID := strings.TrimSpace(fallbackActorID), "", id
 	if actor, ok := storage.QuotaActorFromContext(ctx); ok {
 		actorID, sessionID = actor.UserID, actor.SessionID
@@ -1270,6 +1684,24 @@ func clearStagedSource(installed *storage.InstalledPluginRow) {
 	installed.StagedSignatureKeyID = ""
 	installed.StagedSignaturePublicKey = ""
 	installed.StagedSignatureFingerprint = ""
+	installed.PendingGrantsJSON = "[]"
+}
+
+func pluginGenerationGrants(permissions []plugins.Permission) []storage.PluginGenerationGrant {
+	result := make([]storage.PluginGenerationGrant, 0, len(permissions))
+	for _, permission := range permissions {
+		kind, id := splitPluginResourceSelector(permission.Resource)
+		result = append(result, storage.PluginGenerationGrant{Name: strings.TrimSpace(permission.Name), ResourceKind: kind, ResourceID: id})
+	}
+	return result
+}
+
+func splitPluginResourceSelector(selector string) (string, string) {
+	parts := strings.SplitN(strings.TrimSpace(selector), ":", 2)
+	if len(parts) == 1 {
+		return "", parts[0]
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 }
 
 func lifecycleCurrentState(desired string) string {
@@ -1894,8 +2326,18 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 		return nil, err
 	}
 	operationsByID := make(map[string]storage.PluginOperationRow, len(operations))
+	runtimeStatuses := make(map[string]storage.PluginAgentRuntimeStatusRow)
 	for _, operation := range operations {
 		operationsByID[operation.ID] = operation
+		if runtimeStore, ok := s.store.(pluginRuntimeStatusStore); ok {
+			rows, err := runtimeStore.ListPluginAgentRuntimeStatuses(ctx, operation.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				runtimeStatuses[operation.ID+"\x00"+row.AgentID+"\x00"+row.InstanceID] = row
+			}
+		}
 	}
 	statuses := make([]PluginAgentStatus, 0)
 	for _, instance := range instances {
@@ -1913,14 +2355,16 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 			activeOperationID = instance.PendingOperationID
 		} else if instance.PendingOperationID == "" && isPluginLifecyclePendingKind(installed.PendingKind) {
 			activeOperationID = installed.PendingOperationID
+		} else if instance.PendingOperationID == "" {
+			activeOperationID = installed.LastOperationID
 		}
-		statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, installed, instance, activeTargets, "active", activeOperationID, summary)
+		statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, runtimeStatuses, installed, instance, activeTargets, "active", activeOperationID, summary)
 		if pendingScope {
 			pendingTargets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), defaultTargetID)
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}
-			statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, installed, instance, pendingTargets, "pending", instance.PendingOperationID, summary)
+			statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, runtimeStatuses, installed, instance, pendingTargets, "pending", instance.PendingOperationID, summary)
 		}
 	}
 	sort.Slice(statuses, func(i, j int) bool {
@@ -1939,7 +2383,7 @@ func isPluginLifecyclePendingKind(kind string) bool {
 	return kind == "enable" || kind == "disable"
 }
 
-func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]storage.AgentRow, operations map[string]storage.PluginOperationRow, installed storage.InstalledPluginRow, instance storage.PluginInstanceRow, targets []string, scope, operationID string, summary json.RawMessage) []PluginAgentStatus {
+func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]storage.AgentRow, operations map[string]storage.PluginOperationRow, runtimeStatuses map[string]storage.PluginAgentRuntimeStatusRow, installed storage.InstalledPluginRow, instance storage.PluginInstanceRow, targets []string, scope, operationID string, summary json.RawMessage) []PluginAgentStatus {
 	operation := operations[operationID]
 	targetRevision := operation.TargetRevision
 	if targetRevision == 0 && operationID != "" && operationID == installed.PendingOperationID {
@@ -1948,7 +2392,13 @@ func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]sto
 	for _, target := range targets {
 		target = strings.TrimSpace(target)
 		agent, available := agents[target]
-		result = append(result, PluginAgentStatus{InstanceID: instance.ID, AgentID: target, TargetScope: scope, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, OperationID: operationID, OperationKind: operation.Kind, OperationStatus: operation.Status, TargetRevision: targetRevision, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage})
+		status := PluginAgentStatus{InstanceID: instance.ID, AgentID: target, TargetScope: scope, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, OperationID: operationID, OperationKind: operation.Kind, OperationStatus: operation.Status, TargetRevision: targetRevision, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage}
+		if runtimeStatus, found := runtimeStatuses[operationID+"\x00"+target+"\x00"+instance.ID]; found {
+			status.GenerationID, status.PackageDigest, status.ArtifactDigest = runtimeStatus.GenerationID, runtimeStatus.PackageDigest, runtimeStatus.ArtifactDigest
+			status.RuntimeState, status.RuntimeErrorCode, status.ReportedAt = runtimeStatus.State, runtimeStatus.ErrorCode, runtimeStatus.ReportedAt
+			status.RuntimeDetails, status.RuntimeBudget = json.RawMessage(runtimeStatus.DetailsJSON), json.RawMessage(runtimeStatus.BudgetJSON)
+		}
+		result = append(result, status)
 	}
 	return result
 }

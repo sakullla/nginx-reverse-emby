@@ -651,6 +651,17 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
 	if d.PluginService == nil {
 		pluginService := service.NewPluginServiceWithValidator(store, validator, cacheRoot)
+		pluginService.ConfigureRevisionMutations(d.Config, store)
+		if revisionAPI, ok := d.RevisionService.(*service.RevisionAPI); ok {
+			reconciler, reconcileErr := service.NewPluginLifecycleReconciler(store, pluginService)
+			if reconcileErr != nil {
+				return Dependencies{}, fmt.Errorf("initialize plugin lifecycle reconciler: %w", reconcileErr)
+			}
+			if d.PluginRuntimeHost != nil {
+				reconciler.SetControlPlaneRuntime(d.PluginRuntimeHost)
+			}
+			revisionAPI.SetPluginLifecycleReconciler(reconciler)
+		}
 		d.PluginService = pluginService
 		d.PluginArtifactService = pluginService
 	} else if d.PluginArtifactService == nil {

@@ -29,7 +29,7 @@ func TestHTTPAndL4RulesExposeOnePolicyRef(t *testing.T) {
 	}
 }
 
-func TestFullRevisionRequiresPresentPluginPolicies(t *testing.T) {
+func TestFullRevisionRequiresPresentPluginGenerationsAndPolicies(t *testing.T) {
 	base := `{"desired_version":"v1","desired_revision":1,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`
 	var absent Snapshot
 	if err := json.Unmarshal([]byte(base), &absent); err != nil {
@@ -39,7 +39,16 @@ func TestFullRevisionRequiresPresentPluginPolicies(t *testing.T) {
 		t.Fatal("revision without plugin_policies was accepted as full")
 	}
 
-	presentWire := strings.TrimSuffix(base, "}") + `,"plugin_policies":[]}`
+	policyOnlyWire := strings.TrimSuffix(base, "}") + `,"plugin_policies":[]}`
+	var policyOnly Snapshot
+	if err := json.Unmarshal([]byte(policyOnlyWire), &policyOnly); err != nil {
+		t.Fatalf("Unmarshal(policy only) error = %v", err)
+	}
+	if policyOnly.HasFullRevisionPayload() {
+		t.Fatal("revision without plugin_generations was accepted as full")
+	}
+
+	presentWire := strings.TrimSuffix(base, "}") + `,"plugin_generations":[],"plugin_policies":[]}`
 	var present Snapshot
 	if err := json.Unmarshal([]byte(presentWire), &present); err != nil {
 		t.Fatalf("Unmarshal(present) error = %v", err)
@@ -49,6 +58,9 @@ func TestFullRevisionRequiresPresentPluginPolicies(t *testing.T) {
 	}
 	if present.PluginPolicies == nil || len(present.PluginPolicies) != 0 {
 		t.Fatalf("explicit empty plugin_policies = %#v, want non-nil empty", present.PluginPolicies)
+	}
+	if present.PluginGenerations == nil || len(present.PluginGenerations) != 0 {
+		t.Fatalf("explicit empty plugin_generations = %#v, want non-nil empty", present.PluginGenerations)
 	}
 }
 
@@ -60,12 +72,18 @@ func TestPluginPoliciesWireAlwaysSerializesPresence(t *testing.T) {
 	if !strings.Contains(string(nilWire), `"plugin_policies":null`) {
 		t.Fatalf("nil plugin policies wire = %s", nilWire)
 	}
+	if !strings.Contains(string(nilWire), `"plugin_generations":null`) {
+		t.Fatalf("nil plugin generations wire = %s", nilWire)
+	}
 
-	emptyWire, err := json.Marshal(Snapshot{PluginPolicies: []PluginPolicy{}})
+	emptyWire, err := json.Marshal(Snapshot{PluginPolicies: []PluginPolicy{}, PluginGenerations: []PluginGeneration{}})
 	if err != nil {
 		t.Fatalf("Marshal(empty policies) error = %v", err)
 	}
 	if !strings.Contains(string(emptyWire), `"plugin_policies":[]`) {
 		t.Fatalf("empty plugin policies wire = %s", emptyWire)
+	}
+	if !strings.Contains(string(emptyWire), `"plugin_generations":[]`) {
+		t.Fatalf("empty plugin generations wire = %s", emptyWire)
 	}
 }

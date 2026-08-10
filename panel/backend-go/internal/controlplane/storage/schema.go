@@ -141,6 +141,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&PluginPolicyAgentRevisionRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
+		&PluginAgentRuntimeStatusRow{},
 	); err != nil {
 		return err
 	}

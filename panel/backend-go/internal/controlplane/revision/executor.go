@@ -468,7 +468,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			allApplied = false
 			changedTargets++
 			revision := allocated[target.AgentID]
-			snapshot.Revision = revision
+			stampSnapshotRevision(&snapshot, revision)
 			// PKI security is authenticated heartbeat runtime state. Every newly
 			// issued immutable revision artifact shares this boundary, regardless
 			// of whether a rule, plugin, certificate, or another resource caused
@@ -489,6 +489,15 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			}
 			ledger.Artifacts = append(ledger.Artifacts, policyArtifacts...)
 			ledger.ArtifactRefs = append(ledger.ArtifactRefs, policyArtifactRefs...)
+			statusRows, statusErr := pluginRuntimeStatusRowsForMutation(
+				target.AgentID, revision, operationID, before[target.AgentID], snapshot,
+			)
+			if statusErr != nil {
+				return storage.RevisionMutationDecision{}, statusErr
+			}
+			if statusErr = tx.StagePluginAgentRuntimeStatuses(ctx, statusRows); statusErr != nil {
+				return storage.RevisionMutationDecision{}, statusErr
+			}
 			ledger.Revisions = append(ledger.Revisions, storage.AgentRevisionRow{
 				AgentID: target.AgentID, Revision: revision, OperationID: operationID,
 				State: storage.AgentRevisionStatePending, SnapshotArtifactID: artifactID, SnapshotDigest: digest,
@@ -635,6 +644,48 @@ func snapshotForTargetPackageEligibility(snapshot storage.Snapshot, target Targe
 	}
 	snapshot.VersionPackage = nil
 	return snapshot
+}
+
+func stampSnapshotRevision(snapshot *storage.Snapshot, revision int64) {
+	if snapshot == nil {
+		return
+	}
+	snapshot.Revision = revision
+	for index := range snapshot.PluginGenerations {
+		snapshot.PluginGenerations[index].Revision = revision
+	}
+}
+
+func pluginRuntimeStatusRowsForMutation(agentID string, revision int64, operationID string, before, after storage.Snapshot) ([]storage.PluginAgentRuntimeStatusRow, error) {
+	current := make([]storage.PluginGeneration, 0, len(after.PluginGenerations))
+	present := make(map[string]struct{}, len(after.PluginGenerations))
+	for _, generation := range after.PluginGenerations {
+		present[generation.InstanceID] = struct{}{}
+		if generation.OperationID == operationID {
+			current = append(current, generation)
+		}
+	}
+	rows, err := storage.BuildPluginAgentRuntimeStatuses(agentID, revision, current)
+	if err != nil {
+		return nil, err
+	}
+	removed := make([]storage.PluginGeneration, 0)
+	for _, generation := range before.PluginGenerations {
+		if _, found := present[generation.InstanceID]; found {
+			continue
+		}
+		generation.OperationID = operationID
+		generation.Revision = revision
+		removed = append(removed, generation)
+	}
+	draining, err := storage.BuildPluginAgentRuntimeStatuses(agentID, revision, removed)
+	if err != nil {
+		return nil, err
+	}
+	for index := range draining {
+		draining[index].State = "draining"
+	}
+	return append(rows, draining...), nil
 }
 
 func (e *Executor) loadReplay(ctx context.Context, scope, key, fingerprint string, now time.Time) (MutationResult, bool, error) {

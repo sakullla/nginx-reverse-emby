@@ -179,6 +179,42 @@ func (v *GenerationView) ProviderHash() string {
 	return v.providerHash
 }
 
+func (v *GenerationView) PluginRuntimeStatuses() []model.PluginRuntimeStatus {
+	if v == nil {
+		return nil
+	}
+	statuses := make(map[string]model.PluginRuntimeStatus, len(v.context.snapshot.PluginGenerations))
+	order := make([]string, 0, len(v.context.snapshot.PluginGenerations))
+	for _, generation := range v.context.snapshot.PluginGenerations {
+		budget, _ := json.Marshal(generation.ResourceBudget)
+		order = append(order, generation.InstanceID)
+		statuses[generation.InstanceID] = model.PluginRuntimeStatus{
+			InstanceID: generation.InstanceID, PluginID: generation.PluginID, OperationID: generation.OperationID, Revision: generation.Revision,
+			GenerationID: generation.ID, PackageDigest: generation.PackageDigest, ArtifactDigest: generation.Artifact.SHA256,
+			ConfigVersion: generation.ConfigVersion, RuntimeKind: generation.Runtime.Kind, State: "active", Sequence: 1,
+			Details: json.RawMessage(`{}`), Budget: budget,
+		}
+	}
+	for _, prepared := range v.transactions {
+		source, ok := prepared.transaction.(interface {
+			PluginRuntimeStatuses() []model.PluginRuntimeStatus
+		})
+		if !ok {
+			continue
+		}
+		for _, status := range source.PluginRuntimeStatuses() {
+			if _, exists := statuses[status.InstanceID]; exists {
+				statuses[status.InstanceID] = status
+			}
+		}
+	}
+	result := make([]model.PluginRuntimeStatus, 0, len(order))
+	for _, instanceID := range order {
+		result = append(result, statuses[instanceID])
+	}
+	return result
+}
+
 func (v *GenerationView) Resolve(ref ProviderRef) (any, bool) {
 	if v == nil {
 		return nil, false
@@ -912,6 +948,14 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 			clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
 			clonedStage.Config = slices.Clone(stage.Config)
 		}
+	}
+	cloned.PluginGenerations = slices.Clone(snapshot.PluginGenerations)
+	for i, generation := range snapshot.PluginGenerations {
+		clonedGeneration := &cloned.PluginGenerations[i]
+		clonedGeneration.Config = slices.Clone(generation.Config)
+		clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
+		clonedGeneration.Grants = slices.Clone(generation.Grants)
+		clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
 	}
 	return cloned
 }

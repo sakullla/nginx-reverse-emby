@@ -151,6 +151,22 @@ type TerminalResult struct {
 	CleanupError     error
 }
 
+// PreparedPublication reserves Host ownership for a set of already prepared
+// instances. The Host lock remains held until Publish or Abort, so shutdown
+// cannot open a failure window between a durable batch promotion and the
+// in-memory active-view cutover.
+type PreparedPublication struct {
+	host    *Host
+	entries []preparedPublicationEntry
+	done    bool
+}
+
+type preparedPublicationEntry struct {
+	instance *Instance
+	previous *Instance
+	control  *runtimeControl
+}
+
 type runtimeControl struct {
 	candidate  Candidate
 	exits      []time.Time
@@ -384,53 +400,118 @@ func retryControlHandshake(ctx context.Context, deadline time.Duration, _ Proces
 }
 
 func (h *Host) Publish(instance *Instance) error {
-	if h == nil || instance == nil || instance.ID == "" || instance.Generation == "" {
-		return errors.New("prepared control-plane plugin instance is required")
+	prepared, err := h.PreparePublication([]*Instance{instance})
+	if err != nil {
+		return err
 	}
-	normalized := normalizeRestartCandidate(instance.candidate)
-	runCtx, cancel := context.WithCancel(context.Background())
-	control := &runtimeControl{candidate: normalized, backoff: normalized.InitialBackoff, ctx: runCtx, cancel: cancel}
+	prepared.Publish()
+	return nil
+}
+
+// PreparePublication validates every instance and reserves one atomic Host
+// cutover. Callers must invoke Publish or Abort exactly once.
+func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, error) {
+	if h == nil || len(instances) == 0 {
+		return nil, errors.New("prepared control-plane plugin instances are required")
+	}
+	seen := make(map[string]struct{}, len(instances))
+	entries := make([]preparedPublicationEntry, 0, len(instances))
+	for _, instance := range instances {
+		if instance == nil || instance.ID == "" || instance.Generation == "" {
+			return nil, errors.New("prepared control-plane plugin instance is required")
+		}
+		if _, duplicate := seen[instance.ID]; duplicate {
+			return nil, errors.New("control-plane plugin publication duplicates an instance")
+		}
+		seen[instance.ID] = struct{}{}
+		normalized := normalizeRestartCandidate(instance.candidate)
+		runCtx, cancel := context.WithCancel(context.Background())
+		entries = append(entries, preparedPublicationEntry{instance: instance, control: &runtimeControl{candidate: normalized, backoff: normalized.InitialBackoff, ctx: runCtx, cancel: cancel}})
+	}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		cancel()
-		return errors.New("control-plane plugin host is closed")
+		for _, entry := range entries {
+			entry.control.cancel()
+		}
+		return nil, errors.New("control-plane plugin host is closed")
 	}
-	previous := h.active[instance.ID]
-	if previous != nil && previous.control != nil {
-		previous.control.cancel()
+	for index := range entries {
+		entry := &entries[index]
+		if _, prepared := h.prepared[entry.instance]; !prepared {
+			h.mu.Unlock()
+			for _, cleanup := range entries {
+				cleanup.control.cancel()
+			}
+			return nil, errors.New("control-plane plugin instance is no longer prepared")
+		}
+		entry.previous = h.active[entry.instance.ID]
+		workers := 1
+		if entry.previous != nil && entry.previous != entry.instance {
+			workers++
+		}
+		entry.control.wg.Add(workers)
 	}
-	if previous != nil && previous != instance {
-		h.prepared[previous] = struct{}{}
+	return &PreparedPublication{host: h, entries: entries}, nil
+}
+
+// Publish swaps every reserved instance into the active view before releasing
+// the Host lock. It cannot fail after PreparePublication succeeds.
+func (p *PreparedPublication) Publish() {
+	if p == nil || p.host == nil || p.done {
+		return
 	}
-	workers := 1
-	if previous != nil && previous != instance {
-		workers++
+	h := p.host
+	for index := range p.entries {
+		entry := &p.entries[index]
+		if entry.previous != nil && entry.previous.control != nil {
+			entry.previous.control.cancel()
+		}
+		if entry.previous != nil && entry.previous != entry.instance {
+			h.prepared[entry.previous] = struct{}{}
+		}
+		entry.instance.control = entry.control
+		h.active[entry.instance.ID] = entry.instance
+		delete(h.prepared, entry.instance)
 	}
-	control.wg.Add(workers)
-	instance.control = control
-	h.active[instance.ID] = instance
-	delete(h.prepared, instance)
+	p.done = true
 	h.mu.Unlock()
-	h.notifyOwned(instance, control, false)
-	go h.watch(control, instance)
-	if previous != nil && previous != instance {
-		go func() {
-			defer control.wg.Done()
-			if err := h.stopPublished(context.Background(), previous); err != nil {
-				instance.mu.Lock()
-				instance.LastError = "previous generation cleanup: " + safeError(err)
-				instance.mu.Unlock()
-				h.notifyOwned(instance, control, false)
-			}
-			if previous.terminated() {
-				h.mu.Lock()
-				delete(h.prepared, previous)
-				h.mu.Unlock()
-			}
-		}()
+	for index := range p.entries {
+		entry := p.entries[index]
+		h.notifyOwned(entry.instance, entry.control, false)
+		go h.watch(entry.control, entry.instance)
+		if entry.previous != nil && entry.previous != entry.instance {
+			go h.cleanupPreviousGeneration(entry)
+		}
 	}
-	return nil
+}
+
+// Abort releases the publication reservation without changing active
+// visibility. Prepared candidates remain owned by the normal cleanup path.
+func (p *PreparedPublication) Abort() {
+	if p == nil || p.host == nil || p.done {
+		return
+	}
+	for _, entry := range p.entries {
+		entry.control.cancel()
+	}
+	p.done = true
+	p.host.mu.Unlock()
+}
+
+func (h *Host) cleanupPreviousGeneration(entry preparedPublicationEntry) {
+	defer entry.control.wg.Done()
+	if err := h.stopPublished(context.Background(), entry.previous); err != nil {
+		entry.instance.mu.Lock()
+		entry.instance.LastError = "previous generation cleanup: " + safeError(err)
+		entry.instance.mu.Unlock()
+		h.notifyOwned(entry.instance, entry.control, false)
+	}
+	if entry.previous.terminated() {
+		h.mu.Lock()
+		delete(h.prepared, entry.previous)
+		h.mu.Unlock()
+	}
 }
 func (h *Host) Activate(ctx context.Context, candidate Candidate) (*Instance, error) {
 	instance, err := h.PrepareCandidate(ctx, candidate)

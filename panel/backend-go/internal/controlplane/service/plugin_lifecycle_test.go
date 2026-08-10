@@ -152,6 +152,10 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if err != nil || installed.DesiredLifecycle != "enabled" || installed.CurrentLifecycle != "applying" {
 		t.Fatalf("enable desired/current = %+v, %v", installed, err)
 	}
+	stagedInstance, found, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !found || !stagedInstance.DesiredEnabled || stagedInstance.CurrentState != "applying" {
+		t.Fatalf("enable did not stage instance runtime intent: %+v found=%v err=%v", stagedInstance, found, err)
+	}
 	if err := service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); !errors.Is(err, ErrPluginUninstallBlocked) {
 		t.Fatalf("uninstall while applying = %v", err)
 	}
@@ -279,11 +283,8 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 		t.Fatalf("historical retained grants suppressed current-digest permission confirmation: %v", err)
 	}
 
-	if err := service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: false}); !errors.Is(err, ErrPluginUninstallBlocked) {
-		t.Fatalf("uninstall without drained confirmation = %v", err)
-	}
-	if err := service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); err != nil {
-		t.Fatal(err)
+	if err := service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: false}); err != nil {
+		t.Fatalf("uninstall trusted a client drained flag instead of durable disabled state: %v", err)
 	}
 	if _, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID); err != nil || ok {
 		t.Fatalf("plugin remains installed: %v %v", ok, err)

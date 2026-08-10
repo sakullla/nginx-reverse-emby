@@ -45,7 +45,7 @@ func appendDependencyPlan(
 		if action == DependencyActionDelete {
 			snapshot = before[target.AgentID]
 		} else {
-			snapshot.Revision = revisionNumber
+			stampSnapshotRevision(&snapshot, revisionNumber)
 		}
 		// Dependency plans are immutable revision artifacts too. PKI security is
 		// heartbeat runtime state and must be removed for both apply and delete,

@@ -470,10 +470,18 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	pluginGenerations, err := s.loadAgentPluginGenerations(ctx, resolvedAgentID, input.Platform)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	desiredRevision := int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision, highestPluginPolicyRevision(pluginPolicies), highestPluginGenerationRevision(pluginGenerations)))
+	for index := range pluginGenerations {
+		pluginGenerations[index].Revision = desiredRevision
+	}
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision, highestPluginPolicyRevision(pluginPolicies))),
+		Revision:            desiredRevision,
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
@@ -483,9 +491,23 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
+		PluginGenerations:   pluginGenerations,
 		PluginPolicies:      pluginPolicies,
 		PKISecurity:         pkiSecurity,
 	}, nil
+}
+
+func highestPluginGenerationRevision(generations []PluginGeneration) int {
+	result := 0
+	for _, generation := range generations {
+		if generation.Target.Version > uint64(^uint(0)>>1) {
+			return int(^uint(0) >> 1)
+		}
+		if int(generation.Target.Version) > result {
+			result = int(generation.Target.Version)
+		}
+	}
+	return result
 }
 
 func highestPluginPolicyRevision(policies []PluginPolicy) int {

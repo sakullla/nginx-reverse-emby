@@ -31,6 +31,19 @@ type PluginRuntimeInstanceRow struct {
 	UpdatedAt               time.Time `gorm:"not null" json:"updated_at"`
 }
 
+type PluginRuntimePromotion struct {
+	InstanceID      string
+	Generation      string
+	PID             int
+	SandboxProvider string
+}
+
+type PluginRuntimeCandidateFailure struct {
+	InstanceID string
+	Generation string
+	Failure    error
+}
+
 func (PluginRuntimeInstanceRow) TableName() string { return "plugin_runtime_instances" }
 
 func (s *GormStore) ensurePluginRuntimeSchema(ctx context.Context) error {
@@ -67,6 +80,45 @@ func (s *GormStore) StagePluginRuntime(ctx context.Context, row PluginRuntimeIns
 	})
 }
 
+func (s *GormStore) StagePluginRuntimeBatch(ctx context.Context, rows []PluginRuntimeInstanceRow) error {
+	if len(rows) == 0 {
+		return errors.New("plugin runtime batch is empty")
+	}
+	if err := s.ensurePluginRuntimeSchema(ctx); err != nil {
+		return err
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		seen := make(map[string]struct{}, len(rows))
+		for _, row := range rows {
+			if strings.TrimSpace(row.InstanceID) == "" || strings.TrimSpace(row.CandidateGeneration) == "" {
+				return errors.New("plugin runtime instance and candidate generation are required")
+			}
+			if _, duplicate := seen[row.InstanceID]; duplicate {
+				return errors.New("plugin runtime batch contains a duplicate instance")
+			}
+			seen[row.InstanceID] = struct{}{}
+			now := time.Now().UTC()
+			var current PluginRuntimeInstanceRow
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ?", row.InstanceID).Take(&current).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				row.State, row.CandidateState, row.CandidateLastError, row.UpdatedAt = "stopped", "starting", "", now
+				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			updates := map[string]any{"plugin_id": row.PluginID, "host_scope": row.HostScope, "candidate_generation": row.CandidateGeneration, "candidate_package_digest": row.CandidatePackageDigest, "candidate_artifact_digest": row.CandidateArtifactDigest, "candidate_state": "starting", "candidate_last_error": "", "updated_at": now}
+			if err := tx.Model(&current).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *GormStore) PromotePluginRuntime(ctx context.Context, instanceID, generation string, pid int, sandbox string) error {
 	if err := s.ensurePluginRuntimeSchema(ctx); err != nil {
 		return err
@@ -81,6 +133,36 @@ func (s *GormStore) PromotePluginRuntime(ctx context.Context, instanceID, genera
 		}
 		updates := map[string]any{"active_generation": row.CandidateGeneration, "active_package_digest": row.CandidatePackageDigest, "active_artifact_digest": row.CandidateArtifactDigest, "candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "candidate_state": "", "candidate_last_error": "", "state": "healthy", "pid": pid, "sandbox_provider": sandbox, "last_error": "", "circuit_open": false, "updated_at": time.Now().UTC()}
 		return tx.Model(&row).Updates(updates).Error
+	})
+}
+
+func (s *GormStore) PromotePluginRuntimeBatch(ctx context.Context, promotions []PluginRuntimePromotion) error {
+	if len(promotions) == 0 {
+		return errors.New("plugin runtime promotion batch is empty")
+	}
+	if err := s.ensurePluginRuntimeSchema(ctx); err != nil {
+		return err
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		seen := make(map[string]struct{}, len(promotions))
+		for _, promotion := range promotions {
+			if _, duplicate := seen[promotion.InstanceID]; duplicate {
+				return errors.New("plugin runtime promotion batch contains a duplicate instance")
+			}
+			seen[promotion.InstanceID] = struct{}{}
+			var row PluginRuntimeInstanceRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ?", promotion.InstanceID).Take(&row).Error; err != nil {
+				return err
+			}
+			if row.CandidateGeneration != promotion.Generation {
+				return errors.New("plugin runtime candidate generation changed before batch promotion")
+			}
+			updates := map[string]any{"active_generation": row.CandidateGeneration, "active_package_digest": row.CandidatePackageDigest, "active_artifact_digest": row.CandidateArtifactDigest, "candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "candidate_state": "", "candidate_last_error": "", "state": "healthy", "pid": promotion.PID, "sandbox_provider": promotion.SandboxProvider, "last_error": "", "circuit_open": false, "updated_at": time.Now().UTC()}
+			if err := tx.Model(&row).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -104,6 +186,37 @@ func (s *GormStore) FailPluginRuntimeCandidate(ctx context.Context, instanceID, 
 			return errors.New("plugin runtime candidate generation changed before failure report")
 		}
 		return tx.Model(&row).Updates(map[string]any{"candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "candidate_state": "failed", "candidate_last_error": message, "updated_at": time.Now().UTC()}).Error
+	})
+}
+
+func (s *GormStore) FailPluginRuntimeCandidateBatch(ctx context.Context, failures []PluginRuntimeCandidateFailure) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	if err := s.ensurePluginRuntimeSchema(ctx); err != nil {
+		return err
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		for _, failure := range failures {
+			message := ""
+			if failure.Failure != nil {
+				message = failure.Failure.Error()
+				if len(message) > 512 {
+					message = message[:512]
+				}
+			}
+			var row PluginRuntimeInstanceRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ?", failure.InstanceID).Take(&row).Error; err != nil {
+				return err
+			}
+			if row.CandidateGeneration != failure.Generation {
+				return errors.New("plugin runtime candidate generation changed before batch failure report")
+			}
+			if err := tx.Model(&row).Updates(map[string]any{"candidate_generation": "", "candidate_package_digest": "", "candidate_artifact_digest": "", "candidate_state": "failed", "candidate_last_error": message, "updated_at": time.Now().UTC()}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

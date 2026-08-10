@@ -99,8 +99,10 @@ func (r *Runtime) State() model.RuntimeState {
 
 	stateCopy := r.state
 	stateCopy.Metadata = cloneStringMap(stateCopy.Metadata)
+	stateCopy.PluginStatuses = slices.Clone(stateCopy.PluginStatuses)
 	if r.generations != nil {
 		if active := r.generations.ActiveGeneration(); active != nil {
+			stateCopy.PluginStatuses = active.PluginRuntimeStatuses()
 			stateCopy.CurrentRevision = active.Revision()
 			if stateCopy.Metadata == nil {
 				stateCopy.Metadata = make(map[string]string)
@@ -267,6 +269,7 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.EgressProfiles) == 0 &&
 		len(s.Certificates) == 0 &&
 		len(s.CertificatePolicies) == 0 &&
+		len(s.PluginGenerations) == 0 &&
 		len(s.PluginPolicies) == 0
 }
 
@@ -336,6 +339,16 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
 				clonedStage.Config = slices.Clone(stage.Config)
 			}
+		}
+	}
+	if snapshot.PluginGenerations != nil {
+		cloned.PluginGenerations = slices.Clone(snapshot.PluginGenerations)
+		for i, generation := range snapshot.PluginGenerations {
+			clonedGeneration := &cloned.PluginGenerations[i]
+			clonedGeneration.Config = slices.Clone(generation.Config)
+			clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
+			clonedGeneration.Grants = slices.Clone(generation.Grants)
+			clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
 		}
 	}
 	return cloned

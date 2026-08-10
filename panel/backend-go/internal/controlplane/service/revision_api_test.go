@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -746,6 +747,98 @@ func TestRevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport(t *t
 	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-dependency", 1)
 	if err != nil || !found || row.State != storage.AgentRevisionStateApplied {
 		t.Fatalf("dependency revision after stale report = %+v, found=%v error=%v", row, found, err)
+	}
+}
+
+func TestRevisionAPIMapsAuthenticatedPluginStatusToLifecycleCompletion(t *testing.T) {
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	digest := strings.Repeat("a", 64)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "operation-plugin-runtime", Now: now,
+		States: map[string]string{"edge-plugin": storage.AgentRevisionStatePending},
+	})
+	pluginOperation := storage.PluginOperationRow{ID: "operation-plugin-runtime", PluginID: "runtime.plugin", Kind: "enable", Status: "applying", TargetPackageDigest: digest, TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
+	if err := store.RecordPluginOperation(t.Context(), pluginOperation, storage.AuditEventRow{ID: "audit-plugin-runtime", ActorID: "admin", Action: "plugin.enable", TargetKind: "plugin", TargetID: pluginOperation.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	staged := storage.PluginAgentRuntimeStatusRow{OperationID: pluginOperation.ID, AgentID: "edge-plugin", InstanceID: "instance-plugin", PluginID: pluginOperation.PluginID, Revision: 1, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: 3}
+	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []storage.PluginAgentRuntimeStatusRow{staged}); err != nil {
+		t.Fatal(err)
+	}
+	completion := &lifecycleCompletionRecorder{}
+	reconciler, err := NewPluginLifecycleReconciler(store, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := newRevisionAPITestService(t, store)
+	api.SetPluginLifecycleReconciler(reconciler)
+	pull, err := api.PullRemoteRevision(t.Context(), "edge-plugin")
+	if err != nil || pull.Lease == nil {
+		t.Fatalf("pull = %+v err=%v", pull, err)
+	}
+	start := RemoteRevisionStart{AgentID: "edge-plugin", Revision: 1, RetryCycle: pull.Lease.RetryCycle, Attempt: pull.Lease.Attempt, LeaseID: pull.Lease.LeaseID, GenerationID: "runtime-generation"}
+	if _, err := api.StartRemoteRevision(t.Context(), "edge-plugin", start); err != nil {
+		t.Fatal(err)
+	}
+	report := RemoteRevisionReport{
+		AgentID: "edge-plugin", Revision: 1, RetryCycle: pull.Lease.RetryCycle, Attempt: pull.Lease.Attempt,
+		LeaseID: pull.Lease.LeaseID, GenerationID: start.GenerationID, Status: storage.AgentRevisionStateApplied,
+		PluginStatuses: []storage.PluginRuntimeStatus{{
+			InstanceID: staged.InstanceID, PluginID: staged.PluginID, OperationID: staged.OperationID, Revision: staged.Revision,
+			GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: staged.ConfigVersion,
+			RuntimeKind: "rpc-service", State: "active", Sequence: 1, Details: json.RawMessage(`{"healthy":true}`), Budget: json.RawMessage(`{}`),
+		}},
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-plugin", report); err != nil {
+		t.Fatal(err)
+	}
+	if completion.kind != "lifecycle" || !completion.result.Applied || completion.result.OperationID != pluginOperation.ID {
+		t.Fatalf("completion = %+v", completion)
+	}
+}
+
+func TestRevisionAPICompletesPolicyOnlyPluginFromExactRevisionResult(t *testing.T) {
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	digest := strings.Repeat("b", 64)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "operation-plugin-policy", Now: now,
+		States: map[string]string{"edge-policy": storage.AgentRevisionStatePending},
+	})
+	pluginOperation := storage.PluginOperationRow{ID: "operation-plugin-policy", PluginID: "policy.plugin", Kind: "upgrade", Status: "staged", TargetPackageDigest: digest, TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
+	if err := store.RecordPluginOperation(t.Context(), pluginOperation, storage.AuditEventRow{ID: "audit-plugin-policy", ActorID: "admin", Action: "plugin.upgrade", TargetKind: "plugin", TargetID: pluginOperation.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	completion := &lifecycleCompletionRecorder{}
+	reconciler, err := NewPluginLifecycleReconciler(store, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := newRevisionAPITestService(t, store)
+	api.SetPluginLifecycleReconciler(reconciler)
+	pull, err := api.PullRemoteRevision(t.Context(), "edge-policy")
+	if err != nil || pull.Lease == nil {
+		t.Fatalf("pull = %+v err=%v", pull, err)
+	}
+	start := RemoteRevisionStart{AgentID: "edge-policy", Revision: 1, RetryCycle: pull.Lease.RetryCycle, Attempt: pull.Lease.Attempt, LeaseID: pull.Lease.LeaseID, GenerationID: "policy-generation"}
+	if _, err := api.StartRemoteRevision(t.Context(), "edge-policy", start); err != nil {
+		t.Fatal(err)
+	}
+	report := RemoteRevisionReport{AgentID: "edge-policy", Revision: 1, RetryCycle: pull.Lease.RetryCycle, Attempt: pull.Lease.Attempt, LeaseID: pull.Lease.LeaseID, GenerationID: start.GenerationID, Status: storage.AgentRevisionStateApplied}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-policy", report); err != nil {
+		t.Fatal(err)
+	}
+	if completion.kind != "trusted-upgrade" || !completion.result.Applied || completion.result.OperationID != pluginOperation.ID {
+		t.Fatalf("completion = %+v", completion)
 	}
 }
 

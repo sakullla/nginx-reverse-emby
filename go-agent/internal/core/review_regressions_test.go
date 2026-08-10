@@ -268,7 +268,7 @@ func TestRevisionSyncCarriesLeaseDrainTimeoutIntoGenerationCutover(t *testing.T)
 			Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 			EgressProfiles: []model.EgressProfile{},
 			Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-			PluginPolicies: []model.PluginPolicy{},
+			PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
 		}
 		digest, err := revisionSnapshotDigest(snapshot)
 		if err != nil {
@@ -302,7 +302,7 @@ func TestRevisionSyncBoundsActivationByLeaseDeadline(t *testing.T) {
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{},
 		Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-		PluginPolicies: []model.PluginPolicy{},
+		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
 	}
 	digest, err := revisionSnapshotDigest(snapshot)
 	if err != nil {
@@ -352,7 +352,7 @@ func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
 				Rules:          []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 				EgressProfiles: []model.EgressProfile{},
 				Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-				PluginPolicies: []model.PluginPolicy{},
+				PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
 			}
 			digest, err := revisionSnapshotDigest(snapshot)
 			if err != nil {
@@ -414,7 +414,7 @@ func TestRevisionSyncReplaysPersistedFailedReport(t *testing.T) {
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
 		EgressProfiles: []model.EgressProfile{},
 		Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
-		PluginPolicies: []model.PluginPolicy{},
+		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
 	}
 	digest, err := revisionSnapshotDigest(snapshot)
 	if err != nil {
@@ -465,7 +465,7 @@ func TestRevisionSyncReplaysPersistedFailedReport(t *testing.T) {
 	if err := controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store); err != nil {
 		t.Fatalf("failed report replay error = %v", err)
 	}
-	if len(client.reports) != 2 || client.reports[0] != client.reports[1] {
+	if len(client.reports) != 2 || !reflect.DeepEqual(client.reports[0], client.reports[1]) {
 		t.Fatalf("failed reports = %+v", client.reports)
 	}
 	if store.journal.Candidate == nil || !store.journal.Candidate.Acknowledged {

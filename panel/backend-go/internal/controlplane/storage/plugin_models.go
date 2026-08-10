@@ -281,6 +281,7 @@ type InstalledPluginRow struct {
 	PendingTargetDigest          string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
 	PendingTargetIdentity        string    `gorm:"size:64;not null;default:''" json:"-"`
 	PendingRevision              int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
+	PendingGrantsJSON            string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	InstalledAt                  time.Time `gorm:"not null" json:"installed_at"`
 	UpdatedAt                    time.Time `gorm:"not null" json:"updated_at"`
 }
@@ -293,6 +294,8 @@ type PluginInstanceRow struct {
 	ResourceGroupID          string    `gorm:"index;size:64;not null" json:"resource_group_id"`
 	TargetJSON               string    `gorm:"type:text;not null" json:"targets"`
 	PolicyChainsJSON         string    `gorm:"type:text;not null;default:'[]'" json:"policy_chains"`
+	SecretHandlesJSON        string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	BindingsJSON             string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	ConfigJSON               string    `gorm:"type:text;not null" json:"config"`
 	ConfigVersion            uint64    `gorm:"not null;default:0" json:"config_version"`
 	PendingConfigJSON        string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
@@ -367,3 +370,28 @@ type PluginOperationRow struct {
 }
 
 func (PluginOperationRow) TableName() string { return "plugin_operations" }
+
+// PluginAgentRuntimeStatusRow is the durable, ownership-fenced view of one
+// target Agent applying one plugin instance operation. Historical operations
+// remain queryable and cannot be advanced by a report for another generation.
+type PluginAgentRuntimeStatusRow struct {
+	OperationID    string     `gorm:"primaryKey;size:64" json:"operation_id"`
+	AgentID        string     `gorm:"primaryKey;size:64" json:"agent_id"`
+	InstanceID     string     `gorm:"primaryKey;size:64" json:"instance_id"`
+	PluginID       string     `gorm:"index;size:190;not null" json:"plugin_id"`
+	Revision       int64      `gorm:"index;not null" json:"revision"`
+	GenerationID   string     `gorm:"size:64;not null" json:"generation_id"`
+	PackageDigest  string     `gorm:"size:64;not null" json:"package_digest"`
+	ArtifactDigest string     `gorm:"size:64;not null" json:"artifact_digest"`
+	ConfigVersion  uint64     `gorm:"not null;default:0" json:"config_version"`
+	State          string     `gorm:"index;size:32;not null" json:"state"`
+	ReportSequence uint64     `gorm:"not null;default:0" json:"report_sequence"`
+	ReportDigest   string     `gorm:"size:64;not null;default:''" json:"-"`
+	ErrorCode      string     `gorm:"size:128;not null;default:''" json:"error_code,omitempty"`
+	DetailsJSON    string     `gorm:"type:text;not null;default:'{}'" json:"details"`
+	BudgetJSON     string     `gorm:"type:text;not null;default:'{}'" json:"budget"`
+	ReportedAt     *time.Time `gorm:"index" json:"reported_at,omitempty"`
+	UpdatedAt      time.Time  `gorm:"not null" json:"updated_at"`
+}
+
+func (PluginAgentRuntimeStatusRow) TableName() string { return "plugin_agent_runtime_statuses" }

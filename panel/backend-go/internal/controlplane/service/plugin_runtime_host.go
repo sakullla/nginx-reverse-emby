@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,6 +20,42 @@ type PluginRuntimeRepository interface {
 	GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error)
 	UpdatePluginRuntimeHealth(context.Context, string, string, string, int, int, bool, string) error
 	StopPluginRuntime(context.Context, string, string) error
+}
+
+type PluginRuntimeBatchRepository interface {
+	StagePluginRuntimeBatch(context.Context, []storage.PluginRuntimeInstanceRow) error
+	PromotePluginRuntimeBatch(context.Context, []storage.PluginRuntimePromotion) error
+	FailPluginRuntimeCandidateBatch(context.Context, []storage.PluginRuntimeCandidateFailure) error
+}
+
+type PluginRuntimeBatch struct {
+	mu            sync.Mutex
+	state         string
+	entries       []pluginRuntimeBatchEntry
+	operationDone func()
+	releaseOnce   sync.Once
+}
+
+func (b *PluginRuntimeBatch) release() {
+	if b == nil || b.operationDone == nil {
+		return
+	}
+	b.releaseOnce.Do(b.operationDone)
+}
+
+type pluginRuntimeBatchEntry struct {
+	candidate          pluginhost.Candidate
+	instance           *pluginhost.Instance
+	previousGeneration string
+}
+
+func (b *PluginRuntimeBatch) State() string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.state
 }
 
 const pluginRuntimeHealthWriteTimeout = 5 * time.Second
@@ -152,6 +189,193 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 		s.revokeGeneration(candidate.InstanceID, previousGeneration)
 	}
 	return instance, nil
+}
+
+// PrepareBatch stages and starts every candidate without publishing any of
+// them. A failure aborts all prepared candidates and leaves every old active
+// generation untouched.
+func (s *PluginRuntimeHost) PrepareBatch(ctx context.Context, candidates []pluginhost.Candidate) (*PluginRuntimeBatch, error) {
+	operationCtx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owned := false
+	defer func() {
+		if !owned {
+			done()
+		}
+	}()
+	repository, ok := s.repository.(PluginRuntimeBatchRepository)
+	if !ok {
+		return nil, errors.New("plugin runtime repository does not support atomic batches")
+	}
+	if len(candidates) == 0 {
+		return nil, errors.New("plugin runtime candidate batch is empty")
+	}
+	ordered := append([]pluginhost.Candidate(nil), candidates...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].InstanceID < ordered[j].InstanceID })
+	rows := make([]storage.PluginRuntimeInstanceRow, 0, len(ordered))
+	batch := &PluginRuntimeBatch{state: "preparing", entries: make([]pluginRuntimeBatchEntry, 0, len(ordered)), operationDone: done}
+	for index, candidate := range ordered {
+		if candidate.InstanceID == "" || candidate.Identity.Generation == "" || (index > 0 && ordered[index-1].InstanceID == candidate.InstanceID) {
+			return nil, errors.New("plugin runtime batch candidate identities must be unique and complete")
+		}
+		previous, _ := s.ActiveGeneration(candidate.InstanceID)
+		batch.entries = append(batch.entries, pluginRuntimeBatchEntry{candidate: candidate, previousGeneration: previous})
+		rows = append(rows, storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256})
+	}
+	if err := repository.StagePluginRuntimeBatch(operationCtx, rows); err != nil {
+		return nil, fmt.Errorf("stage plugin runtime batch: %w", err)
+	}
+	for index := range batch.entries {
+		instance, prepareErr := s.host.PrepareCandidate(operationCtx, batch.entries[index].candidate)
+		if prepareErr != nil {
+			abortErr := s.abortPreparedBatch(context.Background(), batch, prepareErr, repository)
+			return nil, errors.Join(prepareErr, abortErr)
+		}
+		batch.entries[index].instance = instance
+	}
+	batch.mu.Lock()
+	batch.state = "prepared"
+	batch.mu.Unlock()
+	owned = true
+	return batch, nil
+}
+
+// CommitBatch atomically promotes the durable candidate pointers, then
+// publishes the already-ready instances. Instance locks fence concurrent
+// single-generation activation and stop operations.
+func (s *PluginRuntimeHost) CommitBatch(ctx context.Context, batch *PluginRuntimeBatch) error {
+	if batch == nil || ctx == nil {
+		return errors.New("plugin runtime batch is required")
+	}
+	repository, ok := s.repository.(PluginRuntimeBatchRepository)
+	if !ok {
+		return errors.New("plugin runtime repository does not support atomic batches")
+	}
+	batch.mu.Lock()
+	if batch.state != "prepared" {
+		state := batch.state
+		batch.mu.Unlock()
+		return fmt.Errorf("plugin runtime batch is %s, not prepared", state)
+	}
+	batch.state = "committing"
+	batch.mu.Unlock()
+	defer batch.release()
+	if err := ctx.Err(); err != nil {
+		cause := errors.Join(errors.New("plugin runtime batch commit canceled"), err)
+		return errors.Join(cause, s.abortPreparedBatch(context.Background(), batch, cause, repository))
+	}
+	locks := make([]*sync.Mutex, 0, len(batch.entries))
+	for _, entry := range batch.entries {
+		value, _ := s.locks.LoadOrStore(entry.candidate.InstanceID, &sync.Mutex{})
+		lock := value.(*sync.Mutex)
+		lock.Lock()
+		locks = append(locks, lock)
+	}
+	defer func() {
+		for index := len(locks) - 1; index >= 0; index-- {
+			locks[index].Unlock()
+		}
+	}()
+	for _, entry := range batch.entries {
+		active, _ := s.ActiveGeneration(entry.candidate.InstanceID)
+		if active != entry.previousGeneration {
+			cause := errors.New("plugin runtime active generation changed after batch prepare")
+			return errors.Join(cause, s.abortPreparedBatch(context.Background(), batch, cause, repository))
+		}
+	}
+	promotions := make([]storage.PluginRuntimePromotion, 0, len(batch.entries))
+	instances := make([]*pluginhost.Instance, 0, len(batch.entries))
+	for _, entry := range batch.entries {
+		promotions = append(promotions, storage.PluginRuntimePromotion{InstanceID: entry.candidate.InstanceID, Generation: entry.candidate.Identity.Generation, PID: entry.instance.ProcessID(), SandboxProvider: entry.instance.SandboxProvider})
+		instances = append(instances, entry.instance)
+	}
+	publication, err := s.host.PreparePublication(instances)
+	if err != nil {
+		return errors.Join(err, s.abortPreparedBatch(context.Background(), batch, err, repository))
+	}
+	if err := repository.PromotePluginRuntimeBatch(ctx, promotions); err != nil {
+		publication.Abort()
+		return errors.Join(err, s.abortPreparedBatch(context.Background(), batch, err, repository))
+	}
+	publication.Publish()
+	for _, entry := range batch.entries {
+		if entry.previousGeneration != "" && entry.previousGeneration != entry.candidate.Identity.Generation {
+			s.revokeGeneration(entry.candidate.InstanceID, entry.previousGeneration)
+		}
+	}
+	batch.mu.Lock()
+	batch.state = "committed"
+	batch.mu.Unlock()
+	return nil
+}
+
+func (s *PluginRuntimeHost) AbortBatch(ctx context.Context, batch *PluginRuntimeBatch, cause error) error {
+	if ctx == nil {
+		return errors.New("plugin runtime batch abort context is required")
+	}
+	repository, ok := s.repository.(PluginRuntimeBatchRepository)
+	if !ok {
+		return errors.New("plugin runtime repository does not support atomic batches")
+	}
+	defer batch.release()
+	return s.abortPreparedBatch(ctx, batch, cause, repository)
+}
+
+func (s *PluginRuntimeHost) ActivateBatch(ctx context.Context, candidates []pluginhost.Candidate) ([]*pluginhost.Instance, error) {
+	batch, err := s.PrepareBatch(ctx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.CommitBatch(ctx, batch); err != nil {
+		return nil, err
+	}
+	instances := make([]*pluginhost.Instance, 0, len(batch.entries))
+	for _, entry := range batch.entries {
+		instances = append(instances, entry.instance)
+	}
+	return instances, nil
+}
+
+func (s *PluginRuntimeHost) abortPreparedBatch(ctx context.Context, batch *PluginRuntimeBatch, cause error, repository PluginRuntimeBatchRepository) error {
+	if batch == nil {
+		return errors.New("plugin runtime batch is required")
+	}
+	batch.mu.Lock()
+	if batch.state == "committed" || batch.state == "aborted" {
+		state := batch.state
+		batch.mu.Unlock()
+		if state == "aborted" {
+			return nil
+		}
+		return errors.New("committed plugin runtime batch cannot be aborted")
+	}
+	batch.state = "aborting"
+	batch.mu.Unlock()
+	cleanupCtx := ctx
+	cancel := func() {}
+	if cleanupCtx == nil || cleanupCtx.Err() != nil {
+		cleanupCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	}
+	defer cancel()
+	var errs []error
+	failures := make([]storage.PluginRuntimeCandidateFailure, 0, len(batch.entries))
+	for _, entry := range batch.entries {
+		failures = append(failures, storage.PluginRuntimeCandidateFailure{InstanceID: entry.candidate.InstanceID, Generation: entry.candidate.Identity.Generation, Failure: cause})
+		if entry.instance != nil {
+			if err := s.stopPreparedCandidate(cleanupCtx, entry.instance, entry.candidate, false); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if err := repository.FailPluginRuntimeCandidateBatch(cleanupCtx, failures); err != nil {
+		errs = append(errs, err)
+	}
+	batch.mu.Lock()
+	batch.state = "aborted"
+	batch.mu.Unlock()
+	return errors.Join(errs...)
 }
 
 func (s *PluginRuntimeHost) beginOperation(ctx context.Context) (context.Context, func(), error) {

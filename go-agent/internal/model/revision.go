@@ -31,6 +31,7 @@ func (s Snapshot) HasFullRevisionPayload() bool {
 		s.EgressProfiles != nil &&
 		s.Certificates != nil &&
 		s.CertificatePolicies != nil &&
+		s.PluginGenerations != nil &&
 		s.PluginPolicies != nil
 }
 
@@ -44,17 +45,18 @@ type RevisionStart struct {
 }
 
 type RevisionReport struct {
-	AgentID      string `json:"agent_id"`
-	Revision     int64  `json:"revision"`
-	RetryCycle   int    `json:"retry_cycle"`
-	Attempt      int    `json:"attempt"`
-	LeaseID      string `json:"lease_id"`
-	GenerationID string `json:"generation_id"`
-	Status       string `json:"status"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	Forced       bool   `json:"forced,omitempty"`
-	ForceReason  string `json:"force_reason,omitempty"`
+	AgentID        string                `json:"agent_id"`
+	Revision       int64                 `json:"revision"`
+	RetryCycle     int                   `json:"retry_cycle"`
+	Attempt        int                   `json:"attempt"`
+	LeaseID        string                `json:"lease_id"`
+	GenerationID   string                `json:"generation_id"`
+	Status         string                `json:"status"`
+	ErrorCode      string                `json:"error_code,omitempty"`
+	ErrorMessage   string                `json:"error_message,omitempty"`
+	Forced         bool                  `json:"forced,omitempty"`
+	ForceReason    string                `json:"force_reason,omitempty"`
+	PluginStatuses []PluginRuntimeStatus `json:"plugin_statuses,omitempty"`
 }
 
 const (

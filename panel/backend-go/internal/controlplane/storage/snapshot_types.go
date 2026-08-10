@@ -15,12 +15,97 @@ type Snapshot struct {
 	DDNSConfig          *DDNSConfig                `json:"ddns_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
+	PluginGenerations   []PluginGeneration         `json:"plugin_generations"`
 	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	PKISecurity         *PKISecuritySnapshot       `json:"pki_security,omitempty"`
+}
+
+// PluginGeneration is the complete, target-specific runtime projection. It
+// deliberately contains no marketplace source, cache path, manifest, UI
+// metadata, or secret plaintext.
+type PluginGeneration struct {
+	ID              string                         `json:"id"`
+	InstanceID      string                         `json:"instance_id"`
+	OperationID     string                         `json:"operation_id,omitempty"`
+	Revision        int64                          `json:"revision"`
+	PluginID        string                         `json:"plugin_id"`
+	PluginVersion   string                         `json:"plugin_version"`
+	PackageDigest   string                         `json:"package_digest"`
+	Runtime         PluginGenerationRuntime        `json:"runtime"`
+	Artifact        PluginGenerationArtifact       `json:"artifact"`
+	ExtensionPoints []string                       `json:"extension_points"`
+	ConfigVersion   uint64                         `json:"config_version"`
+	Config          json.RawMessage                `json:"config"`
+	Grants          []PluginGenerationGrant        `json:"grants"`
+	SecretHandles   []PluginGenerationSecretHandle `json:"secret_handles"`
+	ResourceBudget  PluginGenerationResourceBudget `json:"resource_budget"`
+	Target          PluginGenerationTarget         `json:"target"`
+	FailurePolicy   PluginGenerationFailurePolicy  `json:"failure_policy"`
+}
+
+type PluginGenerationArtifact struct {
+	ArtifactID        string `json:"artifact_id"`
+	PackageIdentity   string `json:"package_identity"`
+	RelativePath      string `json:"relative_path"`
+	SHA256            string `json:"sha256"`
+	SizeBytes         int64  `json:"size_bytes"`
+	Mode              string `json:"mode"`
+	GOOS              string `json:"goos,omitempty"`
+	GOARCH            string `json:"goarch,omitempty"`
+	LocalPath         string `json:"local_path,omitempty"`
+	SignatureVerified bool   `json:"signature_verified"`
+	SignerKeyID       string `json:"signer_key_id"`
+	SignerFingerprint string `json:"signer_fingerprint"`
+}
+
+type PluginGenerationRuntime struct {
+	Kind      string `json:"kind"`
+	ABI       string `json:"abi"`
+	HostScope string `json:"host_scope"`
+	Entry     string `json:"entry"`
+}
+
+type PluginGenerationGrant struct {
+	Name         string `json:"name"`
+	ResourceKind string `json:"resource_kind,omitempty"`
+	ResourceID   string `json:"resource_id,omitempty"`
+}
+
+// PluginGenerationSecretHandle is a revocable reference. Value is never part
+// of a snapshot; secret delivery remains owned by the authenticated lease.
+type PluginGenerationSecretHandle struct {
+	ID      string `json:"id"`
+	Version uint64 `json:"version"`
+	Digest  string `json:"digest"`
+	Purpose string `json:"purpose,omitempty"`
+}
+
+type PluginGenerationResourceBudget struct {
+	TimeoutMS   int64 `json:"timeout_ms"`
+	MemoryBytes int64 `json:"memory_bytes"`
+	Concurrency int   `json:"concurrency"`
+	InputBytes  int64 `json:"input_bytes"`
+	OutputBytes int64 `json:"output_bytes"`
+	CPUMillis   int64 `json:"cpu_millis,omitempty"`
+	Restarts    int   `json:"restarts,omitempty"`
+}
+
+type PluginGenerationTarget struct {
+	Kind            string `json:"kind"`
+	ID              string `json:"id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         uint64 `json:"version"`
+}
+
+type PluginGenerationFailurePolicy struct {
+	OnError      string `json:"on_error"`
+	OnBudget     string `json:"on_budget"`
+	Restart      string `json:"restart"`
+	CoreFallback string `json:"core_fallback"`
 }
 
 // AgentSnapshotMetadata carries database-owned values needed to finish a
@@ -346,7 +431,32 @@ type RuntimeState struct {
 	LastApplyStatus           string                     `json:"last_apply_status,omitempty"`
 	LastApplyMessage          string                     `json:"last_apply_message,omitempty"`
 	ManagedCertificateReports []ManagedCertificateReport `json:"managed_certificate_reports,omitempty"`
+	PluginStatuses            []PluginRuntimeStatus      `json:"plugin_statuses,omitempty"`
 	Metadata                  map[string]string          `json:"metadata,omitempty"`
+}
+
+// PluginRuntimeStatus is the Agent-reported, generation-fenced runtime view.
+// Agent identity is supplied by the authenticated transport and is never
+// accepted from this payload.
+type PluginRuntimeStatus struct {
+	InstanceID      string          `json:"instance_id"`
+	PluginID        string          `json:"plugin_id"`
+	OperationID     string          `json:"operation_id"`
+	Revision        int64           `json:"revision"`
+	GenerationID    string          `json:"generation_id"`
+	PackageDigest   string          `json:"package_digest"`
+	ArtifactDigest  string          `json:"artifact_digest"`
+	ConfigVersion   uint64          `json:"config_version"`
+	RuntimeKind     string          `json:"runtime_kind"`
+	State           string          `json:"state"`
+	Sequence        uint64          `json:"sequence"`
+	ErrorCode       string          `json:"error_code,omitempty"`
+	SafeDetail      string          `json:"safe_detail,omitempty"`
+	Details         json.RawMessage `json:"details,omitempty"`
+	Budget          json.RawMessage `json:"budget,omitempty"`
+	SandboxProvider string          `json:"sandbox_provider,omitempty"`
+	RestartCount    int             `json:"restart_count,omitempty"`
+	CircuitOpen     bool            `json:"circuit_open,omitempty"`
 }
 
 type VersionPackage struct {

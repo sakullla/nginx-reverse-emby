@@ -1142,6 +1142,115 @@ func TestPluginRuntimeHostCloseSurfacesAndRetriesTerminalPersistence(t *testing.
 	}
 }
 
+func TestPluginRuntimeHostBatchPrepareFailurePreservesEveryOldActiveGeneration(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "plugin")
+	payload := []byte("runtime batch")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), runtimeLauncher{}, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := storage.NewSQLiteStore(filepath.Join(root, "data"), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	service, err := NewPluginRuntimeHost(host, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := func(instanceID, generation string) pluginhost.Candidate {
+		value := pluginhost.Candidate{InstanceID: instanceID, Artifact: pluginhost.Artifact{CachePath: cache, SHA256: digest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: digest, Generation: generation, Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+		value.Requirement = runtimeSandboxRequirement(t, digest)
+		return value
+	}
+	for _, value := range []pluginhost.Candidate{candidate("a", "a1"), candidate("b", "b1")} {
+		if _, err := service.Activate(t.Context(), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a2, b2 := candidate("a", "a2"), candidate("b", "b2")
+	b2.Artifact.SHA256 = strings.Repeat("f", 64)
+	if _, err := service.PrepareBatch(t.Context(), []pluginhost.Candidate{b2, a2}); err == nil {
+		t.Fatal("invalid batch candidate was prepared")
+	}
+	for instanceID, generation := range map[string]string{"a": "a1", "b": "b1"} {
+		if active, ok := service.ActiveGeneration(instanceID); !ok || active != generation {
+			t.Fatalf("active generation for %s = %q, %v", instanceID, active, ok)
+		}
+		row, found, err := repository.GetPluginRuntime(t.Context(), instanceID)
+		if err != nil || !found || row.ActiveGeneration != generation || row.CandidateState != "failed" {
+			t.Fatalf("durable runtime for %s = %+v, %v, %v", instanceID, row, found, err)
+		}
+	}
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginRuntimeHostBatchCommitPublishesEveryCandidateAfterDurablePromotion(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "plugin")
+	payload := []byte("runtime batch commit")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), runtimeLauncher{}, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := storage.NewSQLiteStore(filepath.Join(root, "data"), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	service, err := NewPluginRuntimeHost(host, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := func(instanceID, generation string) pluginhost.Candidate {
+		value := pluginhost.Candidate{InstanceID: instanceID, Artifact: pluginhost.Artifact{CachePath: cache, SHA256: digest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: digest, Generation: generation, Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+		value.Requirement = runtimeSandboxRequirement(t, digest)
+		return value
+	}
+	for _, value := range []pluginhost.Candidate{candidate("a", "a1"), candidate("b", "b1")} {
+		if _, err := service.Activate(t.Context(), value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := service.PrepareBatch(t.Context(), []pluginhost.Candidate{candidate("b", "b2"), candidate("a", "a2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for instanceID, generation := range map[string]string{"a": "a1", "b": "b1"} {
+		if active, ok := service.ActiveGeneration(instanceID); !ok || active != generation {
+			t.Fatalf("prepared batch changed active generation for %s: %q, %v", instanceID, active, ok)
+		}
+	}
+	if err := service.CommitBatch(t.Context(), batch); err != nil {
+		t.Fatal(err)
+	}
+	for instanceID, generation := range map[string]string{"a": "a2", "b": "b2"} {
+		if active, ok := service.ActiveGeneration(instanceID); !ok || active != generation {
+			t.Fatalf("committed active generation for %s = %q, %v", instanceID, active, ok)
+		}
+		row, found, err := repository.GetPluginRuntime(t.Context(), instanceID)
+		if err != nil || !found || row.ActiveGeneration != generation || row.CandidateGeneration != "" {
+			t.Fatalf("committed durable runtime for %s = %+v, %v, %v", instanceID, row, found, err)
+		}
+	}
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runtimeCloseCandidate(t *testing.T, root, generation string) pluginhost.Candidate {
 	t.Helper()
 	cache := filepath.Join(root, "cache-"+generation)

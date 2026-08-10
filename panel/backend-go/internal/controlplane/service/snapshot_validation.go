@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -69,6 +70,16 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the egress_profiles capability", nil)
 		}
 	}
+	if len(snapshot.PluginGenerations) > 0 {
+		if _, ok := capabilities[storage.PluginGenerationCapability]; !ok {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the plugin_generation_v1 capability", nil)
+		}
+		for _, generation := range snapshot.PluginGenerations {
+			if strings.TrimSpace(generation.Target.ID) != strings.TrimSpace(target.AgentID) {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q belongs to Agent %q, not snapshot target %q", generation.InstanceID, generation.Target.ID, target.AgentID), nil)
+			}
+		}
+	}
 	return nil
 }
 
@@ -110,6 +121,9 @@ func snapshotResourceBelongsToTarget(targetAgentID, resourceAgentID string) bool
 }
 
 func validateSnapshotResources(snapshot storage.Snapshot) error {
+	if err := validatePluginGenerations(snapshot); err != nil {
+		return err
+	}
 	httpIDs := map[int]struct{}{}
 	frontends := map[string]int{}
 	for _, rule := range snapshot.Rules {
@@ -190,6 +204,67 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 	}
 	if err := validateUniqueSnapshotIDs("certificate policy", policyIDs); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validatePluginGenerations(snapshot storage.Snapshot) error {
+	instanceIDs := make(map[string]struct{}, len(snapshot.PluginGenerations))
+	generationIDs := make(map[string]struct{}, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		if strings.TrimSpace(generation.InstanceID) == "" || strings.TrimSpace(generation.PluginID) == "" || strings.TrimSpace(generation.PluginVersion) == "" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin generation identity is incomplete", nil)
+		}
+		if _, exists := instanceIDs[generation.InstanceID]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("plugin instance %q has duplicate generations", generation.InstanceID), nil)
+		}
+		instanceIDs[generation.InstanceID] = struct{}{}
+		if !storage.ValidPluginGenerationDigest(generation.ID) || !storage.ValidPluginGenerationDigest(generation.PackageDigest) || !storage.ValidPluginGenerationDigest(generation.Artifact.SHA256) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an invalid digest", generation.InstanceID), nil)
+		}
+		if _, exists := generationIDs[generation.ID]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("plugin generation %q is duplicated", generation.ID), nil)
+		}
+		generationIDs[generation.ID] = struct{}{}
+		expectedID, err := storage.PluginGenerationIdentity(generation)
+		if err != nil || !strings.EqualFold(expectedID, generation.ID) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q identity is invalid", generation.InstanceID), err)
+		}
+		if generation.Revision != snapshot.Revision {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q revision differs from its snapshot", generation.InstanceID), nil)
+		}
+		if generation.Runtime.HostScope != "agent" || (generation.Runtime.Kind != "wasm-policy" && generation.Runtime.Kind != "rpc-service") || strings.TrimSpace(generation.Runtime.ABI) == "" || strings.TrimSpace(generation.Runtime.Entry) == "" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q runtime is invalid", generation.InstanceID), nil)
+		}
+		if generation.OperationID == "" || generation.Artifact.ArtifactID == "" || generation.Artifact.PackageIdentity == "" || generation.Artifact.RelativePath != generation.Runtime.Entry || generation.Artifact.SizeBytes <= 0 || generation.Artifact.LocalPath != "" || !generation.Artifact.SignatureVerified || generation.Artifact.SignerKeyID == "" || !storage.ValidPluginGenerationDigest(generation.Artifact.SignerFingerprint) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q artifact is invalid", generation.InstanceID), nil)
+		}
+		if generation.Runtime.Kind == "rpc-service" && (generation.Artifact.GOOS == "" || generation.Artifact.GOARCH == "") {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q RPC artifact platform is missing", generation.InstanceID), nil)
+		}
+		var config map[string]json.RawMessage
+		if err := json.Unmarshal(generation.Config, &config); err != nil || config == nil {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q config must be an object", generation.InstanceID), err)
+		}
+		if generation.Target.Kind != "agent" || strings.TrimSpace(generation.Target.ID) == "" || strings.TrimSpace(generation.Target.ResourceGroupID) == "" || generation.Target.Version != generation.ConfigVersion {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q target binding is invalid", generation.InstanceID), nil)
+		}
+		if generation.ConfigVersion == 0 || generation.ResourceBudget.TimeoutMS <= 0 || generation.ResourceBudget.MemoryBytes <= 0 || generation.ResourceBudget.Concurrency <= 0 || generation.ResourceBudget.InputBytes <= 0 || generation.ResourceBudget.OutputBytes <= 0 || generation.ResourceBudget.CPUMillis < 0 || generation.ResourceBudget.Restarts < 0 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q resource budget is invalid", generation.InstanceID), nil)
+		}
+		if strings.TrimSpace(generation.FailurePolicy.OnError) == "" || strings.TrimSpace(generation.FailurePolicy.OnBudget) == "" || strings.TrimSpace(generation.FailurePolicy.Restart) == "" || strings.TrimSpace(generation.FailurePolicy.CoreFallback) == "" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q failure policy is incomplete", generation.InstanceID), nil)
+		}
+		for _, grant := range generation.Grants {
+			if strings.TrimSpace(grant.Name) == "" {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an empty grant", generation.InstanceID), nil)
+			}
+		}
+		for _, handle := range generation.SecretHandles {
+			if strings.TrimSpace(handle.ID) == "" || handle.Version == 0 || !storage.ValidPluginGenerationDigest(handle.Digest) {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an invalid secret handle", generation.InstanceID), nil)
+			}
+		}
 	}
 	return nil
 }

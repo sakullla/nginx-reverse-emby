@@ -20,10 +20,12 @@ import (
 )
 
 const (
-	revisionLedgerBaselineMarkerKey  = "migration.agent_revision_ledger_baseline.v1"
-	revisionSnapshotArtifactRole     = "snapshot"
-	revisionPolicyArtifactRolePrefix = "plugin_policy_artifact:"
-	revisionPolicyArtifactKind       = "plugin_policy_wasm"
+	revisionLedgerBaselineMarkerKey   = "migration.agent_revision_ledger_baseline.v1"
+	revisionSnapshotArtifactRole      = "snapshot"
+	revisionPolicyArtifactRolePrefix  = "plugin_policy_artifact:"
+	revisionPolicyArtifactKind        = "plugin_policy_wasm"
+	revisionRuntimeArtifactRolePrefix = "plugin_runtime_artifact:"
+	revisionRuntimeArtifactKind       = "plugin_runtime_artifact"
 
 	OperationStatusPending = "pending"
 	OperationStatusApplied = "applied"
@@ -51,6 +53,17 @@ type revisionPolicyArtifactIdentity struct {
 	Source            PolicyArtifactSource
 	ArtifactDigest    string
 	PackageDigest     string
+	SignerFingerprint string
+}
+
+type revisionRuntimeArtifactIdentity struct {
+	ArtifactID        string
+	PackageIdentity   string
+	PackageDigest     string
+	RelativePath      string
+	ArtifactDigest    string
+	SizeBytes         int64
+	SignerKeyID       string
 	SignerFingerprint string
 }
 
@@ -119,6 +132,50 @@ func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, agentID
 		}
 		refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionPolicyArtifactRole(artifactID), CreatedAt: now})
 	}
+	runtimeIdentities := make(map[string]revisionRuntimeArtifactIdentity)
+	runtimeGenerations := make(map[string]PluginGeneration)
+	for _, generation := range snapshot.PluginGenerations {
+		artifactID := strings.TrimSpace(generation.Artifact.ArtifactID)
+		identity := revisionRuntimeArtifactIdentity{
+			ArtifactID: artifactID, PackageIdentity: strings.TrimSpace(generation.Artifact.PackageIdentity),
+			PackageDigest: strings.ToLower(strings.TrimSpace(generation.PackageDigest)), RelativePath: generation.Artifact.RelativePath,
+			ArtifactDigest: strings.ToLower(strings.TrimSpace(generation.Artifact.SHA256)), SizeBytes: generation.Artifact.SizeBytes,
+			SignerKeyID: generation.Artifact.SignerKeyID, SignerFingerprint: strings.ToLower(strings.TrimSpace(generation.Artifact.SignerFingerprint)),
+		}
+		if artifactID == "" || identity.PackageIdentity == "" || identity.RelativePath == "" || identity.SizeBytes <= 0 ||
+			!validSHA256(identity.PackageDigest) || !validSHA256(identity.ArtifactDigest) || !validSHA256(identity.SignerFingerprint) {
+			return nil, nil, fmt.Errorf("plugin runtime artifact %q has incomplete snapshot identity", artifactID)
+		}
+		if previous, found := runtimeIdentities[artifactID]; found {
+			if previous != identity {
+				return nil, nil, fmt.Errorf("plugin runtime artifact %q has conflicting snapshot identities", artifactID)
+			}
+			continue
+		}
+		runtimeIdentities[artifactID], runtimeGenerations[artifactID] = identity, generation
+	}
+	runtimeArtifactIDs := make([]string, 0, len(runtimeGenerations))
+	for artifactID := range runtimeGenerations {
+		runtimeArtifactIDs = append(runtimeArtifactIDs, artifactID)
+	}
+	sort.Strings(runtimeArtifactIDs)
+	for _, artifactID := range runtimeArtifactIDs {
+		generation, identity := runtimeGenerations[artifactID], runtimeIdentities[artifactID]
+		payload, err := loadIssuedRuntimeArtifact(ctx, db, generation)
+		if err != nil {
+			return nil, nil, err
+		}
+		blobID := revisionRuntimeArtifactBlobID(identity.ArtifactDigest)
+		blob := GenerationArtifactRow{ID: blobID, Kind: revisionRuntimeArtifactKind, SHA256: identity.ArtifactDigest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}
+		if existing, found := blobs[blobID]; found {
+			if existing.Kind != blob.Kind || existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || !bytes.Equal(existing.Payload, blob.Payload) {
+				return nil, nil, fmt.Errorf("plugin runtime artifact blob %q has conflicting content", blobID)
+			}
+		} else {
+			blobs[blobID] = blob
+		}
+		refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionRuntimeArtifactRole(artifactID), CreatedAt: now})
+	}
 	artifacts := make([]GenerationArtifactRow, 0, len(blobs))
 	for _, blob := range blobs {
 		artifacts = append(artifacts, blob)
@@ -165,6 +222,48 @@ func loadIssuedPolicyArtifact(ctx context.Context, db *gorm.DB, stage PolicyStag
 	written, err := io.Copy(io.MultiWriter(hash, &payload), io.LimitReader(file, source.SizeBytes+1))
 	if err != nil || written != source.SizeBytes || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), source.SHA256) {
 		return nil, fmt.Errorf("policy artifact %q digest differs from snapshot", source.ArtifactID)
+	}
+	return payload.Bytes(), nil
+}
+
+func loadIssuedRuntimeArtifact(ctx context.Context, db *gorm.DB, generation PluginGeneration) ([]byte, error) {
+	descriptor := generation.Artifact
+	var packageRow PluginPackageRow
+	if err := db.WithContext(ctx).Where("identity = ?", descriptor.PackageIdentity).First(&packageRow).Error; err != nil {
+		return nil, fmt.Errorf("plugin runtime artifact %q package identity: %w", descriptor.ArtifactID, err)
+	}
+	if !strings.EqualFold(packageRow.Digest, generation.PackageDigest) || packageRow.SignatureVerdict != "verified" ||
+		packageRow.SignatureKeyID != descriptor.SignerKeyID || !strings.EqualFold(packageRow.SignatureFingerprint, descriptor.SignerFingerprint) {
+		return nil, fmt.Errorf("plugin runtime artifact %q package evidence differs from snapshot", descriptor.ArtifactID)
+	}
+	var artifact PluginArtifactRow
+	if err := db.WithContext(ctx).Where("id = ? AND package_identity = ?", descriptor.ArtifactID, descriptor.PackageIdentity).First(&artifact).Error; err != nil {
+		return nil, fmt.Errorf("plugin runtime artifact %q durable identity: %w", descriptor.ArtifactID, err)
+	}
+	if artifact.Path != descriptor.RelativePath || artifact.RuntimeKind != generation.Runtime.Kind || artifact.RuntimeABI != generation.Runtime.ABI ||
+		artifact.HostScope != generation.Runtime.HostScope || !strings.EqualFold(artifact.PackageDigest, generation.PackageDigest) ||
+		!strings.EqualFold(artifact.SHA256, descriptor.SHA256) || artifact.SizeBytes != descriptor.SizeBytes {
+		return nil, fmt.Errorf("plugin runtime artifact %q durable evidence differs from snapshot", descriptor.ArtifactID)
+	}
+	artifactPath := filepath.Join(packageRow.CachePath, filepath.FromSlash(artifact.Path))
+	relative, err := filepath.Rel(packageRow.CachePath, artifactPath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("plugin runtime artifact %q path escapes verified package cache", descriptor.ArtifactID)
+	}
+	file, err := os.Open(artifactPath)
+	if err != nil {
+		return nil, fmt.Errorf("open plugin runtime artifact %q: %w", descriptor.ArtifactID, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != descriptor.SizeBytes {
+		return nil, fmt.Errorf("plugin runtime artifact %q size differs from snapshot", descriptor.ArtifactID)
+	}
+	hash := sha256.New()
+	var payload bytes.Buffer
+	written, err := io.Copy(io.MultiWriter(hash, &payload), io.LimitReader(file, descriptor.SizeBytes+1))
+	if err != nil || written != descriptor.SizeBytes || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), descriptor.SHA256) {
+		return nil, fmt.Errorf("plugin runtime artifact %q digest differs from snapshot", descriptor.ArtifactID)
 	}
 	return payload.Bytes(), nil
 }
@@ -333,6 +432,29 @@ func verifyRevisionPolicyArtifactRefs(tx *gorm.DB, revision AgentRevisionRow, sn
 			}
 		}
 	}
+	for _, generation := range snapshot.PluginGenerations {
+		identity := runtimeArtifactIdentity(generation)
+		var ref AgentRevisionArtifactRow
+		if err := tx.Where("agent_id = ? AND revision = ? AND role = ?", revision.AgentID, revision.Revision, revisionRuntimeArtifactRole(identity.ArtifactID)).First(&ref).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		var blob GenerationArtifactRow
+		if err := tx.Where("id = ?", ref.ArtifactID).First(&blob).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		if blob.Kind != revisionRuntimeArtifactKind || !strings.EqualFold(blob.SHA256, identity.ArtifactDigest) || blob.SizeBytes != identity.SizeBytes {
+			return false, fmt.Errorf("revision plugin runtime artifact %q identity is inconsistent", identity.ArtifactID)
+		}
+		if err := validateGenerationArtifact(blob); err != nil {
+			return false, err
+		}
+	}
 	return true, nil
 }
 
@@ -368,12 +490,28 @@ func (s *GormStore) ResolveAgentRevisionPolicyArtifact(ctx context.Context, agen
 	if err := json.Unmarshal(snapshotArtifact.Payload, &snapshot); err != nil {
 		return GenerationArtifactRow{}, false, fmt.Errorf("decode agent revision snapshot: %w", err)
 	}
-	identity, found, err := policyArtifactIdentityFromSnapshot(snapshot, artifactID)
-	if err != nil || !found {
+	policyIdentity, policyFound, err := policyArtifactIdentityFromSnapshot(snapshot, artifactID)
+	if err != nil {
 		return GenerationArtifactRow{}, false, err
 	}
+	runtimeIdentity, runtimeFound, err := runtimeArtifactIdentityFromSnapshot(snapshot, artifactID)
+	if err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	if policyFound == runtimeFound {
+		if policyFound {
+			return GenerationArtifactRow{}, false, fmt.Errorf("plugin artifact %q has ambiguous revision identity", artifactID)
+		}
+		return GenerationArtifactRow{}, false, nil
+	}
+	role, kind, digest, sizeBytes := "", "", "", int64(0)
+	if policyFound {
+		role, kind, digest, sizeBytes = revisionPolicyArtifactRole(artifactID), revisionPolicyArtifactKind, policyIdentity.ArtifactDigest, policyIdentity.Source.SizeBytes
+	} else {
+		role, kind, digest, sizeBytes = revisionRuntimeArtifactRole(artifactID), revisionRuntimeArtifactKind, runtimeIdentity.ArtifactDigest, runtimeIdentity.SizeBytes
+	}
 	var ref AgentRevisionArtifactRow
-	if err := s.db.WithContext(ctx).Where("agent_id = ? AND revision = ? AND role = ?", agentID, revision, revisionPolicyArtifactRole(artifactID)).First(&ref).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("agent_id = ? AND revision = ? AND role = ?", agentID, revision, role).First(&ref).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return GenerationArtifactRow{}, false, nil
 		}
@@ -383,8 +521,8 @@ func (s *GormStore) ResolveAgentRevisionPolicyArtifact(ctx context.Context, agen
 	if err := s.db.WithContext(ctx).Where("id = ?", ref.ArtifactID).First(&blob).Error; err != nil {
 		return GenerationArtifactRow{}, false, err
 	}
-	if blob.Kind != revisionPolicyArtifactKind || !strings.EqualFold(blob.SHA256, identity.ArtifactDigest) || blob.SizeBytes != identity.Source.SizeBytes {
-		return GenerationArtifactRow{}, false, fmt.Errorf("revision policy artifact identity is inconsistent")
+	if blob.Kind != kind || !strings.EqualFold(blob.SHA256, digest) || blob.SizeBytes != sizeBytes {
+		return GenerationArtifactRow{}, false, fmt.Errorf("revision plugin artifact identity is inconsistent")
 	}
 	if err := validateGenerationArtifact(blob); err != nil {
 		return GenerationArtifactRow{}, false, err
@@ -410,12 +548,46 @@ func policyArtifactIdentityFromSnapshot(snapshot Snapshot, artifactID string) (r
 	return matched, found, nil
 }
 
+func runtimeArtifactIdentity(generation PluginGeneration) revisionRuntimeArtifactIdentity {
+	return revisionRuntimeArtifactIdentity{
+		ArtifactID: strings.TrimSpace(generation.Artifact.ArtifactID), PackageIdentity: strings.TrimSpace(generation.Artifact.PackageIdentity),
+		PackageDigest: strings.ToLower(strings.TrimSpace(generation.PackageDigest)), RelativePath: generation.Artifact.RelativePath,
+		ArtifactDigest: strings.ToLower(strings.TrimSpace(generation.Artifact.SHA256)), SizeBytes: generation.Artifact.SizeBytes,
+		SignerKeyID: generation.Artifact.SignerKeyID, SignerFingerprint: strings.ToLower(strings.TrimSpace(generation.Artifact.SignerFingerprint)),
+	}
+}
+
+func runtimeArtifactIdentityFromSnapshot(snapshot Snapshot, artifactID string) (revisionRuntimeArtifactIdentity, bool, error) {
+	var matched revisionRuntimeArtifactIdentity
+	found := false
+	for _, generation := range snapshot.PluginGenerations {
+		if generation.Artifact.ArtifactID != artifactID {
+			continue
+		}
+		identity := runtimeArtifactIdentity(generation)
+		if found && matched != identity {
+			return revisionRuntimeArtifactIdentity{}, false, fmt.Errorf("plugin runtime artifact %q has conflicting revision identities", artifactID)
+		}
+		matched, found = identity, true
+	}
+	return matched, found, nil
+}
+
 func revisionPolicyArtifactBlobID(digest string) string {
 	return "plugin-policy-wasm-" + strings.ToLower(strings.TrimSpace(digest))
 }
 func revisionPolicyArtifactRole(artifactID string) string {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(artifactID)))
 	return revisionPolicyArtifactRolePrefix + hex.EncodeToString(digest[:])
+}
+
+func revisionRuntimeArtifactBlobID(digest string) string {
+	return "plugin-runtime-" + strings.ToLower(strings.TrimSpace(digest))
+}
+
+func revisionRuntimeArtifactRole(artifactID string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(artifactID)))
+	return revisionRuntimeArtifactRolePrefix + hex.EncodeToString(digest[:])
 }
 
 type RevisionRetentionPolicy struct {

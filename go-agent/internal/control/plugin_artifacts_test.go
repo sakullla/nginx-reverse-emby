@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -62,6 +63,44 @@ func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerified
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("artifact requests = %d, want immutable cache reuse", requests.Load())
+	}
+}
+
+func TestPluginGenerationArtifactPreparationStrictlyMaterializesRPCExecutable(t *testing.T) {
+	payload := []byte("verified rpc executable")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent-plugin-artifacts/rpc-artifact" || r.URL.Query().Get("revision") != "7" ||
+			r.URL.Query().Get("snapshot_digest") != testPluginSnapshotDigest || r.Header.Get("Accept") != "application/octet-stream" {
+			http.Error(w, "invalid projection identity", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(server.Close)
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret", PluginCacheDir: t.TempDir()}, server.Client())
+	snapshot := model.Snapshot{Revision: 7, PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{{
+		ID: "generation-7", InstanceID: "instance-7", OperationID: "operation-7", Revision: 7,
+		PluginID: "example.rpc", PluginVersion: "1.0.0", PackageDigest: strings.Repeat("a", 64),
+		Runtime: model.PluginRuntimeDescriptor{Kind: model.PluginRuntimeRPCService, ABI: model.PluginRPCABIV1, HostScope: "agent", Entry: "artifacts/plugin"},
+		Artifact: model.PluginArtifactDescriptor{ArtifactID: "rpc-artifact", PackageIdentity: "example.rpc@1.0.0", RelativePath: "artifacts/plugin",
+			SHA256: digest, SizeBytes: int64(len(payload)), Mode: "executable", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+			SignatureVerified: true, SignerKeyID: "release-key", SignerFingerprint: strings.Repeat("b", 64)},
+		ExtensionPoints: []string{"http.request"}, ConfigVersion: 1, Config: json.RawMessage(`{}`),
+		Grants:         []model.PluginGrantProjection{{Name: "agent.read"}},
+		ResourceBudget: model.PluginResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 100, Restarts: 1},
+		Target:         model.PluginTargetBinding{Kind: "agent", ID: "edge-7", ResourceGroupID: "default", Version: 1},
+		FailurePolicy:  model.PluginFailurePolicy{OnError: "degraded", OnBudget: "fail-closed", Restart: "on-failure", CoreFallback: "preserve"},
+	}}}
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, 7, testPluginSnapshotDigest); err != nil {
+		t.Fatalf("preparePluginArtifacts() error = %v", err)
+	}
+	localPath := snapshot.PluginGenerations[0].Artifact.LocalPath
+	if filepath.Ext(localPath) != ".bin" {
+		t.Fatalf("materialized path = %q, want native cache suffix", localPath)
+	}
+	if got, err := os.ReadFile(localPath); err != nil || string(got) != string(payload) {
+		t.Fatalf("materialized RPC artifact = %q, error = %v", got, err)
 	}
 }
 
@@ -289,7 +328,7 @@ func TestPluginArtifactPreparationAuthAndDigestFailuresPreserveLastKnownGood(t *
 }
 
 func pluginArtifactSnapshot(artifactID, digest string, size int64) model.Snapshot {
-	return model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}, PluginPolicies: []model.PluginPolicy{{ID: "shared", Stages: []model.PolicyStage{{
+	return model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}, PluginGenerations: []model.PluginGeneration{}, PluginPolicies: []model.PluginPolicy{{ID: "shared", Stages: []model.PolicyStage{{
 		InstanceID: "instance-1", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: digest,
 		ArtifactSource: model.PolicyArtifactSource{
 			ArtifactID: artifactID, PackageIdentity: strings.Repeat("b", 64), PackageDigest: strings.Repeat("a", 64),

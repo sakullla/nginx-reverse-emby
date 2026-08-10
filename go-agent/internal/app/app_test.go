@@ -123,7 +123,7 @@ func TestNewRegistersConfiguredModules(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.Close() })
 
-	want := []string{"certs", "diagnostics", "egress", "plugin-policy", "http", "relay", "l4", "traffic", "ddns"}
+	want := []string{"certs", "diagnostics", "egress", "plugin-rpc", "plugin-policy", "http", "relay", "l4", "traffic", "ddns"}
 	if got := app.ModuleNames(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModuleNames() = %v, want %v", got, want)
 	}
@@ -400,7 +400,7 @@ func TestRunTreatsFreshStartupCancellationAsGraceful(t *testing.T) {
 
 func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 	got := advertisedCapabilities(Config{})
-	want := []string{"http_rules", "cert_install", "managed_certificate_reports_v1", "local_acme", "l4", "relay_quic", "egress_profiles"}
+	want := []string{"http_rules", "cert_install", "managed_certificate_reports_v1", "local_acme", "l4", "relay_quic", "plugin_generation_v1", "egress_profiles"}
 	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
 		want = append(want, core.PackageManifestCapability)
 	}
@@ -411,7 +411,7 @@ func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 
 func TestAdvertisedCapabilitiesIncludeConfiguredOptionalPanelCapabilities(t *testing.T) {
 	got := advertisedCapabilities(Config{HTTP3Enabled: true})
-	want := []string{"http_rules", "cert_install", "managed_certificate_reports_v1", "local_acme", "l4", "relay_quic", "egress_profiles", "http3_ingress"}
+	want := []string{"http_rules", "cert_install", "managed_certificate_reports_v1", "local_acme", "l4", "relay_quic", "plugin_generation_v1", "egress_profiles", "http3_ingress"}
 	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
 		want = append(want, core.PackageManifestCapability)
 	}

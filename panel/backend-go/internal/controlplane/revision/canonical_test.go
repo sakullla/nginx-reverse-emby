@@ -55,6 +55,53 @@ func TestSemanticSnapshotDigestIgnoresOrderingAndRevisionMetadata(t *testing.T) 
 	}
 }
 
+func TestCanonicalSnapshotNormalizesPluginGenerations(t *testing.T) {
+	t.Parallel()
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	generation := func(instance string, revision int64, extensions []string, config string, grants []storage.PluginGenerationGrant) storage.PluginGeneration {
+		return storage.PluginGeneration{
+			ID: digest, InstanceID: instance, OperationID: "operation", Revision: revision,
+			PluginID: "runtime.rpc", PluginVersion: "1.0.0", PackageDigest: digest,
+			Runtime:         storage.PluginGenerationRuntime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "plugin"},
+			Artifact:        storage.PluginGenerationArtifact{ArtifactID: digest, PackageIdentity: digest, RelativePath: "plugin", SHA256: digest, SizeBytes: 1, Mode: "executable", GOOS: "linux", GOARCH: "amd64", SignatureVerified: true, SignerKeyID: "release", SignerFingerprint: digest},
+			ExtensionPoints: extensions, ConfigVersion: 2, Config: json.RawMessage(config), Grants: grants,
+			SecretHandles: []storage.PluginGenerationSecretHandle{}, ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: 10},
+			Target:        storage.PluginGenerationTarget{Kind: "agent", ID: "edge", ResourceGroupID: "group", Version: 2},
+			FailurePolicy: storage.PluginGenerationFailurePolicy{OnError: "preserve-old"},
+		}
+	}
+	first := storage.Snapshot{Revision: 4, PluginGenerations: []storage.PluginGeneration{
+		generation("z", 4, []string{"relay.write", "relay.read", "relay.read"}, `{"b":2,"a":1}`, []storage.PluginGenerationGrant{{Name: "write"}, {Name: "read"}}),
+		generation("a", 4, nil, `{}`, nil),
+	}}
+	second := storage.Snapshot{Revision: 99, PluginGenerations: []storage.PluginGeneration{
+		generation("a", 99, []string{}, `{ }`, []storage.PluginGenerationGrant{}),
+		generation("z", 99, []string{"relay.read", "relay.write"}, `{"a":1,"b":2}`, []storage.PluginGenerationGrant{{Name: "read"}, {Name: "write"}}),
+	}}
+	left, err := SemanticSnapshotDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := SemanticSnapshotDigest(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left != right {
+		t.Fatalf("equivalent plugin generation digests differ: %s != %s", left, right)
+	}
+	payload, _, err := CanonicalSnapshotPayload(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivered storage.Snapshot
+	if err := json.Unmarshal(payload, &delivered); err != nil {
+		t.Fatal(err)
+	}
+	if delivered.PluginGenerations[0].InstanceID != "a" || !reflect.DeepEqual(delivered.PluginGenerations[1].ExtensionPoints, []string{"relay.read", "relay.write"}) {
+		t.Fatalf("canonical plugin generations = %+v", delivered.PluginGenerations)
+	}
+}
+
 func TestCanonicalSnapshotPreservesConfiguredBackendOrder(t *testing.T) {
 	t.Parallel()
 	snapshot := storage.Snapshot{

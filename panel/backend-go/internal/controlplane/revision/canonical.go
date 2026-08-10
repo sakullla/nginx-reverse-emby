@@ -56,6 +56,22 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 	if stripRevision {
 		result.Revision = 0
 	}
+	result.PluginGenerations = nonNil(result.PluginGenerations)
+	for i := range result.PluginGenerations {
+		generation := &result.PluginGenerations[i]
+		storage.CanonicalizePluginGeneration(generation, stripRevision)
+		generation.Config, err = canonicalJSON(generation.Config)
+		if err != nil {
+			return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin generation config cannot be canonicalized", err)
+		}
+	}
+	sort.SliceStable(result.PluginGenerations, func(i, j int) bool {
+		left, right := result.PluginGenerations[i], result.PluginGenerations[j]
+		if left.InstanceID != right.InstanceID {
+			return left.InstanceID < right.InstanceID
+		}
+		return left.ID < right.ID
+	})
 	result.PluginPolicies = nonNil(result.PluginPolicies)
 	for i := range result.PluginPolicies {
 		if err := storage.ValidatePluginPolicyIdentity(result.PluginPolicies[i].ID); err != nil {
