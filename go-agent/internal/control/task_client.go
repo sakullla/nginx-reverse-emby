@@ -17,7 +17,11 @@ import (
 	"time"
 )
 
-const maxTaskMessageLineBytes = 4 * 1024 * 1024
+const (
+	maxTaskMessageLineBytes       = 4 * 1024 * 1024
+	maxConcurrentTaskExecutions   = 4
+	taskStreamMessageWriteTimeout = 5 * time.Second
+)
 
 type TaskClientConfig struct {
 	MasterURL     string
@@ -100,26 +104,27 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		return err
 	}
 
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
 	pr, pw := io.Pipe()
 	defer pw.Close()
 	var writeMu sync.Mutex
-	writeMessage := func(msg Message) error {
+	writeMessage := func(ctx context.Context, msg Message) error {
 		data, err := encodeMessage(msg)
 		if err != nil {
 			return err
 		}
+		writeCtx, cancelWrite := context.WithTimeout(ctx, taskStreamMessageWriteTimeout)
+		defer cancelWrite()
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		if _, err := pw.Write(append(data, '\n')); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
+		if err := writeTaskStreamPayload(writeCtx, pw, append(data, '\n')); err != nil {
 			return err
 		}
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.streamURL(sessionID), pr)
+	req, err := http.NewRequestWithContext(sessionCtx, http.MethodPost, c.streamURL(sessionID), pr)
 	if err != nil {
 		return err
 	}
@@ -128,11 +133,11 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 
 	helloWritten := make(chan error, 1)
 	go func() {
-		if ctx.Err() != nil {
+		if sessionCtx.Err() != nil {
 			helloWritten <- nil
 			return
 		}
-		helloWritten <- writeMessage(c.helloMessage(sessionID))
+		helloWritten <- writeMessage(sessionCtx, c.helloMessage(sessionID))
 	}()
 
 	resp, err := c.cfg.HTTPClient.Do(req)
@@ -183,13 +188,20 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return writeMessage(msg)
+		if err := writeMessage(ctx, msg); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return c.postUpdate(ctx, taskID, payload)
+		}
+		return nil
 	}
 
+	executions := newTaskExecutionGroup(ctx, cancelSession)
 	scanner := newTaskMessageScanner(resp.Body)
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil
+		if sessionCtx.Err() != nil {
+			break
 		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -202,12 +214,22 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		if msg.Type != "task" || msg.Task == nil {
 			continue
 		}
-		if err := c.handleTaskMessage(ctx, *msg.Task, update); err != nil {
-			return err
-		}
+		task := *msg.Task
+		executions.Start(func(taskCtx context.Context) error {
+			return c.handleTaskMessage(taskCtx, task, update)
+		})
 	}
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		return err
+	scanErr := scanner.Err()
+	cancelSession()
+	taskErr := executions.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if taskErr != nil {
+		return taskErr
+	}
+	if scanErr != nil {
+		return scanErr
 	}
 	return nil
 }
@@ -246,7 +268,9 @@ func (c *TaskClient) probeStreamSession(ctx context.Context, sessionID string) e
 
 func (c *TaskClient) runSSESession(ctx context.Context) error {
 	sessionID := c.nextSessionID()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sessionURL(sessionID), nil)
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+	req, err := http.NewRequestWithContext(sessionCtx, http.MethodGet, c.sessionURL(sessionID), nil)
 	if err != nil {
 		return err
 	}
@@ -264,18 +288,21 @@ func (c *TaskClient) runSSESession(ctx context.Context) error {
 		return fmt.Errorf("task session failed: %s", resp.Status)
 	}
 
+	executions := newTaskExecutionGroup(ctx, cancelSession)
 	scanner := newTaskMessageScanner(resp.Body)
 	eventName := ""
 	dataLines := make([]string, 0, 1)
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil
+		if sessionCtx.Err() != nil {
+			break
 		}
 		line := scanner.Text()
 		if line == "" {
-			if err := c.handleSSEEvent(ctx, eventName, strings.Join(dataLines, "\n")); err != nil {
-				return err
-			}
+			currentEvent := eventName
+			currentData := strings.Join(dataLines, "\n")
+			executions.Start(func(taskCtx context.Context) error {
+				return c.handleSSEEvent(taskCtx, currentEvent, currentData)
+			})
 			eventName = ""
 			dataLines = dataLines[:0]
 			continue
@@ -291,10 +318,87 @@ func (c *TaskClient) runSSESession(ctx context.Context) error {
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		return err
+	scanErr := scanner.Err()
+	cancelSession()
+	taskErr := executions.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if taskErr != nil {
+		return taskErr
+	}
+	if scanErr != nil {
+		return scanErr
 	}
 	return nil
+}
+
+type taskExecutionGroup struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	slots  chan struct{}
+
+	wg       sync.WaitGroup
+	errMu    sync.Mutex
+	firstErr error
+}
+
+func newTaskExecutionGroup(ctx context.Context, cancel context.CancelFunc) *taskExecutionGroup {
+	return &taskExecutionGroup{
+		ctx:    ctx,
+		cancel: cancel,
+		slots:  make(chan struct{}, maxConcurrentTaskExecutions),
+	}
+}
+
+func (g *taskExecutionGroup) Start(run func(context.Context) error) {
+	if g == nil || run == nil {
+		return
+	}
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		select {
+		case g.slots <- struct{}{}:
+			defer func() { <-g.slots }()
+		case <-g.ctx.Done():
+			return
+		}
+		if err := run(g.ctx); err != nil && g.ctx.Err() == nil {
+			g.errMu.Lock()
+			if g.firstErr == nil {
+				g.firstErr = err
+				g.cancel()
+			}
+			g.errMu.Unlock()
+		}
+	}()
+}
+
+func (g *taskExecutionGroup) Wait() error {
+	if g == nil {
+		return nil
+	}
+	g.wg.Wait()
+	g.errMu.Lock()
+	defer g.errMu.Unlock()
+	return g.firstErr
+}
+
+func writeTaskStreamPayload(ctx context.Context, writer *io.PipeWriter, payload []byte) error {
+	written := make(chan error, 1)
+	go func() {
+		_, err := writer.Write(payload)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		return err
+	case <-ctx.Done():
+		_ = writer.CloseWithError(ctx.Err())
+		<-written
+		return ctx.Err()
+	}
 }
 
 func (c *TaskClient) sessionURL(sessionID string) string {

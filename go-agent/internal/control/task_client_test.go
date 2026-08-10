@@ -900,6 +900,125 @@ func TestTaskClientUsesNDJSONTaskStreamForLifecycleUpdates(t *testing.T) {
 	}
 }
 
+func TestTaskClientNDJSONStartsFollowingTaskWhileFirstIsRunning(t *testing.T) {
+	started := make(chan string, 2)
+	finished := make(chan string, 2)
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if writeTaskStreamProbe(w, r) {
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			t.Fatalf("EnableFullDuplex() error = %v", err)
+		}
+
+		bodyDone := make(chan struct{})
+		go func() {
+			defer close(bodyDone)
+			defer r.Body.Close()
+			_, _ = io.Copy(io.Discard, r.Body)
+		}()
+
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		flusher.Flush()
+		deadline := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+		encoder := json.NewEncoder(w)
+		for _, taskID := range []string{"task-1", "task-2"} {
+			if err := encoder.Encode(Message{Type: "task", Task: &TaskMessage{
+				TaskID: taskID, TaskType: TaskTypeDiagnoseHTTPRule, Deadline: deadline,
+				RawPayload: map[string]any{"rule_id": 7},
+			}}); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		<-bodyDone
+	}))
+	defer server.Close()
+
+	client := NewTaskClient(TaskClientConfig{
+		MasterURL:     server.URL,
+		AgentToken:    "token",
+		AgentID:       "edge-a",
+		ReconnectWait: 10 * time.Millisecond,
+		HTTPClient:    server.Client(),
+		Handler: TaskHandlerFunc(func(ctx context.Context, task TaskMessage) (map[string]any, error) {
+			started <- task.TaskID
+			select {
+			case <-release:
+				finished <- task.TaskID
+				return map[string]any{"ok": true}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+
+	seen := make(map[string]bool, 2)
+	for len(seen) < 2 {
+		select {
+		case taskID := <-started:
+			seen[taskID] = true
+		case <-time.After(time.Second):
+			t.Fatalf("started tasks = %v, want both tasks before releasing the first", seen)
+		}
+	}
+	close(release)
+	for range 2 {
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent task handlers to finish")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for client shutdown")
+	}
+}
+
+func TestWriteTaskStreamPayloadStopsBlockedWriteAtContextDeadline(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	err := writeTaskStreamPayload(ctx, writer, []byte("blocked"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeTaskStreamPayload() error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("blocked stream write returned after %s", elapsed)
+	}
+}
+
 func TestTaskClientStreamsHelloAfterServerOKBeforeBodyRead(t *testing.T) {
 	type taskUpdate struct {
 		TaskID string         `json:"task_id"`
