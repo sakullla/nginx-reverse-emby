@@ -67,6 +67,7 @@ type HostedInstance struct {
 	candidate      HostCandidate
 	supervisor     *pluginprocess.Supervisor
 	dial           DialFunc
+	provision      func(string, DialConfig) (attemptSecurity, error)
 	attempt        *hostAttempt
 	status         RuntimeStatus
 	exits          []time.Time
@@ -90,6 +91,7 @@ type Host struct {
 	install        func(context.Context, string, pluginprocess.Artifact) (string, error)
 	supervisor     *pluginprocess.Supervisor
 	dial           DialFunc
+	provision      func(string, DialConfig) (attemptSecurity, error)
 	active         map[string]*HostedInstance
 	pending        map[*HostedInstance]struct{}
 	locks          sync.Map
@@ -110,7 +112,7 @@ func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Superv
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
+	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, provision: provisionAttemptSecurity, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
 }
 
 func (h *Host) instanceLock(id string) *sync.Mutex {
@@ -165,6 +167,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		candidate:  candidate,
 		supervisor: h.supervisor,
 		dial:       h.dial,
+		provision:  h.provision,
 		status: RuntimeStatus{
 			InstanceID: candidate.InstanceID,
 			Generation: candidate.Generation,
@@ -247,16 +250,24 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 }
 
 func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt)) (*hostAttempt, error) {
-	security, err := provisionAttemptSecurity(filepath.Dir(candidate.Process.Executable), candidate.Dial)
-	if err != nil {
-		return nil, err
+	provision := h.provision
+	if provision == nil {
+		provision = provisionAttemptSecurity
 	}
-	failedSecurity := true
-	defer func() {
-		if failedSecurity {
-			_ = security.cleanup()
+	security, err := provision(filepath.Dir(candidate.Process.Executable), candidate.Dial)
+	var attempt *hostAttempt
+	if security.cleanup != nil {
+		attempt = &hostAttempt{cleanup: security.cleanup}
+		if launched != nil {
+			launched(attempt)
 		}
-	}()
+	}
+	if err != nil {
+		return attempt, err
+	}
+	if attempt == nil {
+		return nil, errors.New("RPC plugin attempt security has no cleanup owner")
+	}
 	candidate.Dial = security.dial
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
 	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
@@ -265,16 +276,12 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 	candidate.Process.SensitiveValues = append(candidate.Process.SensitiveValues, candidate.Dial.Cookie)
 	handle, err := h.supervisor.StartOnce(ctx, candidate.Process)
 	if err != nil {
-		return nil, err
+		return attempt, err
 	}
 	if h.afterStartOnce != nil {
 		h.afterStartOnce()
 	}
-	attempt := &hostAttempt{handle: handle, cleanup: security.cleanup}
-	failedSecurity = false
-	if launched != nil {
-		launched(attempt)
-	}
+	attempt.handle = handle
 	if err := processAttemptError(handle); err != nil {
 		return attempt, err
 	}
@@ -599,7 +606,7 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.State = "starting"
 			i.mu.Unlock()
 
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, afterStartOnce: i.afterStartOnce}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, afterStartOnce: i.afterStartOnce}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()

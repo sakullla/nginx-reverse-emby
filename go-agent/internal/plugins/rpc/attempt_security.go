@@ -32,7 +32,16 @@ type attemptSecurity struct {
 	cleanup             func() error
 }
 
+type attemptSecurityOps struct {
+	writeTLS func(string) (*tls.Config, []string, error)
+	cleanup  func(string, string) error
+}
+
 func provisionAttemptSecurity(runtimeDirectory string, dial DialConfig) (attemptSecurity, error) {
+	return provisionAttemptSecurityWithOps(runtimeDirectory, dial, attemptSecurityOps{})
+}
+
+func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, ops attemptSecurityOps) (attemptSecurity, error) {
 	runtimeDirectory, err := filepath.Abs(runtimeDirectory)
 	if err != nil || strings.TrimSpace(runtimeDirectory) == "" {
 		return attemptSecurity{}, errors.New("RPC plugin attempt requires a managed runtime directory")
@@ -41,31 +50,32 @@ func provisionAttemptSecurity(runtimeDirectory string, dial DialConfig) (attempt
 	if err != nil {
 		return attemptSecurity{}, err
 	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = cleanupAttemptDirectory(runtimeDirectory, root)
-		}
-	}()
+	cleanup := ops.cleanup
+	if cleanup == nil {
+		cleanup = cleanupAttemptDirectory
+	}
+	security := attemptSecurity{dial: dial, cleanup: func() error { return cleanup(runtimeDirectory, root) }}
 	if err := os.Chmod(root, 0o700); err != nil {
-		return attemptSecurity{}, err
+		return security, err
 	}
 	endpointDirectory := filepath.Join(root, "endpoint")
 	credentialDirectory := filepath.Join(root, "credentials")
+	security.endpointDirectory = endpointDirectory
+	security.credentialDirectory = credentialDirectory
 	if err := os.Mkdir(endpointDirectory, 0o700); err != nil {
-		return attemptSecurity{}, err
+		return security, err
 	}
 	if err := os.Mkdir(credentialDirectory, 0o700); err != nil {
-		return attemptSecurity{}, err
+		return security, err
 	}
 	cookieBytes := make([]byte, 32)
 	if _, err := rand.Read(cookieBytes); err != nil {
-		return attemptSecurity{}, err
+		return security, err
 	}
 	cookie := hex.EncodeToString(cookieBytes)
 	cookieFile := filepath.Join(credentialDirectory, "cookie")
 	if err := os.WriteFile(cookieFile, []byte(cookie), 0o600); err != nil {
-		return attemptSecurity{}, err
+		return security, err
 	}
 	dial.Cookie = cookie
 	environment := []string{"NRE_PLUGIN_COOKIE_FILE=" + cookieFile}
@@ -73,7 +83,9 @@ func provisionAttemptSecurity(runtimeDirectory string, dial DialConfig) (attempt
 	if strings.EqualFold(dial.Network, "unix") {
 		dial.Address = filepath.Join(endpointDirectory, "rpc.sock")
 		if runtime.GOOS != "windows" && len(dial.Address) >= 104 {
-			return attemptSecurity{}, errors.New("RPC plugin managed unix endpoint path is too long")
+			security.dial = dial
+			security.environment = environment
+			return security, errors.New("RPC plugin managed unix endpoint path is too long")
 		}
 		dial.RuntimeRoot = endpointDirectory
 		guestEndpoint = guestEndpointDirectory + "/rpc.sock"
@@ -82,15 +94,24 @@ func provisionAttemptSecurity(runtimeDirectory string, dial DialConfig) (attempt
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+dial.Network+":"+dial.Address)
 	}
 	if strings.EqualFold(dial.Network, "tcp") {
-		clientTLS, tlsEnvironment, err := writeAttemptTLS(credentialDirectory)
+		writeTLS := ops.writeTLS
+		if writeTLS == nil {
+			writeTLS = writeAttemptTLS
+		}
+		clientTLS, tlsEnvironment, err := writeTLS(credentialDirectory)
 		if err != nil {
-			return attemptSecurity{}, err
+			security.dial = dial
+			security.guestEndpoint = guestEndpoint
+			security.environment = environment
+			return security, err
 		}
 		dial.TLSConfig = clientTLS
 		environment = append(environment, tlsEnvironment...)
 	}
-	failed = false
-	return attemptSecurity{dial: dial, endpointDirectory: endpointDirectory, credentialDirectory: credentialDirectory, guestEndpoint: guestEndpoint, environment: environment, cleanup: func() error { return cleanupAttemptDirectory(runtimeDirectory, root) }}, nil
+	security.dial = dial
+	security.guestEndpoint = guestEndpoint
+	security.environment = environment
+	return security, nil
 }
 
 func cleanupAttemptDirectory(runtimeDirectory, root string) error {

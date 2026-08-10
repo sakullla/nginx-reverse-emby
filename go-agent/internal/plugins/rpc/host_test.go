@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -69,6 +70,12 @@ type hostRunner struct{}
 
 func (hostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
 	return &hostProcess{done: make(chan error, 1)}, func() error { return nil }, nil
+}
+
+type failingStartHostRunner struct{ err error }
+
+func (r failingStartHostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
+	return nil, nil, r.err
 }
 
 type drainHostProcess struct {
@@ -359,6 +366,88 @@ func TestRPCHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.T) 
 	case <-process.stopped:
 	default:
 		t.Fatal("Close returned before setup-failed process terminated")
+	}
+}
+
+func TestRPCHostProvisionFailureRetainsCredentialOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.Dial = DialConfig{Network: "tcp", Address: "127.0.0.1:12345"}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupErr := errors.New("provision setup failed")
+	cleanupErr := errors.New("credential cleanup failed")
+	cleanupCalls := 0
+	host.provision = func(runtimeDirectory string, dial DialConfig) (attemptSecurity, error) {
+		return provisionAttemptSecurityWithOps(runtimeDirectory, dial, attemptSecurityOps{
+			writeTLS: func(string) (*tls.Config, []string, error) { return nil, nil, setupErr },
+			cleanup: func(runtimeRoot, attemptRoot string) error {
+				cleanupCalls++
+				if cleanupCalls == 1 {
+					return cleanupErr
+				}
+				return cleanupAttemptDirectory(runtimeRoot, attemptRoot)
+			},
+		})
+	}
+	if _, err := host.Activate(t.Context(), candidate); !errors.Is(err, setupErr) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("Activate provision error = %v", err)
+	}
+	host.mu.RLock()
+	pending := len(host.pending)
+	host.mu.RUnlock()
+	if pending != 1 {
+		t.Fatalf("provision failure ownership = %d, want 1", pending)
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry partial provision cleanup: %v", err)
+	}
+	if cleanupCalls != 2 {
+		t.Fatalf("credential cleanup calls = %d, want 2", cleanupCalls)
+	}
+}
+
+func TestRPCHostStartOnceFailureRetainsCredentialOwnerUntilCloseRetry(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	startErr := errors.New("process setup failed")
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(failingStartHostRunner{err: startErr}, nil, io.Discard), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalProvision := host.provision
+	cleanupErr := errors.New("credential cleanup failed")
+	cleanupCalls := 0
+	host.provision = func(runtimeDirectory string, dial DialConfig) (attemptSecurity, error) {
+		security, err := originalProvision(runtimeDirectory, dial)
+		if security.cleanup != nil {
+			cleanup := security.cleanup
+			security.cleanup = func() error {
+				cleanupCalls++
+				if cleanupCalls == 1 {
+					return cleanupErr
+				}
+				return cleanup()
+			}
+		}
+		return security, err
+	}
+	if _, err := host.Activate(t.Context(), candidate); !errors.Is(err, startErr) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("Activate StartOnce error = %v", err)
+	}
+	host.mu.RLock()
+	pending := len(host.pending)
+	host.mu.RUnlock()
+	if pending != 1 {
+		t.Fatalf("StartOnce failure ownership = %d, want 1", pending)
+	}
+	if err := host.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry StartOnce credential cleanup: %v", err)
+	}
+	if cleanupCalls != 2 {
+		t.Fatalf("credential cleanup calls = %d, want 2", cleanupCalls)
 	}
 }
 

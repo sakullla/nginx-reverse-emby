@@ -49,7 +49,9 @@ func (p *cleanupRetryBackendProcess) Cleanup() error {
 func (p *expectedSignalExitProcess) PID() int    { return 78 }
 func (p *expectedSignalExitProcess) Wait() error { return <-p.done }
 func (p *expectedSignalExitProcess) Signal(os.Signal) error {
-	p.once.Do(func() { p.done <- errors.New("signal: interrupt") })
+	p.once.Do(func() {
+		p.done <- &expectedHostTerminationWaitError{err: errors.New("signal: interrupt"), interrupt: true}
+	})
 	return nil
 }
 func (p *expectedSignalExitProcess) Kill() error {
@@ -853,15 +855,58 @@ func TestPluginHostStopReturnsWhenProcessAlreadyExited(t *testing.T) {
 	}
 }
 
-func TestPluginHostStopSurfacesSignalWaitError(t *testing.T) {
+func TestPluginHostStopNormalizesAcceptedInterruptWaitError(t *testing.T) {
 	process := &expectedSignalExitProcess{done: make(chan error, 1)}
 	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Second, done: make(chan struct{})}
 	go instance.monitor()
-	if err := instance.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "signal: interrupt") {
-		t.Fatalf("signal wait error was not surfaced: %v", err)
+	if err := instance.Stop(t.Context()); err != nil {
+		t.Fatalf("accepted interrupt wait error was not normalized: %v", err)
 	}
 	if !instance.terminated() {
 		t.Fatalf("signal-terminated instance retained status: %+v", instance)
+	}
+}
+
+func TestPluginHostStopStillSurfacesPreexistingCrash(t *testing.T) {
+	process := &testProcess{done: make(chan error, 1)}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Millisecond, done: make(chan struct{})}
+	go instance.monitor()
+	process.done <- errors.New("preexisting crash")
+	select {
+	case <-instance.done:
+	case <-time.After(time.Second):
+		t.Fatal("crashed process was not observed")
+	}
+	if err := instance.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "preexisting crash") {
+		t.Fatalf("preexisting crash error = %v", err)
+	}
+}
+
+type expectedSignalCleanupProcess struct {
+	*expectedSignalExitProcess
+	cleanupCalls int
+}
+
+func (p *expectedSignalCleanupProcess) Cleanup() error {
+	p.cleanupCalls++
+	if p.cleanupCalls == 1 {
+		return errors.New("cleanup after interrupt failed")
+	}
+	return nil
+}
+
+func TestPluginHostStopStillSurfacesCleanupAfterAcceptedInterrupt(t *testing.T) {
+	process := &expectedSignalCleanupProcess{expectedSignalExitProcess: &expectedSignalExitProcess{done: make(chan error, 1)}}
+	instance := &Instance{ID: "instance", Generation: "g1", PID: process.PID(), State: "healthy", process: process, grace: time.Millisecond, done: make(chan struct{})}
+	go instance.monitor()
+	if err := instance.Stop(t.Context()); err == nil || !strings.Contains(err.Error(), "cleanup after interrupt failed") {
+		t.Fatalf("cleanup error after accepted interrupt = %v", err)
+	}
+	if instance.terminated() {
+		t.Fatal("cleanup failure marked interrupt-terminated instance terminal")
+	}
+	if err := instance.Stop(t.Context()); err != nil {
+		t.Fatalf("cleanup retry after accepted interrupt: %v", err)
 	}
 }
 

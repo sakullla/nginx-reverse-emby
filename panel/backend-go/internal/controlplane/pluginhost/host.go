@@ -116,6 +116,8 @@ type Instance struct {
 	stopMu                     sync.Mutex
 	gracefulOnce               sync.Once
 	signalErr                  error
+	interruptAccepted          bool
+	killAccepted               bool
 	rpcStopOnce                sync.Once
 	rpcStopErr                 error
 	closeOnce                  sync.Once
@@ -132,7 +134,9 @@ type Instance struct {
 	grace                      time.Duration
 	logCloser                  io.Closer
 	done                       chan struct{}
-	waitErr                    error
+	processWaitErr             error
+	logErr                     error
+	exitErrorConsumed          bool
 	candidate                  Candidate
 	control                    *runtimeControl
 	securityCleanup            func() error
@@ -516,16 +520,18 @@ func (i *Instance) Status() (string, string) {
 	return i.State, i.LastError
 }
 func (i *Instance) monitor() {
-	err := i.process.Wait()
+	processErr := i.process.Wait()
+	var logErr error
 	if i.logCloser != nil {
-		err = errors.Join(err, i.logCloser.Close())
+		logErr = i.logCloser.Close()
 	}
 	i.mu.Lock()
-	i.waitErr = err
+	i.processWaitErr = processErr
+	i.logErr = logErr
 	if i.State != "stopping" && i.State != "stopped" {
 		i.State = "failed"
-		if err != nil {
-			i.LastError = safeError(err)
+		if waitErr := errors.Join(processErr, logErr); waitErr != nil {
+			i.LastError = safeError(waitErr)
 		}
 	}
 	i.mu.Unlock()
@@ -554,7 +560,6 @@ func (i *Instance) stop(ctx context.Context) error {
 	i.rpcStopOnce.Do(func() { i.rpcStopErr = i.stopRPC(ctx) })
 	var signalErr, killErr, joinErr, waitErr error
 	terminated := false
-	alreadyExited := false
 	if i.process != nil {
 		grace := i.grace
 		if grace <= 0 {
@@ -563,7 +568,6 @@ func (i *Instance) stop(ctx context.Context) error {
 		select {
 		case <-i.done:
 			terminated = true
-			alreadyExited = true
 		default:
 		}
 		if !terminated && i.rpcStopErr == nil && i.client != nil {
@@ -586,6 +590,7 @@ func (i *Instance) stop(ctx context.Context) error {
 			i.gracefulOnce.Do(func() {
 				graceful = true
 				i.signalErr = i.process.Signal(os.Interrupt)
+				i.interruptAccepted = i.signalErr == nil
 			})
 			if graceful {
 				timer := time.NewTimer(grace)
@@ -604,6 +609,9 @@ func (i *Instance) stop(ctx context.Context) error {
 			}
 			if !terminated {
 				killErr = i.process.Kill()
+				if killErr == nil {
+					i.killAccepted = true
+				}
 				if i.processCancel != nil {
 					i.processCancel()
 				}
@@ -617,10 +625,14 @@ func (i *Instance) stop(ctx context.Context) error {
 				cancel()
 			}
 		}
-		if terminated && !alreadyExited {
+		if terminated {
 			i.mu.RLock()
-			waitErr = i.waitErr
+			processWaitErr, logErr, exitErrorConsumed := i.processWaitErr, i.logErr, i.exitErrorConsumed
 			i.mu.RUnlock()
+			if !exitErrorConsumed {
+				processWaitErr = normalizeExpectedTerminationWaitError(processWaitErr, i.interruptAccepted, i.killAccepted)
+				waitErr = errors.Join(processWaitErr, logErr)
+			}
 		}
 	}
 	var closeErr, cleanupErr error
@@ -639,7 +651,7 @@ func (i *Instance) stop(ctx context.Context) error {
 		if terminated {
 			i.PID = 0
 		}
-		i.LastError = safeError(errors.Join(killErr, joinErr, cleanupErr))
+		i.LastError = safeError(errors.Join(killErr, joinErr, waitErr, cleanupErr))
 	}
 	i.mu.Unlock()
 	if processExited && i.processCancel != nil {
@@ -771,9 +783,10 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 				return
 			case <-instance.done:
 			}
-			instance.mu.RLock()
-			failure = instance.waitErr
-			instance.mu.RUnlock()
+			instance.mu.Lock()
+			failure = errors.Join(instance.processWaitErr, instance.logErr)
+			instance.exitErrorConsumed = true
+			instance.mu.Unlock()
 			if failure == nil {
 				failure = errors.New("control-plane plugin process exited unexpectedly")
 			}
