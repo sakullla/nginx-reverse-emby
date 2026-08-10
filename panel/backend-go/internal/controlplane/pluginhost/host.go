@@ -37,8 +37,8 @@ type Candidate struct {
 	Config                                                []byte
 	Args, Environment                                     []string
 	Endpoint                                              Endpoint
-	Capabilities, Grants                                  []string
-	Budget                                                ProcessBudget
+	Requirement                                           SandboxRequirement
+	Grants                                                []string
 	Deadline, GracePeriod                                 time.Duration
 	RestartLimit                                          int
 	RestartWindow                                         time.Duration
@@ -79,6 +79,7 @@ type Launcher interface {
 
 type Host struct {
 	mu             sync.RWMutex
+	closed         bool
 	runtimeRoot    string
 	launcher       Launcher
 	dialer         RPCDialer
@@ -95,10 +96,15 @@ type RuntimeStatus struct {
 }
 
 type runtimeControl struct {
-	candidate Candidate
-	exits     []time.Time
-	restarts  int
-	backoff   time.Duration
+	candidate  Candidate
+	exits      []time.Time
+	restarts   int
+	backoff    time.Duration
+	ctx        context.Context
+	cancel     context.CancelFunc
+	launchMu   sync.Mutex
+	observerMu sync.Mutex
+	wg         sync.WaitGroup
 }
 
 type Instance struct {
@@ -155,6 +161,12 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (*Inst
 	}
 	if candidate.Identity.Generation == "" || candidate.InstanceID == "" {
 		return nil, errors.New("control-plane plugin instance and generation are required")
+	}
+	h.mu.RLock()
+	closed := h.closed
+	h.mu.RUnlock()
+	if closed {
+		return nil, errors.New("control-plane plugin host is closed")
 	}
 	if err := authorizeSandbox(candidate); err != nil {
 		return nil, err
@@ -259,25 +271,40 @@ func (h *Host) Publish(instance *Instance) error {
 	if h == nil || instance == nil || instance.ID == "" || instance.Generation == "" {
 		return errors.New("prepared control-plane plugin instance is required")
 	}
-	h.mu.Lock()
-	previous := h.active[instance.ID]
 	normalized := normalizeRestartCandidate(instance.candidate)
-	control := &runtimeControl{candidate: normalized, backoff: normalized.InitialBackoff}
+	runCtx, cancel := context.WithCancel(context.Background())
+	control := &runtimeControl{candidate: normalized, backoff: normalized.InitialBackoff, ctx: runCtx, cancel: cancel}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		cancel()
+		return errors.New("control-plane plugin host is closed")
+	}
+	previous := h.active[instance.ID]
+	if previous != nil && previous.control != nil {
+		previous.control.cancel()
+	}
+	workers := 1
+	if previous != nil && previous != instance {
+		workers++
+	}
+	control.wg.Add(workers)
 	instance.control = control
 	h.active[instance.ID] = instance
 	h.mu.Unlock()
+	h.notifyOwned(instance, control)
+	go h.watch(control, instance)
 	if previous != nil && previous != instance {
 		go func() {
-			if err := previous.Stop(context.Background()); err != nil {
+			defer control.wg.Done()
+			if err := h.stopPublished(context.Background(), previous); err != nil {
 				instance.mu.Lock()
 				instance.LastError = "previous generation cleanup: " + safeError(err)
 				instance.mu.Unlock()
-				h.notify(instance)
+				h.notifyOwned(instance, control)
 			}
 		}()
 	}
-	h.notify(instance)
-	go h.watch(instance)
 	return nil
 }
 func (h *Host) Activate(ctx context.Context, candidate Candidate) (*Instance, error) {
@@ -301,26 +328,54 @@ func (h *Host) Active(instanceID string) (*Instance, bool) {
 func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	h.mu.Lock()
 	instance := h.active[instanceID]
-	delete(h.active, instanceID)
+	if instance != nil {
+		delete(h.active, instanceID)
+		if instance.control != nil {
+			instance.control.cancel()
+		}
+	}
 	h.mu.Unlock()
 	if instance == nil {
 		return nil
 	}
-	return instance.Stop(ctx)
+	return h.stopPublished(ctx, instance)
 }
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
+	h.closed = true
 	instances := make([]*Instance, 0, len(h.active))
 	for _, instance := range h.active {
 		instances = append(instances, instance)
+		if instance.control != nil {
+			instance.control.cancel()
+		}
 	}
 	h.active = make(map[string]*Instance)
 	h.mu.Unlock()
 	var errs []error
 	for _, instance := range instances {
-		errs = append(errs, instance.Stop(ctx))
+		errs = append(errs, h.stopPublished(ctx, instance))
 	}
 	return errors.Join(errs...)
+}
+
+func (h *Host) stopPublished(ctx context.Context, instance *Instance) error {
+	if instance == nil {
+		return nil
+	}
+	control := instance.control
+	if control != nil {
+		control.cancel()
+		control.observerMu.Lock()
+		control.observerMu.Unlock()
+	}
+	stopErr := instance.Stop(ctx)
+	if control != nil {
+		control.launchMu.Lock()
+		control.launchMu.Unlock()
+		control.wg.Wait()
+	}
+	return stopErr
 }
 
 func (i *Instance) Status() (string, string) {
@@ -414,14 +469,83 @@ func normalizeRestartCandidate(candidate Candidate) Candidate {
 	return candidate
 }
 
-func (h *Host) watch(instance *Instance) {
-	<-instance.done
-	h.mu.Lock()
-	if h.active[instance.ID] != instance {
+func (h *Host) watch(control *runtimeControl, instance *Instance) {
+	defer control.wg.Done()
+	var failure error
+	for {
+		if failure == nil {
+			select {
+			case <-control.ctx.Done():
+				return
+			case <-instance.done:
+			}
+			instance.mu.RLock()
+			failure = instance.waitErr
+			instance.mu.RUnlock()
+			if failure == nil {
+				failure = errors.New("control-plane plugin process exited unexpectedly")
+			}
+		}
+		backoff, retry := h.recordRestartFailure(control, instance, failure)
+		if !retry {
+			h.notifyOwned(instance, control)
+			return
+		}
+		h.notifyOwned(instance, control)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-control.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		control.launchMu.Lock()
+		if !h.ownsRuntime(instance, control) {
+			control.launchMu.Unlock()
+			return
+		}
+		replacement, err := h.PrepareCandidate(control.ctx, control.candidate)
+		if err != nil {
+			control.launchMu.Unlock()
+			if control.ctx.Err() != nil {
+				return
+			}
+			instance.mu.Lock()
+			instance.LastError = safeError(err)
+			instance.mu.Unlock()
+			failure = err
+			continue
+		}
+		replacement.control = control
+		replacement.mu.Lock()
+		replacement.RestartCount = control.restarts
+		replacement.mu.Unlock()
+		h.mu.Lock()
+		if control.ctx.Err() != nil || h.active[instance.ID] != instance {
+			h.mu.Unlock()
+			control.launchMu.Unlock()
+			_ = replacement.Stop(context.Background())
+			return
+		}
+		h.active[instance.ID] = replacement
 		h.mu.Unlock()
-		return
+		control.launchMu.Unlock()
+		if instance.closer != nil {
+			_ = instance.closer.Close()
+		}
+		h.notifyOwned(replacement, control)
+		instance = replacement
+		failure = nil
 	}
-	control := instance.control
+}
+
+func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance, failure error) (time.Duration, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if control.ctx.Err() != nil || h.active[instance.ID] != instance {
+		return 0, false
+	}
 	now := time.Now().UTC()
 	cutoff := now.Add(-control.candidate.RestartWindow)
 	kept := control.exits[:0]
@@ -431,14 +555,13 @@ func (h *Host) watch(instance *Instance) {
 		}
 	}
 	control.exits = append(kept, now)
+	instance.mu.Lock()
+	defer instance.mu.Unlock()
+	instance.LastError = safeError(failure)
+	instance.PID = 0
 	if len(control.exits) > control.candidate.RestartLimit {
-		instance.mu.Lock()
 		instance.State, instance.CircuitOpen = "failed", true
-		instance.PID = 0
-		instance.mu.Unlock()
-		h.mu.Unlock()
-		h.notify(instance)
-		return
+		return 0, false
 	}
 	control.restarts++
 	backoff := control.backoff
@@ -446,59 +569,28 @@ func (h *Host) watch(instance *Instance) {
 	if control.backoff > control.candidate.MaximumBackoff {
 		control.backoff = control.candidate.MaximumBackoff
 	}
-	instance.mu.Lock()
-	instance.State, instance.PID = "backoff", 0
+	instance.State = "backoff"
 	instance.RestartCount = control.restarts
-	instance.mu.Unlock()
-	h.mu.Unlock()
-	h.notify(instance)
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-	<-timer.C
-
-	replacement, err := h.PrepareCandidate(context.Background(), control.candidate)
-	if err != nil {
-		instance.mu.Lock()
-		instance.LastError = safeError(err)
-		instance.mu.Unlock()
-		h.notify(instance)
-		go h.watchRetry(instance, control)
-		return
-	}
-	replacement.control = control
-	replacement.mu.Lock()
-	replacement.RestartCount = control.restarts
-	replacement.mu.Unlock()
-	h.mu.Lock()
-	if h.active[instance.ID] != instance {
-		h.mu.Unlock()
-		_ = replacement.Stop(context.Background())
-		return
-	}
-	h.active[instance.ID] = replacement
-	h.mu.Unlock()
-	if instance.closer != nil {
-		_ = instance.closer.Close()
-	}
-	h.notify(replacement)
-	go h.watch(replacement)
+	return backoff, true
 }
 
-func (h *Host) watchRetry(instance *Instance, control *runtimeControl) {
-	// A failed start consumes the same crash budget as an exited process.
-	instance.mu.Lock()
-	instance.done = make(chan struct{})
-	close(instance.done)
-	instance.control = control
-	instance.mu.Unlock()
-	h.watch(instance)
+func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return !h.closed && control.ctx.Err() == nil && h.active[instance.ID] == instance
 }
 
-func (h *Host) notify(instance *Instance) {
+func (h *Host) notifyOwned(instance *Instance, control *runtimeControl) {
+	if instance == nil || control == nil {
+		return
+	}
+	control.observerMu.Lock()
+	defer control.observerMu.Unlock()
 	h.mu.RLock()
 	observer := h.observer
+	owned := !h.closed && control.ctx.Err() == nil && h.active[instance.ID] == instance
 	h.mu.RUnlock()
-	if observer == nil || instance == nil {
+	if observer == nil || !owned {
 		return
 	}
 	instance.mu.RLock()
@@ -506,18 +598,31 @@ func (h *Host) notify(instance *Instance) {
 	instance.mu.RUnlock()
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
+		if control.ctx.Err() != nil || !h.ownsRuntime(instance, control) {
+			return
+		}
 		if err = observer(status); err == nil {
 			h.mu.Lock()
-			delete(h.observerErrors, instance.ID)
+			if control.ctx.Err() == nil && h.active[instance.ID] == instance {
+				delete(h.observerErrors, instance.ID)
+			}
 			h.mu.Unlock()
 			return
 		}
 		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			timer := time.NewTimer(time.Duration(attempt+1) * 10 * time.Millisecond)
+			select {
+			case <-control.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
 	}
 	h.mu.Lock()
-	h.observerErrors[instance.ID] = err
+	if control.ctx.Err() == nil && h.active[instance.ID] == instance {
+		h.observerErrors[instance.ID] = err
+	}
 	h.mu.Unlock()
 	instance.mu.Lock()
 	instance.LastError = safeError(errors.Join(errors.New("runtime status persistence failed"), err))
@@ -526,8 +631,8 @@ func (h *Host) notify(instance *Instance) {
 
 type ExecLauncher struct{}
 
-func (ExecLauncher) Start(_ context.Context, executable string, args, environment []string, output io.Writer, candidate Candidate) (Process, error) {
-	cmd := exec.Command(executable, args...)
+func (ExecLauncher) Start(ctx context.Context, executable string, args, environment []string, output io.Writer, candidate Candidate) (Process, error) {
+	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = filepath.Dir(executable)
 	processEnvironment, err := buildPluginEnvironment(environment, candidate.attemptEnvironment)
 	if err != nil {
@@ -622,6 +727,9 @@ func (p execProcess) Signal(s os.Signal) error { return p.cmd.Process.Signal(s) 
 func (p execProcess) Kill() error              { return p.cmd.Process.Kill() }
 
 func authorizeSandbox(candidate Candidate) error {
+	if err := candidate.Requirement.validatePackageDigest(candidate.Identity.PackageDigest); err != nil {
+		return err
+	}
 	if hasUnsandboxedGrant(candidate.Grants) {
 		return nil
 	}

@@ -23,6 +23,20 @@ type hostProcess struct {
 	pid  int
 }
 
+func agentSandboxRequirement(t *testing.T, digest string) pluginprocess.SandboxRequirement {
+	t.Helper()
+	requirement, err := pluginprocess.NewSandboxRequirement(pluginprocess.SandboxRequirementProjection{
+		PackageDigest:   digest,
+		Permissions:     []pluginprocess.SandboxPermission{pluginprocess.PermissionAgentRead},
+		ExtensionPoints: []pluginprocess.SandboxExtensionPoint{pluginprocess.ExtensionHTTPRequest},
+		ResourceBudget:  pluginprocess.ManifestResourceBudget{TimeoutMS: 1000, MemoryBytes: 256 << 20, Concurrency: 8, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requirement
+}
+
 func (p *hostProcess) PID() int {
 	if p.pid == 0 {
 		return 9
@@ -149,6 +163,7 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = host.Close(context.Background()) })
 	candidate := HostCandidate{InstanceID: "instance", PluginID: "plugin", PluginVersion: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Artifact: artifact, Scopes: []string{"relay.read"}, Process: pluginprocess.InstanceSpec{Security: pluginprocess.Security{Grants: []string{pluginprocess.UnsandboxedGrant}}, GracePeriod: time.Millisecond}, Dial: DialConfig{Cookie: "cookie"}}
+	candidate.Requirement = agentSandboxRequirement(t, candidate.PackageDigest)
 	first, err := host.Activate(t.Context(), candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +305,7 @@ func newRestartHostCandidate(t *testing.T, root string) HostCandidate {
 		PluginID:      "plugin",
 		PluginVersion: "1",
 		PackageDigest: encoded,
+		Requirement:   agentSandboxRequirement(t, encoded),
 		Generation:    "g1",
 		Artifact: pluginprocess.Artifact{
 			CachePath: cache,

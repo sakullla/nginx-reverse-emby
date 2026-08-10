@@ -60,7 +60,9 @@ func TestPluginHostRealLinuxSandboxGRPCHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := Candidate{InstanceID: "sandbox", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(hash.Sum(nil)), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: "package", Generation: "g1", Scopes: []string{"relay.read"}}, Args: []string{"-test.run=^TestPluginHostRealLinuxSandboxGRPCHandshake$"}, Environment: []string{"NRE_TEST_CONTROL_LINUX_SANDBOX_GUEST=1"}, Endpoint: Endpoint{Network: "unix"}, Budget: ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 8, Files: 128, Network: false}, Deadline: 5 * time.Second, GracePeriod: time.Second}
+	artifactDigest := hex.EncodeToString(hash.Sum(nil))
+	candidate := Candidate{InstanceID: "sandbox", Artifact: Artifact{CachePath: cache, SHA256: artifactDigest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: artifactDigest, Generation: "g1", Scopes: []string{"relay.read"}}, Args: []string{"-test.run=^TestPluginHostRealLinuxSandboxGRPCHandshake$"}, Environment: []string{"NRE_TEST_CONTROL_LINUX_SANDBOX_GUEST=1"}, Endpoint: Endpoint{Network: "unix"}, Deadline: 5 * time.Second, GracePeriod: time.Second}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	if _, err := host.Activate(t.Context(), candidate); err != nil {
 		t.Fatal(err)
 	}

@@ -27,7 +27,8 @@ func validatePlatformSandbox(c Candidate) error {
 	if unix.Access(backendCgroupRoot, unix.W_OK) != nil {
 		return errors.New("linux control-plane plugin sandbox requires writable cgroup v2")
 	}
-	if c.Budget.CPUMillis <= 0 || c.Budget.CPUMillis > 1000 || c.Budget.MemoryBytes <= 0 || c.Budget.Processes <= 0 || c.Budget.Files <= 0 {
+	budget := c.Requirement.Budget()
+	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 || budget.MemoryBytes <= 0 || budget.Processes <= 0 || budget.Files <= 0 {
 		return errors.New("linux control-plane plugin sandbox requires bounded CPU/memory/process/file budgets")
 	}
 	return nil
@@ -41,11 +42,12 @@ func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(in
 	}
 	bwrap, _ := exec.LookPath("bwrap")
 	prlimit, _ := exec.LookPath("prlimit")
-	filter, err := backendSeccomp(c.Budget.Network)
+	budget := c.Requirement.Budget()
+	filter, err := backendSeccomp(budget.Network)
 	if err != nil {
 		return nil, nil, err
 	}
-	dir, cgroup, err := prepareBackendCgroup(c.Budget)
+	dir, cgroup, err := prepareBackendCgroup(budget)
 	if err != nil {
 		filter.Close()
 		return nil, nil, err
@@ -75,7 +77,8 @@ func backendLinuxSandboxArguments(bwrap, prlimit, executable string, original, e
 			args = append(args, "--ro-bind", library, library)
 		}
 	}
-	if !c.Budget.Network {
+	budget := c.Requirement.Budget()
+	if !budget.Network {
 		args = append(args, "--unshare-net")
 	} else {
 		args = append(args, "--dir", "/etc")
@@ -105,7 +108,7 @@ func backendLinuxSandboxArguments(bwrap, prlimit, executable string, original, e
 		)
 	}
 	args = append(args, "--chdir", "/plugin")
-	args = append(args, "--seccomp", strconv.Itoa(filterFD), "--", "/runtime/prlimit", "--nofile="+strconv.Itoa(c.Budget.Files)+":"+strconv.Itoa(c.Budget.Files), "--", "/plugin/plugin")
+	args = append(args, "--seccomp", strconv.Itoa(filterFD), "--", "/runtime/prlimit", "--nofile="+strconv.Itoa(budget.Files)+":"+strconv.Itoa(budget.Files), "--", "/plugin/plugin")
 	args = append(args, original...)
 	return args
 }

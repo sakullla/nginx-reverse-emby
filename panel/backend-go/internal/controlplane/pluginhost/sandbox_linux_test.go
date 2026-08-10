@@ -12,7 +12,7 @@ import (
 )
 
 func TestPluginHostLinuxSandboxBindsBeforeExecAndUsesMinimalFilesystem(t *testing.T) {
-	candidate := Candidate{Budget: ProcessBudget{Files: 32, Network: false}, endpointDirectory: "/managed/attempt/endpoint", credentialDirectory: "/managed/attempt/credentials", guestEndpoint: "/run/nre-plugin/rpc.sock"}
+	candidate := Candidate{Requirement: testControlRequirement(ProcessBudget{Files: 32, Network: false}, false, true), endpointDirectory: "/managed/attempt/endpoint", credentialDirectory: "/managed/attempt/credentials", guestEndpoint: "/run/nre-plugin/rpc.sock"}
 	args := backendLinuxSandboxArguments("/usr/bin/bwrap", "/usr/bin/prlimit", "/managed/instance/plugin", []string{"--guest"}, []string{"PATH=/usr/bin:/bin"}, candidate, 3)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--ro-bind / /") || strings.Contains(joined, "/home") || strings.Contains(joined, "/root") || strings.Contains(joined, "/panel") {
@@ -33,7 +33,7 @@ func TestPluginHostLinuxSandboxLiveProcess(t *testing.T) {
 	if os.Getenv("NRE_TEST_LINUX_SANDBOX") != "1" {
 		t.Skip("set NRE_TEST_LINUX_SANDBOX=1 on a Linux cgroup v2 host")
 	}
-	candidate := Candidate{Budget: ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 8, Files: 64}}
+	candidate := Candidate{Requirement: testControlRequirement(ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 8, Files: 64}, false, true)}
 	process, err := (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostLinuxSandboxGuest$"}, []string{"NRE_TEST_LINUX_SANDBOX_GUEST=1"}, io.Discard, candidate)
 	if err != nil {
 		t.Fatal(err)

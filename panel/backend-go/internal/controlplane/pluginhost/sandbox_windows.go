@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"golang.org/x/sys/windows"
 	"os/exec"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -17,19 +16,17 @@ var backendCreateRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewP
 type backendJobCPU struct{ Flags, Rate uint32 }
 
 func validatePlatformSandbox(c Candidate) error {
-	for _, capability := range c.Capabilities {
-		capability = strings.ToLower(strings.TrimSpace(capability))
-		if strings.HasPrefix(capability, "docker.") || strings.HasPrefix(capability, "filesystem.host") || strings.HasPrefix(capability, "process.") || strings.HasPrefix(capability, "network.") {
-			return errors.New("windows control-plane plugin sandbox is unavailable for high-risk host capabilities")
-		}
+	if c.Requirement.RequiresPrivilegeBoundary() {
+		return errors.New("windows control-plane plugin sandbox is unavailable for privileged manifest requirements")
 	}
-	if c.Budget.CPUMillis <= 0 || c.Budget.CPUMillis > 1000 {
+	budget := c.Requirement.Budget()
+	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("windows control-plane plugin sandbox requires cpu_millis within 1..1000")
 	}
-	if c.Budget.MemoryBytes <= 0 || c.Budget.Processes <= 0 {
+	if budget.MemoryBytes <= 0 || budget.Processes <= 0 {
 		return errors.New("windows control-plane plugin sandbox requires memory and process budgets")
 	}
-	if c.Budget.Files > 0 || !c.Budget.Network {
+	if budget.Files > 0 || c.Requirement.RequiresNetworkIsolation() {
 		return errors.New("windows control-plane plugin sandbox cannot enforce requested files/network budget")
 	}
 	return nil
@@ -51,7 +48,7 @@ func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func(in
 	if ok == 0 {
 		return nil, nil, callErr
 	}
-	job, err := newBackendJob(c.Budget)
+	job, err := newBackendJob(c.Requirement.Budget())
 	if err != nil {
 		restricted.Close()
 		return nil, nil, err

@@ -55,11 +55,11 @@ type Runner interface {
 
 type ExecRunner struct{}
 
-func (ExecRunner) Start(_ context.Context, spec InstanceSpec, sandbox Sandbox, output io.Writer) (ManagedProcess, func() error, error) {
+func (ExecRunner) Start(ctx context.Context, spec InstanceSpec, sandbox Sandbox, output io.Writer) (ManagedProcess, func() error, error) {
 	if err := validateProcessLocation(spec); err != nil {
 		return nil, nil, err
 	}
-	cmd := exec.Command(spec.Executable, spec.Args...)
+	cmd := exec.CommandContext(ctx, spec.Executable, spec.Args...)
 	cmd.Dir = filepath.Dir(spec.Executable)
 	environment, err := buildProcessEnvironment(spec.Environment, spec.GeneratedEnvironment)
 	if err != nil {

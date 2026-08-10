@@ -13,7 +13,7 @@ import (
 )
 
 func TestLinuxSandboxBindsCgroupBeforeExecAndUsesMinimalFilesystem(t *testing.T) {
-	security := Security{Budget: Budget{Files: 32, Network: false}, EndpointDirectory: "/managed/attempt/endpoint", CredentialDirectory: "/managed/attempt/credentials", GuestEndpoint: "/run/nre-plugin/rpc.sock"}
+	security := Security{Requirement: testSandboxRequirement(Budget{Files: 32, Network: false}, false, true), EndpointDirectory: "/managed/attempt/endpoint", CredentialDirectory: "/managed/attempt/credentials", GuestEndpoint: "/run/nre-plugin/rpc.sock"}
 	args := linuxSandboxArguments("/usr/bin/bwrap", "/usr/bin/prlimit", "/managed/instance/plugin", []string{"--guest"}, []string{"PATH=/usr/bin:/bin"}, security, 3)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--ro-bind / /") || strings.Contains(joined, "/home") || strings.Contains(joined, "/root") || strings.Contains(joined, "/panel") {
@@ -43,12 +43,12 @@ func TestLinuxSandboxLiveProcess(t *testing.T) {
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestLinuxSandboxGuest$"},
 		Environment: []string{"NRE_TEST_LINUX_SANDBOX_GUEST=1"},
-		Security: Security{Budget: Budget{
+		Security: Security{Requirement: testSandboxRequirement(Budget{
 			CPUMillis:   1000,
 			MemoryBytes: 256 << 20,
 			Processes:   8,
 			Files:       64,
-		}},
+		}, false, true)},
 	}, sandbox, io.Discard)
 	if err != nil {
 		t.Fatal(err)

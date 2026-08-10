@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -30,25 +29,23 @@ func newPlatformSandbox() Sandbox          { return windowsJobSandbox{} }
 func (windowsJobSandbox) Available() bool  { return true }
 func (windowsJobSandbox) Provider() string { return "windows-restricted-token-job-object" }
 func (windowsJobSandbox) Validate(security Security) error {
-	for _, capability := range security.Capabilities {
-		capability = strings.ToLower(strings.TrimSpace(capability))
-		if strings.HasPrefix(capability, "docker.") || strings.HasPrefix(capability, "filesystem.host") || strings.HasPrefix(capability, "process.") || strings.HasPrefix(capability, "network.") {
-			return errors.New("windows plugin sandbox is unavailable for high-risk host capabilities")
-		}
+	if security.Requirement.RequiresPrivilegeBoundary() {
+		return errors.New("windows plugin sandbox is unavailable for privileged manifest requirements")
 	}
-	if security.Budget.CPUMillis <= 0 || security.Budget.CPUMillis > 1000 {
+	budget := security.Requirement.Budget()
+	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("windows plugin sandbox requires cpu_millis within 1..1000")
 	}
-	if security.Budget.MemoryBytes <= 0 {
+	if budget.MemoryBytes <= 0 {
 		return errors.New("windows plugin sandbox requires memory_bytes")
 	}
-	if security.Budget.Processes <= 0 {
+	if budget.Processes <= 0 {
 		return errors.New("windows plugin sandbox requires a positive process limit")
 	}
-	if security.Budget.Files > 0 {
+	if budget.Files > 0 {
 		return errors.New("windows plugin sandbox cannot enforce a per-process file-handle budget")
 	}
-	if !security.Budget.Network {
+	if security.Requirement.RequiresNetworkIsolation() {
 		return errors.New("windows plugin sandbox cannot enforce network denial")
 	}
 	return nil
@@ -78,14 +75,15 @@ func (windowsJobSandbox) Configure(cmd *exec.Cmd, security Security) (func() err
 	closeJob := func() error { return windows.CloseHandle(job) }
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS | windows.JOB_OBJECT_LIMIT_PROCESS_MEMORY
-	limits.BasicLimitInformation.ActiveProcessLimit = uint32(security.Budget.Processes)
-	limits.ProcessMemoryLimit = uintptr(security.Budget.MemoryBytes)
+	budget := security.Requirement.Budget()
+	limits.BasicLimitInformation.ActiveProcessLimit = uint32(budget.Processes)
+	limits.ProcessMemoryLimit = uintptr(budget.MemoryBytes)
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		_ = closeJob()
 		restricted.Close()
 		return nil, nil, nil, fmt.Errorf("configure plugin process job object: %w", err)
 	}
-	cpu := jobObjectCPURateControlInformation{ControlFlags: jobObjectCPUEnable | jobObjectCPUHardCap, CPURate: uint32(security.Budget.CPUMillis * 10)}
+	cpu := jobObjectCPURateControlInformation{ControlFlags: jobObjectCPUEnable | jobObjectCPUHardCap, CPURate: uint32(budget.CPUMillis * 10)}
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectCpuRateControlInformation, uintptr(unsafe.Pointer(&cpu)), uint32(unsafe.Sizeof(cpu))); err != nil {
 		_ = closeJob()
 		restricted.Close()

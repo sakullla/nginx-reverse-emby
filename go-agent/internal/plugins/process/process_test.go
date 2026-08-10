@@ -82,7 +82,7 @@ func (fakeSandbox) Configure(*exec.Cmd, Security) (func() error, func() error, f
 
 func TestSandboxUnsupportedBudgetFailsClosed(t *testing.T) {
 	sandbox := fakeSandbox{available: true, validateErr: errors.New("files unsupported")}
-	security := Security{Budget: Budget{Files: 10}}
+	security := Security{Requirement: testSandboxRequirement(Budget{Files: 10}, false, true)}
 	if _, err := DecideSandbox(sandbox, security); err == nil {
 		t.Fatal("unsupported budget accepted")
 	}
@@ -97,7 +97,7 @@ func (fakeSandbox) Attach(int, Security) (func() error, error) {
 }
 
 func TestSandboxRejectsHighRiskWithoutExplicitGrant(t *testing.T) {
-	security := Security{Capabilities: []string{"docker.socket"}}
+	security := Security{Requirement: testSandboxRequirement(Budget{Processes: 1}, true, true)}
 	if _, err := DecideSandbox(fakeSandbox{}, security); err == nil {
 		t.Fatal("high-risk unsandboxed process was accepted")
 	}

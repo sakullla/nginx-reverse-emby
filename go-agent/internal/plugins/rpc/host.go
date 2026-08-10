@@ -29,6 +29,7 @@ func (fn closeFunc) Close() error { return fn() }
 type HostCandidate struct {
 	InstanceID, PluginID, PluginVersion, PackageDigest, Generation string
 	Artifact                                                       pluginprocess.Artifact
+	Requirement                                                    pluginprocess.SandboxRequirement
 	Scopes                                                         []string
 	Config                                                         []byte
 	Process                                                        pluginprocess.InstanceSpec
@@ -104,6 +105,9 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	lock := h.instanceLock(candidate.InstanceID)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := candidate.Requirement.ValidatePackageDigest(candidate.PackageDigest); err != nil {
+		return nil, err
+	}
 
 	executable, err := h.installer.Install(candidate.InstanceID+"-"+candidate.Generation, candidate.Artifact)
 	if err != nil {
@@ -114,6 +118,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	}
 	candidate.Process.ID = candidate.InstanceID + "-" + candidate.Generation
 	candidate.Process.Executable = executable
+	candidate.Process.Security.Requirement = candidate.Requirement
 	candidate.Process = normalizeRestartSpec(candidate.Process)
 
 	attempt, err := h.startAttempt(ctx, candidate)
@@ -387,6 +392,9 @@ func (i *HostedInstance) run(ctx context.Context) {
 				timer.Stop()
 				return
 			case <-timer.C:
+			}
+			if ctx.Err() != nil {
+				return
 			}
 			i.mu.Lock()
 			if i.status.State == "stopping" || i.status.State == "stopped" {

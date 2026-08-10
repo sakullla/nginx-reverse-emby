@@ -60,6 +60,7 @@ type testRPC struct {
 	stopErr     error
 	stopBlock   <-chan struct{}
 	handshakes  *atomic.Int32
+	activations *atomic.Int32
 }
 
 func (c testRPC) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
@@ -72,10 +73,42 @@ func (testRPC) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.L
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
 func (c testRPC) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	if c.activations != nil {
+		c.activations.Add(1)
+	}
 	if c.activateErr != nil {
 		return pluginsdk.LifecycleResponse{}, c.activateErr
 	}
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
+}
+
+type blockedRestartLauncher struct {
+	mu      sync.Mutex
+	starts  int
+	blocked chan struct{}
+}
+
+func (l *blockedRestartLauncher) Start(ctx context.Context, _ string, _ []string, _ []string, _ io.Writer, _ Candidate) (Process, error) {
+	l.mu.Lock()
+	l.starts++
+	start := l.starts
+	l.mu.Unlock()
+	if start == 1 {
+		return &testProcess{done: make(chan error, 1)}, nil
+	}
+	select {
+	case <-l.blocked:
+	default:
+		close(l.blocked)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (l *blockedRestartLauncher) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.starts
 }
 
 func (c testRPC) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
@@ -103,6 +136,7 @@ func TestPluginHostHandshakeFailurePreservesActiveInstance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = host.Close(context.Background()) })
 	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(digest[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1.0.0", PackageDigest: hex.EncodeToString(digest[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix", Address: filepath.Join(root, "runtime", "instance-g1", "rpc.sock"), Cookie: "secret"}, GracePeriod: time.Millisecond, Grants: []string{UnsandboxedGrant}}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	first, err := host.Activate(t.Context(), candidate)
 	if err != nil {
 		t.Fatalf("Activate(first) error = %v", err)
@@ -168,6 +202,7 @@ func TestPluginHostCrashRestartsThroughHandshakeAndOpensCircuit(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(digest[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(digest[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix", Address: filepath.Join(root, "runtime", "instance-g1", "rpc.sock"), Cookie: "cookie"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond, RestartLimit: 1, RestartWindow: time.Minute, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	first, err := host.Activate(t.Context(), candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +236,80 @@ func TestPluginHostCrashRestartsThroughHandshakeAndOpensCircuit(t *testing.T) {
 	}
 }
 
+func TestPluginHostStopAndCloseJoinRestartWork(t *testing.T) {
+	for _, operation := range []string{"stop", "close"} {
+		for _, phase := range []string{"backoff", "launch"} {
+			t.Run(operation+"-"+phase, func(t *testing.T) {
+				root := t.TempDir()
+				cache := filepath.Join(root, "cache")
+				payload := []byte("restart ownership")
+				if err := os.WriteFile(cache, payload, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				digest := sha256.Sum256(payload)
+				encoded := hex.EncodeToString(digest[:])
+				launcher := &blockedRestartLauncher{blocked: make(chan struct{})}
+				var activations, observations atomic.Int32
+				dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, activations: &activations}}}
+				host, err := New(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
+				if err != nil {
+					t.Fatal(err)
+				}
+				host.SetStatusObserver(func(RuntimeStatus) error {
+					observations.Add(1)
+					return nil
+				})
+				backoff := time.Hour
+				if phase == "launch" {
+					backoff = time.Millisecond
+				}
+				candidate := Candidate{
+					InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: encoded, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH},
+					Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: encoded, Generation: "g1", Scopes: []string{"relay.read"}},
+					Endpoint: Endpoint{Network: "unix"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond,
+					RestartLimit: 3, RestartWindow: time.Minute, InitialBackoff: backoff, MaximumBackoff: backoff,
+				}
+				candidate.Requirement = mustValidatedSandboxRequirement(t, encoded)
+				instance, err := host.Activate(t.Context(), candidate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				instance.process.(*testProcess).done <- errors.New("crash")
+				if phase == "launch" {
+					select {
+					case <-launcher.blocked:
+					case <-time.After(3 * time.Second):
+						t.Fatal("restart launch did not block")
+					}
+				} else if !waitFor(t, func() bool {
+					state, _ := instance.Status()
+					return state == "backoff"
+				}) {
+					t.Fatal("runtime did not enter backoff")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if operation == "stop" {
+					err = host.Stop(ctx, candidate.InstanceID)
+				} else {
+					err = host.Close(ctx)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				starts, activated, observed := launcher.count(), activations.Load(), observations.Load()
+				time.Sleep(50 * time.Millisecond)
+				if launcher.count() != starts || activations.Load() != activated || observations.Load() != observed {
+					t.Fatalf("restart work continued after %s returned: starts %d->%d activations %d->%d observations %d->%d", operation, starts, launcher.count(), activated, activations.Load(), observed, observations.Load())
+				}
+				if activated != 1 || (phase == "backoff" && starts != 1) || (phase == "launch" && starts != 2) {
+					t.Fatalf("unexpected fenced lifecycle: starts=%d activations=%d", starts, activated)
+				}
+			})
+		}
+	}
+}
+
 func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
 	root := t.TempDir()
 	cache := filepath.Join(root, "cache")
@@ -216,6 +325,7 @@ func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := Candidate{InstanceID: "instance", Artifact: Artifact{CachePath: cache, SHA256: hex.EncodeToString(digest[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(digest[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: Endpoint{Network: "unix", Address: filepath.Join(root, "runtime", "instance-g1", "rpc.sock"), Cookie: "cookie"}, Grants: []string{UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = mustValidatedSandboxRequirement(t, candidate.Identity.PackageDigest)
 	if _, err := host.Activate(t.Context(), candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -297,14 +407,14 @@ func TestPluginHostHandshakeIdentityNegativeMatrix(t *testing.T) {
 	}
 }
 
-func TestPluginHostRejectsUnsandboxedHighRiskCapability(t *testing.T) {
-	candidate := Candidate{Capabilities: []string{"docker.socket"}}
+func TestPluginHostRejectsUnboundSandboxRequirement(t *testing.T) {
+	candidate := Candidate{Identity: Identity{PackageDigest: "package"}}
 	if err := authorizeSandbox(candidate); err == nil {
-		t.Fatal("unsandboxed high-risk process was accepted")
+		t.Fatal("unbound sandbox requirement was accepted")
 	}
 	candidate.Grants = []string{UnsandboxedGrant}
-	if err := authorizeSandbox(candidate); err != nil {
-		t.Fatalf("explicit unsandboxed grant rejected: %v", err)
+	if err := authorizeSandbox(candidate); err == nil {
+		t.Fatal("unsandboxed grant bypassed package requirement binding")
 	}
 }
 

@@ -17,9 +17,8 @@ type Budget struct {
 }
 
 type Security struct {
-	Capabilities                                          []string
+	Requirement                                           SandboxRequirement
 	Grants                                                []string
-	Budget                                                Budget
 	EndpointDirectory, CredentialDirectory, GuestEndpoint string
 }
 
@@ -37,14 +36,6 @@ type Sandbox interface {
 }
 
 func DecideSandbox(sandbox Sandbox, security Security) (SandboxDecision, error) {
-	highRisk := false
-	for _, capability := range security.Capabilities {
-		capability = strings.ToLower(strings.TrimSpace(capability))
-		if strings.HasPrefix(capability, "docker.") || strings.HasPrefix(capability, "network.") || strings.HasPrefix(capability, "process.") || strings.HasPrefix(capability, "filesystem.host") {
-			highRisk = true
-			break
-		}
-	}
 	if sandbox != nil && sandbox.Available() {
 		if err := sandbox.Validate(security); err == nil {
 			return SandboxDecision{Sandboxed: true, Provider: sandbox.Provider()}, nil
@@ -55,8 +46,8 @@ func DecideSandbox(sandbox Sandbox, security Security) (SandboxDecision, error) 
 	if hasUnsandboxedGrant(security.Grants) {
 		return SandboxDecision{Sandboxed: false, Provider: "unsandboxed", Reason: "explicit unsandboxed grant"}, nil
 	}
-	if highRisk {
-		return SandboxDecision{}, errors.New("high-risk plugin process capability requires a platform sandbox or explicit plugin.process.unsandboxed grant")
+	if security.Requirement.HighRisk() {
+		return SandboxDecision{}, errors.New("high-risk plugin sandbox requirement requires a platform sandbox or explicit plugin.process.unsandboxed grant")
 	}
 	return SandboxDecision{Sandboxed: false, Provider: "unavailable", Reason: "sandbox unavailable for low-risk plugin"}, nil
 }

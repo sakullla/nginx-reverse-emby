@@ -33,16 +33,17 @@ func newPlatformSandbox() Sandbox {
 func (s linuxSandbox) Available() bool { return s.available }
 func (linuxSandbox) Provider() string  { return "linux-cgroupv2-bwrap-seccomp" }
 func (linuxSandbox) Validate(security Security) error {
-	if security.Budget.CPUMillis <= 0 || security.Budget.CPUMillis > 1000 {
+	budget := security.Requirement.Budget()
+	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("linux plugin sandbox requires cpu_millis within 1..1000")
 	}
-	if security.Budget.MemoryBytes <= 0 {
+	if budget.MemoryBytes <= 0 {
 		return errors.New("linux plugin sandbox requires memory_bytes")
 	}
-	if security.Budget.Processes <= 0 {
+	if budget.Processes <= 0 {
 		return errors.New("linux plugin sandbox requires a positive process limit")
 	}
-	if security.Budget.Files <= 0 {
+	if budget.Files <= 0 {
 		return errors.New("linux plugin sandbox requires a positive file limit")
 	}
 	return nil
@@ -54,11 +55,12 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	if err := s.Validate(security); err != nil {
 		return nil, nil, nil, err
 	}
-	filter, err := createSeccompFilter(security.Budget.Network)
+	budget := security.Requirement.Budget()
+	filter, err := createSeccompFilter(budget.Network)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	cgroupDir, cgroupFile, err := prepareLinuxCgroup(security.Budget)
+	cgroupDir, cgroupFile, err := prepareLinuxCgroup(budget)
 	if err != nil {
 		filter.Close()
 		return nil, nil, nil, err
@@ -95,7 +97,8 @@ func linuxSandboxArguments(bwrap, prlimit, executable string, originalArgs, envi
 			args = append(args, "--ro-bind", directory, directory)
 		}
 	}
-	if !security.Budget.Network {
+	budget := security.Requirement.Budget()
+	if !budget.Network {
 		args = append(args, "--unshare-net")
 	} else {
 		args = append(args, "--dir", "/etc")
@@ -127,7 +130,7 @@ func linuxSandboxArguments(bwrap, prlimit, executable string, originalArgs, envi
 	}
 	args = append(args, "--chdir", "/plugin")
 	args = append(args, "--seccomp", strconv.Itoa(filterFD), "--")
-	args = append(args, "/runtime/prlimit", "--nofile="+strconv.Itoa(security.Budget.Files)+":"+strconv.Itoa(security.Budget.Files), "--", "/plugin/plugin")
+	args = append(args, "/runtime/prlimit", "--nofile="+strconv.Itoa(budget.Files)+":"+strconv.Itoa(budget.Files), "--", "/plugin/plugin")
 	args = append(args, originalArgs...)
 	return args
 }

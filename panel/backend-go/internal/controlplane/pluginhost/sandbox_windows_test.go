@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -24,7 +25,7 @@ func TestPluginHostWindowsSandboxLiveProcess(t *testing.T) {
 		t.Skip("set NRE_TEST_WINDOWS_SANDBOX=1 to exercise the restricted process")
 	}
 	deniedPath := filepath.Join(t.TempDir(), "must-not-write")
-	candidate := Candidate{Budget: ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 2, Network: true}, attemptEnvironment: []string{"NRE_PLUGIN_TEST=1"}}
+	candidate := Candidate{Requirement: testControlRequirement(ProcessBudget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 2, Network: true}, false, false), attemptEnvironment: []string{"NRE_PLUGIN_TEST=1"}}
 	process, err := (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostWindowsSandboxGuest$"}, []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath}, io.Discard, candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +48,17 @@ func TestPluginHostWindowsSandboxGuest(t *testing.T) {
 }
 
 func TestPluginHostWindowsSandboxRejectsHighRiskBoundary(t *testing.T) {
-	if err := validatePlatformSandbox(Candidate{Capabilities: []string{"docker.socket"}, Budget: ProcessBudget{CPUMillis: 100, MemoryBytes: 1, Processes: 1, Network: true}}); err == nil {
+	digest := strings.Repeat("a", 64)
+	requirement, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"secret.use"}, []string{"http.request"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{Identity: Identity{PackageDigest: digest}, Requirement: requirement}
+	if err := authorizeSandbox(candidate); err == nil {
 		t.Fatal("high-risk capability was admitted without an enforceable Windows boundary")
+	}
+	candidate.Grants = []string{UnsandboxedGrant}
+	if err := authorizeSandbox(candidate); err != nil {
+		t.Fatalf("explicit Windows unsandboxed admission failed: %v", err)
 	}
 }

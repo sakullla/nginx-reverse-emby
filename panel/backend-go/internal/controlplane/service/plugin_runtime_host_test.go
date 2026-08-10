@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -22,6 +23,20 @@ import (
 type runtimeProcess struct {
 	done chan error
 	once sync.Once
+}
+
+func runtimeSandboxRequirement(t *testing.T, digest string) pluginhost.SandboxRequirement {
+	t.Helper()
+	requirement, err := pluginhost.SandboxRequirementFromValidatedPackage(plugins.ValidatedPackage{Digest: digest, Manifest: plugins.Manifest{
+		Runtime:         plugins.Runtime{Kind: pluginsdk.RuntimeRPCService, ABI: pluginsdk.RPCABIV1, HostScope: "control-plane", Entry: "plugin"},
+		Permissions:     []plugins.Permission{{Name: "agent.read"}},
+		ExtensionPoints: []string{"http.request"},
+		ResourceBudget:  plugins.ResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 100, Restarts: 2},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requirement
 }
 
 func (p *runtimeProcess) PID() int               { return 18 }
@@ -162,6 +177,7 @@ func TestPluginRuntimeHostRetriesAndSurfacesHealthPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: hex.EncodeToString(sum[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, candidate.Identity.PackageDigest)
 	if _, err := service.Activate(t.Context(), candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +215,7 @@ func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: hex.EncodeToString(sum[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, candidate.Identity.PackageDigest)
 	activateDone := make(chan error, 1)
 	go func() {
 		_, err := service.Activate(context.Background(), candidate)
@@ -258,6 +275,7 @@ func TestPluginRuntimeHostDurablePromotionFailurePreservesOldProcess(t *testing.
 		t.Fatal(err)
 	}
 	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: hex.EncodeToString(sum[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix", Address: filepath.Join(root, "runtime", "instance-g1", "rpc.sock"), Cookie: "cookie"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, candidate.Identity.PackageDigest)
 	first, err := service.Activate(t.Context(), candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -293,6 +311,7 @@ func TestPluginRuntimeHostPersistsRestartAndCircuitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: hex.EncodeToString(sum[:]), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: hex.EncodeToString(sum[:]), Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix", Address: filepath.Join(root, "runtime", "instance-g1", "rpc.sock"), Cookie: "cookie"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond, RestartLimit: 1, RestartWindow: time.Minute, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, candidate.Identity.PackageDigest)
 	if _, err := service.Activate(t.Context(), candidate); err != nil {
 		t.Fatal(err)
 	}
