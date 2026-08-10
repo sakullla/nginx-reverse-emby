@@ -185,6 +185,13 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	if _, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), report); err != nil || !replayed {
 		t.Fatalf("identical replay = %v, %v", replayed, err)
 	}
+	crossChannelReplay := report
+	crossChannelReplay.ReportedAt = report.ReportedAt.Add(time.Minute)
+	crossChannelReplay.SafeDetail = ""
+	crossChannelReplay.Details = json.RawMessage(`{"ready":true,"safe_detail":"runtime ready"}`)
+	if _, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), crossChannelReplay); err != nil || !replayed {
+		t.Fatalf("cross-channel replay = %v, %v", replayed, err)
+	}
 	postAck := report
 	postAck.Sequence = 2
 	postAck.State = "degraded"

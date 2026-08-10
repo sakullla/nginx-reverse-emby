@@ -72,12 +72,13 @@ func (s *revisionClientStub) ReportRemoteRevision(_ context.Context, _ string, i
 }
 
 type revisionLedgerStub struct {
-	pointer     storage.AgentRevisionPointerRow
-	pointerOK   bool
-	revision    storage.AgentRevisionRow
-	revisionOK  bool
-	attempts    []storage.AgentRevisionAttemptRow
-	generations []storage.AgentGenerationRow
+	pointer      storage.AgentRevisionPointerRow
+	pointerOK    bool
+	revision     storage.AgentRevisionRow
+	revisionOK   bool
+	attempts     []storage.AgentRevisionAttemptRow
+	generations  []storage.AgentGenerationRow
+	runtimeState storage.RuntimeState
 }
 
 func (s revisionLedgerStub) GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error) {
@@ -94,6 +95,10 @@ func (s revisionLedgerStub) ListCoordinatorAttempts(context.Context, string, int
 
 func (s revisionLedgerStub) ListCoordinatorGenerations(context.Context, string) ([]storage.AgentGenerationRow, error) {
 	return append([]storage.AgentGenerationRow(nil), s.generations...), nil
+}
+
+func (s revisionLedgerStub) LoadLocalRuntimeState(context.Context) (storage.RuntimeState, error) {
+	return s.runtimeState, nil
 }
 
 type revisionRuntimeStub struct {
@@ -172,6 +177,64 @@ func TestRevisionWorkerClaimsStartsAppliesAndReports(t *testing.T) {
 	}
 	if client.startCalls[0].GenerationID == "" || client.startCalls[0].GenerationID != client.reportCalls[0].GenerationID {
 		t.Fatalf("generation ids = start %q report %q", client.startCalls[0].GenerationID, client.reportCalls[0].GenerationID)
+	}
+}
+
+func TestRevisionWorkerReportsExactPluginStatusAndRetriesCommittedReconciliation(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	lease := service.RemoteRevisionLease{
+		AgentID: "local", Revision: 4, RetryCycle: 1, Attempt: 2,
+		LeaseID: "lease-4", ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+		DeadlineAt: time.Now().Add(time.Minute),
+	}
+	client := &revisionClientStub{
+		pulls: []service.RemoteRevisionPull{{
+			HasUpdate: true, DesiredRevision: 4, Lease: &lease,
+			Snapshot: &storage.Snapshot{Revision: 4},
+		}},
+		status: service.AgentRevisionStatus{Attempts: []service.RevisionAttempt{{
+			RetryCycle: 1, Attempt: 2, State: storage.AgentRevisionAttemptStateLeased,
+		}}},
+		reportErrs: map[string]error{storage.AgentRevisionStateApplied: errors.New("injected lifecycle reconciliation failure")},
+	}
+	pluginStatus := storage.PluginRuntimeStatus{
+		InstanceID: "instance", PluginID: "plugin", OperationID: "operation", Revision: 4,
+		GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: 2,
+		RuntimeKind: "rpc-service", State: "active", Sequence: 1, SafeDetail: "runtime ready",
+	}
+	ledger := &revisionLedgerStub{runtimeState: storage.RuntimeState{CurrentRevision: 4, PluginStatuses: []storage.PluginRuntimeStatus{pluginStatus}}}
+	worker, err := NewRevisionWorker("local", client, ledger, &revisionRuntimeStub{applied: make(chan struct{}, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.processNext(t.Context()); err == nil || processed {
+		t.Fatalf("first processNext() = processed %v, error %v", processed, err)
+	}
+	client.mu.Lock()
+	if len(client.reportCalls) != 1 || len(client.reportCalls[0].PluginStatuses) != 1 || client.reportCalls[0].PluginStatuses[0].SafeDetail != "runtime ready" {
+		client.mu.Unlock()
+		t.Fatalf("first applied report = %+v", client.reportCalls)
+	}
+	client.reportErrs[storage.AgentRevisionStateApplied] = nil
+	client.mu.Unlock()
+	ledger.pointer = storage.AgentRevisionPointerRow{AgentID: "local", AppliedRevision: 4, DesiredRevision: 4}
+	ledger.pointerOK = true
+	ledger.revision = storage.AgentRevisionRow{
+		AgentID: "local", Revision: 4, RetryCycle: 1, AttemptCount: 2,
+		State: storage.AgentRevisionStateApplied, GenerationID: embeddedGenerationID(lease),
+	}
+	ledger.revisionOK = true
+	ledger.attempts = []storage.AgentRevisionAttemptRow{{
+		AgentID: "local", Revision: 4, RetryCycle: 1, Attempt: 2,
+		LeaseID: lease.LeaseID, State: storage.AgentRevisionAttemptStateApplied,
+	}}
+	if err := worker.runCycle(t.Context()); err != nil {
+		t.Fatalf("retry runCycle() error = %v", err)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.reportCalls) != 2 || len(client.reportCalls[1].PluginStatuses) != 1 || client.reportCalls[1].PluginStatuses[0].Sequence != 1 {
+		t.Fatalf("retried applied reports = %+v", client.reportCalls)
 	}
 }
 

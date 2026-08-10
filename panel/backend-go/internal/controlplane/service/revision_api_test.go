@@ -762,7 +762,7 @@ func TestRevisionAPIMapsAuthenticatedPluginStatusToLifecycleCompletion(t *testin
 		OperationID: "operation-plugin-runtime", Now: now,
 		States: map[string]string{"edge-plugin": storage.AgentRevisionStatePending},
 	})
-	pluginOperation := storage.PluginOperationRow{ID: "operation-plugin-runtime", PluginID: "runtime.plugin", Kind: "enable", Status: "applying", TargetPackageDigest: digest, TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
+	pluginOperation := storage.PluginOperationRow{ID: "operation-plugin-runtime", PluginID: "runtime.plugin", Kind: "enable", Status: "applying", TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
 	if err := store.RecordPluginOperation(t.Context(), pluginOperation, storage.AuditEventRow{ID: "audit-plugin-runtime", ActorID: "admin", Action: "plugin.enable", TargetKind: "plugin", TargetID: pluginOperation.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -791,11 +791,19 @@ func TestRevisionAPIMapsAuthenticatedPluginStatusToLifecycleCompletion(t *testin
 		PluginStatuses: []storage.PluginRuntimeStatus{{
 			InstanceID: staged.InstanceID, PluginID: staged.PluginID, OperationID: staged.OperationID, Revision: staged.Revision,
 			GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: staged.ConfigVersion,
-			RuntimeKind: "rpc-service", State: "active", Sequence: 1, Details: json.RawMessage(`{"healthy":true}`), Budget: json.RawMessage(`{}`),
+			RuntimeKind: "rpc-service", State: "active", Sequence: 1, SafeDetail: "runtime ready", Details: json.RawMessage(`{"healthy":true}`), Budget: json.RawMessage(`{}`),
 		}},
 	}
 	if _, err := api.ReportRemoteRevision(t.Context(), "edge-plugin", report); err != nil {
 		t.Fatal(err)
+	}
+	if _, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), storage.PluginGenerationReport{
+		OperationID: staged.OperationID, AgentID: staged.AgentID, InstanceID: staged.InstanceID, PluginID: staged.PluginID,
+		Revision: staged.Revision, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest,
+		State: "active", Sequence: 1, SafeDetail: "runtime ready", Details: json.RawMessage(`{"healthy":true}`),
+		Budget: json.RawMessage(`{}`), ReportedAt: time.Now().UTC(),
+	}); err != nil || !replayed {
+		t.Fatalf("applied-report to heartbeat replay = %v, %v", replayed, err)
 	}
 	if completion.kind != "lifecycle" || !completion.result.Applied || completion.result.OperationID != pluginOperation.ID {
 		t.Fatalf("completion = %+v", completion)
@@ -809,12 +817,11 @@ func TestRevisionAPICompletesPolicyOnlyPluginFromExactRevisionResult(t *testing.
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
-	digest := strings.Repeat("b", 64)
 	seedRevisionOperation(t, store, revisionOperationSeed{
 		OperationID: "operation-plugin-policy", Now: now,
 		States: map[string]string{"edge-policy": storage.AgentRevisionStatePending},
 	})
-	pluginOperation := storage.PluginOperationRow{ID: "operation-plugin-policy", PluginID: "policy.plugin", Kind: "upgrade", Status: "staged", TargetPackageDigest: digest, TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
+	pluginOperation := storage.PluginOperationRow{ID: "operation-plugin-policy", PluginID: "policy.plugin", Kind: "upgrade", Status: "staged", TargetRevision: 1, ActorID: "admin", AgentResultsJSON: `{}`, CreatedAt: now}
 	if err := store.RecordPluginOperation(t.Context(), pluginOperation, storage.AuditEventRow{ID: "audit-plugin-policy", ActorID: "admin", Action: "plugin.upgrade", TargetKind: "plugin", TargetID: pluginOperation.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}

@@ -29,6 +29,7 @@ type RevisionLedger interface {
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 	ListCoordinatorAttempts(context.Context, string, int64) ([]storage.AgentRevisionAttemptRow, error)
 	ListCoordinatorGenerations(context.Context, string) ([]storage.AgentGenerationRow, error)
+	LoadLocalRuntimeState(context.Context) (storage.RuntimeState, error)
 }
 
 type RevisionApplier interface {
@@ -51,6 +52,7 @@ type RevisionWorker struct {
 	runtime      RevisionApplier
 	pollInterval time.Duration
 	wake         chan struct{}
+	reported     int64
 }
 
 func NewRevisionWorker(agentID string, client RevisionClient, ledger RevisionLedger, runtime RevisionApplier) (*RevisionWorker, error) {
@@ -113,6 +115,9 @@ func (w *RevisionWorker) Run(ctx context.Context) error {
 func (w *RevisionWorker) runCycle(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return nil
+	}
+	if err := w.retryAppliedReport(ctx); err != nil {
+		return err
 	}
 	drainErr := w.completeOutstandingDrains(ctx)
 	for ctx.Err() == nil {
@@ -180,18 +185,80 @@ func (w *RevisionWorker) processNext(ctx context.Context) (bool, error) {
 		})
 		return false, errors.Join(err, reportErr)
 	}
+	pluginStatuses, err := w.pluginStatusesForRevision(ctx, lease.Revision)
+	if err != nil {
+		return false, err
+	}
 	status, err = w.client.ReportRemoteRevision(ctx, w.agentID, service.RemoteRevisionReport{
 		AgentID: w.agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle,
 		Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: generationID,
-		Status: storage.AgentRevisionStateApplied,
+		Status: storage.AgentRevisionStateApplied, PluginStatuses: pluginStatuses,
 	})
 	if err != nil {
 		return false, err
 	}
+	w.reported = lease.Revision
 	if err := w.completeDrainingGenerations(ctx, lease, status.Generations); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func (w *RevisionWorker) retryAppliedReport(ctx context.Context) error {
+	pointer, found, err := w.ledger.GetAgentRevisionPointer(ctx, w.agentID)
+	if err != nil || !found || pointer.AppliedRevision <= 0 || pointer.AppliedRevision <= w.reported {
+		return err
+	}
+	revision, found, err := w.ledger.GetCoordinatorRevision(ctx, w.agentID, pointer.AppliedRevision)
+	if err != nil || !found || revision.State != storage.AgentRevisionStateApplied || strings.TrimSpace(revision.GenerationID) == "" {
+		return err
+	}
+	attempts, err := w.ledger.ListCoordinatorAttempts(ctx, w.agentID, revision.Revision)
+	if err != nil {
+		return err
+	}
+	var appliedAttempt storage.AgentRevisionAttemptRow
+	for _, attempt := range attempts {
+		if attempt.RetryCycle == revision.RetryCycle && attempt.Attempt == revision.AttemptCount &&
+			attempt.State == storage.AgentRevisionAttemptStateApplied {
+			appliedAttempt = attempt
+			break
+		}
+	}
+	if strings.TrimSpace(appliedAttempt.LeaseID) == "" {
+		return errors.New("applied local revision is missing its authoritative lease")
+	}
+	pluginStatuses, err := w.pluginStatusesForRevision(ctx, revision.Revision)
+	if err != nil {
+		return err
+	}
+	if _, err := w.client.ReportRemoteRevision(ctx, w.agentID, service.RemoteRevisionReport{
+		AgentID: w.agentID, Revision: revision.Revision, RetryCycle: revision.RetryCycle,
+		Attempt: appliedAttempt.Attempt, LeaseID: appliedAttempt.LeaseID, GenerationID: revision.GenerationID,
+		Status: storage.AgentRevisionStateApplied, PluginStatuses: pluginStatuses,
+	}); err != nil {
+		return err
+	}
+	w.reported = revision.Revision
+	return nil
+}
+
+func (w *RevisionWorker) pluginStatusesForRevision(ctx context.Context, revision int64) ([]storage.PluginRuntimeStatus, error) {
+	state, err := w.ledger.LoadLocalRuntimeState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]storage.PluginRuntimeStatus, 0, len(state.PluginStatuses))
+	for _, status := range state.PluginStatuses {
+		if status.Revision != revision {
+			continue
+		}
+		copyValue := status
+		copyValue.Details = append([]byte(nil), status.Details...)
+		copyValue.Budget = append([]byte(nil), status.Budget...)
+		statuses = append(statuses, copyValue)
+	}
+	return statuses, nil
 }
 
 func applyRevisionWithinLease(ctx context.Context, runtime RevisionApplier, snapshot storage.Snapshot, lease service.RemoteRevisionLease) error {

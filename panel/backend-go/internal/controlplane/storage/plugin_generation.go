@@ -417,6 +417,14 @@ func (s *GormStore) StagePluginAgentRuntimeStatuses(ctx context.Context, rows []
 
 func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report PluginGenerationReport) (PluginAgentRuntimeStatusRow, bool, error) {
 	report.State = strings.ToLower(strings.TrimSpace(report.State))
+	report.OperationID = strings.TrimSpace(report.OperationID)
+	report.AgentID = s.resolveAgentID(report.AgentID)
+	report.InstanceID = strings.TrimSpace(report.InstanceID)
+	report.PluginID = strings.TrimSpace(report.PluginID)
+	report.GenerationID = strings.TrimSpace(report.GenerationID)
+	report.PackageDigest = strings.ToLower(strings.TrimSpace(report.PackageDigest))
+	report.ArtifactDigest = strings.ToLower(strings.TrimSpace(report.ArtifactDigest))
+	report.ErrorCode = strings.TrimSpace(report.ErrorCode)
 	if !validPluginGenerationReportState(report.State) || report.Sequence == 0 {
 		return PluginAgentRuntimeStatusRow{}, false, errors.New("plugin generation report state and sequence are required")
 	}
@@ -450,16 +458,18 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 	}
 	digestPayload := report
 	digestPayload.Details, digestPayload.Budget = details, budget
+	digestPayload.SafeDetail = ""
+	digestPayload.ReportedAt = time.Time{}
 	digestBytes, _ := json.Marshal(digestPayload)
 	reportDigest := sha256.Sum256(digestBytes)
 	digest := hex.EncodeToString(reportDigest[:])
 	var result PluginAgentRuntimeStatusRow
 	replayed := false
 	err = s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, s.resolveAgentID(report.AgentID), report.InstanceID).First(&result).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
 			return err
 		}
-		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: s.resolveAgentID(report.AgentID), InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest}
+		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: report.AgentID, InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest}
 		if !samePluginAgentRuntimeFence(result, expected) {
 			return ErrPluginGenerationStale
 		}
@@ -477,11 +487,11 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		if reportedAt.IsZero() {
 			reportedAt = time.Now().UTC()
 		}
-		updates := map[string]any{"state": report.State, "report_sequence": report.Sequence, "report_digest": digest, "error_code": strings.TrimSpace(report.ErrorCode), "details_json": string(details), "budget_json": string(budget), "reported_at": reportedAt, "updated_at": time.Now().UTC()}
+		updates := map[string]any{"state": report.State, "report_sequence": report.Sequence, "report_digest": digest, "error_code": report.ErrorCode, "details_json": string(details), "budget_json": string(budget), "reported_at": reportedAt, "updated_at": time.Now().UTC()}
 		if err := tx.Model(&result).Updates(updates).Error; err != nil {
 			return err
 		}
-		return tx.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, s.resolveAgentID(report.AgentID), report.InstanceID).First(&result).Error
+		return tx.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error
 	})
 	return result, replayed, err
 }

@@ -855,6 +855,7 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 				return storage.ErrPluginGenerationStale
 			}
 			report.State, report.Sequence, report.ErrorCode = status.State, status.Sequence, status.ErrorCode
+			report.SafeDetail = status.SafeDetail
 			report.Details, report.Budget = append(json.RawMessage(nil), status.Details...), append(json.RawMessage(nil), status.Budget...)
 		case storage.AgentRevisionStateFailed:
 			report.State, report.ErrorCode = "failed", strings.TrimSpace(input.ErrorCode)
