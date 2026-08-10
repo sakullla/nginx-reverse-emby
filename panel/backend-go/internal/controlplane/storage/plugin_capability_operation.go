@@ -14,6 +14,8 @@ import (
 
 var ErrPluginCapabilityOperationConflict = errors.New("plugin capability operation id was reused with a different request")
 
+const PluginCapabilityOperationLease = 2 * time.Minute
+
 type pluginCapabilityPendingClaim struct {
 	Status         string    `json:"status"`
 	ClaimToken     string    `json:"claim_token"`
@@ -25,7 +27,7 @@ func (s *GormStore) ClaimPluginCapabilityOperation(ctx context.Context, scope, k
 	if scope == "" || key == "" || fingerprint == "" || operationID == "" || claimToken == "" || !expiresAt.After(now) {
 		return IdempotencyRecordRow{}, false, errors.New("plugin capability operation claim is incomplete")
 	}
-	pendingJSON, err := json.Marshal(pluginCapabilityPendingClaim{Status: "pending", ClaimToken: claimToken, LeaseExpiresAt: now.Add(30 * time.Second).UTC()})
+	pendingJSON, err := json.Marshal(pluginCapabilityPendingClaim{Status: "pending", ClaimToken: claimToken, LeaseExpiresAt: now.Add(PluginCapabilityOperationLease).UTC()})
 	if err != nil {
 		return IdempotencyRecordRow{}, false, err
 	}
@@ -72,6 +74,34 @@ func (s *GormStore) ClaimPluginCapabilityOperation(ctx context.Context, scope, k
 		return nil
 	})
 	return result, claimed, err
+}
+
+func (s *GormStore) RenewPluginCapabilityOperation(ctx context.Context, scope, key, operationID, claimToken string, now time.Time) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var existing IdempotencyRecordRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("scope = ? AND key = ? AND operation_id = ?", scope, key, operationID).First(&existing).Error; err != nil {
+			return err
+		}
+		var pending pluginCapabilityPendingClaim
+		if err := json.Unmarshal([]byte(existing.ResponseJSON), &pending); err != nil || pending.Status != "pending" || pending.ClaimToken != claimToken {
+			return errors.New("plugin capability operation ownership fence was lost")
+		}
+		pending.LeaseExpiresAt = now.Add(PluginCapabilityOperationLease).UTC()
+		encoded, err := json.Marshal(pending)
+		if err != nil {
+			return err
+		}
+		updated := tx.Model(&IdempotencyRecordRow{}).
+			Where("scope = ? AND key = ? AND operation_id = ? AND response_json = ?", scope, key, operationID, existing.ResponseJSON).
+			Update("response_json", string(encoded))
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return errors.New("plugin capability operation ownership fence was lost")
+		}
+		return nil
+	})
 }
 
 func (s *GormStore) CompletePluginCapabilityOperation(ctx context.Context, scope, key, operationID, claimToken, responseJSON string) error {

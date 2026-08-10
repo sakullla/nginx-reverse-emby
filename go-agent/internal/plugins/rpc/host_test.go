@@ -247,6 +247,10 @@ func (hostClient) Activate(context.Context, pluginsdk.LifecycleRequest) (plugins
 func (hostClient) InvokeAction(_ context.Context, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error) {
 	return pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}, nil
 }
+
+func (hostClient) QueryAction(_ context.Context, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	return pluginsdk.RPCActionResponse{OperationID: request.OperationID, Missing: true}, nil
+}
 func (hostClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }

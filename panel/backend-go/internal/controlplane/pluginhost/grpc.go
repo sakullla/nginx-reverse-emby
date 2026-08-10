@@ -102,7 +102,7 @@ func newDynamicRPCClient(conn grpc.ClientConnInterface, cookie string, deadline 
 	if deadline <= 0 {
 		deadline = 5 * time.Second
 	}
-	names := []string{"HandshakeRequest", "HandshakeResponse", "LifecycleRequest", "LifecycleResponse", "ActionRequest", "ActionResponse"}
+	names := []string{"HandshakeRequest", "HandshakeResponse", "LifecycleRequest", "LifecycleResponse", "ActionRequest", "ActionQueryRequest", "ActionResponse"}
 	messages := map[string]protoreflect.MessageDescriptor{}
 	for _, name := range names {
 		descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.rpc.v1." + name))
@@ -147,21 +147,58 @@ func (c *dynamicRPCClient) InvokeAction(ctx context.Context, request pluginsdk.R
 	setRPCString(input, "target_kind", request.TargetKind)
 	setRPCString(input, "target_id", request.TargetID)
 	setRPCString(input, "operation_id", request.OperationID)
+	setRPCString(input, "resource_handle", request.ResourceHandle)
 	output := dynamicpb.NewMessage(c.messages["ActionResponse"])
 	if err := c.invoke(ctx, "InvokeAction", input, output); err != nil {
 		return pluginsdk.RPCActionResponse{}, err
 	}
+	return decodeRPCActionResponse(output)
+}
+
+func (c *dynamicRPCClient) QueryAction(ctx context.Context, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	if err := request.Validate(); err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	input := dynamicpb.NewMessage(c.messages["ActionQueryRequest"])
+	setRPCString(input, "generation", request.Generation)
+	setRPCString(input, "operation_id", request.OperationID)
+	output := dynamicpb.NewMessage(c.messages["ActionResponse"])
+	if err := c.invoke(ctx, "QueryAction", input, output); err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	return decodeRPCActionResponse(output)
+}
+
+func decodeRPCActionResponse(output *dynamicpb.Message) (pluginsdk.RPCActionResponse, error) {
+	result := pluginsdk.RPCActionResponse{OperationID: getRPCString(output, "operation_id")}
 	successField := output.Descriptor().Fields().ByName("success")
 	errorField := output.Descriptor().Fields().ByName("error")
-	if output.Has(successField) == output.Has(errorField) {
+	pendingField := output.Descriptor().Fields().ByName("pending")
+	missingField := output.Descriptor().Fields().ByName("missing")
+	branches := 0
+	for _, field := range []protoreflect.FieldDescriptor{successField, errorField, pendingField, missingField} {
+		if output.Has(field) {
+			branches++
+		}
+	}
+	if branches != 1 {
 		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin action returned invalid result")
 	}
 	if output.Has(successField) {
 		success := output.Get(successField).Message()
-		return pluginsdk.RPCActionResponse{Accepted: success.Get(success.Descriptor().Fields().ByName("accepted")).Bool(), OperationID: success.Get(success.Descriptor().Fields().ByName("operation_id")).String()}, nil
+		result.Accepted = success.Get(success.Descriptor().Fields().ByName("accepted")).Bool()
+	} else if output.Has(errorField) {
+		failure := output.Get(errorField).Message()
+		result.Error = &pluginsdk.RuntimeError{Code: pluginsdk.ErrorCode(failure.Get(failure.Descriptor().Fields().ByName("code")).Enum()), Message: failure.Get(failure.Descriptor().Fields().ByName("message")).String(), Retryable: failure.Get(failure.Descriptor().Fields().ByName("retryable")).Bool()}
+	} else if output.Has(pendingField) {
+		result.Pending = true
+	} else {
+		result.Missing = true
 	}
-	failure := output.Get(errorField).Message()
-	return pluginsdk.RPCActionResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorCode(failure.Get(failure.Descriptor().Fields().ByName("code")).Enum()), Message: failure.Get(failure.Descriptor().Fields().ByName("message")).String(), Retryable: failure.Get(failure.Descriptor().Fields().ByName("retryable")).Bool()}}, nil
+	if err := result.Validate(); err != nil {
+		return pluginsdk.RPCActionResponse{}, fmt.Errorf("control-plane plugin action response: %w", err)
+	}
+	return result, nil
 }
 func (c *dynamicRPCClient) lifecycle(ctx context.Context, method string, request pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	input := dynamicpb.NewMessage(c.messages["LifecycleRequest"])

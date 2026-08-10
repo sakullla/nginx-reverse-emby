@@ -23,6 +23,7 @@ type LifecycleClient interface {
 
 type ActionClient interface {
 	InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error)
+	QueryAction(context.Context, pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error)
 }
 
 type DialFunc func(context.Context, DialConfig) (LifecycleClient, io.Closer, error)
@@ -426,6 +427,12 @@ func (h *Host) InvokeAction(ctx context.Context, id, generation string, request 
 	if response.OperationID != request.OperationID {
 		return errors.New("Agent RPC plugin action response operation identity mismatch")
 	}
+	if response.Error != nil {
+		return response.Error
+	}
+	if !response.Accepted {
+		return errors.New("Agent RPC plugin invoke returned a non-terminal action result")
+	}
 	h.mu.RLock()
 	stillActive := h.active[id] == instance && instance.candidate.Generation == generation
 	h.mu.RUnlock()
@@ -433,6 +440,51 @@ func (h *Host) InvokeAction(ctx context.Context, id, generation string, request 
 		return errors.New("Agent RPC plugin action generation drained during dispatch")
 	}
 	return nil
+}
+
+func (h *Host) QueryAction(ctx context.Context, id, generation string, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	if h == nil || ctx == nil {
+		return pluginsdk.RPCActionResponse{}, errors.New("Agent RPC plugin action query host and context are required")
+	}
+	if request.Generation != generation {
+		return pluginsdk.RPCActionResponse{}, errors.New("Agent RPC plugin action query generation differs from ownership fence")
+	}
+	if err := request.Validate(); err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	h.mu.RLock()
+	instance := h.active[id]
+	h.mu.RUnlock()
+	if instance == nil || instance.candidate.Generation != generation {
+		return pluginsdk.RPCActionResponse{}, errors.New("Agent RPC plugin action query generation is not active")
+	}
+	instance.mu.RLock()
+	attempt := instance.attempt
+	var client ActionClient
+	if attempt != nil {
+		client, _ = attempt.client.(ActionClient)
+	}
+	instance.mu.RUnlock()
+	if client == nil {
+		return pluginsdk.RPCActionResponse{}, errors.New("Agent RPC plugin runtime does not implement action query")
+	}
+	response, err := client.QueryAction(ctx, request)
+	if err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	if err := response.Validate(); err != nil {
+		return pluginsdk.RPCActionResponse{}, fmt.Errorf("Agent RPC plugin action query response: %w", err)
+	}
+	if response.OperationID != request.OperationID {
+		return pluginsdk.RPCActionResponse{}, errors.New("Agent RPC plugin action query response operation identity mismatch")
+	}
+	h.mu.RLock()
+	stillActive := h.active[id] == instance && instance.candidate.Generation == generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return pluginsdk.RPCActionResponse{}, errors.New("Agent RPC plugin action generation drained during query")
+	}
+	return response, nil
 }
 
 func (h *Host) Stop(ctx context.Context, id string) error {

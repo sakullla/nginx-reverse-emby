@@ -64,7 +64,7 @@ func newCapabilityAuditJournal(path string, maxBytes int64, archives int) (*Capa
 	if err := recoverCapabilityAudit(path, maxBytes, archives); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := openCapabilityAuditFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open capability audit journal: %w", err)
 	}
@@ -125,12 +125,53 @@ func (journal *CapabilityAuditJournal) rotateLocked() error {
 	if err := rotateCapabilityAuditFiles(journal.path, journal.archives); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(journal.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := openCapabilityAuditFile(journal.path)
 	if err != nil {
 		return err
 	}
 	journal.file = file
-	return syncAuditDirectory(filepath.Dir(journal.path))
+	return nil
+}
+
+func openCapabilityAuditFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		return file, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := createCapabilityAuditFile(path); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+}
+
+func createCapabilityAuditFile(path string) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".create-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := durableAuditCreate(temporaryPath, path); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		return nil
+	}
+	return syncAuditDirectory(filepath.Dir(path))
 }
 
 func recoverCapabilityAudit(path string, maxBytes int64, archives int) error {

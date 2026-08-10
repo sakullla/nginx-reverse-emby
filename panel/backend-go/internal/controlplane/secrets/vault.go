@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 var (
@@ -47,9 +49,15 @@ type Keyring struct {
 }
 
 type Vault struct {
-	store   Store
-	keyring Keyring
-	now     func() time.Time
+	store       Store
+	keyring     Keyring
+	now         func() time.Time
+	revocations *targetRevocationOwner
+}
+
+type targetRevocationOwner struct {
+	mu      sync.RWMutex
+	revoker interface{ RevokeTarget(pluginsdk.HostTarget) }
 }
 
 type Metadata struct {
@@ -88,7 +96,28 @@ func NewVault(store Store, keyring Keyring) (*Vault, error) {
 		}
 		keys[id] = append([]byte(nil), candidate...)
 	}
-	return &Vault{store: store, keyring: Keyring{CurrentKeyID: keyID, Keys: keys}, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Vault{store: store, keyring: Keyring{CurrentKeyID: keyID, Keys: keys}, now: func() time.Time { return time.Now().UTC() }, revocations: &targetRevocationOwner{}}, nil
+}
+
+func (v *Vault) SetPluginCapabilityTargetRevoker(revoker interface{ RevokeTarget(pluginsdk.HostTarget) }) {
+	if v == nil || v.revocations == nil {
+		return
+	}
+	v.revocations.mu.Lock()
+	v.revocations.revoker = revoker
+	v.revocations.mu.Unlock()
+}
+
+func (v *Vault) revokePluginCapabilityTarget(target pluginsdk.HostTarget) {
+	if v == nil || v.revocations == nil {
+		return
+	}
+	v.revocations.mu.RLock()
+	revoker := v.revocations.revoker
+	v.revocations.mu.RUnlock()
+	if revoker != nil {
+		revoker.RevokeTarget(target)
+	}
 }
 
 // KeyringFromEnvironment loads the envelope key without persisting it in the
@@ -196,6 +225,7 @@ func (v *Vault) Rotate(ctx context.Context, op OperationContext, id, plaintext s
 	if err != nil {
 		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
+	v.revokePluginCapabilityTarget(pluginsdk.HostTarget{Kind: "secret", ID: id, ResourceGroupID: row.ResourceGroupID})
 	return metadataFromRow(row), nil
 }
 

@@ -229,6 +229,10 @@ func (testRPC) InvokeAction(_ context.Context, request pluginsdk.RPCActionReques
 	return pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}, nil
 }
 
+func (testRPC) QueryAction(_ context.Context, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	return pluginsdk.RPCActionResponse{OperationID: request.OperationID, Missing: true}, nil
+}
+
 type blockedRestartLauncher struct {
 	mu      sync.Mutex
 	starts  int

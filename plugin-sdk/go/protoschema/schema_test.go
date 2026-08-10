@@ -78,7 +78,7 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 	})
 	assertEnum(t, file.Enums().ByName("ABIStatus"), []enumValueExpectation{{"ABI_STATUS_OK", 0}, {"ABI_STATUS_INVALID_ARGUMENT", 1}, {"ABI_STATUS_PERMISSION_DENIED", 2}, {"ABI_STATUS_RESOURCE_EXHAUSTED", 3}, {"ABI_STATUS_DEADLINE_EXCEEDED", 4}, {"ABI_STATUS_UNAVAILABLE", 5}, {"ABI_STATUS_INCOMPATIBLE_ABI", 6}, {"ABI_STATUS_INTERNAL", 7}})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
-	assertExclusiveResult(t, file.Messages().ByName("EvaluateResponse"))
+	assertExclusiveResult(t, file.Messages().ByName("EvaluateResponse"), 2, nil)
 	action := file.Messages().ByName("EvaluateSuccess").Enums().ByName("Action")
 	assertEnum(t, action, []enumValueExpectation{{"ACTION_UNSPECIFIED", 0}, {"ALLOW", 1}, {"DENY", 2}, {"OBSERVE", 3}})
 	emitEvent := file.Messages().ByName("EmitEventRequest")
@@ -110,14 +110,17 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"LifecycleRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"config", 2, protoreflect.BytesKind, false, ""}}},
 		{"LifecycleResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.LifecycleSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
 		{"LifecycleSuccess", []fieldExpectation{{"ready", 1, protoreflect.BoolKind, false, ""}}},
-		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}, {"operation_id", 5, protoreflect.StringKind, false, ""}}},
-		{"ActionResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
-		{"ActionSuccess", []fieldExpectation{{"accepted", 1, protoreflect.BoolKind, false, ""}, {"operation_id", 2, protoreflect.StringKind, false, ""}}},
+		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}, {"operation_id", 5, protoreflect.StringKind, false, ""}, {"resource_handle", 6, protoreflect.StringKind, false, ""}}},
+		{"ActionResponse", []fieldExpectation{{"operation_id", 3, protoreflect.StringKind, false, ""}, {"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}, {"pending", 4, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionPending"}, {"missing", 5, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionMissing"}}},
+		{"ActionSuccess", []fieldExpectation{{"accepted", 1, protoreflect.BoolKind, false, ""}}},
+		{"ActionPending", []fieldExpectation{}},
+		{"ActionMissing", []fieldExpectation{}},
+		{"ActionQueryRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"operation_id", 2, protoreflect.StringKind, false, ""}}},
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
-	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"))
-	assertExclusiveResult(t, file.Messages().ByName("ActionResponse"))
+	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"), 2, nil)
+	assertExclusiveResult(t, file.Messages().ByName("ActionResponse"), 4, map[protoreflect.Name]struct{}{"operation_id": {}})
 	services := file.Services()
 	if services.Len() != 1 || services.Get(0).Name() != "PluginRuntime" {
 		t.Fatalf("RPC services changed: %v", services.Len())
@@ -128,6 +131,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"Prepare", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
 		{"Activate", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
 		{"InvokeAction", "nre.plugin.rpc.v1.ActionRequest", "nre.plugin.rpc.v1.ActionResponse"},
+		{"QueryAction", "nre.plugin.rpc.v1.ActionQueryRequest", "nre.plugin.rpc.v1.ActionResponse"},
 		{"Stop", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
 	}
 	if methods.Len() != len(wantMethods) {
@@ -218,14 +222,21 @@ func assertRuntimeErrorEnum(t *testing.T, enum protoreflect.EnumDescriptor) {
 	})
 }
 
-func assertExclusiveResult(t *testing.T, message protoreflect.MessageDescriptor) {
+func assertExclusiveResult(t *testing.T, message protoreflect.MessageDescriptor, resultFields int, envelopeFields map[protoreflect.Name]struct{}) {
 	t.Helper()
-	if message == nil || message.Oneofs().Len() != 1 || message.Oneofs().Get(0).Name() != "result" || message.Oneofs().Get(0).Fields().Len() != 2 {
+	if message == nil || message.Oneofs().Len() != 1 || message.Oneofs().Get(0).Name() != "result" || message.Oneofs().Get(0).Fields().Len() != resultFields {
 		t.Fatalf("%v does not define the canonical exclusive result oneof", message)
 	}
 	for index := 0; index < message.Fields().Len(); index++ {
-		if message.Fields().Get(index).ContainingOneof() != message.Oneofs().Get(0) {
-			t.Fatalf("%s.%s is outside the result oneof", message.FullName(), message.Fields().Get(index).Name())
+		field := message.Fields().Get(index)
+		if _, ok := envelopeFields[field.Name()]; ok {
+			if field.ContainingOneof() != nil {
+				t.Fatalf("%s.%s must remain outside the result oneof", message.FullName(), field.Name())
+			}
+			continue
+		}
+		if field.ContainingOneof() != message.Oneofs().Get(0) {
+			t.Fatalf("%s.%s is outside the result oneof", message.FullName(), field.Name())
 		}
 	}
 }

@@ -3,11 +3,24 @@ package secrets_test
 import (
 	"bytes"
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+type vaultTargetRevoker struct {
+	mu      sync.Mutex
+	targets []pluginsdk.HostTarget
+}
+
+func (revoker *vaultTargetRevoker) RevokeTarget(target pluginsdk.HostTarget) {
+	revoker.mu.Lock()
+	revoker.targets = append(revoker.targets, target)
+	revoker.mu.Unlock()
+}
 
 func TestVaultPersistsOnlyEnvelopeCiphertextAndRotationKeepsReference(t *testing.T) {
 	t.Parallel()
@@ -21,6 +34,8 @@ func TestVaultPersistsOnlyEnvelopeCiphertextAndRotationKeepsReference(t *testing
 	if err != nil {
 		t.Fatalf("NewVault() error = %v", err)
 	}
+	revoker := &vaultTargetRevoker{}
+	vault.SetPluginCapabilityTargetRevoker(revoker)
 	ctx := context.Background()
 	op := secrets.OperationContext{ActorID: "admin", ResourceGroupID: "default"}
 	metadata, err := vault.Create(ctx, op, "cloudflare", "dns", "first-plaintext-token")
@@ -45,6 +60,11 @@ func TestVaultPersistsOnlyEnvelopeCiphertextAndRotationKeepsReference(t *testing
 	if rotated.ID != metadata.ID || rotated.ActiveVersion != 2 {
 		t.Fatalf("Rotate() metadata = %+v", rotated)
 	}
+	revoker.mu.Lock()
+	if len(revoker.targets) != 1 || revoker.targets[0] != (pluginsdk.HostTarget{Kind: "secret", ID: metadata.ID, ResourceGroupID: "default"}) {
+		t.Fatalf("rotation revocations = %+v", revoker.targets)
+	}
+	revoker.mu.Unlock()
 	resolved, err = vault.Resolve(ctx, op, metadata.ID)
 	if err != nil || string(resolved) != "second-plaintext-token" {
 		t.Fatalf("Resolve(rotated) = %q, %v", resolved, err)

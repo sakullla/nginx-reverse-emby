@@ -23,6 +23,11 @@ service PluginRuntime {
   rpc Prepare(LifecycleRequest) returns (LifecycleResponse);
   rpc Activate(LifecycleRequest) returns (LifecycleResponse);
   rpc InvokeAction(ActionRequest) returns (ActionResponse);
+  // QueryAction is the recovery half of InvokeAction. Implementations MUST
+  // durably claim operation_id before applying a side effect and replay the
+  // exact committed result. A lost InvokeAction response is therefore resolved
+  // without re-entering the action.
+  rpc QueryAction(ActionQueryRequest) returns (ActionResponse);
   rpc Stop(LifecycleRequest) returns (LifecycleResponse);
 }
 
@@ -63,17 +68,33 @@ message ActionRequest {
   string target_kind = 3;
   string target_id = 4;
   string operation_id = 5;
+  // resource_handle is an opaque, revocable host authority. When set, raw
+  // target_kind/target_id MUST be empty and the guest must not infer them.
+  string resource_handle = 6;
 }
 
 message ActionResponse {
+  // The operation identity is top-level so success, failure, pending, and
+  // missing query results are all bound to the same durable guest operation.
+  string operation_id = 3;
   oneof result {
     ActionSuccess success = 1;
     RuntimeError error = 2;
+    ActionPending pending = 4;
+    ActionMissing missing = 5;
   }
 }
 
 message ActionSuccess {
   bool accepted = 1;
+}
+
+message ActionPending {}
+
+message ActionMissing {}
+
+message ActionQueryRequest {
+  string generation = 1;
   string operation_id = 2;
 }
 

@@ -25,13 +25,16 @@ type PluginCapabilityManagerStore interface {
 	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
 	ListPluginGrants(context.Context, string) ([]storage.PluginGrantRow, error)
 	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	PluginCapabilityTargetVersion(context.Context, string, string) (string, bool, error)
 	ClaimPluginCapabilityOperation(context.Context, string, string, string, string, string, time.Time, time.Time) (storage.IdempotencyRecordRow, bool, error)
+	RenewPluginCapabilityOperation(context.Context, string, string, string, string, time.Time) error
 	CompletePluginCapabilityOperation(context.Context, string, string, string, string, string) error
 }
 
 type PluginCapabilityRuntime interface {
 	ActiveGeneration(string) (string, bool)
 	InvokeAction(context.Context, string, string, pluginsdk.RPCActionRequest) error
+	QueryAction(context.Context, string, string, pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error)
 }
 
 type PluginDynamicActionRequest struct {
@@ -53,6 +56,11 @@ type PluginResourceHandleRequest struct {
 	InstanceID string
 	Actor      authz.Actor
 	Target     pluginsdk.HostTarget
+}
+
+type pluginResourceReference struct {
+	Target  pluginsdk.HostTarget
+	Version string
 }
 
 type PluginCapabilityManager struct {
@@ -104,6 +112,9 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 		return PluginDynamicActionResult{}, err
 	}
 	if !claimed {
+		if pluginActionOutcomePending(record.ResponseJSON) {
+			return PluginDynamicActionResult{OperationID: request.OperationID, Replayed: true}, pluginActionPendingError(nil)
+		}
 		result, outcomeErr := decodePluginActionOutcome(record.ResponseJSON, request.OperationID)
 		result.Replayed = true
 		return result, outcomeErr
@@ -111,6 +122,24 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 	instance, _, action, generation, policy, err := manager.actionPolicy(ctx, request)
 	if err != nil {
 		return manager.completePluginAction(ctx, request.OperationID, claimToken, err)
+	}
+	queryCtx, cancelQuery := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	queryResult, queryErr := manager.runtime.QueryAction(queryCtx, request.InstanceID, generation, pluginsdk.RPCActionQueryRequest{Generation: generation, OperationID: request.OperationID})
+	cancelQuery()
+	if queryErr != nil {
+		return manager.retainPendingPluginAction(ctx, request.OperationID, claimToken, queryErr)
+	}
+	if !queryResult.Missing {
+		if queryResult.Pending {
+			return manager.retainPendingPluginAction(ctx, request.OperationID, claimToken, nil)
+		}
+		if queryResult.Error != nil {
+			return manager.completePluginAction(ctx, request.OperationID, claimToken, queryResult.Error)
+		}
+		if queryResult.Accepted {
+			return manager.completePluginAction(ctx, request.OperationID, claimToken, nil)
+		}
+		return manager.retainPendingPluginAction(ctx, request.OperationID, claimToken, errors.New("plugin action query returned an unknown state"))
 	}
 
 	call := pluginsdk.HostCapabilityCall{
@@ -120,35 +149,45 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 	}
 	dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 25*time.Second)
 	defer cancelDispatch()
-	invokeRuntime := func(callCtx context.Context, _ pluginsdk.HostCapabilityCall) error {
-		return manager.runtime.InvokeAction(callCtx, request.InstanceID, generation, pluginsdk.RPCActionRequest{
+	invokeRuntime := func(callCtx context.Context, _ pluginsdk.HostCapabilityCall, resourceHandle string) error {
+		rpcRequest := pluginsdk.RPCActionRequest{
 			Generation: generation, ActionID: action.ID, TargetKind: request.Target.Kind,
 			TargetID: request.Target.ID, OperationID: request.OperationID,
-		})
+		}
+		if resourceHandle != "" {
+			rpcRequest.TargetKind = ""
+			rpcRequest.TargetID = ""
+			rpcRequest.ResourceHandle = resourceHandle
+		}
+		return manager.runtime.InvokeAction(callCtx, request.InstanceID, generation, rpcRequest)
 	}
 	var dispatchErr error
 	if action.Capability == pluginsdk.CapabilityServiceRevocableResourceHandle {
 		handleCall := call
 		handleCall.Capability = pluginsdk.CapabilityServiceRevocableResourceHandle
 		handleCall.QuotaMetric = "plugin.resource.handle.action"
-		handleToken, issueErr := manager.handles.Issue(dispatchCtx, policy, handleCall, request.Target)
+		handleToken, issueErr := manager.IssueResourceHandle(dispatchCtx, PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
 		if issueErr != nil {
 			dispatchErr = issueErr
 		} else {
 			defer manager.handles.Release(handleToken)
+			stopTargetWatch := manager.watchTarget(dispatchCtx, request.Target)
+			defer stopTargetWatch()
 			dispatchErr = manager.actions.Dispatch(dispatchCtx, request.OperationID, action, call, policy, func(callCtx context.Context, actionCall pluginsdk.HostCapabilityCall) error {
 				resolved, resolveErr := manager.handles.ResolveWithPolicy(callCtx, handleToken, handleCall, policy)
 				if resolveErr != nil {
 					return resolveErr
 				}
-				if target, ok := resolved.(pluginsdk.HostTarget); !ok || target != request.Target {
+				if reference, ok := resolved.(pluginResourceReference); !ok || reference.Target != request.Target {
 					return errors.New("plugin action resource handle target is invalid")
 				}
-				return invokeRuntime(callCtx, actionCall)
+				return invokeRuntime(callCtx, actionCall, handleToken)
 			})
 		}
 	} else {
-		dispatchErr = manager.actions.Dispatch(dispatchCtx, request.OperationID, action, call, policy, invokeRuntime)
+		dispatchErr = manager.actions.Dispatch(dispatchCtx, request.OperationID, action, call, policy, func(callCtx context.Context, actionCall pluginsdk.HostCapabilityCall) error {
+			return invokeRuntime(callCtx, actionCall, "")
+		})
 	}
 	if dispatchErr == nil {
 		// A successful action may rotate or delete its target. Revoke the old
@@ -156,7 +195,44 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 		// authorization and handles from current platform state.
 		manager.RevokeTarget(request.Target)
 	}
-	return manager.completePluginAction(ctx, request.OperationID, claimToken, dispatchErr)
+	if dispatchErr == nil || pluginActionErrorIsDefinitive(dispatchErr) {
+		return manager.completePluginAction(ctx, request.OperationID, claimToken, dispatchErr)
+	}
+	reconcileCtx, cancelReconcile := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	reconciled, reconcileErr := manager.runtime.QueryAction(reconcileCtx, request.InstanceID, generation, pluginsdk.RPCActionQueryRequest{Generation: generation, OperationID: request.OperationID})
+	cancelReconcile()
+	if reconcileErr == nil {
+		if reconciled.Accepted {
+			return manager.completePluginAction(ctx, request.OperationID, claimToken, nil)
+		}
+		if reconciled.Error != nil {
+			return manager.completePluginAction(ctx, request.OperationID, claimToken, reconciled.Error)
+		}
+	}
+	return manager.retainPendingPluginAction(ctx, request.OperationID, claimToken, errors.Join(dispatchErr, reconcileErr))
+}
+
+func pluginActionErrorIsDefinitive(err error) bool {
+	var runtimeErr *pluginsdk.RuntimeError
+	return errors.As(err, &runtimeErr)
+}
+
+func pluginActionOutcomePending(value string) bool {
+	var pending struct {
+		Status string `json:"status"`
+	}
+	return json.Unmarshal([]byte(value), &pending) == nil && pending.Status == "pending"
+}
+
+func pluginActionPendingError(cause error) error {
+	return errors.Join(errPluginActionPending, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "plugin action result is pending", Retryable: true}, cause)
+}
+
+func (manager *PluginCapabilityManager) retainPendingPluginAction(ctx context.Context, operationID, claimToken string, cause error) (PluginDynamicActionResult, error) {
+	renewCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	renewErr := manager.store.RenewPluginCapabilityOperation(renewCtx, "plugin.action", operationID, operationID, claimToken, time.Now().UTC())
+	return PluginDynamicActionResult{OperationID: operationID}, pluginActionPendingError(errors.Join(cause, renewErr))
 }
 
 func (manager *PluginCapabilityManager) lockOperation(operationID string) func() {
@@ -244,17 +320,21 @@ func (manager *PluginCapabilityManager) capabilityPolicy(ctx context.Context, re
 	return instance, packageRow, validated, generation, policy, err
 }
 
-func (manager *PluginCapabilityManager) IssueResourceHandle(ctx context.Context, request PluginResourceHandleRequest, resource any) (string, error) {
+func (manager *PluginCapabilityManager) IssueResourceHandle(ctx context.Context, request PluginResourceHandleRequest) (string, error) {
 	instance, _, _, generation, policy, err := manager.capabilityPolicy(ctx, request)
 	if err != nil {
 		return "", err
+	}
+	version, exists, err := manager.store.PluginCapabilityTargetVersion(ctx, request.Target.Kind, request.Target.ID)
+	if err != nil || !exists || version == "" {
+		return "", errors.Join(errors.New("plugin capability target is unavailable"), err)
 	}
 	call := pluginsdk.HostCapabilityCall{
 		PluginID: request.PluginID, InstanceID: request.InstanceID, Generation: generation,
 		Actor:  pluginsdk.HostActor{ID: request.Actor.ID, ResourceGroupID: instance.ResourceGroupID},
 		Target: request.Target, QuotaMetric: "plugin.resource.handle.issue", QuotaUnits: 1,
 	}
-	return manager.handles.Issue(ctx, policy, call, resource)
+	return manager.handles.Issue(ctx, policy, call, pluginResourceReference{Target: request.Target, Version: version})
 }
 
 func (manager *PluginCapabilityManager) ResolveResourceHandle(ctx context.Context, token string, request PluginResourceHandleRequest) (any, error) {
@@ -267,7 +347,52 @@ func (manager *PluginCapabilityManager) ResolveResourceHandle(ctx context.Contex
 		Actor:  pluginsdk.HostActor{ID: request.Actor.ID, ResourceGroupID: instance.ResourceGroupID},
 		Target: request.Target, QuotaMetric: "plugin.resource.handle.resolve", QuotaUnits: 1,
 	}
-	return manager.handles.ResolveWithPolicy(ctx, token, call, policy)
+	resource, err := manager.handles.ResolveWithPolicy(ctx, token, call, policy)
+	if err != nil {
+		return nil, err
+	}
+	reference, ok := resource.(pluginResourceReference)
+	if !ok || reference.Target != request.Target {
+		return nil, fmt.Errorf("%w: plugin resource handle projection is invalid", pluginhost.ErrCapabilityDenied)
+	}
+	version, exists, err := manager.store.PluginCapabilityTargetVersion(ctx, request.Target.Kind, request.Target.ID)
+	if err != nil || !exists || version != reference.Version {
+		manager.RevokeTarget(request.Target)
+		return nil, fmt.Errorf("%w: plugin resource handle target was deleted or rotated", pluginhost.ErrCapabilityDenied)
+	}
+	return reference, nil
+}
+
+func (manager *PluginCapabilityManager) watchTarget(ctx context.Context, target pluginsdk.HostTarget) func() {
+	watchCtx, cancel := context.WithCancel(ctx)
+	version, exists, err := manager.store.PluginCapabilityTargetVersion(watchCtx, target.Kind, target.ID)
+	if err != nil || !exists || version == "" {
+		manager.RevokeTarget(target)
+		cancel()
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-ticker.C:
+				current, currentExists, currentErr := manager.store.PluginCapabilityTargetVersion(watchCtx, target.Kind, target.ID)
+				if currentErr != nil || !currentExists || current != version {
+					manager.RevokeTarget(target)
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func pluginActionFingerprint(request PluginDynamicActionRequest) (string, error) {

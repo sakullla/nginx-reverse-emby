@@ -377,17 +377,46 @@ type LifecycleSuccess struct {
 }
 
 type RPCActionRequest struct {
-	Generation  string
-	ActionID    string
-	TargetKind  string
-	TargetID    string
-	OperationID string
+	Generation     string
+	ActionID       string
+	TargetKind     string
+	TargetID       string
+	OperationID    string
+	ResourceHandle string
 }
 
 func (request RPCActionRequest) Validate() error {
-	for name, value := range map[string]string{"generation": request.Generation, "action": request.ActionID, "target kind": request.TargetKind, "target": request.TargetID, "operation": request.OperationID} {
+	for name, value := range map[string]string{"generation": request.Generation, "action": request.ActionID, "operation": request.OperationID} {
 		if err := ValidatePolicyIdentity(value); err != nil {
 			return fmt.Errorf("%s identity: %w", name, err)
+		}
+	}
+	if request.ResourceHandle != "" {
+		if request.TargetKind != "" || request.TargetID != "" {
+			return errors.New("action request cannot combine an opaque resource handle with raw target identity")
+		}
+		if err := ValidatePolicyIdentity(request.ResourceHandle); err != nil {
+			return fmt.Errorf("resource handle identity: %w", err)
+		}
+		return nil
+	}
+	for name, value := range map[string]string{"target kind": request.TargetKind, "target": request.TargetID} {
+		if err := ValidatePolicyIdentity(value); err != nil {
+			return fmt.Errorf("%s identity: %w", name, err)
+		}
+	}
+	return nil
+}
+
+type RPCActionQueryRequest struct {
+	Generation  string
+	OperationID string
+}
+
+func (request RPCActionQueryRequest) Validate() error {
+	for name, value := range map[string]string{"generation": request.Generation, "operation": request.OperationID} {
+		if err := ValidatePolicyIdentity(value); err != nil {
+			return fmt.Errorf("action query %s identity: %w", name, err)
 		}
 	}
 	return nil
@@ -397,17 +426,32 @@ type RPCActionResponse struct {
 	Accepted    bool
 	OperationID string
 	Error       *RuntimeError
+	Pending     bool
+	Missing     bool
 }
 
 func (response RPCActionResponse) Validate() error {
-	if response.Error != nil {
-		return response.Error.Validate()
-	}
-	if !response.Accepted {
-		return errors.New("action response was not accepted")
-	}
 	if err := ValidatePolicyIdentity(response.OperationID); err != nil {
 		return fmt.Errorf("action response operation identity: %w", err)
+	}
+	branches := 0
+	if response.Accepted {
+		branches++
+	}
+	if response.Error != nil {
+		branches++
+	}
+	if response.Pending {
+		branches++
+	}
+	if response.Missing {
+		branches++
+	}
+	if branches != 1 {
+		return errors.New("action response must contain exactly one success, error, pending, or missing result")
+	}
+	if response.Error != nil {
+		return response.Error.Validate()
 	}
 	return nil
 }

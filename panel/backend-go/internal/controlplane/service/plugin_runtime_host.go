@@ -86,6 +86,10 @@ func (s *PluginRuntimeHost) InvokeAction(ctx context.Context, instanceID, genera
 	return s.host.InvokeAction(ctx, instanceID, generation, request)
 }
 
+func (s *PluginRuntimeHost) QueryAction(ctx context.Context, instanceID, generation string, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	return s.host.QueryAction(ctx, instanceID, generation, request)
+}
+
 func (s *PluginRuntimeHost) revokeGeneration(instanceID, generation string) {
 	if generation == "" {
 		return

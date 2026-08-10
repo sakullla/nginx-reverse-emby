@@ -17,12 +17,14 @@ import (
 
 type capabilityManagerStore struct {
 	capabilityTestStore
-	mu         sync.Mutex
-	installed  storage.InstalledPluginRow
-	packageRow storage.PluginPackageRow
-	instance   storage.PluginInstanceRow
-	grants     []storage.PluginGrantRow
-	operations map[string]storage.IdempotencyRecordRow
+	mu            sync.Mutex
+	installed     storage.InstalledPluginRow
+	packageRow    storage.PluginPackageRow
+	instance      storage.PluginInstanceRow
+	grants        []storage.PluginGrantRow
+	operations    map[string]storage.IdempotencyRecordRow
+	targetVersion string
+	targetExists  bool
 }
 
 func (store *capabilityManagerStore) ClaimPluginCapabilityOperation(_ context.Context, scope, key, fingerprint, operationID, claimToken string, now, expiresAt time.Time) (storage.IdempotencyRecordRow, bool, error) {
@@ -56,6 +58,19 @@ func (store *capabilityManagerStore) CompletePluginCapabilityOperation(_ context
 	return nil
 }
 
+func (store *capabilityManagerStore) RenewPluginCapabilityOperation(_ context.Context, scope, key, operationID, _ string, now time.Time) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	mapKey := scope + "\x00" + key
+	record, ok := store.operations[mapKey]
+	if !ok || record.OperationID != operationID {
+		return errors.New("operation owner missing")
+	}
+	record.ExpiresAt = now.Add(storage.PluginCapabilityOperationLease)
+	store.operations[mapKey] = record
+	return nil
+}
+
 func (store *capabilityManagerStore) GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -80,15 +95,25 @@ func (store *capabilityManagerStore) GetPluginInstance(context.Context, string) 
 	return store.instance, true, nil
 }
 
+func (store *capabilityManagerStore) PluginCapabilityTargetVersion(context.Context, string, string) (string, bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.targetVersion, store.targetExists, nil
+}
+
 type capabilityRuntimeStub struct {
-	mu         sync.Mutex
-	generation string
-	calls      int
-	invokeErr  error
-	afterCall  func()
-	started    chan struct{}
-	release    chan struct{}
-	block      bool
+	mu          sync.Mutex
+	generation  string
+	calls       int
+	invokeErr   error
+	commitErr   bool
+	lastRequest pluginsdk.RPCActionRequest
+	afterCall   func()
+	started     chan struct{}
+	release     chan struct{}
+	block       bool
+	results     map[string]pluginsdk.RPCActionResponse
+	queryErr    error
 }
 
 func (runtime *capabilityRuntimeStub) ActiveGeneration(string) (string, bool) {
@@ -101,7 +126,9 @@ func (runtime *capabilityRuntimeStub) InvokeAction(ctx context.Context, _, gener
 	}
 	runtime.mu.Lock()
 	runtime.calls++
+	runtime.lastRequest = request
 	afterCall, invokeErr, started, block := runtime.afterCall, runtime.invokeErr, runtime.started, runtime.block
+	commitErr := runtime.commitErr
 	runtime.mu.Unlock()
 	if started != nil {
 		select {
@@ -119,13 +146,47 @@ func (runtime *capabilityRuntimeStub) InvokeAction(ctx context.Context, _, gener
 	if afterCall != nil {
 		afterCall()
 	}
+	runtime.mu.Lock()
+	if runtime.results == nil {
+		runtime.results = make(map[string]pluginsdk.RPCActionResponse)
+	}
+	if invokeErr == nil || commitErr {
+		runtime.results[request.OperationID] = pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}
+	} else {
+		var runtimeErr *pluginsdk.RuntimeError
+		if errors.As(invokeErr, &runtimeErr) {
+			runtime.results[request.OperationID] = pluginsdk.RPCActionResponse{OperationID: request.OperationID, Error: runtimeErr}
+		}
+	}
+	runtime.mu.Unlock()
 	return invokeErr
+}
+
+func (runtime *capabilityRuntimeStub) QueryAction(_ context.Context, _, generation string, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	if generation != runtime.generation || request.Generation != runtime.generation {
+		return pluginsdk.RPCActionResponse{}, errors.New("wrong runtime generation")
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.queryErr != nil {
+		return pluginsdk.RPCActionResponse{}, runtime.queryErr
+	}
+	if result, ok := runtime.results[request.OperationID]; ok {
+		return result, nil
+	}
+	return pluginsdk.RPCActionResponse{OperationID: request.OperationID, Missing: true}, nil
 }
 
 func (runtime *capabilityRuntimeStub) callCount() int {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	return runtime.calls
+}
+
+func (runtime *capabilityRuntimeStub) request() pluginsdk.RPCActionRequest {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.lastRequest
 }
 
 func TestPluginCapabilityManagerRereadsDurableGrantAndDispatchesExactRuntimeGeneration(t *testing.T) {
@@ -138,7 +199,7 @@ func TestPluginCapabilityManagerRereadsDurableGrantAndDispatchesExactRuntimeGene
 		{ID: "grant-ui", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: string(pluginsdk.CapabilityUIDynamicActions)},
 		{ID: "grant-handle", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: string(pluginsdk.CapabilityServiceRevocableResourceHandle)},
 	}
-	store := &capabilityManagerStore{installed: storage.InstalledPluginRow{PluginID: pluginID, ActivePackageDigest: digest, ActivePackageIdentity: identity}, packageRow: storage.PluginPackageRow{Identity: identity, Digest: digest, PluginID: pluginID}, instance: storage.PluginInstanceRow{ID: "instance-1", PluginID: pluginID, ResourceGroupID: target.ResourceGroupID, DesiredEnabled: true}, grants: grants}
+	store := &capabilityManagerStore{installed: storage.InstalledPluginRow{PluginID: pluginID, ActivePackageDigest: digest, ActivePackageIdentity: identity}, packageRow: storage.PluginPackageRow{Identity: identity, Digest: digest, PluginID: pluginID}, instance: storage.PluginInstanceRow{ID: "instance-1", PluginID: pluginID, ResourceGroupID: target.ResourceGroupID, DesiredEnabled: true}, grants: grants, targetVersion: "target-version-1", targetExists: true}
 	runtime := &capabilityRuntimeStub{generation: "generation-1"}
 	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: capabilityTestAuthorizer{}, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry()}
 	manager.loadPackage = func(context.Context, storage.PluginPackageRow) (plugins.ValidatedPackage, error) {
@@ -276,8 +337,8 @@ func TestPluginCapabilityManagerGenerationDrainCancelsRealRuntimeDispatch(t *tes
 		t.Fatal("generation drain did not cancel the guest RPC")
 	}
 	result, err := manager.InvokeDynamicAction(t.Context(), request)
-	if !errors.Is(err, pluginhost.ErrCapabilityDenied) || !result.Replayed || !strings.Contains(err.Error(), "revoked during dispatch") || runtime.callCount() != 1 {
-		t.Fatalf("durable failed replay result=%+v error=%v calls=%d", result, err, runtime.callCount())
+	if !errors.Is(err, errPluginActionPending) || !result.Replayed || runtime.callCount() != 1 {
+		t.Fatalf("durable ambiguous replay result=%+v error=%v calls=%d", result, err, runtime.callCount())
 	}
 }
 
@@ -296,10 +357,59 @@ func TestPluginCapabilityManagerDurableReplayPreservesRuntimeError(t *testing.T)
 	}
 }
 
-func TestPluginCapabilityManagerTargetRotationCancelsDispatchAndRevokesPriorHandleEpoch(t *testing.T) {
+func TestPluginCapabilityManagerReconcilesCommittedLostResponseAndUsesOpaqueHandle(t *testing.T) {
 	manager, _, runtime, request := newCapabilityManagerFixture(t)
+	runtime.invokeErr = context.DeadlineExceeded
+	runtime.commitErr = true
+	result, err := manager.InvokeDynamicAction(t.Context(), request)
+	if err != nil || result.OperationID != request.OperationID || result.Replayed {
+		t.Fatalf("lost response reconciliation result=%+v error=%v", result, err)
+	}
+	rpcRequest := runtime.request()
+	if rpcRequest.ResourceHandle == "" || rpcRequest.TargetKind != "" || rpcRequest.TargetID != "" {
+		t.Fatalf("guest received raw resource identity: %+v", rpcRequest)
+	}
+	result, err = manager.InvokeDynamicAction(t.Context(), request)
+	if err != nil || !result.Replayed || runtime.callCount() != 1 {
+		t.Fatalf("durable replay result=%+v error=%v calls=%d", result, err, runtime.callCount())
+	}
+}
+
+func TestPluginCapabilityManagerLeaseTakeoverQueriesGuestBeforeReentry(t *testing.T) {
+	first, store, runtime, request := newCapabilityManagerFixture(t)
+	runtime.queryErr = errors.New("guest query transport unavailable")
+	result, err := first.InvokeDynamicAction(t.Context(), request)
+	if !errors.Is(err, errPluginActionPending) || result.OperationID != request.OperationID || runtime.callCount() != 0 {
+		t.Fatalf("initial pending result=%+v error=%v calls=%d", result, err, runtime.callCount())
+	}
+	runtime.mu.Lock()
+	runtime.queryErr = nil
+	if runtime.results == nil {
+		runtime.results = make(map[string]pluginsdk.RPCActionResponse)
+	}
+	runtime.results[request.OperationID] = pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}
+	runtime.mu.Unlock()
+	store.mu.Lock()
+	record := store.operations["plugin.action\x00"+request.OperationID]
+	record.ExpiresAt = time.Now().Add(-time.Second)
+	store.operations["plugin.action\x00"+request.OperationID] = record
+	store.mu.Unlock()
+	second := &PluginCapabilityManager{store: store, resourceAuthorizer: first.resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry()}
+	second.loadPackage = first.loadPackage
+	result, err = second.InvokeDynamicAction(t.Context(), request)
+	if err != nil || result.Replayed || runtime.callCount() != 0 {
+		t.Fatalf("takeover reconciliation result=%+v error=%v calls=%d", result, err, runtime.callCount())
+	}
+	result, err = first.InvokeDynamicAction(t.Context(), request)
+	if err != nil || !result.Replayed || runtime.callCount() != 0 {
+		t.Fatalf("post-takeover durable replay result=%+v error=%v calls=%d", result, err, runtime.callCount())
+	}
+}
+
+func TestPluginCapabilityManagerTargetRotationCancelsDispatchAndRevokesPriorHandleEpoch(t *testing.T) {
+	manager, store, runtime, request := newCapabilityManagerFixture(t)
 	handleRequest := PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target}
-	priorToken, err := manager.IssueResourceHandle(t.Context(), handleRequest, "prior-target-resource")
+	priorToken, err := manager.IssueResourceHandle(t.Context(), handleRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,10 +422,12 @@ func TestPluginCapabilityManagerTargetRotationCancelsDispatchAndRevokesPriorHand
 		done <- invokeErr
 	}()
 	<-runtime.started
-	manager.RevokeTarget(request.Target)
+	store.mu.Lock()
+	store.targetVersion = "target-version-2"
+	store.mu.Unlock()
 	select {
 	case err := <-done:
-		if !errors.Is(err, pluginhost.ErrCapabilityDenied) {
+		if !errors.Is(err, errPluginActionPending) {
 			t.Fatalf("target-rotated dispatch error=%v", err)
 		}
 	case <-time.After(time.Second):
@@ -324,7 +436,7 @@ func TestPluginCapabilityManagerTargetRotationCancelsDispatchAndRevokesPriorHand
 	if _, err := manager.ResolveResourceHandle(t.Context(), priorToken, handleRequest); !errors.Is(err, pluginhost.ErrCapabilityDenied) {
 		t.Fatalf("prior target handle after rotation error=%v", err)
 	}
-	freshToken, err := manager.IssueResourceHandle(t.Context(), handleRequest, "fresh-target-resource")
+	freshToken, err := manager.IssueResourceHandle(t.Context(), handleRequest)
 	if err != nil {
 		t.Fatalf("issue fresh target epoch: %v", err)
 	}
@@ -333,10 +445,34 @@ func TestPluginCapabilityManagerTargetRotationCancelsDispatchAndRevokesPriorHand
 	}
 }
 
+func TestPluginCapabilityManagerTargetDeletionCancelsRealRuntimeDispatch(t *testing.T) {
+	manager, store, runtime, request := newCapabilityManagerFixture(t)
+	runtime.block = true
+	runtime.started = make(chan struct{}, 1)
+	runtime.release = make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, invokeErr := manager.InvokeDynamicAction(context.Background(), request)
+		done <- invokeErr
+	}()
+	<-runtime.started
+	store.mu.Lock()
+	store.targetExists = false
+	store.mu.Unlock()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errPluginActionPending) {
+			t.Fatalf("target-deleted dispatch error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("target deletion was not detected and canceled")
+	}
+}
+
 func TestPluginCapabilityManagerSuccessfulHandleActionRevokesPriorTargetEpoch(t *testing.T) {
 	manager, _, _, request := newCapabilityManagerFixture(t)
 	handleRequest := PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target}
-	priorToken, err := manager.IssueResourceHandle(t.Context(), handleRequest, "prior-target-resource")
+	priorToken, err := manager.IssueResourceHandle(t.Context(), handleRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +482,7 @@ func TestPluginCapabilityManagerSuccessfulHandleActionRevokesPriorTargetEpoch(t 
 	if _, err := manager.ResolveResourceHandle(t.Context(), priorToken, handleRequest); !errors.Is(err, pluginhost.ErrCapabilityDenied) {
 		t.Fatalf("prior target handle after successful mutation error=%v", err)
 	}
-	if _, err := manager.IssueResourceHandle(t.Context(), handleRequest, "fresh-target-resource"); err != nil {
+	if _, err := manager.IssueResourceHandle(t.Context(), handleRequest); err != nil {
 		t.Fatalf("issue after successful target mutation: %v", err)
 	}
 }
@@ -354,13 +490,13 @@ func TestPluginCapabilityManagerSuccessfulHandleActionRevokesPriorTargetEpoch(t 
 func TestPluginCapabilityManagerResourceHandlesRereadGrantAndRevoke(t *testing.T) {
 	manager, store, runtime, request := newCapabilityManagerFixture(t)
 	handleRequest := PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target}
-	resource := &struct{ name string }{"relay-secret"}
-	token, err := manager.IssueResourceHandle(t.Context(), handleRequest, resource)
+	token, err := manager.IssueResourceHandle(t.Context(), handleRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := manager.ResolveResourceHandle(t.Context(), token, handleRequest)
-	if err != nil || resolved != resource {
+	reference, ok := resolved.(pluginResourceReference)
+	if err != nil || !ok || reference.Target != request.Target || reference.Version != store.targetVersion {
 		t.Fatalf("resolve resource=%v error=%v", resolved, err)
 	}
 	store.mu.Lock()
@@ -378,7 +514,7 @@ func TestPluginCapabilityManagerResourceHandlesRereadGrantAndRevoke(t *testing.T
 func TestPluginCapabilityManagerResourceHandleTargetAndPackageRotationFailClosed(t *testing.T) {
 	manager, store, _, request := newCapabilityManagerFixture(t)
 	handleRequest := PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target}
-	token, err := manager.IssueResourceHandle(t.Context(), handleRequest, "resource")
+	token, err := manager.IssueResourceHandle(t.Context(), handleRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +525,7 @@ func TestPluginCapabilityManagerResourceHandleTargetAndPackageRotationFailClosed
 
 	manager, store, _, request = newCapabilityManagerFixture(t)
 	handleRequest = PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target}
-	token, err = manager.IssueResourceHandle(t.Context(), handleRequest, "resource")
+	token, err = manager.IssueResourceHandle(t.Context(), handleRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +555,8 @@ func newCapabilityManagerFixture(t *testing.T) (*PluginCapabilityManager, *capab
 			{ID: "grant-ui", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: string(pluginsdk.CapabilityUIDynamicActions)},
 			{ID: "grant-handle", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: string(pluginsdk.CapabilityServiceRevocableResourceHandle)},
 		},
+		targetVersion: "target-version-1",
+		targetExists:  true,
 	}
 	runtime := &capabilityRuntimeStub{generation: "generation-1"}
 	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: capabilityTestAuthorizer{}, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry()}

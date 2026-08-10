@@ -40,6 +40,39 @@ func TestCapabilityAuditJournalAcknowledgesDurableRedactedWhitelist(t *testing.T
 	}
 }
 
+func TestCapabilityAuditJournalDurablyCreatesAndReopensInitialJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit", "capabilities.jsonl")
+	event := hostapi.AuditEvent{Call: pluginsdk.HostCapabilityCall{
+		PluginID: "official.policy", InstanceID: "instance-1", Generation: "generation-1",
+		Capability: pluginsdk.CapabilityPolicyTrustedSource,
+		Actor:      pluginsdk.HostActor{ID: "actor-1", ResourceGroupID: "group-1"},
+		Target:     pluginsdk.HostTarget{Kind: "plugin.instance", ID: "instance-1", ResourceGroupID: "group-1"},
+	}, Outcome: "allowed"}
+	for run := 0; run < 2; run++ {
+		journal, err := NewCapabilityAuditJournal(path)
+		if err != nil {
+			t.Fatalf("NewCapabilityAuditJournal(%d) error = %v", run, err)
+		}
+		if err := journal.Audit(t.Context(), event); err != nil {
+			t.Fatalf("Audit(%d) error = %v", run, err)
+		}
+		if err := journal.Close(); err != nil {
+			t.Fatalf("Close(%d) error = %v", run, err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(string(data), "\n"); lines != 2 {
+		t.Fatalf("durable first-create/reopen lines = %d, want 2", lines)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".capabilities.jsonl.create-*"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("first-create temporary files = %v, error = %v", leftovers, err)
+	}
+}
+
 func TestCapabilityAuditJournalRotatesWithBoundedRetentionAndRestarts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit", "capabilities.jsonl")
 	event := hostapi.AuditEvent{Call: pluginsdk.HostCapabilityCall{PluginID: "official.policy", InstanceID: "instance-1", Generation: "generation-1", Capability: pluginsdk.CapabilityPolicyTrustedSource, Actor: pluginsdk.HostActor{ID: "actor-1", ResourceGroupID: "group-1"}, Target: pluginsdk.HostTarget{Kind: "plugin.instance", ID: "instance-1", ResourceGroupID: "group-1"}}, Outcome: "allowed"}

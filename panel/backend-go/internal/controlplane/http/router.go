@@ -669,6 +669,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 		d.PluginCapabilityService = manager
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
+		if d.SecretVault != nil {
+			d.SecretVault.SetPluginCapabilityTargetRevoker(manager)
+		}
 	}
 	if d.MarketplaceService == nil {
 		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)

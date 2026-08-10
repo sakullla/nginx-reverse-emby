@@ -66,6 +66,7 @@ type RPCClient interface {
 }
 type ActionRPCClient interface {
 	InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error)
+	QueryAction(context.Context, pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error)
 }
 type RPCDialer interface {
 	Dial(context.Context, Endpoint, time.Duration) (RPCClient, io.Closer, error)
@@ -459,6 +460,12 @@ func (h *Host) InvokeAction(ctx context.Context, instanceID, generation string, 
 	if response.OperationID != request.OperationID {
 		return errors.New("control-plane plugin action response operation identity mismatch")
 	}
+	if response.Error != nil {
+		return response.Error
+	}
+	if !response.Accepted {
+		return errors.New("control-plane plugin invoke returned a non-terminal action result")
+	}
 	h.mu.RLock()
 	stillActive := h.active[instanceID] == instance && instance.Generation == generation
 	h.mu.RUnlock()
@@ -466,6 +473,47 @@ func (h *Host) InvokeAction(ctx context.Context, instanceID, generation string, 
 		return errors.New("control-plane plugin action generation drained during dispatch")
 	}
 	return nil
+}
+
+func (h *Host) QueryAction(ctx context.Context, instanceID, generation string, request pluginsdk.RPCActionQueryRequest) (pluginsdk.RPCActionResponse, error) {
+	if h == nil || ctx == nil {
+		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin action query host and context are required")
+	}
+	if request.Generation != generation {
+		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin action query generation differs from ownership fence")
+	}
+	if err := request.Validate(); err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	h.mu.RLock()
+	instance := h.active[instanceID]
+	h.mu.RUnlock()
+	if instance == nil || instance.Generation != generation {
+		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin action query generation is not active")
+	}
+	instance.mu.RLock()
+	client, ok := instance.client.(ActionRPCClient)
+	instance.mu.RUnlock()
+	if !ok {
+		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin runtime does not implement action query")
+	}
+	response, err := client.QueryAction(ctx, request)
+	if err != nil {
+		return pluginsdk.RPCActionResponse{}, err
+	}
+	if err := response.Validate(); err != nil {
+		return pluginsdk.RPCActionResponse{}, fmt.Errorf("control-plane plugin action query response: %w", err)
+	}
+	if response.OperationID != request.OperationID {
+		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin action query response operation identity mismatch")
+	}
+	h.mu.RLock()
+	stillActive := h.active[instanceID] == instance && instance.Generation == generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return pluginsdk.RPCActionResponse{}, errors.New("control-plane plugin action generation drained during query")
+	}
+	return response, nil
 }
 func (h *Host) ActiveGenerations() map[string]string {
 	h.mu.RLock()

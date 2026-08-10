@@ -53,6 +53,17 @@ func TestRPCRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 		if err != nil || action.Validate() != nil {
 			t.Fatalf("real mutual-TLS action dispatch failed: %+v, %v", action, err)
 		}
+		for _, test := range []struct {
+			actionID  string
+			operation string
+			code      pluginsdk.ErrorCode
+			retryable bool
+		}{{"retryable", "operation-2", pluginsdk.ErrorUnavailable, true}, {"denied", "operation-3", pluginsdk.ErrorPermissionDenied, false}} {
+			response, invokeErr := client.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: test.actionID, TargetKind: "relay", TargetID: "relay-1", OperationID: test.operation})
+			if invokeErr != nil || response.Validate() != nil || response.OperationID != test.operation || response.Error == nil || response.Error.Code != test.code || response.Error.Retryable != test.retryable {
+				t.Fatalf("real mutual-TLS typed action error %s response=%+v error=%v", test.actionID, response, invokeErr)
+			}
+		}
 		_ = closeClient()
 		server.Stop()
 		_ = listener.Close()
@@ -150,9 +161,43 @@ func agentAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Servi
 			return nil, err
 		}
 		response := dynamicpb.NewMessage(responseDescriptor)
+		response.Set(responseDescriptor.Fields().ByName("operation_id"), request.Get(requestDescriptor.Fields().ByName("operation_id")))
+		actionID := request.Get(requestDescriptor.Fields().ByName("action_id")).String()
+		if actionID == "retryable" || actionID == "denied" {
+			runtimeError := response.Mutable(responseDescriptor.Fields().ByName("error")).Message()
+			code := protoreflect.EnumNumber(5)
+			retryable := true
+			message := "try later"
+			if actionID == "denied" {
+				code = protoreflect.EnumNumber(2)
+				retryable = false
+				message = "permission denied"
+			}
+			runtimeError.Set(runtimeError.Descriptor().Fields().ByName("code"), protoreflect.ValueOfEnum(code))
+			runtimeError.Set(runtimeError.Descriptor().Fields().ByName("message"), protoreflect.ValueOfString(message))
+			runtimeError.Set(runtimeError.Descriptor().Fields().ByName("retryable"), protoreflect.ValueOfBool(retryable))
+			return response, nil
+		}
 		success := response.Mutable(responseDescriptor.Fields().ByName("success")).Message()
 		success.Set(success.Descriptor().Fields().ByName("accepted"), protoreflect.ValueOfBool(true))
-		success.Set(success.Descriptor().Fields().ByName("operation_id"), request.Get(requestDescriptor.Fields().ByName("operation_id")))
+		return response, nil
+	}})
+	methods = append(methods, grpc.MethodDesc{MethodName: "QueryAction", Handler: func(_ any, _ context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionQueryRequest")
+		if err != nil {
+			return nil, err
+		}
+		request := dynamicpb.NewMessage(requestDescriptor)
+		if err := decode(request); err != nil {
+			return nil, err
+		}
+		responseDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionResponse")
+		if err != nil {
+			return nil, err
+		}
+		response := dynamicpb.NewMessage(responseDescriptor)
+		response.Set(responseDescriptor.Fields().ByName("operation_id"), request.Get(requestDescriptor.Fields().ByName("operation_id")))
+		response.Mutable(responseDescriptor.Fields().ByName("missing"))
 		return response, nil
 	}})
 	return &grpc.ServiceDesc{ServiceName: rpcServiceName, HandlerType: (*interface{})(nil), Methods: methods}
