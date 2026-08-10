@@ -23,20 +23,24 @@ type PluginRuntimeRepository interface {
 const pluginRuntimeHealthWriteTimeout = 5 * time.Second
 
 type PluginRuntimeHost struct {
-	host          *pluginhost.Host
-	repository    PluginRuntimeRepository
-	locks         sync.Map
-	stateMu       sync.Mutex
-	closeMu       sync.Mutex
-	ctx           context.Context
-	cancel        context.CancelFunc
-	operations    sync.WaitGroup
-	closed        bool
-	closeTargets  map[string]string
-	closeFailures map[string]error
-	closeResults  map[string]pluginhost.TerminalResult
-	pendingMu     sync.Mutex
-	pending       map[*pluginhost.Instance]pendingRuntimeCleanup
+	host       *pluginhost.Host
+	repository PluginRuntimeRepository
+	locks      sync.Map
+	stateMu    sync.Mutex
+	closeMu    sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	operations sync.WaitGroup
+	closed     bool
+	terminalMu sync.Mutex
+	terminals  map[terminalResultKey]pluginhost.TerminalResult
+	pendingMu  sync.Mutex
+	pending    map[*pluginhost.Instance]pendingRuntimeCleanup
+}
+
+type terminalResultKey struct {
+	instanceID string
+	generation string
 }
 
 type pendingRuntimeCleanup struct {
@@ -49,7 +53,7 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, closeTargets: make(map[string]string), closeFailures: make(map[string]error), closeResults: make(map[string]pluginhost.TerminalResult), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup)}
+	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, terminals: make(map[terminalResultKey]pluginhost.TerminalResult), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
 		observerCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
 		defer cancel()
@@ -180,39 +184,93 @@ func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
 	if readErr != nil {
 		return fmt.Errorf("read plugin runtime before stop: %w", readErr)
 	}
+	if found && row.ActiveGeneration != "" {
+		if result, ok := s.terminalResult(instanceID, row.ActiveGeneration); ok && result.Terminated {
+			return s.persistTerminalResult(operationCtx, result, false)
+		}
+	}
 	results, stopErr := s.host.StopWithResults(operationCtx, instanceID)
+	s.rememberTerminalResults(results)
 	if !found || row.ActiveGeneration == "" {
 		return stopErr
 	}
-	result, resultFound := publishedTerminalResult(results, instanceID, row.ActiveGeneration)
+	result, resultFound := s.terminalResult(instanceID, row.ActiveGeneration)
 	if !resultFound {
 		return errors.Join(stopErr, fmt.Errorf("plugin runtime %s generation %s has no ownership-fenced terminal result", instanceID, row.ActiveGeneration))
 	}
-	if !result.Terminated {
-		return errors.Join(stopErr, result.CleanupError, fmt.Errorf("plugin runtime %s generation %s remains owned after failed termination", instanceID, row.ActiveGeneration))
+	return errors.Join(stopErr, s.persistTerminalResult(operationCtx, result, false))
+}
+
+func (s *PluginRuntimeHost) rememberTerminalResults(results []pluginhost.TerminalResult) {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	for _, result := range results {
+		if !result.Published || result.InstanceID == "" || result.Generation == "" {
+			continue
+		}
+		key := terminalResultKey{instanceID: result.InstanceID, generation: result.Generation}
+		current, exists := s.terminals[key]
+		if !exists || result.Terminated || !current.Terminated {
+			s.terminals[key] = result
+		}
 	}
-	persistCtx := operationCtx
+}
+
+func (s *PluginRuntimeHost) terminalResult(instanceID, generation string) (pluginhost.TerminalResult, bool) {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	result, ok := s.terminals[terminalResultKey{instanceID: instanceID, generation: generation}]
+	return result, ok
+}
+
+func (s *PluginRuntimeHost) terminalResults() []pluginhost.TerminalResult {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	results := make([]pluginhost.TerminalResult, 0, len(s.terminals))
+	for _, result := range s.terminals {
+		results = append(results, result)
+	}
+	return results
+}
+
+func (s *PluginRuntimeHost) forgetTerminalResult(result pluginhost.TerminalResult) {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	key := terminalResultKey{instanceID: result.InstanceID, generation: result.Generation}
+	if current, ok := s.terminals[key]; ok && current.Instance == result.Instance {
+		delete(s.terminals, key)
+	}
+}
+
+func (s *PluginRuntimeHost) persistTerminalResult(ctx context.Context, result pluginhost.TerminalResult, closing bool) error {
+	if !result.Terminated {
+		return errors.Join(result.CleanupError, fmt.Errorf("plugin runtime %s generation %s remains owned after failed termination", result.InstanceID, result.Generation))
+	}
+	persistCtx := ctx
 	cancelPersist := func() {}
-	if operationCtx.Err() != nil {
+	if ctx.Err() != nil {
 		persistCtx, cancelPersist = context.WithTimeout(context.Background(), 5*time.Second)
 	}
 	defer cancelPersist()
+	observerErr := s.host.StatusPersistenceError(result.InstanceID)
 	if result.PendingExitError != nil {
-		failure := errors.Join(result.PendingExitError, s.host.StatusPersistenceError(instanceID))
-		persistErr := retryRuntimeFailurePersistence(persistCtx, s.repository, instanceID, row.ActiveGeneration, failure)
-		return errors.Join(stopErr, fmt.Errorf("plugin runtime %s generation %s stopped with unacknowledged exit: %w", instanceID, row.ActiveGeneration, failure), persistErr)
-	}
-	persistErr := retryRuntimeStopPersistence(persistCtx, s.repository, instanceID, row.ActiveGeneration)
-	return errors.Join(stopErr, persistErr, s.host.StatusPersistenceError(instanceID))
-}
-
-func publishedTerminalResult(results []pluginhost.TerminalResult, instanceID, generation string) (pluginhost.TerminalResult, bool) {
-	for _, result := range results {
-		if result.Published && result.InstanceID == instanceID && result.Generation == generation {
-			return result, true
+		failure := errors.Join(result.PendingExitError, observerErr)
+		persistErr := retryRuntimeFailurePersistence(persistCtx, s.repository, result.InstanceID, result.Generation, failure)
+		if persistErr == nil {
+			s.forgetTerminalResult(result)
 		}
+		return errors.Join(fmt.Errorf("plugin runtime %s generation %s stopped with unacknowledged exit: %w", result.InstanceID, result.Generation, failure), persistErr)
 	}
-	return pluginhost.TerminalResult{}, false
+	persistErr := retryRuntimeStopPersistence(persistCtx, s.repository, result.InstanceID, result.Generation)
+	if persistErr == nil {
+		s.forgetTerminalResult(result)
+	} else {
+		persistErr = fmt.Errorf("persist terminal state for plugin runtime %s generation %s: %w", result.InstanceID, result.Generation, persistErr)
+	}
+	if closing && errors.Is(observerErr, context.Canceled) && s.ctx.Err() != nil {
+		observerErr = nil
+	}
+	return errors.Join(persistErr, observerErr)
 }
 
 func (s *PluginRuntimeHost) Close(ctx context.Context) error {
@@ -226,16 +284,7 @@ func (s *PluginRuntimeHost) Close(ctx context.Context) error {
 	s.stateMu.Unlock()
 	s.operations.Wait()
 	results, hostErr := s.host.CloseWithResults(ctx)
-	for _, result := range results {
-		if !result.Published || result.InstanceID == "" || result.Generation == "" {
-			continue
-		}
-		s.closeTargets[result.InstanceID] = result.Generation
-		s.closeResults[result.InstanceID] = result
-		if result.PendingExitError != nil {
-			s.closeFailures[result.InstanceID] = errors.Join(result.PendingExitError, s.host.StatusPersistenceError(result.InstanceID))
-		}
-	}
+	s.rememberTerminalResults(results)
 	errs := []error{hostErr}
 	s.pendingMu.Lock()
 	for instance, pending := range s.pending {
@@ -252,38 +301,9 @@ func (s *PluginRuntimeHost) Close(ctx context.Context) error {
 		delete(s.pending, instance)
 	}
 	s.pendingMu.Unlock()
-	for instanceID, generation := range s.closeTargets {
-		result, resultFound := s.closeResults[instanceID]
-		if resultFound && !result.Terminated {
-			errs = append(errs, fmt.Errorf("plugin runtime %s generation %s remains owned after failed termination", instanceID, generation))
-			continue
-		}
-		failure := s.closeFailures[instanceID]
-		if failure != nil {
-			if err := retryRuntimeFailurePersistence(ctx, s.repository, instanceID, generation, failure); err != nil {
-				errs = append(errs, fmt.Errorf("persist failed close for plugin runtime %s generation %s: %w", instanceID, generation, err))
-			} else {
-				delete(s.closeTargets, instanceID)
-				delete(s.closeFailures, instanceID)
-				delete(s.closeResults, instanceID)
-			}
-			errs = append(errs, fmt.Errorf("plugin runtime %s generation %s closed with unacknowledged exit: %w", instanceID, generation, failure))
-			continue
-		}
-		if !resultFound {
-			errs = append(errs, fmt.Errorf("plugin runtime %s generation %s has no ownership-fenced terminal result", instanceID, generation))
-			continue
-		}
-		if err := retryRuntimeStopPersistence(ctx, s.repository, instanceID, generation); err != nil {
-			errs = append(errs, fmt.Errorf("persist closed plugin runtime %s generation %s: %w", instanceID, generation, err))
-			continue
-		}
-		delete(s.closeTargets, instanceID)
-		delete(s.closeResults, instanceID)
-		if observerErr := s.host.StatusPersistenceError(instanceID); observerErr != nil {
-			if !errors.Is(observerErr, context.Canceled) || s.ctx.Err() == nil {
-				errs = append(errs, observerErr)
-			}
+	for _, result := range s.terminalResults() {
+		if err := s.persistTerminalResult(ctx, result, true); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)

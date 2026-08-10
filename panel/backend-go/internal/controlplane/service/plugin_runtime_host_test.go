@@ -312,6 +312,16 @@ func TestPluginRuntimeHostRetriesAndSurfacesHealthPersistence(t *testing.T) {
 	if _, active := host.Active("instance"); active {
 		t.Fatal("runtime remained active after process stop")
 	}
+	repo.stopErr = nil
+	if err := service.Close(t.Context()); err != nil {
+		t.Fatalf("Close did not retry the terminal result retained by Stop: %v", err)
+	}
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if stopCalls != 4 || row.ActiveGeneration != candidate.Identity.Generation || row.State != "stopped" || row.PID != 0 {
+		t.Fatalf("Close did not persist the retained clean terminal result: calls=%d row=%+v", stopCalls, row)
+	}
 }
 
 func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
@@ -581,6 +591,66 @@ func TestPluginRuntimeHostStopPersistsExactUnacknowledgedExit(t *testing.T) {
 	}
 	if stopCalls != 0 {
 		t.Fatalf("Stop overwrote crash with clean terminal persistence %d times", stopCalls)
+	}
+}
+
+func TestPluginRuntimeHostStopRetriesRetainedUnacknowledgedExit(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-stop-retained-exit")
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	repo.healthStarted = make(chan struct{})
+	repo.healthRelease = make(chan struct{})
+	repo.healthReturned = make(chan struct{})
+	repo.healthOnce = sync.Once{}
+	repo.healthReturnOnce = sync.Once{}
+	repo.getReturned = make(chan struct{})
+	repo.mu.Lock()
+	// The blocked crash observer consumes one failure before Stop performs its
+	// three bounded terminal-persistence attempts.
+	repo.healthFailures = 4
+	repo.mu.Unlock()
+	launcher.process(0).done <- errors.New("retained terminal crash")
+	<-repo.healthStarted
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- service.Stop(context.Background(), candidate.InstanceID) }()
+	<-repo.getReturned
+	time.Sleep(10 * time.Millisecond)
+	close(repo.healthRelease)
+	firstErr := <-stopDone
+	if firstErr == nil || !strings.Contains(firstErr.Error(), "retained terminal crash") || !strings.Contains(firstErr.Error(), "health persistence failed") {
+		t.Fatalf("first Stop error = %v", firstErr)
+	}
+	repo.mu.Lock()
+	firstRow := repo.row
+	repo.healthFailures = 0
+	repo.mu.Unlock()
+	if firstRow.State == "failed" || firstRow.PID == 0 {
+		t.Fatalf("failed persistence unexpectedly changed durable state: %+v", firstRow)
+	}
+	secondErr := service.Stop(t.Context(), candidate.InstanceID)
+	if secondErr == nil || !strings.Contains(secondErr.Error(), "retained terminal crash") || strings.Contains(secondErr.Error(), "health persistence failed") {
+		t.Fatalf("second Stop did not retry the retained exit result: %v", secondErr)
+	}
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if row.ActiveGeneration != candidate.Identity.Generation || row.State != "failed" || row.PID != 0 || !strings.Contains(row.LastError, "retained terminal crash") {
+		t.Fatalf("retained exit result was not durably persisted: %+v", row)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("retained crash was overwritten by clean stop: %d", stopCalls)
 	}
 }
 
