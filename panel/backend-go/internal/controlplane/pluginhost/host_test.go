@@ -1019,6 +1019,35 @@ func TestPluginHostCanceledWatcherLeavesReadyCrashAndLogForStopOrClose(t *testin
 	}
 }
 
+func TestPluginHostCanceledWatcherLeavesSimultaneousNormalExitClean(t *testing.T) {
+	for iteration := 0; iteration < 100; iteration++ {
+		processDone := make(chan struct{})
+		controlCtx, cancelControl := context.WithCancel(context.Background())
+		control := &runtimeControl{candidate: normalizeRestartCandidate(Candidate{}), ctx: controlCtx, cancel: cancelControl}
+		instance := &Instance{ID: "instance", Generation: "g1", PID: 77, State: "healthy", process: &testProcess{done: make(chan error, 1)}, grace: time.Millisecond, done: processDone, control: control}
+		hostCtx, cancelHost := context.WithCancel(context.Background())
+		host := &Host{ctx: hostCtx, cancel: cancelHost, active: map[string]*Instance{"instance": instance}, prepared: map[*Instance]struct{}{}, observerErrors: map[string]error{}}
+		watcherRelease := make(chan struct{})
+		control.wg.Add(1)
+		go func() {
+			<-watcherRelease
+			host.watch(control, instance)
+		}()
+		cancelControl()
+		close(processDone)
+		close(watcherRelease)
+		control.wg.Wait()
+		results, err := host.StopWithResults(t.Context(), instance.ID)
+		cancelHost()
+		if err != nil {
+			t.Fatalf("iteration %d Stop error = %v", iteration, err)
+		}
+		if len(results) != 1 || !results[0].Published || !results[0].Terminated || results[0].PendingExitError != nil {
+			t.Fatalf("iteration %d terminal result = %+v", iteration, results)
+		}
+	}
+}
+
 func TestPluginHostStopResultFencesObserverAckToExactInstance(t *testing.T) {
 	root := t.TempDir()
 	candidate := newBackendHostCandidate(t, root)

@@ -594,6 +594,36 @@ func TestPluginRuntimeHostStopPersistsExactUnacknowledgedExit(t *testing.T) {
 	}
 }
 
+func TestPluginRuntimeHostStopPersistsCanceledNormalExitAsStopped(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-normal-stop")
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Stop(t.Context(), candidate.InstanceID); err != nil {
+		t.Fatalf("normal Stop error = %v", err)
+	}
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if row.ActiveGeneration != candidate.Identity.Generation || row.State != "stopped" || row.PID != 0 || row.LastError != "" {
+		t.Fatalf("normal exit was not durably stopped: %+v", row)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("normal exit persistence calls = %d", stopCalls)
+	}
+}
+
 func TestPluginRuntimeHostStopRetriesRetainedUnacknowledgedExit(t *testing.T) {
 	root := t.TempDir()
 	launcher := &runtimeQueueLauncher{}

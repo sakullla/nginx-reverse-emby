@@ -850,16 +850,10 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 				return
 			case <-instance.done:
 			}
-			instance.mu.RLock()
-			failure = errors.Join(instance.processWaitErr, instance.logErr)
-			instance.mu.RUnlock()
-			if failure == nil {
-				failure = errors.New("control-plane plugin process exited unexpectedly")
-				instance.mu.Lock()
-				if !instance.exitErrorConsumed && instance.processWaitErr == nil && instance.logErr == nil {
-					instance.processWaitErr = failure
-				}
-				instance.mu.Unlock()
+			var owned bool
+			failure, owned = h.restartFailureAfterExit(control, instance)
+			if !owned {
+				return
 			}
 			if cleanupErr := instance.cleanupSecurity(); cleanupErr != nil {
 				if !h.recordCleanupFailure(control, instance, errors.Join(failure, cleanupErr)) {
@@ -926,6 +920,24 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 		instance = replacement
 		failure = nil
 	}
+}
+
+func (h *Host) restartFailureAfterExit(control *runtimeControl, instance *Instance) (error, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || control.ctx.Err() != nil || h.active[instance.ID] != instance {
+		return nil, false
+	}
+	instance.mu.Lock()
+	defer instance.mu.Unlock()
+	failure := errors.Join(instance.processWaitErr, instance.logErr)
+	if failure == nil {
+		failure = errors.New("control-plane plugin process exited unexpectedly")
+		if !instance.exitErrorConsumed {
+			instance.processWaitErr = failure
+		}
+	}
+	return failure, true
 }
 
 func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance, failure error) (time.Duration, bool, bool) {
