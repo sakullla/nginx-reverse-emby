@@ -197,15 +197,7 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 				if resourceCall.ResourceHandle != resourceHandle {
 					return errors.New("plugin action plan used an unknown resource handle")
 				}
-				resolved, resolveErr := manager.ResolveResourceHandle(callCtx, resourceHandle, PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
-				if resolveErr != nil {
-					return resolveErr
-				}
-				reference, ok := resolved.(pluginResourceReference)
-				if !ok {
-					return errors.New("plugin action resource handle projection is invalid")
-				}
-				resourceResult, executeErr := manager.executeDurableResourceCall(callCtx, request, storage.PluginCapabilityTargetBinding{Kind: reference.Target.Kind, ID: reference.Target.ID, ResourceGroupID: reference.Target.ResourceGroupID, Version: reference.Version}, resourceCall)
+				resourceResult, executeErr := manager.executeDurableResourceCall(callCtx, request, resourceCall)
 				if executeErr != nil {
 					return executeErr
 				}
@@ -264,12 +256,12 @@ type pluginCapabilityResourceCallOutcome struct {
 	Error     *pluginsdk.RuntimeError `json:"error,omitempty"`
 }
 
-func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.Context, request PluginDynamicActionRequest, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) (pluginsdk.RPCResourceResult, error) {
-	fingerprint, err := pluginCapabilityResourceCallFingerprint(request.OperationID, binding, call)
+func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.Context, request PluginDynamicActionRequest, call pluginsdk.RPCResourceCall) (pluginsdk.RPCResourceResult, error) {
+	fingerprint, err := pluginCapabilityResourceCallFingerprint(request, call)
 	if err != nil {
 		return pluginsdk.RPCResourceResult{}, err
 	}
-	key := request.OperationID + ":" + call.RequestID
+	key := pluginCapabilityResourceCallKey(request.OperationID, call.RequestID)
 	claimToken := capabilityAuditID()
 	now := time.Now().UTC()
 	record, claimed, err := manager.store.ClaimPluginCapabilityOperation(ctx, pluginCapabilityResourceCallScope, key, fingerprint, request.OperationID, claimToken, now, now.Add(24*time.Hour))
@@ -287,7 +279,20 @@ func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.C
 	if storage.PluginCapabilityOperationRecovered(record) {
 		result = pluginsdk.RPCResourceResult{RequestID: call.RequestID, Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "resource call outcome is unavailable after owner recovery", Retryable: false}}
 	} else {
-		value, executeErr := manager.executeResourceCall(ctx, request, binding, call)
+		var binding storage.PluginCapabilityTargetBinding
+		resolved, resolveErr := manager.ResolveResourceHandle(ctx, call.ResourceHandle, PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
+		if resolveErr == nil {
+			reference, ok := resolved.(pluginResourceReference)
+			if !ok {
+				resolveErr = fmt.Errorf("%w: plugin action resource handle projection is invalid", pluginhost.ErrCapabilityDenied)
+			} else {
+				binding = storage.PluginCapabilityTargetBinding{Kind: reference.Target.Kind, ID: reference.Target.ID, ResourceGroupID: reference.Target.ResourceGroupID, Version: reference.Version}
+			}
+		}
+		value, executeErr := []byte(nil), resolveErr
+		if executeErr == nil {
+			value, executeErr = manager.executeResourceCall(ctx, request, binding, call)
+		}
 		result = pluginsdk.RPCResourceResult{RequestID: call.RequestID, Value: value}
 		if executeErr != nil {
 			result.Value = nil
@@ -309,12 +314,22 @@ func (manager *PluginCapabilityManager) executeDurableResourceCall(ctx context.C
 	return result, nil
 }
 
-func pluginCapabilityResourceCallFingerprint(operationID string, binding storage.PluginCapabilityTargetBinding, call pluginsdk.RPCResourceCall) (string, error) {
+func pluginCapabilityResourceCallKey(operationID, requestID string) string {
+	payload, _ := json.Marshal(struct {
+		Domain      string `json:"domain"`
+		OperationID string `json:"operation_id"`
+		RequestID   string `json:"request_id"`
+	}{"plugin.action.resource.v1", operationID, requestID})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
+}
+
+func pluginCapabilityResourceCallFingerprint(request PluginDynamicActionRequest, call pluginsdk.RPCResourceCall) (string, error) {
 	payload, err := json.Marshal(struct {
-		OperationID, RequestID, Kind, ID, Group, Version string
-		Operation                                        pluginsdk.RPCResourceOperation
-		Input                                            []byte
-	}{operationID, call.RequestID, binding.Kind, binding.ID, binding.ResourceGroupID, binding.Version, call.Operation, call.Input})
+		OperationID, RequestID, PluginID, InstanceID, Kind, ID, Group string
+		Operation                                                     pluginsdk.RPCResourceOperation
+		Input                                                         []byte
+	}{request.OperationID, call.RequestID, request.PluginID, request.InstanceID, request.Target.Kind, request.Target.ID, request.Target.ResourceGroupID, call.Operation, call.Input})
 	if err != nil {
 		return "", err
 	}
@@ -337,6 +352,9 @@ func decodePluginCapabilityResourceCallOutcome(value, requestID string) (plugins
 func pluginCapabilityResourceRuntimeError(err error) *pluginsdk.RuntimeError {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, pluginhost.ErrCapabilityDenied) {
+		return &pluginsdk.RuntimeError{Code: pluginsdk.ErrorPermissionDenied, Message: "resource handle is no longer authorized", Retryable: false}
 	}
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "invalid") || strings.Contains(message, "unsupported") || strings.Contains(message, "unknown") || strings.Contains(message, "requires") {

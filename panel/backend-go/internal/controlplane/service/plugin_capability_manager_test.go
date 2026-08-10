@@ -460,22 +460,22 @@ func TestPluginCapabilityManagerResourceCallOutcomesAreDurableAndErrorsReachGues
 	store.resourceErrs = map[string]error{"resource-call-2": errors.New("resource request is invalid")}
 	// Directly exercise the durable host boundary; InvokeDynamicAction uses this
 	// method for every planned call before delivering the exact results.
-	binding := storage.PluginCapabilityTargetBinding{Kind: request.Target.Kind, ID: request.Target.ID, ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
-	firstCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-1", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
-	first, err := manager.executeDurableResourceCall(t.Context(), request, binding, firstCall)
+	handle := mustIssueCapabilityResourceHandle(t, manager, request)
+	firstCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-1", ResourceHandle: handle, Operation: pluginsdk.RPCResourceInspect}
+	first, err := manager.executeDurableResourceCall(t.Context(), request, firstCall)
 	if err != nil || first.Error != nil || string(first.Value) != `{"available":true}` {
 		t.Fatalf("first resource result=%+v error=%v", first, err)
 	}
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, binding, firstCall)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, firstCall)
 	if err != nil || replayed.Error != nil || string(replayed.Value) != string(first.Value) || store.resourceCalls[firstCall.RequestID] != 1 {
 		t.Fatalf("replayed resource result=%+v error=%v calls=%d", replayed, err, store.resourceCalls[firstCall.RequestID])
 	}
-	secondCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-2", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
-	failed, err := manager.executeDurableResourceCall(t.Context(), request, binding, secondCall)
+	secondCall := pluginsdk.RPCResourceCall{RequestID: "resource-call-2", ResourceHandle: handle, Operation: pluginsdk.RPCResourceInspect}
+	failed, err := manager.executeDurableResourceCall(t.Context(), request, secondCall)
 	if err != nil || failed.Error == nil || failed.Error.Code != pluginsdk.ErrorInvalidArgument {
 		t.Fatalf("failed resource result=%+v error=%v", failed, err)
 	}
-	failedReplay, err := manager.executeDurableResourceCall(t.Context(), request, binding, secondCall)
+	failedReplay, err := manager.executeDurableResourceCall(t.Context(), request, secondCall)
 	if err != nil || failedReplay.Error == nil || failedReplay.Error.Code != failed.Error.Code || store.resourceCalls[secondCall.RequestID] != 1 {
 		t.Fatalf("failed replay=%+v error=%v calls=%d", failedReplay, err, store.resourceCalls[secondCall.RequestID])
 	}
@@ -502,13 +502,12 @@ func TestPluginCapabilityManagerDeliversMultiCallPartialFailureAsTypedResult(t *
 
 func TestPluginCapabilityManagerRecoveredResourceClaimDoesNotRepeatCoreOperation(t *testing.T) {
 	manager, store, _, request := newCapabilityManagerFixture(t)
-	binding := storage.PluginCapabilityTargetBinding{Kind: request.Target.Kind, ID: request.Target.ID, ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
-	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-recovered", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
-	fingerprint, err := pluginCapabilityResourceCallFingerprint(request.OperationID, binding, call)
+	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-recovered", ResourceHandle: mustIssueCapabilityResourceHandle(t, manager, request), Operation: pluginsdk.RPCResourceInspect}
+	fingerprint, err := pluginCapabilityResourceCallFingerprint(request, call)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := request.OperationID + ":" + call.RequestID
+	key := pluginCapabilityResourceCallKey(request.OperationID, call.RequestID)
 	if _, claimed, err := store.ClaimPluginCapabilityOperation(t.Context(), pluginCapabilityResourceCallScope, key, fingerprint, request.OperationID, "lost-owner", time.Now(), time.Now().Add(time.Hour)); err != nil || !claimed {
 		t.Fatalf("seed lost claim claimed=%t error=%v", claimed, err)
 	}
@@ -517,11 +516,11 @@ func TestPluginCapabilityManagerRecoveredResourceClaimDoesNotRepeatCoreOperation
 	record.ExpiresAt = time.Now().Add(-time.Second)
 	store.operations[pluginCapabilityResourceCallScope+"\x00"+key] = record
 	store.mu.Unlock()
-	result, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	result, err := manager.executeDurableResourceCall(t.Context(), request, call)
 	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorUnavailable || result.Error.Retryable || store.resourceCalls[call.RequestID] != 0 {
 		t.Fatalf("recovered resource result=%+v error=%v calls=%d", result, err, store.resourceCalls[call.RequestID])
 	}
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call)
 	if err != nil || replayed.Error == nil || replayed.Error.Message != result.Error.Message || store.resourceCalls[call.RequestID] != 0 {
 		t.Fatalf("recovered replay=%+v error=%v calls=%d", replayed, err, store.resourceCalls[call.RequestID])
 	}
@@ -529,12 +528,11 @@ func TestPluginCapabilityManagerRecoveredResourceClaimDoesNotRepeatCoreOperation
 
 func TestPluginCapabilityManagerCompletionFailureAfterSideEffectRecoversWithoutReexecution(t *testing.T) {
 	manager, store, _, request := newCapabilityManagerFixture(t)
-	binding := storage.PluginCapabilityTargetBinding{Kind: request.Target.Kind, ID: request.Target.ID, ResourceGroupID: request.Target.ResourceGroupID, Version: store.targetVersion}
-	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-side-effect", ResourceHandle: "handle-1", Operation: pluginsdk.RPCResourceInspect}
-	key := request.OperationID + ":" + call.RequestID
+	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-side-effect", ResourceHandle: mustIssueCapabilityResourceHandle(t, manager, request), Operation: pluginsdk.RPCResourceInspect}
+	key := pluginCapabilityResourceCallKey(request.OperationID, call.RequestID)
 	mapKey := pluginCapabilityResourceCallScope + "\x00" + key
 	store.completeFails = map[string]int{mapKey: 1}
-	if _, err := manager.executeDurableResourceCall(t.Context(), request, binding, call); err == nil || store.resourceCalls[call.RequestID] != 1 {
+	if _, err := manager.executeDurableResourceCall(t.Context(), request, call); err == nil || store.resourceCalls[call.RequestID] != 1 {
 		t.Fatalf("first post-side-effect completion error=%v calls=%d", err, store.resourceCalls[call.RequestID])
 	}
 	store.mu.Lock()
@@ -542,13 +540,56 @@ func TestPluginCapabilityManagerCompletionFailureAfterSideEffectRecoversWithoutR
 	record.ExpiresAt = time.Now().Add(-time.Second)
 	store.operations[mapKey] = record
 	store.mu.Unlock()
-	result, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	result, err := manager.executeDurableResourceCall(t.Context(), request, call)
 	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorUnavailable || store.resourceCalls[call.RequestID] != 1 {
 		t.Fatalf("recovered post-side-effect result=%+v error=%v calls=%d", result, err, store.resourceCalls[call.RequestID])
 	}
-	replayed, err := manager.executeDurableResourceCall(t.Context(), request, binding, call)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call)
 	if err != nil || replayed.Error == nil || replayed.Error.Message != result.Error.Message || store.resourceCalls[call.RequestID] != 1 {
 		t.Fatalf("post-side-effect replay=%+v error=%v calls=%d", replayed, err, store.resourceCalls[call.RequestID])
+	}
+}
+
+func TestPluginCapabilityResourceCallKeyUsesUnambiguousIdentityTuple(t *testing.T) {
+	first := pluginCapabilityResourceCallKey("x", "y:z")
+	second := pluginCapabilityResourceCallKey("x:y", "z")
+	if first == second {
+		t.Fatalf("distinct operation/request tuples collided: %q", first)
+	}
+	if first != pluginCapabilityResourceCallKey("x", "y:z") {
+		t.Fatal("resource call key is not deterministic")
+	}
+}
+
+func TestPluginCapabilityManagerClaimsBeforeHandleRevalidationAndReplaysRevocation(t *testing.T) {
+	manager, store, _, request := newCapabilityManagerFixture(t)
+	call := pluginsdk.RPCResourceCall{RequestID: "resource-call-rotated", ResourceHandle: mustIssueCapabilityResourceHandle(t, manager, request), Operation: pluginsdk.RPCResourceInspect}
+
+	store.mu.Lock()
+	store.targetVersion = "target-version-2"
+	store.mu.Unlock()
+	result, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	if err != nil || result.Error == nil || result.Error.Code != pluginsdk.ErrorPermissionDenied || result.Error.Retryable {
+		t.Fatalf("rotated handle result=%+v error=%v", result, err)
+	}
+	if store.resourceCalls[call.RequestID] != 0 {
+		t.Fatalf("rotated handle executed core operation %d time(s)", store.resourceCalls[call.RequestID])
+	}
+
+	call.ResourceHandle = mustIssueCapabilityResourceHandle(t, manager, request)
+	replayed, err := manager.executeDurableResourceCall(t.Context(), request, call)
+	if err != nil || replayed.Error == nil || replayed.Error.Code != result.Error.Code || replayed.Error.Message != result.Error.Message {
+		t.Fatalf("revocation replay=%+v error=%v", replayed, err)
+	}
+	if store.resourceCalls[call.RequestID] != 0 {
+		t.Fatalf("revocation replay executed core operation %d time(s)", store.resourceCalls[call.RequestID])
+	}
+	key := pluginCapabilityResourceCallKey(request.OperationID, call.RequestID)
+	store.mu.Lock()
+	response := store.operations[pluginCapabilityResourceCallScope+"\x00"+key].ResponseJSON
+	store.mu.Unlock()
+	if pluginActionOutcomePending(response) {
+		t.Fatalf("revoked handle remained pending: %s", response)
 	}
 }
 
@@ -801,6 +842,15 @@ func TestPluginCapabilityManagerResourceHandleTargetAndPackageRotationFailClosed
 	if _, err := manager.ResolveResourceHandle(t.Context(), token, handleRequest); !errors.Is(err, pluginhost.ErrCapabilityDenied) {
 		t.Fatalf("resolve after package rotation error=%v", err)
 	}
+}
+
+func mustIssueCapabilityResourceHandle(t *testing.T, manager *PluginCapabilityManager, request PluginDynamicActionRequest) string {
+	t.Helper()
+	handle, err := manager.IssueResourceHandle(t.Context(), PluginResourceHandleRequest{PluginID: request.PluginID, InstanceID: request.InstanceID, Actor: request.Actor, Target: request.Target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handle
 }
 
 func newCapabilityManagerFixture(t *testing.T) (*PluginCapabilityManager, *capabilityManagerStore, *capabilityRuntimeStub, PluginDynamicActionRequest) {
