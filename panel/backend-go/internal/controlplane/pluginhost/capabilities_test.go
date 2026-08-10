@@ -5,9 +5,25 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+type blockingCapabilityQuota struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (quota *blockingCapabilityQuota) ConsumeHostCapability(ctx context.Context, _ pluginsdk.HostCapabilityCall) error {
+	close(quota.started)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-quota.release:
+		return nil
+	}
+}
 
 type capabilityQuotaStub struct {
 	err   error
@@ -110,6 +126,38 @@ func TestPluginCapabilityRevocableResourceHandleLifecycle(t *testing.T) {
 	}
 }
 
+func TestPluginCapabilityHandleRevokeCancelsLeaseWithoutWaitingForQuota(t *testing.T) {
+	call, policy, _, _ := testCapabilityPolicy()
+	quota := &blockingCapabilityQuota{started: make(chan struct{}), release: make(chan struct{})}
+	broker := NewResourceHandleBroker()
+	token, err := broker.Issue(t.Context(), policy, call, "resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.handles[token].policy.Quota = quota
+	done := make(chan error, 1)
+	go func() {
+		_, resolveErr := broker.Resolve(context.Background(), token, call)
+		done <- resolveErr
+	}()
+	<-quota.started
+	revoked := make(chan struct{})
+	go func() { broker.RevokeGeneration(call.InstanceID, call.Generation); close(revoked) }()
+	select {
+	case <-revoked:
+	case <-time.After(time.Second):
+		t.Fatal("RevokeGeneration waited for external quota owner")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCapabilityDenied) {
+			t.Fatalf("Resolve() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled handle lease did not return")
+	}
+}
+
 func TestPluginCapabilityDynamicActionsAreHostDeclaredAndAuthorized(t *testing.T) {
 	call, policy, _, _ := testCapabilityPolicy()
 	policy.Declared = append(policy.Declared, pluginsdk.CapabilityUIDynamicActions)
@@ -144,6 +192,37 @@ func TestPluginCapabilityDynamicActionsAreHostDeclaredAndAuthorized(t *testing.T
 	}
 	if err := registry.Invoke(t.Context(), call.InstanceID, call.Generation, action.ID, call.Actor); !errors.Is(err, ErrCapabilityDenied) {
 		t.Fatalf("Invoke(without ui grant) error = %v", err)
+	}
+}
+
+func TestPluginCapabilityDynamicActionCanRevokeItselfWithoutDeadlock(t *testing.T) {
+	call, policy, _, _ := testCapabilityPolicy()
+	policy.Declared = append(policy.Declared, pluginsdk.CapabilityUIDynamicActions)
+	policy.Granted = append(policy.Granted, pluginsdk.CapabilityUIDynamicActions)
+	policy.ActorCapabilities = append(policy.ActorCapabilities, pluginsdk.CapabilityUIDynamicActions)
+	action := pluginsdk.DynamicAction{ID: "rotate", Label: "Rotate", Capability: pluginsdk.CapabilityServiceRevocableResourceHandle, TargetKind: call.Target.Kind}
+	policy.DynamicActions = []pluginsdk.DynamicAction{action}
+	registry := NewDynamicActionRegistry()
+	if err := registry.Register(action, call, policy, func(context.Context, pluginsdk.HostCapabilityCall) error {
+		registry.RevokeGeneration(call.InstanceID, call.Generation)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- registry.Invoke(context.Background(), call.InstanceID, call.Generation, action.ID, call.Actor)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCapabilityDenied) {
+			t.Fatalf("Invoke() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("self-revoking action deadlocked")
+	}
+	if err := registry.Invoke(t.Context(), call.InstanceID, call.Generation, action.ID, call.Actor); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("Invoke(after self revoke) error = %v", err)
 	}
 }
 

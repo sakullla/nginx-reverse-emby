@@ -244,6 +244,9 @@ func (c hostClient) Prepare(context.Context, pluginsdk.LifecycleRequest) (plugin
 func (hostClient) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
+func (hostClient) InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error) {
+	return pluginsdk.RPCActionResponse{Accepted: true}, nil
+}
 func (hostClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
@@ -317,6 +320,9 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := host.InvokeAction(t.Context(), "instance", "g1", pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"}); err != nil {
+		t.Fatalf("InvokeAction(active generation) error = %v", err)
+	}
 	for _, generation := range []string{"g2", "g3"} {
 		candidate.Generation = generation
 		if _, err := host.Activate(t.Context(), candidate); err == nil {
@@ -335,6 +341,9 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 	active, _ := host.Active("instance")
 	if active != next || active == first {
 		t.Fatal("successful candidate did not cut over")
+	}
+	if err := host.InvokeAction(t.Context(), "instance", "g1", pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"}); err == nil {
+		t.Fatal("InvokeAction accepted drained generation")
 	}
 }
 

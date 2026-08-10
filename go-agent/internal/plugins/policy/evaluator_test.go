@@ -25,6 +25,12 @@ type scriptedModule struct {
 	inspect   func(ModuleRequest)
 }
 
+type acknowledgedCapabilityAudit struct{ err error }
+
+func (audit acknowledgedCapabilityAudit) Audit(context.Context, hostapi.AuditEvent) error {
+	return audit.err
+}
+
 type eventExfiltrationModule struct {
 	headerSecret string
 	bodySecret   string
@@ -92,12 +98,45 @@ func TestPolicyConstructionRejectsOutOfOrderAndUnsignedStages(t *testing.T) {
 			policy.Stages[0].ResourceBudget.Concurrency = MaxPolicyConcurrency + 1
 			return policy
 		}(),
+		"missing resource group": func() model.PluginPolicy {
+			policy := testPolicy("missing-group", model.PolicyKindIP)
+			policy.Stages[0].ResourceGroupID = ""
+			return policy
+		}(),
+		"duplicate declaration": func() model.PluginPolicy {
+			policy := testPolicy("duplicate-declaration", model.PolicyKindIP)
+			policy.Stages[0].DeclaredScopes = append(policy.Stages[0].DeclaredScopes, policy.Stages[0].DeclaredScopes[0])
+			return policy
+		}(),
+		"noncanonical grant": func() model.PluginPolicy {
+			policy := testPolicy("noncanonical-grant", model.PolicyKindIP)
+			policy.Stages[0].GrantedScopes = append(policy.Stages[0].GrantedScopes, " policy.read")
+			return policy
+		}(),
+		"grant outside declaration": func() model.PluginPolicy {
+			policy := testPolicy("excess-grant", model.PolicyKindIP)
+			policy.Stages[0].GrantedScopes = append(policy.Stages[0].GrantedScopes, "storage.write")
+			return policy
+		}(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewGenerationEvaluator("generation-1", []model.PluginPolicy{policy}, &scriptedModule{}, nil); err == nil {
 				t.Fatal("NewGenerationEvaluator() error = nil")
 			}
 		})
+	}
+}
+
+func TestPolicyStageCloneOwnsDeclaredAndGrantedScopeMemory(t *testing.T) {
+	original := testPolicy("clone-scopes", model.PolicyKindIP)
+	cloned, err := validateAndClonePolicy(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.Stages[0].DeclaredScopes[0] = "storage.write"
+	original.Stages[0].GrantedScopes[0] = "storage.write"
+	if cloned.Stages[0].DeclaredScopes[0] == "storage.write" || cloned.Stages[0].GrantedScopes[0] == "storage.write" {
+		t.Fatal("validated stage aliases caller-owned declaration or grant slices")
 	}
 }
 
@@ -162,7 +201,8 @@ func TestPolicyBodyWindowAndCanonicalSourceAreBoundedHostOwnedInputs(t *testing.
 	}
 	host := &requestHost{
 		input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(),
-		stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyTrustedSource)}, GrantedScopes: []string{"http.inspect", string(pluginsdk.CapabilityPolicyTrustedSource)}},
+		stage:             model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyTrustedSource)}, GrantedScopes: []string{"http.inspect", string(pluginsdk.CapabilityPolicyTrustedSource)}},
+		capabilityAuditor: acknowledgedCapabilityAudit{},
 	}
 	source, _ := host.ReadField(context.Background(), "source.ip")
 	complete, _ := host.ReadField(context.Background(), "body.complete")
@@ -314,7 +354,7 @@ func TestPolicyWireFrameBudgetExactBoundariesAndDimensions(t *testing.T) {
 
 func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
-	host := &requestHost{input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a"}}
+	host := &requestHost{input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a"}, capabilityAuditor: acknowledgedCapabilityAudit{}}
 	if _, err := host.ReadField(context.Background(), FieldRequestPath); !isPermissionDenied(err) {
 		t.Fatalf("ReadField() error = %v", err)
 	}
@@ -347,6 +387,7 @@ func TestPolicyHostCapabilitiesUseSignedProjectionAndNodeLocalPrimitives(t *test
 			input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
 			stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: append([]string(nil), capabilities...), GrantedScopes: append([]string{"http.inspect", "policy.read", "policy.write"}, capabilities...)},
 			state: newGenerationState(), clock: hostapi.NewMonotonicClock(),
+			capabilityAuditor: acknowledgedCapabilityAudit{},
 		}
 	}
 	host := newHost()
@@ -386,6 +427,13 @@ func TestPolicyHostCapabilitiesUseSignedProjectionAndNodeLocalPrimitives(t *test
 			}
 		})
 	}
+	t.Run("audit failure", func(t *testing.T) {
+		candidate := newHost()
+		candidate.capabilityAuditor = acknowledgedCapabilityAudit{err: errors.New("durable journal unavailable")}
+		if _, err := candidate.ReadField(t.Context(), "source.ip"); !isPermissionDenied(err) {
+			t.Fatalf("audit failure error = %v", err)
+		}
+	})
 }
 
 func TestPolicyHostPreservesEmptyFieldPresenceAndEmitsSafeEvent(t *testing.T) {
@@ -474,7 +522,7 @@ func testPolicy(id string, kinds ...model.PolicyKind) model.PluginPolicy {
 			InstanceID: id + "-instance-" + string(kind), PackageDigest: "package-digest", ArtifactPath: "verified/policy.wasm",
 			ArtifactDigest: "artifact-digest", SignatureVerified: true, SignerKeyID: "official-release", SignerFingerprint: "signer-fingerprint",
 			ABI: model.PolicyABIV1, ExtensionPoints: extensions,
-			DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock), string(pluginsdk.CapabilityPolicyTrustedSource)},
+			DeclaredScopes: []string{"policy.read", "policy.write", "event.emit", "http.inspect", "l4.inspect", string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock), string(pluginsdk.CapabilityPolicyTrustedSource)},
 			GrantedScopes:  []string{"policy.read", string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock), string(pluginsdk.CapabilityPolicyTrustedSource)}, ResourceGroupID: "group-a",
 			ResourceBudget: model.PolicyResourceBudget{TimeoutMS: 2, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 1024},
 			FailurePolicy:  model.PolicyFailurePolicy{OnError: "fail-open", OnBudget: "fail-open", Restart: "never", CoreFallback: "preserve"},

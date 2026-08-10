@@ -244,19 +244,22 @@ func NewTrustedSource(source, peer netip.AddrPort, kind string, authenticated bo
 
 type ResourceHandles struct {
 	mu                 sync.RWMutex
-	handles            map[string]agentResourceHandle
+	handles            map[string]*agentResourceHandle
 	revokedGenerations map[string]struct{}
 	revokedTargets     map[pluginsdk.HostTarget]struct{}
+	nextLease          uint64
 }
 
 type agentResourceHandle struct {
 	call       pluginsdk.HostCapabilityCall
 	authorizer Authorizer
 	resource   any
+	revoked    bool
+	leases     map[uint64]context.CancelFunc
 }
 
 func NewResourceHandles() *ResourceHandles {
-	return &ResourceHandles{handles: make(map[string]agentResourceHandle), revokedGenerations: make(map[string]struct{}), revokedTargets: make(map[pluginsdk.HostTarget]struct{})}
+	return &ResourceHandles{handles: make(map[string]*agentResourceHandle), revokedGenerations: make(map[string]struct{}), revokedTargets: make(map[pluginsdk.HostTarget]struct{})}
 }
 
 func (handles *ResourceHandles) Issue(ctx context.Context, authorizer Authorizer, call pluginsdk.HostCapabilityCall, resource any) (string, error) {
@@ -280,7 +283,7 @@ func (handles *ResourceHandles) Issue(ctx context.Context, authorizer Authorizer
 	if _, revoked := handles.revokedTargets[call.Target]; revoked {
 		return "", fmt.Errorf("%w: resource target is revoked", ErrDenied)
 	}
-	handles.handles[token] = agentResourceHandle{call: call, authorizer: authorizer, resource: resource}
+	handles.handles[token] = &agentResourceHandle{call: call, authorizer: authorizer, resource: resource, leases: make(map[uint64]context.CancelFunc)}
 	return token, nil
 }
 
@@ -288,20 +291,39 @@ func (handles *ResourceHandles) Resolve(ctx context.Context, token string, call 
 	if handles == nil {
 		return nil, errors.New("Agent resource handle owner is unavailable")
 	}
-	handles.mu.RLock()
-	defer handles.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	handles.mu.Lock()
 	handle, ok := handles.handles[token]
-	if !ok {
+	if !ok || handle.revoked {
+		handles.mu.Unlock()
 		return nil, fmt.Errorf("%w: resource handle is revoked or unknown", ErrDenied)
 	}
 	call.Capability = pluginsdk.CapabilityServiceRevocableResourceHandle
 	if call.PluginID != handle.call.PluginID || call.InstanceID != handle.call.InstanceID || call.Generation != handle.call.Generation || call.Target != handle.call.Target {
+		handles.mu.Unlock()
 		return nil, fmt.Errorf("%w: resource handle owner mismatch", ErrDenied)
 	}
-	if err := handle.authorizer.Authorize(ctx, call); err != nil {
+	handles.nextLease++
+	leaseID := handles.nextLease
+	leaseCtx, cancel := context.WithCancel(ctx)
+	handle.leases[leaseID] = cancel
+	authorizer, resource := handle.authorizer, handle.resource
+	handles.mu.Unlock()
+	err := authorizer.Authorize(leaseCtx, call)
+	handles.mu.Lock()
+	delete(handle.leases, leaseID)
+	revoked := handle.revoked
+	handles.mu.Unlock()
+	cancel()
+	if err != nil {
 		return nil, err
 	}
-	return handle.resource, nil
+	if revoked {
+		return nil, fmt.Errorf("%w: resource handle was revoked during authorization", ErrDenied)
+	}
+	return resource, nil
 }
 
 func (handles *ResourceHandles) RevokeGeneration(instanceID, generation string) {
@@ -309,12 +331,20 @@ func (handles *ResourceHandles) RevokeGeneration(instanceID, generation string) 
 		return
 	}
 	handles.mu.Lock()
-	defer handles.mu.Unlock()
 	handles.revokedGenerations[instanceID+"\x00"+generation] = struct{}{}
+	var cancels []context.CancelFunc
 	for token, handle := range handles.handles {
 		if handle.call.InstanceID == instanceID && handle.call.Generation == generation {
+			handle.revoked = true
+			for _, cancel := range handle.leases {
+				cancels = append(cancels, cancel)
+			}
 			delete(handles.handles, token)
 		}
+	}
+	handles.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
 	}
 }
 
@@ -323,11 +353,19 @@ func (handles *ResourceHandles) RevokeTarget(target pluginsdk.HostTarget) {
 		return
 	}
 	handles.mu.Lock()
-	defer handles.mu.Unlock()
 	handles.revokedTargets[target] = struct{}{}
+	var cancels []context.CancelFunc
 	for token, handle := range handles.handles {
 		if handle.call.Target == target {
+			handle.revoked = true
+			for _, cancel := range handle.leases {
+				cancels = append(cancels, cancel)
+			}
 			delete(handles.handles, token)
 		}
+	}
+	handles.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
 	}
 }

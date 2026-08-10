@@ -21,6 +21,10 @@ type LifecycleClient interface {
 	Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error)
 }
 
+type ActionClient interface {
+	InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error)
+}
+
 type DialFunc func(context.Context, DialConfig) (LifecycleClient, io.Closer, error)
 type closeFunc func() error
 
@@ -382,6 +386,50 @@ func (h *Host) Status(id string) (RuntimeStatus, bool) {
 		return RuntimeStatus{}, false
 	}
 	return instance.Status(), true
+}
+
+// InvokeAction binds guest dispatch to the exact active generation and fails
+// when a concurrent replacement or drain changes ownership during the call.
+func (h *Host) InvokeAction(ctx context.Context, id, generation string, request pluginsdk.RPCActionRequest) error {
+	if h == nil || ctx == nil {
+		return errors.New("Agent RPC plugin action host and context are required")
+	}
+	if request.Generation != generation {
+		return errors.New("Agent RPC plugin action generation differs from ownership fence")
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	h.mu.RLock()
+	instance := h.active[id]
+	h.mu.RUnlock()
+	if instance == nil || instance.candidate.Generation != generation {
+		return errors.New("Agent RPC plugin action generation is not active")
+	}
+	instance.mu.RLock()
+	attempt := instance.attempt
+	var client ActionClient
+	if attempt != nil {
+		client, _ = attempt.client.(ActionClient)
+	}
+	instance.mu.RUnlock()
+	if client == nil {
+		return errors.New("Agent RPC plugin runtime does not implement action dispatch")
+	}
+	response, err := client.InvokeAction(ctx, request)
+	if err != nil {
+		return err
+	}
+	if err := response.Validate(); err != nil {
+		return fmt.Errorf("Agent RPC plugin action response: %w", err)
+	}
+	h.mu.RLock()
+	stillActive := h.active[id] == instance && instance.candidate.Generation == generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return errors.New("Agent RPC plugin action generation drained during dispatch")
+	}
+	return nil
 }
 
 func (h *Host) Stop(ctx context.Context, id string) error {

@@ -93,15 +93,16 @@ func (state *generationState) put(instanceID, key string, value []byte) error {
 }
 
 type requestHost struct {
-	input        Input
-	generationID string
-	instanceID   string
-	policyID     string
-	stage        model.PolicyStage
-	state        *generationState
-	observer     observability.Observer
-	clock        *hostapi.MonotonicClock
-	authorizer   *hostapi.Authorizer
+	input             Input
+	generationID      string
+	instanceID        string
+	policyID          string
+	stage             model.PolicyStage
+	state             *generationState
+	observer          observability.Observer
+	clock             *hostapi.MonotonicClock
+	authorizer        *hostapi.Authorizer
+	capabilityAuditor hostapi.Auditor
 }
 
 func (host *requestHost) ReadField(ctx context.Context, name string) ([]byte, error) {
@@ -250,7 +251,7 @@ func (host *requestHost) authorizeCapability(ctx context.Context, capability plu
 			PluginID: host.stage.PluginID, InstanceID: host.instanceID, Generation: host.generationID,
 			Declared: capabilityProjection(host.stage.DeclaredScopes), Granted: capabilityProjection(host.stage.GrantedScopes),
 			Actor: actor, ActorCapabilities: capabilityProjection(host.stage.GrantedScopes), Targets: []pluginsdk.HostTarget{target},
-			Quota: quota, Auditor: policyCapabilityAuditor{host: host},
+			Quota: quota, Auditor: host.capabilityAuditor,
 		}
 	}
 	call := pluginsdk.HostCapabilityCall{
@@ -279,17 +280,6 @@ func capabilityProjection(scopes []string) []pluginsdk.HostCapability {
 		}
 	}
 	return result
-}
-
-type policyCapabilityAuditor struct{ host *requestHost }
-
-func (auditor policyCapabilityAuditor) Audit(ctx context.Context, event hostapi.AuditEvent) error {
-	reason := string(event.Call.Capability)
-	if event.Reason != "" {
-		reason += ":" + event.Reason
-	}
-	auditor.host.observe(ctx, observability.Event{Name: observability.PolicyHostCapability, Outcome: event.Outcome, Reason: reason})
-	return nil
 }
 
 func inspectScope(extensionPoint string) string {

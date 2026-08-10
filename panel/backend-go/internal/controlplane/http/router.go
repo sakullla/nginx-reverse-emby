@@ -167,6 +167,10 @@ type AgentPluginArtifactService interface {
 	ResolveAgentPluginArtifact(context.Context, string, int64, string, string) (service.AgentPluginArtifact, error)
 }
 
+type PluginCapabilityAPI interface {
+	InvokeDynamicAction(context.Context, service.PluginDynamicActionRequest) error
+}
+
 type Dependencies struct {
 	Config                       config.Config
 	SystemService                SystemService
@@ -185,6 +189,8 @@ type Dependencies struct {
 	MarketplaceService           MarketplaceAPI
 	PluginService                PluginAPI
 	PluginArtifactService        AgentPluginArtifactService
+	PluginCapabilityService      PluginCapabilityAPI
+	PluginRuntimeHost            *service.PluginRuntimeHost
 	AccessManager                *authz.Manager
 	SecretVault                  *secrets.Vault
 	MonitorStreamRefreshInterval time.Duration
@@ -451,6 +457,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/plugins/install", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstall)))
 			mux.Handle(prefix+"/plugins/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugin)))
 			mux.Handle(prefix+"/plugins/{id}/operations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginOperations)))
+			if resolved.PluginCapabilityService != nil {
+				mux.Handle(prefix+"/plugins/{id}/instances/{instance}/actions/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginDynamicAction)))
+			}
 			mux.Handle(prefix+"/plugins/{id}/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginAction)))
 		}
 	}
@@ -648,6 +657,18 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if artifactService, ok := d.PluginService.(AgentPluginArtifactService); ok {
 			d.PluginArtifactService = artifactService
 		}
+	}
+	if d.PluginCapabilityService == nil && d.PluginRuntimeHost != nil && d.AccessManager != nil {
+		pluginService, ok := d.PluginService.(*service.PluginService)
+		if !ok {
+			return Dependencies{}, errors.New("plugin capability manager requires the production plugin service")
+		}
+		manager, managerErr := service.NewPluginCapabilityManager(store, d.AccessManager, d.PluginRuntimeHost, pluginService)
+		if managerErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize plugin capability manager: %w", managerErr)
+		}
+		d.PluginCapabilityService = manager
+		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 	}
 	if d.MarketplaceService == nil {
 		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)

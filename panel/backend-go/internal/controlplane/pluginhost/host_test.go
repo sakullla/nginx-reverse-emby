@@ -225,6 +225,9 @@ func (c testRPC) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsd
 	}
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
+func (testRPC) InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error) {
+	return pluginsdk.RPCActionResponse{Accepted: true}, nil
+}
 
 type blockedRestartLauncher struct {
 	mu      sync.Mutex
@@ -306,6 +309,12 @@ func TestPluginHostHandshakeFailurePreservesActiveInstance(t *testing.T) {
 	active, ok := host.Active("instance")
 	if !ok || active != first || active.Generation != "g1" {
 		t.Fatalf("active instance changed after candidate failure: %+v", active)
+	}
+	if err := host.InvokeAction(t.Context(), "instance", "g1", pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"}); err != nil {
+		t.Fatalf("InvokeAction(active generation) error = %v", err)
+	}
+	if err := host.InvokeAction(t.Context(), "instance", "g2", pluginsdk.RPCActionRequest{Generation: "g2", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"}); err == nil {
+		t.Fatal("InvokeAction accepted inactive generation")
 	}
 }
 

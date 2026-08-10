@@ -91,6 +91,12 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	if app.runtime == nil {
 		t.Fatal("runtime = nil")
 	}
+	if app.capabilityAudit == nil {
+		t.Fatal("durable plugin capability audit journal is not wired")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "audit", "plugin-capabilities.jsonl")); err != nil {
+		t.Fatalf("capability audit journal: %v", err)
+	}
 	if app.taskClient == nil {
 		t.Fatal("taskClient = nil")
 	}
@@ -156,6 +162,7 @@ func TestConfiguredRuntimeUsesCompatibleSoleViewGenerationPath(t *testing.T) {
 	app := &App{}
 	app.setConfiguredModules(configured)
 	t.Cleanup(func() { _ = app.Close() })
+	t.Cleanup(func() { _ = app.Close() })
 	if app.runtime == nil {
 		t.Fatal("configured runtime is nil")
 	}
@@ -195,6 +202,9 @@ func TestConfiguredRuntimeContinuesWithoutUnavailablePolicyCompiler(t *testing.T
 		}
 		if configured.registry != nil {
 			_ = configured.registry.StopAll(context.Background())
+		}
+		if configured.capabilityAudit != nil {
+			_ = configured.capabilityAudit.Close()
 		}
 	})
 	if configured.policyWASM != nil {
@@ -236,7 +246,8 @@ func appTestPolicy(id string) model.PluginPolicy {
 		Kind: model.PolicyKindIP, PolicyID: id + "-ip", PluginID: "official.ip", PluginVersion: "1.0.0",
 		InstanceID: id + "-instance", PackageDigest: "package-digest", ArtifactPath: "verified/policy.wasm",
 		ArtifactDigest: "artifact-digest", SignatureVerified: true, SignerKeyID: "official-release", SignerFingerprint: "signer-fingerprint",
-		ABI: model.PolicyABIV1, ExtensionPoints: []string{policy.ExtensionHTTP, policy.ExtensionL4}, GrantedScopes: []string{"policy.read"},
+		ABI: model.PolicyABIV1, ExtensionPoints: []string{policy.ExtensionHTTP, policy.ExtensionL4},
+		DeclaredScopes: []string{"policy.read"}, GrantedScopes: []string{"policy.read"}, ResourceGroupID: "group-a",
 		ResourceBudget: model.PolicyResourceBudget{TimeoutMS: 2, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 1024},
 		FailurePolicy:  model.PolicyFailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
 	}}}

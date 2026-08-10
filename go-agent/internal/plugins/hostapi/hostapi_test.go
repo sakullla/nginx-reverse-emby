@@ -5,9 +5,25 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"time"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+type blockingQuota struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (quota *blockingQuota) Consume(ctx context.Context, _ pluginsdk.HostCapabilityCall) error {
+	close(quota.started)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-quota.release:
+		return nil
+	}
+}
 
 type auditRecorder struct{ events []AuditEvent }
 
@@ -131,5 +147,41 @@ func TestHostAPIRevocableHandleBindsOwnerAndFencesDrainAndTargetRotation(t *test
 	handles.RevokeTarget(target)
 	if _, err := handles.Resolve(t.Context(), token, call); !errors.Is(err, ErrDenied) {
 		t.Fatalf("Resolve(after target rotation) error = %v", err)
+	}
+}
+
+func TestHostAPIRevokeCancelsLeaseWithoutWaitingForQuota(t *testing.T) {
+	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
+	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}
+	call := pluginsdk.HostCapabilityCall{PluginID: "official.reverse", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.reverse", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
+	quota, _ := NewCallQuota(16)
+	authorizer := Authorizer{PluginID: call.PluginID, InstanceID: call.InstanceID, Generation: call.Generation, Declared: []pluginsdk.HostCapability{capability}, Granted: []pluginsdk.HostCapability{capability}, Actor: call.Actor, ActorCapabilities: []pluginsdk.HostCapability{capability}, Targets: []pluginsdk.HostTarget{target}, Quota: quota, Auditor: &auditRecorder{}}
+	handles := NewResourceHandles()
+	token, err := handles.Issue(t.Context(), authorizer, call, "resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handles.handles[token].authorizer.Quota = &blockingQuota{started: make(chan struct{}), release: make(chan struct{})}
+	blocking := handles.handles[token].authorizer.Quota.(*blockingQuota)
+	done := make(chan error, 1)
+	go func() {
+		_, resolveErr := handles.Resolve(context.Background(), token, call)
+		done <- resolveErr
+	}()
+	<-blocking.started
+	revoked := make(chan struct{})
+	go func() { handles.RevokeGeneration(call.InstanceID, call.Generation); close(revoked) }()
+	select {
+	case <-revoked:
+	case <-time.After(time.Second):
+		t.Fatal("RevokeGeneration waited for external quota owner")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrDenied) {
+			t.Fatalf("Resolve() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled handle lease did not return")
 	}
 }

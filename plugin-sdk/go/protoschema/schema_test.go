@@ -110,10 +110,14 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"LifecycleRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"config", 2, protoreflect.BytesKind, false, ""}}},
 		{"LifecycleResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.LifecycleSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
 		{"LifecycleSuccess", []fieldExpectation{{"ready", 1, protoreflect.BoolKind, false, ""}}},
+		{"ActionRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"action_id", 2, protoreflect.StringKind, false, ""}, {"target_kind", 3, protoreflect.StringKind, false, ""}, {"target_id", 4, protoreflect.StringKind, false, ""}}},
+		{"ActionResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.ActionSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
+		{"ActionSuccess", []fieldExpectation{{"accepted", 1, protoreflect.BoolKind, false, ""}}},
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
 	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"))
+	assertExclusiveResult(t, file.Messages().ByName("ActionResponse"))
 	services := file.Services()
 	if services.Len() != 1 || services.Get(0).Name() != "PluginRuntime" {
 		t.Fatalf("RPC services changed: %v", services.Len())
@@ -123,6 +127,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"Handshake", "nre.plugin.rpc.v1.HandshakeRequest", "nre.plugin.rpc.v1.HandshakeResponse"},
 		{"Prepare", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
 		{"Activate", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
+		{"InvokeAction", "nre.plugin.rpc.v1.ActionRequest", "nre.plugin.rpc.v1.ActionResponse"},
 		{"Stop", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
 	}
 	if methods.Len() != len(wantMethods) {

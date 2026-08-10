@@ -64,6 +64,9 @@ type RPCClient interface {
 	Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error)
 	Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error)
 }
+type ActionRPCClient interface {
+	InvokeAction(context.Context, pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error)
+}
 type RPCDialer interface {
 	Dial(context.Context, Endpoint, time.Duration) (RPCClient, io.Closer, error)
 }
@@ -420,6 +423,46 @@ func (h *Host) Active(instanceID string) (*Instance, bool) {
 	defer h.mu.RUnlock()
 	instance, ok := h.active[instanceID]
 	return instance, ok
+}
+
+// InvokeAction dispatches only to the exact currently-published generation and
+// rechecks ownership after the guest returns so a concurrent drain fails closed.
+func (h *Host) InvokeAction(ctx context.Context, instanceID, generation string, request pluginsdk.RPCActionRequest) error {
+	if h == nil || ctx == nil {
+		return errors.New("control-plane plugin action host and context are required")
+	}
+	if request.Generation != generation {
+		return errors.New("control-plane plugin action generation differs from ownership fence")
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	h.mu.RLock()
+	instance := h.active[instanceID]
+	h.mu.RUnlock()
+	if instance == nil || instance.Generation != generation {
+		return errors.New("control-plane plugin action generation is not active")
+	}
+	instance.mu.RLock()
+	client, ok := instance.client.(ActionRPCClient)
+	instance.mu.RUnlock()
+	if !ok {
+		return errors.New("control-plane plugin runtime does not implement action dispatch")
+	}
+	response, err := client.InvokeAction(ctx, request)
+	if err != nil {
+		return err
+	}
+	if err := response.Validate(); err != nil {
+		return fmt.Errorf("control-plane plugin action response: %w", err)
+	}
+	h.mu.RLock()
+	stillActive := h.active[instanceID] == instance && instance.Generation == generation
+	h.mu.RUnlock()
+	if !stillActive {
+		return errors.New("control-plane plugin action generation drained during dispatch")
+	}
+	return nil
 }
 func (h *Host) ActiveGenerations() map[string]string {
 	h.mu.RLock()

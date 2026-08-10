@@ -15,12 +15,13 @@ import (
 )
 
 type GenerationEvaluator struct {
-	generationID string
-	policies     map[string]model.PluginPolicy
-	modules      ModuleEvaluator
-	observer     observability.Observer
-	state        *generationState
-	clock        *hostapi.MonotonicClock
+	generationID      string
+	policies          map[string]model.PluginPolicy
+	modules           ModuleEvaluator
+	observer          observability.Observer
+	state             *generationState
+	clock             *hostapi.MonotonicClock
+	capabilityAuditor hostapi.Auditor
 }
 
 func NewGenerationEvaluator(generationID string, definitions []model.PluginPolicy, modules ModuleEvaluator, observer observability.Observer) (*GenerationEvaluator, error) {
@@ -49,13 +50,15 @@ func NewGenerationEvaluator(generationID string, definitions []model.PluginPolic
 	if observer == nil {
 		observer = observability.Default()
 	}
+	capabilityAuditor, _ := observer.(hostapi.Auditor)
 	return &GenerationEvaluator{
-		generationID: generationID,
-		policies:     policies,
-		modules:      modules,
-		observer:     observer,
-		state:        newGenerationState(),
-		clock:        hostapi.NewMonotonicClock(),
+		generationID:      generationID,
+		policies:          policies,
+		modules:           modules,
+		observer:          observer,
+		state:             newGenerationState(),
+		clock:             hostapi.NewMonotonicClock(),
+		capabilityAuditor: capabilityAuditor,
 	}, nil
 }
 
@@ -92,14 +95,15 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 			return e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "runtime-unavailable", decision)
 		}
 		requestHost := &requestHost{
-			input:        input,
-			generationID: e.generationID,
-			instanceID:   stage.InstanceID,
-			policyID:     definition.ID,
-			stage:        stage,
-			state:        e.state,
-			observer:     e.observer,
-			clock:        e.clock,
+			input:             input,
+			generationID:      e.generationID,
+			instanceID:        stage.InstanceID,
+			policyID:          definition.ID,
+			stage:             stage,
+			state:             e.state,
+			observer:          e.observer,
+			clock:             e.clock,
+			capabilityAuditor: e.capabilityAuditor,
 		}
 		deadline := time.Duration(stage.ResourceBudget.TimeoutMS) * time.Millisecond
 		stageCtx, cancel := context.WithTimeout(ctx, deadline)
@@ -208,6 +212,22 @@ func validateStage(stage model.PolicyStage) error {
 			return fmt.Errorf("%s is missing or non-canonical: %w", identity.name, err)
 		}
 	}
+	if err := pluginsdk.ValidatePolicyIdentity(stage.ResourceGroupID); err != nil {
+		return fmt.Errorf("resource group id is missing or non-canonical: %w", err)
+	}
+	declared, err := canonicalScopeSet("declared scope", stage.DeclaredScopes)
+	if err != nil {
+		return err
+	}
+	granted, err := canonicalScopeSet("granted scope", stage.GrantedScopes)
+	if err != nil {
+		return err
+	}
+	for scope := range granted {
+		if _, ok := declared[scope]; !ok {
+			return fmt.Errorf("granted scope %q is absent from signed declarations", scope)
+		}
+	}
 	if !stage.SignatureVerified {
 		return errors.New("artifact signature verification evidence is required")
 	}
@@ -237,9 +257,24 @@ func validateStage(stage model.PolicyStage) error {
 
 func cloneStage(stage model.PolicyStage) model.PolicyStage {
 	stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
+	stage.DeclaredScopes = append([]string(nil), stage.DeclaredScopes...)
 	stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
 	stage.Config = append([]byte(nil), stage.Config...)
 	return stage
+}
+
+func canonicalScopeSet(name string, scopes []string) (map[string]struct{}, error) {
+	result := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if err := pluginsdk.ValidatePolicyIdentity(scope); err != nil {
+			return nil, fmt.Errorf("%s %q is non-canonical: %w", name, scope, err)
+		}
+		if _, duplicate := result[scope]; duplicate {
+			return nil, fmt.Errorf("%s %q is duplicated", name, scope)
+		}
+		result[scope] = struct{}{}
+	}
+	return result, nil
 }
 
 func validFailureAction(action string, allowDegraded bool) bool {

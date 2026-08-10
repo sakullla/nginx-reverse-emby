@@ -376,6 +376,37 @@ type LifecycleSuccess struct {
 	Ready bool
 }
 
+type RPCActionRequest struct {
+	Generation string
+	ActionID   string
+	TargetKind string
+	TargetID   string
+}
+
+func (request RPCActionRequest) Validate() error {
+	for name, value := range map[string]string{"generation": request.Generation, "action": request.ActionID, "target kind": request.TargetKind, "target": request.TargetID} {
+		if err := ValidatePolicyIdentity(value); err != nil {
+			return fmt.Errorf("%s identity: %w", name, err)
+		}
+	}
+	return nil
+}
+
+type RPCActionResponse struct {
+	Accepted bool
+	Error    *RuntimeError
+}
+
+func (response RPCActionResponse) Validate() error {
+	if response.Error != nil {
+		return response.Error.Validate()
+	}
+	if !response.Accepted {
+		return errors.New("action response was not accepted")
+	}
+	return nil
+}
+
 // LifecycleResponse mirrors the RPC IDL oneof. A success is only actionable
 // when ready=true; false readiness and missing/conflicting results fail closed.
 type LifecycleResponse struct {

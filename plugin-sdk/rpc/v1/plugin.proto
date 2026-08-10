@@ -22,6 +22,7 @@ service PluginRuntime {
   rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
   rpc Prepare(LifecycleRequest) returns (LifecycleResponse);
   rpc Activate(LifecycleRequest) returns (LifecycleResponse);
+  rpc InvokeAction(ActionRequest) returns (ActionResponse);
   rpc Stop(LifecycleRequest) returns (LifecycleResponse);
 }
 
@@ -54,6 +55,24 @@ message LifecycleResponse {
 
 message LifecycleSuccess {
   bool ready = 1;
+}
+
+message ActionRequest {
+  string generation = 1;
+  string action_id = 2;
+  string target_kind = 3;
+  string target_id = 4;
+}
+
+message ActionResponse {
+  oneof result {
+    ActionSuccess success = 1;
+    RuntimeError error = 2;
+  }
+}
+
+message ActionSuccess {
+  bool accepted = 1;
 }
 
 message RuntimeError {

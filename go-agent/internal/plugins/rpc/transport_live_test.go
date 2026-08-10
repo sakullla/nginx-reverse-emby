@@ -49,6 +49,10 @@ func TestRPCRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 		if _, err := client.Handshake(t.Context(), request); err != nil {
 			t.Fatal(err)
 		}
+		action, err := client.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"})
+		if err != nil || action.Validate() != nil {
+			t.Fatalf("real mutual-TLS action dispatch failed: %+v, %v", action, err)
+		}
 		_ = closeClient()
 		server.Stop()
 		_ = listener.Close()
@@ -132,5 +136,23 @@ func agentAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Servi
 			return response, nil
 		}})
 	}
+	methods = append(methods, grpc.MethodDesc{MethodName: "InvokeAction", Handler: func(_ any, _ context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionRequest")
+		if err != nil {
+			return nil, err
+		}
+		request := dynamicpb.NewMessage(requestDescriptor)
+		if err := decode(request); err != nil {
+			return nil, err
+		}
+		responseDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionResponse")
+		if err != nil {
+			return nil, err
+		}
+		response := dynamicpb.NewMessage(responseDescriptor)
+		success := response.Mutable(responseDescriptor.Fields().ByName("success")).Message()
+		success.Set(success.Descriptor().Fields().ByName("accepted"), protoreflect.ValueOfBool(true))
+		return response, nil
+	}})
 	return &grpc.ServiceDesc{ServiceName: rpcServiceName, HandlerType: (*interface{})(nil), Methods: methods}
 }

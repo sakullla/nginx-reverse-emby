@@ -191,6 +191,28 @@ type runtimeRepo struct {
 	failErr          error
 }
 
+type capabilityRevocationRecorder struct {
+	mu          sync.Mutex
+	generations []string
+}
+
+func (recorder *capabilityRevocationRecorder) RevokeGeneration(instanceID, generation string) {
+	recorder.mu.Lock()
+	recorder.generations = append(recorder.generations, instanceID+":"+generation)
+	recorder.mu.Unlock()
+}
+
+func (recorder *capabilityRevocationRecorder) contains(value string) bool {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	for _, generation := range recorder.generations {
+		if generation == value {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *runtimeRepo) StagePluginRuntime(ctx context.Context, row storage.PluginRuntimeInstanceRow) error {
 	if r.stageStarted != nil {
 		r.stageOnce.Do(func() { close(r.stageStarted) })
@@ -885,6 +907,46 @@ func TestPluginRuntimeHostDurablePromotionFailurePreservesOldProcess(t *testing.
 	active, ok := host.Active("instance")
 	if !ok || active != first || active.Generation != "g1" {
 		t.Fatalf("old active process was replaced: %+v", active)
+	}
+}
+
+func TestPluginRuntimeHostSynchronouslyRevokesCapabilitiesOnCutoverAndStop(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	payload := []byte("runtime capability revocation")
+	if err := os.WriteFile(cache, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), runtimeLauncher{}, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocations := &capabilityRevocationRecorder{}
+	service.SetCapabilityRevoker(revocations)
+	digest := hex.EncodeToString(sum[:])
+	candidate := pluginhost.Candidate{InstanceID: "instance", Artifact: pluginhost.Artifact{CachePath: cache, SHA256: digest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Identity: pluginhost.Identity{PluginID: "plugin", Version: "1", PackageDigest: digest, Generation: "g1", Scopes: []string{"relay.read"}}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Grants: []string{pluginhost.UnsandboxedGrant}, GracePeriod: time.Millisecond}
+	candidate.Requirement = runtimeSandboxRequirement(t, digest)
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Identity.Generation = "g2"
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if !revocations.contains("instance:g1") {
+		t.Fatal("cutover returned before old generation capabilities were revoked")
+	}
+	if err := service.Stop(t.Context(), "instance"); err != nil {
+		t.Fatal(err)
+	}
+	if !revocations.contains("instance:g2") {
+		t.Fatal("Stop returned before active generation capabilities were revoked")
 	}
 }
 

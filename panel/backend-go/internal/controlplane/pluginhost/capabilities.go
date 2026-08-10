@@ -123,9 +123,10 @@ func containsTarget(values []pluginsdk.HostTarget, wanted pluginsdk.HostTarget) 
 
 type ResourceHandleBroker struct {
 	mu                 sync.RWMutex
-	handles            map[string]resourceHandle
+	handles            map[string]*resourceHandle
 	revokedGenerations map[string]struct{}
 	revokedTargets     map[pluginsdk.HostTarget]struct{}
+	nextLease          uint64
 }
 
 type resourceHandle struct {
@@ -133,10 +134,11 @@ type resourceHandle struct {
 	policy   CapabilityPolicy
 	resource any
 	revoked  bool
+	leases   map[uint64]context.CancelFunc
 }
 
 func NewResourceHandleBroker() *ResourceHandleBroker {
-	return &ResourceHandleBroker{handles: make(map[string]resourceHandle), revokedGenerations: make(map[string]struct{}), revokedTargets: make(map[pluginsdk.HostTarget]struct{})}
+	return &ResourceHandleBroker{handles: make(map[string]*resourceHandle), revokedGenerations: make(map[string]struct{}), revokedTargets: make(map[pluginsdk.HostTarget]struct{})}
 }
 
 func (broker *ResourceHandleBroker) Issue(ctx context.Context, policy CapabilityPolicy, call pluginsdk.HostCapabilityCall, resource any) (string, error) {
@@ -161,7 +163,7 @@ func (broker *ResourceHandleBroker) Issue(ctx context.Context, policy Capability
 		broker.mu.Unlock()
 		return "", fmt.Errorf("%w: resource target is revoked", ErrCapabilityDenied)
 	}
-	broker.handles[token] = resourceHandle{call: call, policy: policy, resource: resource}
+	broker.handles[token] = &resourceHandle{call: call, policy: policy, resource: resource, leases: make(map[uint64]context.CancelFunc)}
 	broker.mu.Unlock()
 	return token, nil
 }
@@ -170,20 +172,39 @@ func (broker *ResourceHandleBroker) Resolve(ctx context.Context, token string, c
 	if broker == nil {
 		return nil, errors.New("resource handle broker is unavailable")
 	}
-	broker.mu.RLock()
-	defer broker.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	broker.mu.Lock()
 	handle, ok := broker.handles[token]
 	if !ok || handle.revoked {
+		broker.mu.Unlock()
 		return nil, fmt.Errorf("%w: resource handle is revoked or unknown", ErrCapabilityDenied)
 	}
 	call.Capability = pluginsdk.CapabilityServiceRevocableResourceHandle
 	if call.PluginID != handle.call.PluginID || call.InstanceID != handle.call.InstanceID || call.Generation != handle.call.Generation || call.Target != handle.call.Target {
+		broker.mu.Unlock()
 		return nil, fmt.Errorf("%w: resource handle owner mismatch", ErrCapabilityDenied)
 	}
-	if err := handle.policy.Authorize(ctx, call); err != nil {
+	broker.nextLease++
+	leaseID := broker.nextLease
+	leaseCtx, cancel := context.WithCancel(ctx)
+	handle.leases[leaseID] = cancel
+	policy, resource := handle.policy, handle.resource
+	broker.mu.Unlock()
+	err := policy.Authorize(leaseCtx, call)
+	broker.mu.Lock()
+	delete(handle.leases, leaseID)
+	revoked := handle.revoked
+	broker.mu.Unlock()
+	cancel()
+	if err != nil {
 		return nil, err
 	}
-	return handle.resource, nil
+	if revoked {
+		return nil, fmt.Errorf("%w: resource handle was revoked during authorization", ErrCapabilityDenied)
+	}
+	return resource, nil
 }
 
 func (broker *ResourceHandleBroker) RevokeGeneration(instanceID, generation string) {
@@ -191,11 +212,14 @@ func (broker *ResourceHandleBroker) RevokeGeneration(instanceID, generation stri
 		return
 	}
 	broker.mu.Lock()
-	defer broker.mu.Unlock()
 	broker.revokedGenerations[instanceID+"\x00"+generation] = struct{}{}
-	broker.revoke(func(handle resourceHandle) bool {
+	cancels := broker.revoke(func(handle *resourceHandle) bool {
 		return handle.call.InstanceID == instanceID && handle.call.Generation == generation
 	})
+	broker.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (broker *ResourceHandleBroker) RevokeTarget(target pluginsdk.HostTarget) {
@@ -203,25 +227,33 @@ func (broker *ResourceHandleBroker) RevokeTarget(target pluginsdk.HostTarget) {
 		return
 	}
 	broker.mu.Lock()
-	defer broker.mu.Unlock()
 	broker.revokedTargets[target] = struct{}{}
-	broker.revoke(func(handle resourceHandle) bool { return handle.call.Target == target })
+	cancels := broker.revoke(func(handle *resourceHandle) bool { return handle.call.Target == target })
+	broker.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
-func (broker *ResourceHandleBroker) revoke(match func(resourceHandle) bool) {
+func (broker *ResourceHandleBroker) revoke(match func(*resourceHandle) bool) []context.CancelFunc {
+	var cancels []context.CancelFunc
 	for token, handle := range broker.handles {
 		if match(handle) {
 			handle.revoked = true
-			handle.resource = nil
-			broker.handles[token] = handle
+			delete(broker.handles, token)
+			for _, cancel := range handle.leases {
+				cancels = append(cancels, cancel)
+			}
 		}
 	}
+	return cancels
 }
 
 type DynamicActionRegistry struct {
 	mu                 sync.RWMutex
 	actions            map[string]registeredDynamicAction
 	revokedGenerations map[string]struct{}
+	nextLease          uint64
 }
 
 type registeredDynamicAction struct {
@@ -229,6 +261,8 @@ type registeredDynamicAction struct {
 	call    pluginsdk.HostCapabilityCall
 	policy  CapabilityPolicy
 	handler func(context.Context, pluginsdk.HostCapabilityCall) error
+	revoked bool
+	leases  map[uint64]context.CancelFunc
 }
 
 func NewDynamicActionRegistry() *DynamicActionRegistry {
@@ -258,39 +292,88 @@ func (registry *DynamicActionRegistry) Register(action pluginsdk.DynamicAction, 
 	if _, exists := registry.actions[key]; exists {
 		return errors.New("dynamic action is already registered")
 	}
-	registry.actions[key] = registeredDynamicAction{action: action, call: call, policy: policy, handler: handler}
+	registry.actions[key] = registeredDynamicAction{action: action, call: call, policy: policy, handler: handler, leases: make(map[uint64]context.CancelFunc)}
 	return nil
 }
 
 func (registry *DynamicActionRegistry) Invoke(ctx context.Context, instanceID, generation, actionID string, actor pluginsdk.HostActor) error {
 	key := instanceID + "\x00" + generation + "\x00" + actionID
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	registry.mu.Lock()
 	registered, ok := registry.actions[key]
-	if !ok {
+	if !ok || registered.revoked {
+		registry.mu.Unlock()
 		return fmt.Errorf("%w: dynamic action is unavailable", ErrCapabilityDenied)
 	}
+	registry.nextLease++
+	leaseID := registry.nextLease
+	leaseCtx, cancel := context.WithCancel(ctx)
+	registered.leases[leaseID] = cancel
+	registry.actions[key] = registered
+	registry.mu.Unlock()
 	call := registered.call
 	call.Actor = actor
 	call.Capability = pluginsdk.CapabilityUIDynamicActions
-	if err := registered.policy.Authorize(ctx, call); err != nil {
+	if err := registered.policy.Authorize(leaseCtx, call); err != nil {
+		registry.finishActionLease(key, leaseID, cancel)
 		return err
 	}
 	call.Capability = registered.action.Capability
-	if err := registered.policy.Authorize(ctx, call); err != nil {
+	if err := registered.policy.Authorize(leaseCtx, call); err != nil {
+		registry.finishActionLease(key, leaseID, cancel)
 		return err
 	}
-	return registered.handler(ctx, call)
+	if !registry.actionLeaseValid(key, leaseID) {
+		registry.finishActionLease(key, leaseID, cancel)
+		return fmt.Errorf("%w: dynamic action was revoked during authorization", ErrCapabilityDenied)
+	}
+	err := registered.handler(leaseCtx, call)
+	revoked := !registry.finishActionLease(key, leaseID, cancel)
+	if revoked {
+		return fmt.Errorf("%w: dynamic action was revoked during dispatch", ErrCapabilityDenied)
+	}
+	return err
 }
 
 func (registry *DynamicActionRegistry) RevokeGeneration(instanceID, generation string) {
 	registry.mu.Lock()
-	defer registry.mu.Unlock()
 	prefix := instanceID + "\x00" + generation + "\x00"
 	registry.revokedGenerations[instanceID+"\x00"+generation] = struct{}{}
-	for key := range registry.actions {
+	var cancels []context.CancelFunc
+	for key, action := range registry.actions {
 		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			action.revoked = true
+			for _, cancel := range action.leases {
+				cancels = append(cancels, cancel)
+			}
 			delete(registry.actions, key)
 		}
 	}
+	registry.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+func (registry *DynamicActionRegistry) actionLeaseValid(key string, leaseID uint64) bool {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	action, ok := registry.actions[key]
+	_, leased := action.leases[leaseID]
+	return ok && !action.revoked && leased
+}
+
+func (registry *DynamicActionRegistry) finishActionLease(key string, leaseID uint64, cancel context.CancelFunc) bool {
+	registry.mu.Lock()
+	action, ok := registry.actions[key]
+	if ok {
+		delete(action.leases, leaseID)
+		registry.actions[key] = action
+	}
+	valid := ok && !action.revoked
+	registry.mu.Unlock()
+	cancel()
+	return valid
 }

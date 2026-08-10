@@ -635,6 +635,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		PKIService:           pkiHTTPService,
 		TaskService:          taskSvc,
 		TrafficService:       trafficSvc,
+		PluginRuntimeHost:    rpcRuntimeHost,
 	})
 	if err != nil {
 		_ = closeServices()

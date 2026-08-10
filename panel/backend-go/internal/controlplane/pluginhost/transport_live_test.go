@@ -48,6 +48,14 @@ func TestPluginHostRealMutualTLSRestartUsesFreshIdentity(t *testing.T) {
 		if err != nil || validateHandshake(request, response) != nil {
 			t.Fatalf("real mutual-TLS handshake failed: %v", err)
 		}
+		actionClient, ok := client.(ActionRPCClient)
+		if !ok {
+			t.Fatal("real RPC client omitted action dispatch")
+		}
+		action, err := actionClient.InvokeAction(t.Context(), pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1"})
+		if err != nil || action.Validate() != nil {
+			t.Fatalf("real mutual-TLS action dispatch failed: %+v, %v", action, err)
+		}
 		_ = closer.Close()
 		server.Stop()
 		_ = listener.Close()
@@ -130,5 +138,23 @@ func controlAttemptServiceDesc(cookie string, stopCallbacks ...func()) *grpc.Ser
 			return response, nil
 		}})
 	}
+	methods = append(methods, grpc.MethodDesc{MethodName: "InvokeAction", Handler: func(_ any, _ context.Context, decode func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+		requestDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionRequest")
+		if err != nil {
+			return nil, err
+		}
+		request := dynamicpb.NewMessage(requestDescriptor)
+		if err := decode(request); err != nil {
+			return nil, err
+		}
+		responseDescriptor, err := protoschema.Message("nre.plugin.rpc.v1.ActionResponse")
+		if err != nil {
+			return nil, err
+		}
+		response := dynamicpb.NewMessage(responseDescriptor)
+		success := response.Mutable(responseDescriptor.Fields().ByName("success")).Message()
+		success.Set(success.Descriptor().Fields().ByName("accepted"), protoreflect.ValueOfBool(true))
+		return response, nil
+	}})
 	return &grpc.ServiceDesc{ServiceName: "nre.plugin.rpc.v1.PluginRuntime", HandlerType: (*interface{})(nil), Methods: methods}
 }

@@ -79,6 +79,7 @@ type App struct {
 	ddns                   *moduleddns.Module
 	generations            *core.GenerationManager
 	policyWASM             *pluginwasm.Runtime
+	capabilityAudit        *observability.CapabilityAuditJournal
 	rpcProcesses           *pluginprocess.Supervisor
 	rpcHost                *pluginrpc.Host
 	rpcProcessesClose      func(context.Context) error
@@ -192,16 +193,17 @@ func ddnsModuleConfigFromAppConfig(cfg Config) moduleddns.Config {
 }
 
 type configuredModules struct {
-	registry       *agentmodule.Registry
-	diagnostics    *modulediagnostics.Module
-	traffic        core.TrafficReporter
-	hostMetrics    core.HostMetricsReporter
-	certReports    core.ManagedCertificateReporter
-	ddns           *moduleddns.Module
-	generations    *core.GenerationManager
-	policyWASM     *pluginwasm.Runtime
-	processStreams *ingress.ProcessStreamRegistry
-	processPackets *ingress.ProcessPacketRegistry
+	registry        *agentmodule.Registry
+	diagnostics     *modulediagnostics.Module
+	traffic         core.TrafficReporter
+	hostMetrics     core.HostMetricsReporter
+	certReports     core.ManagedCertificateReporter
+	ddns            *moduleddns.Module
+	generations     *core.GenerationManager
+	policyWASM      *pluginwasm.Runtime
+	capabilityAudit *observability.CapabilityAuditJournal
+	processStreams  *ingress.ProcessStreamRegistry
+	processPackets  *ingress.ProcessPacketRegistry
 }
 
 func newPolicyWASMObserver() pluginwasm.Observer {
@@ -270,6 +272,21 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 	if err != nil {
 		return configuredModules{}, err
 	}
+	auditPath, err := filepath.Abs(filepath.Join(cfg.DataDir, "audit", "plugin-capabilities.jsonl"))
+	if err != nil {
+		return configuredModules{}, fmt.Errorf("resolve plugin capability audit path: %w", err)
+	}
+	capabilityAudit, err := observability.NewCapabilityAuditJournal(auditPath)
+	if err != nil {
+		return configuredModules{}, err
+	}
+	keepCapabilityAudit := false
+	defer func() {
+		if !keepCapabilityAudit {
+			_ = capabilityAudit.Close()
+		}
+	}()
+	capabilityObserver := observability.CapabilityAuditObserver{Observer: observability.Default(), Auditor: capabilityAudit}
 	policyObserver := newPolicyWASMObserver()
 	policyRuntime, err := runtimeFactory(context.Background(), pluginwasm.RuntimeOptions{Observer: policyObserver})
 	if err != nil && !pluginwasm.IsCode(err, pluginwasm.ErrorUnavailable) {
@@ -289,9 +306,9 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 	}()
 	var policyModule agentmodule.Module
 	if policyRuntime != nil {
-		policyModule = policy.NewModule(pluginwasm.GenerationFactory{Runtime: policyRuntime, Observer: policyObserver}, observability.Default())
+		policyModule = policy.NewModule(pluginwasm.GenerationFactory{Runtime: policyRuntime, Observer: policyObserver}, capabilityObserver)
 	} else {
-		policyModule = policy.NewValidationModule(observability.Default())
+		policyModule = policy.NewValidationModule(capabilityObserver)
 	}
 	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
@@ -348,17 +365,19 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 		return configuredModules{}, err
 	}
 	keepPolicyRuntime = policyRuntime != nil
+	keepCapabilityAudit = true
 	return configuredModules{
-		registry:       registry,
-		diagnostics:    diagnosticModule,
-		traffic:        trafficModule,
-		hostMetrics:    modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
-		certReports:    certModule,
-		ddns:           ddnsModule,
-		generations:    generations,
-		policyWASM:     policyRuntime,
-		processStreams: processStreams,
-		processPackets: processPackets,
+		registry:        registry,
+		diagnostics:     diagnosticModule,
+		traffic:         trafficModule,
+		hostMetrics:     modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
+		certReports:     certModule,
+		ddns:            ddnsModule,
+		generations:     generations,
+		policyWASM:      policyRuntime,
+		capabilityAudit: capabilityAudit,
+		processStreams:  processStreams,
+		processPackets:  processPackets,
 	}, nil
 }
 
@@ -556,6 +575,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.ddns = modules.ddns
 	a.generations = modules.generations
 	a.policyWASM = modules.policyWASM
+	a.capabilityAudit = modules.capabilityAudit
 	a.processStreams = modules.processStreams
 	a.processPackets = modules.processPackets
 	a.runtime = core.NewRuntimeWithGenerationManager(modules.generations)
@@ -973,6 +993,13 @@ func (a *App) closeLocalRuntimes() error {
 			errs = append(errs, err)
 		} else {
 			a.policyWASM = nil
+		}
+	}
+	if a.capabilityAudit != nil {
+		if err := a.capabilityAudit.Close(); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.capabilityAudit = nil
 		}
 	}
 	if a.rpcProcesses != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type PluginRuntimeRepository interface {
@@ -36,6 +37,11 @@ type PluginRuntimeHost struct {
 	terminals  map[terminalResultKey]pluginhost.TerminalResult
 	pendingMu  sync.Mutex
 	pending    map[*pluginhost.Instance]pendingRuntimeCleanup
+	revoker    PluginCapabilityGenerationRevoker
+}
+
+type PluginCapabilityGenerationRevoker interface {
+	RevokeGeneration(string, string)
 }
 
 type terminalResultKey struct {
@@ -62,6 +68,36 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 	return service, nil
 }
 
+func (s *PluginRuntimeHost) SetCapabilityRevoker(revoker PluginCapabilityGenerationRevoker) {
+	s.stateMu.Lock()
+	s.revoker = revoker
+	s.stateMu.Unlock()
+}
+
+func (s *PluginRuntimeHost) ActiveGeneration(instanceID string) (string, bool) {
+	instance, ok := s.host.Active(instanceID)
+	if !ok || instance == nil || instance.Generation == "" {
+		return "", false
+	}
+	return instance.Generation, true
+}
+
+func (s *PluginRuntimeHost) InvokeAction(ctx context.Context, instanceID, generation string, request pluginsdk.RPCActionRequest) error {
+	return s.host.InvokeAction(ctx, instanceID, generation, request)
+}
+
+func (s *PluginRuntimeHost) revokeGeneration(instanceID, generation string) {
+	if generation == "" {
+		return
+	}
+	s.stateMu.Lock()
+	revoker := s.revoker
+	s.stateMu.Unlock()
+	if revoker != nil {
+		revoker.RevokeGeneration(instanceID, generation)
+	}
+}
+
 func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.Candidate) (*pluginhost.Instance, error) {
 	operationCtx, done, err := s.beginOperation(ctx)
 	if err != nil {
@@ -75,6 +111,7 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 	if err := operationCtx.Err(); err != nil {
 		return nil, errors.Join(errors.New("plugin runtime activation canceled"), err)
 	}
+	previousGeneration, _ := s.ActiveGeneration(candidate.InstanceID)
 	row := storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256}
 	if err := s.repository.StagePluginRuntime(operationCtx, row); err != nil {
 		return nil, fmt.Errorf("stage plugin runtime state: %w", err)
@@ -102,6 +139,9 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 	}
 	if err := s.host.Publish(instance); err != nil {
 		return nil, s.rollbackPromotedCandidate(instance, candidate, fmt.Errorf("publish promoted plugin runtime: %w", err))
+	}
+	if previousGeneration != "" && previousGeneration != candidate.Identity.Generation {
+		s.revokeGeneration(candidate.InstanceID, previousGeneration)
 	}
 	return instance, nil
 }
@@ -191,6 +231,11 @@ func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
 	}
 	results, stopErr := s.host.StopWithResults(operationCtx, instanceID)
 	s.rememberTerminalResults(results)
+	for _, result := range results {
+		if result.Terminated {
+			s.revokeGeneration(result.InstanceID, result.Generation)
+		}
+	}
 	if !found || row.ActiveGeneration == "" {
 		return stopErr
 	}
@@ -285,6 +330,11 @@ func (s *PluginRuntimeHost) Close(ctx context.Context) error {
 	s.operations.Wait()
 	results, hostErr := s.host.CloseWithResults(ctx)
 	s.rememberTerminalResults(results)
+	for _, result := range results {
+		if result.Terminated {
+			s.revokeGeneration(result.InstanceID, result.Generation)
+		}
+	}
 	errs := []error{hostErr}
 	s.pendingMu.Lock()
 	for instance, pending := range s.pending {
