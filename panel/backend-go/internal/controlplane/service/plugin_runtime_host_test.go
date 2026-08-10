@@ -186,6 +186,8 @@ type runtimeRepo struct {
 	stageStarted     chan struct{}
 	stageRelease     chan struct{}
 	stageOnce        sync.Once
+	getReturned      chan struct{}
+	getOnce          sync.Once
 	failErr          error
 }
 
@@ -242,6 +244,9 @@ func (r *runtimeRepo) FailPluginRuntimeCandidate(_ context.Context, _ string, ge
 	return nil
 }
 func (r *runtimeRepo) GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error) {
+	if r.getReturned != nil {
+		r.getOnce.Do(func() { close(r.getReturned) })
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.row, true, nil
@@ -532,6 +537,119 @@ func TestPluginRuntimeHostCloseSurfacesCrashBetweenServiceAndHostCancellation(t 
 	}
 	if stopCalls != 0 {
 		t.Fatalf("crash close wrote clean terminal state %d times", stopCalls)
+	}
+}
+
+func TestPluginRuntimeHostStopPersistsExactUnacknowledgedExit(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-stop-ack-race")
+	if _, err := service.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	repo.healthStarted = make(chan struct{})
+	repo.healthRelease = make(chan struct{})
+	repo.healthReturned = make(chan struct{})
+	repo.healthOnce = sync.Once{}
+	repo.healthReturnOnce = sync.Once{}
+	repo.getReturned = make(chan struct{})
+	launcher.process(0).done <- errors.New("stop observer race crash")
+	<-repo.healthStarted
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- service.Stop(context.Background(), candidate.InstanceID) }()
+	<-repo.getReturned
+	time.Sleep(10 * time.Millisecond)
+	close(repo.healthRelease)
+	stopErr := <-stopDone
+	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop observer race crash") {
+		t.Fatalf("Stop error = %v", stopErr)
+	}
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if row.ActiveGeneration != candidate.Identity.Generation || row.State != "failed" || row.PID != 0 || !strings.Contains(row.LastError, "stop observer race crash") {
+		t.Fatalf("Stop persisted wrong terminal result: %+v", row)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("Stop overwrote crash with clean terminal persistence %d times", stopCalls)
+	}
+}
+
+func TestPluginRuntimeHostClosePersistsExactRestartReplacementExit(t *testing.T) {
+	root := t.TempDir()
+	launcher := &runtimeQueueLauncher{}
+	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &runtimeRepo{}
+	service, err := NewPluginRuntimeHost(host, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := runtimeCloseCandidate(t, root, "g-replacement-close")
+	first, err := service.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher.process(0).done <- errors.New("acknowledged first crash")
+	deadline := time.Now().Add(3 * time.Second)
+	var replacement *pluginhost.Instance
+	for time.Now().Before(deadline) {
+		active, ok := host.Active(candidate.InstanceID)
+		if ok && active != first && launcher.process(1) != nil {
+			replacement = active
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if replacement == nil {
+		t.Fatal("restart replacement was not published")
+	}
+	repo.healthStarted = make(chan struct{})
+	repo.healthRelease = make(chan struct{})
+	repo.healthReturned = make(chan struct{})
+	repo.healthOnce = sync.Once{}
+	repo.healthReturnOnce = sync.Once{}
+	_, operationDone, err := service.beginOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- service.Close(context.Background()) }()
+	<-service.ctx.Done()
+	launcher.process(1).done <- errors.New("replacement shutdown crash")
+	<-repo.healthReturned
+	deadline = time.Now().Add(time.Second)
+	for host.StatusPersistenceError(candidate.InstanceID) == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if host.StatusPersistenceError(candidate.InstanceID) == nil {
+		t.Fatal("replacement crash observation was treated as acknowledged")
+	}
+	close(repo.healthRelease)
+	operationDone()
+	closeErr := <-closeDone
+	if closeErr == nil || !strings.Contains(closeErr.Error(), "replacement shutdown crash") {
+		t.Fatalf("Close error = %v", closeErr)
+	}
+	repo.mu.Lock()
+	row, stopCalls := repo.row, repo.stopCalls
+	repo.mu.Unlock()
+	if row.ActiveGeneration != candidate.Identity.Generation || row.State != "failed" || row.PID != 0 || !strings.Contains(row.LastError, "replacement shutdown crash") {
+		t.Fatalf("Close persisted wrong replacement terminal result: %+v", row)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("Close overwrote replacement crash with clean terminal persistence %d times", stopCalls)
 	}
 }
 

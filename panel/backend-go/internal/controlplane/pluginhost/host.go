@@ -100,6 +100,16 @@ type RuntimeStatus struct {
 	CircuitOpen                                               bool
 }
 
+type TerminalResult struct {
+	Instance         *Instance
+	InstanceID       string
+	Generation       string
+	Published        bool
+	Terminated       bool
+	PendingExitError error
+	CleanupError     error
+}
+
 type runtimeControl struct {
 	candidate  Candidate
 	exits      []time.Time
@@ -423,6 +433,11 @@ func (h *Host) ActiveGenerations() map[string]string {
 	return result
 }
 func (h *Host) Stop(ctx context.Context, instanceID string) error {
+	_, err := h.StopWithResults(ctx, instanceID)
+	return err
+}
+
+func (h *Host) StopWithResults(ctx context.Context, instanceID string) ([]TerminalResult, error) {
 	h.mu.Lock()
 	instance := h.active[instanceID]
 	if instance != nil {
@@ -438,8 +453,10 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	}
 	h.mu.Unlock()
 	var errs []error
+	results := make([]TerminalResult, 0, 1+len(prepared))
 	if instance != nil {
 		errs = append(errs, h.stopPublished(ctx, instance))
+		results = append(results, terminalResult(instance, true))
 	}
 	if instance != nil && instance.terminated() {
 		h.mu.Lock()
@@ -450,6 +467,7 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	}
 	for _, candidate := range prepared {
 		stopErr := h.stopPublished(ctx, candidate)
+		results = append(results, terminalResult(candidate, false))
 		if candidate.terminated() {
 			h.mu.Lock()
 			delete(h.prepared, candidate)
@@ -457,9 +475,14 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 		}
 		errs = append(errs, stopErr)
 	}
-	return errors.Join(errs...)
+	return results, errors.Join(errs...)
 }
 func (h *Host) Close(ctx context.Context) error {
+	_, err := h.CloseWithResults(ctx)
+	return err
+}
+
+func (h *Host) CloseWithResults(ctx context.Context) ([]TerminalResult, error) {
 	h.mu.Lock()
 	if !h.closed {
 		h.closed = true
@@ -481,8 +504,10 @@ func (h *Host) Close(ctx context.Context) error {
 	}
 	h.mu.Unlock()
 	var errs []error
+	results := make([]TerminalResult, 0, len(instances)+len(prepared))
 	for _, instance := range instances {
 		errs = append(errs, h.stopPublished(ctx, instance))
+		results = append(results, terminalResult(instance, true))
 		if instance.terminated() {
 			h.mu.Lock()
 			if h.active[instance.ID] == instance {
@@ -493,8 +518,16 @@ func (h *Host) Close(ctx context.Context) error {
 	}
 	for _, instance := range prepared {
 		errs = append(errs, h.StopCandidate(ctx, instance))
+		results = append(results, terminalResult(instance, false))
 	}
-	return errors.Join(errs...)
+	return results, errors.Join(errs...)
+}
+
+func terminalResult(instance *Instance, published bool) TerminalResult {
+	if instance == nil {
+		return TerminalResult{Published: published, Terminated: true}
+	}
+	return TerminalResult{Instance: instance, InstanceID: instance.ID, Generation: instance.Generation, Published: published, Terminated: instance.terminated(), PendingExitError: instance.PendingExitError(), CleanupError: instance.CleanupError()}
 }
 
 func (h *Host) stopPublished(ctx context.Context, instance *Instance) error {
@@ -952,12 +985,19 @@ func (i *Instance) PendingExitError() error {
 		i.mu.RUnlock()
 		return nil
 	}
-	exitErr := errors.Join(i.processWaitErr, i.logErr)
+	processWaitErr := normalizeExpectedTerminationWaitError(i.processWaitErr, i.interruptAccepted, i.killAccepted)
+	exitErr := errors.Join(processWaitErr, i.logErr)
 	i.mu.RUnlock()
+	return exitErr
+}
+
+func (i *Instance) CleanupError() error {
+	if i == nil {
+		return nil
+	}
 	i.cleanupMu.Lock()
-	cleanupErr := i.cleanupErr
-	i.cleanupMu.Unlock()
-	return errors.Join(exitErr, cleanupErr)
+	defer i.cleanupMu.Unlock()
+	return i.cleanupErr
 }
 
 func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {

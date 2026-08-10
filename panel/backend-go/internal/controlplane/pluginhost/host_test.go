@@ -965,6 +965,10 @@ func TestPluginHostStopNormalizesAcceptedInterruptWaitError(t *testing.T) {
 	if !instance.terminated() {
 		t.Fatalf("signal-terminated instance retained status: %+v", instance)
 	}
+	result := terminalResult(instance, true)
+	if result.PendingExitError != nil || !result.Terminated {
+		t.Fatalf("expected interrupt terminal result = %+v", result)
+	}
 }
 
 func TestPluginHostStopStillSurfacesPreexistingCrash(t *testing.T) {
@@ -1012,6 +1016,66 @@ func TestPluginHostCanceledWatcherLeavesReadyCrashAndLogForStopOrClose(t *testin
 				t.Fatalf("%s error = %v", operation, err)
 			}
 		})
+	}
+}
+
+func TestPluginHostStopResultFencesObserverAckToExactInstance(t *testing.T) {
+	root := t.TempDir()
+	candidate := newBackendHostCandidate(t, root)
+	process := &testProcess{done: make(chan error, 1)}
+	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerStarted := make(chan struct{})
+	observerRelease := make(chan struct{})
+	var observerOnce sync.Once
+	host.SetStatusObserver(func(status RuntimeStatus) error {
+		if status.State == "backoff" || status.State == "failed" {
+			observerOnce.Do(func() { close(observerStarted) })
+			<-observerRelease
+		}
+		return nil
+	})
+	instance, err := host.Activate(t.Context(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.done <- errors.New("observer ack race crash")
+	<-observerStarted
+	stopDone := make(chan struct {
+		results []TerminalResult
+		err     error
+	}, 1)
+	go func() {
+		results, err := host.StopWithResults(context.Background(), candidate.InstanceID)
+		stopDone <- struct {
+			results []TerminalResult
+			err     error
+		}{results: results, err: err}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for instance.control.ctx.Err() == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if instance.control.ctx.Err() == nil {
+		t.Fatal("Stop did not establish its ownership fence")
+	}
+	close(observerRelease)
+	result := <-stopDone
+	terminal, ok := func() (TerminalResult, bool) {
+		for _, item := range result.results {
+			if item.Published {
+				return item, true
+			}
+		}
+		return TerminalResult{}, false
+	}()
+	if !ok || terminal.Instance != instance || terminal.Generation != candidate.Identity.Generation || terminal.PendingExitError == nil || !strings.Contains(terminal.PendingExitError.Error(), "observer ack race crash") {
+		t.Fatalf("terminal result = %+v", terminal)
+	}
+	if result.err == nil || !strings.Contains(result.err.Error(), "observer ack race crash") {
+		t.Fatalf("Stop error = %v", result.err)
 	}
 }
 
