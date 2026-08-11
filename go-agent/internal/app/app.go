@@ -549,6 +549,9 @@ func newAppWithAllDeps(
 	}
 	rpcProcesses := pluginprocess.NewSupervisor(nil, nil, nil)
 	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(cfg.DataDir, "plugins", "rpc-runtime")}, rpcProcesses, nil)
+	if redeemer, ok := client.(pluginrpc.SecretRedeemer); ok {
+		rpcHost.SetSecretRedeemer(redeemer)
+	}
 	app := &App{
 		cfg:            cfg,
 		store:          st,

@@ -24,6 +24,18 @@ type pluginArtifactServiceStub struct {
 	calls      int
 }
 
+type pluginSecretServiceStub struct {
+	agentID string
+	request service.PluginSecretRedemptionRequest
+	calls   int
+}
+
+func (s *pluginSecretServiceStub) RedeemAgentPluginSecrets(_ context.Context, agentID string, request service.PluginSecretRedemptionRequest) (service.PluginSecretRedemptionResponse, error) {
+	s.calls++
+	s.agentID, s.request = agentID, request
+	return service.PluginSecretRedemptionResponse{Secrets: []service.PluginRedeemedSecret{{ID: "secret", Version: 1, Digest: strings.Repeat("d", 64), Purpose: "plugin-config:instance:/token", Value: `"transient"`}}}, nil
+}
+
 func TestHeartbeatProjectsStableArtifactIdentityWithoutServerFilesystemPath(t *testing.T) {
 	snapshotDigest := strings.Repeat("a", 64)
 	reply := service.HeartbeatReply{HasUpdate: true, DesiredRevision: 7, SnapshotDigest: snapshotDigest, PluginGenerations: []storage.PluginGeneration{}, PluginDependencies: []storage.PluginDependencyEdge{}, PluginPolicies: []storage.PluginPolicy{{ID: "shared", Stages: []storage.PolicyStage{{
@@ -123,5 +135,30 @@ func TestAgentPluginArtifactRouteRejectsDigestMismatch(t *testing.T) {
 	deps.handleAgentPluginArtifact(response, request)
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("digest mismatch status = %d", response.Code)
+	}
+}
+
+func TestAgentPluginSecretRedemptionRequiresAgentAuthAndStrictGenerationBody(t *testing.T) {
+	secrets := &pluginSecretServiceStub{}
+	deps := Dependencies{AgentService: fakeAgentService{agentsByToken: map[string]service.AgentSummary{"agent-secret": {ID: "edge-1"}}}, PluginSecretService: secrets}
+	body := `{"revision":7,"generation_id":"generation","instance_id":"instance","plugin_id":"plugin","operation_id":"operation","package_digest":"` + strings.Repeat("a", 64) + `","artifact_digest":"` + strings.Repeat("b", 64) + `","handles":[{"id":"secret","version":1,"digest":"` + strings.Repeat("d", 64) + `","purpose":"plugin-config:instance:/token"}]}`
+	unauthorized := httptest.NewRecorder()
+	deps.handleAgentPluginSecretRedemption(unauthorized, httptest.NewRequest(http.MethodPost, "/api/agent-plugin-secrets/redeem", strings.NewReader(body)))
+	if unauthorized.Code != http.StatusUnauthorized || secrets.calls != 0 {
+		t.Fatalf("unauthorized status=%d calls=%d", unauthorized.Code, secrets.calls)
+	}
+	unknown := httptest.NewRecorder()
+	unknownRequest := httptest.NewRequest(http.MethodPost, "/api/agent-plugin-secrets/redeem", strings.NewReader(strings.TrimSuffix(body, "}")+`,"agent_id":"forged"}`))
+	unknownRequest.Header.Set("X-Agent-Token", "agent-secret")
+	deps.handleAgentPluginSecretRedemption(unknown, unknownRequest)
+	if unknown.Code != http.StatusBadRequest || secrets.calls != 0 {
+		t.Fatalf("unknown-field status=%d calls=%d", unknown.Code, secrets.calls)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/agent-plugin-secrets/redeem", strings.NewReader(body))
+	request.Header.Set("X-Agent-Token", "agent-secret")
+	deps.handleAgentPluginSecretRedemption(response, request)
+	if response.Code != http.StatusOK || secrets.calls != 1 || secrets.agentID != "edge-1" || secrets.request.InstanceID != "instance" || strings.Contains(body, `"agent_id"`) || response.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("response=%d %s calls=%d agent=%q request=%+v headers=%v", response.Code, response.Body.String(), secrets.calls, secrets.agentID, secrets.request, response.Header())
 	}
 }

@@ -62,12 +62,20 @@ func (generationTestSandbox) Configure(*exec.Cmd, pluginprocess.Security) (func(
 
 func TestHostCandidatePreservesProviderGenerationAndAgentIdentity(t *testing.T) {
 	generation := rpcPluginGenerationForTest(t, t.TempDir(), 7, "operation-7")
+	generation.SecretHandles = []model.PluginSecretHandle{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:" + generation.InstanceID + ":/token"}}
 	candidate, err := hostCandidateFromGeneration(generation, "module-generation-context")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if candidate.Generation != "module-generation-context" || candidate.ProviderGenerationID != generation.ID || candidate.AgentID != generation.Target.ID || candidate.Revision != generation.Revision || candidate.InstanceID != generation.InstanceID || candidate.PackageDigest != generation.PackageDigest || candidate.Artifact.SHA256 != generation.Artifact.SHA256 {
 		t.Fatalf("host candidate identity = %+v, generation = %+v", candidate, generation)
+	}
+	if len(candidate.SecretHandles) != 1 || candidate.SecretHandles[0] != generation.SecretHandles[0] {
+		t.Fatalf("host candidate secret fence = %+v", candidate.SecretHandles)
+	}
+	generation.SecretHandles[0].ID = "mutated"
+	if candidate.SecretHandles[0].ID != "secret-a" {
+		t.Fatal("host candidate secret handles alias the snapshot projection")
 	}
 }
 

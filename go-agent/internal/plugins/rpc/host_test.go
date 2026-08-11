@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -1145,6 +1147,83 @@ func newRestartHostCandidate(t *testing.T, root string) HostCandidate {
 		},
 		Dial: DialConfig{Cookie: "cookie"},
 	}
+}
+
+func TestTransientLifecycleRequestRedeemsExactFenceAndClearsMaterializedConfig(t *testing.T) {
+	secretDigestBytes := sha256.Sum256([]byte(`"s3cr3t"`))
+	secretDigest := hex.EncodeToString(secretDigestBytes[:])
+	enabledDigestBytes := sha256.Sum256([]byte(`true`))
+	enabledDigest := hex.EncodeToString(enabledDigestBytes[:])
+	redemption := &recordingSecretRedeemer{secrets: []model.PluginRedeemedSecret{
+		{ID: "secret-token", Version: 2, Digest: secretDigest, Purpose: "plugin-config:instance-a:/auth/token", Value: `"s3cr3t"`},
+		{ID: "secret-enabled", Version: 3, Digest: enabledDigest, Purpose: "plugin-config:instance-a:/auth/enabled", Value: `true`},
+	}}
+	candidate := HostCandidate{
+		InstanceID: "instance-a", PluginID: "example.rpc", OperationID: "operation-a", Revision: 7,
+		ProviderGenerationID: "generation-a", PackageDigest: strings.Repeat("a", 64), Generation: "module-generation",
+		Artifact: pluginprocess.Artifact{SHA256: strings.Repeat("b", 64)}, Config: []byte(`{"auth":{"token":"placeholder","enabled":false}}`),
+		SecretHandles: []model.PluginSecretHandle{
+			{ID: "secret-token", Version: 2, Digest: secretDigest, Purpose: "plugin-config:instance-a:/auth/token"},
+			{ID: "secret-enabled", Version: 3, Digest: enabledDigest, Purpose: "plugin-config:instance-a:/auth/enabled"},
+		},
+	}
+	original := append([]byte(nil), candidate.Config...)
+	lifecycle, clear, err := transientLifecycleRequest(t.Context(), redemption, candidate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(lifecycle.Config) != `{"auth":{"enabled":true,"token":"s3cr3t"}}` {
+		t.Fatalf("materialized config = %s", lifecycle.Config)
+	}
+	if string(candidate.Config) != string(original) {
+		t.Fatal("candidate config was mutated with plaintext")
+	}
+	if redemption.request.Revision != 7 || redemption.request.GenerationID != candidate.ProviderGenerationID ||
+		redemption.request.OperationID != candidate.OperationID || redemption.request.ArtifactDigest != candidate.Artifact.SHA256 ||
+		len(redemption.request.Handles) != 2 {
+		t.Fatalf("redemption fence = %+v", redemption.request)
+	}
+	clear()
+	for _, value := range lifecycle.Config {
+		if value != 0 {
+			t.Fatal("materialized lifecycle config was not cleared")
+		}
+	}
+}
+
+func TestTransientLifecycleRequestRejectsUnsafeRedemptionWithoutLeakingValue(t *testing.T) {
+	secret := "never-print-this-secret"
+	candidate := HostCandidate{
+		InstanceID: "instance-a", PluginID: "example.rpc", OperationID: "operation-a", Revision: 7,
+		ProviderGenerationID: "generation-a", PackageDigest: strings.Repeat("a", 64), Generation: "module-generation",
+		Artifact: pluginprocess.Artifact{SHA256: strings.Repeat("b", 64)}, Config: []byte(`{"token":"placeholder"}`),
+		SecretHandles: []model.PluginSecretHandle{{ID: "secret-token", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:instance-a:/token"}},
+	}
+	_, _, err := transientLifecycleRequest(t.Context(), &recordingSecretRedeemer{err: fmt.Errorf("backend accidentally included %s", secret)}, candidate, nil)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unsafe redemption error = %v", err)
+	}
+	mismatch := &recordingSecretRedeemer{secrets: []model.PluginRedeemedSecret{{
+		ID: "secret-token", Version: 99, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:instance-a:/token", Value: `"` + secret + `"`,
+	}}}
+	_, _, err = transientLifecycleRequest(t.Context(), mismatch, candidate, nil)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unsafe fence error = %v", err)
+	}
+	if callErr := pluginLifecycleCallError("prepare", true, fmt.Errorf("guest echoed %s", secret)); strings.Contains(callErr.Error(), secret) {
+		t.Fatalf("guest lifecycle error leaked secret: %v", callErr)
+	}
+}
+
+type recordingSecretRedeemer struct {
+	request model.PluginSecretRedemptionRequest
+	secrets []model.PluginRedeemedSecret
+	err     error
+}
+
+func (r *recordingSecretRedeemer) RedeemPluginSecrets(_ context.Context, request model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	r.request = request
+	return append([]model.PluginRedeemedSecret(nil), r.secrets...), r.err
 }
 
 func nextHostProcess(t *testing.T, started <-chan *hostProcess) *hostProcess {

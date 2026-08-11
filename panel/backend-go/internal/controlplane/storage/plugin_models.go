@@ -378,37 +378,72 @@ type PluginOperationRow struct {
 
 func (PluginOperationRow) TableName() string { return "plugin_operations" }
 
+// PluginOperationScopeRow is the immutable resource ownership projection for
+// one lifecycle operation. A plugin-wide operation has one row per affected
+// instance so scoped readers never infer ownership from mutable instances.
+type PluginOperationScopeRow struct {
+	OperationID     string    `gorm:"primaryKey;size:64" json:"operation_id"`
+	InstanceID      string    `gorm:"primaryKey;size:64" json:"instance_id"`
+	PluginID        string    `gorm:"index;size:190;not null" json:"plugin_id"`
+	ResourceGroupID string    `gorm:"index;size:64;not null" json:"resource_group_id"`
+	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
+}
+
+func (PluginOperationScopeRow) TableName() string { return "plugin_operation_scopes" }
+
+// PluginOperationSecretRow records staging and retirement without retaining
+// plaintext. State advances from staged to active or retired transactionally.
+type PluginOperationSecretRow struct {
+	OperationID string     `gorm:"primaryKey;size:64"`
+	SecretID    string     `gorm:"primaryKey;size:64"`
+	InstanceID  string     `gorm:"index;size:64;not null"`
+	Role        string     `gorm:"size:16;not null"`
+	State       string     `gorm:"index;size:16;not null"`
+	CreatedAt   time.Time  `gorm:"not null"`
+	RetiredAt   *time.Time `gorm:"index"`
+}
+
+func (PluginOperationSecretRow) TableName() string { return "plugin_operation_secrets" }
+
 // PluginAgentRuntimeStatusRow is the durable, ownership-fenced view of one
 // target Agent applying one plugin instance operation. Historical operations
 // remain queryable and cannot be advanced by a report for another generation.
 type PluginAgentRuntimeStatusRow struct {
-	OperationID    string     `gorm:"primaryKey;size:64" json:"operation_id"`
-	AgentID        string     `gorm:"primaryKey;size:64" json:"agent_id"`
-	InstanceID     string     `gorm:"primaryKey;size:64" json:"instance_id"`
-	PluginID       string     `gorm:"index;size:190;not null" json:"plugin_id"`
-	Revision       int64      `gorm:"index;not null" json:"revision"`
-	GenerationID   string     `gorm:"size:64;not null" json:"generation_id"`
-	PackageDigest  string     `gorm:"size:64;not null" json:"package_digest"`
-	ArtifactDigest string     `gorm:"size:64;not null" json:"artifact_digest"`
-	ConfigVersion  uint64     `gorm:"not null;default:0" json:"config_version"`
-	State          string     `gorm:"index;size:32;not null" json:"state"`
-	ReportSequence uint64     `gorm:"not null;default:0" json:"report_sequence"`
-	ReportDigest   string     `gorm:"size:64;not null;default:''" json:"-"`
-	ErrorCode      string     `gorm:"size:128;not null;default:''" json:"error_code,omitempty"`
-	DetailsJSON    string     `gorm:"type:text;not null;default:'{}'" json:"details"`
-	BudgetJSON     string     `gorm:"type:text;not null;default:'{}'" json:"budget"`
-	ReportedAt     *time.Time `gorm:"index" json:"reported_at,omitempty"`
-	UpdatedAt      time.Time  `gorm:"not null" json:"updated_at"`
+	OperationID     string     `gorm:"primaryKey;size:64" json:"operation_id"`
+	AgentID         string     `gorm:"primaryKey;size:64" json:"agent_id"`
+	InstanceID      string     `gorm:"primaryKey;size:64" json:"instance_id"`
+	PluginID        string     `gorm:"index;size:190;not null" json:"plugin_id"`
+	ResourceGroupID string     `gorm:"index;size:64;not null;default:''" json:"resource_group_id"`
+	TargetVersion   uint64     `gorm:"not null;default:0" json:"target_version"`
+	Revision        int64      `gorm:"index;not null" json:"revision"`
+	GenerationID    string     `gorm:"size:64;not null" json:"generation_id"`
+	PackageDigest   string     `gorm:"size:64;not null" json:"package_digest"`
+	ArtifactDigest  string     `gorm:"size:64;not null" json:"artifact_digest"`
+	ConfigVersion   uint64     `gorm:"not null;default:0" json:"config_version"`
+	State           string     `gorm:"index;size:32;not null" json:"state"`
+	ReportSequence  uint64     `gorm:"not null;default:0" json:"report_sequence"`
+	ReportDigest    string     `gorm:"size:64;not null;default:''" json:"-"`
+	ErrorCode       string     `gorm:"size:128;not null;default:''" json:"error_code,omitempty"`
+	DetailsJSON     string     `gorm:"type:text;not null;default:'{}'" json:"details"`
+	BudgetJSON      string     `gorm:"type:text;not null;default:'{}'" json:"budget"`
+	ReportedAt      *time.Time `gorm:"index" json:"reported_at,omitempty"`
+	UpdatedAt       time.Time  `gorm:"not null" json:"updated_at"`
 }
 
 func (PluginAgentRuntimeStatusRow) TableName() string { return "plugin_agent_runtime_statuses" }
 
 type PluginRuntimeLogRow struct {
 	ID              uint64    `gorm:"primaryKey;autoIncrement" json:"-"`
+	EventID         *string   `gorm:"uniqueIndex;size:64" json:"-"`
 	InstanceID      string    `gorm:"index;size:64;not null" json:"instance_id"`
 	PluginID        string    `gorm:"index;size:190;not null" json:"plugin_id"`
 	AgentID         string    `gorm:"index;size:64;not null" json:"agent_id"`
 	ResourceGroupID string    `gorm:"index;size:64;not null" json:"resource_group_id"`
+	OperationID     string    `gorm:"index;size:64;not null;default:''" json:"operation_id"`
+	GenerationID    string    `gorm:"index;size:128;not null;default:''" json:"generation_id"`
+	Revision        int64     `gorm:"not null;default:0" json:"revision"`
+	PackageDigest   string    `gorm:"size:64;not null;default:''" json:"-"`
+	ArtifactDigest  string    `gorm:"size:64;not null;default:''" json:"-"`
 	Level           string    `gorm:"size:16;not null" json:"level"`
 	Message         string    `gorm:"type:text;not null" json:"message"`
 	Truncated       bool      `gorm:"not null;default:false" json:"truncated"`
@@ -416,6 +451,24 @@ type PluginRuntimeLogRow struct {
 }
 
 func (PluginRuntimeLogRow) TableName() string { return "plugin_runtime_logs" }
+
+type PluginControlPlaneLogOutboxRow struct {
+	EventID         string    `gorm:"primaryKey;size:64"`
+	InstanceID      string    `gorm:"index;size:64;not null"`
+	PluginID        string    `gorm:"index;size:190;not null"`
+	OperationID     string    `gorm:"index;size:64;not null"`
+	GenerationID    string    `gorm:"index;size:128;not null"`
+	ResourceGroupID string    `gorm:"index;size:64;not null"`
+	Revision        int64     `gorm:"not null"`
+	PackageDigest   string    `gorm:"size:64;not null"`
+	ArtifactDigest  string    `gorm:"size:64;not null"`
+	Level           string    `gorm:"size:16;not null"`
+	Message         string    `gorm:"type:text;not null"`
+	Truncated       bool      `gorm:"not null;default:false"`
+	CreatedAt       time.Time `gorm:"index;not null"`
+}
+
+func (PluginControlPlaneLogOutboxRow) TableName() string { return "plugin_control_plane_log_outbox" }
 
 // PluginRuntimeLogReportRow is the authenticated replay fence for one Agent
 // runtime generation. Log fragments are stored separately only after the

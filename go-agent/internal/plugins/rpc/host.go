@@ -2,15 +2,20 @@ package rpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -68,6 +73,9 @@ func (h *Host) PlanAction(ctx context.Context, id, generation string, request pl
 }
 
 type DialFunc func(context.Context, DialConfig) (LifecycleClient, io.Closer, error)
+type SecretRedeemer interface {
+	RedeemPluginSecrets(context.Context, model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error)
+}
 type closeFunc func() error
 
 func (fn closeFunc) Close() error { return fn() }
@@ -79,6 +87,7 @@ type HostCandidate struct {
 	Artifact                                                                    pluginprocess.Artifact
 	Requirement                                                                 pluginprocess.SandboxRequirement
 	Scopes                                                                      []string
+	SecretHandles                                                               []model.PluginSecretHandle
 	Restart                                                                     string
 	Config                                                                      []byte
 	Process                                                                     pluginprocess.InstanceSpec
@@ -120,6 +129,7 @@ type HostedInstance struct {
 	supervisor     *pluginprocess.Supervisor
 	dial           DialFunc
 	provision      func(string, DialConfig) (attemptSecurity, error)
+	redeemer       SecretRedeemer
 	attempt        *hostAttempt
 	status         RuntimeStatus
 	exits          []time.Time
@@ -149,6 +159,7 @@ type Host struct {
 	supervisor     *pluginprocess.Supervisor
 	dial           DialFunc
 	provision      func(string, DialConfig) (attemptSecurity, error)
+	redeemer       SecretRedeemer
 	active         map[string]*HostedInstance
 	pending        map[*HostedInstance]struct{}
 	locks          sync.Map
@@ -176,6 +187,33 @@ func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Superv
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, provision: provisionAttemptSecurity, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
+}
+
+func (h *Host) SetSecretRedeemer(redeemer SecretRedeemer) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.redeemer = redeemer
+	h.mu.Unlock()
+}
+
+func (h *Host) SecretRedemptionReady() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.redeemer != nil
+}
+
+func (h *Host) secretRedeemer() SecretRedeemer {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.redeemer
 }
 
 func (h *Host) instanceLock(id string) *sync.Mutex {
@@ -235,6 +273,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		supervisor: h.supervisor,
 		dial:       h.dial,
 		provision:  h.provision,
+		redeemer:   h.secretRedeemer(),
 		status: RuntimeStatus{
 			InstanceID: candidate.InstanceID,
 			Generation: candidate.Generation,
@@ -357,7 +396,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*
 	}
 	runCtx, cancel := context.WithCancel(hostCtx)
 	instance := &HostedInstance{
-		candidate: candidate, supervisor: h.supervisor, dial: h.dial, provision: h.provision,
+		candidate: candidate, supervisor: h.supervisor, dial: h.dial, provision: h.provision, redeemer: h.secretRedeemer(),
 		status: RuntimeStatus{InstanceID: candidate.InstanceID, Generation: candidate.Generation, OperationID: candidate.OperationID,
 			Revision: candidate.Revision, PackageDigest: candidate.PackageDigest, State: "preparing"},
 		backoff: candidate.Process.InitialBackoff, cancel: cancel, done: make(chan struct{}), runContext: runCtx,
@@ -420,12 +459,17 @@ func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedIn
 	attempt := instance.attempt
 	candidate := instance.candidate
 	instance.mu.Unlock()
-	response, err := attempt.client.Activate(ctx, pluginsdk.LifecycleRequest{Generation: candidate.Generation, Config: append([]byte(nil), candidate.Config...)})
+	lifecycle, clearLifecycle, err := transientLifecycleRequest(ctx, instance.redeemer, candidate, attempt.handle)
 	if err != nil {
-		return fmt.Errorf("Agent RPC plugin activate: %w", err)
+		return err
+	}
+	response, err := attempt.client.Activate(ctx, lifecycle)
+	clearLifecycle()
+	if err != nil {
+		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 	}
 	if err := response.Validate(); err != nil {
-		return fmt.Errorf("Agent RPC plugin activate: %w", err)
+		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 	}
 	if err := processAttemptError(attempt.handle); err != nil {
 		return err
@@ -532,6 +576,7 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 }
 
 func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt), activate bool) (*hostAttempt, error) {
+	redeemer := h.secretRedeemer()
 	provision := h.provision
 	if provision == nil {
 		provision = provisionAttemptSecurity
@@ -599,27 +644,246 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	if err := ValidateHandshake(handshake, response); err != nil {
 		return attempt, err
 	}
-	lifecycle := pluginsdk.LifecycleRequest{Generation: candidate.Generation, Config: append([]byte(nil), candidate.Config...)}
-	prepared, err := client.Prepare(ctx, lifecycle)
+	lifecycle, clearLifecycle, err := transientLifecycleRequest(ctx, redeemer, candidate, handle)
 	if err != nil {
-		return attempt, fmt.Errorf("Agent RPC plugin prepare: %w", err)
+		return attempt, err
+	}
+	prepared, err := client.Prepare(ctx, lifecycle)
+	clearLifecycle()
+	if err != nil {
+		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
 	}
 	if err := prepared.Validate(); err != nil {
-		return attempt, fmt.Errorf("Agent RPC plugin prepare: %w", err)
+		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
 	}
 	if activate {
-		activated, err := client.Activate(ctx, lifecycle)
+		lifecycle, clearLifecycle, err = transientLifecycleRequest(ctx, redeemer, candidate, handle)
 		if err != nil {
-			return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
+			return attempt, err
+		}
+		activated, err := client.Activate(ctx, lifecycle)
+		clearLifecycle()
+		if err != nil {
+			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 		}
 		if err := activated.Validate(); err != nil {
-			return attempt, fmt.Errorf("Agent RPC plugin activate: %w", err)
+			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 		}
 	}
 	if err := processAttemptError(handle); err != nil {
 		return attempt, err
 	}
 	return attempt, nil
+}
+
+func pluginLifecycleCallError(phase string, transientSecrets bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	if transientSecrets {
+		return fmt.Errorf("Agent RPC plugin %s failed", phase)
+	}
+	return fmt.Errorf("Agent RPC plugin %s: %w", phase, err)
+}
+
+func transientLifecycleRequest(ctx context.Context, redeemer SecretRedeemer, candidate HostCandidate, handle *pluginprocess.Handle) (pluginsdk.LifecycleRequest, func(), error) {
+	config := append([]byte(nil), candidate.Config...)
+	clear := func() {
+		for index := range config {
+			config[index] = 0
+		}
+	}
+	if len(candidate.SecretHandles) == 0 {
+		return pluginsdk.LifecycleRequest{Generation: candidate.Generation, Config: config}, clear, nil
+	}
+	if redeemer == nil || candidate.Revision <= 0 {
+		clear()
+		return pluginsdk.LifecycleRequest{}, func() {}, errors.New("Agent RPC plugin secret redeemer is unavailable")
+	}
+	secrets, err := redeemer.RedeemPluginSecrets(ctx, model.PluginSecretRedemptionRequest{
+		Revision: uint64(candidate.Revision), GenerationID: candidate.ProviderGenerationID, InstanceID: candidate.InstanceID,
+		PluginID: candidate.PluginID, OperationID: candidate.OperationID, PackageDigest: candidate.PackageDigest,
+		ArtifactDigest: candidate.Artifact.SHA256, Handles: append([]model.PluginSecretHandle(nil), candidate.SecretHandles...),
+	})
+	if err != nil {
+		clear()
+		return pluginsdk.LifecycleRequest{}, func() {}, errors.New("Agent RPC plugin secret redemption failed")
+	}
+	values, materialized, err := materializePluginConfigSecrets(config, candidate.InstanceID, candidate.SecretHandles, secrets)
+	for index := range secrets {
+		secrets[index].Value = ""
+	}
+	clear()
+	if err != nil {
+		for index := range materialized {
+			materialized[index] = 0
+		}
+		return pluginsdk.LifecycleRequest{}, func() {}, err
+	}
+	config = materialized
+	handle.AddSensitiveValues(values)
+	clear = func() {
+		handle.ClearSensitiveValues(values)
+		for index := range values {
+			values[index] = ""
+		}
+		for index := range config {
+			config[index] = 0
+		}
+	}
+	return pluginsdk.LifecycleRequest{Generation: candidate.Generation, Config: config}, clear, nil
+}
+
+func materializePluginConfigSecrets(config []byte, instanceID string, handles []model.PluginSecretHandle, secrets []model.PluginRedeemedSecret) ([]string, []byte, error) {
+	if len(handles) == 0 || len(secrets) != len(handles) {
+		return nil, nil, errors.New("Agent RPC plugin secret response does not match signed handles")
+	}
+	expected := make(map[string]model.PluginSecretHandle, len(handles))
+	for _, handle := range handles {
+		expected[handle.ID] = handle
+	}
+	resolved := make(map[string]model.PluginRedeemedSecret, len(secrets))
+	for _, secret := range secrets {
+		handle, ok := expected[secret.ID]
+		valueDigest := sha256.Sum256([]byte(secret.Value))
+		if !ok || secret.Version != handle.Version || secret.Digest != handle.Digest || secret.Purpose != handle.Purpose ||
+			hex.EncodeToString(valueDigest[:]) != handle.Digest {
+			return nil, nil, errors.New("Agent RPC plugin secret response fence mismatch")
+		}
+		if _, duplicate := resolved[secret.ID]; duplicate {
+			return nil, nil, errors.New("Agent RPC plugin secret response duplicates a handle")
+		}
+		resolved[secret.ID] = secret
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(config)))
+	decoder.UseNumber()
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return nil, nil, errors.New("Agent RPC plugin config cannot receive secrets")
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, nil, errors.New("Agent RPC plugin config cannot receive secrets")
+	}
+	values := make([]string, 0, len(handles))
+	for _, handle := range handles {
+		secret, ok := resolved[handle.ID]
+		if !ok {
+			return nil, nil, errors.New("Agent RPC plugin secret response is incomplete")
+		}
+		prefix := "plugin-config:" + instanceID + ":"
+		pointer := strings.TrimPrefix(handle.Purpose, prefix)
+		secretValue, err := decodeRedeemedPluginSecretValue(secret.Value)
+		if err != nil || pointer == handle.Purpose || setPluginConfigJSONPointer(document, pointer, secretValue) != nil {
+			return nil, nil, errors.New("Agent RPC plugin secret purpose is invalid")
+		}
+		values = append(values, secret.Value)
+		collectPluginSecretStrings(secretValue, &values)
+	}
+	materialized, err := json.Marshal(document)
+	if err != nil {
+		return nil, nil, errors.New("Agent RPC plugin config secret materialization failed")
+	}
+	return values, materialized, nil
+}
+
+func decodeRedeemedPluginSecretValue(value string) (any, error) {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, errors.New("redeemed secret contains trailing JSON")
+	}
+	canonical, err := json.Marshal(decoded)
+	if err != nil || string(canonical) != value {
+		return nil, errors.New("redeemed secret is not canonical JSON")
+	}
+	return decoded, nil
+}
+
+func collectPluginSecretStrings(value any, target *[]string) {
+	switch typed := value.(type) {
+	case string:
+		*target = append(*target, typed)
+	case []any:
+		for _, child := range typed {
+			collectPluginSecretStrings(child, target)
+		}
+	case map[string]any:
+		for _, child := range typed {
+			collectPluginSecretStrings(child, target)
+		}
+	}
+}
+
+func setPluginConfigJSONPointer(document any, pointer string, value any) error {
+	if pointer == "" || pointer[0] != '/' {
+		return errors.New("invalid JSON pointer")
+	}
+	parts := strings.Split(pointer[1:], "/")
+	for index := range parts {
+		decoded, err := decodePluginConfigPointerToken(parts[index])
+		if err != nil {
+			return err
+		}
+		parts[index] = decoded
+	}
+	current := document
+	for index, part := range parts {
+		last := index == len(parts)-1
+		switch typed := current.(type) {
+		case map[string]any:
+			next, exists := typed[part]
+			if !exists {
+				return errors.New("JSON pointer target is missing")
+			}
+			if last {
+				typed[part] = value
+				return nil
+			}
+			current = next
+		case []any:
+			if part == "" || (len(part) > 1 && part[0] == '0') {
+				return errors.New("JSON pointer array index is non-canonical")
+			}
+			position, err := strconv.Atoi(part)
+			if err != nil || position < 0 || position >= len(typed) {
+				return errors.New("JSON pointer array index is invalid")
+			}
+			if last {
+				typed[position] = value
+				return nil
+			}
+			current = typed[position]
+		default:
+			return errors.New("JSON pointer crosses a scalar")
+		}
+	}
+	return errors.New("JSON pointer target is invalid")
+}
+
+func decodePluginConfigPointerToken(token string) (string, error) {
+	var result strings.Builder
+	for index := 0; index < len(token); index++ {
+		if token[index] != '~' {
+			result.WriteByte(token[index])
+			continue
+		}
+		if index+1 >= len(token) || (token[index+1] != '0' && token[index+1] != '1') {
+			return "", errors.New("JSON pointer escape is invalid")
+		}
+		index++
+		if token[index] == '0' {
+			result.WriteByte('~')
+		} else {
+			result.WriteByte('/')
+		}
+	}
+	return result.String(), nil
 }
 
 func retryAgentHandshake(ctx context.Context, deadline time.Duration, handle *pluginprocess.Handle, client LifecycleClient, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
@@ -1012,7 +1276,7 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.State = "starting"
 			i.mu.Unlock()
 
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, afterStartOnce: i.afterStartOnce}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()

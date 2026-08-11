@@ -167,6 +167,10 @@ type AgentPluginArtifactService interface {
 	ResolveAgentPluginArtifact(context.Context, string, int64, string, string) (service.AgentPluginArtifact, error)
 }
 
+type AgentPluginSecretService interface {
+	RedeemAgentPluginSecrets(context.Context, string, service.PluginSecretRedemptionRequest) (service.PluginSecretRedemptionResponse, error)
+}
+
 type PluginCapabilityAPI interface {
 	InvokeDynamicAction(context.Context, service.PluginDynamicActionRequest) (service.PluginDynamicActionResult, error)
 }
@@ -189,6 +193,7 @@ type Dependencies struct {
 	MarketplaceService           MarketplaceAPI
 	PluginService                PluginAPI
 	PluginArtifactService        AgentPluginArtifactService
+	PluginSecretService          AgentPluginSecretService
 	PluginCapabilityService      PluginCapabilityAPI
 	PluginRuntimeHost            *service.PluginRuntimeHost
 	AccessManager                *authz.Manager
@@ -374,6 +379,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agent-revisions/{revision}/start", http.HandlerFunc(resolved.handleRemoteRevisionStart))
 		mux.Handle(prefix+"/agent-revisions/{revision}/report", http.HandlerFunc(resolved.handleRemoteRevisionReport))
 		mux.Handle(prefix+"/agent-plugin-artifacts/{artifactID}", http.HandlerFunc(resolved.handleAgentPluginArtifact))
+		mux.Handle(prefix+"/agent-plugin-secrets/redeem", http.HandlerFunc(resolved.handleAgentPluginSecretRedemption))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
 		mux.Handle(prefix+"/agents/task-stream", http.HandlerFunc(resolved.handleAgentTaskStream))
 		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
@@ -653,6 +659,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.PluginService == nil {
 		pluginService := service.NewPluginServiceWithValidator(store, validator, cacheRoot)
 		pluginService.SetSecretVault(d.SecretVault)
+		if err := pluginService.MigrateLegacyWriteOnlySecrets(context.Background()); err != nil {
+			return Dependencies{}, fmt.Errorf("migrate legacy plugin writeOnly secrets: %w", err)
+		}
 		pluginService.ConfigureRevisionMutations(d.Config, store)
 		if revisionAPI, ok := d.RevisionService.(*service.RevisionAPI); ok {
 			reconciler, reconcileErr := service.NewPluginLifecycleReconciler(store, pluginService)
@@ -666,9 +675,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 		d.PluginService = pluginService
 		d.PluginArtifactService = pluginService
+		d.PluginSecretService = pluginService
 	} else if d.PluginArtifactService == nil {
 		if artifactService, ok := d.PluginService.(AgentPluginArtifactService); ok {
 			d.PluginArtifactService = artifactService
+		}
+	}
+	if d.PluginSecretService == nil {
+		if secretService, ok := d.PluginService.(AgentPluginSecretService); ok {
+			d.PluginSecretService = secretService
 		}
 	}
 	if d.PluginCapabilityService == nil && d.PluginRuntimeHost != nil && d.AccessManager != nil {

@@ -3072,6 +3072,65 @@ type PluginSecretWrite struct {
 	Audit   AuditEventRow
 }
 
+func (s *GormStore) MigrateLegacyPluginInstanceSecrets(ctx context.Context, expectedStateVersion uint64, instance PluginInstanceRow, writes []PluginSecretWrite) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var current PluginInstanceRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND plugin_id = ?", instance.ID, instance.PluginID).First(&current).Error; err != nil {
+			return err
+		}
+		if current.StateVersion != expectedStateVersion {
+			return ErrPluginConflict
+		}
+		for _, write := range writes {
+			if write.Secret.ID == "" || write.Version.SecretID != write.Secret.ID || write.Version.Version != write.Secret.ActiveVersion {
+				return errors.New("legacy plugin secret migration identity is invalid")
+			}
+			if err := tx.Create(&write.Secret).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(&write.Version).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(&write.Audit).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&PluginInstanceRow{}).Where("id = ? AND state_version = ?", instance.ID, expectedStateVersion).Updates(map[string]any{
+			"config_json": instance.ConfigJSON, "secret_handles_json": instance.SecretHandlesJSON,
+			"pending_config_json": instance.PendingConfigJSON, "pending_secret_handles_json": instance.PendingSecretHandlesJSON,
+			"rollback_config_json": instance.RollbackConfigJSON, "rollback_secret_handles_json": instance.RollbackSecretHandlesJSON,
+			"state_version": expectedStateVersion + 1, "updated_at": instance.UpdatedAt,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrPluginConflict
+		}
+		activeIDs := make(map[string]struct{})
+		var activeHandles []PluginInstanceSecretHandle
+		if err := json.Unmarshal([]byte(pluginDefaultArrayJSON(instance.SecretHandlesJSON)), &activeHandles); err != nil {
+			return err
+		}
+		for _, handle := range activeHandles {
+			activeIDs[handle.ID] = struct{}{}
+		}
+		migrationDigest := sha256.Sum256([]byte(instance.PluginID + "\x00" + instance.ID))
+		operationID := "migration-" + fmt.Sprintf("%x", migrationDigest[:])[:54]
+		for _, write := range writes {
+			state := "staged"
+			if _, active := activeIDs[write.Secret.ID]; active {
+				state = "active"
+			}
+			row := PluginOperationSecretRow{OperationID: operationID, SecretID: write.Secret.ID, InstanceID: instance.ID, Role: state, State: state, CreatedAt: instance.UpdatedAt}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMutation) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		scoped := s.transactionView(tx)
@@ -3110,6 +3169,13 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 		if err := tx.Create(&write.Audit).Error; err != nil {
 			return err
 		}
+		ownership := PluginOperationSecretRow{OperationID: mutation.Operation.ID, SecretID: write.Secret.ID, InstanceID: pluginSecretInstanceID(write.Secret.Purpose), Role: "staged", State: "staged", CreatedAt: mutation.Operation.CreatedAt}
+		if ownership.InstanceID == "" || ownership.OperationID == "" {
+			return errors.New("plugin staged secret ownership is invalid")
+		}
+		if err := tx.Create(&ownership).Error; err != nil {
+			return err
+		}
 	}
 	if mutation.RequireAcquisition {
 		if mutation.Package == nil {
@@ -3125,6 +3191,23 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 			return ErrPluginNotInstalled
 		}
 		return err
+	}
+	secretCandidates, err := pluginSecretIDsForPluginTx(tx, mutation.PluginID)
+	if err != nil {
+		return err
+	}
+	for _, write := range mutation.SecretWrites {
+		secretCandidates[write.Secret.ID] = pluginSecretInstanceID(write.Secret.Purpose)
+	}
+	operationScopes, err := pluginOperationScopesForPluginTx(tx, mutation.PluginID, mutation.Operation)
+	if err != nil {
+		return err
+	}
+	if mutation.ReplaceInstance != nil {
+		operationScopes = mergePluginOperationScope(operationScopes, *mutation.ReplaceInstance, mutation.Operation)
+	}
+	for _, replacement := range mutation.ReplaceInstances {
+		operationScopes = mergePluginOperationScope(operationScopes, replacement, mutation.Operation)
 	}
 	if mutation.ExpectedActive != "" && current.ActivePackageDigest != mutation.ExpectedActive {
 		return fmt.Errorf("%w: active plugin package changed concurrently", ErrPluginConflict)
@@ -3218,6 +3301,9 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 			}
 		}
 	}
+	if err := reconcilePluginSecretOwnershipTx(tx, mutation, secretCandidates); err != nil {
+		return err
+	}
 	if mutation.CompleteOperation {
 		var storedOperation PluginOperationRow
 		if err := tx.Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).First(&storedOperation).Error; err != nil {
@@ -3251,7 +3337,133 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 		}
 		return tx.Create(&mutation.Audit).Error
 	}
-	return createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit)
+	if err := createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit); err != nil {
+		return err
+	}
+	return persistPluginOperationScopesTx(tx, mutation.Operation, operationScopes)
+}
+
+func pluginSecretIDsForPluginTx(tx *gorm.DB, pluginID string) (map[string]string, error) {
+	var instances []PluginInstanceRow
+	if err := tx.Where("plugin_id = ?", pluginID).Find(&instances).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	for _, instance := range instances {
+		for _, raw := range []string{instance.SecretHandlesJSON, instance.PendingSecretHandlesJSON, instance.RollbackSecretHandlesJSON} {
+			var handles []PluginInstanceSecretHandle
+			if err := json.Unmarshal([]byte(pluginDefaultArrayJSON(raw)), &handles); err != nil {
+				return nil, fmt.Errorf("plugin instance %s secret handles are invalid: %w", instance.ID, err)
+			}
+			for _, handle := range handles {
+				if handle.ID == "" {
+					return nil, fmt.Errorf("plugin instance %s secret handle identity is empty", instance.ID)
+				}
+				result[handle.ID] = instance.ID
+			}
+		}
+	}
+	return result, nil
+}
+
+func pluginSecretInstanceID(purpose string) string {
+	const prefix = "plugin-config:"
+	if !strings.HasPrefix(purpose, prefix) {
+		return ""
+	}
+	remainder := strings.TrimPrefix(purpose, prefix)
+	if separator := strings.IndexByte(remainder, ':'); separator > 0 {
+		return remainder[:separator]
+	}
+	return ""
+}
+
+func reconcilePluginSecretOwnershipTx(tx *gorm.DB, mutation PluginMutation, candidates map[string]string) error {
+	current, err := pluginSecretIDsForPluginTx(tx, mutation.PluginID)
+	if err != nil {
+		return err
+	}
+	active := make(map[string]struct{})
+	var instances []PluginInstanceRow
+	if err := tx.Where("plugin_id = ?", mutation.PluginID).Find(&instances).Error; err != nil {
+		return err
+	}
+	for _, instance := range instances {
+		var handles []PluginInstanceSecretHandle
+		if err := json.Unmarshal([]byte(pluginDefaultArrayJSON(instance.SecretHandlesJSON)), &handles); err != nil {
+			return err
+		}
+		for _, handle := range handles {
+			active[handle.ID] = struct{}{}
+		}
+	}
+	now := mutation.Operation.CreatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for id, instanceID := range candidates {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if _, referenced := current[id]; referenced {
+			state := "staged"
+			if _, promoted := active[id]; promoted {
+				state = "active"
+			}
+			if err := tx.Model(&PluginOperationSecretRow{}).Where("operation_id = ? AND secret_id = ?", mutation.Operation.ID, id).Updates(map[string]any{"state": state}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		if err := tx.Model(&SecretVersionRow{}).Where("secret_id = ? AND destroyed_at IS NULL", id).Updates(map[string]any{"destroyed_at": now, "nonce": []byte{}, "ciphertext": []byte{}}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&SecretRow{}).Where("id = ? AND retired_at IS NULL", id).Update("retired_at", now).Error; err != nil {
+			return err
+		}
+		row := PluginOperationSecretRow{OperationID: mutation.Operation.ID, SecretID: id, InstanceID: instanceID, Role: "retired", State: "retired", CreatedAt: now, RetiredAt: &now}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "operation_id"}, {Name: "secret_id"}}, DoUpdates: clause.AssignmentColumns([]string{"role", "state", "retired_at"})}).Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pluginOperationScopesForPluginTx(tx *gorm.DB, pluginID string, operation PluginOperationRow) ([]PluginOperationScopeRow, error) {
+	if operation.InstanceID != "" && operation.ResourceGroupID != "" {
+		return []PluginOperationScopeRow{{OperationID: operation.ID, InstanceID: operation.InstanceID, PluginID: pluginID, ResourceGroupID: operation.ResourceGroupID, CreatedAt: operation.CreatedAt}}, nil
+	}
+	var instances []PluginInstanceRow
+	if err := tx.Where("plugin_id = ?", pluginID).Find(&instances).Error; err != nil {
+		return nil, err
+	}
+	rows := make([]PluginOperationScopeRow, 0, len(instances)+1)
+	for _, instance := range instances {
+		rows = mergePluginOperationScope(rows, instance, operation)
+	}
+	return rows, nil
+}
+
+func mergePluginOperationScope(rows []PluginOperationScopeRow, instance PluginInstanceRow, operation PluginOperationRow) []PluginOperationScopeRow {
+	if instance.ID == "" || instance.ResourceGroupID == "" || instance.PluginID != operation.PluginID {
+		return rows
+	}
+	for _, row := range rows {
+		if row.InstanceID == instance.ID {
+			return rows
+		}
+	}
+	return append(rows, PluginOperationScopeRow{OperationID: operation.ID, InstanceID: instance.ID, PluginID: operation.PluginID, ResourceGroupID: instance.ResourceGroupID, CreatedAt: operation.CreatedAt})
+}
+
+func persistPluginOperationScopesTx(tx *gorm.DB, operation PluginOperationRow, rows []PluginOperationScopeRow) error {
+	if operation.InstanceID != "" && operation.ResourceGroupID != "" {
+		rows = mergePluginOperationScope(rows, PluginInstanceRow{ID: operation.InstanceID, PluginID: operation.PluginID, ResourceGroupID: operation.ResourceGroupID}, operation)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
 func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []PluginArtifactRow) error {
@@ -3688,11 +3900,20 @@ func (s *GormStore) ListPluginOperations(ctx context.Context, pluginID string) (
 	return rows, err
 }
 
+func (s *GormStore) ListPluginOperationScopes(ctx context.Context, pluginID string) ([]PluginOperationScopeRow, error) {
+	var rows []PluginOperationScopeRow
+	err := s.db.WithContext(ctx).Where("plugin_id = ?", pluginID).Order("operation_id, instance_id").Find(&rows).Error
+	return rows, err
+}
+
 func createPluginOperationAndAudit(tx *gorm.DB, operation PluginOperationRow, audit AuditEventRow) error {
 	if err := preparePluginOperationForWriteTx(tx, &operation); err != nil {
 		return err
 	}
 	if err := tx.Create(&operation).Error; err != nil {
+		return err
+	}
+	if err := persistPluginOperationScopesTx(tx, operation, nil); err != nil {
 		return err
 	}
 	return tx.Create(&audit).Error
@@ -3790,6 +4011,13 @@ func backfillMarketplaceSignatureTrust(ctx context.Context, db *gorm.DB) error {
 func pluginDefaultJSON(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "{}"
+	}
+	return value
+}
+
+func pluginDefaultArrayJSON(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "[]"
 	}
 	return value
 }

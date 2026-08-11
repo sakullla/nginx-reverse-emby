@@ -43,8 +43,14 @@ func TestPluginRuntimeLogReportFencesOwnershipSequenceAndReplay(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
-	instance := PluginInstanceRow{ID: "instance", PluginID: "official.rpc", ResourceGroupID: "group-a", TargetJSON: `["edge-a"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{}`, PendingConfigJSON: ``, PendingTargetJSON: ``, PendingPolicyChainsJSON: `[]`, PendingBindingsJSON: `[]`, PendingSecretHandlesJSON: `[]`, RollbackConfigJSON: ``, RollbackPolicyChainsJSON: `[]`, RollbackBindingsJSON: `[]`, RollbackSecretHandlesJSON: `[]`, CurrentState: "active", StatusSummaryJSON: `{}`, UpdatedAt: now}
-	status := PluginAgentRuntimeStatusRow{OperationID: "operation", AgentID: "edge-a", InstanceID: instance.ID, PluginID: instance.PluginID, Revision: 7, GenerationID: "generation-7", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), State: "active", UpdatedAt: now}
+	instance := PluginInstanceRow{ID: "instance", PluginID: "official.rpc", ResourceGroupID: "group-a", TargetJSON: `["edge-a"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{}`, ConfigVersion: 1, PendingConfigJSON: ``, PendingTargetJSON: ``, PendingPolicyChainsJSON: `[]`, PendingBindingsJSON: `[]`, PendingSecretHandlesJSON: `[]`, RollbackConfigJSON: ``, RollbackPolicyChainsJSON: `[]`, RollbackBindingsJSON: `[]`, RollbackSecretHandlesJSON: `[]`, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, UpdatedAt: now}
+	status := PluginAgentRuntimeStatusRow{OperationID: "operation", AgentID: "edge-a", InstanceID: instance.ID, PluginID: instance.PluginID, ResourceGroupID: instance.ResourceGroupID, TargetVersion: instance.ConfigVersion, ConfigVersion: instance.ConfigVersion, Revision: 7, GenerationID: "generation-7", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), State: "active", UpdatedAt: now}
+	if err := store.db.Create(&AgentRow{ID: "edge-a", Name: "edge", AgentToken: "token"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&InstalledPluginRow{PluginID: instance.PluginID, ActivePackageDigest: status.PackageDigest, ActivePackageIdentity: status.PackageDigest, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: status.OperationID, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := store.db.Create(&instance).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -70,5 +76,68 @@ func TestPluginRuntimeLogReportFencesOwnershipSequenceAndReplay(t *testing.T) {
 	report.AgentID = "edge-b"
 	if _, err := store.RecordPluginRuntimeLogReport(t.Context(), "edge-a", report); err == nil {
 		t.Fatal("cross-agent report was accepted")
+	}
+	report.AgentID, report.Sequence = "edge-a", 2
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", instance.ID).Update("resource_group_id", "group-b").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordPluginRuntimeLogReport(t.Context(), "edge-a", report); err == nil {
+		t.Fatal("historical generation was accepted after resource-group rebind")
+	}
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", instance.ID).Update("resource_group_id", "group-a").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Delete(&AgentRow{}, "id = ?", "edge-a").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordPluginRuntimeLogReport(t.Context(), "edge-a", report); err == nil {
+		t.Fatal("removed Agent replay was accepted")
+	}
+}
+
+func TestControlPlanePluginLogOutboxIsDurableIdempotentAndImmutable(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewSQLiteStore(root, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	packageDigest, artifactDigest := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	runtime := PluginRuntimeInstanceRow{InstanceID: "instance", PluginID: "plugin", HostScope: "control-plane", CandidateGeneration: "generation", CandidatePackageDigest: packageDigest, CandidateArtifactDigest: artifactDigest, CandidateOperationID: "operation", CandidateResourceGroupID: "group-a", CandidateRevision: 9, CandidateState: "starting", State: "stopped", UpdatedAt: now}
+	if err := store.StagePluginRuntime(t.Context(), runtime); err != nil {
+		t.Fatal(err)
+	}
+	event := PluginControlPlaneLogOutboxRow{EventID: "event-1", InstanceID: runtime.InstanceID, PluginID: runtime.PluginID, OperationID: runtime.CandidateOperationID, GenerationID: runtime.CandidateGeneration, ResourceGroupID: runtime.CandidateResourceGroupID, Revision: runtime.CandidateRevision, PackageDigest: packageDigest, ArtifactDigest: artifactDigest, Message: `{"api-key":"plaintext"}`, CreatedAt: now}
+	if err := store.EnqueueControlPlanePluginRuntimeLog(t.Context(), event); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnqueueControlPlanePluginRuntimeLog(t.Context(), event); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(root, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	outbox, err := store.ListControlPlanePluginRuntimeLogOutbox(t.Context(), 10)
+	if err != nil || len(outbox) != 1 || strings.Contains(outbox[0].Message, "plaintext") {
+		t.Fatalf("recovered outbox=%+v err=%v", outbox, err)
+	}
+	if err := store.FlushControlPlanePluginRuntimeLog(t.Context(), event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FlushControlPlanePluginRuntimeLog(t.Context(), event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListPluginRuntimeLogs(t.Context(), PluginRuntimeLogQuery{InstanceID: event.InstanceID})
+	if err != nil || len(page.Rows) != 1 || page.Rows[0].ResourceGroupID != event.ResourceGroupID || page.Rows[0].GenerationID != event.GenerationID || strings.Contains(page.Rows[0].Message, "plaintext") {
+		t.Fatalf("flushed page=%+v err=%v", page, err)
+	}
+	event.EventID, event.ResourceGroupID = "event-stale", "group-b"
+	if err := store.EnqueueControlPlanePluginRuntimeLog(t.Context(), event); err == nil {
+		t.Fatal("mismatched immutable log authority was accepted")
 	}
 }

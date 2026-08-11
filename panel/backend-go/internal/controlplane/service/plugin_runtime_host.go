@@ -76,12 +76,16 @@ type PluginRuntimeHost struct {
 	pendingMu  sync.Mutex
 	pending    map[*pluginhost.Instance]pendingRuntimeCleanup
 	revoker    PluginCapabilityGenerationRevoker
-	logQueue   chan pluginRuntimeHostLog
+	logWake    chan struct{}
+	logCancel  context.CancelFunc
+	logDone    chan struct{}
+	logSpool   pluginRuntimeLogSpool
 }
 
-type pluginRuntimeHostLog struct {
-	candidate pluginhost.Candidate
-	message   string
+type pluginRuntimeLogSpool interface {
+	EnqueueControlPlanePluginRuntimeLog(context.Context, storage.PluginControlPlaneLogOutboxRow) error
+	ListControlPlanePluginRuntimeLogOutbox(context.Context, int) ([]storage.PluginControlPlaneLogOutboxRow, error)
+	FlushControlPlanePluginRuntimeLog(context.Context, string) error
 }
 
 type PluginCapabilityGenerationRevoker interface {
@@ -103,37 +107,76 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, terminals: make(map[terminalResultKey]pluginhost.TerminalResult), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup), logQueue: make(chan pluginRuntimeHostLog, 128)}
+	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, terminals: make(map[terminalResultKey]pluginhost.TerminalResult), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
 		observerCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
 		defer cancel()
 		return repository.UpdatePluginRuntimeHealth(observerCtx, status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
 	})
-	if sink, ok := repository.(interface {
-		AppendControlPlanePluginRuntimeLog(context.Context, string, string, string, string) error
-	}); ok {
+	if spool, ok := repository.(pluginRuntimeLogSpool); ok {
+		logCtx, logCancel := context.WithCancel(context.Background())
+		service.logSpool, service.logWake, service.logCancel, service.logDone = spool, make(chan struct{}, 1), logCancel, make(chan struct{})
 		host.SetLogObserver(func(candidate pluginhost.Candidate, message string) {
-			select {
-			case service.logQueue <- pluginRuntimeHostLog{candidate: candidate, message: message}:
-			default:
+			row := storage.PluginControlPlaneLogOutboxRow{EventID: lifecycleID("plugin-log"), InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, OperationID: candidate.OperationID, GenerationID: candidate.Identity.Generation, ResourceGroupID: candidate.ResourceGroupID, Revision: candidate.Revision, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, Level: "info", Message: message, CreatedAt: time.Now().UTC()}
+			for attempt := 0; ; attempt++ {
+				writeCtx, writeCancel := context.WithTimeout(logCtx, pluginRuntimeHealthWriteTimeout)
+				err := spool.EnqueueControlPlanePluginRuntimeLog(writeCtx, row)
+				writeCancel()
+				if err == nil {
+					select {
+					case service.logWake <- struct{}{}:
+					default:
+					}
+					return
+				}
+				if errors.Is(err, storage.ErrPluginGenerationStale) || logCtx.Err() != nil {
+					return
+				}
+				timer := time.NewTimer(time.Duration(min(attempt+1, 20)) * 10 * time.Millisecond)
+				select {
+				case <-logCtx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
 			}
 		})
-		service.operations.Add(1)
 		go func() {
-			defer service.operations.Done()
+			defer close(service.logDone)
+			ticker := time.NewTicker(250 * time.Millisecond)
+			defer ticker.Stop()
 			for {
+				_ = service.flushControlPlaneLogs(logCtx)
 				select {
-				case <-service.ctx.Done():
+				case <-logCtx.Done():
 					return
-				case entry := <-service.logQueue:
-					writeCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
-					_ = sink.AppendControlPlanePluginRuntimeLog(writeCtx, entry.candidate.InstanceID, entry.candidate.Identity.PluginID, entry.candidate.Identity.Generation, entry.message)
-					cancel()
+				case <-service.logWake:
+				case <-ticker.C:
 				}
 			}
 		}()
 	}
 	return service, nil
+}
+
+func (s *PluginRuntimeHost) flushControlPlaneLogs(ctx context.Context) error {
+	if s == nil || s.logSpool == nil {
+		return nil
+	}
+	for {
+		rows, err := s.logSpool.ListControlPlanePluginRuntimeLogOutbox(ctx, 128)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, row := range rows {
+			if err := s.logSpool.FlushControlPlanePluginRuntimeLog(ctx, row.EventID); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (s *PluginRuntimeHost) SetCapabilityRevoker(revoker PluginCapabilityGenerationRevoker) {
@@ -188,7 +231,7 @@ func (s *PluginRuntimeHost) Activate(ctx context.Context, candidate pluginhost.C
 		return nil, errors.Join(errors.New("plugin runtime activation canceled"), err)
 	}
 	previousGeneration, _ := s.ActiveGeneration(candidate.InstanceID)
-	row := storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256}
+	row := storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256, CandidateOperationID: candidate.OperationID, CandidateResourceGroupID: candidate.ResourceGroupID, CandidateRevision: candidate.Revision}
 	if err := s.repository.StagePluginRuntime(operationCtx, row); err != nil {
 		return nil, fmt.Errorf("stage plugin runtime state: %w", err)
 	}
@@ -253,7 +296,7 @@ func (s *PluginRuntimeHost) PrepareBatch(ctx context.Context, candidates []plugi
 		}
 		previous, _ := s.ActiveGeneration(candidate.InstanceID)
 		batch.entries = append(batch.entries, pluginRuntimeBatchEntry{candidate: candidate, previousGeneration: previous})
-		rows = append(rows, storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256})
+		rows = append(rows, storage.PluginRuntimeInstanceRow{InstanceID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, HostScope: "control-plane", CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: candidate.Identity.PackageDigest, CandidateArtifactDigest: candidate.Artifact.SHA256, CandidateOperationID: candidate.OperationID, CandidateResourceGroupID: candidate.ResourceGroupID, CandidateRevision: candidate.Revision})
 	}
 	if err := repository.StagePluginRuntimeBatch(operationCtx, rows); err != nil {
 		return nil, fmt.Errorf("stage plugin runtime batch: %w", err)
@@ -618,6 +661,17 @@ func (s *PluginRuntimeHost) Close(ctx context.Context) error {
 		if err := s.persistTerminalResult(ctx, result, true); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if s.logCancel != nil {
+		drainCtx := ctx
+		drainCancel := func() {}
+		if drainCtx == nil || drainCtx.Err() != nil {
+			drainCtx, drainCancel = context.WithTimeout(context.Background(), 5*time.Second)
+		}
+		errs = append(errs, s.flushControlPlaneLogs(drainCtx))
+		drainCancel()
+		s.logCancel()
+		<-s.logDone
 	}
 	return errors.Join(errs...)
 }

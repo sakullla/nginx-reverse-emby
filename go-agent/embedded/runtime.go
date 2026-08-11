@@ -21,6 +21,11 @@ type PluginDependencyEdge = model.PluginDependencyEdge
 type PluginDependencyConsumer = model.PluginDependencyConsumer
 type PluginDependencyTarget = model.PluginDependencyTarget
 type PluginRuntimeStatus = model.PluginRuntimeStatus
+type PluginRuntimeLogEntry = model.PluginRuntimeLogEntry
+type PluginRuntimeLogReport = model.PluginRuntimeLogReport
+type PluginGenerationSecretHandle = model.PluginGenerationSecretHandle
+type PluginSecretRedemptionRequest = model.PluginSecretRedemptionRequest
+type PluginRedeemedSecret = model.PluginRedeemedSecret
 type RuntimeState = model.RuntimeState
 type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage
@@ -57,6 +62,10 @@ const (
 
 type SyncSource interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
+}
+
+type PluginSecretSource interface {
+	RedeemPluginSecrets(context.Context, PluginSecretRedemptionRequest) ([]PluginRedeemedSecret, error)
 }
 
 type StateSink interface {
@@ -304,11 +313,43 @@ func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncReques
 	return Snapshot{Revision: int64(request.CurrentRevision)}, nil
 }
 
+func (a syncClientAdapter) RedeemPluginSecrets(ctx context.Context, request model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	source, ok := a.source.(PluginSecretSource)
+	if !ok {
+		return nil, errors.New("embedded plugin secret redemption is unavailable")
+	}
+	return source.RedeemPluginSecrets(ctx, request)
+}
+
 type approvedRevisionContextKey struct{}
 
 type persistentBridgeStore struct {
 	delegate agentcore.Store
 	sink     StateSink
+}
+
+func (s *persistentBridgeStore) EnqueuePluginLogReports(batchID string, reports []model.PluginRuntimeLogReport) ([]model.PluginRuntimeLogReport, error) {
+	outbox, ok := s.delegate.(agentcore.PluginLogOutboxStore)
+	if !ok {
+		return nil, errors.New("embedded plugin log outbox is unavailable")
+	}
+	return outbox.EnqueuePluginLogReports(batchID, reports)
+}
+
+func (s *persistentBridgeStore) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, error) {
+	outbox, ok := s.delegate.(agentcore.PluginLogOutboxStore)
+	if !ok {
+		return nil, errors.New("embedded plugin log outbox is unavailable")
+	}
+	return outbox.PendingPluginLogReports()
+}
+
+func (s *persistentBridgeStore) AcknowledgePluginLogReports(reports []model.PluginRuntimeLogReport) error {
+	outbox, ok := s.delegate.(agentcore.PluginLogOutboxStore)
+	if !ok {
+		return errors.New("embedded plugin log outbox is unavailable")
+	}
+	return outbox.AcknowledgePluginLogReports(reports)
 }
 
 func (s *persistentBridgeStore) SaveDesiredSnapshot(snapshot Snapshot) error {

@@ -4,7 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"encoding/json"
+	"errors"
 	"math"
 	"reflect"
 	"sort"
@@ -33,16 +34,7 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	}
 	meta := ensureMetadata(state.Metadata)
 	state.Metadata = meta
-	logEvents := pluginprocess.DrainRuntimeLogEvents()
-	consumedLogEvents, logErr := appendPluginRuntimeLogEvents(&state, logEvents)
-	if logErr != nil {
-		pluginprocess.RestoreRuntimeLogEvents(logEvents)
-		return SyncPlan{}, logErr
-	}
-	if consumedLogEvents < len(logEvents) {
-		pluginprocess.RestoreRuntimeLogEvents(logEvents[consumedLogEvents:])
-	}
-	logsChanged := consumedLogEvents > 0
+	logsChanged := false
 	if c.Runtime != nil {
 		statuses := reconcilePluginRuntimeStatuses(state.PluginStatuses, c.Runtime.State().PluginStatuses)
 		if !reflect.DeepEqual(statuses, state.PluginStatuses) {
@@ -53,14 +45,43 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	}
 	if logsChanged {
 		if err := c.Store.SaveRuntimeState(state); err != nil {
-			pluginprocess.RestoreRuntimeLogEvents(logEvents[:consumedLogEvents])
 			return SyncPlan{}, err
 		}
 	}
-	plan.Request.PluginLogs = model.ClonePluginRuntimeLogReports(state.PluginLogReports)
+	outbox, ok := c.Store.(PluginLogOutboxStore)
+	logEvents := pluginprocess.SnapshotRuntimeLogEvents()
+	if len(logEvents) > 0 && !ok {
+		return SyncPlan{}, errors.New("plugin runtime log outbox store is unavailable")
+	}
+	if ok {
+		pending, err := outbox.PendingPluginLogReports()
+		if err != nil {
+			return SyncPlan{}, err
+		}
+		drafts, consumed := pluginRuntimeLogDrafts(logEvents, model.MaxPendingPluginLogReports-len(pending))
+		if len(drafts) > 0 {
+			batchID, err := pluginRuntimeLogCaptureBatchID(logEvents[:consumed])
+			if err != nil {
+				return SyncPlan{}, err
+			}
+			if _, err := outbox.EnqueuePluginLogReports(batchID, drafts); err != nil {
+				return SyncPlan{}, err
+			}
+			captureIDs := make([]string, consumed)
+			for index := 0; index < consumed; index++ {
+				captureIDs[index] = logEvents[index].CaptureID
+			}
+			pluginprocess.CommitRuntimeLogEvents(captureIDs)
+			pending, err = outbox.PendingPluginLogReports()
+			if err != nil {
+				return SyncPlan{}, err
+			}
+		}
+		plan.Request.PluginLogs = model.ClonePluginRuntimeLogReports(pending)
+	}
 	if len(plan.Request.PluginLogs) > 0 {
 		sent := model.ClonePluginRuntimeLogReports(plan.Request.PluginLogs)
-		plan.Request.PluginLogsAcknowledged = func() error { return acknowledgePluginRuntimeLogs(c.Store, sent) }
+		plan.Request.PluginLogsAcknowledged = func() error { return outbox.AcknowledgePluginLogReports(sent) }
 	}
 	plan.Request.LastApplyRevision = boundedInt64Revision(parseInt64Default(meta["last_apply_revision"], applied.Revision))
 	plan.Request.LastApplyStatus = strings.TrimSpace(meta["last_apply_status"])
@@ -112,13 +133,29 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	return plan, nil
 }
 
-func appendPluginRuntimeLogEvents(state *model.RuntimeState, events []pluginprocess.RuntimeLogEvent) (int, error) {
-	if state == nil || len(events) == 0 {
-		return 0, nil
+func pluginRuntimeLogCaptureBatchID(events []pluginprocess.RuntimeLogEvent) (string, error) {
+	identities := make([]string, len(events))
+	for index, event := range events {
+		if !validPluginLogOutboxID(event.CaptureID) {
+			return "", errors.New("plugin runtime log capture identity is invalid")
+		}
+		identities[index] = event.CaptureID
 	}
-	state.Metadata = ensureMetadata(state.Metadata)
+	encoded, err := json.Marshal(identities)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func pluginRuntimeLogDrafts(events []pluginprocess.RuntimeLogEvent, capacity int) ([]model.PluginRuntimeLogReport, int) {
+	if len(events) == 0 || capacity <= 0 {
+		return nil, 0
+	}
+	reports := make([]model.PluginRuntimeLogReport, 0, min(capacity, len(events)))
 	consumed := 0
-	for consumed < len(events) && len(state.PluginLogReports) < model.MaxPendingPluginLogReports {
+	for consumed < len(events) && len(reports) < capacity {
 		identity := events[consumed].Identity
 		entries := make([]model.PluginRuntimeLogEntry, 0, model.MaxPluginRuntimeLogEntries)
 		for consumed < len(events) && len(entries) < model.MaxPluginRuntimeLogEntries && events[consumed].Identity == identity {
@@ -126,80 +163,14 @@ func appendPluginRuntimeLogEvents(state *model.RuntimeState, events []pluginproc
 			entries = append(entries, model.PluginRuntimeLogEntry{Level: entry.Level, Message: entry.Message, Truncated: entry.Truncated})
 			consumed++
 		}
-		sequenceKey := pluginRuntimeLogSequenceMetadataKey(identity)
-		sequence := parsePluginRuntimeLogSequence(state.Metadata[sequenceKey])
-		for _, pending := range state.PluginLogReports {
-			if pluginRuntimeLogEventMatchesReport(identity, pending) && pending.Sequence > sequence {
-				sequence = pending.Sequence
-			}
-		}
-		sequence++
 		report := model.PluginRuntimeLogReport{
 			Revision: identity.Revision, GenerationID: identity.ProviderGenerationID, InstanceID: identity.InstanceID,
 			PluginID: identity.PluginID, AgentID: identity.AgentID, PackageDigest: identity.PackageDigest,
-			ArtifactDigest: identity.ArtifactDigest, Sequence: sequence, Entries: entries,
+			ArtifactDigest: identity.ArtifactDigest, Entries: entries,
 		}
-		if err := report.Validate(); err != nil {
-			return consumed - len(entries), fmt.Errorf("capture plugin runtime logs: %w", err)
-		}
-		state.PluginLogReports = append(state.PluginLogReports, report)
-		state.Metadata[sequenceKey] = strconv.FormatUint(sequence, 10)
+		reports = append(reports, report)
 	}
-	return consumed, nil
-}
-
-func pluginRuntimeLogEventMatchesReport(identity pluginprocess.RuntimeLogIdentity, report model.PluginRuntimeLogReport) bool {
-	return identity.Revision == report.Revision && identity.ProviderGenerationID == report.GenerationID &&
-		identity.InstanceID == report.InstanceID && identity.PluginID == report.PluginID && identity.AgentID == report.AgentID &&
-		identity.PackageDigest == report.PackageDigest && identity.ArtifactDigest == report.ArtifactDigest
-}
-
-func acknowledgePluginRuntimeLogs(store Store, sent []model.PluginRuntimeLogReport) error {
-	if store == nil || len(sent) == 0 {
-		return nil
-	}
-	state, err := store.LoadRuntimeState()
-	if err != nil {
-		return err
-	}
-	acknowledged := make(map[string]struct{}, len(sent))
-	for _, report := range sent {
-		acknowledged[pluginRuntimeLogReportIdentity(report)] = struct{}{}
-	}
-	kept := state.PluginLogReports[:0]
-	for _, report := range state.PluginLogReports {
-		if _, ok := acknowledged[pluginRuntimeLogReportIdentity(report)]; !ok {
-			kept = append(kept, report)
-		}
-	}
-	if len(kept) == len(state.PluginLogReports) {
-		return nil
-	}
-	state.PluginLogReports = model.ClonePluginRuntimeLogReports(kept)
-	return store.SaveRuntimeState(state)
-}
-
-func pluginRuntimeLogSequenceMetadataKey(identity pluginprocess.RuntimeLogIdentity) string {
-	digest := sha256.Sum256([]byte(strings.Join([]string{
-		strconv.FormatInt(identity.Revision, 10), identity.ProviderGenerationID, identity.InstanceID,
-		identity.PluginID, identity.AgentID, identity.PackageDigest, identity.ArtifactDigest,
-	}, "\x00")))
-	return "plugin_log_sequence." + hex.EncodeToString(digest[:])
-}
-
-func parsePluginRuntimeLogSequence(raw string) uint64 {
-	sequence, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return sequence
-}
-
-func pluginRuntimeLogReportIdentity(report model.PluginRuntimeLogReport) string {
-	return strings.Join([]string{
-		strconv.FormatInt(report.Revision, 10), report.GenerationID, report.InstanceID, report.PluginID,
-		report.AgentID, report.PackageDigest, report.ArtifactDigest, strconv.FormatUint(report.Sequence, 10),
-	}, "\x00")
+	return reports, consumed
 }
 
 func reconcilePluginRuntimeStatuses(previous, current []model.PluginRuntimeStatus) []model.PluginRuntimeStatus {

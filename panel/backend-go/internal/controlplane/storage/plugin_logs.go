@@ -24,15 +24,89 @@ const (
 )
 
 type PluginRuntimeLogQuery struct {
-	InstanceID string
-	AgentID    string
-	Cursor     string
-	Limit      int
+	InstanceID      string
+	AgentID         string
+	ResourceGroupID string
+	Cursor          string
+	Limit           int
 }
 
 type PluginRuntimeLogPage struct {
 	Rows       []PluginRuntimeLogRow
 	NextCursor string
+}
+
+func (s *GormStore) EnqueueControlPlanePluginRuntimeLog(ctx context.Context, row PluginControlPlaneLogOutboxRow) error {
+	row.EventID = strings.TrimSpace(row.EventID)
+	row.InstanceID = strings.TrimSpace(row.InstanceID)
+	row.PluginID = strings.TrimSpace(row.PluginID)
+	row.OperationID = strings.TrimSpace(row.OperationID)
+	row.GenerationID = strings.TrimSpace(row.GenerationID)
+	row.ResourceGroupID = strings.TrimSpace(row.ResourceGroupID)
+	row.PackageDigest = strings.ToLower(strings.TrimSpace(row.PackageDigest))
+	row.ArtifactDigest = strings.ToLower(strings.TrimSpace(row.ArtifactDigest))
+	if row.EventID == "" || row.InstanceID == "" || row.PluginID == "" || row.OperationID == "" || row.GenerationID == "" || row.ResourceGroupID == "" || row.Revision <= 0 || len(row.PackageDigest) != 64 || len(row.ArtifactDigest) != 64 {
+		return errors.New("control-plane plugin log authority is invalid")
+	}
+	row.Message, row.Truncated = sanitizePluginRuntimeLog(row.Message)
+	if row.Level == "" {
+		row.Level = "info"
+	}
+	if row.CreatedAt.IsZero() {
+		row.CreatedAt = time.Now().UTC()
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var runtime PluginRuntimeInstanceRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ? AND plugin_id = ?", row.InstanceID, row.PluginID).First(&runtime).Error; err != nil {
+			return err
+		}
+		candidate := runtime.CandidateGeneration == row.GenerationID && runtime.CandidateOperationID == row.OperationID && runtime.CandidateResourceGroupID == row.ResourceGroupID && runtime.CandidateRevision == row.Revision && runtime.CandidatePackageDigest == row.PackageDigest && runtime.CandidateArtifactDigest == row.ArtifactDigest
+		active := runtime.ActiveGeneration == row.GenerationID && runtime.ActiveOperationID == row.OperationID && runtime.ActiveResourceGroupID == row.ResourceGroupID && runtime.ActiveRevision == row.Revision && runtime.ActivePackageDigest == row.PackageDigest && runtime.ActiveArtifactDigest == row.ArtifactDigest
+		if !candidate && !active {
+			return ErrPluginGenerationStale
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
+	})
+}
+
+func (s *GormStore) ListControlPlanePluginRuntimeLogOutbox(ctx context.Context, limit int) ([]PluginControlPlaneLogOutboxRow, error) {
+	if limit <= 0 || limit > 128 {
+		limit = 128
+	}
+	var rows []PluginControlPlaneLogOutboxRow
+	err := s.db.WithContext(ctx).Order("created_at, event_id").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+func (s *GormStore) FlushControlPlanePluginRuntimeLog(ctx context.Context, eventID string) error {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return errors.New("control-plane plugin log event is required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var outbox PluginControlPlaneLogOutboxRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_id = ?", eventID).First(&outbox).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		ownedEventID := outbox.EventID
+		row := PluginRuntimeLogRow{EventID: &ownedEventID, InstanceID: outbox.InstanceID, PluginID: outbox.PluginID, AgentID: "control-plane", ResourceGroupID: outbox.ResourceGroupID, OperationID: outbox.OperationID, GenerationID: outbox.GenerationID, Revision: outbox.Revision, PackageDigest: outbox.PackageDigest, ArtifactDigest: outbox.ArtifactDigest, Level: outbox.Level, Message: outbox.Message, Truncated: outbox.Truncated, CreatedAt: outbox.CreatedAt}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			return err
+		}
+		var stale []uint64
+		if err := tx.Model(&PluginRuntimeLogRow{}).Where("instance_id = ?", outbox.InstanceID).Order("id DESC").Offset(pluginRuntimeLogRetention).Pluck("id", &stale).Error; err != nil {
+			return err
+		}
+		if len(stale) > 0 {
+			if err := tx.Where("id IN ?", stale).Delete(&PluginRuntimeLogRow{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("event_id = ?", eventID).Delete(&PluginControlPlaneLogOutboxRow{}).Error
+	})
 }
 
 // AppendControlPlanePluginRuntimeLog derives ownership from durable runtime
@@ -93,13 +167,8 @@ func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authentica
 			report.AgentID, report.InstanceID, report.GenerationID, report.Revision, report.PluginID, report.PackageDigest, report.ArtifactDigest).Order("updated_at DESC").First(&status).Error; err != nil {
 			return fmt.Errorf("plugin runtime log generation is not authoritative: %w", err)
 		}
-		var instance PluginInstanceRow
-		if err := tx.Where("id = ? AND plugin_id = ?", report.InstanceID, report.PluginID).First(&instance).Error; err != nil {
-			return fmt.Errorf("plugin runtime log instance is unavailable: %w", err)
-		}
-		groupID := instance.ResourceGroupID
-		if instance.PendingOperationID == status.OperationID && strings.TrimSpace(instance.PendingResourceGroupID) != "" {
-			groupID = instance.PendingResourceGroupID
+		if err := pluginRuntimeLogStatusCurrentTx(tx, status); err != nil {
+			return err
 		}
 		var fence PluginRuntimeLogReportRow
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ? AND instance_id = ? AND generation_id = ?", report.AgentID, report.InstanceID, report.GenerationID).First(&fence).Error
@@ -118,7 +187,7 @@ func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authentica
 		}
 		createdAt := time.Now().UTC()
 		for _, entry := range report.Entries {
-			row := PluginRuntimeLogRow{InstanceID: report.InstanceID, PluginID: report.PluginID, AgentID: report.AgentID, ResourceGroupID: groupID, Level: entry.Level, Message: entry.Message, Truncated: entry.Truncated, CreatedAt: createdAt}
+			row := PluginRuntimeLogRow{InstanceID: report.InstanceID, PluginID: report.PluginID, AgentID: report.AgentID, ResourceGroupID: status.ResourceGroupID, OperationID: status.OperationID, GenerationID: status.GenerationID, Revision: status.Revision, PackageDigest: status.PackageDigest, ArtifactDigest: status.ArtifactDigest, Level: entry.Level, Message: entry.Message, Truncated: entry.Truncated, CreatedAt: createdAt}
 			row.Message, row.Truncated = sanitizePluginRuntimeLog(row.Message)
 			row.Truncated = row.Truncated || entry.Truncated
 			if err := appendPluginRuntimeLogTx(tx, &row); err != nil {
@@ -133,6 +202,49 @@ func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authentica
 		return nil
 	})
 	return accepted, err
+}
+
+func pluginRuntimeLogStatusCurrentTx(tx *gorm.DB, status PluginAgentRuntimeStatusRow) error {
+	if status.ResourceGroupID == "" || status.TargetVersion == 0 || status.State == "failed" || status.State == "drained" || status.State == "draining" {
+		return ErrPluginGenerationStale
+	}
+	var agent AgentRow
+	if err := tx.Where("id = ?", status.AgentID).First(&agent).Error; err != nil {
+		return ErrPluginGenerationStale
+	}
+	var instance PluginInstanceRow
+	if err := tx.Where("id = ? AND plugin_id = ?", status.InstanceID, status.PluginID).First(&instance).Error; err != nil {
+		return ErrPluginGenerationStale
+	}
+	var installed InstalledPluginRow
+	if err := tx.Where("plugin_id = ?", status.PluginID).First(&installed).Error; err != nil || installed.DesiredLifecycle != "enabled" {
+		return ErrPluginGenerationStale
+	}
+	groupID, configVersion, targetsJSON, packageDigest := instance.ResourceGroupID, instance.ConfigVersion, instance.TargetJSON, installed.ActivePackageDigest
+	if instance.PendingOperationID == status.OperationID && instance.PendingVersion > 0 {
+		groupID, configVersion, targetsJSON = instance.PendingResourceGroupID, instance.PendingVersion, instance.PendingTargetJSON
+		if groupID == "" {
+			groupID = instance.ResourceGroupID
+		}
+		if installed.PendingOperationID == status.OperationID && installed.StagedPackageDigest != "" {
+			packageDigest = installed.StagedPackageDigest
+		}
+	}
+	var targets []string
+	if err := json.Unmarshal([]byte(targetsJSON), &targets); err != nil {
+		return ErrPluginGenerationStale
+	}
+	foundTarget := false
+	for _, target := range targets {
+		if target == status.AgentID {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget || groupID != status.ResourceGroupID || configVersion != status.ConfigVersion || configVersion != status.TargetVersion || packageDigest != status.PackageDigest {
+		return ErrPluginGenerationStale
+	}
+	return nil
 }
 
 func (s *GormStore) AppendPluginRuntimeLog(ctx context.Context, row PluginRuntimeLogRow) (PluginRuntimeLogRow, error) {
@@ -186,6 +298,9 @@ func (s *GormStore) ListPluginRuntimeLogs(ctx context.Context, query PluginRunti
 	db := s.db.WithContext(ctx).Where("instance_id = ?", query.InstanceID)
 	if query.AgentID != "" {
 		db = db.Where("agent_id = ?", query.AgentID)
+	}
+	if query.ResourceGroupID != "" {
+		db = db.Where("resource_group_id = ?", query.ResourceGroupID)
 	}
 	if query.Cursor != "" {
 		cursor, err := decodePluginRuntimeLogCursor(query.Cursor)

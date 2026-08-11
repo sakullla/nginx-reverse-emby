@@ -46,13 +46,17 @@ func (s *PluginService) LogsForActor(ctx context.Context, pluginID, instanceID, 
 	if !ok {
 		return PluginRuntimeLogPage{}, errors.New("plugin runtime log store is unavailable")
 	}
-	page, err := store.ListPluginRuntimeLogs(ctx, storage.PluginRuntimeLogQuery{InstanceID: instance.ID, AgentID: agentID, Cursor: cursor, Limit: limit})
+	scopedGroupID := ""
+	if !actor.Bootstrap && !actor.Has(authz.PermissionSystemAdmin) {
+		scopedGroupID = instance.ResourceGroupID
+	}
+	page, err := store.ListPluginRuntimeLogs(ctx, storage.PluginRuntimeLogQuery{InstanceID: instance.ID, AgentID: agentID, ResourceGroupID: scopedGroupID, Cursor: cursor, Limit: limit})
 	if err != nil {
 		return PluginRuntimeLogPage{}, err
 	}
 	result := PluginRuntimeLogPage{Entries: make([]PluginRuntimeLogEntry, 0, len(page.Rows)), NextCursor: page.NextCursor}
 	for _, row := range page.Rows {
-		if row.PluginID != instance.PluginID || row.ResourceGroupID != instance.ResourceGroupID {
+		if row.PluginID != instance.PluginID || scopedGroupID != "" && row.ResourceGroupID != scopedGroupID {
 			return PluginRuntimeLogPage{}, ErrPluginReadProjection
 		}
 		result.Entries = append(result.Entries, PluginRuntimeLogEntry{InstanceID: row.InstanceID, AgentID: row.AgentID, Level: row.Level, Message: row.Message, Truncated: row.Truncated, CreatedAt: row.CreatedAt})

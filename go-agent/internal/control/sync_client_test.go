@@ -560,6 +560,54 @@ func testPluginRuntimeLogReport(sequence uint64) model.PluginRuntimeLogReport {
 	}
 }
 
+func TestSyncClientRedeemPluginSecretsUsesAuthenticatedExactFence(t *testing.T) {
+	request := model.PluginSecretRedemptionRequest{
+		Revision: 7, GenerationID: "generation-a", InstanceID: "instance-a", PluginID: "example.rpc", OperationID: "operation-a",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Handles: []model.PluginSecretHandle{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:instance-a:/token"}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, incoming *http.Request) {
+		if incoming.Method != http.MethodPost || incoming.URL.Path != "/api/agent-plugin-secrets/redeem" || incoming.Header.Get("x-agent-token") != "agent-token" {
+			t.Fatalf("redemption transport = %s %s token=%q", incoming.Method, incoming.URL.Path, incoming.Header.Get("x-agent-token"))
+		}
+		var decoded model.PluginSecretRedemptionRequest
+		if err := json.NewDecoder(incoming.Body).Decode(&decoded); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decoded, request) {
+			t.Fatalf("redemption request = %+v, want %+v", decoded, request)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"secrets":[{"id":"secret-a","version":2,"digest":"`+strings.Repeat("c", 64)+`","purpose":"plugin-config:instance-a:/token","value":"\"token\""}]}`)
+	}))
+	defer server.Close()
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-token"}, server.Client())
+	secrets, err := client.RedeemPluginSecrets(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets) != 1 || secrets[0].Value != `"token"` || secrets[0].Purpose != request.Handles[0].Purpose {
+		t.Fatalf("redeemed secrets = %+v", secrets)
+	}
+}
+
+func TestSyncClientRedeemPluginSecretsDoesNotExposeResponseBody(t *testing.T) {
+	const secret = "never-expose-response-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, secret, http.StatusForbidden)
+	}))
+	defer server.Close()
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-token"}, server.Client())
+	_, err := client.RedeemPluginSecrets(t.Context(), model.PluginSecretRedemptionRequest{
+		Revision: 7, GenerationID: "generation-a", InstanceID: "instance-a", PluginID: "example.rpc", OperationID: "operation-a",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Handles: []model.PluginSecretHandle{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:instance-a:/token"}},
+	})
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("redemption error = %v", err)
+	}
+}
+
 func TestHeartbeatSyncSendsExplicitEmptyStats(t *testing.T) {
 	reqs := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

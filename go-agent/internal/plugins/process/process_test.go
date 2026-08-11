@@ -555,6 +555,51 @@ func TestSupervisorCloseCancelsAndJoinsBlockedStart(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogQueueCommitsOnlyExactSnapshottedPrefix(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	EnqueueRuntimeLogEvents([]RuntimeLogEvent{{Identity: processRuntimeLogIdentity(), Entry: RuntimeLogEntry{Level: "info", Message: "first"}}})
+	snapshot := SnapshotRuntimeLogEvents()
+	EnqueueRuntimeLogEvents([]RuntimeLogEvent{{Identity: processRuntimeLogIdentity(), Entry: RuntimeLogEntry{Level: "info", Message: "second"}}})
+	if !CommitRuntimeLogEvents([]string{snapshot[0].CaptureID}) {
+		t.Fatal("exact captured prefix was not committed")
+	}
+	remaining := SnapshotRuntimeLogEvents()
+	if len(remaining) != 1 || remaining[0].Entry.Message != "second" {
+		t.Fatalf("concurrently appended event was removed: %+v", remaining)
+	}
+	if CommitRuntimeLogEvents([]string{snapshot[0].CaptureID}) {
+		t.Fatal("stale capture identity committed a different queue prefix")
+	}
+}
+
+func TestHandleTransientSensitiveValuesAreRedactedWithoutRetention(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	var output bytes.Buffer
+	writer := newRuntimeLogWriter(&output, nil, "info", processRuntimeLogIdentity())
+	handle := &Handle{stdoutLog: writer}
+	handle.AddSensitiveValues([]string{"transient-secret"})
+	if _, err := writer.Write([]byte("transient-secret\n")); err != nil {
+		t.Fatal(err)
+	}
+	handle.ClearSensitiveValues([]string{"transient-secret"})
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := DrainRuntimeLogEvents()
+	if len(events) != 1 || events[0].Entry.Message != "[REDACTED]" || strings.Contains(output.String(), "transient-secret") {
+		t.Fatalf("transient secret escaped redaction: events=%+v output=%q", events, output.String())
+	}
+}
+
+func processRuntimeLogIdentity() RuntimeLogIdentity {
+	return RuntimeLogIdentity{
+		Revision: 7, ProviderGenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+	}
+}
+
 func TestProcessCrashLoopOpensCircuit(t *testing.T) {
 	s := NewSupervisor(crashRunner{}, fakeSandbox{available: true}, io.Discard)
 	h, err := s.Start(t.Context(), InstanceSpec{ID: "crash", Executable: "unused", RestartLimit: 1, RestartWindow: time.Second, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond})

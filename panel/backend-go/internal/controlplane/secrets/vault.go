@@ -229,6 +229,10 @@ func (v *Vault) Rotate(ctx context.Context, op OperationContext, id, plaintext s
 	if err != nil {
 		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
+	if row.RetiredAt != nil {
+		err := ErrInvalidSecret
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), map[string]any{"retired": true}))
+	}
 	if op.ResourceGroupID != "" && row.ResourceGroupID != op.ResourceGroupID {
 		err := ErrInvalidSecret
 		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
@@ -281,6 +285,10 @@ func (v *Vault) Resolve(ctx context.Context, op OperationContext, id string) ([]
 	row, err := v.store.GetSecret(ctx, id)
 	if err != nil {
 		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
+	}
+	if row.RetiredAt != nil {
+		err := ErrInvalidSecret
+		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), map[string]any{"retired": true}))
 	}
 	auditOp := op
 	auditOp.ResourceGroupID = row.ResourceGroupID

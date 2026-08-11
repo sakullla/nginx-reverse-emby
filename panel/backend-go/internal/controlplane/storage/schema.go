@@ -141,8 +141,11 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&PluginPolicyAgentRevisionRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
+		&PluginOperationScopeRow{},
+		&PluginOperationSecretRow{},
 		&PluginAgentRuntimeStatusRow{},
 		&PluginRuntimeLogRow{},
+		&PluginControlPlaneLogOutboxRow{},
 		&PluginRuntimeLogReportRow{},
 	); err != nil {
 		return err
@@ -154,6 +157,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 	if err := migratePluginRuntimeProjection(ctx, db); err != nil {
+		return err
+	}
+	if err := backfillPluginOperationScopes(ctx, db); err != nil {
 		return err
 	}
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, db, defaultPluginTargetID); err != nil {
@@ -219,6 +225,21 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func backfillPluginOperationScopes(ctx context.Context, db *gorm.DB) error {
+	var operations []PluginOperationRow
+	if err := db.WithContext(ctx).Where("instance_id <> ? AND resource_group_id <> ?", "", "").Find(&operations).Error; err != nil {
+		return err
+	}
+	rows := make([]PluginOperationScopeRow, 0, len(operations))
+	for _, operation := range operations {
+		rows = append(rows, PluginOperationScopeRow{OperationID: operation.ID, InstanceID: operation.InstanceID, PluginID: operation.PluginID, ResourceGroupID: operation.ResourceGroupID, CreatedAt: operation.CreatedAt})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
 // prepareMarketplaceRepositorySourceColumns is the one-time legacy boundary:

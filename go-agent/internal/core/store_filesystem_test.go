@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -314,11 +313,6 @@ func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 
 	expected := model.RuntimeState{
 		NodeID: "agent-42",
-		PluginLogReports: []model.PluginRuntimeLogReport{{
-			Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
-			PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), Sequence: 2,
-			Entries: []model.PluginRuntimeLogEntry{{Level: "error", Message: "persisted", Truncated: true}},
-		}},
 		Metadata: map[string]string{
 			"session": "abc123",
 		},
@@ -345,12 +339,18 @@ func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 	if val := got.Metadata["session"]; val != "abc123" {
 		t.Fatalf("expected metadata session=abc123, got %q", val)
 	}
-	if !reflect.DeepEqual(got.PluginLogReports, expected.PluginLogReports) {
-		t.Fatalf("restarted filesystem outbox = %+v, want %+v", got.PluginLogReports, expected.PluginLogReports)
-	}
 	pluginprocess.DrainRuntimeLogEvents()
 	t.Cleanup(func() { pluginprocess.DrainRuntimeLogEvents() })
-	persisted := got.PluginLogReports[0]
+	persistedDraft := model.PluginRuntimeLogReport{
+		Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Entries: []model.PluginRuntimeLogEntry{{Level: "error", Message: "persisted", Truncated: true}},
+	}
+	persistedReports, err := s.EnqueuePluginLogReports(strings.Repeat("c", 64), []model.PluginRuntimeLogReport{persistedDraft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := persistedReports[0]
 	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{{
 		Identity: pluginprocess.RuntimeLogIdentity{
 			Revision: persisted.Revision, ProviderGenerationID: persisted.GenerationID, InstanceID: persisted.InstanceID,
@@ -362,7 +362,7 @@ func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Request.PluginLogs) != 2 || plan.Request.PluginLogs[1].Sequence != 3 || plan.Request.PluginLogs[1].Entries[0].Message != "after restart" {
+	if len(plan.Request.PluginLogs) != 2 || plan.Request.PluginLogs[0].Sequence != 1 || plan.Request.PluginLogs[1].Sequence != 2 || plan.Request.PluginLogs[1].Entries[0].Message != "after restart" {
 		t.Fatalf("restarted outbox continuation = %+v", plan.Request.PluginLogs)
 	}
 }

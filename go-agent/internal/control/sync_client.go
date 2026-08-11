@@ -353,6 +353,52 @@ func (c *SyncClient) ReportRevision(ctx context.Context, input model.RevisionRep
 	return c.doRevisionRequest(ctx, "/api/agent-revisions/"+strconv.FormatInt(input.Revision, 10)+"/report", input, nil)
 }
 
+// RedeemPluginSecrets exchanges an authenticated, generation-fenced handle
+// set for transient values. Response bodies and values are deliberately never
+// copied into returned errors.
+func (c *SyncClient) RedeemPluginSecrets(ctx context.Context, input model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	if c == nil || c.client == nil || ctx == nil {
+		return nil, errors.New("plugin secret redemption client is unavailable")
+	}
+	if err := input.Validate(); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return nil, errors.New("encode plugin secret redemption request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.MasterURL+"/api/agent-plugin-secrets/redeem", bytes.NewReader(data))
+	if err != nil {
+		return nil, errors.New("create plugin secret redemption request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agent-token", c.cfg.AgentToken)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.discardConnections()
+		return nil, errors.New("plugin secret redemption transport failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
+		return nil, fmt.Errorf("plugin secret redemption failed with status %d", resp.StatusCode)
+	}
+	var output model.PluginSecretRedemptionResponse
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&output); err != nil {
+		return nil, errors.New("decode plugin secret redemption response")
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, errors.New("decode plugin secret redemption response")
+	}
+	if output.Secrets == nil {
+		return nil, errors.New("plugin secret redemption response is incomplete")
+	}
+	return output.Secrets, nil
+}
+
 func (c *SyncClient) doRevisionRequest(ctx context.Context, path string, input any, output any) error {
 	var body io.Reader
 	if input != nil {

@@ -15,3 +15,24 @@ func TestTextRedactsStructuredEscapedAndExactSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestTextRedactsCredentialKeySeparatorsCamelCaseAndMalformedJSON(t *testing.T) {
+	for _, input := range []string{
+		`{"api-key":"hyphen-secret"}`,
+		`{"api.key":"dot-secret"}`,
+		`{"apiKey":"camel-secret"}`,
+		`{"privateKey":"private-secret"}`,
+		`{"api-key":"malformed-secret"`,
+		`prefix "api_key" : "quoted-secret" suffix`,
+	} {
+		got := Text(input, nil)
+		if strings.Contains(got, "secret") && !strings.Contains(got, Redacted) {
+			t.Fatalf("Text(%q) did not redact credential value: %s", input, got)
+		}
+		for _, forbidden := range []string{"hyphen-secret", "dot-secret", "camel-secret", "private-secret", "malformed-secret", "quoted-secret"} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("Text(%q) contains %q: %s", input, forbidden, got)
+			}
+		}
+	}
+}

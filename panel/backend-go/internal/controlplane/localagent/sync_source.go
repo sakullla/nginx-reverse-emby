@@ -47,6 +47,15 @@ type SyncSource struct {
 	trafficService      trafficSummaryService
 	trafficStatsEnabled bool
 	ddnsReconcile       func(context.Context, string)
+	pluginSecrets       interface {
+		RedeemAgentPluginSecrets(context.Context, string, service.PluginSecretRedemptionRequest) (service.PluginSecretRedemptionResponse, error)
+	}
+}
+
+func (s *SyncSource) SetPluginSecretSource(source interface {
+	RedeemAgentPluginSecrets(context.Context, string, service.PluginSecretRedemptionRequest) (service.PluginSecretRedemptionResponse, error)
+}) {
+	s.pluginSecrets = source
 }
 
 type localDDNSHeartbeatStore interface {

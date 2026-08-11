@@ -420,7 +420,8 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 		ProviderGenerationID: generation.ID, AgentID: generation.Target.ID,
 		Artifact: pluginprocess.Artifact{CachePath: generation.Artifact.LocalPath, SHA256: generation.Artifact.SHA256,
 			GOOS: generation.Artifact.GOOS, GOARCH: generation.Artifact.GOARCH},
-		Requirement: requirement, Scopes: scopes, Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
+		Requirement: requirement, Scopes: scopes, SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
+		Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
 		Process: pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute},
 		Dial:    DialConfig{Network: generationEndpointNetwork(), Deadline: deadline},
 	}, nil

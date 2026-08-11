@@ -80,6 +80,42 @@ type PluginSecretHandle struct {
 	Purpose string `json:"purpose,omitempty"`
 }
 
+// PluginGenerationSecretHandle preserves the controller wire name while the
+// Agent keeps PluginSecretHandle as its established internal symbol.
+type PluginGenerationSecretHandle = PluginSecretHandle
+
+type PluginSecretRedemptionRequest struct {
+	Revision       uint64                         `json:"revision"`
+	GenerationID   string                         `json:"generation_id"`
+	InstanceID     string                         `json:"instance_id"`
+	PluginID       string                         `json:"plugin_id"`
+	OperationID    string                         `json:"operation_id"`
+	PackageDigest  string                         `json:"package_digest"`
+	ArtifactDigest string                         `json:"artifact_digest"`
+	Handles        []PluginGenerationSecretHandle `json:"handles"`
+}
+
+type PluginRedeemedSecret struct {
+	ID      string `json:"id"`
+	Version uint64 `json:"version"`
+	Digest  string `json:"digest"`
+	Purpose string `json:"purpose"`
+	Value   string `json:"value"`
+}
+
+type PluginSecretRedemptionResponse struct {
+	Secrets []PluginRedeemedSecret `json:"secrets"`
+}
+
+func (request PluginSecretRedemptionRequest) Validate() error {
+	if request.Revision == 0 || !validPluginIdentity(request.GenerationID) || !validPluginIdentity(request.InstanceID) ||
+		!validPluginIdentity(request.PluginID) || !validPluginIdentity(request.OperationID) ||
+		!validPluginSHA256(request.PackageDigest) || !validPluginSHA256(request.ArtifactDigest) || len(request.Handles) == 0 {
+		return errors.New("plugin secret redemption fence is invalid")
+	}
+	return validatePluginSecretHandles(request.InstanceID, request.Handles)
+}
+
 type PluginResourceBudget struct {
 	TimeoutMS   int64 `json:"timeout_ms"`
 	MemoryBytes int64 `json:"memory_bytes"`
@@ -385,7 +421,7 @@ func (generation PluginGeneration) Validate(snapshotRevision int64, materialized
 	if err := validatePluginGrants(generation.Grants); err != nil {
 		return err
 	}
-	if err := validatePluginSecretHandles(generation.SecretHandles); err != nil {
+	if err := validatePluginSecretHandles(generation.InstanceID, generation.SecretHandles); err != nil {
 		return err
 	}
 	if err := validatePluginBudget(generation.Runtime.Kind, generation.ResourceBudget); err != nil {
@@ -482,11 +518,17 @@ func validatePluginGrants(grants []PluginGrantProjection) error {
 	return nil
 }
 
-func validatePluginSecretHandles(handles []PluginSecretHandle) error {
+func validatePluginSecretHandles(instanceID string, handles []PluginSecretHandle) error {
+	if len(handles) > 64 {
+		return errors.New("secret handle set exceeds Agent bounds")
+	}
 	seen := map[string]struct{}{}
 	for _, handle := range handles {
-		if !validPluginIdentity(handle.ID) || handle.Version == 0 || !validPluginSHA256(handle.Digest) ||
-			(handle.Purpose != "" && !validPluginIdentity(handle.Purpose)) {
+		purposeValid := handle.Purpose == "" || validPluginIdentity(handle.Purpose)
+		if strings.HasPrefix(handle.Purpose, "plugin-config:") {
+			purposeValid = validPluginConfigSecretPurpose(instanceID, handle.Purpose)
+		}
+		if !validPluginIdentity(handle.ID) || handle.Version == 0 || !validPluginSHA256(handle.Digest) || !purposeValid {
 			return errors.New("secret handle is invalid")
 		}
 		if _, duplicate := seen[handle.ID]; duplicate {
@@ -495,6 +537,24 @@ func validatePluginSecretHandles(handles []PluginSecretHandle) error {
 		seen[handle.ID] = struct{}{}
 	}
 	return nil
+}
+
+func validPluginConfigSecretPurpose(instanceID, purpose string) bool {
+	prefix := "plugin-config:" + instanceID + ":"
+	pointer := strings.TrimPrefix(purpose, prefix)
+	if pointer == purpose || len(pointer) == 0 || len(pointer) > 2048 || pointer[0] != '/' {
+		return false
+	}
+	for index := 0; index < len(pointer); index++ {
+		if pointer[index] != '~' {
+			continue
+		}
+		if index+1 >= len(pointer) || (pointer[index+1] != '0' && pointer[index+1] != '1') {
+			return false
+		}
+		index++
+	}
+	return true
 }
 
 func validatePluginBudget(kind string, budget PluginResourceBudget) error {

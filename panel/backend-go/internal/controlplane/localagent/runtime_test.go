@@ -32,6 +32,19 @@ type bridgeStoreStub struct {
 	pluginLogErr         error
 }
 
+type embeddedSecretSourceStub struct {
+	agentID string
+	request service.PluginSecretRedemptionRequest
+}
+
+func (s *embeddedSecretSourceStub) RedeemAgentPluginSecrets(_ context.Context, agentID string, request service.PluginSecretRedemptionRequest) (service.PluginSecretRedemptionResponse, error) {
+	s.agentID = agentID
+	s.request = request
+	return service.PluginSecretRedemptionResponse{Secrets: []service.PluginRedeemedSecret{{
+		ID: "secret-1", Version: 2, Digest: strings.Repeat("d", 64), Purpose: "plugin-config:instance:/token", Value: `"transient"`,
+	}}}, nil
+}
+
 func (s *bridgeStoreStub) RecordPluginRuntimeLogReport(_ context.Context, _ string, report storage.PluginRuntimeLogReport) (bool, error) {
 	if s.pluginLogErr != nil {
 		return false, s.pluginLogErr
@@ -573,6 +586,36 @@ func TestEmbeddedPluginLogsAcknowledgeOnlyAfterSuccessfulIngestion(t *testing.T)
 	store.pluginLogErr = errors.New("persist failed")
 	if _, err := (syncSourceAdapter{source: source}).Sync(t.Context(), request); err == nil || acknowledged != 1 {
 		t.Fatalf("failure acknowledged=%d error=%v", acknowledged, err)
+	}
+}
+
+func TestEmbeddedPluginSecretRedemptionPreservesGenerationFence(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	secretSource := &embeddedSecretSourceStub{}
+	source := NewSyncSource(&bridgeStoreStub{}, "local-agent")
+	source.SetPluginSecretSource(secretSource)
+	request := goagentembedded.PluginSecretRedemptionRequest{
+		Revision:       17,
+		GenerationID:   "generation-1",
+		InstanceID:     "instance",
+		PluginID:       "plugin",
+		OperationID:    "operation",
+		PackageDigest:  digest,
+		ArtifactDigest: digest,
+		Handles: []goagentembedded.PluginGenerationSecretHandle{{
+			ID: "secret-1", Version: 2, Digest: strings.Repeat("d", 64), Purpose: "plugin-config:instance:/token",
+		}},
+	}
+
+	secrets, err := (syncSourceAdapter{source: source}).RedeemPluginSecrets(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretSource.agentID != "local-agent" || secretSource.request.GenerationID != request.GenerationID || secretSource.request.Revision != request.Revision || !reflect.DeepEqual(secretSource.request.Handles, []storage.PluginGenerationSecretHandle{{ID: "secret-1", Version: 2, Digest: strings.Repeat("d", 64), Purpose: "plugin-config:instance:/token"}}) {
+		t.Fatalf("embedded redemption fence agent=%q request=%+v", secretSource.agentID, secretSource.request)
+	}
+	if len(secrets) != 1 || secrets[0].Value != `"transient"` || secrets[0].Purpose != request.Handles[0].Purpose {
+		t.Fatalf("embedded redeemed secrets = %+v", secrets)
 	}
 }
 

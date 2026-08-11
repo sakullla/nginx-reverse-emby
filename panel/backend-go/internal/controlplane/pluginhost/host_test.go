@@ -189,6 +189,7 @@ type testRPC struct {
 	stopBlock   <-chan struct{}
 	handshakes  *atomic.Int32
 	activations *atomic.Int32
+	configs     *[][]byte
 }
 
 type blockingStopRPC struct{ released <-chan struct{} }
@@ -219,10 +220,16 @@ func (c testRPC) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequ
 	}
 	return pluginsdk.RPCHandshakeResponse{ABI: c.abi, Capabilities: []string{"relay.read"}, Features: append([]string(nil), request.RequiredFeatures...)}, nil
 }
-func (testRPC) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+func (c testRPC) Prepare(_ context.Context, request pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	if c.configs != nil {
+		*c.configs = append(*c.configs, append([]byte(nil), request.Config...))
+	}
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
 }
-func (c testRPC) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+func (c testRPC) Activate(_ context.Context, request pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	if c.configs != nil {
+		*c.configs = append(*c.configs, append([]byte(nil), request.Config...))
+	}
 	if c.activations != nil {
 		c.activations.Add(1)
 	}
@@ -230,6 +237,33 @@ func (c testRPC) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsd
 		return pluginsdk.LifecycleResponse{}, c.activateErr
 	}
 	return pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}, nil
+}
+
+func TestPluginHostRedeemsConfigOnlyAtLifecycleBoundary(t *testing.T) {
+	root := t.TempDir()
+	candidate := newBackendHostCandidate(t, root)
+	candidate.Config = []byte(`{"mode":"safe"}`)
+	resolved := 0
+	candidate.ResolveConfigAndSecrets = func(_ context.Context, generation string) ([]byte, []string, error) {
+		if generation != candidate.Identity.Generation {
+			return nil, nil, errors.New("generation changed")
+		}
+		resolved++
+		return []byte(`{"mode":"safe","token":"transient-secret"}`), []string{"transient-secret"}, nil
+	}
+	var configs [][]byte
+	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, configs: &configs}}}
+	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if resolved != 1 || len(configs) != 2 || !bytes.Contains(configs[0], []byte("transient-secret")) || !bytes.Equal(configs[0], configs[1]) || bytes.Contains(candidate.Config, []byte("transient-secret")) {
+		t.Fatalf("resolved=%d configs=%q durable=%s", resolved, configs, candidate.Config)
+	}
 }
 func (testRPC) InvokeAction(_ context.Context, request pluginsdk.RPCActionRequest) (pluginsdk.RPCActionResponse, error) {
 	return pluginsdk.RPCActionResponse{Accepted: true, OperationID: request.OperationID}, nil

@@ -11,11 +11,39 @@ import (
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type runtimeTestSource struct {
 	snapshot Snapshot
 	requests chan SyncRequest
+}
+
+type runtimePluginSecretSource struct {
+	runtimeTestSource
+	request PluginSecretRedemptionRequest
+}
+
+func (s *runtimePluginSecretSource) RedeemPluginSecrets(_ context.Context, request PluginSecretRedemptionRequest) ([]PluginRedeemedSecret, error) {
+	s.request = request
+	return []PluginRedeemedSecret{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: request.Handles[0].Purpose, Value: `"value"`}}, nil
+}
+
+func TestEmbeddedSyncAdapterForwardsPluginSecretRedemption(t *testing.T) {
+	source := &runtimePluginSecretSource{}
+	adapter := syncClientAdapter{source: source}
+	request := PluginSecretRedemptionRequest{
+		Revision: 7, GenerationID: "generation-a", InstanceID: "instance-a", PluginID: "example.rpc", OperationID: "operation-a",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Handles: []model.PluginSecretHandle{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:instance-a:/token"}},
+	}
+	secrets, err := adapter.RedeemPluginSecrets(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.request.GenerationID != request.GenerationID || len(secrets) != 1 || secrets[0].Value != `"value"` {
+		t.Fatalf("embedded redemption = request:%+v secrets:%+v", source.request, secrets)
+	}
 }
 
 func newRuntimeTestSource(snapshot Snapshot) *runtimeTestSource {

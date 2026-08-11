@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -54,6 +56,20 @@ type Runtime struct {
 func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	bridge := newSyncRequestBridge()
 	source := newSyncSourceWithBridge(store, cfg.LocalAgentID, bridge)
+	if secretStore, ok := store.(*storage.GormStore); ok {
+		keyring, keyErr := secrets.KeyringFromEnvironment()
+		if keyErr == nil {
+			vault, vaultErr := secrets.NewVault(secretStore, keyring)
+			if vaultErr != nil {
+				return nil, vaultErr
+			}
+			pluginService := service.NewPluginService(secretStore, filepath.Join(cfg.DataDir, "plugins", "packages"))
+			pluginService.SetSecretVault(vault)
+			source.SetPluginSecretSource(pluginService)
+		} else if !errors.Is(keyErr, secrets.ErrKeyNotConfigured) {
+			return nil, keyErr
+		}
+	}
 	sink := newStateSinkWithBridge(store, cfg.LocalAgentID, bridge)
 
 	runtime, err := newEmbeddedRuntime(
@@ -199,6 +215,25 @@ func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.Syn
 		}
 	}
 	return toEmbeddedSnapshot(snapshot), nil
+}
+
+func (a syncSourceAdapter) RedeemPluginSecrets(ctx context.Context, request goagentembedded.PluginSecretRedemptionRequest) ([]goagentembedded.PluginRedeemedSecret, error) {
+	if a.source == nil || a.source.pluginSecrets == nil {
+		return nil, errors.New("embedded plugin secret redemption is unavailable")
+	}
+	handles := make([]storage.PluginGenerationSecretHandle, len(request.Handles))
+	for index, handle := range request.Handles {
+		handles[index] = storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose}
+	}
+	response, err := a.source.pluginSecrets.RedeemAgentPluginSecrets(ctx, a.source.agentID, service.PluginSecretRedemptionRequest{Revision: request.Revision, GenerationID: request.GenerationID, InstanceID: request.InstanceID, PluginID: request.PluginID, OperationID: request.OperationID, PackageDigest: request.PackageDigest, ArtifactDigest: request.ArtifactDigest, Handles: handles})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]goagentembedded.PluginRedeemedSecret, len(response.Secrets))
+	for index, secret := range response.Secrets {
+		result[index] = goagentembedded.PluginRedeemedSecret{ID: secret.ID, Version: secret.Version, Digest: secret.Digest, Purpose: secret.Purpose, Value: secret.Value}
+	}
+	return result, nil
 }
 
 type stateSinkAdapter struct {

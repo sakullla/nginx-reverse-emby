@@ -369,7 +369,7 @@ func BuildPluginAgentRuntimeStatuses(agentID string, revision int64, generations
 		row := PluginAgentRuntimeStatusRow{
 			OperationID: generation.OperationID, AgentID: agentID, InstanceID: generation.InstanceID, PluginID: generation.PluginID,
 			Revision: revision, GenerationID: generation.ID, PackageDigest: generation.PackageDigest,
-			ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion,
+			ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion, ResourceGroupID: generation.Target.ResourceGroupID, TargetVersion: generation.Target.Version,
 		}
 		if generation.Revision != revision || generation.Target.ID != agentID {
 			return nil, ErrPluginGenerationConflict
@@ -471,7 +471,7 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
 			return err
 		}
-		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: report.AgentID, InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest}
+		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: report.AgentID, InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest, ResourceGroupID: result.ResourceGroupID, TargetVersion: result.TargetVersion}
 		if !samePluginAgentRuntimeFence(result, expected) {
 			return ErrPluginGenerationStale
 		}
@@ -534,6 +534,15 @@ func (s *GormStore) ListPluginAgentRuntimeStatuses(ctx context.Context, operatio
 	return rows, nil
 }
 
+func (s *GormStore) GetPluginAgentRuntimeStatusFence(ctx context.Context, operationID, agentID, instanceID string) (PluginAgentRuntimeStatusRow, bool, error) {
+	var row PluginAgentRuntimeStatusRow
+	err := s.db.WithContext(ctx).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", operationID, agentID, instanceID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PluginAgentRuntimeStatusRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
 func (s *GormStore) GetPluginOperation(ctx context.Context, operationID string) (PluginOperationRow, bool, error) {
 	var row PluginOperationRow
 	err := s.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(operationID)).First(&row).Error
@@ -551,7 +560,7 @@ func validatePluginAgentRuntimeStatusIdentity(row PluginAgentRuntimeStatusRow) e
 }
 
 func samePluginAgentRuntimeFence(left, right PluginAgentRuntimeStatusRow) bool {
-	return left.OperationID == right.OperationID && left.AgentID == right.AgentID && left.InstanceID == right.InstanceID && left.PluginID == right.PluginID && left.Revision == right.Revision && left.ConfigVersion == right.ConfigVersion && strings.EqualFold(left.GenerationID, right.GenerationID) && strings.EqualFold(left.PackageDigest, right.PackageDigest) && strings.EqualFold(left.ArtifactDigest, right.ArtifactDigest)
+	return left.OperationID == right.OperationID && left.AgentID == right.AgentID && left.InstanceID == right.InstanceID && left.PluginID == right.PluginID && left.Revision == right.Revision && left.ConfigVersion == right.ConfigVersion && left.ResourceGroupID == right.ResourceGroupID && left.TargetVersion == right.TargetVersion && strings.EqualFold(left.GenerationID, right.GenerationID) && strings.EqualFold(left.PackageDigest, right.PackageDigest) && strings.EqualFold(left.ArtifactDigest, right.ArtifactDigest)
 }
 
 func validPluginGenerationReportState(state string) bool {

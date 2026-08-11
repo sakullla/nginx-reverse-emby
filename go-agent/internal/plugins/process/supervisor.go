@@ -2,6 +2,9 @@ package process
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -51,8 +56,9 @@ type RuntimeLogEntry struct {
 }
 
 type RuntimeLogEvent struct {
-	Identity RuntimeLogIdentity
-	Entry    RuntimeLogEntry
+	CaptureID string
+	Identity  RuntimeLogIdentity
+	Entry     RuntimeLogEntry
 }
 
 type Status struct {
@@ -308,6 +314,8 @@ type Handle struct {
 	signalOnce  sync.Once
 	signalErr   error
 	once        bool
+	stdoutLog   *redactingWriter
+	stderrLog   *redactingWriter
 }
 
 func (s *Supervisor) Start(ctx context.Context, spec InstanceSpec) (*Handle, error) {
@@ -401,6 +409,9 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 	for {
 		stdout := newRuntimeLogWriter(s.output, handle.spec.SensitiveValues, "info", handle.spec.RuntimeLogIdentity)
 		stderr := newRuntimeLogWriter(s.output, handle.spec.SensitiveValues, "error", handle.spec.RuntimeLogIdentity)
+		handle.mu.Lock()
+		handle.stdoutLog, handle.stderrLog = stdout, stderr
+		handle.mu.Unlock()
 		var proc ManagedProcess
 		var cleanup func() error
 		var err error
@@ -432,6 +443,9 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 			first = false
 		}
 		err = errors.Join(proc.Wait(), stdout.Close(), stderr.Close())
+		handle.mu.Lock()
+		handle.stdoutLog, handle.stderrLog = nil, nil
+		handle.mu.Unlock()
 		now := time.Now().UTC()
 		handle.mu.Lock()
 		handle.process = nil
@@ -491,6 +505,39 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 }
 
 func (h *Handle) Status() Status { h.mu.RLock(); defer h.mu.RUnlock(); return h.status }
+
+// AddSensitiveValues extends redaction for the duration of a transient host
+// call. The values are kept only by active writers and can be explicitly
+// cleared as soon as the call returns.
+func (h *Handle) AddSensitiveValues(values []string) {
+	if h == nil || len(values) == 0 {
+		return
+	}
+	h.mu.RLock()
+	stdout, stderr := h.stdoutLog, h.stderrLog
+	h.mu.RUnlock()
+	if stdout != nil {
+		stdout.AddSecrets(values)
+	}
+	if stderr != nil {
+		stderr.AddSecrets(values)
+	}
+}
+
+func (h *Handle) ClearSensitiveValues(values []string) {
+	if h == nil || len(values) == 0 {
+		return
+	}
+	h.mu.RLock()
+	stdout, stderr := h.stdoutLog, h.stderrLog
+	h.mu.RUnlock()
+	if stdout != nil {
+		stdout.ClearSecrets(values)
+	}
+	if stderr != nil {
+		stderr.ClearSecrets(values)
+	}
+}
 
 // Done is closed after the supervised process has exited and all per-attempt
 // cleanup has completed.
@@ -722,14 +769,15 @@ const (
 )
 
 type redactingWriter struct {
-	target   io.Writer
-	secrets  []string
-	level    string
-	identity RuntimeLogIdentity
-	mu       sync.Mutex
-	line     []byte
-	dropping bool
-	closed   bool
+	target           io.Writer
+	secrets          []string
+	transientSecrets map[string]int
+	level            string
+	identity         RuntimeLogIdentity
+	mu               sync.Mutex
+	line             []byte
+	dropping         bool
+	closed           bool
 }
 
 func newRedactingWriter(target io.Writer, secrets []string) *redactingWriter {
@@ -769,6 +817,58 @@ func (w *redactingWriter) Write(p []byte) (int, error) {
 		w.line = append(w.line, value)
 	}
 	return len(p), nil
+}
+
+func (w *redactingWriter) AddSecrets(values []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if count := w.transientSecrets[value]; count > 0 {
+			w.transientSecrets[value] = count + 1
+			continue
+		}
+		if slices.Contains(w.secrets, value) {
+			continue
+		}
+		if w.transientSecrets == nil {
+			w.transientSecrets = make(map[string]int)
+		}
+		w.secrets = append(w.secrets, value)
+		w.transientSecrets[value] = 1
+	}
+}
+
+func (w *redactingWriter) ClearSecrets(values []string) {
+	if w == nil || len(values) == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	remove := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		count := w.transientSecrets[value]
+		if count > 1 {
+			w.transientSecrets[value] = count - 1
+			continue
+		}
+		if count == 1 {
+			delete(w.transientSecrets, value)
+			remove[value] = struct{}{}
+		}
+	}
+	kept := w.secrets[:0]
+	for _, value := range w.secrets {
+		if _, transient := remove[value]; !transient {
+			kept = append(kept, value)
+		}
+	}
+	w.secrets = append([]string(nil), kept...)
 }
 
 func (w *redactingWriter) Close() error {
@@ -895,9 +995,14 @@ var runtimeLogEvents = struct {
 	events []RuntimeLogEvent
 }{}
 
+var runtimeLogCaptureCounter atomic.Uint64
+
 func publishRuntimeLogEvent(event RuntimeLogEvent) {
 	if event.Identity.ProviderGenerationID == "" || event.Identity.InstanceID == "" || event.Entry.Message == "" {
 		return
+	}
+	if event.CaptureID == "" {
+		event.CaptureID = nextRuntimeLogCaptureID()
 	}
 	runtimeLogEvents.Lock()
 	defer runtimeLogEvents.Unlock()
@@ -909,26 +1014,66 @@ func publishRuntimeLogEvent(event RuntimeLogEvent) {
 	runtimeLogEvents.events = append(runtimeLogEvents.events, event)
 }
 
+func nextRuntimeLogCaptureID() string {
+	var random [sha256.Size]byte
+	if _, err := io.ReadFull(cryptorand.Reader, random[:]); err == nil {
+		return hex.EncodeToString(random[:])
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%d", os.Getpid(), time.Now().UnixNano(), runtimeLogCaptureCounter.Add(1))))
+	return hex.EncodeToString(digest[:])
+}
+
 func DrainRuntimeLogEvents() []RuntimeLogEvent {
-	runtimeLogEvents.Lock()
-	defer runtimeLogEvents.Unlock()
-	events := append([]RuntimeLogEvent(nil), runtimeLogEvents.events...)
-	runtimeLogEvents.events = nil
+	events := SnapshotRuntimeLogEvents()
+	CommitRuntimeLogEvents(runtimeLogCaptureIDs(events))
 	return events
 }
 
-func RestoreRuntimeLogEvents(events []RuntimeLogEvent) {
-	if len(events) == 0 {
-		return
+// SnapshotRuntimeLogEvents returns the current queue without changing it. A
+// durable consumer must commit the returned prefix only after its own fsynced
+// enqueue succeeds.
+func SnapshotRuntimeLogEvents() []RuntimeLogEvent {
+	runtimeLogEvents.Lock()
+	defer runtimeLogEvents.Unlock()
+	return append([]RuntimeLogEvent(nil), runtimeLogEvents.events...)
+}
+
+// CommitRuntimeLogEvents removes exactly count events from the queue prefix.
+// Events appended after a snapshot remain queued.
+func CommitRuntimeLogEvents(captureIDs []string) bool {
+	if len(captureIDs) == 0 {
+		return true
 	}
 	runtimeLogEvents.Lock()
 	defer runtimeLogEvents.Unlock()
-	remaining := maxPendingRuntimeLogEvents - len(runtimeLogEvents.events)
-	if remaining <= 0 {
-		return
+	if len(captureIDs) > len(runtimeLogEvents.events) {
+		return false
 	}
-	if len(events) > remaining {
-		events = events[:remaining]
+	for index, captureID := range captureIDs {
+		if runtimeLogEvents.events[index].CaptureID != captureID {
+			return false
+		}
 	}
-	runtimeLogEvents.events = append(append([]RuntimeLogEvent(nil), events...), runtimeLogEvents.events...)
+	runtimeLogEvents.events = append([]RuntimeLogEvent(nil), runtimeLogEvents.events[len(captureIDs):]...)
+	return true
+}
+
+func runtimeLogCaptureIDs(events []RuntimeLogEvent) []string {
+	ids := make([]string, len(events))
+	for index := range events {
+		ids[index] = events[index].CaptureID
+	}
+	return ids
+}
+
+// EnqueueRuntimeLogEvents is used by integration boundaries and tests that
+// restore already-sanitized events. It never stores raw process output.
+func EnqueueRuntimeLogEvents(events []RuntimeLogEvent) {
+	for _, event := range events {
+		publishRuntimeLogEvent(event)
+	}
+}
+
+func RestoreRuntimeLogEvents(events []RuntimeLogEvent) {
+	EnqueueRuntimeLogEvents(events)
 }

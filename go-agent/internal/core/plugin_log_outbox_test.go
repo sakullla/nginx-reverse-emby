@@ -1,0 +1,179 @@
+package core
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+)
+
+func TestFilesystemPluginLogOutboxSurvivesRestartAndExactMultiBatchACK(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{pluginLogTestDraft("same")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(2), []model.PluginRuntimeLogReport{pluginLogTestDraft("same")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].Sequence != 1 || second[0].Sequence != 2 {
+		t.Fatalf("sequences = %d, %d", first[0].Sequence, second[0].Sequence)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(3), []model.PluginRuntimeLogReport{pluginLogTestDraft("later")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.AcknowledgePluginLogReports(append(first, second...)); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.AcknowledgePluginLogReports(append(first, second...)); err != nil {
+		t.Fatal(err)
+	}
+	afterACK, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := afterACK.PendingPluginLogReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Sequence != 3 || pending[0].Entries[0].Message != third[0].Entries[0].Message {
+		t.Fatalf("pending after exact ACK = %+v", pending)
+	}
+}
+
+func TestFilesystemPluginLogOutboxRecoversPartialCrashTail(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{pluginLogTestDraft("before")}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(filepath.Join(directory, pluginLogOutboxFile), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"version":1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(2), []model.PluginRuntimeLogReport{pluginLogTestDraft("after")}); err != nil {
+		t.Fatal(err)
+	}
+	final, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := final.PendingPluginLogReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 || pending[0].Sequence != 1 || pending[1].Sequence != 2 {
+		t.Fatalf("recovered pending = %+v", pending)
+	}
+}
+
+func TestFilesystemPluginLogOutboxRetryAfterDirectorySyncFailureIsIdempotent(t *testing.T) {
+	store, err := NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	store.syncDirectory = func(string) error {
+		if calls.Add(1) == 1 {
+			return fmt.Errorf("injected directory sync failure")
+		}
+		return nil
+	}
+	draft := []model.PluginRuntimeLogReport{pluginLogTestDraft("uncertain")}
+	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), draft); err == nil {
+		t.Fatal("enqueue accepted uncertain directory durability")
+	}
+	retried, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.PendingPluginLogReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retried) != 1 || retried[0].Sequence != 1 || len(pending) != 1 || pending[0].Sequence != 1 {
+		t.Fatalf("idempotent retry = retried:%+v pending:%+v", retried, pending)
+	}
+	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{pluginLogTestDraft("different capture")}); err == nil {
+		t.Fatal("capture batch identity collision was accepted")
+	}
+}
+
+func TestFilesystemPluginLogOutboxSerializesConcurrentEnqueue(t *testing.T) {
+	store, err := NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = 16
+	var wait sync.WaitGroup
+	errorsByWorker := make(chan error, count)
+	for index := 0; index < count; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			_, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(index+1), []model.PluginRuntimeLogReport{pluginLogTestDraft(fmt.Sprintf("event-%d", index))})
+			errorsByWorker <- err
+		}(index)
+	}
+	wait.Wait()
+	close(errorsByWorker)
+	for err := range errorsByWorker {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending, err := store.PendingPluginLogReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[uint64]struct{}, count)
+	for _, report := range pending {
+		seen[report.Sequence] = struct{}{}
+	}
+	if len(pending) != count || len(seen) != count {
+		t.Fatalf("concurrent pending sequences = %+v", pending)
+	}
+	for sequence := uint64(1); sequence <= count; sequence++ {
+		if _, ok := seen[sequence]; !ok {
+			t.Fatalf("missing sequence %d", sequence)
+		}
+	}
+}
+
+func pluginLogTestDraft(message string) model.PluginRuntimeLogReport {
+	return model.PluginRuntimeLogReport{
+		Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Entries: []model.PluginRuntimeLogEntry{{Level: "info", Message: message}},
+	}
+}
+
+func pluginLogTestBatchID(value int) string { return fmt.Sprintf("%064x", value) }

@@ -58,6 +58,47 @@ func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.R
 	_, _ = w.Write(verified)
 }
 
+func (d Dependencies) handleAgentPluginSecretRedemption(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	agent, ok := d.authenticateRevisionAgent(w, r)
+	if !ok {
+		return
+	}
+	if d.PluginSecretService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin secret redemption unavailable"))
+		return
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	var request service.PluginSecretRedemptionRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
+		return
+	}
+	response, err := d.PluginSecretService.RedeemAgentPluginSecrets(r.Context(), agent.ID, request)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidArgument):
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
+		case errors.Is(err, storage.ErrPluginGenerationStale), errors.Is(err, storage.ErrPluginGenerationConflict):
+			writeJSON(w, http.StatusConflict, errorPayload("plugin secret generation is no longer authoritative"))
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorPayload("plugin secret redemption failed"))
+		}
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

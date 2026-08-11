@@ -40,26 +40,26 @@ func TestSyncControllerPluginLogOutboxPersistsSequencesAndAcknowledgesExactSentB
 	if err := first.Request.PluginLogsAcknowledged(); err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.LoadRuntimeState()
+	pending, err := store.PendingPluginLogReports()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.PluginLogReports) != 1 || state.PluginLogReports[0].Sequence != 2 || state.PluginLogReports[0].Entries[0].Message != "second" {
-		t.Fatalf("exact acknowledgement removed concurrent report: %+v", state.PluginLogReports)
+	if len(pending) != 1 || pending[0].Sequence != 2 || pending[0].Entries[0].Message != "second" {
+		t.Fatalf("exact acknowledgement removed concurrent report: %+v", pending)
 	}
 	if err := first.Request.PluginLogsAcknowledged(); err != nil {
 		t.Fatal(err)
 	}
-	state, _ = store.LoadRuntimeState()
-	if len(state.PluginLogReports) != 1 || state.PluginLogReports[0].Sequence != 2 {
-		t.Fatalf("duplicate acknowledgement changed outbox: %+v", state.PluginLogReports)
+	pending, _ = store.PendingPluginLogReports()
+	if len(pending) != 1 || pending[0].Sequence != 2 {
+		t.Fatalf("duplicate acknowledgement changed outbox: %+v", pending)
 	}
 	if err := second.Request.PluginLogsAcknowledged(); err != nil {
 		t.Fatal(err)
 	}
-	state, _ = store.LoadRuntimeState()
-	if len(state.PluginLogReports) != 0 {
-		t.Fatalf("successful acknowledgement retained reports: %+v", state.PluginLogReports)
+	pending, _ = store.PendingPluginLogReports()
+	if len(pending) != 0 {
+		t.Fatalf("successful acknowledgement retained reports: %+v", pending)
 	}
 
 	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{syncControllerPluginLogEvent("third")})
@@ -85,12 +85,12 @@ func TestSyncControllerPluginLogOutboxRetainsFailedHeartbeat(t *testing.T) {
 	if err := controller.PerformSyncPlan(t.Context(), plan); err == nil {
 		t.Fatal("PerformSyncPlan() accepted failed heartbeat")
 	}
-	state, err := store.LoadRuntimeState()
+	pending, err := store.PendingPluginLogReports()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.PluginLogReports) != 1 || state.PluginLogReports[0].Entries[0].Message != "retain" {
-		t.Fatalf("failed heartbeat dropped plugin logs: %+v", state.PluginLogReports)
+	if len(pending) != 1 || pending[0].Entries[0].Message != "retain" {
+		t.Fatalf("failed heartbeat dropped plugin logs: %+v", pending)
 	}
 }
 
@@ -1253,10 +1253,11 @@ type syncControllerStore struct {
 	failOnDesiredSave int
 	failOnAppliedSave int
 	failOnRuntimeSave int
+	pluginLogs        pluginLogOutboxState
 }
 
 func newSyncControllerStore() *syncControllerStore {
-	return &syncControllerStore{}
+	return &syncControllerStore{pluginLogs: newPluginLogOutboxState()}
 }
 
 func (s *syncControllerStore) SaveDesiredSnapshot(snapshot model.Snapshot) error {
@@ -1296,6 +1297,20 @@ func (s *syncControllerStore) SaveRuntimeState(state RuntimeState) error {
 
 func (s *syncControllerStore) LoadRuntimeState() (RuntimeState, error) {
 	return copySyncControllerRuntimeState(s.runtime), nil
+}
+
+func (s *syncControllerStore) EnqueuePluginLogReports(batchID string, drafts []model.PluginRuntimeLogReport) ([]model.PluginRuntimeLogReport, error) {
+	reports, _, err := s.pluginLogs.enqueue(batchID, drafts)
+	return reports, err
+}
+
+func (s *syncControllerStore) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, error) {
+	return model.ClonePluginRuntimeLogReports(s.pluginLogs.pending), nil
+}
+
+func (s *syncControllerStore) AcknowledgePluginLogReports(sent []model.PluginRuntimeLogReport) error {
+	_, _, _, err := s.pluginLogs.acknowledge(sent)
+	return err
 }
 
 func copySyncControllerRuntimeState(state RuntimeState) RuntimeState {

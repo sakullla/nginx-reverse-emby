@@ -143,9 +143,17 @@ func (s *PluginService) OperationsForActor(ctx context.Context, pluginID string,
 		}
 		result = make([]PluginOperationDetail, 0, len(operations))
 		for _, operation := range operations {
-			if _, ok := visibleGroups[operation.ResourceGroupID]; !ok || operation.InstanceID == "" {
+			visibleScopes := make([]PluginOperationScopeDetail, 0, len(operation.Scopes))
+			for _, scope := range operation.Scopes {
+				if _, ok := visibleGroups[scope.ResourceGroupID]; ok {
+					visibleScopes = append(visibleScopes, scope)
+				}
+			}
+			if len(visibleScopes) == 0 {
 				continue
 			}
+			operation.Scopes = visibleScopes
+			operation.InstanceID, operation.ResourceGroupID = "", ""
 			operation.ActorID, operation.SessionID, operation.CorrelationID = "", "", ""
 			var all map[string]json.RawMessage
 			if err := json.Unmarshal(operation.AgentResults, &all); err != nil {

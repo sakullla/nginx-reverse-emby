@@ -83,8 +83,11 @@ func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, jo
 		&PluginPolicyAgentRevisionRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
+		&PluginOperationScopeRow{},
+		&PluginOperationSecretRow{},
 		&PluginAgentRuntimeStatusRow{},
 		&PluginRuntimeLogRow{},
+		&PluginControlPlaneLogOutboxRow{},
 		&PluginRuntimeLogReportRow{},
 	}
 	for _, table := range tables {
@@ -1626,10 +1629,16 @@ func newSliceForModel(model any) any {
 		return &[]PluginGrantRow{}
 	case *PluginOperationRow:
 		return &[]PluginOperationRow{}
+	case *PluginOperationScopeRow:
+		return &[]PluginOperationScopeRow{}
+	case *PluginOperationSecretRow:
+		return &[]PluginOperationSecretRow{}
 	case *PluginAgentRuntimeStatusRow:
 		return &[]PluginAgentRuntimeStatusRow{}
 	case *PluginRuntimeLogRow:
 		return &[]PluginRuntimeLogRow{}
+	case *PluginControlPlaneLogOutboxRow:
+		return &[]PluginControlPlaneLogOutboxRow{}
 	case *PluginRuntimeLogReportRow:
 		return &[]PluginRuntimeLogReportRow{}
 	default:
@@ -1739,9 +1748,15 @@ func isEmptyMigrationSlice(rows any) bool {
 		return len(*typed) == 0
 	case *[]PluginOperationRow:
 		return len(*typed) == 0
+	case *[]PluginOperationScopeRow:
+		return len(*typed) == 0
+	case *[]PluginOperationSecretRow:
+		return len(*typed) == 0
 	case *[]PluginAgentRuntimeStatusRow:
 		return len(*typed) == 0
 	case *[]PluginRuntimeLogRow:
+		return len(*typed) == 0
+	case *[]PluginControlPlaneLogOutboxRow:
 		return len(*typed) == 0
 	case *[]PluginRuntimeLogReportRow:
 		return len(*typed) == 0

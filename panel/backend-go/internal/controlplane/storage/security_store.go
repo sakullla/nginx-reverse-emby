@@ -1526,6 +1526,9 @@ func (s *GormStore) RotateSecret(ctx context.Context, secret SecretRow, version 
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", secret.ID).First(&current).Error; err != nil {
 			return err
 		}
+		if current.RetiredAt != nil {
+			return errors.New("secret is retired")
+		}
 		if version.Version != current.ActiveVersion+1 {
 			return fmt.Errorf("secret version conflict")
 		}
@@ -1545,7 +1548,7 @@ func (s *GormStore) GetSecret(ctx context.Context, id string) (SecretRow, error)
 }
 
 func (s *GormStore) ListSecrets(ctx context.Context, resourceGroupIDs []string) ([]SecretRow, error) {
-	query := s.db.WithContext(ctx).Order("name ASC")
+	query := s.db.WithContext(ctx).Where("retired_at IS NULL").Order("name ASC")
 	if resourceGroupIDs != nil {
 		if len(resourceGroupIDs) == 0 {
 			return []SecretRow{}, nil
@@ -1565,6 +1568,6 @@ func (s *GormStore) GetSecretVersion(ctx context.Context, id string, version uin
 
 func (s *GormStore) MarkSecretUsed(ctx context.Context, id string, at time.Time) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		return tx.Model(&SecretRow{}).Where("id = ?", id).Update("last_used_at", at).Error
+		return tx.Model(&SecretRow{}).Where("id = ? AND retired_at IS NULL", id).Update("last_used_at", at).Error
 	})
 }

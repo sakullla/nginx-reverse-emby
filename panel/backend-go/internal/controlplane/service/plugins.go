@@ -231,25 +231,31 @@ type PluginGrantDetail struct {
 }
 
 type PluginOperationDetail struct {
-	ID                  string          `json:"id"`
-	PluginID            string          `json:"plugin_id"`
-	InstanceID          string          `json:"instance_id,omitempty"`
-	ResourceGroupID     string          `json:"resource_group_id,omitempty"`
-	Kind                string          `json:"kind"`
-	Status              string          `json:"status"`
-	TargetPackageDigest string          `json:"target_package_digest,omitempty"`
-	TargetRevision      int64           `json:"target_revision,omitempty"`
-	AgentResults        json.RawMessage `json:"agent_results"`
-	ErrorClass          string          `json:"error_class,omitempty"`
-	Error               string          `json:"error,omitempty"`
-	ActorID             string          `json:"actor_id"`
-	SessionID           string          `json:"session_id,omitempty"`
-	CorrelationID       string          `json:"correlation_id,omitempty"`
-	SourceID            string          `json:"source_id,omitempty"`
-	SourceKind          string          `json:"source_kind,omitempty"`
-	SourceRiskLabel     string          `json:"source_risk_label,omitempty"`
-	CreatedAt           time.Time       `json:"created_at"`
-	CompletedAt         *time.Time      `json:"completed_at,omitempty"`
+	ID                  string                       `json:"id"`
+	PluginID            string                       `json:"plugin_id"`
+	InstanceID          string                       `json:"instance_id,omitempty"`
+	ResourceGroupID     string                       `json:"resource_group_id,omitempty"`
+	Scopes              []PluginOperationScopeDetail `json:"scopes"`
+	Kind                string                       `json:"kind"`
+	Status              string                       `json:"status"`
+	TargetPackageDigest string                       `json:"target_package_digest,omitempty"`
+	TargetRevision      int64                        `json:"target_revision,omitempty"`
+	AgentResults        json.RawMessage              `json:"agent_results"`
+	ErrorClass          string                       `json:"error_class,omitempty"`
+	Error               string                       `json:"error,omitempty"`
+	ActorID             string                       `json:"actor_id"`
+	SessionID           string                       `json:"session_id,omitempty"`
+	CorrelationID       string                       `json:"correlation_id,omitempty"`
+	SourceID            string                       `json:"source_id,omitempty"`
+	SourceKind          string                       `json:"source_kind,omitempty"`
+	SourceRiskLabel     string                       `json:"source_risk_label,omitempty"`
+	CreatedAt           time.Time                    `json:"created_at"`
+	CompletedAt         *time.Time                   `json:"completed_at,omitempty"`
+}
+
+type PluginOperationScopeDetail struct {
+	InstanceID      string `json:"instance_id"`
+	ResourceGroupID string `json:"resource_group_id"`
 }
 
 type PluginDetail struct {
@@ -466,13 +472,32 @@ func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]Plug
 	if err != nil {
 		return nil, err
 	}
+	scopesByOperation := make(map[string][]PluginOperationScopeDetail)
+	if scopeStore, ok := s.store.(interface {
+		ListPluginOperationScopes(context.Context, string) ([]storage.PluginOperationScopeRow, error)
+	}); ok {
+		scopes, err := scopeStore.ListPluginOperationScopes(ctx, pluginID)
+		if err != nil {
+			return nil, err
+		}
+		for _, scope := range scopes {
+			scopesByOperation[scope.OperationID] = append(scopesByOperation[scope.OperationID], PluginOperationScopeDetail{InstanceID: scope.InstanceID, ResourceGroupID: scope.ResourceGroupID})
+		}
+	}
 	result := make([]PluginOperationDetail, 0, len(rows))
 	for _, row := range rows {
 		agentResults, err := pluginReadStatusObject(row.AgentResultsJSON)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, PluginOperationDetail{ID: row.ID, PluginID: row.PluginID, InstanceID: row.InstanceID, ResourceGroupID: row.ResourceGroupID, Kind: row.Kind, Status: row.Status, TargetPackageDigest: row.TargetPackageDigest, TargetRevision: row.TargetRevision, AgentResults: agentResults, ErrorClass: row.ErrorClass, Error: row.Error, ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID, SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: row.CreatedAt, CompletedAt: row.CompletedAt})
+		scopes := scopesByOperation[row.ID]
+		if scopes == nil && row.InstanceID != "" && row.ResourceGroupID != "" {
+			scopes = []PluginOperationScopeDetail{{InstanceID: row.InstanceID, ResourceGroupID: row.ResourceGroupID}}
+		}
+		if scopes == nil {
+			scopes = []PluginOperationScopeDetail{}
+		}
+		result = append(result, PluginOperationDetail{ID: row.ID, PluginID: row.PluginID, InstanceID: row.InstanceID, ResourceGroupID: row.ResourceGroupID, Scopes: scopes, Kind: row.Kind, Status: row.Status, TargetPackageDigest: row.TargetPackageDigest, TargetRevision: row.TargetRevision, AgentResults: agentResults, ErrorClass: row.ErrorClass, Error: row.Error, ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID, SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: row.CreatedAt, CompletedAt: row.CompletedAt})
 	}
 	return result, nil
 }
@@ -931,6 +956,10 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 	if manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "control-plane" {
 		return controlPlanePluginRuntimePlan{}, nil
 	}
+	var configSchema map[string]any
+	if err := json.Unmarshal([]byte(packageRow.ConfigSchemaJSON), &configSchema); err != nil || configSchema == nil {
+		return controlPlanePluginRuntimePlan{}, ErrPluginReadProjection
+	}
 	plan := controlPlanePluginRuntimePlan{Controlled: true}
 	instances, err := s.store.ListPluginInstances(ctx, operation.PluginID)
 	if err != nil {
@@ -1002,21 +1031,8 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 			return plan, err
 		}
 		secretHandles := make([]storage.PluginGenerationSecretHandle, 0, len(instanceSecretHandles))
-		logSecrets := make([]string, 0, len(instanceSecretHandles))
 		for _, handle := range instanceSecretHandles {
 			secretHandles = append(secretHandles, storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose})
-			if s.secretVault == nil {
-				return plan, errors.New("control-plane plugin secret vault is unavailable")
-			}
-			plaintext, err := s.secretVault.Resolve(ctx, secrets.OperationContext{ActorID: operation.ActorID, ResourceGroupID: resourceGroupID, CorrelationID: operation.CorrelationID}, handle.ID)
-			if err != nil {
-				return plan, err
-			}
-			var text string
-			if json.Unmarshal(plaintext, &text) != nil {
-				text = string(plaintext)
-			}
-			logSecrets = append(logSecrets, text)
 		}
 		generation := storage.PluginGeneration{
 			InstanceID: instance.ID, OperationID: operation.ID, Revision: operation.TargetRevision,
@@ -1032,11 +1048,23 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		if err != nil {
 			return plan, err
 		}
+		generationID := generation.ID
+		configRaw, handlesRaw, group, actorID, correlationID := config, secretHandlesJSON, resourceGroupID, operation.ActorID, operation.CorrelationID
 		plan.Candidates = append(plan.Candidates, pluginhost.Candidate{
-			InstanceID: instance.ID,
-			Artifact:   pluginhost.Artifact{CachePath: filepath.Join(packageRow.CachePath, filepath.FromSlash(runtimeArtifact.Path)), SHA256: runtimeArtifact.SHA256, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH},
-			Identity:   pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
-			Config:     append([]byte(nil), generation.Config...), LogSecrets: logSecrets, Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
+			InstanceID: instance.ID, OperationID: operation.ID, ResourceGroupID: resourceGroupID, Revision: operation.TargetRevision,
+			Artifact: pluginhost.Artifact{CachePath: filepath.Join(packageRow.CachePath, filepath.FromSlash(runtimeArtifact.Path)), SHA256: runtimeArtifact.SHA256, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH},
+			Identity: pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
+			Config:   append([]byte(nil), generation.Config...), ResolveConfigAndSecrets: func(resolveCtx context.Context, requestedGeneration string) ([]byte, []string, error) {
+				if requestedGeneration != generationID {
+					return nil, nil, storage.ErrPluginGenerationStale
+				}
+				materialized, handles, err := s.materializeStoredPluginConfig(resolveCtx, configSchema, configRaw, handlesRaw, group, actorID, correlationID)
+				if err != nil {
+					return nil, nil, err
+				}
+				exact, err := pluginSecretLogValues(materialized, handles)
+				return append([]byte(nil), materialized...), exact, err
+			}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
 			Deadline: time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
 			Restart: manifest.FailurePolicy.Restart, RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
 		})
@@ -1100,7 +1128,9 @@ func (s *PluginService) materializeStoredPluginConfig(ctx context.Context, schem
 		var secret any
 		secretDecoder := json.NewDecoder(strings.NewReader(string(plaintext)))
 		secretDecoder.UseNumber()
-		if err := secretDecoder.Decode(&secret); err != nil || pluginSetJSONPointer(value, handle.Pointer, secret) != nil {
+		decodeErr := secretDecoder.Decode(&secret)
+		clear(plaintext)
+		if decodeErr != nil || pluginSetJSONPointer(value, handle.Pointer, secret) != nil {
 			return nil, nil, ErrPluginReadProjection
 		}
 	}
@@ -1202,7 +1232,11 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 			return storage.PluginInstanceRow{}, ErrPluginReadProjection
 		}
 	}
-	publicConfig, replacements, retainedHandles, err := pluginPrepareBrokeredConfig(schema, request.Config, currentHandles, request.SecretReplacements)
+	currentConfig := json.RawMessage(instance.ConfigJSON)
+	if !exists || strings.TrimSpace(string(currentConfig)) == "" {
+		currentConfig = json.RawMessage(`{}`)
+	}
+	publicConfig, replacements, retainedHandles, err := pluginPrepareBrokeredConfig(schema, currentConfig, request.Config, currentHandles, request.SecretReplacements)
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}

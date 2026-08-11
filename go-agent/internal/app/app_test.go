@@ -18,6 +18,7 @@ import (
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 	pluginwasm "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm"
 	"io"
 	"log/slog"
@@ -85,6 +86,9 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	if app.syncClient == nil {
 		t.Fatal("syncClient = nil")
 	}
+	if app.rpcHost == nil || !app.rpcHost.SecretRedemptionReady() {
+		t.Fatal("remote RPC host plugin secret redeemer is not wired")
+	}
 	if app.pkiStore == nil || app.pkiStore.Root() != filepath.Join(cfg.DataDir, "pki") {
 		t.Fatalf("pkiStore root = %q, want %q", app.pkiStore.Root(), filepath.Join(cfg.DataDir, "pki"))
 	}
@@ -107,6 +111,36 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	if transport.TLSHandshakeTimeout != 22*time.Second {
 		t.Fatalf("task TLSHandshakeTimeout = %v", transport.TLSHandshakeTimeout)
 	}
+}
+
+func TestNewAppWiresGenerationFencedPluginSecretRedeemer(t *testing.T) {
+	client := appSecretRedeemingSyncClient{}
+	application := newAppWithAllDeps(Config{DataDir: t.TempDir()}, core.NewInMemory(), client, nil, nil)
+	t.Cleanup(func() { _ = application.Close() })
+	if application.rpcHost == nil || !application.rpcHost.SecretRedemptionReady() {
+		t.Fatal("RPC host did not receive the sync client's plugin secret redeemer")
+	}
+}
+
+func TestNewEmbeddedWiresGenerationFencedPluginSecretRedeemer(t *testing.T) {
+	application, err := NewEmbedded(Config{AgentID: "local", AgentName: "local", DataDir: t.TempDir()}, core.NewInMemory(), appSecretRedeemingSyncClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	if application.PluginRPCHost() == nil || !application.PluginRPCHost().SecretRedemptionReady() {
+		t.Fatal("embedded RPC host did not receive the local plugin secret redeemer")
+	}
+}
+
+type appSecretRedeemingSyncClient struct{}
+
+func (appSecretRedeemingSyncClient) Sync(context.Context, SyncRequest) (Snapshot, error) {
+	return Snapshot{}, nil
+}
+
+func (appSecretRedeemingSyncClient) RedeemPluginSecrets(context.Context, model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	return nil, nil
 }
 
 func TestNewRegistersConfiguredModules(t *testing.T) {
@@ -1053,3 +1087,4 @@ func extractPrivateTransport(t *testing.T, client any) *http.Transport {
 }
 
 var _ SyncClient = (*control.SyncClient)(nil)
+var _ pluginrpc.SecretRedeemer = (*control.SyncClient)(nil)

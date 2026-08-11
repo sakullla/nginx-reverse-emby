@@ -19,14 +19,15 @@ type Store interface {
 }
 
 type InMemory struct {
-	mu      stdsync.RWMutex
-	desired Snapshot
-	applied Snapshot
-	runtime RuntimeState
+	mu         stdsync.RWMutex
+	desired    Snapshot
+	applied    Snapshot
+	runtime    RuntimeState
+	pluginLogs pluginLogOutboxState
 }
 
 func NewInMemory() *InMemory {
-	return &InMemory{}
+	return &InMemory{pluginLogs: newPluginLogOutboxState()}
 }
 
 func (s *InMemory) SaveDesiredSnapshot(snapshot Snapshot) error {
@@ -82,4 +83,24 @@ func (s *InMemory) SaveSnapshot(snapshot Snapshot) error {
 
 func (s *InMemory) LoadSnapshot() (Snapshot, error) {
 	return s.LoadDesiredSnapshot()
+}
+
+func (s *InMemory) EnqueuePluginLogReports(batchID string, drafts []model.PluginRuntimeLogReport) ([]model.PluginRuntimeLogReport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	assigned, _, err := s.pluginLogs.enqueue(batchID, drafts)
+	return model.ClonePluginRuntimeLogReports(assigned), err
+}
+
+func (s *InMemory) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return model.ClonePluginRuntimeLogReports(s.pluginLogs.pending), nil
+}
+
+func (s *InMemory) AcknowledgePluginLogReports(sent []model.PluginRuntimeLogReport) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _, _, err := s.pluginLogs.acknowledge(sent)
+	return err
 }

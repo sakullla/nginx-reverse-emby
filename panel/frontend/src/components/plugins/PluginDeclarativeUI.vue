@@ -2,13 +2,23 @@
 import { reactive, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
 
-const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
+const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, secretFields: { type: Array, default: () => [] }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
 const emit = defineEmits(['submit', 'dynamic'])
 const model = reactive({})
 const targets = reactive({})
+const secretReplacements = reactive({})
 watch(() => props.config, reset, { immediate: true, deep: true })
 function clone(value) { return JSON.parse(JSON.stringify(value || {})) }
-function reset() { for (const key of Object.keys(model)) delete model[key]; Object.assign(model, clone(props.config)) }
+function reset() {
+  for (const key of Object.keys(model)) delete model[key]
+  for (const key of Object.keys(secretReplacements)) delete secretReplacements[key]
+  Object.assign(model, clone(props.config))
+}
+function secretPresent(pointer) { return props.secretFields.some((field) => field.pointer === pointer && field.present) }
+function setSecret(pointer, value) {
+  if (value === '') delete secretReplacements[pointer]
+  else secretReplacements[pointer] = value
+}
 function setValue(pointer, value) {
   const parts = String(pointer).split('/').slice(1).map((part) => part.replaceAll('~1', '/').replaceAll('~0', '~'))
   let current = model
@@ -17,7 +27,7 @@ function setValue(pointer, value) {
 }
 function action(action) {
 	if (action.type === 'dynamic' ? !props.canAct : !props.canConfigure) return
-  if (action.type === 'submit') emit('submit', { config: clone(model), secret_replacements: {} })
+  if (action.type === 'submit') emit('submit', { config: clone(model), secret_replacements: clone(secretReplacements) })
   else if (action.type === 'reset' && (!action.confirm || window.confirm(action.confirm))) reset()
   else if (action.type === 'dynamic' && (!action.confirm || window.confirm(action.confirm))) emit('dynamic', { action, target_id: targets[action.id] || '', confirmed: true })
 }
@@ -26,7 +36,7 @@ function action(action) {
 <template>
   <section class="declarative-ui">
     <header><h3>{{ document.title }}</h3><p v-if="document.description">{{ document.description }}</p></header>
-		<template v-if="canConfigure"><PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" @change="setValue" /></template>
+		<template v-if="canConfigure"><PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" @change="setValue" @secret="setSecret" /></template>
     <div class="declarative-actions">
 			<template v-for="item in (document.actions || []).filter((action) => action.type === 'dynamic' ? canAct : canConfigure)" :key="item.id">
         <label v-if="item.type === 'dynamic'" class="declarative-target"><span>{{ item.target_kind }} ID</span><input v-model="targets[item.id]" type="text" autocomplete="off"></label>

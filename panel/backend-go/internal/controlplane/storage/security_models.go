@@ -154,6 +154,7 @@ type SecretRow struct {
 	CreatedAt       time.Time `gorm:"not null"`
 	RotatedAt       time.Time `gorm:"not null"`
 	LastUsedAt      *time.Time
+	RetiredAt       *time.Time `gorm:"index"`
 }
 
 type SecretVersionRow struct {

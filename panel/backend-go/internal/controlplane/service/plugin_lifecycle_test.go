@@ -64,6 +64,39 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if err != nil || len(detail.Instances) != 1 || strings.Contains(string(detail.Instances[0].Config), "install-plaintext") || len(detail.Instances[0].SecretFields) != 1 || !detail.Instances[0].SecretFields[0].Present {
 		t.Fatalf("detail=%+v error=%v", detail, err)
 	}
+	enabled, err := service.Enable(ctx, installed.PluginID, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"local": "active"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil || len(operations) == 0 {
+		t.Fatal(err)
+	}
+	enableOperation := operations[len(operations)-1]
+	if enableOperation.ID != enabled.LastOperationID {
+		t.Fatalf("enabled operation=%s last=%s", enableOperation.ID, enabled.LastOperationID)
+	}
+	var handles []storage.PluginInstanceSecretHandle
+	if err := json.Unmarshal([]byte(instance.SecretHandlesJSON), &handles); err != nil || len(handles) != 1 {
+		t.Fatalf("handles=%+v err=%v", handles, err)
+	}
+	generationID, artifactDigest := strings.Repeat("c", 64), strings.Repeat("d", 64)
+	status := storage.PluginAgentRuntimeStatusRow{OperationID: enableOperation.ID, AgentID: "local", InstanceID: instance.ID, PluginID: installed.PluginID, ResourceGroupID: instance.ResourceGroupID, TargetVersion: instance.ConfigVersion, Revision: enableOperation.TargetRevision, GenerationID: generationID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, ConfigVersion: instance.ConfigVersion}
+	if err := store.StagePluginAgentRuntimeStatuses(ctx, []storage.PluginAgentRuntimeStatusRow{status}); err != nil {
+		t.Fatal(err)
+	}
+	requestHandles := []storage.PluginGenerationSecretHandle{{ID: handles[0].ID, Version: handles[0].Version, Digest: handles[0].Digest, Purpose: handles[0].Purpose}}
+	redeemed, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles})
+	if err != nil || len(redeemed.Secrets) != 1 || redeemed.Secrets[0].Value != `"install-plaintext"` {
+		t.Fatalf("redeemed=%+v err=%v", redeemed, err)
+	}
+	if _, err := service.RedeemAgentPluginSecrets(ctx, "other-agent", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
+		t.Fatal("cross-Agent secret redemption was accepted")
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}

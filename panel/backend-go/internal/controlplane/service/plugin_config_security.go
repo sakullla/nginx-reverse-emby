@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ type PluginSecretFieldState struct {
 	Present bool   `json:"present"`
 }
 
-func pluginPrepareBrokeredConfig(schema map[string]any, requested json.RawMessage, currentHandles []storage.PluginInstanceSecretHandle, replacements map[string]json.RawMessage) (json.RawMessage, map[string]json.RawMessage, []storage.PluginInstanceSecretHandle, error) {
+func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested json.RawMessage, currentHandles []storage.PluginInstanceSecretHandle, replacements map[string]json.RawMessage) (json.RawMessage, map[string]json.RawMessage, []storage.PluginInstanceSecretHandle, error) {
 	var value any
 	decoder := json.NewDecoder(strings.NewReader(string(requested)))
 	decoder.UseNumber()
@@ -32,6 +33,10 @@ func pluginPrepareBrokeredConfig(schema map[string]any, requested json.RawMessag
 	if len(submitted) > 0 {
 		return nil, nil, nil, fmt.Errorf("%w: writeOnly config values must use secret_replacements", ErrInvalidArgument)
 	}
+	current, err := pluginConfigValue(currentConfig)
+	if err != nil {
+		return nil, nil, nil, ErrPluginReadProjection
+	}
 	handles := make(map[string]storage.PluginInstanceSecretHandle, len(currentHandles))
 	for _, handle := range currentHandles {
 		if handle.Pointer == "" || handle.ID == "" {
@@ -41,10 +46,12 @@ func pluginPrepareBrokeredConfig(schema map[string]any, requested json.RawMessag
 	}
 	prepared := make(map[string]json.RawMessage)
 	for pointer, raw := range replacements {
-		if !pluginPointerIsWriteOnly(schema, public, pointer) {
+		_, clearingExisting := handles[pointer]
+		isNull := strings.TrimSpace(string(raw)) == "null"
+		if !pluginPointerIsWriteOnly(schema, public, pointer) && !(isNull && clearingExisting && pluginPointerIsWriteOnly(schema, current, pointer)) {
 			return nil, nil, nil, fmt.Errorf("%w: secret replacement %q is not a concrete schema writeOnly field", ErrInvalidArgument, pointer)
 		}
-		if strings.TrimSpace(string(raw)) == "null" {
+		if isNull {
 			delete(handles, pointer)
 			continue
 		}
@@ -61,6 +68,17 @@ func pluginPrepareBrokeredConfig(schema map[string]any, requested json.RawMessag
 		prepared[pointer] = canonical
 		delete(handles, pointer)
 	}
+	for pointer := range handles {
+		if _, explicit := replacements[pointer]; explicit {
+			continue
+		}
+		if !pluginPointerIsWriteOnly(schema, public, pointer) {
+			return nil, nil, nil, fmt.Errorf("%w: retained secret pointer %q no longer exists; explicitly clear it", ErrInvalidArgument, pointer)
+		}
+		if !pluginArraySecretPointerStable(current, public, pointer) {
+			return nil, nil, nil, fmt.Errorf("%w: array structure for retained secret %q changed; explicitly clear or replace it", ErrInvalidArgument, pointer)
+		}
+	}
 	encoded, err := json.Marshal(public)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
@@ -71,6 +89,52 @@ func pluginPrepareBrokeredConfig(schema map[string]any, requested json.RawMessag
 	}
 	sort.Slice(retained, func(i, j int) bool { return retained[i].Pointer < retained[j].Pointer })
 	return encoded, prepared, retained, nil
+}
+
+func pluginArraySecretPointerStable(current, requested any, pointer string) bool {
+	if pointer == "" || pointer[0] != '/' {
+		return false
+	}
+	left, right := current, requested
+	for _, escaped := range strings.Split(pointer[1:], "/") {
+		token := strings.ReplaceAll(strings.ReplaceAll(escaped, "~1", "/"), "~0", "~")
+		switch currentValue := left.(type) {
+		case map[string]any:
+			requestedValue, ok := right.(map[string]any)
+			if !ok {
+				return false
+			}
+			left, right = currentValue[token], requestedValue[token]
+		case []any:
+			requestedValue, ok := right.([]any)
+			index, indexErr := strconv.Atoi(token)
+			if !ok || indexErr != nil || index < 0 || index >= len(currentValue) || index >= len(requestedValue) || len(currentValue) != len(requestedValue) {
+				return false
+			}
+			if !pluginArrayItemIdentityEqual(currentValue[index], requestedValue[index]) {
+				return false
+			}
+			left, right = currentValue[index], requestedValue[index]
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func pluginArrayItemIdentityEqual(current, requested any) bool {
+	currentObject, currentOK := current.(map[string]any)
+	requestedObject, requestedOK := requested.(map[string]any)
+	if currentOK && requestedOK {
+		for _, key := range []string{"id", "key", "name"} {
+			currentIdentity, currentFound := currentObject[key]
+			requestedIdentity, requestedFound := requestedObject[key]
+			if currentFound || requestedFound {
+				return currentFound && requestedFound && reflect.DeepEqual(currentIdentity, requestedIdentity)
+			}
+		}
+	}
+	return reflect.DeepEqual(current, requested)
 }
 
 func pluginStripWriteOnly(schema map[string]any, value any, pointer string) (any, map[string]json.RawMessage, error) {
@@ -191,6 +255,81 @@ func pluginSetJSONPointer(value any, pointer string, replacement any) error {
 		}
 	}
 	return ErrInvalidArgument
+}
+
+func pluginSecretLogValues(config json.RawMessage, handles []storage.PluginInstanceSecretHandle) ([]string, error) {
+	value, err := pluginConfigValue(config)
+	if err != nil {
+		return nil, ErrPluginReadProjection
+	}
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(handles)*2)
+	add := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+	for _, handle := range handles {
+		secret, ok := pluginJSONPointerValue(value, handle.Pointer)
+		if !ok {
+			return nil, ErrPluginReadProjection
+		}
+		encoded, err := json.Marshal(secret)
+		if err != nil {
+			return nil, ErrPluginReadProjection
+		}
+		add(string(encoded))
+		var collectStrings func(any)
+		collectStrings = func(current any) {
+			switch typed := current.(type) {
+			case string:
+				add(typed)
+			case []any:
+				for _, item := range typed {
+					collectStrings(item)
+				}
+			case map[string]any:
+				for _, item := range typed {
+					collectStrings(item)
+				}
+			}
+		}
+		collectStrings(secret)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func pluginJSONPointerValue(value any, pointer string) (any, bool) {
+	if pointer == "" || pointer[0] != '/' {
+		return nil, false
+	}
+	current := value
+	for _, escaped := range strings.Split(pointer[1:], "/") {
+		token := strings.ReplaceAll(strings.ReplaceAll(escaped, "~1", "/"), "~0", "~")
+		switch typed := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = typed[token]
+			if !ok {
+				return nil, false
+			}
+		case []any:
+			index, err := strconv.Atoi(token)
+			if err != nil || index < 0 || index >= len(typed) {
+				return nil, false
+			}
+			current = typed[index]
+		default:
+			return nil, false
+		}
+	}
+	return current, true
 }
 
 func pluginConfigValue(raw json.RawMessage) (any, error) {

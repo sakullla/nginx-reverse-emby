@@ -178,6 +178,38 @@ func TestPluginRuntimeLogReportStrictWireAndBounds(t *testing.T) {
 	}
 }
 
+func TestPluginSecretRedemptionRequestValidatesExactGenerationFence(t *testing.T) {
+	request := PluginSecretRedemptionRequest{
+		Revision: 7, GenerationID: "generation-a", InstanceID: "instance-a", PluginID: "example.rpc", OperationID: "operation-a",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Handles: []PluginSecretHandle{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:instance-a:/nested/token"}},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"revision":7`, `"generation_id":"generation-a"`, `"operation_id":"operation-a"`, `"handles":[`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("request JSON %s does not contain %s", encoded, field)
+		}
+	}
+	invalid := request
+	invalid.Handles = append([]PluginSecretHandle(nil), request.Handles...)
+	invalid.Handles[0].Purpose = "plugin-config:other-instance:/nested/token"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("cross-instance plugin secret purpose was accepted")
+	}
+	invalid = request
+	invalid.Handles = append([]PluginSecretHandle(nil), request.Handles...)
+	invalid.Handles[0].Purpose = "plugin-config:instance-a:/bad~2pointer"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("non-canonical plugin secret pointer was accepted")
+	}
+}
+
 func TestPluginDependenciesRejectDanglingDuplicateCrossTargetAndInvalidConsumers(t *testing.T) {
 	provider := validPluginGenerationForTest()
 	base := Snapshot{Revision: 7, Rules: []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}}, PluginGenerations: []PluginGeneration{provider}}

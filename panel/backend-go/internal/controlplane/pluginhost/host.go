@@ -33,9 +33,13 @@ type Identity struct {
 }
 type Candidate struct {
 	InstanceID                                            string
+	OperationID, ResourceGroupID                          string
+	Revision                                              int64
 	Artifact                                              Artifact
 	Identity                                              Identity
 	Config                                                []byte
+	ResolveConfig                                         func(context.Context, string) ([]byte, error)
+	ResolveConfigAndSecrets                               func(context.Context, string) ([]byte, []string, error)
 	LogSecrets                                            []string
 	Args, Environment                                     []string
 	Endpoint                                              Endpoint
@@ -332,7 +336,23 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
+	config := append([]byte(nil), candidate.Config...)
 	logSecrets := append([]string{candidate.Endpoint.Cookie}, candidate.LogSecrets...)
+	if candidate.ResolveConfigAndSecrets != nil {
+		var exact []string
+		config, exact, err = candidate.ResolveConfigAndSecrets(attemptCtx, candidate.Identity.Generation)
+		if err != nil {
+			return nil, errors.Join(errors.New("control-plane plugin config redemption failed"), err)
+		}
+		logSecrets = append(logSecrets, exact...)
+	} else if candidate.ResolveConfig != nil {
+		config, err = candidate.ResolveConfig(attemptCtx, candidate.Identity.Generation)
+		if err != nil {
+			return nil, errors.Join(errors.New("control-plane plugin config redemption failed"), err)
+		}
+	}
+	defer clear(config)
+	defer clear(logSecrets)
 	logWriter := newRedactor(&candidateLogTarget{host: h, candidate: candidate}, logSecrets)
 	process, err := h.launcher.Start(attemptCtx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
 	if err != nil {
@@ -373,7 +393,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if err := validateHandshake(handshake, response); err != nil {
 		return nil, err
 	}
-	request := pluginsdk.LifecycleRequest{Generation: candidate.Identity.Generation, Config: append([]byte(nil), candidate.Config...)}
+	request := pluginsdk.LifecycleRequest{Generation: candidate.Identity.Generation, Config: config}
 	if response, err := client.Prepare(attemptCtx, request); err != nil || response.Validate() != nil {
 		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err, response.Validate())
 	}

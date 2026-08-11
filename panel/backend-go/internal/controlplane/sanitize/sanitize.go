@@ -9,6 +9,7 @@ import (
 const Redacted = "[REDACTED]"
 
 var credentialPattern = regexp.MustCompile(`(?i)((?:authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+|Bearer\s+[^\s,;]+`)
+var quotedCredentialPattern = regexp.MustCompile(`((?:"[^"]+"|'[^']+')\s*:\s*)(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|[^\s,}\]]+)`)
 var urlCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+@`)
 var privateKeyPattern = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
 
@@ -26,6 +27,13 @@ func Text(input string, exact []string) string {
 			input = string(encoded)
 		}
 	}
+	input = quotedCredentialPattern.ReplaceAllStringFunc(input, func(match string) string {
+		separator := strings.Index(match, ":")
+		if separator < 0 || !credentialKey(strings.Trim(strings.TrimSpace(match[:separator]), `"'`)) {
+			return match
+		}
+		return match[:separator+1] + `"[REDACTED]"`
+	})
 	input = privateKeyPattern.ReplaceAllString(input, "[REDACTED PRIVATE KEY]")
 	input = urlCredentialPattern.ReplaceAllString(input, `${1}[REDACTED]@`)
 	return credentialPattern.ReplaceAllStringFunc(input, func(match string) string {
@@ -44,8 +52,7 @@ func structured(value any, exact []string) any {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, item := range typed {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, "authorization") || strings.Contains(lower, "cookie") || strings.Contains(lower, "credential") || strings.Contains(lower, "password") || strings.Contains(lower, "private_key") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "api_key") {
+			if credentialKey(key) {
 				out[key] = Redacted
 			} else {
 				out[key] = structured(item, exact)
@@ -63,6 +70,25 @@ func structured(value any, exact []string) any {
 	default:
 		return value
 	}
+}
+
+func credentialKey(key string) bool {
+	var normalized strings.Builder
+	for _, current := range key {
+		if current >= 'A' && current <= 'Z' {
+			current += 'a' - 'A'
+		}
+		if current >= 'a' && current <= 'z' || current >= '0' && current <= '9' {
+			normalized.WriteRune(current)
+		}
+	}
+	value := normalized.String()
+	for _, marker := range []string{"authorization", "cookie", "credential", "password", "privatekey", "secret", "token", "apikey"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func replaceExact(input string, exact []string) string {
