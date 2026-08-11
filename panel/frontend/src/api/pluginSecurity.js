@@ -37,9 +37,32 @@ function pruneSecretPointer(config, pointer) {
   }
   const leaf = segments.at(-1)
   if (parent && typeof parent === 'object' && leaf !== undefined) {
-    if (Array.isArray(parent)) parent[Number(leaf)] = null
+    if (Array.isArray(parent)) {
+      if (!/^(0|[1-9]\d*)$/.test(leaf) || Number(leaf) >= parent.length) return
+      parent[Number(leaf)] = null
+    }
     else delete parent[leaf]
   }
+}
+
+function safeSecretPointer(pointer) {
+  if (typeof pointer !== 'string' || pointer.length < 1 || pointer.length > 1024 || !pointer.startsWith('/') || /[\u0000-\u001f\u007f]/.test(pointer)) return false
+  for (let index = 0; index < pointer.length; index += 1) {
+    if (pointer[index] === '~' && !['0', '1'].includes(pointer[index + 1])) return false
+  }
+  return true
+}
+
+function normalizeSecretFieldStates(fields) {
+  if (!Array.isArray(fields)) return []
+  const normalized = []
+  const seen = new Set()
+  for (const field of fields.slice(0, 500)) {
+    if (!field || typeof field !== 'object' || Array.isArray(field) || !safeSecretPointer(field.pointer) || typeof field.present !== 'boolean' || seen.has(field.pointer)) continue
+    seen.add(field.pointer)
+    normalized.push({ pointer: field.pointer, present: field.present })
+  }
+  return normalized
 }
 
 function stripWriteOnlySchemaValues(schema) {
@@ -64,9 +87,13 @@ export function redactPluginProjection(value) {
   const schema = result?.package?.config_schema || result?.config_schema
   stripWriteOnlySchemaValues(schema)
   const instances = Array.isArray(result?.instances) ? result.instances : []
-  for (const instance of instances) {
-    for (const pointer of Array.isArray(instance.secret_fields) ? instance.secret_fields : []) pruneSecretPointer(instance.config, pointer)
-    for (const pointer of Array.isArray(instance.pending_secret_fields) ? instance.pending_secret_fields : []) pruneSecretPointer(instance.pending_config, pointer)
+  const sourceInstances = Array.isArray(value?.instances) ? value.instances : []
+  for (const [index, instance] of instances.entries()) {
+    const source = sourceInstances[index] || {}
+    instance.secret_fields = normalizeSecretFieldStates(source.secret_fields)
+    instance.pending_secret_fields = normalizeSecretFieldStates(source.pending_secret_fields)
+    for (const field of instance.secret_fields) pruneSecretPointer(instance.config, field.pointer)
+    for (const field of instance.pending_secret_fields) pruneSecretPointer(instance.pending_config, field.pointer)
   }
   return result
 }

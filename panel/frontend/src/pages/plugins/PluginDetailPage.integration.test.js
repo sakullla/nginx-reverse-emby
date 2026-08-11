@@ -21,14 +21,21 @@ describe('PluginDetailPage production API projection', () => {
           manifest: { id: 'rpc.plugin', name: 'RPC Plugin' }, runtime: { kind: 'rpc-service' }, artifacts: [], permissions: [], permission_diff: { added: [], removed: [] },
           config_schema: { type: 'object', required: ['credential'], properties: {
             token: { type: 'string', title: '普通 Token' },
-            credential: { type: 'string', title: 'Credential', writeOnly: true, default: 'package-secret' }
+            credential: { type: 'string', title: 'Credential', writeOnly: true, default: 'package-secret' },
+            optional: { type: 'string', title: 'Optional', writeOnly: true }
           } }
         },
         instances: [{
           id: 'instance-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [],
-          config: { token: 'active-value' }, secret_fields: [], pending_operation_id: 'configure-pending',
-          pending_config: { token: 'ordinary-value', credential: 'server-plaintext' }, pending_secret_fields: ['/credential'],
+          config: { token: 'active-value' }, secret_fields: [{ pointer: '/credential', present: false }], pending_operation_id: 'configure-pending',
+          pending_config: { token: 'ordinary-value', credential: 'server-plaintext', optional: 'other-plaintext' },
+          pending_secret_fields: [{ pointer: '/credential', present: true }, { pointer: '/optional', present: false }],
           config_version: 1, current_state: 'active'
+        }, {
+          id: 'instance-b', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [],
+          config: { token: 'active-ordinary', credential: 'active-plaintext', optional: 'optional-plaintext' },
+          secret_fields: [{ pointer: '/credential', present: false }, { pointer: '/optional', present: true }],
+          config_version: 2, current_state: 'active'
         }],
         agent_statuses: []
       } }
@@ -39,15 +46,26 @@ describe('PluginDetailPage production API projection', () => {
 
     expect(wrapper.text()).toContain('普通 Token')
     expect(wrapper.html()).not.toContain('server-plaintext')
+    expect(wrapper.html()).not.toContain('other-plaintext')
     expect(wrapper.html()).not.toContain('package-secret')
     expect(wrapper.get('.plugin-config-form input[type="text"]').element.value).toBe('ordinary-value')
     expect(wrapper.get('.plugin-config-form input[type="password"]').attributes('required')).toBeUndefined()
     expect(wrapper.text()).toContain('已有安全句柄')
+    expect(wrapper.findAll('button.secret-field__clear')).toHaveLength(0)
 
     await wrapper.get('form.plugin-config-form').trigger('submit')
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { token: 'ordinary-value' }, secret_replacements: {}
     }))
+
+    await wrapper.findAll('select')[0].setValue('instance-b')
+    await flushPromises()
+    const activeSecretInputs = wrapper.findAll('.plugin-config-form input[type="password"]')
+    expect(wrapper.get('.plugin-config-form input[type="text"]').element.value).toBe('active-ordinary')
+    expect(wrapper.html()).not.toContain('active-plaintext')
+    expect(wrapper.html()).not.toContain('optional-plaintext')
+    expect(activeSecretInputs[0].attributes('required')).toBeDefined()
+    expect(wrapper.findAll('button.secret-field__clear')).toHaveLength(1)
   })
 })

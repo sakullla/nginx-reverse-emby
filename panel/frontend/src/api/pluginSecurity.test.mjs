@@ -49,17 +49,28 @@ describe('plugin UI security boundary', () => {
         credential: { type: 'string', writeOnly: true, default: 'package-secret' }
       } } },
       instances: [{
-        config: { token: 'routing-token', credential: 'must-not-survive' },
-        secret_fields: ['/credential']
+        config: { token: 'routing-token', credential: 'must-not-survive', absent: 'also-must-not-survive' },
+        secret_fields: [
+          { pointer: '/credential', present: true, value: 'must-be-dropped' },
+          { pointer: '/absent', present: false },
+          { pointer: 'unsafe', present: true },
+          { pointer: '/wrong-type', present: 'true' }
+        ]
       }]
     })
     expect(projected.package.config_schema.properties.token.title).toBe('普通 token 字段')
     expect(projected.package.config_schema.properties.credential).not.toHaveProperty('default')
-    expect(projected.instances[0].secret_fields).toEqual(['/credential'])
+    expect(projected.instances[0].secret_fields).toEqual([
+      { pointer: '/credential', present: true },
+      { pointer: '/absent', present: false }
+    ])
     expect(projected.instances[0].config).toEqual({ token: 'routing-token' })
     const exported = safePluginExport(projected, [])
     expect(exported.plugin.package.config_schema.properties.token.title).toBe('普通 token 字段')
-    expect(exported.plugin.instances[0].secret_fields).toEqual(['/credential'])
+    expect(exported.plugin.instances[0].secret_fields).toEqual([
+      { pointer: '/credential', present: true },
+      { pointer: '/absent', present: false }
+    ])
   })
 
   it('states relevant runtime risks and the no-package-frontend boundary', () => {

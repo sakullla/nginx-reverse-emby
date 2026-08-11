@@ -40,14 +40,14 @@ describe('plugin administration API', () => {
         token: { type: 'string', title: 'ordinary token metadata' },
         api_credential: { type: 'string', writeOnly: true }
       } } },
-      instances: [{ config: { api_credential: 'raw-secret', token: 'ordinary-token', mode: 'safe' }, secret_fields: ['/api_credential'] }],
+      instances: [{ config: { api_credential: 'raw-secret', token: 'ordinary-token', mode: 'safe' }, secret_fields: [{ pointer: '/api_credential', present: true }] }],
       agent_statuses: [{ last_apply_message: 'authorization=raw' }]
     } })
     const detail = await plugins.fetchPluginDetail('team/plugin')
     expect(detail.instances[0].config).not.toHaveProperty('api_credential')
     expect(detail.instances[0].config.token).toBe('ordinary-token')
     expect(detail.instances[0].config.mode).toBe('safe')
-    expect(detail.instances[0].secret_fields).toEqual(['/api_credential'])
+    expect(detail.instances[0].secret_fields).toEqual([{ pointer: '/api_credential', present: true }])
     expect(detail.package.config_schema.properties.token.title).toBe('ordinary token metadata')
     expect(detail.agent_statuses[0].last_apply_message).toContain('[REDACTED]')
     await expect(plugins.runPluginAction('team/plugin', 'execute-script')).rejects.toThrow('plugin action is invalid')

@@ -13,7 +13,9 @@ const emit = defineEmits(['submit'])
 const model = reactive({})
 const clearedSecrets = reactive(new Set())
 const fields = computed(() => normalizePluginConfigSchema(props.schema))
-const secretPointers = computed(() => new Set((props.secretFields || []).filter((pointer) => typeof pointer === 'string')))
+const secretPointers = computed(() => new Set((props.secretFields || [])
+  .filter((field) => field && typeof field === 'object' && typeof field.pointer === 'string' && field.present === true)
+  .map((field) => field.pointer)))
 
 watch([fields, () => props.config, () => props.secretFields], initialize, { immediate: true, deep: true })
 
