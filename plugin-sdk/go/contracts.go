@@ -373,6 +373,7 @@ type PolicyNormalizedHTTP struct {
 	TrustedSource              []byte
 	TrustedSourceAuthenticated bool
 	BodyWindowComplete         bool
+	BodyWindowLength           uint32
 }
 
 // PolicyNormalizedHTTPHost is optional for policy/v1 hosts so existing hosts

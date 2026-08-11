@@ -172,6 +172,7 @@ func encodeNormalizedHTTPResponse(value pluginsdk.PolicyNormalizedHTTP, hostErr 
 	setMessageBytes(message, "trusted_source", value.TrustedSource)
 	setMessageBool(message, "trusted_source_authenticated", value.TrustedSourceAuthenticated)
 	setMessageBool(message, "body_window_complete", value.BodyWindowComplete)
+	setMessageUint32(message, "body_window_length", value.BodyWindowLength)
 	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
 	if err != nil {
 		return nil, pluginsdk.PolicyStatusInternal, ""
@@ -311,4 +312,8 @@ func setMessageBytes(message protoreflect.ProtoMessage, name protoreflect.Name, 
 
 func setMessageBool(message protoreflect.ProtoMessage, name protoreflect.Name, value bool) {
 	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfBool(value))
+}
+
+func setMessageUint32(message protoreflect.ProtoMessage, name protoreflect.Name, value uint32) {
+	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfUint32(value))
 }

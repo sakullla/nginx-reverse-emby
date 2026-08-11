@@ -70,7 +70,7 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 		{"ReadFieldRequest", []fieldExpectation{{"name", 1, protoreflect.StringKind, false, ""}}},
 		{"ReadNormalizedHTTPRequest", []fieldExpectation{}},
-		{"NormalizedHTTPResponse", []fieldExpectation{{"path", 1, protoreflect.BytesKind, false, ""}, {"query", 2, protoreflect.BytesKind, false, ""}, {"headers", 3, protoreflect.BytesKind, false, ""}, {"trusted_source", 4, protoreflect.BytesKind, false, ""}, {"trusted_source_authenticated", 5, protoreflect.BoolKind, false, ""}, {"body_window_complete", 6, protoreflect.BoolKind, false, ""}}},
+		{"NormalizedHTTPResponse", []fieldExpectation{{"path", 1, protoreflect.BytesKind, false, ""}, {"query", 2, protoreflect.BytesKind, false, ""}, {"headers", 3, protoreflect.BytesKind, false, ""}, {"trusted_source", 4, protoreflect.BytesKind, false, ""}, {"trusted_source_authenticated", 5, protoreflect.BoolKind, false, ""}, {"body_window_complete", 6, protoreflect.BoolKind, false, ""}, {"body_window_length", 7, protoreflect.Uint32Kind, false, ""}}},
 		{"ReadBodyWindowRequest", []fieldExpectation{{"offset", 1, protoreflect.Uint32Kind, false, ""}, {"length", 2, protoreflect.Uint32Kind, false, ""}}},
 		{"StateGetRequest", []fieldExpectation{{"key", 1, protoreflect.StringKind, false, ""}}},
 		{"StatePutRequest", []fieldExpectation{{"key", 1, protoreflect.StringKind, false, ""}, {"value", 2, protoreflect.BytesKind, false, ""}}},

@@ -95,6 +95,7 @@ func TestWASMHostNormalizedHTTPSnapshotUsesOneFixedResponse(t *testing.T) {
 	host := &normalizedHTTPPolicyHost{snapshot: pluginsdk.PolicyNormalizedHTTP{
 		Path: []byte("/items"), Query: []byte("q=1"), Headers: []byte("user-agent:test"),
 		TrustedSource: []byte("198.51.100.10"), TrustedSourceAuthenticated: true, BodyWindowComplete: true,
+		BodyWindowLength: 17,
 	}}
 	encoded, status, _ := dispatchHost(t.Context(), host, pluginsdk.PolicyHostReadNormalizedHTTP, nil)
 	if status != pluginsdk.PolicyStatusOK || host.calls != 1 {
@@ -112,6 +113,9 @@ func TestWASMHostNormalizedHTTPSnapshotUsesOneFixedResponse(t *testing.T) {
 	}
 	if !messageBool(message, "trusted_source_authenticated") || !messageBool(message, "body_window_complete") {
 		t.Fatal("snapshot booleans were not preserved")
+	}
+	if got := messageUint32(message, "body_window_length"); got != 17 {
+		t.Fatalf("snapshot body length = %d", got)
 	}
 	if _, status, _ := dispatchHost(t.Context(), &testPolicyHost{}, pluginsdk.PolicyHostReadNormalizedHTTP, nil); status != pluginsdk.PolicyStatusIncompatibleABI {
 		t.Fatalf("legacy host snapshot status=%d, want incompatible ABI", status)

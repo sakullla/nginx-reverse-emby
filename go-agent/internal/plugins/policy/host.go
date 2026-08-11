@@ -189,6 +189,7 @@ func (host *requestHost) ReadNormalizedHTTP(ctx context.Context) (pluginsdk.Poli
 		TrustedSource:              []byte(host.input.metadata.source.Addr().String()),
 		TrustedSourceAuthenticated: host.input.metadata.authorized,
 		BodyWindowComplete:         host.input.body.complete,
+		BodyWindowLength:           uint32(len(host.input.body.prefix)),
 	}, nil
 }
 

@@ -131,6 +131,7 @@ message NormalizedHTTPResponse {
   bytes trusted_source = 4;
   bool trusted_source_authenticated = 5;
   bool body_window_complete = 6;
+  uint32 body_window_length = 7;
 }
 
 message ReadBodyWindowRequest {

@@ -527,7 +527,7 @@ func TestPolicyHostReturnsOneCanonicalNormalizedHTTPSnapshot(t *testing.T) {
 	if string(snapshot.Headers) != "a-first:one\nz-last:two" {
 		t.Fatalf("snapshot headers = %q", snapshot.Headers)
 	}
-	if len(snapshot.TrustedSource) == 0 || !snapshot.TrustedSourceAuthenticated || !snapshot.BodyWindowComplete {
+	if len(snapshot.TrustedSource) == 0 || !snapshot.TrustedSourceAuthenticated || !snapshot.BodyWindowComplete || snapshot.BodyWindowLength != 0 {
 		t.Fatalf("snapshot metadata = %+v", snapshot)
 	}
 
