@@ -1572,14 +1572,32 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 		}
 	}
 	if rawUnique, ok := schema["uniqueItems"]; ok {
-		if _, valid := rawUnique.(bool); !valid || !hasType || typeName != "array" {
+		unique, valid := rawUnique.(bool)
+		if !valid || !hasType || typeName != "array" {
 			return errors.New("uniqueItems requires a boolean on an array schema")
+		}
+		if unique {
+			maximum, bounded := nonNegativeIntegerBound(schema["maxItems"])
+			if !bounded || maximum > maxUniqueConfigItems {
+				return fmt.Errorf("uniqueItems requires maxItems no greater than %d", maxUniqueConfigItems)
+			}
 		}
 	}
 	if enum, ok := schema["enum"]; ok {
 		values, valid := enum.([]any)
-		if !valid || len(values) == 0 {
-			return errors.New("enum must be a non-empty array")
+		if !valid || len(values) == 0 || len(values) > maxConfigEnumValues {
+			return fmt.Errorf("enum must contain 1 to %d values", maxConfigEnumValues)
+		}
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			key, err := jsonSemanticKey(value)
+			if err != nil {
+				return fmt.Errorf("enum value is invalid: %w", err)
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return errors.New("enum values must be unique under JSON numeric equality")
+			}
+			seen[key] = struct{}{}
 		}
 	}
 	if properties, ok := schema["properties"]; ok {

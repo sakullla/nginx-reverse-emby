@@ -32,9 +32,10 @@ router-state tests remain serial.
 ## Official Plugin Market
 
 The official-market unit suite is offline. It creates nine canonical packages
-under `t.TempDir()`, signs their raw 32-byte payload digests with an ephemeral
-Ed25519 fixture key, and verifies the market, complete package digests, file
-manifests, and tamper rejection without cloning or contacting GitHub:
+under `t.TempDir()`, signs the raw 32-byte package and provenance payload
+digests with an ephemeral Ed25519 fixture key, and verifies the market,
+complete package digests, file manifests, signed SDK provenance, and tamper
+rejection without cloning or contacting GitHub:
 
 ```sh
 cd panel/backend-go
@@ -54,6 +55,20 @@ go run ./cmd/nre-plugin-validator --official-lock ../../official-market.lock
 
 Run that command only as an explicit release/integration gate. Ordinary unit and
 short test tiers never fetch the official repository.
+
+The complete official-market release gate has one network-enabled entry point:
+
+```powershell
+pwsh -File scripts/official-market-release/run.ps1
+```
+
+The script validates all nine signed packages and every declared artifact,
+performs all published RPC handshakes in networkless containers, and supplies
+the verified WAF artifact to the performance process.
+It aggregates all package and runtime failures before returning. The Go tests
+themselves never fetch a repository. A missing artifact makes the standalone
+WAF test skip; the release script rejects that skip, zero matched tests, or any
+throughput, p95, p99, and process-memory measurement failure.
 
 ## Internal PKI Multi-Process E2E
 

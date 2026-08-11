@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,10 @@ type Store interface {
 
 type transactionalStore interface {
 	SecurityTransaction(context.Context, func(*storage.GormStore) error) error
+}
+
+type keyMigrationStore interface {
+	ReencryptSecretVersion(context.Context, storage.SecretVersionRow, string) error
 }
 
 type Keyring struct {
@@ -159,22 +164,70 @@ func (v *Vault) revokePluginCapabilityTarget(target pluginsdk.HostTarget) {
 }
 
 // KeyringFromEnvironment loads the envelope key without persisting it in the
-// database. The value may be raw base64, hex, or a 32-byte literal.
+// database. An explicit value may be raw base64, hex, or a 32-byte literal. If
+// it is absent, the panel token is deterministically converted to a 32-byte
+// key so existing single-token deployments do not need a separate migration.
 func KeyringFromEnvironment() (Keyring, error) {
 	encoded := strings.TrimSpace(os.Getenv("PANEL_VAULT_MASTER_KEY"))
-	if encoded == "" {
-		return Keyring{}, ErrKeyNotConfigured
-	}
-	key, err := decodeKey(encoded)
-	if err != nil {
-		return Keyring{}, err
+	var key []byte
+	if encoded != "" {
+		decoded, err := decodeKey(encoded)
+		if err != nil {
+			return Keyring{}, err
+		}
+		key = decoded
+	} else {
+		panelToken := strings.TrimSpace(os.Getenv("API_TOKEN"))
+		if panelToken == "" {
+			panelToken = strings.TrimSpace(os.Getenv("NRE_PANEL_TOKEN"))
+		}
+		if panelToken == "" {
+			return Keyring{}, ErrKeyNotConfigured
+		}
+		key = derivePanelTokenKey(panelToken)
 	}
 	keyID := strings.TrimSpace(os.Getenv("PANEL_VAULT_KEY_ID"))
 	if keyID == "" {
-		digest := sha256.Sum256(key)
-		keyID = "env-" + hex.EncodeToString(digest[:6])
+		keyID = defaultKeyID(key)
 	}
-	return Keyring{CurrentKeyID: keyID, Keys: map[string][]byte{keyID: key}}, nil
+	keys := map[string][]byte{keyID: key}
+
+	previousEncoded := strings.TrimSpace(os.Getenv("PANEL_VAULT_PREVIOUS_MASTER_KEY"))
+	previousToken := strings.TrimSpace(os.Getenv("PANEL_VAULT_PREVIOUS_API_TOKEN"))
+	if previousEncoded != "" && previousToken != "" {
+		return Keyring{}, fmt.Errorf("%w: configure only one previous vault key source", ErrKeyUnavailable)
+	}
+	if previousEncoded != "" || previousToken != "" {
+		var previousKey []byte
+		if previousEncoded != "" {
+			decoded, err := decodeKey(previousEncoded)
+			if err != nil {
+				return Keyring{}, fmt.Errorf("decode previous vault key: %w", err)
+			}
+			previousKey = decoded
+		} else {
+			previousKey = derivePanelTokenKey(previousToken)
+		}
+		previousKeyID := strings.TrimSpace(os.Getenv("PANEL_VAULT_PREVIOUS_KEY_ID"))
+		if previousKeyID == "" {
+			previousKeyID = defaultKeyID(previousKey)
+		}
+		if previousKeyID == keyID {
+			return Keyring{}, fmt.Errorf("%w: previous and current vault key IDs must differ", ErrKeyUnavailable)
+		}
+		keys[previousKeyID] = previousKey
+	}
+	return Keyring{CurrentKeyID: keyID, Keys: keys}, nil
+}
+
+func derivePanelTokenKey(token string) []byte {
+	derived := sha256.Sum256([]byte("nre-panel-vault-v1\x00" + token))
+	return derived[:]
+}
+
+func defaultKeyID(key []byte) string {
+	digest := sha256.Sum256(key)
+	return "env-" + hex.EncodeToString(digest[:6])
 }
 
 func decodeKey(encoded string) ([]byte, error) {
@@ -187,6 +240,67 @@ func decodeKey(encoded string) ([]byte, error) {
 		return []byte(encoded), nil
 	}
 	return nil, fmt.Errorf("%w: PANEL_VAULT_MASTER_KEY must decode to 32 bytes", ErrKeyUnavailable)
+}
+
+// MigrateToCurrentKey re-encrypts every active secret version whose key is
+// present in the configured previous-key set. The durable version and secret
+// handle do not change, so callers do not need a data migration.
+func (v *Vault) MigrateToCurrentKey(ctx context.Context) (int, error) {
+	if v == nil || len(v.keyring.Keys) <= 1 {
+		return 0, nil
+	}
+	migrated := 0
+	oldKeyIDs := map[string]struct{}{}
+	err := v.transaction(ctx, func(txVault *Vault) error {
+		migrationStore, ok := txVault.store.(keyMigrationStore)
+		if !ok {
+			return errors.New("vault store does not support master-key migration")
+		}
+		secrets, err := txVault.store.ListSecrets(ctx, nil)
+		if err != nil {
+			return err
+		}
+		for _, secret := range secrets {
+			version, err := txVault.store.GetSecretVersion(ctx, secret.ID, secret.ActiveVersion)
+			if err != nil {
+				return err
+			}
+			if version.KeyID == txVault.keyring.CurrentKeyID {
+				continue
+			}
+			plaintext, err := txVault.decrypt(secret, version)
+			if err != nil {
+				return fmt.Errorf("migrate secret %s: %w", secret.ID, err)
+			}
+			replacement, err := txVault.encrypt(secret, version.Version, string(plaintext), version.CreatedAt)
+			for index := range plaintext {
+				plaintext[index] = 0
+			}
+			if err != nil {
+				return err
+			}
+			if err := migrationStore.ReencryptSecretVersion(ctx, replacement, version.KeyID); err != nil {
+				return err
+			}
+			oldKeyIDs[version.KeyID] = struct{}{}
+			migrated++
+		}
+		if migrated == 0 {
+			return nil
+		}
+		from := make([]string, 0, len(oldKeyIDs))
+		for keyID := range oldKeyIDs {
+			from = append(from, keyID)
+		}
+		sort.Strings(from)
+		metadata, _ := json.Marshal(map[string]any{"from_key_ids": from, "to_key_id": txVault.keyring.CurrentKeyID, "secret_count": migrated})
+		return txVault.store.AppendAuditEvent(ctx, storage.AuditEventRow{
+			ID: randomID("audit"), ActorID: "system", Action: "secret.master-key.migrate",
+			TargetKind: "vault", TargetID: txVault.keyring.CurrentKeyID, Result: "success",
+			MetadataJSON: string(metadata), CreatedAt: txVault.now(),
+		})
+	})
+	return migrated, err
 }
 
 func (v *Vault) Create(ctx context.Context, op OperationContext, name, purpose, plaintext string) (Metadata, error) {

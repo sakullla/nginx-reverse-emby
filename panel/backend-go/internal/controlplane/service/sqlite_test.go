@@ -72,6 +72,7 @@ func serviceSQLiteTemplateData() ([]byte, error) {
 			&storage.PluginGrantRow{},
 			&storage.PluginOperationRow{},
 			&storage.PluginAgentRuntimeStatusRow{},
+			&storage.PluginRuntimeLogRow{},
 			&storage.PluginPolicyAgentRevisionRow{},
 			&storage.RoleBindingRow{},
 			&storage.ResourceBindingRow{},

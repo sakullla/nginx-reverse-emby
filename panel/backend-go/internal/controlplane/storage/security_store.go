@@ -45,11 +45,7 @@ func (s *GormStore) SecurityTransaction(ctx context.Context, fn func(*GormStore)
 		return fn(s)
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		txStore := *s
-		txStore.db = tx
-		txStore.writeDB = nil
-		txStore.transactionScoped = true
-		return fn(&txStore)
+		return fn(s.transactionView(tx))
 	})
 }
 
@@ -1572,6 +1568,21 @@ func (s *GormStore) GetSecretVersion(ctx context.Context, id string, version uin
 	}
 	err := db.Where("secret_id = ? AND version = ? AND destroyed_at IS NULL", id, version).First(&row).Error
 	return row, err
+}
+
+func (s *GormStore) ReencryptSecretVersion(ctx context.Context, version SecretVersionRow, previousKeyID string) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		result := tx.Model(&SecretVersionRow{}).
+			Where("secret_id = ? AND version = ? AND key_id = ? AND destroyed_at IS NULL", version.SecretID, version.Version, previousKeyID).
+			Updates(map[string]any{"key_id": version.KeyID, "nonce": version.Nonce, "ciphertext": version.Ciphertext})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("secret master-key migration conflict")
+		}
+		return nil
+	})
 }
 
 func (s *GormStore) MarkSecretUsed(ctx context.Context, id string, at time.Time) error {

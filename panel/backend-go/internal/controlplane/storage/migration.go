@@ -29,11 +29,7 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 	}
 	journal := newPluginMigrationFilesystemJournal(filepath.Join(target.dataRoot, "plugins", "packages"))
 	err := target.writeTransaction(ctx, func(tx *gorm.DB) error {
-		transactionTarget := *target
-		transactionTarget.db = tx
-		transactionTarget.writeDB = tx
-		transactionTarget.transactionScoped = true
-		return copyDefaultMigrationRows(ctx, source, &transactionTarget, journal)
+		return copyDefaultMigrationRows(ctx, source, target.transactionView(tx), journal)
 	})
 	if err != nil {
 		return errors.Join(err, journal.rollback())

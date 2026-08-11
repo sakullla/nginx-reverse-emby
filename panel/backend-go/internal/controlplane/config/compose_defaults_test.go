@@ -74,12 +74,18 @@ func TestComposeDefaultsDoNotExposeWeakTokensPublicly(t *testing.T) {
 	for _, required := range []string{
 		"API_TOKEN: ${API_TOKEN:?",
 		"MASTER_REGISTER_TOKEN: ${MASTER_REGISTER_TOKEN:?",
+		"PANEL_VAULT_MASTER_KEY: ${PANEL_VAULT_MASTER_KEY:-}",
+		"PANEL_VAULT_PREVIOUS_MASTER_KEY: ${PANEL_VAULT_PREVIOUS_MASTER_KEY:-}",
+		"PANEL_VAULT_PREVIOUS_API_TOKEN: ${PANEL_VAULT_PREVIOUS_API_TOKEN:-}",
 		"PANEL_BACKEND_HOST: ${PANEL_BACKEND_HOST:-127.0.0.1}",
 		"NRE_PANEL_PUBLIC_PATH: ${NRE_PANEL_PUBLIC_PATH:-}",
 	} {
 		if !strings.Contains(compose, required) {
 			t.Fatalf("docker-compose.yaml missing secure default %q: %s", required, compose)
 		}
+	}
+	if strings.Contains(compose, "PANEL_VAULT_MASTER_KEY: ${PANEL_VAULT_MASTER_KEY:?") {
+		t.Fatal("docker-compose.yaml must allow the vault key to derive from API_TOKEN")
 	}
 }
 

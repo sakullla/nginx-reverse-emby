@@ -1482,7 +1482,7 @@ func TestValidatorEnforcesBoundedRE2StringPatterns(t *testing.T) {
 
 func TestValidatorEnforcesUniqueItemsWithJSONNumberSemantics(t *testing.T) {
 	root := newPackageFixture(t)
-	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","properties":{"values":{"type":"array","uniqueItems":true,"items":{"type":"number"}}},"required":["values"],"additionalProperties":false}`)
+	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","properties":{"values":{"type":"array","maxItems":1024,"uniqueItems":true,"items":{"type":"number"}}},"required":["values"],"additionalProperties":false}`)
 	refreshFixtureDigest(t, root)
 	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	if err != nil {
@@ -1500,6 +1500,50 @@ func TestValidatorEnforcesUniqueItemsWithJSONNumberSemantics(t *testing.T) {
 	refreshFixtureDigest(t, root)
 	_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "config_schema")
+}
+
+func TestValidatorBoundsUniqueItemsAndEnumWork(t *testing.T) {
+	for name, schema := range map[string]string{
+		"missing maxItems":   `{"type":"object","properties":{"values":{"type":"array","uniqueItems":true}}}`,
+		"oversized maxItems": `{"type":"object","properties":{"values":{"type":"array","maxItems":1025,"uniqueItems":true}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := newPackageFixture(t)
+			writeFixture(t, root, ConfigSchemaFile, schema)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "config_schema")
+		})
+	}
+
+	values := make([]any, maxUniqueConfigItems)
+	for index := range values {
+		values[index] = map[string]any{"id": index, "nested": []any{map[string]any{"value": index}}}
+	}
+	config, err := json.Marshal(map[string]any{"values": values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"values":{"type":"array","maxItems":1024,"uniqueItems":true,"items":{"type":"object"}}},"required":["values"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(schema, config); err != nil {
+		t.Fatalf("ValidateConfig() rejected %d distinct nested values: %v", maxUniqueConfigItems, err)
+	}
+
+	enumValues := make([]any, maxConfigEnumValues+1)
+	for index := range enumValues {
+		enumValues[index] = index
+	}
+	oversizedEnum := map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "integer", "enum": enumValues}}}
+	if err := validateJSONSchema(oversizedEnum); err == nil {
+		t.Fatal("validateJSONSchema() accepted an oversized enum")
+	}
+	duplicateEnum := map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "number", "enum": []any{json.Number("1"), json.Number("1.0")}}}}
+	if err := validateJSONSchema(duplicateEnum); err == nil {
+		t.Fatal("validateJSONSchema() accepted numerically equal enum values")
+	}
 }
 
 func TestValidatorRejectsSignedPackageWithUnsatisfiableWritableSchema(t *testing.T) {

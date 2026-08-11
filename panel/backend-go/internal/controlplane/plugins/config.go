@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -16,6 +16,8 @@ import (
 const (
 	maxExactNumberMantissaDigits    = 4096
 	maxExactNumberExponentMagnitude = 4096
+	maxUniqueConfigItems            = 1024
+	maxConfigEnumValues             = 256
 )
 
 func DecodeConfigSchema(raw []byte) (map[string]any, error) {
@@ -109,12 +111,16 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 			return fmt.Errorf("%s has too many items", location)
 		}
 		if unique, _ := schema["uniqueItems"].(bool); unique {
-			for left := 0; left < len(items); left++ {
-				for right := left + 1; right < len(items); right++ {
-					if enumEqual(items[left], items[right]) {
-						return fmt.Errorf("%s contains duplicate items", location)
-					}
+			seen := make(map[string]struct{}, len(items))
+			for _, item := range items {
+				key, err := jsonSemanticKey(item)
+				if err != nil {
+					return fmt.Errorf("%s cannot be compared for uniqueness: %w", location, err)
 				}
+				if _, duplicate := seen[key]; duplicate {
+					return fmt.Errorf("%s contains duplicate items", location)
+				}
+				seen[key] = struct{}{}
 			}
 		}
 		if itemSchema, ok := schema["items"].(map[string]any); ok {
@@ -205,41 +211,71 @@ func validateExactNumericConstraints(schema map[string]any, number *big.Rat, loc
 }
 
 func enumEqual(left, right any) bool {
-	if reflect.DeepEqual(left, right) {
-		return true
+	leftKey, leftErr := jsonSemanticKey(left)
+	rightKey, rightErr := jsonSemanticKey(right)
+	return leftErr == nil && rightErr == nil && leftKey == rightKey
+}
+
+func jsonSemanticKey(value any) (string, error) {
+	var builder strings.Builder
+	if err := writeJSONSemanticKey(&builder, value, 0); err != nil {
+		return "", err
 	}
-	leftNumber, leftNumeric := exactNumber(left)
-	rightNumber, rightNumeric := exactNumber(right)
-	if leftNumeric || rightNumeric {
-		return leftNumeric && rightNumeric && leftNumber.Cmp(rightNumber) == 0
+	return builder.String(), nil
+}
+
+func writeJSONSemanticKey(builder *strings.Builder, value any, depth int) error {
+	if depth > 64 {
+		return errors.New("JSON value exceeds comparison depth")
 	}
-	switch leftValue := left.(type) {
+	if number, ok := exactNumber(value); ok {
+		builder.WriteByte('n')
+		builder.WriteString(number.RatString())
+		builder.WriteByte(';')
+		return nil
+	}
+	switch typed := value.(type) {
+	case nil:
+		builder.WriteByte('0')
+	case bool:
+		if typed {
+			builder.WriteByte('t')
+		} else {
+			builder.WriteByte('f')
+		}
+	case string:
+		builder.WriteByte('s')
+		builder.WriteString(strconv.Itoa(len(typed)))
+		builder.WriteByte(':')
+		builder.WriteString(typed)
 	case []any:
-		rightValue, ok := right.([]any)
-		if !ok || len(leftValue) != len(rightValue) {
-			return false
-		}
-		for index := range leftValue {
-			if !enumEqual(leftValue[index], rightValue[index]) {
-				return false
+		builder.WriteByte('[')
+		for _, item := range typed {
+			if err := writeJSONSemanticKey(builder, item, depth+1); err != nil {
+				return err
 			}
 		}
-		return true
+		builder.WriteByte(']')
 	case map[string]any:
-		rightValue, ok := right.(map[string]any)
-		if !ok || len(leftValue) != len(rightValue) {
-			return false
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
 		}
-		for key, value := range leftValue {
-			other, exists := rightValue[key]
-			if !exists || !enumEqual(value, other) {
-				return false
+		sort.Strings(keys)
+		builder.WriteByte('{')
+		for _, key := range keys {
+			builder.WriteString(strconv.Itoa(len(key)))
+			builder.WriteByte(':')
+			builder.WriteString(key)
+			if err := writeJSONSemanticKey(builder, typed[key], depth+1); err != nil {
+				return err
 			}
 		}
-		return true
+		builder.WriteByte('}')
 	default:
-		return false
+		return fmt.Errorf("unsupported JSON value type %T", value)
 	}
+	return nil
 }
 
 func exactNumber(value any) (*big.Rat, bool) {

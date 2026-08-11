@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -69,6 +71,20 @@ plugins:
 	}
 	if !strings.Contains(stdout.String(), `"valid":true`) || !strings.Contains(stdout.String(), `"packages":1`) {
 		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+	var output validationOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	wantDetails := []validationPackageOutput{{
+		ID: "official.example", Version: "1.0.0", PackagePath: "plugins/official.example/1.0.0",
+		RuntimeKind: "wasm-policy", RuntimeABI: "nre:policy/v1", RuntimeEntry: "artifacts/policy.wasm",
+		ArtifactSHA256: fmt.Sprintf("%x", artifactDigest), Artifacts: []validationArtifactOutput{{
+			Path: "artifacts/policy.wasm", SHA256: fmt.Sprintf("%x", artifactDigest), Size: int64(len(artifact)), Mode: "wasm",
+		}},
+	}}
+	if !reflect.DeepEqual(output.PackageDetails, wantDetails) {
+		t.Fatalf("package details = %+v", output.PackageDetails)
 	}
 }
 

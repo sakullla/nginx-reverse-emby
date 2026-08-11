@@ -36,6 +36,18 @@ func TestOfficialMarketV1ValidatesNineCanonicalPackages(t *testing.T) {
 	}
 }
 
+func TestOfficialMarketV1AllowsKnownRootMetadataOnly(t *testing.T) {
+	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
+	writeFixture(t, root, OfficialMarketAgentsFile, "# Official release projection\n")
+	if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err != nil {
+		t.Fatalf("ValidateMarket() rejected known inert root metadata: %v", err)
+	}
+
+	writeFixture(t, root, "unreferenced.txt", "not part of the market contract\n")
+	_, err := officialFixtureValidator(publicKey).ValidateMarket(root, true)
+	assertValidationCode(t, err, "market_tree")
+}
+
 func TestOfficialMarketV1RejectsEnvelopeAndPayloadTampering(t *testing.T) {
 	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
 	packageRoot := filepath.Join(root, "packages", "accelerator-sources", "1.0.0")
@@ -158,7 +170,7 @@ func TestOfficialMarketV1RejectsASCIIHexDigestSignature(t *testing.T) {
 }
 
 func TestOfficialMarketV1AcceptsSDKCommitMovementOnlyWithStableDescriptor(t *testing.T) {
-	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
+	root, publicKey, privateKey := buildOfficialMarketV1Fixture(t)
 	provenancePath := filepath.Join(root, OfficialMarketProvenanceFile)
 	data, err := os.ReadFile(provenancePath)
 	if err != nil {
@@ -170,6 +182,7 @@ func TestOfficialMarketV1AcceptsSDKCommitMovementOnlyWithStableDescriptor(t *tes
 	}
 	provenance.SDKRepositoryCommit = strings.Repeat("c", 40)
 	writeOfficialJSONFixture(t, provenancePath, provenance)
+	signOfficialProvenanceFixture(t, root, privateKey)
 	if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err != nil {
 		t.Fatalf("ValidateMarket() rejected a new full SDK commit with the stable descriptor: %v", err)
 	}
@@ -183,11 +196,29 @@ func TestOfficialMarketV1AcceptsSDKCommitMovementOnlyWithStableDescriptor(t *tes
 			candidate := provenance
 			mutate(&candidate)
 			writeOfficialJSONFixture(t, provenancePath, candidate)
+			signOfficialProvenanceFixture(t, root, privateKey)
 			if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err == nil {
 				t.Fatal("invalid SDK provenance was accepted")
 			}
 		})
 	}
+}
+
+func TestOfficialMarketV1RejectsUnsignedProvenanceMutation(t *testing.T) {
+	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
+	provenancePath := filepath.Join(root, OfficialMarketProvenanceFile)
+	data, err := os.ReadFile(provenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provenance officialMarketProvenanceV1
+	if err := json.Unmarshal(data, &provenance); err != nil {
+		t.Fatal(err)
+	}
+	provenance.SDKRepositoryCommit = strings.Repeat("c", 40)
+	writeOfficialJSONFixture(t, provenancePath, provenance)
+	_, err = officialFixtureValidator(publicKey).ValidateMarket(root, true)
+	assertValidationCode(t, err, "market_signature")
 }
 
 func officialFixtureValidator(publicKey ed25519.PublicKey) *Validator {
@@ -283,7 +314,25 @@ func buildOfficialMarketV1Fixture(t *testing.T) (string, ed25519.PublicKey, ed25
 		SDKABIs: []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}, SignerIdentity: OfficialSignatureKeyID, Packages: provenancePackages,
 	}
 	writeOfficialJSONFixture(t, filepath.Join(root, OfficialMarketProvenanceFile), provenance)
+	signOfficialProvenanceFixture(t, root, privateKey)
 	return root, publicKey, privateKey
+}
+
+func signOfficialProvenanceFixture(t *testing.T, root string, privateKey ed25519.PrivateKey) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, OfficialMarketProvenanceFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(data)
+	signature := officialPackageSignatureV1{
+		SchemaVersion: 1,
+		Algorithm:     "ed25519",
+		Identity:      OfficialSignatureKeyID,
+		PayloadSHA256: hex.EncodeToString(digest[:]),
+		Signature:     base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, digest[:])),
+	}
+	writeOfficialJSONFixture(t, filepath.Join(root, OfficialMarketSignatureFile), signature)
 }
 
 func officialTestPayloadRecords(t *testing.T, root, executablePath string) []officialFileRecordV1 {

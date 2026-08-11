@@ -18,17 +18,38 @@ import (
 )
 
 type validationOutput struct {
-	Valid     bool     `json:"valid"`
-	Kind      string   `json:"kind"`
-	ID        string   `json:"id,omitempty"`
-	Version   string   `json:"version,omitempty"`
-	Digest    string   `json:"digest,omitempty"`
-	Packages  int      `json:"packages,omitempty"`
-	FileCount int      `json:"file_count,omitempty"`
-	Size      int64    `json:"size,omitempty"`
-	Error     string   `json:"error,omitempty"`
-	Codes     []string `json:"codes,omitempty"`
-	Commit    string   `json:"commit,omitempty"`
+	Valid          bool                      `json:"valid"`
+	Kind           string                    `json:"kind"`
+	ID             string                    `json:"id,omitempty"`
+	Version        string                    `json:"version,omitempty"`
+	Digest         string                    `json:"digest,omitempty"`
+	Packages       int                       `json:"packages,omitempty"`
+	PackageDetails []validationPackageOutput `json:"package_details,omitempty"`
+	FileCount      int                       `json:"file_count,omitempty"`
+	Size           int64                     `json:"size,omitempty"`
+	Error          string                    `json:"error,omitempty"`
+	Codes          []string                  `json:"codes,omitempty"`
+	Commit         string                    `json:"commit,omitempty"`
+}
+
+type validationPackageOutput struct {
+	ID             string                     `json:"id"`
+	Version        string                     `json:"version"`
+	PackagePath    string                     `json:"package_path"`
+	RuntimeKind    string                     `json:"runtime_kind"`
+	RuntimeABI     string                     `json:"runtime_abi"`
+	RuntimeEntry   string                     `json:"runtime_entry"`
+	ArtifactSHA256 string                     `json:"artifact_sha256,omitempty"`
+	Artifacts      []validationArtifactOutput `json:"artifacts"`
+}
+
+type validationArtifactOutput struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+	Mode   string `json:"mode"`
+	GOOS   string `json:"goos,omitempty"`
+	GOARCH string `json:"goarch,omitempty"`
 }
 
 type stringFlags []string
@@ -89,6 +110,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			result, output.Commit, validationErr = marketplace.ValidateOfficialMarketAtLock(context.Background(), lock, validator)
 			if validationErr == nil {
 				output.Packages = len(result.Packages)
+				output.PackageDetails = validationPackageDetails(result)
 			}
 		}
 	} else if *marketPath != "" {
@@ -101,6 +123,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			result, validationErr = validator.ValidateMarket(marketRoot, *official)
 			if validationErr == nil {
 				output.Packages = len(result.Packages)
+				output.PackageDetails = validationPackageDetails(result)
 			}
 		}
 	} else {
@@ -129,6 +152,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func validationPackageDetails(market plugins.ValidatedMarket) []validationPackageOutput {
+	details := make([]validationPackageOutput, 0, len(market.Packages))
+	for index, pkg := range market.Packages {
+		packagePath := ""
+		if index < len(market.Manifest.Entries) {
+			packagePath = market.Manifest.Entries[index].PackagePath
+		}
+		artifactDigest := ""
+		artifacts := make([]validationArtifactOutput, 0, len(pkg.Manifest.Artifacts))
+		for _, artifact := range pkg.Manifest.Artifacts {
+			artifacts = append(artifacts, validationArtifactOutput{
+				Path: artifact.Path, SHA256: artifact.SHA256, Size: artifact.Size,
+				Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH,
+			})
+			if artifact.Path == pkg.Manifest.Runtime.Entry {
+				artifactDigest = artifact.SHA256
+			}
+		}
+		details = append(details, validationPackageOutput{
+			ID: pkg.Manifest.ID, Version: pkg.Manifest.Version, PackagePath: packagePath,
+			RuntimeKind: pkg.Manifest.Runtime.Kind, RuntimeABI: pkg.Manifest.Runtime.ABI,
+			RuntimeEntry: pkg.Manifest.Runtime.Entry, ArtifactSHA256: artifactDigest, Artifacts: artifacts,
+		})
+	}
+	return details
 }
 
 func parseTrustedSigners(values []string) (map[string]ed25519.PublicKey, error) {

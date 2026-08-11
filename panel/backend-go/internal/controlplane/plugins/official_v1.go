@@ -22,6 +22,8 @@ import (
 
 const (
 	OfficialMarketProvenanceFile = "provenance.json"
+	OfficialMarketSignatureFile  = "provenance.signature.json"
+	OfficialMarketAgentsFile     = "AGENTS.md"
 	OfficialPackageFilesFile     = "package.files.json"
 	OfficialPackageSignatureFile = "signature.json"
 )
@@ -98,8 +100,11 @@ func (v *Validator) validateOfficialMarketV1Snapshot(root, sourceRoot string, ma
 	if err := v.validateOfficialMarketManifestV1(market); err != nil {
 		return ValidatedMarket{}, validationError("market_schema", MarketManifestFile, err)
 	}
-	provenance, err := readOfficialMarketProvenanceV1(root)
+	provenance, provenanceData, err := readOfficialMarketProvenanceV1(root)
 	if err != nil {
+		return ValidatedMarket{}, err
+	}
+	if err := v.verifyOfficialMarketProvenanceSignatureV1(root, provenanceData); err != nil {
 		return ValidatedMarket{}, err
 	}
 	if err := validateOfficialMarketProvenanceV1(marketData, market, provenance); err != nil {
@@ -184,16 +189,37 @@ func (v *Validator) validateOfficialMarketManifestV1(market officialMarketManife
 	return nil
 }
 
-func readOfficialMarketProvenanceV1(root string) (officialMarketProvenanceV1, error) {
+func readOfficialMarketProvenanceV1(root string) (officialMarketProvenanceV1, []byte, error) {
 	data, err := readBoundedFile(filepath.Join(root, OfficialMarketProvenanceFile), 1<<20)
 	if err != nil {
-		return officialMarketProvenanceV1{}, validationError("market_provenance", OfficialMarketProvenanceFile, err)
+		return officialMarketProvenanceV1{}, nil, validationError("market_provenance", OfficialMarketProvenanceFile, err)
 	}
 	var provenance officialMarketProvenanceV1
 	if err := decodeStrictJSONV1(data, &provenance); err != nil {
-		return officialMarketProvenanceV1{}, validationError("market_provenance", OfficialMarketProvenanceFile, err)
+		return officialMarketProvenanceV1{}, nil, validationError("market_provenance", OfficialMarketProvenanceFile, err)
 	}
-	return provenance, nil
+	return provenance, data, nil
+}
+
+func (v *Validator) verifyOfficialMarketProvenanceSignatureV1(root string, provenanceData []byte) error {
+	signatureData, err := readBoundedFile(filepath.Join(root, OfficialMarketSignatureFile), 4096)
+	if err != nil {
+		return validationError("market_signature_missing", OfficialMarketSignatureFile, err)
+	}
+	var signature officialPackageSignatureV1
+	if err := decodeStrictJSONV1(signatureData, &signature); err != nil {
+		return validationError("market_signature", OfficialMarketSignatureFile, err)
+	}
+	digest := sha256.Sum256(provenanceData)
+	if signature.SchemaVersion != 1 || signature.Algorithm != "ed25519" || signature.Identity != OfficialSignatureKeyID || signature.PayloadSHA256 != hex.EncodeToString(digest[:]) {
+		return validationError("market_signature", OfficialMarketSignatureFile, errors.New("signature identity, algorithm, or provenance digest differs"))
+	}
+	encoded, err := base64.StdEncoding.Strict().DecodeString(signature.Signature)
+	publicKey, trusted := v.trustedSigners[OfficialSignatureKeyID]
+	if err != nil || len(encoded) != ed25519.SignatureSize || !trusted || !ed25519.Verify(publicKey, digest[:], encoded) {
+		return validationError("market_signature_mismatch", OfficialMarketSignatureFile, errors.New("raw provenance SHA-256 signature is invalid"))
+	}
+	return nil
 }
 
 func validateOfficialMarketProvenanceV1(marketData []byte, market officialMarketManifestV1, provenance officialMarketProvenanceV1) error {
@@ -385,7 +411,8 @@ func validateOfficialManifestPayloadV1(manifest Manifest, records []officialFile
 
 func inspectOfficialMarketTreeV1(root string, market officialMarketManifestV1, options ValidatorOptions) error {
 	allowedRoot := map[string]struct{}{
-		MarketManifestFile: {}, OfficialMarketProvenanceFile: {}, "NOTICE": {}, "SBOM.spdx.json": {}, "THIRD_PARTY_LICENSES.json": {},
+		MarketManifestFile: {}, OfficialMarketProvenanceFile: {}, OfficialMarketSignatureFile: {}, OfficialMarketAgentsFile: {},
+		"NOTICE": {}, "SBOM.spdx.json": {}, "THIRD_PARTY_LICENSES.json": {},
 	}
 	packageRoots := make([]string, 0, len(market.Packages))
 	for _, entry := range market.Packages {

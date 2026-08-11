@@ -590,6 +590,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			if vaultErr != nil {
 				return Dependencies{}, fmt.Errorf("initialize secret vault: %w", vaultErr)
 			}
+			if _, migrateErr := vault.MigrateToCurrentKey(context.Background()); migrateErr != nil {
+				return Dependencies{}, fmt.Errorf("migrate secret vault key: %w", migrateErr)
+			}
 			d.SecretVault = vault
 		} else if !errors.Is(keyErr, secrets.ErrKeyNotConfigured) {
 			return Dependencies{}, fmt.Errorf("load secret vault key: %w", keyErr)

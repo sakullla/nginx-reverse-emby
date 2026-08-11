@@ -63,6 +63,9 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 			if vaultErr != nil {
 				return nil, vaultErr
 			}
+			if _, migrateErr := vault.MigrateToCurrentKey(context.Background()); migrateErr != nil {
+				return nil, migrateErr
+			}
 			pluginService := service.NewPluginService(secretStore, filepath.Join(cfg.DataDir, "plugins", "packages"))
 			pluginService.SetSecretVault(vault)
 			source.SetPluginSecretSource(pluginService)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/testing/wasmreference"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const (
@@ -34,6 +35,8 @@ const (
 	wafMemoryChildEnv        = "NRE_WAF_MEMORY_CHILD"
 	wafMemoryResultPrefix    = "NRE_WAF_MEMORY="
 	wafNativeProofBytes      = 32 << 20
+	officialWAFArtifactEnv   = "NRE_OFFICIAL_WAF_ARTIFACT"
+	officialWAFDigestEnv     = "NRE_OFFICIAL_WAF_SHA256"
 )
 
 type wafMeasurement struct {
@@ -53,6 +56,82 @@ type processMemorySample struct {
 	RSSBytes     uint64 `json:"rss_bytes"`
 	PrivateBytes uint64 `json:"private_bytes"`
 }
+
+type wafPerformanceHost struct {
+	request    *http.Request
+	projection []byte
+}
+
+func (host *wafPerformanceHost) ReadField(_ context.Context, name string) ([]byte, error) {
+	if host == nil || host.request == nil {
+		return nil, nil
+	}
+	switch name {
+	case "site":
+		return []byte("official-waf-performance"), nil
+	case "method":
+		return []byte(host.request.Method), nil
+	case "path":
+		return []byte(host.request.URL.EscapedPath()), nil
+	case "query":
+		return []byte(host.request.URL.RawQuery), nil
+	case "headers":
+		return host.projection, nil
+	case "trusted_source":
+		return []byte("127.0.0.1"), nil
+	case "trusted_source_authenticated", "body_window_complete":
+		return []byte("true"), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (host *wafPerformanceHost) ReadNormalizedHTTP(context.Context) (pluginsdk.PolicyNormalizedHTTP, error) {
+	if host == nil || host.request == nil {
+		return pluginsdk.PolicyNormalizedHTTP{}, nil
+	}
+	return pluginsdk.PolicyNormalizedHTTP{
+		Path:                       []byte(host.request.URL.EscapedPath()),
+		Query:                      []byte(host.request.URL.RawQuery),
+		Headers:                    host.projection,
+		TrustedSource:              []byte("127.0.0.1"),
+		TrustedSourceAuthenticated: true,
+		BodyWindowComplete:         true,
+		BodyWindowLength:           uint32(max(host.request.ContentLength, 0)),
+	}, nil
+}
+
+func marshalWAFPerformanceRequest(request *http.Request, projection []byte) ([]byte, error) {
+	snapshot := pluginsdk.PolicyNormalizedHTTP{
+		Path:                       []byte(request.URL.EscapedPath()),
+		Query:                      []byte(request.URL.RawQuery),
+		Headers:                    projection,
+		TrustedSource:              []byte("127.0.0.1"),
+		TrustedSourceAuthenticated: true,
+		BodyWindowComplete:         true,
+		BodyWindowLength:           uint32(max(request.ContentLength, 0)),
+	}
+	normalized := appendNormalizedHTTPResponse(
+		make([]byte, 0, normalizedHTTPResponseSize(snapshot)), snapshot,
+	)
+	return marshalEvaluateRequest(
+		policy.ExtensionHTTP, "waf-reference-request", projection, normalized,
+	)
+}
+
+func (*wafPerformanceHost) ReadBodyWindow(context.Context, uint32, uint32) ([]byte, error) {
+	return nil, nil
+}
+
+func (*wafPerformanceHost) StateGet(context.Context, string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
+func (*wafPerformanceHost) StatePut(context.Context, string, []byte) error { return nil }
+func (*wafPerformanceHost) EmitEvent(context.Context, pluginsdk.PolicySecurityEvent) error {
+	return nil
+}
+func (*wafPerformanceHost) AddMetric(context.Context, string, int64) error { return nil }
 
 var fixedWAFHeaderPathCorpus = []wafCorpusItem{
 	{path: "/library/items?sort=created_at", headers: [][2]string{{"User-Agent", "nre-reference/1"}, {"Accept", "application/json"}}},
@@ -98,6 +177,36 @@ func TestWAFReferencePerformanceGate(t *testing.T) {
 	assertWAFGuestCorpusDecisions(t, generation)
 	assertWAFGateSensitivity(t)
 	assertWAFProcessMemoryGate(t)
+}
+
+// TestOfficialWAFPerformanceGate never fetches a repository. The release
+// harness under scripts/official-market-release validates the signed market first,
+// then passes the exact local artifact and signed digest into this process.
+func TestOfficialWAFPerformanceGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("official WAF performance runs only through scripts/official-market-release")
+	}
+	if strings.TrimSpace(os.Getenv(officialWAFArtifactEnv)) == "" && strings.TrimSpace(os.Getenv(officialWAFDigestEnv)) == "" {
+		t.Skip("no local verified official WAF artifact; use scripts/official-market-release/run.ps1")
+	}
+	previousProcessors := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previousProcessors)
+	previousGCPercent := debug.SetGCPercent(100)
+	defer debug.SetGCPercent(previousGCPercent)
+
+	hostRuntime, generation := compileOfficialWAFGeneration(t, "official-waf-performance")
+	defer hostRuntime.Close(context.Background())
+	harness := newWAFReferenceHarness(t, generation)
+	defer harness.close()
+
+	warmWAFReferenceHarness(t, harness)
+	for pass := 0; pass < 3; pass++ {
+		measurement := measureWAFPass(t, harness.client, harness.server.URL)
+		assertWAFMeasurement(t, pass+1, measurement)
+	}
+	harness.assertHealthy(t)
+	harness.assertPersistentConnection(t)
+	assertWAFProcessMemoryGateForMode(t, "official-enabled")
 }
 
 // assertWAFGateSensitivity is deliberately called by the anchored Recipe
@@ -160,10 +269,14 @@ func warmWAFReferenceHarness(t *testing.T, harness *wafReferenceHarness) {
 }
 
 func assertWAFProcessMemoryGate(t *testing.T) {
+	assertWAFProcessMemoryGateForMode(t, "enabled")
+}
+
+func assertWAFProcessMemoryGateForMode(t *testing.T, enabledMode string) {
 	t.Helper()
 	for pass := 1; pass <= 3; pass++ {
 		disabled := runWAFMemoryChild(t, "disabled")
-		enabled := runWAFMemoryChild(t, "enabled")
+		enabled := runWAFMemoryChild(t, enabledMode)
 		rssDelta := positiveMemoryDelta(enabled.RSSBytes, disabled.RSSBytes)
 		privateDelta := positiveMemoryDelta(enabled.PrivateBytes, disabled.PrivateBytes)
 		if rssDelta == 0 && privateDelta == 0 {
@@ -224,18 +337,22 @@ func TestWAFProcessMemoryHarness(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	if mode != "disabled" && mode != "enabled" && mode != "native" {
+	if mode != "disabled" && mode != "enabled" && mode != "official-enabled" && mode != "native" {
 		t.Fatalf("unknown WAF memory child mode %q", mode)
 	}
 
 	guestBytes := wasmreference.WAFGuest(wasmreference.WAFOptions{ScanRounds: 1})
+	if mode == "official-enabled" {
+		guestBytes, _ = loadOfficialWAFArtifact(t)
+	}
 	wireFrames := make([][]byte, 0, len(fixedWAFHeaderPathCorpus))
 	for _, item := range fixedWAFHeaderPathCorpus {
 		request := httptest.NewRequest(http.MethodGet, item.path, nil)
 		for _, header := range item.headers {
 			request.Header.Add(header[0], header[1])
 		}
-		wireRequest, err := marshalEvaluateRequest(policy.ExtensionHTTP, "waf-reference-request", projectWAFReferenceRequest(request))
+		projection := projectWAFReferenceRequest(request)
+		wireRequest, err := marshalWAFPerformanceRequest(request, projection)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -243,15 +360,25 @@ func TestWAFProcessMemoryHarness(t *testing.T) {
 	}
 
 	var hostRuntime *Runtime
-	if mode == "enabled" {
+	if mode == "enabled" || mode == "official-enabled" {
 		var generation *Generation
-		hostRuntime, generation = compileWAFReferenceGeneration(t, 1, "waf-process-memory")
+		if mode == "official-enabled" {
+			hostRuntime, generation = compileOfficialWAFGeneration(t, "official-waf-process-memory")
+		} else {
+			hostRuntime, generation = compileWAFReferenceGeneration(t, 1, "waf-process-memory")
+		}
 		generation.budget.Timeout = 250 * time.Millisecond
 		if err := generation.Ready(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		for iteration := 0; iteration < 256; iteration++ {
-			if _, err := generation.Evaluate(context.Background(), &testPolicyHost{}, wireFrames[iteration%len(wireFrames)]); err != nil {
+			item := fixedWAFHeaderPathCorpus[iteration%len(fixedWAFHeaderPathCorpus)]
+			request := httptest.NewRequest(http.MethodGet, item.path, nil)
+			for _, header := range item.headers {
+				request.Header.Add(header[0], header[1])
+			}
+			projection := projectWAFReferenceRequest(request)
+			if _, err := generation.Evaluate(context.Background(), &wafPerformanceHost{request: request, projection: projection}, wireFrames[iteration%len(wireFrames)]); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -326,6 +453,58 @@ func compileWAFReferenceGeneration(t *testing.T, scanRounds uint32, id string) (
 	return hostRuntime, generation
 }
 
+func compileOfficialWAFGeneration(t *testing.T, id string) (*Runtime, *Generation) {
+	t.Helper()
+	wasmBytes, artifact := loadOfficialWAFArtifact(t)
+	ctx := context.Background()
+	hostRuntime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initRequest, err := marshalInitRequest([]byte(`{"mode":"deny"}`), []string{
+		"policy.read-normalized-http", "policy.read-body-window", "policy.emit-event", "policy.add-metric",
+	}, id)
+	if err != nil {
+		_ = hostRuntime.Close(ctx)
+		t.Fatal(err)
+	}
+	generation, err := hostRuntime.CompileGeneration(ctx, artifact, GenerationConfig{
+		ID:          id,
+		InitRequest: initRequest,
+		Budget: Budget{
+			MaxInputBytes:  131072,
+			MaxOutputBytes: 4096,
+			MemoryBytes:    16 << 20,
+			MaxMemoryPages: 256,
+			MaxConcurrency: 1,
+			Timeout:        2 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		_ = hostRuntime.Close(ctx)
+		t.Fatalf("compile official WAF artifact (%d bytes): %v: %v", len(wasmBytes), err, errors.Unwrap(err))
+	}
+	return hostRuntime, generation
+}
+
+func loadOfficialWAFArtifact(t *testing.T) ([]byte, VerifiedArtifact) {
+	t.Helper()
+	artifactPath := strings.TrimSpace(os.Getenv(officialWAFArtifactEnv))
+	digest := strings.TrimSpace(os.Getenv(officialWAFDigestEnv))
+	if artifactPath == "" || digest == "" {
+		t.Fatalf("%s and %s must both be set by the release harness", officialWAFArtifactEnv, officialWAFDigestEnv)
+	}
+	wasmBytes, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("read verified official WAF artifact: %v", err)
+	}
+	artifact, err := AcceptVerifiedArtifact(wasmBytes, digest, true)
+	if err != nil {
+		t.Fatalf("accept verified official WAF artifact: %v", err)
+	}
+	return wasmBytes, artifact
+}
+
 type wafReferenceHarness struct {
 	client              *http.Client
 	server              *httptest.Server
@@ -356,10 +535,10 @@ func newWAFReferenceHarness(t *testing.T, generation *Generation) *wafReferenceH
 	}, Timeout: 2 * time.Second}
 	harness.server = httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		payload := projectWAFReferenceRequest(request)
-		wireRequest, err := marshalEvaluateRequest(policy.ExtensionHTTP, "waf-reference-request", payload)
+		wireRequest, err := marshalWAFPerformanceRequest(request, payload)
 		wireResponse := []byte{0x0a, 0x02, 0x08, 0x01}
 		if err == nil && request.Header.Get(wafEnabledHeader) == "1" {
-			wireResponse, err = generation.Evaluate(request.Context(), &testPolicyHost{}, wireRequest)
+			wireResponse, err = generation.Evaluate(request.Context(), &wafPerformanceHost{request: request, projection: payload}, wireRequest)
 		}
 		if err == nil {
 			_, err = decodeEvaluateResponse(wireResponse)
@@ -416,7 +595,8 @@ func assertWAFGuestCorpusDecisions(t *testing.T, generation *Generation) {
 		for _, header := range item.headers {
 			request.Header.Add(header[0], header[1])
 		}
-		wireRequest, err := marshalEvaluateRequest(policy.ExtensionHTTP, "waf-reference-request", projectWAFReferenceRequest(request))
+		projection := projectWAFReferenceRequest(request)
+		wireRequest, err := marshalWAFPerformanceRequest(request, projection)
 		if err != nil {
 			t.Fatal(err)
 		}
