@@ -64,7 +64,7 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 	}
 	assertMessages(t, file.Messages(), []messageExpectation{
 		{"InitRequest", []fieldExpectation{{"config", 1, protoreflect.BytesKind, false, ""}, {"granted_scopes", 2, protoreflect.StringKind, true, ""}, {"generation", 3, protoreflect.StringKind, false, ""}}},
-		{"EvaluateRequest", []fieldExpectation{{"extension_point", 1, protoreflect.StringKind, false, ""}, {"request_id", 2, protoreflect.StringKind, false, ""}, {"payload", 3, protoreflect.BytesKind, false, ""}}},
+		{"EvaluateRequest", []fieldExpectation{{"extension_point", 1, protoreflect.StringKind, false, ""}, {"request_id", 2, protoreflect.StringKind, false, ""}, {"payload", 3, protoreflect.BytesKind, false, ""}, {"normalized_http", 4, protoreflect.BytesKind, false, ""}}},
 		{"EvaluateResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.policy.v1.EvaluateSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.policy.v1.RuntimeError"}}},
 		{"EvaluateSuccess", []fieldExpectation{{"action", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.EvaluateSuccess.Action"}, {"payload", 2, protoreflect.BytesKind, false, ""}}},
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},

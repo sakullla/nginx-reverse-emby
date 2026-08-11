@@ -86,6 +86,10 @@ message EvaluateRequest {
   string extension_point = 1;
   string request_id = 2;
   bytes payload = 3;
+  // Canonical NormalizedHTTPResponse bytes supplied in the evaluate frame.
+  // New HTTP hosts use this zero-round-trip path; guests retain the additive
+  // read_normalized_http import as a compatibility fallback.
+  bytes normalized_http = 4;
 }
 
 message EvaluateResponse {

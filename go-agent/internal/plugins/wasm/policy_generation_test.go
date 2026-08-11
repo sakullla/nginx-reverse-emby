@@ -1,6 +1,7 @@
 package wasm
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,8 +14,43 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
+
+func TestMarshalEvaluateRequestEmbedsNormalizedHTTP(t *testing.T) {
+	snapshot := pluginsdk.PolicyNormalizedHTTP{
+		Path:                       []byte("/library"),
+		Query:                      []byte("token=redacted"),
+		Headers:                    []byte("host: media.example\n"),
+		TrustedSource:              []byte("192.0.2.10"),
+		TrustedSourceAuthenticated: true,
+		BodyWindowComplete:         true,
+		BodyWindowLength:           17,
+	}
+	normalized := appendNormalizedHTTPResponse(
+		make([]byte, 0, normalizedHTTPResponseSize(snapshot)), snapshot,
+	)
+	encoded, err := marshalEvaluateRequest(policy.ExtensionHTTP, "request-1", []byte("payload"), normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := protoschema.Message("nre.plugin.policy.v1.EvaluateRequest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := dynamicpb.NewMessage(descriptor)
+	if err := proto.Unmarshal(encoded, message.Interface()); err != nil {
+		t.Fatal(err)
+	}
+	field := message.Descriptor().Fields().ByName("normalized_http")
+	if got := message.Get(field).Bytes(); !bytes.Equal(got, normalized) {
+		t.Fatalf("normalized_http=%x, want %x", got, normalized)
+	}
+}
 
 func TestPolicyGenerationPreparesMultipleStages(t *testing.T) {
 	ctx := context.Background()

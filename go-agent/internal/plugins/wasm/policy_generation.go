@@ -188,7 +188,19 @@ func (generation *PolicyGeneration) Evaluate(ctx context.Context, request policy
 	if request.Budget != stage.definition.ResourceBudget {
 		return policy.ModuleResponse{}, policy.RuntimeError("budget-binding", errors.New("policy request budget differs from the prepared stage"))
 	}
-	wireRequest, err := marshalEvaluateRequest(request.ExtensionPoint, request.RequestID, request.Payload)
+	var normalizedHTTP []byte
+	if request.PolicyKind == model.PolicyKindWAF && request.ExtensionPoint == policy.ExtensionHTTP {
+		if normalizedHost, ok := request.Host.(pluginsdk.PolicyNormalizedHTTPHost); ok {
+			snapshot, snapshotErr := normalizedHost.ReadNormalizedHTTP(ctx)
+			if snapshotErr != nil {
+				return policy.ModuleResponse{}, policy.RuntimeError("normalized-http", snapshotErr)
+			}
+			normalizedHTTP = appendNormalizedHTTPResponse(
+				make([]byte, 0, normalizedHTTPResponseSize(snapshot)), snapshot,
+			)
+		}
+	}
+	wireRequest, err := marshalEvaluateRequest(request.ExtensionPoint, request.RequestID, request.Payload, normalizedHTTP)
 	if err != nil {
 		return policy.ModuleResponse{}, policy.RuntimeError("request-wire", err)
 	}
@@ -281,7 +293,7 @@ func marshalInitRequest(config []byte, grants []string, generation string) ([]by
 	return (proto.MarshalOptions{Deterministic: true}).Marshal(message.Interface())
 }
 
-func marshalEvaluateRequest(extensionPoint, requestID string, payload []byte) ([]byte, error) {
+func marshalEvaluateRequest(extensionPoint, requestID string, payload []byte, normalizedHTTP ...[]byte) ([]byte, error) {
 	message, err := canonicalPolicyMessage("EvaluateRequest")
 	if err != nil {
 		return nil, err
@@ -289,6 +301,9 @@ func marshalEvaluateRequest(extensionPoint, requestID string, payload []byte) ([
 	setCanonicalString(message, "extension_point", extensionPoint)
 	setCanonicalString(message, "request_id", requestID)
 	setCanonicalBytes(message, "payload", payload)
+	if len(normalizedHTTP) != 0 {
+		setCanonicalBytes(message, "normalized_http", normalizedHTTP[0])
+	}
 	return (proto.MarshalOptions{Deterministic: true}).Marshal(message.Interface())
 }
 
