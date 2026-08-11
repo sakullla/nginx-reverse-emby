@@ -1534,10 +1534,18 @@ func rejectReadOnlyConfigValue(schema map[string]any, value any, pointer string)
 }
 
 func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) error {
-	allowed := map[string]bool{"type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "minLength": true, "maxLength": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true}
+	allowed := map[string]bool{"$schema": true, "type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true}
 	for keyword := range schema {
 		if !allowed[keyword] {
 			return fmt.Errorf("unsupported JSON Schema keyword %q", keyword)
+		}
+	}
+	if dialect, ok := schema["$schema"]; ok {
+		if !root {
+			return errors.New("$schema is only allowed at the root")
+		}
+		if dialect != "https://json-schema.org/draft/2020-12/schema" {
+			return fmt.Errorf("unsupported JSON Schema dialect %q", dialect)
 		}
 	}
 	typeName, hasType := schema["type"].(string)
@@ -1549,6 +1557,23 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 		case "object", "array", "string", "integer", "number", "boolean", "null":
 		default:
 			return fmt.Errorf("unsupported JSON Schema type %q", typeName)
+		}
+	}
+	if rawPattern, ok := schema["pattern"]; ok {
+		pattern, valid := rawPattern.(string)
+		if !valid || !hasType || typeName != "string" {
+			return errors.New("pattern requires a string schema")
+		}
+		if len(pattern) > 1024 {
+			return errors.New("pattern exceeds 1024 bytes")
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("pattern is invalid: %w", err)
+		}
+	}
+	if rawUnique, ok := schema["uniqueItems"]; ok {
+		if _, valid := rawUnique.(bool); !valid || !hasType || typeName != "array" {
+			return errors.New("uniqueItems requires a boolean on an array schema")
 		}
 	}
 	if enum, ok := schema["enum"]; ok {

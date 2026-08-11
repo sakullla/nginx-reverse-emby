@@ -157,6 +157,39 @@ func TestOfficialMarketV1RejectsASCIIHexDigestSignature(t *testing.T) {
 	}
 }
 
+func TestOfficialMarketV1AcceptsSDKCommitMovementOnlyWithStableDescriptor(t *testing.T) {
+	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
+	provenancePath := filepath.Join(root, OfficialMarketProvenanceFile)
+	data, err := os.ReadFile(provenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provenance officialMarketProvenanceV1
+	if err := json.Unmarshal(data, &provenance); err != nil {
+		t.Fatal(err)
+	}
+	provenance.SDKRepositoryCommit = strings.Repeat("c", 40)
+	writeOfficialJSONFixture(t, provenancePath, provenance)
+	if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err != nil {
+		t.Fatalf("ValidateMarket() rejected a new full SDK commit with the stable descriptor: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*officialMarketProvenanceV1){
+		"abbreviated SDK commit": func(value *officialMarketProvenanceV1) { value.SDKRepositoryCommit = "9e2d915c" },
+		"zero SDK commit":        func(value *officialMarketProvenanceV1) { value.SDKRepositoryCommit = strings.Repeat("0", 40) },
+		"changed descriptor":     func(value *officialMarketProvenanceV1) { value.SDKDescriptorSHA256 = strings.Repeat("d", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := provenance
+			mutate(&candidate)
+			writeOfficialJSONFixture(t, provenancePath, candidate)
+			if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err == nil {
+				t.Fatal("invalid SDK provenance was accepted")
+			}
+		})
+	}
+}
+
 func officialFixtureValidator(publicKey ed25519.PublicKey) *Validator {
 	validator := NewValidator(ValidatorOptions{})
 	validator.trustedSigners[OfficialSignatureKeyID] = append(ed25519.PublicKey(nil), publicKey...)
@@ -246,7 +279,7 @@ func buildOfficialMarketV1Fixture(t *testing.T) (string, ed25519.PublicKey, ed25
 	}
 	provenance := officialMarketProvenanceV1{
 		SchemaVersion: 1, RepositoryCommit: strings.Repeat("a", 40), MarketSHA256: hex.EncodeToString(marketDigest[:]),
-		SDKRepositoryCommit: OfficialSDKRepositoryCommit, SDKDescriptorSHA256: protoschema.CanonicalDescriptorSetSHA256,
+		SDKRepositoryCommit: strings.Repeat("b", 40), SDKDescriptorSHA256: protoschema.CanonicalDescriptorSetSHA256,
 		SDKABIs: []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}, SignerIdentity: OfficialSignatureKeyID, Packages: provenancePackages,
 	}
 	writeOfficialJSONFixture(t, filepath.Join(root, OfficialMarketProvenanceFile), provenance)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/big"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -107,6 +108,15 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 		if maximum, ok := nonNegativeIntegerBound(schema["maxItems"]); ok && len(items) > maximum {
 			return fmt.Errorf("%s has too many items", location)
 		}
+		if unique, _ := schema["uniqueItems"].(bool); unique {
+			for left := 0; left < len(items); left++ {
+				for right := left + 1; right < len(items); right++ {
+					if enumEqual(items[left], items[right]) {
+						return fmt.Errorf("%s contains duplicate items", location)
+					}
+				}
+			}
+		}
 		if itemSchema, ok := schema["items"].(map[string]any); ok {
 			for index, item := range items {
 				if err := validateSchemaValue(itemSchema, item, fmt.Sprintf("%s[%d]", location, index)); err != nil {
@@ -124,6 +134,15 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 		}
 		if maximum, ok := nonNegativeIntegerBound(schema["maxLength"]); ok && len([]rune(text)) > maximum {
 			return fmt.Errorf("%s is too long", location)
+		}
+		if expression, ok := schema["pattern"].(string); ok {
+			compiled, err := regexp.Compile(expression)
+			if err != nil {
+				return fmt.Errorf("schema pattern is invalid: %w", err)
+			}
+			if !compiled.MatchString(text) {
+				return fmt.Errorf("%s does not match pattern", location)
+			}
 		}
 	case "integer":
 		number, ok := exactNumber(value)
@@ -191,7 +210,36 @@ func enumEqual(left, right any) bool {
 	}
 	leftNumber, leftNumeric := exactNumber(left)
 	rightNumber, rightNumeric := exactNumber(right)
-	return leftNumeric && rightNumeric && leftNumber.Cmp(rightNumber) == 0
+	if leftNumeric || rightNumeric {
+		return leftNumeric && rightNumeric && leftNumber.Cmp(rightNumber) == 0
+	}
+	switch leftValue := left.(type) {
+	case []any:
+		rightValue, ok := right.([]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for index := range leftValue {
+			if !enumEqual(leftValue[index], rightValue[index]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		rightValue, ok := right.(map[string]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for key, value := range leftValue {
+			other, exists := rightValue[key]
+			if !exists || !enumEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func exactNumber(value any) (*big.Rat, bool) {

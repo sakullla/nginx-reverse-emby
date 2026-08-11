@@ -24,7 +24,6 @@ const (
 	OfficialMarketProvenanceFile = "provenance.json"
 	OfficialPackageFilesFile     = "package.files.json"
 	OfficialPackageSignatureFile = "signature.json"
-	OfficialSDKRepositoryCommit  = "f35b0ec16ff4292149fb8a9622d9d218dcc64a61"
 )
 
 var officialCommitOIDPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -202,8 +201,11 @@ func validateOfficialMarketProvenanceV1(marketData []byte, market officialMarket
 	if provenance.SchemaVersion != 1 || provenance.RepositoryCommit != market.Commit || provenance.MarketSHA256 != hex.EncodeToString(marketDigest[:]) {
 		return errors.New("market source commit or SHA-256 differs from provenance")
 	}
-	if provenance.SDKRepositoryCommit != OfficialSDKRepositoryCommit || provenance.SDKDescriptorSHA256 != protoschema.CanonicalDescriptorSetSHA256 {
-		return errors.New("SDK commit or descriptor digest differs from the host contract")
+	if !officialCommitOIDPattern.MatchString(provenance.SDKRepositoryCommit) || provenance.SDKRepositoryCommit == strings.Repeat("0", 40) {
+		return errors.New("SDK provenance requires a non-zero lowercase full commit")
+	}
+	if provenance.SDKDescriptorSHA256 != protoschema.CanonicalDescriptorSetSHA256 {
+		return errors.New("SDK descriptor digest differs from the host contract")
 	}
 	if len(provenance.SDKABIs) != 2 || provenance.SDKABIs[0] != pluginsdk.PolicyABIV1 || provenance.SDKABIs[1] != pluginsdk.RPCABIV1 || provenance.SignerIdentity != OfficialSignatureKeyID {
 		return errors.New("SDK ABI or signer provenance is invalid")

@@ -1429,6 +1429,79 @@ func TestValidatorRejectsTrailingConfigSchemaValue(t *testing.T) {
 	assertValidationCode(t, err, "config_schema")
 }
 
+func TestValidatorAcceptsOnlyCanonicalRootJSONSchemaDialect(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, ConfigSchemaFile, `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}`)
+	refreshFixtureDigest(t, root)
+	if _, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("ValidatePackage() rejected the canonical JSON Schema dialect: %v", err)
+	}
+
+	for name, schema := range map[string]string{
+		"unsupported dialect": `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object"}`,
+		"nested dialect":      `{"type":"object","properties":{"value":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := newPackageFixture(t)
+			writeFixture(t, root, ConfigSchemaFile, schema)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "config_schema")
+		})
+	}
+}
+
+func TestValidatorEnforcesBoundedRE2StringPatterns(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]{0,31}$"}},"required":["id"],"additionalProperties":false}`)
+	refreshFixtureDigest(t, root)
+	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("ValidatePackage() rejected a bounded RE2 pattern: %v", err)
+	}
+	if err := ValidateConfig(validated.ConfigSchema, json.RawMessage(`{"id":"valid-id"}`)); err != nil {
+		t.Fatalf("ValidateConfig() rejected a matching value: %v", err)
+	}
+	if err := ValidateConfig(validated.ConfigSchema, json.RawMessage(`{"id":"INVALID"}`)); err == nil {
+		t.Fatal("ValidateConfig() accepted a non-matching value")
+	}
+
+	for name, schema := range map[string]string{
+		"invalid expression": `{"type":"object","properties":{"id":{"type":"string","pattern":"["}}}`,
+		"non-string schema":  `{"type":"object","properties":{"id":{"type":"integer","pattern":"^[0-9]+$"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := newPackageFixture(t)
+			writeFixture(t, root, ConfigSchemaFile, schema)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "config_schema")
+		})
+	}
+}
+
+func TestValidatorEnforcesUniqueItemsWithJSONNumberSemantics(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","properties":{"values":{"type":"array","uniqueItems":true,"items":{"type":"number"}}},"required":["values"],"additionalProperties":false}`)
+	refreshFixtureDigest(t, root)
+	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("ValidatePackage() rejected uniqueItems: %v", err)
+	}
+	if err := ValidateConfig(validated.ConfigSchema, json.RawMessage(`{"values":[1,2]}`)); err != nil {
+		t.Fatalf("ValidateConfig() rejected unique values: %v", err)
+	}
+	if err := ValidateConfig(validated.ConfigSchema, json.RawMessage(`{"values":[1,1.0]}`)); err == nil {
+		t.Fatal("ValidateConfig() accepted numerically equal duplicate values")
+	}
+
+	root = newPackageFixture(t)
+	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","uniqueItems":true}`)
+	refreshFixtureDigest(t, root)
+	_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "config_schema")
+}
+
 func TestValidatorRejectsSignedPackageWithUnsatisfiableWritableSchema(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1626,7 +1699,6 @@ func TestValidatorRejectsUnsupportedSchemaAndExecutesEveryAcceptedConstraint(t *
 	for name, schema := range map[string]string{
 		"reference": `{"type":"object","properties":{"mode":{"$ref":"#/definitions/mode"}},"definitions":{"mode":{"type":"string"}}}`,
 		"one-of":    `{"type":"object","properties":{"mode":{"oneOf":[{"type":"string"},{"type":"number"}]}}}`,
-		"pattern":   `{"type":"object","properties":{"mode":{"type":"string","pattern":"x"}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := newPackageFixture(t)
