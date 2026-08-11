@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +14,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+var pluginRuntimeErrorCredentialPattern = regexp.MustCompile(`(?i)((?:authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+|Bearer\s+[^\s,;]+`)
+var pluginRuntimeErrorURLCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+@`)
+var pluginRuntimeErrorPrivateKeyPattern = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
 
 type PluginRuntimeRepository interface {
 	StagePluginRuntime(context.Context, storage.PluginRuntimeInstanceRow) error
@@ -433,6 +439,17 @@ func safeRuntimeError(err error) string {
 		return ""
 	}
 	value := err.Error()
+	value = pluginRuntimeErrorCredentialPattern.ReplaceAllStringFunc(value, func(match string) string {
+		if len(match) >= 7 && strings.EqualFold(match[:7], "Bearer ") {
+			return "Bearer [REDACTED]"
+		}
+		if index := strings.IndexAny(match, ":="); index >= 0 {
+			return match[:index+1] + "[REDACTED]"
+		}
+		return "[REDACTED]"
+	})
+	value = pluginRuntimeErrorURLCredentialPattern.ReplaceAllString(value, `${1}[REDACTED]@`)
+	value = pluginRuntimeErrorPrivateKeyPattern.ReplaceAllString(value, `[REDACTED PRIVATE KEY]`)
 	if len(value) > 256 {
 		return value[:256]
 	}

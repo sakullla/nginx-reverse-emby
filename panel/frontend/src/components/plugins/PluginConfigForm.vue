@@ -33,14 +33,15 @@ function initialize() {
 
 function submit() {
   const config = {}
+  const secretReplacements = {}
   for (const field of fields.value) {
     const value = model[field.name]
     if (field.secret && value === '') continue
-    if (field.type === 'integer') config[field.name] = Number.parseInt(value, 10)
-    else if (field.type === 'number') config[field.name] = Number(value)
-    else config[field.name] = value
+    const normalized = field.type === 'integer' ? Number.parseInt(value, 10) : field.type === 'number' ? Number(value) : value
+    if (field.secret) secretReplacements[`/${field.name.replaceAll('~', '~0').replaceAll('/', '~1')}`] = normalized
+    else config[field.name] = normalized
   }
-  emit('submit', config)
+  emit('submit', { config, secret_replacements: secretReplacements })
 }
 </script>
 

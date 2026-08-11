@@ -29,6 +29,6 @@ describe('PluginConfigForm', () => {
     await wrapper.get('select').setValue('block')
     await wrapper.get('input[type="password"]').setValue('new-write-only-value')
     await wrapper.get('form').trigger('submit')
-    expect(wrapper.emitted('submit')[0][0]).toEqual({ mode: 'block', api_token: 'new-write-only-value' })
+    expect(wrapper.emitted('submit')[0][0]).toEqual({ config: { mode: 'block' }, secret_replacements: { '/api_token': 'new-write-only-value' } })
   })
 })

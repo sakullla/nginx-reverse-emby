@@ -7,14 +7,17 @@ import {
   enablePlugin,
   fetchPluginDetail,
   fetchPluginOperations,
+  invokePluginDynamicAction,
   rollbackPlugin,
   uninstallPlugin
 } from '../../api/plugins'
-import { safePluginExport } from '../../api/pluginSecurity'
+import { safePluginExport, sanitizePluginText } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
 import { filterPluginDetailForActor, useAccessControl } from '../../context/useAccessControl'
 import PluginAgentStatusTable from '../../components/plugins/PluginAgentStatusTable.vue'
 import PluginConfigForm from '../../components/plugins/PluginConfigForm.vue'
+import PluginDeclarativeUI from '../../components/plugins/PluginDeclarativeUI.vue'
+import PluginLogViewer from '../../components/plugins/PluginLogViewer.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 import PluginOperationTimeline from '../../components/operations/PluginOperationTimeline.vue'
@@ -29,8 +32,10 @@ const detail = ref(null)
 const operations = ref([])
 const selectedInstanceID = ref('')
 const retryingAgent = ref('')
+const actionBusy = ref('')
 
 const admin = computed(() => can('*'))
+const canWrite = computed(() => admin.value || can('resource.write'))
 const selectedInstance = computed(() => detail.value?.instances.find((instance) => instance.id === selectedInstanceID.value) || null)
 const source = computed(() => ({ kind: detail.value?.plugin.active_source_kind, risk_label: detail.value?.plugin.active_source_risk_label }))
 
@@ -46,10 +51,10 @@ async function load() {
     const visibleDetail = filterPluginDetailForActor(nextDetail, actor.value)
     if (!visibleDetail) throw new Error('当前身份无权查看此插件的资源组实例')
     detail.value = visibleDetail
-    operations.value = admin.value ? nextOperations : []
+    operations.value = nextOperations
     selectedInstanceID.value = visibleDetail.instances[0]?.id || ''
   } catch (cause) {
-    error.value = cause?.message || '读取插件详情失败'
+    error.value = sanitizePluginText(cause?.message || '读取插件详情失败')
   } finally {
     loading.value = false
   }
@@ -72,13 +77,13 @@ async function lifecycle(action) {
     }
     await load()
   } catch (cause) {
-    error.value = cause?.message || `插件 ${action} 失败`
+    error.value = sanitizePluginText(cause?.message || `插件 ${action} 失败`)
   } finally {
     busy.value = ''
   }
 }
 
-async function saveConfig(config) {
+async function saveConfig(payload) {
   if (!admin.value || !selectedInstance.value) return
   busy.value = 'configure'
   error.value = ''
@@ -93,13 +98,28 @@ async function saveConfig(config) {
         consumer: { kind: binding.consumer.kind, id: binding.consumer.id },
         target_agent_id: binding.target_agent_id
       })),
-      config
+      config: payload.config,
+      secret_replacements: payload.secret_replacements || {}
     })
     await load()
   } catch (cause) {
-    error.value = cause?.message || '保存插件配置失败'
+    error.value = sanitizePluginText(cause?.message || '保存插件配置失败')
   } finally {
     busy.value = ''
+  }
+}
+
+async function runDynamicAction({ action, target_id, confirmed }) {
+  if (!canWrite.value || !selectedInstance.value || actionBusy.value) return
+  actionBusy.value = action.id
+  error.value = ''
+  try {
+    await invokePluginDynamicAction(detail.value.plugin.plugin_id, selectedInstance.value.id, action.id, target_id, confirmed)
+    await load()
+  } catch (cause) {
+    error.value = sanitizePluginText(cause?.message || `动态操作 ${action.label} 失败`)
+  } finally {
+    actionBusy.value = ''
   }
 }
 
@@ -123,7 +143,7 @@ async function retryAgent(status) {
     await retryRevision({ agent_id: status.agent_id, desired_revision: revision, agents: [] }, { agent_id: status.agent_id, desired_revision: revision })
     await load()
   } catch (cause) {
-    error.value = cause?.message || '重试 Agent revision 失败'
+    error.value = sanitizePluginText(cause?.message || '重试 Agent revision 失败')
   } finally {
     retryingAgent.value = ''
   }
@@ -160,11 +180,13 @@ async function retryAgent(status) {
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
         </div>
-        <PluginConfigForm v-if="selectedInstance && admin" :schema="detail.package.config_schema" :config="selectedInstance.config" :saving="busy === 'configure'" @submit="saveConfig" />
+        <PluginDeclarativeUI v-if="selectedInstance && canWrite && detail.package.declarative_ui" :document="detail.package.declarative_ui" :config="selectedInstance.config" :saving="busy === 'configure'" :action-busy="!!actionBusy" @submit="saveConfig" @dynamic="runDynamicAction" />
+        <PluginConfigForm v-else-if="selectedInstance && admin" :schema="detail.package.config_schema" :config="selectedInstance.config" :saving="busy === 'configure'" @submit="saveConfig" />
         <p v-else-if="selectedInstance">当前身份只有只读权限。</p>
       </section>
       <section class="plugin-section"><h2>逐 Agent 状态、预算与故障</h2><PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" /></section>
-      <section class="plugin-section"><h2>生命周期操作、日志与审计</h2><PluginOperationTimeline :operations="operations" /></section>
+      <section v-if="selectedInstance" class="plugin-section"><h2>实例 / Agent 运行日志</h2><PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="selectedInstance.targets || []" /></section>
+      <section class="plugin-section"><h2>生命周期操作与审计</h2><PluginOperationTimeline :operations="operations" /></section>
     </template>
   </main>
 </template>

@@ -42,7 +42,7 @@ describe('PluginDetailPage', () => {
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
       instance_id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [],
-      bindings: [{ consumer: { kind: 'http_rule', id: '1' }, target_agent_id: 'edge-a' }], config: { mode: 'block' }
+      bindings: [{ consumer: { kind: 'http_rule', id: '1' }, target_agent_id: 'edge-a' }], config: { mode: 'block' }, secret_replacements: {}
     })
   })
 })

@@ -74,8 +74,10 @@ dd { margin: 2px 0 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
 code { overflow-wrap: anywhere; font-size: var(--text-xs); }
 .package-summary__section { padding-top: var(--space-4); border-top: 1px solid var(--color-border-subtle); }
 .package-summary__section h3 { margin: 0 0 var(--space-3); font-size: var(--text-sm); }
-.artifact-row { display: grid; grid-template-columns: minmax(9rem, .5fr) minmax(12rem, 1fr); gap: var(--space-2); padding: var(--space-2) 0; }
+.artifact-row { min-width: 0; display: grid; grid-template-columns: minmax(9rem, .5fr) minmax(0, 1fr); gap: var(--space-2); padding: var(--space-2) 0; }
+.artifact-row code, .artifact-row small { min-width: 0; overflow-wrap: anywhere; }
 .artifact-row small { grid-column: 1 / -1; color: var(--color-text-muted); }
+@media (max-width: 42rem) { .artifact-row { grid-template-columns: minmax(0, 1fr); }.artifact-row small { grid-column: 1; } }
 .permission-added { color: var(--color-danger); }
 .permission-removed { color: var(--color-success); }
 @media (max-width: 760px) { .package-summary__identity { display: grid; } .package-summary__identity dl { grid-template-columns: 1fr 1fr; } }

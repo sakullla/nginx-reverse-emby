@@ -491,7 +491,30 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		if err := tx.Model(&result).Updates(updates).Error; err != nil {
 			return err
 		}
-		return tx.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error
+		if err := tx.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
+			return err
+		}
+		var instance PluginInstanceRow
+		if err := tx.Where("id = ? AND plugin_id = ?", report.InstanceID, report.PluginID).First(&instance).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		message := report.State
+		if report.SafeDetail != "" {
+			message += ": " + report.SafeDetail
+		} else if report.ErrorCode != "" {
+			message += ": " + report.ErrorCode
+		}
+		message, truncated := sanitizePluginRuntimeLog(message)
+		level := "info"
+		if report.State == "degraded" {
+			level = "warning"
+		} else if report.State == "failed" {
+			level = "error"
+		}
+		return appendPluginRuntimeLogTx(tx, &PluginRuntimeLogRow{InstanceID: report.InstanceID, PluginID: report.PluginID, AgentID: report.AgentID, ResourceGroupID: instance.ResourceGroupID, Level: level, Message: message, Truncated: truncated, CreatedAt: reportedAt})
 	})
 	return result, replayed, err
 }

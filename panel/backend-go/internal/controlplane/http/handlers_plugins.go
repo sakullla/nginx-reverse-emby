@@ -2,11 +2,13 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -324,7 +326,19 @@ func (d Dependencies) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	installed, err := d.PluginService.List(r.Context())
+	var installed []service.PluginSummary
+	var err error
+	if actor, ok := actorFromRequest(r); ok {
+		if scoped, supported := d.PluginService.(interface {
+			ListForActor(context.Context, authz.Actor) ([]service.PluginSummary, error)
+		}); supported {
+			installed, err = scoped.ListForActor(r.Context(), actor)
+		} else {
+			installed, err = d.PluginService.List(r.Context())
+		}
+	} else {
+		installed, err = d.PluginService.List(r.Context())
+	}
 	if err != nil {
 		writePluginError(w, err)
 		return
@@ -383,7 +397,19 @@ func (d Dependencies) handlePlugin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	detail, err := d.PluginService.Detail(r.Context(), r.PathValue("id"))
+	var detail service.PluginDetail
+	var err error
+	if actor, ok := actorFromRequest(r); ok {
+		if scoped, supported := d.PluginService.(interface {
+			DetailForActor(context.Context, string, authz.Actor) (service.PluginDetail, error)
+		}); supported {
+			detail, err = scoped.DetailForActor(r.Context(), r.PathValue("id"), actor)
+		} else {
+			detail, err = d.PluginService.Detail(r.Context(), r.PathValue("id"))
+		}
+	} else {
+		detail, err = d.PluginService.Detail(r.Context(), r.PathValue("id"))
+	}
 	if err != nil {
 		writePluginError(w, err)
 		return
@@ -396,12 +422,62 @@ func (d Dependencies) handlePluginOperations(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	operations, err := d.PluginService.Operations(r.Context(), r.PathValue("id"))
+	var operations []service.PluginOperationDetail
+	var err error
+	if actor, ok := actorFromRequest(r); ok {
+		if scoped, supported := d.PluginService.(interface {
+			OperationsForActor(context.Context, string, authz.Actor) ([]service.PluginOperationDetail, error)
+		}); supported {
+			operations, err = scoped.OperationsForActor(r.Context(), r.PathValue("id"), actor)
+		} else {
+			operations, err = d.PluginService.Operations(r.Context(), r.PathValue("id"))
+		}
+	} else {
+		operations, err = d.PluginService.Operations(r.Context(), r.PathValue("id"))
+	}
 	if err != nil {
 		writePluginError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"operations": operations})
+}
+
+func (d Dependencies) handlePluginLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+		return
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorPayload("plugin log actor is unavailable"))
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		var err error
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			writeJSON(w, http.StatusBadRequest, errorPayload("plugin log limit must be between 1 and 100"))
+			return
+		}
+	}
+	api, supported := d.PluginService.(interface {
+		LogsForActor(context.Context, string, string, string, string, int, authz.Actor) (service.PluginRuntimeLogPage, error)
+	})
+	if !supported {
+		writePluginError(w, errors.New("plugin runtime logs are unavailable"))
+		return
+	}
+	page, err := api.LogsForActor(r.Context(), r.PathValue("id"), r.PathValue("instance"), r.URL.Query().Get("agent_id"), r.URL.Query().Get("cursor"), limit, actor)
+	if err != nil {
+		if strings.Contains(err.Error(), "cursor is invalid") {
+			writeJSON(w, http.StatusBadRequest, errorPayload("plugin log cursor is invalid"))
+			return
+		}
+		writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request) {
@@ -427,19 +503,20 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 		}
 	case "configure":
 		var input struct {
-			InstanceID      string                                  `json:"instance_id"`
-			ResourceGroupID string                                  `json:"resource_group_id"`
-			Targets         any                                     `json:"targets"`
-			PolicyChains    *[]string                               `json:"policy_chains"`
-			Bindings        *[]storage.PluginInstanceBindingRequest `json:"bindings"`
-			Config          json.RawMessage                         `json:"config"`
+			InstanceID         string                                  `json:"instance_id"`
+			ResourceGroupID    string                                  `json:"resource_group_id"`
+			Targets            any                                     `json:"targets"`
+			PolicyChains       *[]string                               `json:"policy_chains"`
+			Bindings           *[]storage.PluginInstanceBindingRequest `json:"bindings"`
+			Config             json.RawMessage                         `json:"config"`
+			SecretReplacements map[string]json.RawMessage              `json:"secret_replacements,omitempty"`
 		}
 		if err = decodeStrictPluginJSON(r, &input); err == nil {
 			if input.PolicyChains == nil {
 				err = fmt.Errorf("%w: policy_chains is required", service.ErrInvalidArgument)
 				break
 			}
-			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, PolicyChains: input.PolicyChains, Bindings: input.Bindings, Config: input.Config, ActorID: actorID})
+			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, PolicyChains: input.PolicyChains, Bindings: input.Bindings, Config: input.Config, SecretReplacements: input.SecretReplacements, ActorID: actorID})
 		}
 	case "upgrade":
 		var input pluginPackageSelection

@@ -227,6 +227,7 @@ type ValidatedPackage struct {
 	Size           int64
 	ConfigSchema   map[string]any
 	DynamicActions []pluginsdk.DynamicAction
+	DeclarativeUI  *DeclarativeUIDocument
 }
 
 type ValidatedMarket struct {

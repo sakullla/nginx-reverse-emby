@@ -51,3 +51,22 @@ export const rollbackPlugin = (pluginID, confirmedPermissions = []) => runPlugin
 export const configurePlugin = (pluginID, payload) => runPluginAction(pluginID, 'configure', payload)
 export const upgradePlugin = (pluginID, selection) => runPluginAction(pluginID, 'upgrade', selection)
 export const uninstallPlugin = (pluginID) => runPluginAction(pluginID, 'uninstall', { drained: true })
+
+export function newPluginActionKey() {
+  if (globalThis.crypto?.randomUUID) return `ui:${globalThis.crypto.randomUUID()}`
+  const bytes = new Uint8Array(24)
+  globalThis.crypto?.getRandomValues?.(bytes)
+  return `ui:${Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')}`
+}
+
+export async function invokePluginDynamicAction(pluginID, instanceID, actionID, targetID, confirmed, idempotencyKey = newPluginActionKey()) {
+  const path = pluginPath(pluginID, `/instances/${identity(instanceID, 'instance id')}/actions/${identity(actionID, 'action id')}`)
+  const { data } = await api.post(path, { target_id: String(targetID || '').trim(), confirmed: confirmed === true }, { headers: { 'Idempotency-Key': idempotencyKey } })
+  return redactPluginData(data)
+}
+
+export async function fetchPluginLogs(pluginID, instanceID, { agentID = '', cursor = '', limit = 50 } = {}) {
+  const path = pluginPath(pluginID, `/instances/${identity(instanceID, 'instance id')}/logs`)
+  const { data } = await api.get(path, { params: { agent_id: agentID || undefined, cursor: cursor || undefined, limit } })
+  return redactPluginData({ entries: Array.isArray(data?.entries) ? data.entries : [], next_cursor: data?.next_cursor || '' })
+}

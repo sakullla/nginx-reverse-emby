@@ -906,7 +906,7 @@ func TestPluginCapabilityManagerRejectsCallerSpoofedResourceGroupBeforeGuestDisp
 	manager, store, runtime, request := newCapabilityManagerFixture(t)
 	store.targetGroup = "group-b"
 	request.Actor.VisibleResourceGroups = []string{"group-a", "group-b"}
-	if _, err := manager.InvokeDynamicAction(t.Context(), request); err == nil || !strings.Contains(err.Error(), "resource group is not authoritative") {
+	if _, err := manager.InvokeDynamicAction(t.Context(), request); err == nil || !strings.Contains(err.Error(), "outside the instance resource group") {
 		t.Fatalf("cross-group spoof error=%v", err)
 	}
 	if runtime.calls != 0 {

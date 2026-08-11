@@ -457,6 +457,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/plugins/install", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstall)))
 			mux.Handle(prefix+"/plugins/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugin)))
 			mux.Handle(prefix+"/plugins/{id}/operations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginOperations)))
+			mux.Handle(prefix+"/plugins/{id}/instances/{instance}/logs", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginLogs)))
 			if resolved.PluginCapabilityService != nil {
 				mux.Handle(prefix+"/plugins/{id}/instances/{instance}/actions/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginDynamicAction)))
 			}

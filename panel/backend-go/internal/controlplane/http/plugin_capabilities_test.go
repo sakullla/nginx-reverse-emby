@@ -84,7 +84,8 @@ func (api *pluginCapabilityAPIFake) InvokeDynamicAction(_ context.Context, reque
 
 func TestPluginCapabilityHTTPDispatchesDeclarativeActionWithAuthenticatedActor(t *testing.T) {
 	api := &pluginCapabilityAPIFake{}
-	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.service/instances/instance-1/actions/rotate", bytes.NewBufferString(`{"operation_id":"action-op-1","target_kind":"relay","target_id":"relay-1","resource_group_id":"group-a"}`))
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.service/instances/instance-1/actions/rotate", bytes.NewBufferString(`{"target_id":"relay-1","confirmed":true}`))
+	request.Header.Set("Idempotency-Key", "user-click-opaque-0001")
 	request.SetPathValue("id", "official.service")
 	request.SetPathValue("instance", "instance-1")
 	request.SetPathValue("action", "rotate")
@@ -92,7 +93,7 @@ func TestPluginCapabilityHTTPDispatchesDeclarativeActionWithAuthenticatedActor(t
 	request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, actor))
 	response := httptest.NewRecorder()
 	Dependencies{PluginCapabilityService: api}.handlePluginDynamicAction(response, request)
-	if response.Code != http.StatusOK || api.request.OperationID != "action-op-1" || api.request.Actor.ID != actor.ID || api.request.PluginID != "official.service" || api.request.InstanceID != "instance-1" || api.request.ActionID != "rotate" || api.request.Target.ID != "relay-1" || api.request.Target.ResourceGroupID != "group-a" {
+	if response.Code != http.StatusOK || len(api.request.OperationID) != 64 || api.request.Actor.ID != actor.ID || api.request.PluginID != "official.service" || api.request.InstanceID != "instance-1" || api.request.ActionID != "rotate" || api.request.Target.ID != "relay-1" || api.request.Target.Kind != "" || api.request.Target.ResourceGroupID != "" || !api.request.Confirmed {
 		t.Fatalf("HTTP action status=%d request=%+v body=%s", response.Code, api.request, response.Body.String())
 	}
 }
@@ -100,12 +101,13 @@ func TestPluginCapabilityHTTPDispatchesDeclarativeActionWithAuthenticatedActor(t
 func TestPluginCapabilityHTTPRejectsMissingActorAndUnknownFields(t *testing.T) {
 	api := &pluginCapabilityAPIFake{}
 	for name, request := range map[string]*http.Request{
-		"missing actor": httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"target_kind":"relay","target_id":"relay-1","resource_group_id":"group-a"}`)),
-		"unknown field": httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"target_kind":"relay","target_id":"relay-1","resource_group_id":"group-a","script":"alert(1)"}`)),
+		"missing actor": httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"target_id":"relay-1","confirmed":true}`)),
+		"unknown field": httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"target_id":"relay-1","confirmed":true,"operation_id":"caller-controlled"}`)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if name == "unknown field" {
 				request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, authz.Actor{ID: "operator"}))
+				request.Header.Set("Idempotency-Key", "user-click-opaque-0001")
 			}
 			response := httptest.NewRecorder()
 			Dependencies{PluginCapabilityService: api}.handlePluginDynamicAction(response, request)
@@ -116,13 +118,39 @@ func TestPluginCapabilityHTTPRejectsMissingActorAndUnknownFields(t *testing.T) {
 	}
 }
 
+func TestPluginCapabilityHTTPDerivesStableActorBoundOperationID(t *testing.T) {
+	api := &pluginCapabilityAPIFake{}
+	invoke := func(actorID, action string) string {
+		request := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"target_id":"relay-1","confirmed":true}`))
+		request.Header.Set("Idempotency-Key", "stable-user-click-0001")
+		request.SetPathValue("id", "official.service")
+		request.SetPathValue("instance", "instance-1")
+		request.SetPathValue("action", action)
+		request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, authz.Actor{ID: actorID}))
+		response := httptest.NewRecorder()
+		Dependencies{PluginCapabilityService: api}.handlePluginDynamicAction(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		return api.request.OperationID
+	}
+	first := invoke("operator", "rotate")
+	if second := invoke("operator", "rotate"); second != first {
+		t.Fatalf("same user action retry changed operation id: %q != %q", second, first)
+	}
+	if otherActor := invoke("other-operator", "rotate"); otherActor == first {
+		t.Fatal("operation id was not actor-bound")
+	}
+}
+
 func TestPluginCapabilityHTTPRejectsCrossGroupSpoofBeforeGuestDispatch(t *testing.T) {
 	runtime := &crossGroupCapabilityRuntime{}
 	manager, err := service.NewPluginCapabilityManager(crossGroupCapabilityStore{}, crossGroupCapabilityAuthorizer{}, runtime, &service.PluginService{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.service/instances/instance-1/actions/rotate", bytes.NewBufferString(`{"operation_id":"action-op-1","target_kind":"relay","target_id":"relay-1","resource_group_id":"group-a"}`))
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.service/instances/instance-1/actions/rotate", bytes.NewBufferString(`{"target_id":"relay-1","confirmed":true}`))
+	request.Header.Set("Idempotency-Key", "user-click-opaque-0001")
 	request.SetPathValue("id", "official.service")
 	request.SetPathValue("instance", "instance-1")
 	request.SetPathValue("action", "rotate")

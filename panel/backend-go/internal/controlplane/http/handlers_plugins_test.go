@@ -89,6 +89,76 @@ type pluginReadAPIFake struct {
 	configureCalls int
 }
 
+type scopedPluginReadFake struct {
+	*pluginReadAPIFake
+	actor authz.Actor
+}
+
+func (f *scopedPluginReadFake) ListForActor(_ context.Context, actor authz.Actor) ([]service.PluginSummary, error) {
+	f.actor = actor
+	return []service.PluginSummary{{PluginID: "visible.plugin"}}, nil
+}
+
+func (f *scopedPluginReadFake) DetailForActor(_ context.Context, _ string, actor authz.Actor) (service.PluginDetail, error) {
+	f.actor = actor
+	return service.PluginDetail{Plugin: service.PluginSummary{PluginID: "visible.plugin"}, Instances: []service.PluginInstanceDetail{{ID: "visible", ResourceGroupID: "group-a"}}}, nil
+}
+
+func (f *scopedPluginReadFake) OperationsForActor(_ context.Context, _ string, actor authz.Actor) ([]service.PluginOperationDetail, error) {
+	f.actor = actor
+	return []service.PluginOperationDetail{{ID: "visible-operation", AgentResults: json.RawMessage(`{}`)}}, nil
+}
+
+func (f *scopedPluginReadFake) LogsForActor(_ context.Context, _, _, _, _ string, _ int, actor authz.Actor) (service.PluginRuntimeLogPage, error) {
+	f.actor = actor
+	return service.PluginRuntimeLogPage{Entries: []service.PluginRuntimeLogEntry{{InstanceID: "visible", AgentID: "edge-a", Level: "info", Message: "token=[REDACTED]"}}, NextCursor: "opaque-next"}, nil
+}
+
+func TestPluginReadHandlersUseAuthenticatedResourceScopedProjection(t *testing.T) {
+	actor := authz.Actor{ID: "member", Permissions: []string{authz.PermissionResourceRead}, VisibleResourceGroups: []string{"group-a"}}
+	api := &scopedPluginReadFake{pluginReadAPIFake: &pluginReadAPIFake{installed: []service.PluginSummary{{PluginID: "hidden.plugin"}}}}
+	for _, test := range []struct {
+		path    string
+		handler func(Dependencies, http.ResponseWriter, *http.Request)
+		marker  string
+	}{
+		{"/panel-api/plugins", func(d Dependencies, w http.ResponseWriter, r *http.Request) { d.handlePlugins(w, r) }, "visible.plugin"},
+		{"/panel-api/plugins/visible.plugin", func(d Dependencies, w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("id", "visible.plugin")
+			d.handlePlugin(w, r)
+		}, `"resource_group_id":"group-a"`},
+		{"/panel-api/plugins/visible.plugin/operations", func(d Dependencies, w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("id", "visible.plugin")
+			d.handlePluginOperations(w, r)
+		}, "visible-operation"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, actor))
+		response := httptest.NewRecorder()
+		test.handler(Dependencies{PluginService: api}, response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), test.marker) || strings.Contains(response.Body.String(), "hidden.plugin") || api.actor.ID != actor.ID {
+			t.Fatalf("path=%s status=%d actor=%+v body=%s", test.path, response.Code, api.actor, response.Body.String())
+		}
+	}
+	for _, path := range []string{"/panel-api/plugins", "/panel-api/plugins/p/operations", "/panel-api/plugins/p/instances/i/logs"} {
+		if permission := requestPermission(httptest.NewRequest(http.MethodGet, path, nil)); permission != authz.PermissionResourceRead {
+			t.Fatalf("GET %s permission=%q", path, permission)
+		}
+	}
+	if permission := requestPermission(httptest.NewRequest(http.MethodPost, "/panel-api/plugins/p/instances/i/actions/a", nil)); permission != authz.PermissionResourceWrite {
+		t.Fatalf("dynamic action permission=%q", permission)
+	}
+	logRequest := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/visible.plugin/instances/visible/logs?agent_id=edge-a&limit=25", nil)
+	logRequest.SetPathValue("id", "visible.plugin")
+	logRequest.SetPathValue("instance", "visible")
+	logRequest = logRequest.WithContext(context.WithValue(logRequest.Context(), actorContextKey{}, actor))
+	logResponse := httptest.NewRecorder()
+	Dependencies{PluginService: api}.handlePluginLogs(logResponse, logRequest)
+	if logResponse.Code != http.StatusOK || strings.Contains(logResponse.Body.String(), "plaintext") || !strings.Contains(logResponse.Body.String(), "[REDACTED]") || !strings.Contains(logResponse.Body.String(), "opaque-next") {
+		t.Fatalf("log status=%d body=%s", logResponse.Code, logResponse.Body.String())
+	}
+}
+
 func (f *pluginReadAPIFake) List(context.Context) ([]service.PluginSummary, error) {
 	return f.installed, nil
 }
@@ -208,7 +278,7 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 		t.Fatalf("package detail status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
 	}
 
-	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":["shared"],"bindings":[{"consumer":{"kind":"http_rule","id":"1"},"target_agent_id":"local"}],"config":{"mode":"observe"}}`))
+	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":["shared"],"bindings":[{"consumer":{"kind":"http_rule","id":"1"},"target_agent_id":"local"}],"config":{"mode":"observe"},"secret_replacements":{"/credentials/token":"replacement-secret"}}`))
 	configureRequest.SetPathValue("id", installed.PluginID)
 	configureRequest.SetPathValue("action", "configure")
 	configureResponse := httptest.NewRecorder()
@@ -234,6 +304,9 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	}
 	if pluginAPI.configureIn.Bindings == nil || len(*pluginAPI.configureIn.Bindings) != 1 || (*pluginAPI.configureIn.Bindings)[0].Consumer.Kind != "http_rule" {
 		t.Fatalf("configure bindings = %v", pluginAPI.configureIn.Bindings)
+	}
+	if string(pluginAPI.configureIn.SecretReplacements["/credentials/token"]) != `"replacement-secret"` || strings.Contains(configureResponse.Body.String(), "replacement-secret") {
+		t.Fatalf("configure secret replacement was not write-only: input=%s body=%s", pluginAPI.configureIn.SecretReplacements["/credentials/token"], configureResponse.Body.String())
 	}
 	omittedChains := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{"mode":"observe"}}`))
 	omittedChains.SetPathValue("id", installed.PluginID)
@@ -430,9 +503,15 @@ func TestPluginAPIRejectsTrailingJSONValue(t *testing.T) {
 	}
 }
 
-func TestPluginAndMarketplaceRoutesRequireSystemAdminPermission(t *testing.T) {
-	for _, path := range []string{"/panel-api/plugins", "/panel-api/plugins/official.waf", "/panel-api/plugins/package-detail", "/panel-api/plugins/install", "/panel-api/marketplace/sources", "/panel-api/marketplace/sources/official/refresh", "/panel-api/marketplace/sources/official/entries"} {
+func TestPluginReadsAreResourceScopedAndMarketplaceMutationsRemainAdmin(t *testing.T) {
+	for _, path := range []string{"/panel-api/plugins", "/panel-api/plugins/official.waf", "/panel-api/plugins/official.waf/operations"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
+		if permission := requestPermission(request); permission != authz.PermissionResourceRead {
+			t.Fatalf("%s permission = %q, want %q", path, permission, authz.PermissionResourceRead)
+		}
+	}
+	for _, path := range []string{"/panel-api/plugins/package-detail", "/panel-api/plugins/install", "/panel-api/marketplace/sources", "/panel-api/marketplace/sources/official/refresh"} {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
 		if permission := requestPermission(request); permission != authz.PermissionSystemAdmin {
 			t.Fatalf("%s permission = %q, want %q", path, permission, authz.PermissionSystemAdmin)
 		}

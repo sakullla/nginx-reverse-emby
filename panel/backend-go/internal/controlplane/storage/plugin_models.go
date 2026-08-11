@@ -121,6 +121,7 @@ type PluginPackageRow struct {
 	CachePath            string    `gorm:"size:2048;not null"`
 	ManifestJSON         string    `gorm:"type:text;not null"`
 	ConfigSchemaJSON     string    `gorm:"type:text;not null"`
+	UISchemaJSON         string    `gorm:"type:text;not null;default:''"`
 	VerifiedAt           time.Time `gorm:"not null"`
 }
 
@@ -397,3 +398,17 @@ type PluginAgentRuntimeStatusRow struct {
 }
 
 func (PluginAgentRuntimeStatusRow) TableName() string { return "plugin_agent_runtime_statuses" }
+
+type PluginRuntimeLogRow struct {
+	ID              uint64    `gorm:"primaryKey;autoIncrement" json:"-"`
+	InstanceID      string    `gorm:"index;size:64;not null" json:"instance_id"`
+	PluginID        string    `gorm:"index;size:190;not null" json:"plugin_id"`
+	AgentID         string    `gorm:"index;size:64;not null" json:"agent_id"`
+	ResourceGroupID string    `gorm:"index;size:64;not null" json:"resource_group_id"`
+	Level           string    `gorm:"size:16;not null" json:"level"`
+	Message         string    `gorm:"type:text;not null" json:"message"`
+	Truncated       bool      `gorm:"not null;default:false" json:"truncated"`
+	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
+}
+
+func (PluginRuntimeLogRow) TableName() string { return "plugin_runtime_logs" }

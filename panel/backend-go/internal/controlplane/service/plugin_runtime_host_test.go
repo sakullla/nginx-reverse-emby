@@ -1280,3 +1280,10 @@ func waitRuntimeRow(t *testing.T, repo *runtimeRepo, ready func(storage.PluginRu
 	t.Fatal("durable plugin runtime state was not reached")
 	return storage.PluginRuntimeInstanceRow{}
 }
+
+func TestSafeRuntimeErrorRedactsCredentialsBeforePersistence(t *testing.T) {
+	value := safeRuntimeError(errors.New("guest failed token=plaintext-secret Authorization=raw-bearer https://user:url-password@example.test"))
+	if strings.Contains(value, "plaintext-secret") || strings.Contains(value, "raw-bearer") || strings.Contains(value, "url-password") || !strings.Contains(value, "[REDACTED]") {
+		t.Fatalf("unsafe runtime error %q", value)
+	}
+}

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { fetchRepositoryContents, fetchRepositorySources } from '../../api/pluginRepositories'
 import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../../api/plugins'
+import { sanitizePluginText } from '../../api/pluginSecurity'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 
@@ -37,7 +38,7 @@ async function load() {
     })
     if (packages.value.length) await selectPackage(packages.value[0])
   } catch (cause) {
-    error.value = cause?.message || '读取插件市场失败'
+    error.value = sanitizePluginText(cause?.message || '读取插件市场失败')
   } finally {
     loading.value = false
   }
@@ -52,7 +53,7 @@ async function selectPackage(item) {
   try {
     detail.value = await fetchPluginPackageDetail(selection(false))
   } catch (cause) {
-    error.value = cause?.message || '读取签名包详情失败'
+    error.value = sanitizePluginText(cause?.message || '读取签名包详情失败')
   }
 }
 
@@ -84,7 +85,7 @@ async function applyPackage() {
     else await installPlugin(selection())
     installed.value = await fetchPlugins()
   } catch (cause) {
-    error.value = cause?.message || '提交插件包失败'
+    error.value = sanitizePluginText(cause?.message || '提交插件包失败')
   } finally {
     actionBusy.value = false
   }

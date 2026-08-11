@@ -360,6 +360,7 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
 	}
 	dynamicActions := []pluginsdk.DynamicAction(nil)
+	var declarativeUI *DeclarativeUIDocument
 	if manifest.UISchema != "" {
 		uiPath, err := securePackagePath(root, manifest.UISchema)
 		if err != nil {
@@ -370,6 +371,10 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
 		if err := validateDeclarativeUIWithActions(uiData, schema, manifest.Permissions, &dynamicActions); err != nil {
+			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
+		}
+		declarativeUI, err = ProjectDeclarativeUI(uiData, schema, manifest.Permissions)
+		if err != nil {
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
 	}
@@ -398,7 +403,7 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 	if expected.Capabilities != nil && !sameStringSet(expected.Capabilities, manifest.ExtensionPoints) {
 		return ValidatedPackage{}, validationError("capability_mismatch", PackageManifestFile, errors.New("market capabilities differ from signed manifest extension points"))
 	}
-	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema, DynamicActions: dynamicActions}, nil
+	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema, DynamicActions: dynamicActions, DeclarativeUI: declarativeUI}, nil
 }
 
 func (v *Validator) verifyPackageSignature(root string, manifest Manifest, digest, expectedKeyID string) error {

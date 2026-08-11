@@ -56,6 +56,7 @@ type PluginDynamicActionRequest struct {
 	ActionID    string
 	Actor       authz.Actor
 	Target      pluginsdk.HostTarget
+	Confirmed   bool
 }
 
 type PluginDynamicActionResult struct {
@@ -146,6 +147,10 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 		result, outcomeErr := decodePluginActionOutcome(record.ResponseJSON, request.OperationID)
 		result.Replayed = true
 		return result, outcomeErr
+	}
+	request, err = manager.authoritativeDynamicActionRequest(ctx, request)
+	if err != nil {
+		return manager.completePluginAction(ctx, request.OperationID, claimToken, err)
 	}
 	instance, _, action, generation, policy, err := manager.actionPolicy(ctx, request)
 	if err != nil {
@@ -242,6 +247,54 @@ func (manager *PluginCapabilityManager) InvokeDynamicAction(ctx context.Context,
 		}
 	}
 	return manager.retainPendingPluginAction(ctx, request.OperationID, claimToken, errors.Join(dispatchErr, reconcileErr))
+}
+
+func (manager *PluginCapabilityManager) authoritativeDynamicActionRequest(ctx context.Context, request PluginDynamicActionRequest) (PluginDynamicActionRequest, error) {
+	instance, ok, err := manager.store.GetPluginInstance(ctx, request.InstanceID)
+	if err != nil || !ok || instance.PluginID != request.PluginID || !instance.DesiredEnabled {
+		return request, errors.Join(errors.New("plugin capability instance is unavailable"), err)
+	}
+	installed, ok, err := manager.store.GetInstalledPlugin(ctx, request.PluginID)
+	if err != nil || !ok || installed.ActivePackageIdentity == "" {
+		return request, errors.Join(errors.New("plugin capability active package is unavailable"), err)
+	}
+	packageRow, ok, err := manager.store.GetPluginPackageByIdentity(ctx, installed.ActivePackageIdentity)
+	if err != nil || !ok || packageRow.Digest != installed.ActivePackageDigest {
+		return request, errors.Join(errors.New("plugin capability package identity is stale"), err)
+	}
+	validated, err := manager.loadPackage(ctx, packageRow)
+	if err != nil {
+		return request, fmt.Errorf("validate plugin capability package: %w", err)
+	}
+	var action pluginsdk.DynamicAction
+	for _, candidate := range validated.DynamicActions {
+		if candidate.ID == request.ActionID {
+			action = candidate
+			break
+		}
+	}
+	if action.ID == "" {
+		return request, errors.New("dynamic action is absent from the signed declarative UI")
+	}
+	if action.Confirm != "" && !request.Confirmed {
+		return request, fmt.Errorf("%w: dynamic action requires explicit confirmation", ErrInvalidArgument)
+	}
+	targetID := strings.TrimSpace(request.Target.ID)
+	if targetID == "" {
+		return request, fmt.Errorf("%w: dynamic action target is required", ErrInvalidArgument)
+	}
+	binding, exists, err := manager.store.PluginCapabilityTargetBinding(ctx, action.TargetKind, targetID)
+	if err != nil || !exists || binding.ResourceGroupID == "" || binding.Version == "" {
+		return request, errors.Join(errors.New("plugin capability target binding is unavailable"), err)
+	}
+	if binding.ResourceGroupID != instance.ResourceGroupID {
+		return request, errors.New("plugin capability target is outside the instance resource group")
+	}
+	if err := manager.resourceAuthorizer.AuthorizeResource(ctx, request.Actor, authz.PermissionResourceWrite, action.TargetKind, targetID); err != nil {
+		return request, err
+	}
+	request.Target = pluginsdk.HostTarget{Kind: action.TargetKind, ID: targetID, ResourceGroupID: binding.ResourceGroupID}
+	return request, nil
 }
 
 const pluginCapabilityResourceCallScope = "plugin.action.resource"
@@ -669,8 +722,9 @@ func (manager *PluginCapabilityManager) watchTarget(ctx context.Context, target 
 
 func pluginActionFingerprint(request PluginDynamicActionRequest) (string, error) {
 	payload, err := json.Marshal(struct {
-		PluginID, InstanceID, ActionID, ActorID, TargetKind, TargetID, ResourceGroupID string
-	}{request.PluginID, request.InstanceID, request.ActionID, request.Actor.ID, request.Target.Kind, request.Target.ID, request.Target.ResourceGroupID})
+		PluginID, InstanceID, ActionID, ActorID, TargetID string
+		Confirmed                                         bool
+	}{request.PluginID, request.InstanceID, request.ActionID, request.Actor.ID, request.Target.ID, request.Confirmed})
 	if err != nil {
 		return "", err
 	}

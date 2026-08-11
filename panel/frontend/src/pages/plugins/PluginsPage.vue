@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { fetchPluginDetail, fetchPlugins } from '../../api/plugins'
+import { sanitizePluginText } from '../../api/pluginSecurity'
 import { filterPluginDetailForActor, useAccessControl } from '../../context/useAccessControl'
 
 const { actor, refreshActor } = useAccessControl()
@@ -19,7 +20,7 @@ async function load() {
     const details = await Promise.all(summaries.map((summary) => fetchPluginDetail(summary.plugin_id)))
     plugins.value = details.map((detail) => filterPluginDetailForActor(detail, actor.value)).filter(Boolean)
   } catch (cause) {
-    error.value = cause?.message || '读取已安装插件失败'
+    error.value = sanitizePluginText(cause?.message || '读取已安装插件失败')
   } finally {
     loading.value = false
   }

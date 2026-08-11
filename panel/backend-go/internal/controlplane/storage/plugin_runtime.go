@@ -270,5 +270,25 @@ func (s *GormStore) UpdatePluginRuntimeHealth(ctx context.Context, instanceID, g
 	if result.RowsAffected != 1 {
 		return errors.New("plugin runtime active generation changed before health update")
 	}
-	return nil
+	instance, exists, err := s.GetPluginInstance(ctx, instanceID)
+	if err != nil || !exists {
+		return err
+	}
+	targets, err := pluginInstanceTargets(instance.TargetJSON, s.LocalAgentID())
+	if err != nil || len(targets) == 0 {
+		return err
+	}
+	message := state
+	if strings.TrimSpace(lastError) != "" {
+		message += ": " + lastError
+	}
+	level := "info"
+	if state == "backoff" || circuitOpen {
+		level = "warning"
+	}
+	if state == "failed" {
+		level = "error"
+	}
+	_, err = s.AppendPluginRuntimeLog(ctx, PluginRuntimeLogRow{InstanceID: instance.ID, PluginID: instance.PluginID, AgentID: targets[0], ResourceGroupID: instance.ResourceGroupID, Level: level, Message: message, CreatedAt: time.Now().UTC()})
+	return err
 }

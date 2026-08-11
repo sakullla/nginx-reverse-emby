@@ -39,6 +39,101 @@ type declarativeUIDocument struct {
 	Actions       []json.RawMessage `json:"actions"`
 }
 
+// DeclarativeUIDocument is the bounded host-renderable projection. It contains
+// data for the fixed component vocabulary only; package HTML, script and URLs
+// are never part of this contract.
+type DeclarativeUIDocument struct {
+	SchemaVersion int                      `json:"schema_version"`
+	Title         string                   `json:"title"`
+	Description   string                   `json:"description,omitempty"`
+	Components    []DeclarativeUIComponent `json:"components"`
+	Actions       []DeclarativeUIAction    `json:"actions"`
+}
+
+type DeclarativeUIComponent struct {
+	Type        string                   `json:"type"`
+	ID          string                   `json:"id"`
+	Label       string                   `json:"label"`
+	Description string                   `json:"description,omitempty"`
+	Binding     string                   `json:"binding,omitempty"`
+	Placeholder string                   `json:"placeholder,omitempty"`
+	Required    bool                     `json:"required,omitempty"`
+	ReadOnly    bool                     `json:"read_only,omitempty"`
+	Minimum     *json.Number             `json:"minimum,omitempty"`
+	Maximum     *json.Number             `json:"maximum,omitempty"`
+	Step        *json.Number             `json:"step,omitempty"`
+	Options     []DeclarativeUIOption    `json:"options,omitempty"`
+	Children    []DeclarativeUIComponent `json:"children,omitempty"`
+	Tone        string                   `json:"tone,omitempty"`
+}
+
+type DeclarativeUIOption struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+type DeclarativeUIAction struct {
+	Type       string                   `json:"type"`
+	ID         string                   `json:"id"`
+	Label      string                   `json:"label"`
+	Capability pluginsdk.HostCapability `json:"capability,omitempty"`
+	TargetKind string                   `json:"target_kind,omitempty"`
+	Confirm    string                   `json:"confirm,omitempty"`
+}
+
+func ProjectDeclarativeUI(data []byte, configSchema map[string]any, permissions []Permission) (*DeclarativeUIDocument, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if err := validateDeclarativeUIForPermissions(data, configSchema, permissions); err != nil {
+		return nil, err
+	}
+	var source declarativeUIDocument
+	if err := json.Unmarshal(data, &source); err != nil {
+		return nil, err
+	}
+	document := &DeclarativeUIDocument{SchemaVersion: source.SchemaVersion, Title: source.Title, Description: source.Description, Components: make([]DeclarativeUIComponent, 0, len(source.Components)), Actions: make([]DeclarativeUIAction, 0, len(source.Actions))}
+	for _, raw := range source.Components {
+		component, err := projectDeclarativeUIComponent(raw)
+		if err != nil {
+			return nil, err
+		}
+		document.Components = append(document.Components, component)
+	}
+	for _, raw := range source.Actions {
+		var action DeclarativeUIAction
+		if err := json.Unmarshal(raw, &action); err != nil {
+			return nil, err
+		}
+		document.Actions = append(document.Actions, action)
+	}
+	return document, nil
+}
+
+func projectDeclarativeUIComponent(raw json.RawMessage) (DeclarativeUIComponent, error) {
+	var component DeclarativeUIComponent
+	if err := json.Unmarshal(raw, &component); err != nil {
+		return DeclarativeUIComponent{}, err
+	}
+	if component.Type != UIComponentSection {
+		return component, nil
+	}
+	var section declarativeUISection
+	if err := json.Unmarshal(raw, &section); err != nil {
+		return DeclarativeUIComponent{}, err
+	}
+	component.Children = make([]DeclarativeUIComponent, 0, len(section.Children))
+	for _, childRaw := range section.Children {
+		child, err := projectDeclarativeUIComponent(childRaw)
+		if err != nil {
+			return DeclarativeUIComponent{}, err
+		}
+		component.Children = append(component.Children, child)
+	}
+	return component, nil
+}
+
 type declarativeUIComponentEnvelope struct {
 	Type string `json:"type"`
 }

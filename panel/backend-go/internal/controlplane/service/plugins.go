@@ -58,14 +58,15 @@ type PluginInstallRequest struct {
 }
 
 type PluginConfigureRequest struct {
-	PluginID        string
-	InstanceID      string
-	ResourceGroupID string
-	Targets         any
-	PolicyChains    *[]string
-	Bindings        *[]storage.PluginInstanceBindingRequest
-	Config          json.RawMessage
-	ActorID         string
+	PluginID           string
+	InstanceID         string
+	ResourceGroupID    string
+	Targets            any
+	PolicyChains       *[]string
+	Bindings           *[]storage.PluginInstanceBindingRequest
+	Config             json.RawMessage
+	SecretReplacements map[string]json.RawMessage
+	ActorID            string
 }
 
 type PluginUpgradeRequest struct {
@@ -96,17 +97,18 @@ type PluginPermissionDiff struct {
 }
 
 type PluginPackageDetail struct {
-	Digest         string                 `json:"digest"`
-	Version        string                 `json:"version"`
-	Runtime        plugins.Runtime        `json:"runtime"`
-	Artifacts      []PluginArtifactDetail `json:"artifacts"`
-	ResourceBudget plugins.ResourceBudget `json:"resource_budget"`
-	FailurePolicy  plugins.FailurePolicy  `json:"failure_policy"`
-	Signature      plugins.Signature      `json:"signature"`
-	Manifest       plugins.Manifest       `json:"manifest"`
-	ConfigSchema   map[string]any         `json:"config_schema"`
-	Permissions    []string               `json:"permissions"`
-	PermissionDiff PluginPermissionDiff   `json:"permission_diff"`
+	Digest         string                         `json:"digest"`
+	Version        string                         `json:"version"`
+	Runtime        plugins.Runtime                `json:"runtime"`
+	Artifacts      []PluginArtifactDetail         `json:"artifacts"`
+	ResourceBudget plugins.ResourceBudget         `json:"resource_budget"`
+	FailurePolicy  plugins.FailurePolicy          `json:"failure_policy"`
+	Signature      plugins.Signature              `json:"signature"`
+	Manifest       plugins.Manifest               `json:"manifest"`
+	ConfigSchema   map[string]any                 `json:"config_schema"`
+	Permissions    []string                       `json:"permissions"`
+	PermissionDiff PluginPermissionDiff           `json:"permission_diff"`
+	DeclarativeUI  *plugins.DeclarativeUIDocument `json:"declarative_ui,omitempty"`
 }
 
 type PluginArtifactDetail struct {
@@ -201,8 +203,10 @@ type PluginInstanceDetail struct {
 	PolicyChains           []string                        `json:"policy_chains"`
 	Bindings               []storage.PluginInstanceBinding `json:"bindings"`
 	Config                 json.RawMessage                 `json:"config"`
+	SecretFields           []PluginSecretFieldState        `json:"secret_fields"`
 	ConfigVersion          uint64                          `json:"config_version"`
 	PendingConfig          json.RawMessage                 `json:"pending_config,omitempty"`
+	PendingSecretFields    []PluginSecretFieldState        `json:"pending_secret_fields,omitempty"`
 	PendingVersion         uint64                          `json:"pending_version,omitempty"`
 	PendingOperationID     string                          `json:"pending_operation_id,omitempty"`
 	PendingResourceGroupID string                          `json:"pending_resource_group_id,omitempty"`
@@ -380,6 +384,13 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
+	if packageDetail.DeclarativeUI == nil && packageDetail.Manifest.UISchema != "" {
+		validated, err := s.loadValidatedCapabilityPackage(ctx, packageRow)
+		if err != nil {
+			return PluginDetail{}, err
+		}
+		packageDetail.DeclarativeUI = validated.DeclarativeUI
+	}
 	instanceDetails, err := s.pluginInstanceDetails(ctx, instances)
 	if err != nil {
 		return PluginDetail{}, err
@@ -425,7 +436,14 @@ func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPacka
 	if err != nil {
 		return PluginPackageDetail{}, err
 	}
-	packageRow, artifacts, err := storage.ProjectPluginPackage(storage.PluginPackageRow{Digest: candidate.Package.Digest, Version: candidate.Package.Manifest.Version, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON)}, candidate.Package.Manifest)
+	uiJSON, err := json.Marshal(candidate.Package.DeclarativeUI)
+	if err != nil {
+		return PluginPackageDetail{}, err
+	}
+	if candidate.Package.DeclarativeUI == nil {
+		uiJSON = nil
+	}
+	packageRow, artifacts, err := storage.ProjectPluginPackage(storage.PluginPackageRow{Digest: candidate.Package.Digest, Version: candidate.Package.Manifest.Version, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), UISchemaJSON: string(uiJSON)}, candidate.Package.Manifest)
 	if err != nil {
 		return PluginPackageDetail{}, err
 	}
@@ -1056,6 +1074,25 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err := plugins.ValidateConfigWritableInput(schema, request.Config); err != nil {
 		return storage.PluginInstanceRow{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
+	var instance storage.PluginInstanceRow
+	exists := false
+	if strings.TrimSpace(request.InstanceID) != "" {
+		instance, exists, err = s.store.GetPluginInstance(ctx, request.InstanceID)
+		if err != nil {
+			return storage.PluginInstanceRow{}, err
+		}
+		if exists && instance.PluginID != request.PluginID {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance identity mismatch", ErrInvalidArgument))
+		}
+	}
+	currentConfig := "{}"
+	if exists {
+		currentConfig = instance.ConfigJSON
+	}
+	request.Config, err = pluginMergeWriteOnlyConfig(schema, request.Config, currentConfig, request.SecretReplacements)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
 	if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
@@ -1102,12 +1139,11 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err := storage.ValidatePluginPolicyIdentity(request.InstanceID); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin instance identity: %v", ErrInvalidArgument, err))
 	}
-	instance, exists, err := s.store.GetPluginInstance(ctx, request.InstanceID)
-	if err != nil {
-		return storage.PluginInstanceRow{}, err
-	}
-	if exists && instance.PluginID != request.PluginID {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance identity mismatch", ErrInvalidArgument))
+	if !exists && strings.TrimSpace(request.InstanceID) != "" {
+		instance, exists, err = s.store.GetPluginInstance(ctx, request.InstanceID)
+		if err != nil {
+			return storage.PluginInstanceRow{}, err
+		}
 	}
 	policyChains := []string{}
 	if request.PolicyChains != nil {
@@ -1925,6 +1961,13 @@ func validateStoredPackageProjection(row storage.PluginPackageRow, artifacts []s
 	if err != nil || !reflect.DeepEqual(projectedSchema, validated.ConfigSchema) {
 		return errors.New("persisted plugin config schema differs from verified cache")
 	}
+	expectedUI, err := json.Marshal(validated.DeclarativeUI)
+	if validated.DeclarativeUI == nil {
+		expectedUI = nil
+	}
+	if err != nil || (strings.TrimSpace(row.UISchemaJSON) != "" && string(expectedUI) != row.UISchemaJSON) {
+		return errors.New("persisted plugin declarative UI differs from verified cache")
+	}
 	projectedRow, projectedArtifacts, err := storage.ProjectPluginPackage(row, validated.Manifest)
 	sort.Slice(projectedArtifacts, func(i, j int) bool { return projectedArtifacts[i].Path < projectedArtifacts[j].Path })
 	if err != nil || projectedRow.RuntimeKind != row.RuntimeKind || projectedRow.RuntimeABI != row.RuntimeABI || projectedRow.HostScope != row.HostScope || projectedRow.PolicyKind != row.PolicyKind || projectedRow.EntryPath != row.EntryPath || projectedRow.SignatureKeyID != row.SignatureKeyID || projectedRow.SignatureVerdict != row.SignatureVerdict || projectedRow.ResourceBudgetJSON != row.ResourceBudgetJSON || projectedRow.FailurePolicyJSON != row.FailurePolicyJSON || !reflect.DeepEqual(projectedArtifacts, artifacts) {
@@ -1970,7 +2013,14 @@ func bindInstalledRollbackOperation(operation *storage.PluginOperationRow, insta
 
 func pluginPackageRows(candidate PluginPackageCandidate, manifestJSON, schemaJSON []byte, now time.Time) (storage.PluginPackageRow, []storage.PluginArtifactRow, error) {
 	digest := strings.ToLower(candidate.Package.Digest)
-	row := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SourceRevision: candidate.sourceRevision, SourceRefKind: candidate.sourceRefKind, SourceRefName: candidate.sourceRefName, SourceResolvedOID: candidate.sourceResolvedOID, SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
+	uiJSON, err := json.Marshal(candidate.Package.DeclarativeUI)
+	if err != nil {
+		return storage.PluginPackageRow{}, nil, err
+	}
+	if candidate.Package.DeclarativeUI == nil {
+		uiJSON = nil
+	}
+	row := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SourceRevision: candidate.sourceRevision, SourceRefKind: candidate.sourceRefKind, SourceRefName: candidate.sourceRefName, SourceResolvedOID: candidate.sourceResolvedOID, SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), UISchemaJSON: string(uiJSON), VerifiedAt: now}
 	return storage.ProjectPluginPackage(row, candidate.Package.Manifest)
 }
 
@@ -2266,12 +2316,29 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		return nil, err
 	}
 	result := make([]PluginInstanceDetail, 0, len(rows))
+	schemas := make(map[string]map[string]any)
 	for _, row := range rows {
 		targets, err := pluginTargetIDs(json.RawMessage(row.TargetJSON), defaultTargetID)
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
-		config, err := pluginReadJSONObject(row.ConfigJSON)
+		schema := schemas[row.PluginID]
+		if schema == nil {
+			installed, err := s.installedPlugin(ctx, row.PluginID)
+			if err != nil {
+				return nil, err
+			}
+			packageRow, ok, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+			if err != nil || !ok {
+				return nil, errors.Join(ErrPluginReadProjection, err)
+			}
+			schema, err = plugins.DecodeConfigSchema([]byte(packageRow.ConfigSchemaJSON))
+			if err != nil {
+				return nil, ErrPluginReadProjection
+			}
+			schemas[row.PluginID] = schema
+		}
+		config, secretFields, err := pluginRedactedConfig(schema, row.ConfigJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -2287,9 +2354,9 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
-		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, PolicyChains: policyChains, Bindings: bindings, Config: config, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
+		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, PolicyChains: policyChains, Bindings: bindings, Config: config, SecretFields: secretFields, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
 		if strings.TrimSpace(row.PendingConfigJSON) != "" {
-			detail.PendingConfig, err = pluginReadJSONObject(row.PendingConfigJSON)
+			detail.PendingConfig, detail.PendingSecretFields, err = pluginRedactedConfig(schema, row.PendingConfigJSON)
 			if err != nil {
 				return nil, err
 			}
@@ -2369,6 +2436,12 @@ func pluginPackageDetail(row storage.PluginPackageRow, artifactRows []storage.Pl
 	if err != nil {
 		return PluginPackageDetail{}, err
 	}
+	var declarativeUI *plugins.DeclarativeUIDocument
+	if strings.TrimSpace(row.UISchemaJSON) != "" {
+		if err := json.Unmarshal([]byte(row.UISchemaJSON), &declarativeUI); err != nil || declarativeUI == nil {
+			return PluginPackageDetail{}, ErrPluginReadProjection
+		}
+	}
 	permissions := normalizedPermissions(manifest.Permissions)
 	current := make([]string, 0, len(grants))
 	for _, grant := range grants {
@@ -2386,7 +2459,7 @@ func pluginPackageDetail(row storage.PluginPackageRow, artifactRows []storage.Pl
 	for _, artifact := range artifactRows {
 		artifacts = append(artifacts, PluginArtifactDetail{Path: artifact.Path, SHA256: artifact.SHA256, Size: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH})
 	}
-	return PluginPackageDetail{Digest: strings.ToLower(row.Digest), Version: row.Version, Runtime: manifest.Runtime, Artifacts: artifacts, ResourceBudget: manifest.ResourceBudget, FailurePolicy: manifest.FailurePolicy, Signature: manifest.Signature, Manifest: manifest, ConfigSchema: schema, Permissions: permissions, PermissionDiff: permissionDiff(current, permissions)}, nil
+	return PluginPackageDetail{Digest: strings.ToLower(row.Digest), Version: row.Version, Runtime: manifest.Runtime, Artifacts: artifacts, ResourceBudget: manifest.ResourceBudget, FailurePolicy: manifest.FailurePolicy, Signature: manifest.Signature, Manifest: manifest, ConfigSchema: pluginPublicConfigSchema(schema), Permissions: permissions, PermissionDiff: permissionDiff(current, permissions), DeclarativeUI: declarativeUI}, nil
 }
 
 func permissionDiff(current, desired []string) PluginPermissionDiff {
