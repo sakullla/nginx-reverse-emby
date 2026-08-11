@@ -60,6 +60,9 @@ func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name st
 		runtime.observeHostBudget(invocation.generation, name, ErrorOutputBudget, pluginsdk.BudgetDimensionOutput)
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 0)
 	}
+	if name == pluginsdk.PolicyHostReadNormalizedHTTP {
+		return runtime.callNormalizedHTTP(ctx, module, invocation, requestLength, responsePointer, responseCapacity)
+	}
 	request, readable := module.Memory().Read(requestPointer, requestLength)
 	if !readable {
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
@@ -85,6 +88,89 @@ func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name st
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
 	}
 	return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusOK, uint32(len(response)))
+}
+
+func (runtime *Runtime) callNormalizedHTTP(ctx context.Context, module api.Module, invocation hostInvocation, requestLength, responsePointer, responseCapacity uint32) uint64 {
+	if requestLength != 0 {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
+	}
+	normalizedHost, ok := invocation.host.(pluginsdk.PolicyNormalizedHTTPHost)
+	if !ok {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusIncompatibleABI, 0)
+	}
+	value, err := normalizedHost.ReadNormalizedHTTP(ctx)
+	if err != nil {
+		status := statusForHostError(err)
+		dimension := budgetDimensionForHostError(err)
+		runtime.observer.ObserveWASM(Event{
+			Generation: invocation.generation,
+			Operation:  "host." + pluginsdk.PolicyHostReadNormalizedHTTP,
+			Code:       hostStatusCode(status, dimension),
+			Dimension:  dimension,
+		})
+		return pluginsdk.PackPolicyHostResult(status, 0)
+	}
+	required := normalizedHTTPResponseSize(value)
+	if required > uint64(invocation.budget.MaxOutputBytes) {
+		runtime.observeHostBudget(invocation.generation, pluginsdk.PolicyHostReadNormalizedHTTP, ErrorOutputBudget, pluginsdk.BudgetDimensionOutput)
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, uint32(required))
+	}
+	if required > uint64(responseCapacity) {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, uint32(required))
+	}
+	response, ok := module.Memory().Read(responsePointer, responseCapacity)
+	if !ok {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
+	}
+	encoded := appendNormalizedHTTPResponse(response[:0], value)
+	return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusOK, uint32(len(encoded)))
+}
+
+func normalizedHTTPResponseSize(value pluginsdk.PolicyNormalizedHTTP) uint64 {
+	var size int
+	for _, field := range []struct {
+		number protowire.Number
+		value  []byte
+	}{{1, value.Path}, {2, value.Query}, {3, value.Headers}, {4, value.TrustedSource}} {
+		if len(field.value) != 0 {
+			size += protowire.SizeTag(field.number) + protowire.SizeBytes(len(field.value))
+		}
+	}
+	if value.TrustedSourceAuthenticated {
+		size += protowire.SizeTag(5) + 1
+	}
+	if value.BodyWindowComplete {
+		size += protowire.SizeTag(6) + 1
+	}
+	if value.BodyWindowLength != 0 {
+		size += protowire.SizeTag(7) + protowire.SizeVarint(uint64(value.BodyWindowLength))
+	}
+	return uint64(size)
+}
+
+func appendNormalizedHTTPResponse(encoded []byte, value pluginsdk.PolicyNormalizedHTTP) []byte {
+	for _, field := range []struct {
+		number protowire.Number
+		value  []byte
+	}{{1, value.Path}, {2, value.Query}, {3, value.Headers}, {4, value.TrustedSource}} {
+		if len(field.value) != 0 {
+			encoded = protowire.AppendTag(encoded, field.number, protowire.BytesType)
+			encoded = protowire.AppendBytes(encoded, field.value)
+		}
+	}
+	if value.TrustedSourceAuthenticated {
+		encoded = protowire.AppendTag(encoded, 5, protowire.VarintType)
+		encoded = protowire.AppendVarint(encoded, 1)
+	}
+	if value.BodyWindowComplete {
+		encoded = protowire.AppendTag(encoded, 6, protowire.VarintType)
+		encoded = protowire.AppendVarint(encoded, 1)
+	}
+	if value.BodyWindowLength != 0 {
+		encoded = protowire.AppendTag(encoded, 7, protowire.VarintType)
+		encoded = protowire.AppendVarint(encoded, uint64(value.BodyWindowLength))
+	}
+	return encoded
 }
 
 func (runtime *Runtime) observeHostBudget(generation, name string, code ErrorCode, dimension pluginsdk.BudgetDimension) {
