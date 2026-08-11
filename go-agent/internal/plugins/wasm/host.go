@@ -9,6 +9,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
 	"github.com/tetratelabs/wazero/api"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -162,20 +163,34 @@ func encodeNormalizedHTTPResponse(value pluginsdk.PolicyNormalizedHTTP, hostErr 
 	if hostErr != nil {
 		return nil, statusForHostError(hostErr), budgetDimensionForHostError(hostErr)
 	}
-	message, err := newPolicyMessage("NormalizedHTTPResponse")
-	if err != nil {
-		return nil, pluginsdk.PolicyStatusInternal, ""
+	encoded := make([]byte, 0, len(value.Path)+len(value.Query)+len(value.Headers)+len(value.TrustedSource)+24)
+	if len(value.Path) != 0 {
+		encoded = protowire.AppendTag(encoded, 1, protowire.BytesType)
+		encoded = protowire.AppendBytes(encoded, value.Path)
 	}
-	setMessageBytes(message, "path", value.Path)
-	setMessageBytes(message, "query", value.Query)
-	setMessageBytes(message, "headers", value.Headers)
-	setMessageBytes(message, "trusted_source", value.TrustedSource)
-	setMessageBool(message, "trusted_source_authenticated", value.TrustedSourceAuthenticated)
-	setMessageBool(message, "body_window_complete", value.BodyWindowComplete)
-	setMessageUint32(message, "body_window_length", value.BodyWindowLength)
-	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
-	if err != nil {
-		return nil, pluginsdk.PolicyStatusInternal, ""
+	if len(value.Query) != 0 {
+		encoded = protowire.AppendTag(encoded, 2, protowire.BytesType)
+		encoded = protowire.AppendBytes(encoded, value.Query)
+	}
+	if len(value.Headers) != 0 {
+		encoded = protowire.AppendTag(encoded, 3, protowire.BytesType)
+		encoded = protowire.AppendBytes(encoded, value.Headers)
+	}
+	if len(value.TrustedSource) != 0 {
+		encoded = protowire.AppendTag(encoded, 4, protowire.BytesType)
+		encoded = protowire.AppendBytes(encoded, value.TrustedSource)
+	}
+	if value.TrustedSourceAuthenticated {
+		encoded = protowire.AppendTag(encoded, 5, protowire.VarintType)
+		encoded = protowire.AppendVarint(encoded, 1)
+	}
+	if value.BodyWindowComplete {
+		encoded = protowire.AppendTag(encoded, 6, protowire.VarintType)
+		encoded = protowire.AppendVarint(encoded, 1)
+	}
+	if value.BodyWindowLength != 0 {
+		encoded = protowire.AppendTag(encoded, 7, protowire.VarintType)
+		encoded = protowire.AppendVarint(encoded, uint64(value.BodyWindowLength))
 	}
 	return encoded, pluginsdk.PolicyStatusOK, ""
 }
@@ -312,8 +327,4 @@ func setMessageBytes(message protoreflect.ProtoMessage, name protoreflect.Name, 
 
 func setMessageBool(message protoreflect.ProtoMessage, name protoreflect.Name, value bool) {
 	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfBool(value))
-}
-
-func setMessageUint32(message protoreflect.ProtoMessage, name protoreflect.Name, value uint32) {
-	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfUint32(value))
 }
