@@ -63,7 +63,7 @@ type PluginConfigureRequest struct {
 	ResourceGroupID string
 	Targets         any
 	PolicyChains    *[]string
-	Bindings        *[]storage.PluginInstanceBinding
+	Bindings        *[]storage.PluginInstanceBindingRequest
 	Config          json.RawMessage
 	ActorID         string
 }
@@ -289,7 +289,7 @@ type pluginRuntimeStatusStore interface {
 }
 
 type pluginDependencyConsumerStore interface {
-	PluginDependencyConsumerState(context.Context, storage.PluginInstanceBinding) (bool, bool, error)
+	ResolvePluginInstanceBindingRequests(context.Context, []storage.PluginInstanceBindingRequest, string) ([]storage.PluginInstanceBinding, error)
 }
 
 type PluginService struct {
@@ -1122,22 +1122,34 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid policy chain memberships: %v", ErrInvalidArgument, err))
 	}
-	bindings := []storage.PluginInstanceBinding{}
+	bindingRequests := []storage.PluginInstanceBindingRequest{}
 	if request.Bindings != nil {
-		bindings = append(bindings, (*request.Bindings)...)
+		bindingRequests, err = storage.CanonicalPluginInstanceBindingRequests(*request.Bindings)
+		if err != nil {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin bindings: %v", ErrInvalidArgument, err))
+		}
 	} else if exists {
-		bindings, err = storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+		var activeBindings []storage.PluginInstanceBinding
+		activeBindings, err = storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
 		if err != nil {
 			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: persisted plugin bindings are invalid", ErrInvalidArgument))
+		}
+		bindingRequests = storage.PluginInstanceBindingRequests(activeBindings)
+	}
+	bindings := []storage.PluginInstanceBinding{}
+	if len(bindingRequests) > 0 {
+		consumerStore, ok := s.store.(pluginDependencyConsumerStore)
+		if !ok {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("plugin binding ownership resolver is unavailable"))
+		}
+		bindings, err = consumerStore.ResolvePluginInstanceBindingRequests(ctx, bindingRequests, request.ResourceGroupID)
+		if err != nil {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrInvalidArgument, err))
 		}
 	}
 	bindingsJSON, err := storage.EncodePluginInstanceBindings(bindings)
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin bindings: %v", ErrInvalidArgument, err))
-	}
-	bindings, err = storage.CanonicalPluginInstanceBindings(bindingsJSON)
-	if err != nil {
-		return storage.PluginInstanceRow{}, err
 	}
 	if len(bindings) > 0 && (manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "agent") {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: core consumer bindings require an Agent rpc-service plugin", ErrInvalidArgument))
@@ -1145,18 +1157,9 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err := storage.ValidatePluginInstanceBindingScope(bindings, targetIDs, manifest.ExtensionPoints); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrInvalidArgument, err))
 	}
-	if consumerStore, ok := s.store.(pluginDependencyConsumerStore); ok {
-		for _, binding := range bindings {
-			exists, _, err := consumerStore.PluginDependencyConsumerState(ctx, binding)
-			if err != nil {
-				return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
-			}
-			if !exists {
-				return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin binding consumer %s %s does not exist on Agent %s", ErrInvalidArgument, binding.Consumer.Kind, binding.Consumer.ID, binding.TargetAgentID))
-			}
-			if err := authorizeReferencedResource(ctx, s.store, binding.Consumer.Kind, binding.TargetAgentID+":"+binding.Consumer.ID); err != nil {
-				return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrPluginResourceAuthorization, err))
-			}
+	for _, binding := range bindings {
+		if err := authorizeReferencedResource(ctx, s.store, binding.Consumer.Kind, binding.TargetAgentID+":"+binding.Consumer.ID); err != nil {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrPluginResourceAuthorization, err))
 		}
 	}
 	now := s.now()

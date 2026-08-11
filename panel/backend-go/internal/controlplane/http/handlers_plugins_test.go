@@ -243,6 +243,14 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	if omittedResponse.Code != http.StatusBadRequest || pluginAPI.configureCalls != 1 {
 		t.Fatalf("omitted policy_chains status=%d configure calls=%d", omittedResponse.Code, pluginAPI.configureCalls)
 	}
+	callerFence := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"policy_chains":[],"bindings":[{"consumer":{"kind":"http_rule","id":"1","resource_group_id":"forged","version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"target_agent_id":"local"}],"config":{}}`))
+	callerFence.SetPathValue("id", installed.PluginID)
+	callerFence.SetPathValue("action", "configure")
+	callerFenceResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePluginAction(callerFenceResponse, callerFence)
+	if callerFenceResponse.Code != http.StatusBadRequest || pluginAPI.configureCalls != 1 {
+		t.Fatalf("caller-supplied ownership fence status=%d configure calls=%d", callerFenceResponse.Code, pluginAPI.configureCalls)
+	}
 
 	enableRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/enable", nil)
 	enableRequest.SetPathValue("id", installed.PluginID)

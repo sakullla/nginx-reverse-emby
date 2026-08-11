@@ -61,7 +61,7 @@ func TestFullSnapshotValidatorRejectsInvalidPluginDependencyGraph(t *testing.T) 
 		Revision:           7,
 		Rules:              []storage.HTTPRule{{ID: 1, AgentID: "edge-1", FrontendURL: "https://edge.example.test", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
 		PluginGenerations:  []storage.PluginGeneration{generation},
-		PluginDependencies: []storage.PluginDependencyEdge{{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "provider", Target: storage.PluginDependencyTarget{AgentID: "edge-1", ResourceGroupID: "group", Version: 1}}},
+		PluginDependencies: []storage.PluginDependencyEdge{{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "group", Version: digest}, ProviderInstanceID: "provider", Target: storage.PluginDependencyTarget{AgentID: "edge-1", ResourceGroupID: "group", Version: 1}}},
 	}
 	validator := FullSnapshotValidator{}
 	target := revision.Target{AgentID: "edge-1", Capabilities: []string{storage.PluginGenerationCapability}}
@@ -79,6 +79,10 @@ func TestFullSnapshotValidatorRejectsInvalidPluginDependencyGraph(t *testing.T) 
 		}},
 		{"cross target", func(snapshot *storage.Snapshot) { snapshot.PluginDependencies[0].Target.AgentID = "edge-2" }},
 		{"mismatched version", func(snapshot *storage.Snapshot) { snapshot.PluginDependencies[0].Target.Version = 2 }},
+		{"consumer cross group", func(snapshot *storage.Snapshot) { snapshot.PluginDependencies[0].Consumer.ResourceGroupID = "other" }},
+		{"consumer ownership version", func(snapshot *storage.Snapshot) {
+			snapshot.PluginDependencies[0].Consumer.Version = strings.Repeat("A", 64)
+		}},
 		{"unsupported consumer", func(snapshot *storage.Snapshot) { snapshot.PluginDependencies[0].Consumer.Kind = "service" }},
 	}
 	for _, test := range tests {

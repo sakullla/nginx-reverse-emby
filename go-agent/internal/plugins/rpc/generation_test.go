@@ -538,7 +538,7 @@ func rpcSnapshotWithRequiredInstance(t *testing.T, revision int64, generations [
 		CertificatePolicies: []model.ManagedCertificatePolicy{},
 		PluginGenerations:   generations,
 		PluginDependencies: []model.PluginDependencyEdge{{
-			Consumer: model.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: instanceID,
+			Consumer: model.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: provider.Target.ResourceGroupID, Version: strings.Repeat("e", 64)}, ProviderInstanceID: instanceID,
 			Target: model.PluginDependencyTarget{AgentID: provider.Target.ID, ResourceGroupID: provider.Target.ResourceGroupID, Version: provider.Target.Version},
 		}},
 		PluginPolicies: []model.PluginPolicy{},
@@ -547,7 +547,7 @@ func rpcSnapshotWithRequiredInstance(t *testing.T, revision int64, generations [
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(wire), `"plugin_dependencies":[{"consumer":{"kind":"http_rule","id":"1"},"provider_instance_id":"`+instanceID+`"`) {
+	if !strings.Contains(string(wire), `"plugin_dependencies":[{"consumer":{"kind":"http_rule","id":"1","resource_group_id":"`+provider.Target.ResourceGroupID+`","version":"`+strings.Repeat("e", 64)+`"},"provider_instance_id":"`+instanceID+`"`) {
 		t.Fatalf("backend-realistic dependency wire = %s", wire)
 	}
 	var decoded model.Snapshot

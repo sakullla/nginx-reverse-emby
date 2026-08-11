@@ -90,7 +90,7 @@ func validatePluginDependencies(snapshot storage.Snapshot, httpIDs, l4IDs map[in
 	}
 	seen := make(map[string]struct{}, len(snapshot.PluginDependencies))
 	for _, edge := range snapshot.PluginDependencies {
-		if edge.Consumer.Kind != strings.TrimSpace(edge.Consumer.Kind) || edge.Consumer.ID != strings.TrimSpace(edge.Consumer.ID) || edge.ProviderInstanceID != strings.TrimSpace(edge.ProviderInstanceID) || edge.Target.AgentID != strings.TrimSpace(edge.Target.AgentID) || edge.Target.ResourceGroupID != strings.TrimSpace(edge.Target.ResourceGroupID) {
+		if edge.Consumer.Kind != strings.TrimSpace(edge.Consumer.Kind) || edge.Consumer.ID != strings.TrimSpace(edge.Consumer.ID) || edge.Consumer.ResourceGroupID == "" || edge.Consumer.ResourceGroupID != strings.TrimSpace(edge.Consumer.ResourceGroupID) || !storage.ValidPluginDependencyConsumerVersion(edge.Consumer.Version) || edge.ProviderInstanceID != strings.TrimSpace(edge.ProviderInstanceID) || edge.Target.AgentID != strings.TrimSpace(edge.Target.AgentID) || edge.Target.ResourceGroupID != strings.TrimSpace(edge.Target.ResourceGroupID) {
 			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin dependency contains non-canonical text", nil)
 		}
 		consumerID, err := strconv.Atoi(edge.Consumer.ID)
@@ -118,6 +118,9 @@ func validatePluginDependencies(snapshot storage.Snapshot, httpIDs, l4IDs map[in
 		}
 		if edge.Target.AgentID != provider.Target.ID || edge.Target.ResourceGroupID != provider.Target.ResourceGroupID || edge.Target.Version != provider.Target.Version || provider.Target.Kind != "agent" {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q target is mismatched", edge.ProviderInstanceID), nil)
+		}
+		if edge.Consumer.ResourceGroupID != provider.Target.ResourceGroupID {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency consumer %s %s belongs to another resource group", edge.Consumer.Kind, edge.Consumer.ID), nil)
 		}
 		key := edge.Consumer.Kind + "\x00" + edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
 		if _, duplicate := seen[key]; duplicate {

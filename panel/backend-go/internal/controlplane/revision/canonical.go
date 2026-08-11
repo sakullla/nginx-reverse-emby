@@ -81,6 +81,12 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 		if left.Consumer.ID != right.Consumer.ID {
 			return left.Consumer.ID < right.Consumer.ID
 		}
+		if left.Consumer.ResourceGroupID != right.Consumer.ResourceGroupID {
+			return left.Consumer.ResourceGroupID < right.Consumer.ResourceGroupID
+		}
+		if left.Consumer.Version != right.Consumer.Version {
+			return left.Consumer.Version < right.Consumer.Version
+		}
 		if left.ProviderInstanceID != right.ProviderInstanceID {
 			return left.ProviderInstanceID < right.ProviderInstanceID
 		}

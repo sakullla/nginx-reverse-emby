@@ -524,7 +524,7 @@ func TestEmbeddedBridgePreservesPluginGenerationAndRuntimeStatus(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	embedded := toEmbeddedSnapshot(Snapshot{PluginGenerations: []storage.PluginGeneration{{
 		ID: digest, InstanceID: "instance", OperationID: "operation", Revision: 7, PluginID: "plugin", PackageDigest: digest,
-	}}, PluginDependencies: []storage.PluginDependencyEdge{{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "instance", Target: storage.PluginDependencyTarget{AgentID: "local", ResourceGroupID: "default", Version: 1}}}})
+	}}, PluginDependencies: []storage.PluginDependencyEdge{{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "default", Version: digest}, ProviderInstanceID: "instance", Target: storage.PluginDependencyTarget{AgentID: "local", ResourceGroupID: "default", Version: 1}}}})
 	if len(embedded.PluginGenerations) != 1 || embedded.PluginGenerations[0].OperationID != "operation" {
 		t.Fatalf("embedded plugin generations = %+v", embedded.PluginGenerations)
 	}

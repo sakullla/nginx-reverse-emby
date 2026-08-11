@@ -36,8 +36,10 @@ type PluginDependencyEdge struct {
 }
 
 type PluginDependencyConsumer struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	Kind            string `json:"kind"`
+	ID              string `json:"id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         string `json:"version"`
 }
 
 type PluginDependencyTarget struct {

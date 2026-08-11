@@ -1099,6 +1099,11 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 				return err
 			}
 		}
+		for _, binding := range childBindings {
+			if err := detachPluginConsumerBindingsTx(tx, binding.ResourceKind, binding.ResourceID, now); err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("parent_resource_kind = ? AND parent_resource_id = ?", "agent", agentID).Delete(&ResourceBindingRow{}).Error; err != nil {
 			return err
 		}

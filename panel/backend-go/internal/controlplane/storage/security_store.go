@@ -393,12 +393,19 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 				affected[child.ResourceKind+"\x00"+child.ResourceID] = child
 			}
 			if movingGroups {
+				if err := rejectPluginConsumerOwnershipMutationTx(tx, affected); err != nil {
+					return err
+				}
 				if err := addAgentCertificateBindingsTx(tx, row, affected); err != nil {
 					return err
 				}
 				if err := addAgentPluginBindingsTx(tx, row, affected, s.LocalAgentID()); err != nil {
 					return err
 				}
+			}
+		} else if movingGroups {
+			if err := rejectPluginConsumerOwnershipMutationTx(tx, affected); err != nil {
+				return err
 			}
 		}
 		if movingGroups {
@@ -1463,6 +1470,9 @@ func (s *GormStore) ConsumeQuotaForResource(ctx context.Context, resourceKind, r
 			}
 		}
 		if delta <= 0 {
+			if err := detachPluginConsumerBindingsTx(tx.db.WithContext(ctx), resourceKind, resourceID, now); err != nil {
+				return err
+			}
 			if err := tx.db.WithContext(ctx).Where("resource_kind = ? AND resource_id = ?", resourceKind, resourceID).Delete(&ResourceBindingRow{}).Error; err != nil {
 				return err
 			}

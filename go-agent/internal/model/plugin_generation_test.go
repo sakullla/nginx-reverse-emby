@@ -84,8 +84,8 @@ func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t
 		L4Rules:           []L4Rule{{ID: 12, AgentID: "edge-7", Enabled: true}},
 		PluginGenerations: []PluginGeneration{httpProvider, l4Provider},
 		PluginDependencies: []PluginDependencyEdge{
-			{Consumer: PluginDependencyConsumer{Kind: "http_rule", ID: "11"}, ProviderInstanceID: httpProvider.InstanceID, Target: pluginDependencyTargetForTest(httpProvider)},
-			{Consumer: PluginDependencyConsumer{Kind: "l4_rule", ID: "12"}, ProviderInstanceID: l4Provider.InstanceID, Target: pluginDependencyTargetForTest(l4Provider)},
+			{Consumer: pluginDependencyConsumerForTest("http_rule", "11", httpProvider.Target.ResourceGroupID), ProviderInstanceID: httpProvider.InstanceID, Target: pluginDependencyTargetForTest(httpProvider)},
+			{Consumer: pluginDependencyConsumerForTest("l4_rule", "12", l4Provider.Target.ResourceGroupID), ProviderInstanceID: l4Provider.InstanceID, Target: pluginDependencyTargetForTest(l4Provider)},
 		},
 	}
 	if err := ValidatePluginGenerations(snapshot, false); err != nil {
@@ -100,17 +100,56 @@ func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t
 	}
 }
 
+func TestPluginDependencyProductionWireRoundTripPreservesConsumerAuthority(t *testing.T) {
+	provider := validPluginGenerationForTest()
+	edge := PluginDependencyEdge{
+		Consumer:           pluginDependencyConsumerForTest("http_rule", "11", provider.Target.ResourceGroupID),
+		ProviderInstanceID: provider.InstanceID,
+		Target:             pluginDependencyTargetForTest(provider),
+	}
+	snapshot := Snapshot{
+		Revision:           7,
+		Rules:              []HTTPRule{{ID: 11, AgentID: provider.Target.ID, Enabled: true}},
+		PluginGenerations:  []PluginGeneration{provider},
+		PluginDependencies: []PluginDependencyEdge{edge},
+	}
+	wire, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := `"consumer":{"kind":"http_rule","id":"11","resource_group_id":"default","version":"` + strings.Repeat("e", 64) + `"}`
+	if !strings.Contains(string(wire), expected) {
+		t.Fatalf("production dependency wire = %s", wire)
+	}
+	var decoded Snapshot
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.PluginDependencies) != 1 || decoded.PluginDependencies[0].Consumer != edge.Consumer {
+		t.Fatalf("round-tripped consumer authority = %+v", decoded.PluginDependencies)
+	}
+	if err := ValidatePluginGenerations(decoded, false); err != nil {
+		t.Fatalf("round-tripped dependency validation error = %v", err)
+	}
+}
+
 func TestPluginDependenciesRejectDanglingDuplicateCrossTargetAndInvalidConsumers(t *testing.T) {
 	provider := validPluginGenerationForTest()
 	base := Snapshot{Revision: 7, Rules: []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}}, PluginGenerations: []PluginGeneration{provider}}
-	valid := PluginDependencyEdge{Consumer: PluginDependencyConsumer{Kind: "http_rule", ID: "11"}, ProviderInstanceID: provider.InstanceID, Target: pluginDependencyTargetForTest(provider)}
+	valid := PluginDependencyEdge{Consumer: pluginDependencyConsumerForTest("http_rule", "11", provider.Target.ResourceGroupID), ProviderInstanceID: provider.InstanceID, Target: pluginDependencyTargetForTest(provider)}
 	for name, mutate := range map[string]func(*Snapshot, *PluginDependencyEdge){
-		"dangling provider": func(_ *Snapshot, edge *PluginDependencyEdge) { edge.ProviderInstanceID = "missing" },
-		"cross target":      func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Target.AgentID = "edge-8" },
-		"disabled consumer": func(snapshot *Snapshot, _ *PluginDependencyEdge) { snapshot.Rules[0].Enabled = false },
-		"wrong agent":       func(snapshot *Snapshot, _ *PluginDependencyEdge) { snapshot.Rules[0].AgentID = "edge-8" },
-		"unsupported kind":  func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.Kind = "relay_listener" },
-		"noncanonical id":   func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.ID = "011" },
+		"dangling provider":          func(_ *Snapshot, edge *PluginDependencyEdge) { edge.ProviderInstanceID = "missing" },
+		"cross target":               func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Target.AgentID = "edge-8" },
+		"stale target":               func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Target.Version++ },
+		"cross resource group":       func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.ResourceGroupID = "other" },
+		"missing consumer group":     func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.ResourceGroupID = "" },
+		"missing consumer authority": func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.Version = "" },
+		"stale consumer authority":   func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.Version = strings.Repeat("f", 63) },
+		"noncanonical authority":     func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.Version = strings.Repeat("F", 64) },
+		"disabled consumer":          func(snapshot *Snapshot, _ *PluginDependencyEdge) { snapshot.Rules[0].Enabled = false },
+		"wrong agent":                func(snapshot *Snapshot, _ *PluginDependencyEdge) { snapshot.Rules[0].AgentID = "edge-8" },
+		"unsupported kind":           func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.Kind = "relay_listener" },
+		"noncanonical id":            func(_ *Snapshot, edge *PluginDependencyEdge) { edge.Consumer.ID = "011" },
 		"wrong extension": func(snapshot *Snapshot, _ *PluginDependencyEdge) {
 			snapshot.PluginGenerations[0].ExtensionPoints = []string{"dns.provider"}
 		},
@@ -137,6 +176,10 @@ func TestPluginDependenciesRejectDanglingDuplicateCrossTargetAndInvalidConsumers
 
 func pluginDependencyTargetForTest(generation PluginGeneration) PluginDependencyTarget {
 	return PluginDependencyTarget{AgentID: generation.Target.ID, ResourceGroupID: generation.Target.ResourceGroupID, Version: generation.Target.Version}
+}
+
+func pluginDependencyConsumerForTest(kind, id, resourceGroupID string) PluginDependencyConsumer {
+	return PluginDependencyConsumer{Kind: kind, ID: id, ResourceGroupID: resourceGroupID, Version: strings.Repeat("e", 64)}
 }
 
 func validPluginGenerationForTest() PluginGeneration {

@@ -74,15 +74,15 @@ func TestCanonicalSnapshotNormalizesPluginGenerations(t *testing.T) {
 		generation("z", 4, []string{"relay.write", "relay.read", "relay.read"}, `{"b":2,"a":1}`, []storage.PluginGenerationGrant{{Name: "write"}, {Name: "read"}}),
 		generation("a", 4, nil, `{}`, nil),
 	}, PluginDependencies: []storage.PluginDependencyEdge{
-		{Consumer: storage.PluginDependencyConsumer{Kind: "l4_rule", ID: "2"}, ProviderInstanceID: "z", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
-		{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "a", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
+		{Consumer: storage.PluginDependencyConsumer{Kind: "l4_rule", ID: "2", ResourceGroupID: "group", Version: digest}, ProviderInstanceID: "z", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
+		{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "group", Version: digest}, ProviderInstanceID: "a", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
 	}}
 	second := storage.Snapshot{Revision: 99, PluginGenerations: []storage.PluginGeneration{
 		generation("a", 99, []string{}, `{ }`, []storage.PluginGenerationGrant{}),
 		generation("z", 99, []string{"relay.read", "relay.write"}, `{"a":1,"b":2}`, []storage.PluginGenerationGrant{{Name: "read"}, {Name: "write"}}),
 	}, PluginDependencies: []storage.PluginDependencyEdge{
-		{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "a", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
-		{Consumer: storage.PluginDependencyConsumer{Kind: "l4_rule", ID: "2"}, ProviderInstanceID: "z", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
+		{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "group", Version: digest}, ProviderInstanceID: "a", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
+		{Consumer: storage.PluginDependencyConsumer{Kind: "l4_rule", ID: "2", ResourceGroupID: "group", Version: digest}, ProviderInstanceID: "z", Target: storage.PluginDependencyTarget{AgentID: "edge", ResourceGroupID: "group", Version: 2}},
 	}}
 	left, err := SemanticSnapshotDigest(first)
 	if err != nil {

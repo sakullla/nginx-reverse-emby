@@ -3359,6 +3359,9 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 			return err
 		}
 	}
+	if err := resolvePluginInstanceBindingFencesTx(ctx, tx, instance); err != nil {
+		return err
+	}
 	var current PluginInstanceRow
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", instance.ID).First(&current).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -3385,6 +3388,40 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 		return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
 	}
 	instance.StateVersion = next.StateVersion
+	return nil
+}
+
+func resolvePluginInstanceBindingFencesTx(ctx context.Context, tx *gorm.DB, instance *PluginInstanceRow) error {
+	if instance == nil {
+		return errors.New("plugin instance is required")
+	}
+	pendingGroupID := strings.TrimSpace(instance.PendingResourceGroupID)
+	if pendingGroupID == "" {
+		pendingGroupID = strings.TrimSpace(instance.ResourceGroupID)
+	}
+	fields := []struct {
+		label   string
+		raw     *string
+		groupID string
+	}{
+		{label: "bindings", raw: &instance.BindingsJSON, groupID: instance.ResourceGroupID},
+		{label: "pending bindings", raw: &instance.PendingBindingsJSON, groupID: pendingGroupID},
+		{label: "rollback bindings", raw: &instance.RollbackBindingsJSON, groupID: instance.ResourceGroupID},
+	}
+	for _, field := range fields {
+		bindings, err := CanonicalPluginInstanceBindings(*field.raw)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, field.label, err)
+		}
+		resolved, err := resolvePluginInstanceBindingRequestsTx(ctx, tx, PluginInstanceBindingRequests(bindings), field.groupID, true)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, field.label, err)
+		}
+		*field.raw, err = EncodePluginInstanceBindings(resolved)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s %s: %w", instance.ID, field.label, err)
+		}
+	}
 	return nil
 }
 

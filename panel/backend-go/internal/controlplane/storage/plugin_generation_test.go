@@ -101,14 +101,20 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	consumerOwner := ResourceBindingRow{ID: "http-owner", ResourceKind: "http_rule", ResourceID: "local:1", ResourceGroupID: "group-a", ParentResourceKind: "agent", ParentResourceID: "local", UpdatedAt: now}
+	bindingsJSON, err := EncodePluginInstanceBindings([]PluginInstanceBinding{{Consumer: PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "group-a", Version: pluginDependencyConsumerOwnershipVersion(consumerOwner)}, TargetAgentID: "local"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	rows := []any{
 		&packageRow,
 		&artifacts,
 		&InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: packageDigest, ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: "operation-active", StateVersion: 1, InstalledAt: now, UpdatedAt: now},
-		&PluginInstanceRow{ID: "instance-rpc", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[{"id":"secret-1","version":2,"digest":"` + strings.Repeat("d", 64) + `","purpose":"token"}]`, BindingsJSON: `[{"consumer":{"kind":"http_rule","id":"1"},"target_agent_id":"local"}]`, ConfigJSON: `{"enabled":true}`, ConfigVersion: 7, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
+		&PluginInstanceRow{ID: "instance-rpc", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[{"id":"secret-1","version":2,"digest":"` + strings.Repeat("d", 64) + `","purpose":"token"}]`, BindingsJSON: bindingsJSON, ConfigJSON: `{"enabled":true}`, ConfigVersion: 7, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
 		&PluginInstanceRow{ID: "instance-optional", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{"enabled":true}`, ConfigVersion: 8, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
 		&PluginGrantRow{ID: "grant-rpc", PluginID: manifest.ID, PackageDigest: packageDigest, PackageIdentity: packageRow.Identity, Permission: "relay.manage", ResourceSelector: "relay:public", GrantedBy: "admin", GrantedAt: now},
 		&HTTPRuleRow{ID: 1, AgentID: "local", FrontendURL: "https://plugin.example.test", BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, Enabled: true, Revision: 3},
+		&consumerOwner,
 	}
 	for _, row := range rows {
 		if err := store.db.Create(row).Error; err != nil {
@@ -138,8 +144,23 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 		t.Fatalf("production plugin projection generations=%+v dependencies=%+v", snapshot.PluginGenerations, snapshot.PluginDependencies)
 	}
 	edge := snapshot.PluginDependencies[0]
-	if edge.Consumer.Kind != PluginDependencyConsumerHTTPRule || edge.Consumer.ID != "1" || edge.ProviderInstanceID != "instance-rpc" || edge.Target.AgentID != "local" || edge.Target.ResourceGroupID != "group-a" || edge.Target.Version != 7 {
+	if edge.Consumer.Kind != PluginDependencyConsumerHTTPRule || edge.Consumer.ID != "1" || edge.Consumer.ResourceGroupID != "group-a" || !ValidPluginDependencyConsumerVersion(edge.Consumer.Version) || edge.ProviderInstanceID != "instance-rpc" || edge.Target.AgentID != "local" || edge.Target.ResourceGroupID != "group-a" || edge.Target.Version != 7 {
 		t.Fatalf("production plugin dependency = %+v", edge)
+	}
+	stale := []PluginInstanceBinding{{Consumer: edge.Consumer, TargetAgentID: "local"}}
+	stale[0].Consumer.Version = strings.Repeat("e", 64)
+	staleJSON, err := EncodePluginInstanceBindings(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", "instance-rpc").Update("bindings_json", staleJSON).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{Platform: "linux-amd64"}); err == nil || !strings.Contains(err.Error(), "ownership fence is stale") {
+		t.Fatalf("stale consumer ownership fence error = %v", err)
+	}
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", "instance-rpc").Update("bindings_json", bindingsJSON).Error; err != nil {
+		t.Fatal(err)
 	}
 	if err := store.db.Model(&HTTPRuleRow{}).Where("agent_id = ? AND id = ?", "local", 1).Update("enabled", false).Error; err != nil {
 		t.Fatal(err)

@@ -406,7 +406,7 @@ func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
 		PluginGenerations: []model.PluginGeneration{{InstanceID: "rpc-instance", Config: []byte(`{"port":53}`),
 			ExtensionPoints: []string{"dns.provider"}, Grants: []model.PluginGrantProjection{{Name: "dns.manage"}},
 			SecretHandles: []model.PluginSecretHandle{{ID: "secret", Version: 1}}}},
-		PluginDependencies: []model.PluginDependencyEdge{{Consumer: model.PluginDependencyConsumer{Kind: "http_rule", ID: "1"}, ProviderInstanceID: "rpc-instance"}},
+		PluginDependencies: []model.PluginDependencyEdge{{Consumer: model.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "default", Version: strings.Repeat("e", 64)}, ProviderInstanceID: "rpc-instance"}},
 	}
 	ctx, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
 	if err != nil {

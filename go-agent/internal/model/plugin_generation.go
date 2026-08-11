@@ -117,6 +117,12 @@ type PluginDependencyEdge struct {
 type PluginDependencyConsumer struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
+	// ResourceGroupID and Version are the signed ownership fence resolved by
+	// the controller. Version is an opaque lowercase SHA-256 digest; the Agent
+	// validates its canonical shape but does not reproduce controller storage
+	// identity inputs such as binding_id.
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         string `json:"version"`
 }
 
 type PluginDependencyTarget struct {
@@ -198,9 +204,13 @@ func ValidatePluginDependencies(snapshot Snapshot) error {
 	seen := make(map[string]struct{}, len(snapshot.PluginDependencies))
 	for index, edge := range snapshot.PluginDependencies {
 		if !validPluginIdentity(edge.ProviderInstanceID) || !validPluginIdentity(edge.Consumer.Kind) ||
-			!validPluginIdentity(edge.Consumer.ID) || !validPluginIdentity(edge.Target.AgentID) ||
+			!validPluginIdentity(edge.Consumer.ID) || !validPluginIdentity(edge.Consumer.ResourceGroupID) ||
+			!validPluginIdentity(edge.Target.AgentID) ||
 			!validPluginIdentity(edge.Target.ResourceGroupID) || edge.Target.Version == 0 {
 			return fmt.Errorf("plugin dependency %d has an invalid identity", index)
+		}
+		if !validPluginSHA256(edge.Consumer.Version) {
+			return fmt.Errorf("plugin dependency %d has an invalid consumer authority version", index)
 		}
 		provider, exists := providers[edge.ProviderInstanceID]
 		if !exists {
@@ -212,6 +222,9 @@ func ValidatePluginDependencies(snapshot Snapshot) error {
 		if provider.Target.Kind != "agent" || provider.Target.ID != edge.Target.AgentID ||
 			provider.Target.ResourceGroupID != edge.Target.ResourceGroupID || provider.Target.Version != edge.Target.Version {
 			return fmt.Errorf("plugin dependency %d provider %q crosses its target fence", index, edge.ProviderInstanceID)
+		}
+		if edge.Consumer.ResourceGroupID != provider.Target.ResourceGroupID {
+			return fmt.Errorf("plugin dependency %d consumer %s/%s crosses provider resource group", index, edge.Consumer.Kind, edge.Consumer.ID)
 		}
 		key := edge.Consumer.Kind + "\x00" + edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
 		if _, duplicate := seen[key]; duplicate {

@@ -427,12 +427,12 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 		}
 	case "configure":
 		var input struct {
-			InstanceID      string                           `json:"instance_id"`
-			ResourceGroupID string                           `json:"resource_group_id"`
-			Targets         any                              `json:"targets"`
-			PolicyChains    *[]string                        `json:"policy_chains"`
-			Bindings        *[]storage.PluginInstanceBinding `json:"bindings"`
-			Config          json.RawMessage                  `json:"config"`
+			InstanceID      string                                  `json:"instance_id"`
+			ResourceGroupID string                                  `json:"resource_group_id"`
+			Targets         any                                     `json:"targets"`
+			PolicyChains    *[]string                               `json:"policy_chains"`
+			Bindings        *[]storage.PluginInstanceBindingRequest `json:"bindings"`
+			Config          json.RawMessage                         `json:"config"`
 		}
 		if err = decodeStrictPluginJSON(r, &input); err == nil {
 			if input.PolicyChains == nil {

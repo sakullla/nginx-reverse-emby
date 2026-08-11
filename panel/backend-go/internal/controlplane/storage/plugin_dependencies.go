@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -17,11 +23,25 @@ const (
 	PluginDependencyConsumerL4Rule   = "l4_rule"
 )
 
+var ErrPluginDependencyConsumerInUse = errors.New("plugin dependency consumer ownership is in use")
+
 // PluginInstanceBinding is the durable, operator-configured authority for a
 // core consumer to require one plugin instance on one target Agent.
 type PluginInstanceBinding struct {
 	Consumer      PluginDependencyConsumer `json:"consumer"`
 	TargetAgentID string                   `json:"target_agent_id"`
+}
+
+// PluginInstanceBindingRequest is the caller-owned portion of a binding.
+// Resource-group and ownership-version fences are always derived by storage.
+type PluginInstanceBindingRequest struct {
+	Consumer      PluginInstanceBindingConsumer `json:"consumer"`
+	TargetAgentID string                        `json:"target_agent_id"`
+}
+
+type PluginInstanceBindingConsumer struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }
 
 func CanonicalPluginInstanceBindings(raw string) ([]PluginInstanceBinding, error) {
@@ -43,6 +63,8 @@ func CanonicalPluginInstanceBindings(raw string) ([]PluginInstanceBinding, error
 	for index := range bindings {
 		bindings[index].Consumer.Kind = strings.ToLower(strings.TrimSpace(bindings[index].Consumer.Kind))
 		bindings[index].Consumer.ID = strings.TrimSpace(bindings[index].Consumer.ID)
+		bindings[index].Consumer.ResourceGroupID = strings.TrimSpace(bindings[index].Consumer.ResourceGroupID)
+		bindings[index].Consumer.Version = strings.TrimSpace(bindings[index].Consumer.Version)
 		bindings[index].TargetAgentID = strings.TrimSpace(bindings[index].TargetAgentID)
 		if err := validatePluginInstanceBinding(bindings[index]); err != nil {
 			return nil, fmt.Errorf("plugin binding %d: %w", index, err)
@@ -63,6 +85,57 @@ func CanonicalPluginInstanceBindings(raw string) ([]PluginInstanceBinding, error
 		}
 	}
 	return bindings, nil
+}
+
+func CanonicalPluginInstanceBindingRequests(requests []PluginInstanceBindingRequest) ([]PluginInstanceBindingRequest, error) {
+	encoded, err := json.Marshal(requests)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	var result []PluginInstanceBindingRequest
+	if err := decoder.Decode(&result); err != nil {
+		return nil, err
+	}
+	if result == nil {
+		result = []PluginInstanceBindingRequest{}
+	}
+	for index := range result {
+		result[index].Consumer.Kind = strings.ToLower(strings.TrimSpace(result[index].Consumer.Kind))
+		result[index].Consumer.ID = strings.TrimSpace(result[index].Consumer.ID)
+		result[index].TargetAgentID = strings.TrimSpace(result[index].TargetAgentID)
+		binding := PluginInstanceBinding{Consumer: PluginDependencyConsumer{Kind: result[index].Consumer.Kind, ID: result[index].Consumer.ID}, TargetAgentID: result[index].TargetAgentID}
+		if err := validatePluginInstanceBinding(binding); err != nil {
+			return nil, fmt.Errorf("plugin binding %d: %w", index, err)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].TargetAgentID != result[j].TargetAgentID {
+			return result[i].TargetAgentID < result[j].TargetAgentID
+		}
+		if result[i].Consumer.Kind != result[j].Consumer.Kind {
+			return result[i].Consumer.Kind < result[j].Consumer.Kind
+		}
+		return result[i].Consumer.ID < result[j].Consumer.ID
+	})
+	for index := 1; index < len(result); index++ {
+		if result[index] == result[index-1] {
+			return nil, fmt.Errorf("duplicate plugin binding for %s %s on Agent %s", result[index].Consumer.Kind, result[index].Consumer.ID, result[index].TargetAgentID)
+		}
+	}
+	return result, nil
+}
+
+func PluginInstanceBindingRequests(bindings []PluginInstanceBinding) []PluginInstanceBindingRequest {
+	requests := make([]PluginInstanceBindingRequest, 0, len(bindings))
+	for _, binding := range bindings {
+		requests = append(requests, PluginInstanceBindingRequest{
+			Consumer:      PluginInstanceBindingConsumer{Kind: binding.Consumer.Kind, ID: binding.Consumer.ID},
+			TargetAgentID: binding.TargetAgentID,
+		})
+	}
+	return requests
 }
 
 func EncodePluginInstanceBindings(bindings []PluginInstanceBinding) (string, error) {
@@ -111,7 +184,21 @@ func validatePluginInstanceBinding(binding PluginInstanceBinding) error {
 	if err != nil || id <= 0 || strconv.Itoa(id) != binding.Consumer.ID {
 		return errors.New("consumer id must be a canonical positive decimal integer")
 	}
+	if (binding.Consumer.ResourceGroupID == "") != (binding.Consumer.Version == "") {
+		return errors.New("consumer resource-group and ownership version fences must be present together")
+	}
+	if binding.Consumer.Version != "" && !ValidPluginDependencyConsumerVersion(binding.Consumer.Version) {
+		return errors.New("consumer ownership version must be a lowercase SHA-256 digest")
+	}
 	return nil
+}
+
+func ValidPluginDependencyConsumerVersion(value string) bool {
+	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func pluginBindingExtensionSupported(kind string, extensions map[string]struct{}) bool {
@@ -132,23 +219,84 @@ func PluginDependencyConsumerSupportsExtensions(kind string, extensionPoints []s
 	return pluginBindingExtensionSupported(strings.TrimSpace(kind), stringSet(extensionPoints))
 }
 
-func (s *GormStore) PluginDependencyConsumerState(ctx context.Context, binding PluginInstanceBinding) (exists, enabled bool, err error) {
-	if err := validatePluginInstanceBinding(binding); err != nil {
-		return false, false, err
+func (s *GormStore) ResolvePluginInstanceBindingRequests(ctx context.Context, requests []PluginInstanceBindingRequest, providerResourceGroupID string) ([]PluginInstanceBinding, error) {
+	requests, err := CanonicalPluginInstanceBindingRequests(requests)
+	if err != nil {
+		return nil, err
 	}
-	id, _ := strconv.Atoi(binding.Consumer.ID)
-	switch binding.Consumer.Kind {
-	case PluginDependencyConsumerHTTPRule:
-		var row HTTPRuleRow
-		result := s.db.WithContext(ctx).Where("agent_id = ? AND id = ?", binding.TargetAgentID, id).Limit(1).Find(&row)
-		return result.RowsAffected == 1, row.Enabled, result.Error
-	case PluginDependencyConsumerL4Rule:
-		var row L4RuleRow
-		result := s.db.WithContext(ctx).Where("agent_id = ? AND id = ?", binding.TargetAgentID, id).Limit(1).Find(&row)
-		return result.RowsAffected == 1, row.Enabled, result.Error
-	default:
-		return false, false, nil
+	if s.transactionScoped {
+		return resolvePluginInstanceBindingRequestsTx(ctx, s.db, requests, providerResourceGroupID, false)
 	}
+	var bindings []PluginInstanceBinding
+	err = s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		bindings, err = resolvePluginInstanceBindingRequestsTx(ctx, scoped.db, requests, providerResourceGroupID, false)
+		return err
+	})
+	return bindings, err
+}
+
+func resolvePluginInstanceBindingRequestsTx(ctx context.Context, tx *gorm.DB, requests []PluginInstanceBindingRequest, providerResourceGroupID string, lock bool) ([]PluginInstanceBinding, error) {
+	providerResourceGroupID = strings.TrimSpace(providerResourceGroupID)
+	if providerResourceGroupID == "" && len(requests) != 0 {
+		return nil, errors.New("plugin provider resource group is required")
+	}
+	result := make([]PluginInstanceBinding, 0, len(requests))
+	for _, request := range requests {
+		id, _ := strconv.Atoi(request.Consumer.ID)
+		var coreResult *gorm.DB
+		switch request.Consumer.Kind {
+		case PluginDependencyConsumerHTTPRule:
+			coreResult = tx.WithContext(ctx).Where("agent_id = ? AND id = ?", request.TargetAgentID, id).Limit(1).Find(&HTTPRuleRow{})
+		case PluginDependencyConsumerL4Rule:
+			coreResult = tx.WithContext(ctx).Where("agent_id = ? AND id = ?", request.TargetAgentID, id).Limit(1).Find(&L4RuleRow{})
+		default:
+			return nil, fmt.Errorf("unsupported plugin dependency consumer kind %q", request.Consumer.Kind)
+		}
+		if coreResult.Error != nil {
+			return nil, coreResult.Error
+		}
+		if coreResult.RowsAffected != 1 {
+			return nil, fmt.Errorf("plugin binding consumer %s %s does not exist on Agent %s", request.Consumer.Kind, request.Consumer.ID, request.TargetAgentID)
+		}
+		resourceID := request.TargetAgentID + ":" + request.Consumer.ID
+		var owner ResourceBindingRow
+		query := tx.WithContext(ctx)
+		if lock {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.Where("resource_kind = ? AND resource_id = ?", request.Consumer.Kind, resourceID).First(&owner).Error; err != nil {
+			return nil, fmt.Errorf("plugin binding consumer %s %s ownership: %w", request.Consumer.Kind, request.Consumer.ID, err)
+		}
+		if strings.TrimSpace(owner.ResourceGroupID) != providerResourceGroupID {
+			return nil, fmt.Errorf("plugin binding consumer %s %s belongs to resource group %s, not provider group %s", request.Consumer.Kind, request.Consumer.ID, owner.ResourceGroupID, providerResourceGroupID)
+		}
+		result = append(result, PluginInstanceBinding{
+			Consumer: PluginDependencyConsumer{
+				Kind: request.Consumer.Kind, ID: request.Consumer.ID,
+				ResourceGroupID: owner.ResourceGroupID, Version: pluginDependencyConsumerOwnershipVersion(owner),
+			},
+			TargetAgentID: request.TargetAgentID,
+		})
+	}
+	return result, nil
+}
+
+func pluginDependencyConsumerOwnershipVersion(binding ResourceBindingRow) string {
+	payload, _ := json.Marshal(struct {
+		Domain             string `json:"domain"`
+		BindingID          string `json:"binding_id"`
+		ResourceKind       string `json:"resource_kind"`
+		ResourceID         string `json:"resource_id"`
+		ResourceGroupID    string `json:"resource_group_id"`
+		ParentResourceKind string `json:"parent_resource_kind"`
+		ParentResourceID   string `json:"parent_resource_id"`
+	}{
+		Domain: "nre.plugin-consumer-ownership.v1", BindingID: strings.TrimSpace(binding.ID),
+		ResourceKind: strings.TrimSpace(binding.ResourceKind), ResourceID: strings.TrimSpace(binding.ResourceID),
+		ResourceGroupID: strings.TrimSpace(binding.ResourceGroupID), ParentResourceKind: strings.TrimSpace(binding.ParentResourceKind), ParentResourceID: strings.TrimSpace(binding.ParentResourceID),
+	})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
 
 func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID string, generations []PluginGeneration, httpRules []HTTPRule, l4Rules []L4Rule) ([]PluginDependencyEdge, error) {
@@ -190,6 +338,13 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 			if !pluginBindingExtensionSupported(binding.Consumer.Kind, extensions) {
 				return nil, fmt.Errorf("plugin instance %s binding consumer kind %q is incompatible with its generation", instance.ID, binding.Consumer.Kind)
 			}
+			authoritative, err := resolvePluginInstanceBindingRequestsTx(ctx, s.db, PluginInstanceBindingRequests([]PluginInstanceBinding{binding}), generation.Target.ResourceGroupID, false)
+			if err != nil {
+				return nil, fmt.Errorf("plugin instance %s binding authority: %w", instance.ID, err)
+			}
+			if len(authoritative) != 1 || authoritative[0] != binding {
+				return nil, fmt.Errorf("plugin instance %s binding consumer %s %s ownership fence is stale", instance.ID, binding.Consumer.Kind, binding.Consumer.ID)
+			}
 			consumerExists := false
 			switch binding.Consumer.Kind {
 			case PluginDependencyConsumerHTTPRule:
@@ -206,7 +361,7 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 			}
 			seen[key] = struct{}{}
 			edges = append(edges, PluginDependencyEdge{
-				Consumer: binding.Consumer, ProviderInstanceID: generation.InstanceID,
+				Consumer: authoritative[0].Consumer, ProviderInstanceID: generation.InstanceID,
 				Target: PluginDependencyTarget{AgentID: agentID, ResourceGroupID: generation.Target.ResourceGroupID, Version: generation.Target.Version},
 			})
 		}
@@ -229,4 +384,91 @@ func stringSet(values []string) map[string]struct{} {
 		result[strings.TrimSpace(value)] = struct{}{}
 	}
 	return result
+}
+
+func rejectPluginConsumerOwnershipMutationTx(tx *gorm.DB, resources map[string]ResourceBindingRow) error {
+	targets := make(map[string]struct{})
+	for _, resource := range resources {
+		if resource.ResourceKind != PluginDependencyConsumerHTTPRule && resource.ResourceKind != PluginDependencyConsumerL4Rule {
+			continue
+		}
+		agentID, numericID, ok := splitBoundResourceID(resource.ResourceID)
+		if ok {
+			targets[resource.ResourceKind+"\x00"+agentID+"\x00"+strconv.Itoa(numericID)] = struct{}{}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	var instances []PluginInstanceRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&instances).Error; err != nil {
+		return err
+	}
+	for _, instance := range instances {
+		for _, raw := range []string{instance.BindingsJSON, instance.PendingBindingsJSON, instance.RollbackBindingsJSON} {
+			bindings, err := CanonicalPluginInstanceBindings(raw)
+			if err != nil {
+				return fmt.Errorf("plugin instance %s bindings: %w", instance.ID, err)
+			}
+			for _, binding := range bindings {
+				key := binding.Consumer.Kind + "\x00" + binding.TargetAgentID + "\x00" + binding.Consumer.ID
+				if _, found := targets[key]; found {
+					return fmt.Errorf("%w: %s %s is required by plugin instance %s", ErrPluginDependencyConsumerInUse, binding.Consumer.Kind, binding.Consumer.ID, instance.ID)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func detachPluginConsumerBindingsTx(tx *gorm.DB, resourceKind, resourceID string, now time.Time) error {
+	if resourceKind != PluginDependencyConsumerHTTPRule && resourceKind != PluginDependencyConsumerL4Rule {
+		return nil
+	}
+	agentID, numericID, ok := splitBoundResourceID(resourceID)
+	if !ok {
+		return nil
+	}
+	consumerID := strconv.Itoa(numericID)
+	var instances []PluginInstanceRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&instances).Error; err != nil {
+		return err
+	}
+	for index := range instances {
+		updates := make(map[string]any)
+		for column, raw := range map[string]string{
+			"bindings_json":          instances[index].BindingsJSON,
+			"pending_bindings_json":  instances[index].PendingBindingsJSON,
+			"rollback_bindings_json": instances[index].RollbackBindingsJSON,
+		} {
+			bindings, err := CanonicalPluginInstanceBindings(raw)
+			if err != nil {
+				return fmt.Errorf("plugin instance %s bindings: %w", instances[index].ID, err)
+			}
+			filtered := bindings[:0]
+			for _, binding := range bindings {
+				if binding.Consumer.Kind == resourceKind && binding.Consumer.ID == consumerID && binding.TargetAgentID == agentID {
+					continue
+				}
+				filtered = append(filtered, binding)
+			}
+			if len(filtered) == len(bindings) {
+				continue
+			}
+			encoded, err := EncodePluginInstanceBindings(filtered)
+			if err != nil {
+				return err
+			}
+			updates[column] = encoded
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		updates["state_version"] = gorm.Expr("state_version + 1")
+		updates["updated_at"] = now
+		if err := tx.Model(&PluginInstanceRow{}).Where("id = ?", instances[index].ID).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
