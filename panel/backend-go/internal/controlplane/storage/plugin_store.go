@@ -3336,12 +3336,52 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 		if result.RowsAffected != 1 {
 			return fmt.Errorf("%w: plugin operation is stale, replayed, or already completed", ErrPluginConflict)
 		}
+		if err := completePluginAgentRuntimeAuthorityTx(tx, mutation.Operation); err != nil {
+			return err
+		}
 		return tx.Create(&mutation.Audit).Error
 	}
 	if err := createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit); err != nil {
 		return err
 	}
 	return persistPluginOperationScopesTx(tx, mutation.Operation, operationScopes)
+}
+
+func completePluginAgentRuntimeAuthorityTx(tx *gorm.DB, operation PluginOperationRow) error {
+	var statuses []PluginAgentRuntimeStatusRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("operation_id = ? AND authority_slot IN ?", operation.ID, []string{"pending", "active"}).
+		Order("agent_id, instance_id").Find(&statuses).Error; err != nil {
+		return err
+	}
+	if operation.Status != "succeeded" {
+		return tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("operation_id = ? AND authority_slot IN ?", operation.ID, []string{"pending", "active"}).
+			Update("authority_slot", "retired").Error
+	}
+	for _, status := range statuses {
+		if status.State != "active" {
+			if status.AuthoritySlot == "pending" {
+				if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+					Where("operation_id = ? AND agent_id = ? AND instance_id = ? AND authority_slot = ?", status.OperationID, status.AgentID, status.InstanceID, "pending").
+					Update("authority_slot", "retired").Error; err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("agent_id = ? AND instance_id = ? AND authority_slot = ? AND operation_id <> ?", status.AgentID, status.InstanceID, "active", status.OperationID).
+			Update("authority_slot", "retired").Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("operation_id = ? AND agent_id = ? AND instance_id = ? AND authority_slot IN ?", status.OperationID, status.AgentID, status.InstanceID, []string{"pending", "active"}).
+			Update("authority_slot", "active").Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pluginSecretIDsForPluginTx(tx *gorm.DB, pluginID string) (map[string]string, error) {

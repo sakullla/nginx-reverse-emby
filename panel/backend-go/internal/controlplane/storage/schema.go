@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,6 +70,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		if err := migratePostgresPluginVariantIdentity(ctx, db); err != nil {
 			return err
 		}
+	}
+	if err := prepareLegacyPluginRollbackResourceGroupColumn(db); err != nil {
+		return err
 	}
 	if err := preparePluginSafeIndexes(ctx, db); err != nil {
 		return err
@@ -159,6 +163,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := migratePluginRuntimeProjection(ctx, db); err != nil {
 		return err
 	}
+	if err := backfillPluginRollbackResourceGroups(ctx, db); err != nil {
+		return err
+	}
 	if err := backfillPluginOperationScopes(ctx, db); err != nil {
 		return err
 	}
@@ -228,6 +235,252 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func prepareLegacyPluginRollbackResourceGroupColumn(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&PluginInstanceRow{}) || db.Migrator().HasColumn(&PluginInstanceRow{}, "RollbackResourceGroupID") {
+		return nil
+	}
+	if db.Dialector.Name() == "sqlite" {
+		if err := db.Exec(`ALTER TABLE plugin_instances ADD COLUMN rollback_resource_group_id text NOT NULL DEFAULT ""`).Error; err != nil {
+			return fmt.Errorf("add legacy plugin rollback resource-group column: %w", err)
+		}
+		return nil
+	}
+	if err := db.Migrator().AddColumn(&PluginInstanceRow{}, "RollbackResourceGroupID"); err != nil {
+		return fmt.Errorf("add legacy plugin rollback resource-group column: %w", err)
+	}
+	return nil
+}
+
+// backfillPluginRollbackResourceGroups is the pre-service boundary for the
+// A5 rollback ownership column. A legacy rollback slot is usable only when
+// its immutable owner can be reconstructed from exact Vault or consumer
+// binding evidence. Ambiguous plugin-wide rollback state is retired instead
+// of preventing the control plane from starting.
+func backfillPluginRollbackResourceGroups(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var installedRows []InstalledPluginRow
+		if err := tx.Order("plugin_id").Find(&installedRows).Error; err != nil {
+			return err
+		}
+		for _, installed := range installedRows {
+			var instances []PluginInstanceRow
+			if err := tx.Where("plugin_id = ?", installed.PluginID).Order("id").Find(&instances).Error; err != nil {
+				return err
+			}
+			retire := false
+			resolved := make(map[string]string, len(instances))
+			for _, instance := range instances {
+				if !pluginRollbackSnapshotPresent(instance) {
+					if installed.RollbackPackageDigest != "" {
+						retire = true
+					}
+					continue
+				}
+				if installed.RollbackPackageDigest == "" || instance.RollbackVersion == 0 {
+					retire = true
+					continue
+				}
+				groupID, exact, err := pluginRollbackResourceGroupEvidenceTx(ctx, tx, instance)
+				if err != nil {
+					return err
+				}
+				if !exact {
+					retire = true
+					continue
+				}
+				resolved[instance.ID] = groupID
+			}
+			if retire {
+				if err := retirePluginRollbackSnapshotsTx(tx, installed, instances); err != nil {
+					return err
+				}
+				continue
+			}
+			for instanceID, groupID := range resolved {
+				if err := tx.Model(&PluginInstanceRow{}).
+					Where("id = ? AND plugin_id = ? AND rollback_resource_group_id = ?", instanceID, installed.PluginID, "").
+					Updates(map[string]any{"rollback_resource_group_id": groupID, "state_version": gorm.Expr("state_version + 1")}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func pluginRollbackSnapshotPresent(instance PluginInstanceRow) bool {
+	return instance.RollbackVersion != 0 || strings.TrimSpace(instance.RollbackConfigJSON) != "" ||
+		!canonicalJSONIsEmptyArray(instance.RollbackSecretHandlesJSON) ||
+		!canonicalJSONIsEmptyArray(instance.RollbackBindingsJSON) ||
+		!canonicalJSONIsEmptyArray(instance.RollbackPolicyChainsJSON)
+}
+
+func pluginRollbackResourceGroupEvidenceTx(ctx context.Context, tx *gorm.DB, instance PluginInstanceRow) (string, bool, error) {
+	groups := make(map[string]struct{})
+	addGroup := func(groupID string) bool {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
+			return false
+		}
+		groups[groupID] = struct{}{}
+		return len(groups) == 1
+	}
+
+	var handles []PluginInstanceSecretHandle
+	if err := json.Unmarshal([]byte(pluginDefaultArrayJSON(instance.RollbackSecretHandlesJSON)), &handles); err != nil {
+		return "", false, nil
+	}
+	for _, handle := range handles {
+		var secret SecretRow
+		err := tx.WithContext(ctx).Where("id = ?", strings.TrimSpace(handle.ID)).First(&secret).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		var version SecretVersionRow
+		err = tx.WithContext(ctx).Where("secret_id = ? AND version = ?", secret.ID, handle.Version).First(&version).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if handle.ID == "" || handle.Version == 0 || handle.Purpose == "" || handle.Purpose != secret.Purpose ||
+			pluginSecretInstanceID(secret.Purpose) != instance.ID || secret.RetiredAt != nil || version.DestroyedAt != nil || !addGroup(secret.ResourceGroupID) {
+			return "", false, nil
+		}
+	}
+
+	bindings, err := CanonicalPluginInstanceBindings(instance.RollbackBindingsJSON)
+	if err != nil {
+		return "", false, nil
+	}
+	for _, binding := range bindings {
+		consumerID, err := strconv.Atoi(binding.Consumer.ID)
+		if err != nil || consumerID <= 0 {
+			return "", false, nil
+		}
+		resourceID := binding.TargetAgentID + ":" + binding.Consumer.ID
+		var owner ResourceBindingRow
+		err = tx.WithContext(ctx).Where("resource_kind = ? AND resource_id = ?", binding.Consumer.Kind, resourceID).First(&owner).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if owner.ResourceGroupID != binding.Consumer.ResourceGroupID || pluginDependencyConsumerOwnershipVersion(owner) != binding.Consumer.Version || !addGroup(owner.ResourceGroupID) {
+			return "", false, nil
+		}
+		var count int64
+		switch binding.Consumer.Kind {
+		case PluginDependencyConsumerHTTPRule:
+			err = tx.WithContext(ctx).Model(&HTTPRuleRow{}).Where("agent_id = ? AND id = ?", binding.TargetAgentID, consumerID).Count(&count).Error
+		case PluginDependencyConsumerL4Rule:
+			err = tx.WithContext(ctx).Model(&L4RuleRow{}).Where("agent_id = ? AND id = ?", binding.TargetAgentID, consumerID).Count(&count).Error
+		default:
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if count != 1 {
+			return "", false, nil
+		}
+		var agentOwner ResourceBindingRow
+		err = tx.WithContext(ctx).Where("resource_kind = ? AND resource_id = ?", "agent", binding.TargetAgentID).First(&agentOwner).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if agentOwner.ResourceGroupID != owner.ResourceGroupID {
+			return "", false, nil
+		}
+	}
+
+	current := strings.TrimSpace(instance.RollbackResourceGroupID)
+	if current != "" {
+		if len(groups) == 0 {
+			return current, true, nil
+		}
+		if _, ok := groups[current]; ok && len(groups) == 1 {
+			return current, true, nil
+		}
+		return "", false, nil
+	}
+	if len(groups) != 1 {
+		return "", false, nil
+	}
+	for groupID := range groups {
+		return groupID, true, nil
+	}
+	return "", false, nil
+}
+
+func retirePluginRollbackSnapshotsTx(tx *gorm.DB, installed InstalledPluginRow, instances []PluginInstanceRow) error {
+	candidates := make(map[string]string)
+	for _, instance := range instances {
+		var handles []PluginInstanceSecretHandle
+		if json.Unmarshal([]byte(pluginDefaultArrayJSON(instance.RollbackSecretHandlesJSON)), &handles) == nil {
+			for _, handle := range handles {
+				if handle.ID != "" {
+					candidates[handle.ID] = instance.ID
+				}
+			}
+		}
+	}
+	now := time.Now().UTC()
+	if err := tx.Model(&PluginInstanceRow{}).Where("plugin_id = ?", installed.PluginID).Updates(map[string]any{
+		"rollback_config_json": "", "rollback_version": 0, "rollback_resource_group_id": "",
+		"rollback_policy_chains_json": "[]", "rollback_bindings_json": "[]", "rollback_secret_handles_json": "[]",
+		"state_version": gorm.Expr("state_version + 1"), "updated_at": now,
+	}).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed.PluginID).Updates(map[string]any{
+		"rollback_package_digest": "", "rollback_package_identity": "", "rollback_source_id": "", "rollback_source_kind": "", "rollback_source_risk_label": "",
+		"rollback_source_revision": 0, "rollback_source_ref_kind": "", "rollback_source_ref_name": "", "rollback_source_resolved_oid": "",
+		"rollback_signature_key_id": "", "rollback_signature_public_key": "", "rollback_signature_fingerprint": "",
+		"state_version": gorm.Expr("state_version + 1"), "updated_at": now,
+	}).Error; err != nil {
+		return err
+	}
+	current, err := pluginSecretIDsForPluginTx(tx, installed.PluginID)
+	if err != nil {
+		return err
+	}
+	for secretID, instanceID := range candidates {
+		if _, referenced := current[secretID]; referenced {
+			continue
+		}
+		var secret SecretRow
+		err := tx.Where("id = ?", secretID).First(&secret).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if pluginSecretInstanceID(secret.Purpose) != instanceID {
+			continue
+		}
+		if err := tx.Model(&SecretVersionRow{}).Where("secret_id = ? AND destroyed_at IS NULL", secretID).Updates(map[string]any{"destroyed_at": now, "nonce": []byte{}, "ciphertext": []byte{}}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&SecretRow{}).Where("id = ? AND retired_at IS NULL", secretID).Update("retired_at", now).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&PluginOperationSecretRow{}).Where("secret_id = ? AND retired_at IS NULL", secretID).Updates(map[string]any{"role": "retired", "state": "retired", "retired_at": now}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func backfillPluginOperationScopes(ctx context.Context, db *gorm.DB) error {

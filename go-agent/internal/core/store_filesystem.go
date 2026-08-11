@@ -23,6 +23,7 @@ type Filesystem struct {
 	root          string
 	mu            sync.Mutex
 	syncDirectory func(string) error
+	logCapacity   pluginLogCapacitySignal
 }
 
 func NewFilesystem(root string) (*Filesystem, error) {

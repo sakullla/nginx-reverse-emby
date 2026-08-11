@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 type PluginLogOutboxStore interface {
@@ -16,6 +18,17 @@ type PluginLogOutboxStore interface {
 	PendingPluginLogReports() ([]model.PluginRuntimeLogReport, error)
 	AcknowledgePluginLogReports([]model.PluginRuntimeLogReport) error
 }
+
+type PluginLogBackpressureStore interface {
+	PluginLogOutboxStore
+	WaitForPluginLogCapacity(context.Context) error
+}
+
+type PluginLogFenceRetirementStore interface {
+	RetirePluginRuntimeLogFence(pluginprocess.RuntimeLogIdentity) error
+}
+
+var ErrPluginLogOutboxFull = errors.New("plugin runtime log outbox is full")
 
 type pluginLogOutboxState struct {
 	pending       []model.PluginRuntimeLogReport
@@ -25,6 +38,7 @@ type pluginLogOutboxState struct {
 	batchOrder    []string
 	acks          map[string]struct{}
 	ackOrder      []string
+	retired       map[string]struct{}
 	records       int
 }
 
@@ -33,6 +47,7 @@ func newPluginLogOutboxState() pluginLogOutboxState {
 		sequence: make(map[string]uint64),
 		batches:  make(map[string][]model.PluginRuntimeLogReport),
 		acks:     make(map[string]struct{}),
+		retired:  make(map[string]struct{}),
 	}
 }
 
@@ -59,7 +74,7 @@ func (state *pluginLogOutboxState) enqueue(batchID string, drafts []model.Plugin
 		return model.ClonePluginRuntimeLogReports(existing), true, nil
 	}
 	if len(state.pending)+len(drafts) > model.MaxPendingPluginLogReports {
-		return nil, false, errors.New("plugin runtime log outbox is full")
+		return nil, false, ErrPluginLogOutboxFull
 	}
 	assigned := model.ClonePluginRuntimeLogReports(drafts)
 	nextSequence := make(map[string]uint64, len(state.sequence))
@@ -84,6 +99,9 @@ func (state *pluginLogOutboxState) enqueue(batchID string, drafts []model.Plugin
 			return nil, false, fmt.Errorf("enqueue plugin runtime log report: %w", err)
 		}
 		nextSequence[identity] = sequence
+	}
+	for index := range assigned {
+		delete(state.retired, pluginRuntimeLogFenceIdentity(assigned[index]))
 	}
 	state.sequence = nextSequence
 	state.sequenceOrder = nextSequenceOrder
@@ -143,7 +161,6 @@ func (state *pluginLogOutboxState) acknowledge(sent []model.PluginRuntimeLogRepo
 }
 
 const maxPluginLogReplayIdentities = 512
-const maxPluginLogSequenceHighWater = 1024
 
 func (state *pluginLogOutboxState) trimReplayHistory() {
 	if state == nil {
@@ -175,31 +192,19 @@ func (state *pluginLogOutboxState) trimReplayHistory() {
 		delete(state.batches, batchID)
 	}
 	protectedSequences := state.protectedSequenceHighWater()
-	for len(protectedSequences) > maxPluginLogSequenceHighWater && len(state.batchOrder) > 0 {
-		batchID := state.batchOrder[0]
-		state.batchOrder = state.batchOrder[1:]
-		if _, keep := protectedBatches[batchID]; keep {
-			state.batchOrder = append(state.batchOrder, batchID)
-			if len(protectedBatches) == len(state.batches) {
-				break
-			}
+	sequenceOrder := state.sequenceOrder[:0]
+	for _, identity := range state.sequenceOrder {
+		if _, exists := state.sequence[identity]; !exists {
 			continue
 		}
-		delete(state.batches, batchID)
-		protectedSequences = state.protectedSequenceHighWater()
-	}
-	for len(state.sequence) > maxPluginLogSequenceHighWater && len(state.sequenceOrder) > 0 {
-		identity := state.sequenceOrder[0]
-		state.sequenceOrder = state.sequenceOrder[1:]
 		if _, keep := protectedSequences[identity]; keep {
-			state.sequenceOrder = append(state.sequenceOrder, identity)
-			if len(protectedSequences) == len(state.sequence) {
-				break
-			}
+			sequenceOrder = append(sequenceOrder, identity)
 			continue
 		}
 		delete(state.sequence, identity)
+		delete(state.retired, identity)
 	}
+	state.sequenceOrder = append([]string(nil), sequenceOrder...)
 	for len(state.acks) > maxPluginLogReplayIdentities && len(state.ackOrder) > 0 {
 		ackID := state.ackOrder[0]
 		state.ackOrder = state.ackOrder[1:]
@@ -208,7 +213,12 @@ func (state *pluginLogOutboxState) trimReplayHistory() {
 }
 
 func (state *pluginLogOutboxState) protectedSequenceHighWater() map[string]struct{} {
-	protected := make(map[string]struct{})
+	protected := make(map[string]struct{}, len(state.sequence))
+	for identity := range state.sequence {
+		if _, retired := state.retired[identity]; !retired {
+			protected[identity] = struct{}{}
+		}
+	}
 	for _, report := range state.pending {
 		protected[pluginRuntimeLogFenceIdentity(report)] = struct{}{}
 	}
@@ -218,6 +228,22 @@ func (state *pluginLogOutboxState) protectedSequenceHighWater() map[string]struc
 		}
 	}
 	return protected
+}
+
+func (state *pluginLogOutboxState) retire(identity pluginprocess.RuntimeLogIdentity) (string, bool, error) {
+	fence, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(identity)
+	if err != nil {
+		return "", false, err
+	}
+	if _, exists := state.sequence[fence]; !exists {
+		return fence, false, nil
+	}
+	if _, exists := state.retired[fence]; exists {
+		return fence, false, nil
+	}
+	state.retired[fence] = struct{}{}
+	state.trimReplayHistory()
+	return fence, true, nil
 }
 
 func pluginLogBatchDigest(reports []model.PluginRuntimeLogReport) (string, error) {
@@ -234,6 +260,19 @@ func pluginRuntimeLogFenceIdentity(report model.PluginRuntimeLogReport) string {
 		fmt.Sprintf("%d", report.Revision), report.GenerationID, report.InstanceID, report.PluginID,
 		report.AgentID, report.PackageDigest, report.ArtifactDigest,
 	}, "\x00")
+}
+
+func pluginRuntimeLogFenceIdentityFromRuntimeIdentity(identity pluginprocess.RuntimeLogIdentity) (string, error) {
+	report := model.PluginRuntimeLogReport{
+		Revision: identity.Revision, GenerationID: identity.ProviderGenerationID, InstanceID: identity.InstanceID,
+		PluginID: identity.PluginID, AgentID: identity.AgentID, PackageDigest: identity.PackageDigest,
+		ArtifactDigest: identity.ArtifactDigest, Sequence: 1,
+		Entries: []model.PluginRuntimeLogEntry{{Level: "info", Message: "retirement fence"}},
+	}
+	if err := report.Validate(); err != nil {
+		return "", fmt.Errorf("retire plugin runtime log fence: %w", err)
+	}
+	return pluginRuntimeLogFenceIdentity(report), nil
 }
 
 func pluginRuntimeLogReportIdentity(report model.PluginRuntimeLogReport) string {

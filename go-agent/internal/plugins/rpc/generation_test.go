@@ -36,6 +36,16 @@ type generationControlledRunner struct {
 	process *hostProcess
 }
 
+type generationLogFenceRetirer struct {
+	identities []pluginprocess.RuntimeLogIdentity
+	err        error
+}
+
+func (retirer *generationLogFenceRetirer) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLogIdentity) error {
+	retirer.identities = append(retirer.identities, identity)
+	return retirer.err
+}
+
 func (r *generationControlledRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
 	process := &hostProcess{done: make(chan error, 1)}
 	r.mu.Lock()
@@ -136,6 +146,8 @@ func TestRPCGenerationPrepareReadyAtomicPublishAndDestroy(t *testing.T) {
 		t.Fatal(err)
 	}
 	moduleUnderTest := NewGenerationModule(host)
+	retirer := &generationLogFenceRetirer{}
+	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
 	request := module.ApplyRequest{Previous: model.Snapshot{}, Next: model.Snapshot{Revision: 1, PluginGenerations: []model.PluginGeneration{generation}}}
 	prepared, err := moduleUnderTest.Prepare(t.Context(), request)
 	if err != nil {
@@ -170,6 +182,9 @@ func TestRPCGenerationPrepareReadyAtomicPublishAndDestroy(t *testing.T) {
 	}
 	if _, _, activations, stops := client.counts(); activations != 1 || stops != 1 {
 		t.Fatalf("lifecycle activations/stops = %d/%d", activations, stops)
+	}
+	if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(generation) {
+		t.Fatalf("destroyed generation retirement fence = %+v", retirer.identities)
 	}
 }
 

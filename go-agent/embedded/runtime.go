@@ -11,6 +11,7 @@ import (
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 type Snapshot = model.Snapshot
@@ -350,6 +351,22 @@ func (s *persistentBridgeStore) AcknowledgePluginLogReports(reports []model.Plug
 		return errors.New("embedded plugin log outbox is unavailable")
 	}
 	return outbox.AcknowledgePluginLogReports(reports)
+}
+
+func (s *persistentBridgeStore) WaitForPluginLogCapacity(ctx context.Context) error {
+	outbox, ok := s.delegate.(agentcore.PluginLogBackpressureStore)
+	if !ok {
+		return errors.New("embedded plugin log outbox backpressure is unavailable")
+	}
+	return outbox.WaitForPluginLogCapacity(ctx)
+}
+
+func (s *persistentBridgeStore) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLogIdentity) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogFenceRetirementStore)
+	if !ok {
+		return errors.New("embedded plugin log fence retirement is unavailable")
+	}
+	return retirement.RetirePluginRuntimeLogFence(identity)
 }
 
 func (s *persistentBridgeStore) SaveDesiredSnapshot(snapshot Snapshot) error {

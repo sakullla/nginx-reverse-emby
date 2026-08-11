@@ -595,11 +595,13 @@ func TestHandleTransientSensitiveValuesAreRedactedWithoutRetention(t *testing.T)
 }
 
 type processRuntimeLogSink struct {
-	events []RuntimeLogEvent
-	err    error
+	events   []RuntimeLogEvent
+	attempts []RuntimeLogEvent
+	err      error
 }
 
-func (sink *processRuntimeLogSink) CaptureRuntimeLogEvent(event RuntimeLogEvent) error {
+func (sink *processRuntimeLogSink) CaptureRuntimeLogEvent(_ context.Context, event RuntimeLogEvent) error {
+	sink.attempts = append(sink.attempts, event)
 	if sink.err != nil {
 		return sink.err
 	}
@@ -620,12 +622,23 @@ func TestRuntimeLogWriterDurablyCapturesBeforeForwardingOutput(t *testing.T) {
 
 	output.Reset()
 	failing := &processRuntimeLogSink{err: errors.New("durable outbox saturated")}
-	writer = newRuntimeLogWriterWithSink(&output, nil, "error", processRuntimeLogIdentity(), failing)
-	if _, err := writer.Write([]byte("must not escape\n")); err == nil {
+	writer = newRuntimeLogWriterWithSink(&output, []string{"blocked-secret"}, "error", processRuntimeLogIdentity(), failing)
+	if _, err := writer.Write([]byte("must not escape blocked-secret\n")); err == nil {
 		t.Fatal("writer ignored durable capture failure")
 	}
 	if output.Len() != 0 {
 		t.Fatalf("output forwarded before durable capture: %q", output.String())
+	}
+	if writer.pendingEvent == nil || len(failing.attempts) != 1 || len(writer.line) != 0 || strings.Contains(writer.pendingEvent.Entry.Message, "blocked-secret") {
+		t.Fatal("durable capture failure discarded the current line")
+	}
+	captureID := failing.attempts[0].CaptureID
+	failing.err = nil
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(failing.events) != 1 || failing.events[0].CaptureID != captureID || failing.events[0].Entry.Message != "must not escape [REDACTED]" {
+		t.Fatalf("capture retry changed current line identity: attempts=%+v events=%+v", failing.attempts, failing.events)
 	}
 }
 

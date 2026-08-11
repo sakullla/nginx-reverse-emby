@@ -89,6 +89,9 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	if app.rpcHost == nil || !app.rpcHost.SecretRedemptionReady() {
 		t.Fatal("remote RPC host plugin secret redeemer is not wired")
 	}
+	if app.rpcGeneration == nil || !app.rpcGeneration.RuntimeLogFenceRetirementReady() {
+		t.Fatal("remote RPC generation durable log fence retirement is not wired")
+	}
 	if app.pkiStore == nil || app.pkiStore.Root() != filepath.Join(cfg.DataDir, "pki") {
 		t.Fatalf("pkiStore root = %q, want %q", app.pkiStore.Root(), filepath.Join(cfg.DataDir, "pki"))
 	}
@@ -136,6 +139,9 @@ func TestNewEmbeddedWiresGenerationFencedPluginSecretRedeemer(t *testing.T) {
 	}
 	if application.rpcProcesses == nil || !application.rpcProcesses.RuntimeLogSinkReady() {
 		t.Fatal("embedded RPC process supervisor did not receive the durable plugin log sink")
+	}
+	if application.rpcGeneration == nil || !application.rpcGeneration.RuntimeLogFenceRetirementReady() {
+		t.Fatal("embedded RPC generation module did not receive durable plugin log fence retirement")
 	}
 }
 

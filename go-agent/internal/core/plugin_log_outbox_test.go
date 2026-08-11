@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 func TestFilesystemPluginLogOutboxSurvivesRestartAndExactMultiBatchACK(t *testing.T) {
@@ -291,21 +292,94 @@ func TestFilesystemPluginLogOutboxIgnoresPreRenameCheckpointCrashFile(t *testing
 	}
 }
 
-func TestPluginLogOutboxBoundsHistoricalFenceHighWater(t *testing.T) {
+func TestPluginLogOutboxNeverEvictsLiveFenceHighWaterDuringRetiredChurn(t *testing.T) {
 	state := newPluginLogOutboxState()
-	for index := 1; index <= maxPluginLogSequenceHighWater+100; index++ {
+	live := pluginLogTestDraft("live-1")
+	assigned, _, err := state.enqueue(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{live})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := state.acknowledge(assigned); err != nil {
+		t.Fatal(err)
+	}
+	const churn = maxPluginLogReplayIdentities * 2
+	for index := 1; index <= churn; index++ {
 		draft := pluginLogTestDraft("historical")
-		draft.GenerationID = fmt.Sprintf("generation-%d", index)
-		assigned, _, err := state.enqueue(pluginLogTestBatchID(index), []model.PluginRuntimeLogReport{draft})
+		draft.GenerationID = fmt.Sprintf("retired-generation-%d", index)
+		assigned, _, err := state.enqueue(pluginLogTestBatchID(index+1), []model.PluginRuntimeLogReport{draft})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, _, _, err := state.acknowledge(assigned); err != nil {
 			t.Fatal(err)
 		}
+		if _, _, err := state.retire(pluginLogRuntimeIdentity(draft)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if len(state.sequence) > maxPluginLogSequenceHighWater || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
+	resumed, _, err := state.enqueue(pluginLogTestBatchID(churn+2), []model.PluginRuntimeLogReport{pluginLogTestDraft("live-2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed[0].Sequence != 2 {
+		t.Fatalf("live generation resumed sequence = %d", resumed[0].Sequence)
+	}
+	if len(state.sequence) > maxPluginLogReplayIdentities+2 || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
 		t.Fatalf("historical replay state is unbounded: sequences=%d batches=%d ACKs=%d", len(state.sequence), len(state.batches), len(state.acks))
+	}
+}
+
+func TestFilesystemPluginLogOutboxRetirementRetainsPendingAndLiveResumeAcrossCheckpointRestart(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveDraft := pluginLogTestDraft("live-before-restart")
+	live, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{liveDraft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgePluginLogReports(live); err != nil {
+		t.Fatal(err)
+	}
+	retiredDraft := pluginLogTestDraft("retired-pending")
+	retiredDraft.GenerationID = "retired-generation"
+	retired, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(2), []model.PluginRuntimeLogReport{retiredDraft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetirePluginRuntimeLogFence(pluginLogRuntimeIdentity(retiredDraft)); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.PendingPluginLogReports()
+	if err != nil || len(pending) != 1 || pending[0].Sequence != retired[0].Sequence {
+		t.Fatalf("retirement lost pending report: pending=%+v err=%v", pending, err)
+	}
+	store.mu.Lock()
+	state, err := store.loadPluginLogOutboxLocked()
+	if err == nil {
+		state.records = maxPluginLogOutboxJournalRecords + 1
+		err = store.maybeCompactPluginLogOutboxLocked(&state)
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(3), []model.PluginRuntimeLogReport{pluginLogTestDraft("live-after-restart")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed[0].Sequence != 2 {
+		t.Fatalf("live checkpoint/restart resume sequence = %d", resumed[0].Sequence)
+	}
+	pending, err = restarted.PendingPluginLogReports()
+	if err != nil || len(pending) != 2 || pending[0].GenerationID != retiredDraft.GenerationID {
+		t.Fatalf("checkpoint/restart pending reports = %+v, %v", pending, err)
 	}
 }
 
@@ -318,3 +392,10 @@ func pluginLogTestDraft(message string) model.PluginRuntimeLogReport {
 }
 
 func pluginLogTestBatchID(value int) string { return fmt.Sprintf("%064x", value) }
+
+func pluginLogRuntimeIdentity(report model.PluginRuntimeLogReport) pluginprocess.RuntimeLogIdentity {
+	return pluginprocess.RuntimeLogIdentity{
+		Revision: report.Revision, ProviderGenerationID: report.GenerationID, InstanceID: report.InstanceID,
+		PluginID: report.PluginID, AgentID: report.AgentID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest,
+	}
+}

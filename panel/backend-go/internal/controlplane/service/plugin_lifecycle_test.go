@@ -34,6 +34,12 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-peer", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "edge-peer-binding", ResourceKind: "agent", ResourceID: "edge-peer", ResourceGroupID: "default", UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.CreateResourceGroup(ctx, storage.ResourceGroupRow{ID: "other", Name: "Other", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
@@ -58,14 +64,14 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "secret-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe","token":null}`), SecretReplacements: map[string]json.RawMessage{"/token": json.RawMessage(`"install-plaintext"`)}, ActorID: "admin"})
+	instance, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "secret-instance", ResourceGroupID: "default", Targets: []string{"local", "edge-peer"}, Config: json.RawMessage(`{"mode":"observe","token":null}`), SecretReplacements: map[string]json.RawMessage{"/token": json.RawMessage(`"install-plaintext"`)}, ActorID: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(instance.PendingConfigJSON, "install-plaintext") || strings.Contains(instance.PendingSecretHandlesJSON, "install-plaintext") || instance.PendingSecretHandlesJSON == "[]" {
 		t.Fatalf("plaintext persisted in staged instance: %+v", instance)
 	}
-	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"local": "active"}))
+	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"edge-peer": "active", "local": "active"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,17 +83,13 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"local": "active"}))
-	if err != nil {
-		t.Fatal(err)
-	}
 	operations, err := store.ListPluginOperations(ctx, installed.PluginID)
 	if err != nil || len(operations) == 0 {
 		t.Fatal(err)
 	}
 	enableOperation := operations[len(operations)-1]
-	if enableOperation.ID != enabled.LastOperationID {
-		t.Fatalf("enabled operation=%s last=%s", enableOperation.ID, enabled.LastOperationID)
+	if enableOperation.ID != enabled.PendingOperationID {
+		t.Fatalf("enabled operation=%s pending=%s", enableOperation.ID, enabled.PendingOperationID)
 	}
 	var handles []storage.PluginInstanceSecretHandle
 	if err := json.Unmarshal([]byte(instance.SecretHandlesJSON), &handles); err != nil || len(handles) != 1 {
@@ -95,7 +97,9 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	}
 	generationID, artifactDigest := strings.Repeat("c", 64), strings.Repeat("d", 64)
 	status := storage.PluginAgentRuntimeStatusRow{OperationID: enableOperation.ID, AgentID: "local", InstanceID: instance.ID, PluginID: installed.PluginID, ResourceGroupID: instance.ResourceGroupID, TargetVersion: instance.ConfigVersion, Revision: enableOperation.TargetRevision, GenerationID: generationID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, ConfigVersion: instance.ConfigVersion}
-	if err := store.StagePluginAgentRuntimeStatuses(ctx, []storage.PluginAgentRuntimeStatusRow{status}); err != nil {
+	peerStatus := status
+	peerStatus.AgentID = "edge-peer"
+	if err := store.StagePluginAgentRuntimeStatuses(ctx, []storage.PluginAgentRuntimeStatusRow{status, peerStatus}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.RecordPluginAgentRuntimeReport(ctx, storage.PluginGenerationReport{OperationID: status.OperationID, AgentID: status.AgentID, InstanceID: status.InstanceID, PluginID: status.PluginID, Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest, ArtifactDigest: status.ArtifactDigest, State: "active", Sequence: 1}); err != nil {
@@ -104,16 +108,30 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	requestHandles := []storage.PluginGenerationSecretHandle{{ID: handles[0].ID, Version: handles[0].Version, Digest: handles[0].Digest, Purpose: handles[0].Purpose}}
 	redeemed, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles})
 	if err != nil || len(redeemed.Secrets) != 1 || redeemed.Secrets[0].Value != `"install-plaintext"` {
-		t.Fatalf("redeemed=%+v err=%v", redeemed, err)
+		t.Fatalf("applying-window redeemed=%+v err=%v", redeemed, err)
 	}
 	if _, err := service.RedeemAgentPluginSecrets(ctx, "other-agent", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
 		t.Fatal("cross-Agent secret redemption was accepted")
+	}
+	if _, _, err := store.RecordPluginAgentRuntimeReport(ctx, storage.PluginGenerationReport{OperationID: peerStatus.OperationID, AgentID: peerStatus.AgentID, InstanceID: peerStatus.InstanceID, PluginID: peerStatus.PluginID, Revision: peerStatus.Revision, GenerationID: peerStatus.GenerationID, PackageDigest: peerStatus.PackageDigest, ArtifactDigest: peerStatus.ArtifactDigest, State: "active", Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"edge-peer": "active", "local": "active"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, found, err := store.GetPluginAgentRuntimeStatusFence(ctx, status.OperationID, status.AgentID, status.InstanceID)
+	if err != nil || !found || committed.AuthoritySlot != "active" {
+		t.Fatalf("committed runtime authority=%+v found=%v err=%v", committed, found, err)
+	}
+	if _, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err != nil {
+		t.Fatalf("committed generation could not redeem required secret: %v", err)
 	}
 	_, err = service.Disable(ctx, installed.PluginID, "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"local": "drained"})); err != nil {
+	if _, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"edge-peer": "drained", "local": "drained"})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
@@ -122,7 +140,7 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if _, err = service.Enable(ctx, installed.PluginID, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"local": "active"})); err != nil {
+	if _, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"edge-peer": "active", "local": "active"})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {

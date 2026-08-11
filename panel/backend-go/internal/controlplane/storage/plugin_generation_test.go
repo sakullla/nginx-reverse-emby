@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"gorm.io/gorm"
 )
 
 func TestRevisionLedgerMaterializesAndAuthorizesPluginRuntimeArtifact(t *testing.T) {
@@ -220,7 +221,7 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	}
 	report := PluginGenerationReport{OperationID: row.OperationID, AgentID: row.AgentID, InstanceID: row.InstanceID, PluginID: row.PluginID, Revision: row.Revision, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "active", Sequence: 1, SafeDetail: "runtime ready", Details: json.RawMessage(`{"ready":true}`), ReportedAt: time.Now().UTC()}
 	updated, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), report)
-	if err != nil || replayed || updated.State != "active" || updated.AuthoritySlot != "active" {
+	if err != nil || replayed || updated.State != "active" || updated.AuthoritySlot != "pending" {
 		t.Fatalf("first report = %+v replay=%v err=%v", updated, replayed, err)
 	}
 	if !strings.Contains(updated.DetailsJSON, `"safe_detail":"runtime ready"`) {
@@ -235,6 +236,11 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	crossChannelReplay.Details = json.RawMessage(`{"ready":true,"safe_detail":"runtime ready"}`)
 	if _, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), crossChannelReplay); err != nil || !replayed {
 		t.Fatalf("cross-channel replay = %v, %v", replayed, err)
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return completePluginAgentRuntimeAuthorityTx(tx, PluginOperationRow{ID: row.OperationID, Status: "succeeded"})
+	}); err != nil {
+		t.Fatal(err)
 	}
 	postAck := report
 	postAck.Sequence = 2
@@ -265,12 +271,46 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous, found, err = store.GetPluginAgentRuntimeStatusFence(t.Context(), row.OperationID, row.AgentID, row.InstanceID)
+	if err != nil || !found || previous.AuthoritySlot != "active" {
+		t.Fatalf("active authority was cut over before completion = %+v found=%v err=%v", previous, found, err)
+	}
+	nextPending, found, err := store.GetPluginAgentRuntimeStatusFence(t.Context(), next.OperationID, next.AgentID, next.InstanceID)
+	if err != nil || !found || nextPending.AuthoritySlot != "pending" || nextPending.State != "active" {
+		t.Fatalf("ready candidate authority = %+v found=%v err=%v", nextPending, found, err)
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return completePluginAgentRuntimeAuthorityTx(tx, PluginOperationRow{ID: next.OperationID, Status: "succeeded"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previous, found, err = store.GetPluginAgentRuntimeStatusFence(t.Context(), row.OperationID, row.AgentID, row.InstanceID)
 	if err != nil || !found || previous.AuthoritySlot != "retired" {
-		t.Fatalf("superseded authority = %+v found=%v err=%v", previous, found, err)
+		t.Fatalf("superseded authority after completion = %+v found=%v err=%v", previous, found, err)
 	}
 	postSupersede := postAck
 	postSupersede.Sequence = 3
 	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), postSupersede); !errors.Is(err, ErrPluginGenerationStale) {
 		t.Fatalf("superseded report error = %v", err)
+	}
+	failed := next
+	failed.OperationID, failed.Revision, failed.GenerationID = "operation-failed", 11, strings.Repeat("b", 64)
+	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []PluginAgentRuntimeStatusRow{failed}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), PluginGenerationReport{OperationID: failed.OperationID, AgentID: failed.AgentID, InstanceID: failed.InstanceID, PluginID: failed.PluginID, Revision: failed.Revision, GenerationID: failed.GenerationID, PackageDigest: failed.PackageDigest, ArtifactDigest: failed.ArtifactDigest, State: "active", Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return completePluginAgentRuntimeAuthorityTx(tx, PluginOperationRow{ID: failed.OperationID, Status: "failed"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failedStatus, found, err := store.GetPluginAgentRuntimeStatusFence(t.Context(), failed.OperationID, failed.AgentID, failed.InstanceID)
+	if err != nil || !found || failedStatus.AuthoritySlot != "retired" {
+		t.Fatalf("failed candidate authority = %+v found=%v err=%v", failedStatus, found, err)
+	}
+	current, found, err := store.GetPluginAgentRuntimeStatusFence(t.Context(), next.OperationID, next.AgentID, next.InstanceID)
+	if err != nil || !found || current.AuthoritySlot != "active" {
+		t.Fatalf("failed candidate displaced active authority = %+v found=%v err=%v", current, found, err)
 	}
 }

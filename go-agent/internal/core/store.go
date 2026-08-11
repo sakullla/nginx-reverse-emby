@@ -1,9 +1,11 @@
 package core
 
 import (
+	"context"
 	stdsync "sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 type Snapshot = model.Snapshot
@@ -19,11 +21,12 @@ type Store interface {
 }
 
 type InMemory struct {
-	mu         stdsync.RWMutex
-	desired    Snapshot
-	applied    Snapshot
-	runtime    RuntimeState
-	pluginLogs pluginLogOutboxState
+	mu          stdsync.RWMutex
+	desired     Snapshot
+	applied     Snapshot
+	runtime     RuntimeState
+	pluginLogs  pluginLogOutboxState
+	logCapacity pluginLogCapacitySignal
 }
 
 func NewInMemory() *InMemory {
@@ -100,7 +103,25 @@ func (s *InMemory) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, er
 
 func (s *InMemory) AcknowledgePluginLogReports(sent []model.PluginRuntimeLogReport) error {
 	s.mu.Lock()
+	_, _, changed, err := s.pluginLogs.acknowledge(sent)
+	s.mu.Unlock()
+	if changed {
+		s.logCapacity.notify()
+	}
+	return err
+}
+
+func (s *InMemory) WaitForPluginLogCapacity(ctx context.Context) error {
+	return waitPluginLogCapacity(ctx, &s.logCapacity, func() (int, error) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return len(s.pluginLogs.pending), nil
+	})
+}
+
+func (s *InMemory) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLogIdentity) error {
+	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _, _, err := s.pluginLogs.acknowledge(sent)
+	_, _, err := s.pluginLogs.retire(identity)
 	return err
 }

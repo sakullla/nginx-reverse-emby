@@ -20,9 +20,14 @@ const GenerationCapability = "plugin_generation_v1"
 // GenerationModule attaches rpc-service processes to the same candidate view,
 // readiness barrier, atomic publication, and predecessor drain as core modules.
 type GenerationModule struct {
-	mu     sync.RWMutex
-	host   *Host
-	active *generationTransaction
+	mu      sync.RWMutex
+	host    *Host
+	retirer RuntimeLogFenceRetirer
+	active  *generationTransaction
+}
+
+type RuntimeLogFenceRetirer interface {
+	RetirePluginRuntimeLogFence(pluginprocess.RuntimeLogIdentity) error
 }
 
 func NewGenerationModule(host *Host) *GenerationModule { return &GenerationModule{host: host} }
@@ -34,6 +39,24 @@ func (m *GenerationModule) SetHost(host *Host) {
 	m.mu.Lock()
 	m.host = host
 	m.mu.Unlock()
+}
+
+func (m *GenerationModule) SetRuntimeLogFenceRetirer(retirer RuntimeLogFenceRetirer) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.retirer = retirer
+	m.mu.Unlock()
+}
+
+func (m *GenerationModule) RuntimeLogFenceRetirementReady() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.retirer != nil
 }
 
 func (*GenerationModule) Name() string { return "plugin-rpc" }
@@ -266,22 +289,36 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 		t.publication.Abort()
 		t.publication = nil
 	}
-	instances := make([]*HostedInstance, 0, len(t.candidates))
+	type retirement struct {
+		identity pluginprocess.RuntimeLogIdentity
+		instance *HostedInstance
+	}
+	retirements := make([]retirement, 0, len(t.candidates))
 	for index := range t.candidates {
 		candidate := &t.candidates[index]
-		if candidate.instance != nil {
-			instances = append(instances, candidate.instance)
-			candidate.instance = nil
-		}
+		retirements = append(retirements, retirement{identity: runtimeLogIdentityFromGeneration(candidate.spec), instance: candidate.instance})
+		candidate.instance = nil
 		candidate.spec.Config = nil
 		candidate.spec.SecretHandles = nil
 	}
 	t.candidates = nil
 	t.mu.Unlock()
 	var errs []error
-	for _, instance := range instances {
-		if t.host != nil {
-			errs = append(errs, t.host.DestroyCandidate(instance))
+	var retirer RuntimeLogFenceRetirer
+	if t.module != nil {
+		t.module.mu.RLock()
+		retirer = t.module.retirer
+		t.module.mu.RUnlock()
+	}
+	for _, retirement := range retirements {
+		if retirement.instance != nil && t.host != nil {
+			if err := t.host.DestroyCandidate(retirement.instance); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		if retirer != nil {
+			errs = append(errs, retirer.RetirePluginRuntimeLogFence(retirement.identity))
 		}
 	}
 	return errors.Join(errs...)
@@ -425,6 +462,14 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 		Process: pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute},
 		Dial:    DialConfig{Network: generationEndpointNetwork(), Deadline: deadline},
 	}, nil
+}
+
+func runtimeLogIdentityFromGeneration(generation model.PluginGeneration) pluginprocess.RuntimeLogIdentity {
+	return pluginprocess.RuntimeLogIdentity{
+		Revision: generation.Revision, ProviderGenerationID: generation.ID, InstanceID: generation.InstanceID,
+		PluginID: generation.PluginID, AgentID: generation.Target.ID, PackageDigest: generation.PackageDigest,
+		ArtifactDigest: generation.Artifact.SHA256,
+	}
 }
 
 func generationEndpointNetwork() string {

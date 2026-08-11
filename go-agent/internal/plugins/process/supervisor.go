@@ -62,7 +62,7 @@ type RuntimeLogEvent struct {
 }
 
 type RuntimeLogSink interface {
-	CaptureRuntimeLogEvent(RuntimeLogEvent) error
+	CaptureRuntimeLogEvent(context.Context, RuntimeLogEvent) error
 }
 
 type Status struct {
@@ -436,8 +436,8 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 		s.mu.Lock()
 		logSink := s.logSink
 		s.mu.Unlock()
-		stdout := newRuntimeLogWriterWithSink(s.output, handle.spec.SensitiveValues, "info", handle.spec.RuntimeLogIdentity, logSink)
-		stderr := newRuntimeLogWriterWithSink(s.output, handle.spec.SensitiveValues, "error", handle.spec.RuntimeLogIdentity, logSink)
+		stdout := newRuntimeLogWriterWithContext(ctx, s.output, handle.spec.SensitiveValues, "info", handle.spec.RuntimeLogIdentity, logSink)
+		stderr := newRuntimeLogWriterWithContext(ctx, s.output, handle.spec.SensitiveValues, "error", handle.spec.RuntimeLogIdentity, logSink)
 		retained := handle.retainedSensitiveValues()
 		stdout.AddSecrets(retained)
 		stderr.AddSecrets(retained)
@@ -860,6 +860,7 @@ const (
 )
 
 type redactingWriter struct {
+	ctx              context.Context
 	target           io.Writer
 	secrets          []string
 	transientSecrets map[string]int
@@ -870,6 +871,8 @@ type redactingWriter struct {
 	line             []byte
 	dropping         bool
 	closed           bool
+	pendingEvent     *RuntimeLogEvent
+	pendingNewline   bool
 }
 
 func newRedactingWriter(target io.Writer, secrets []string) *redactingWriter {
@@ -881,13 +884,20 @@ func newRuntimeLogWriter(target io.Writer, secrets []string, level string, ident
 }
 
 func newRuntimeLogWriterWithSink(target io.Writer, secrets []string, level string, identity RuntimeLogIdentity, sink RuntimeLogSink) *redactingWriter {
+	return newRuntimeLogWriterWithContext(context.Background(), target, secrets, level, identity, sink)
+}
+
+func newRuntimeLogWriterWithContext(ctx context.Context, target io.Writer, secrets []string, level string, identity RuntimeLogIdentity, sink RuntimeLogSink) *redactingWriter {
 	clean := make([]string, 0, len(secrets))
 	for _, secret := range secrets {
 		if strings.TrimSpace(secret) != "" {
 			clean = append(clean, secret)
 		}
 	}
-	return &redactingWriter{target: target, secrets: clean, level: level, identity: identity, sink: sink}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &redactingWriter{ctx: ctx, target: target, secrets: clean, level: level, identity: identity, sink: sink}
 }
 func (w *redactingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -982,6 +992,15 @@ func (w *redactingWriter) ClearAllSecrets() {
 	w.secrets = nil
 	clear(w.transientSecrets)
 	w.transientSecrets = nil
+	for index := range w.line {
+		w.line[index] = 0
+	}
+	w.line = nil
+	if w.pendingEvent != nil {
+		w.pendingEvent.Entry.Message = ""
+		w.pendingEvent = nil
+	}
+	w.pendingNewline = false
 }
 
 func (w *redactingWriter) Close() error {
@@ -990,36 +1009,53 @@ func (w *redactingWriter) Close() error {
 	if w.closed {
 		return nil
 	}
+	if err := w.flushLineLocked(false); err != nil {
+		return err
+	}
 	w.closed = true
-	return w.flushLineLocked(false)
+	return nil
 }
 func (w *redactingWriter) flushLineLocked(newline bool) error {
-	line := string(w.line)
-	w.line = w.line[:0]
-	truncated := false
-	if w.dropping {
-		line = "[REDACTED oversized plugin log line]"
+	if w.pendingEvent == nil {
+		line := string(w.line)
+		truncated := false
+		if w.dropping {
+			line = "[REDACTED oversized plugin log line]"
+			truncated = true
+		} else {
+			line = sanitizePluginLogLine(line, w.secrets)
+		}
+		if line == "" && !newline {
+			w.line = w.line[:0]
+			w.dropping = false
+			return nil
+		}
+		if len(line) > maxPluginLogMessage {
+			line = truncateUTF8(line, maxPluginLogMessage)
+			truncated = true
+		}
+		event := RuntimeLogEvent{CaptureID: nextRuntimeLogCaptureID(), Identity: w.identity, Entry: RuntimeLogEntry{Level: w.level, Message: line, Truncated: truncated}}
+		w.pendingEvent = &event
+		w.pendingNewline = newline
+		for index := range w.line {
+			w.line[index] = 0
+		}
+		w.line = nil
 		w.dropping = false
-		truncated = true
-	} else {
-		line = sanitizePluginLogLine(line, w.secrets)
 	}
-	if line == "" && !newline {
-		return nil
-	}
-	if len(line) > maxPluginLogMessage {
-		line = truncateUTF8(line, maxPluginLogMessage)
-		truncated = true
-	}
-	event := RuntimeLogEvent{CaptureID: nextRuntimeLogCaptureID(), Identity: w.identity, Entry: RuntimeLogEntry{Level: w.level, Message: line, Truncated: truncated}}
+	event := *w.pendingEvent
+	writeNewline := w.pendingNewline
 	if w.sink != nil {
-		if err := w.sink.CaptureRuntimeLogEvent(event); err != nil {
+		if err := w.sink.CaptureRuntimeLogEvent(w.ctx, event); err != nil {
 			return err
 		}
 	} else {
 		publishRuntimeLogEvent(event)
 	}
-	if newline {
+	w.pendingEvent = nil
+	w.pendingNewline = false
+	line := event.Entry.Message
+	if writeNewline {
 		line += "\n"
 	}
 	_, err := io.WriteString(w.target, line)

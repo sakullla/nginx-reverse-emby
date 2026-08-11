@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 const pluginLogOutboxFile = "plugin-log-outbox.jsonl"
@@ -21,6 +23,16 @@ const maxPluginLogOutboxJournalRecords = 512
 type pluginLogOutboxBatch struct {
 	ID      string                         `json:"id"`
 	Reports []model.PluginRuntimeLogReport `json:"reports"`
+}
+
+type pluginLogOutboxFence struct {
+	Revision             int64  `json:"revision"`
+	ProviderGenerationID string `json:"generation_id"`
+	InstanceID           string `json:"instance_id"`
+	PluginID             string `json:"plugin_id"`
+	AgentID              string `json:"agent_id"`
+	PackageDigest        string `json:"package_digest"`
+	ArtifactDigest       string `json:"artifact_digest"`
 }
 
 type pluginLogOutboxRecord struct {
@@ -33,6 +45,8 @@ type pluginLogOutboxRecord struct {
 	SequenceOrder []string                       `json:"sequence_order,omitempty"`
 	Batches       []pluginLogOutboxBatch         `json:"batches,omitempty"`
 	Acks          []string                       `json:"acks,omitempty"`
+	Retired       []string                       `json:"retired,omitempty"`
+	Fence         *pluginLogOutboxFence          `json:"fence,omitempty"`
 	Digest        string                         `json:"digest"`
 }
 
@@ -94,6 +108,37 @@ func (f *Filesystem) AcknowledgePluginLogReports(sent []model.PluginRuntimeLogRe
 		return err
 	}
 	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "ack", BatchID: ackID, Identities: identities}); err != nil {
+		return err
+	}
+	state.records++
+	err = f.maybeCompactPluginLogOutboxLocked(&state)
+	f.logCapacity.notify()
+	return err
+}
+
+func (f *Filesystem) WaitForPluginLogCapacity(ctx context.Context) error {
+	return waitPluginLogCapacity(ctx, &f.logCapacity, func() (int, error) {
+		pending, err := f.PendingPluginLogReports()
+		return len(pending), err
+	})
+}
+
+func (f *Filesystem) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLogIdentity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state, err := f.loadPluginLogOutboxLocked()
+	if err != nil {
+		return err
+	}
+	fenceID, changed, err := state.retire(identity)
+	if err != nil || !changed {
+		return err
+	}
+	digest := sha256.Sum256([]byte(fenceID))
+	record := pluginLogOutboxRecord{
+		Version: 1, Operation: "retire", BatchID: hex.EncodeToString(digest[:]), Fence: pluginLogOutboxFenceFromIdentity(identity),
+	}
+	if err := f.appendPluginLogOutboxRecordLocked(record); err != nil {
 		return err
 	}
 	state.records++
@@ -167,6 +212,7 @@ func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 					return state, err
 				}
 				identity := pluginRuntimeLogFenceIdentity(report)
+				delete(state.retired, identity)
 				if report.Sequence <= state.sequence[identity] {
 					return state, errors.New("plugin log outbox sequence is not monotonic")
 				}
@@ -195,6 +241,13 @@ func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 				}
 			}
 			state.pending = model.ClonePluginRuntimeLogReports(kept)
+		case "retire":
+			if record.Fence == nil {
+				return state, errors.New("plugin log retirement fence is missing")
+			}
+			if _, _, err := state.retire(record.Fence.runtimeIdentity()); err != nil {
+				return state, err
+			}
 		}
 		state.trimReplayHistory()
 	}
@@ -214,6 +267,11 @@ func (f *Filesystem) maybeCompactPluginLogOutboxLocked(state *pluginLogOutboxSta
 	}
 	for identity, sequence := range state.sequence {
 		record.Sequences[identity] = sequence
+	}
+	for _, identity := range state.sequenceOrder {
+		if _, retired := state.retired[identity]; retired {
+			record.Retired = append(record.Retired, identity)
+		}
 	}
 	for _, batchID := range state.batchOrder {
 		reports, ok := state.batches[batchID]
@@ -263,7 +321,8 @@ func pluginLogCheckpointID(state pluginLogOutboxState) string {
 	payload, _ := json.Marshal(struct {
 		Pending  []model.PluginRuntimeLogReport
 		Sequence map[string]uint64
-	}{state.pending, state.sequence})
+		Retired  map[string]struct{}
+	}{state.pending, state.sequence, state.retired})
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])
 }
@@ -290,6 +349,15 @@ func pluginLogOutboxStateFromCheckpoint(record pluginLogOutboxRecord) (pluginLog
 			return state, errors.New("checkpoint sequence is invalid")
 		}
 		state.sequence[identity] = sequence
+	}
+	for _, identity := range record.Retired {
+		if _, exists := state.sequence[identity]; !exists {
+			return state, errors.New("checkpoint retired fence is dangling")
+		}
+		if _, duplicate := state.retired[identity]; duplicate {
+			return state, errors.New("checkpoint retired fence is duplicated")
+		}
+		state.retired[identity] = struct{}{}
 	}
 	for _, report := range state.pending {
 		if err := report.Validate(); err != nil || state.sequence[pluginRuntimeLogFenceIdentity(report)] < report.Sequence {
@@ -321,7 +389,8 @@ func pluginLogOutboxStateFromCheckpoint(record pluginLogOutboxRecord) (pluginLog
 		state.acks[ackID] = struct{}{}
 		state.ackOrder = append(state.ackOrder, ackID)
 	}
-	if len(state.pending) > model.MaxPendingPluginLogReports || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities || len(state.sequence) > maxPluginLogSequenceHighWater {
+	state.trimReplayHistory()
+	if len(state.pending) > model.MaxPendingPluginLogReports || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
 		return state, errors.New("checkpoint exceeds Agent bounds")
 	}
 	return state, nil
@@ -368,7 +437,7 @@ func sealPluginLogOutboxRecord(record pluginLogOutboxRecord) ([]byte, error) {
 }
 
 func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
-	if record.Version != 1 || (record.Operation != "enqueue" && record.Operation != "ack" && record.Operation != "checkpoint") ||
+	if record.Version != 1 || (record.Operation != "enqueue" && record.Operation != "ack" && record.Operation != "checkpoint" && record.Operation != "retire") ||
 		!validPluginLogOutboxID(record.BatchID) || !validPluginLogOutboxID(record.Digest) {
 		return errors.New("plugin log outbox record identity is invalid")
 	}
@@ -382,10 +451,21 @@ func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
 	if hex.EncodeToString(digest[:]) != want {
 		return errors.New("plugin log outbox record digest mismatch")
 	}
-	if (record.Operation == "enqueue" && (len(record.Reports) == 0 || len(record.Identities) != 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0)) ||
-		(record.Operation == "ack" && (len(record.Reports) != 0 || len(record.Identities) == 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0)) ||
-		(record.Operation == "checkpoint" && (len(record.Identities) != 0 || record.Sequences == nil || len(record.SequenceOrder) != len(record.Sequences) || len(record.Sequences) > maxPluginLogSequenceHighWater || len(record.Batches) > maxPluginLogReplayIdentities || len(record.Acks) > maxPluginLogReplayIdentities)) {
+	if (record.Operation == "enqueue" && (len(record.Reports) == 0 || len(record.Identities) != 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || record.Fence != nil)) ||
+		(record.Operation == "ack" && (len(record.Reports) != 0 || len(record.Identities) == 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || record.Fence != nil)) ||
+		(record.Operation == "retire" && (len(record.Reports) != 0 || len(record.Identities) != 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || record.Fence == nil)) ||
+		(record.Operation == "checkpoint" && (len(record.Identities) != 0 || record.Sequences == nil || len(record.SequenceOrder) != len(record.Sequences) || len(record.Retired) > len(record.Sequences) || len(record.Batches) > maxPluginLogReplayIdentities || len(record.Acks) > maxPluginLogReplayIdentities || record.Fence != nil)) {
 		return errors.New("plugin log outbox record payload is invalid")
+	}
+	if record.Operation == "retire" {
+		fenceID, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(record.Fence.runtimeIdentity())
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256([]byte(fenceID))
+		if record.BatchID != hex.EncodeToString(digest[:]) {
+			return errors.New("plugin log retirement identity mismatch")
+		}
 	}
 	seen := make(map[string]struct{}, len(record.Identities))
 	for _, identity := range record.Identities {
@@ -398,6 +478,20 @@ func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
 		seen[identity] = struct{}{}
 	}
 	return nil
+}
+
+func pluginLogOutboxFenceFromIdentity(identity pluginprocess.RuntimeLogIdentity) *pluginLogOutboxFence {
+	return &pluginLogOutboxFence{
+		Revision: identity.Revision, ProviderGenerationID: identity.ProviderGenerationID, InstanceID: identity.InstanceID,
+		PluginID: identity.PluginID, AgentID: identity.AgentID, PackageDigest: identity.PackageDigest, ArtifactDigest: identity.ArtifactDigest,
+	}
+}
+
+func (fence pluginLogOutboxFence) runtimeIdentity() pluginprocess.RuntimeLogIdentity {
+	return pluginprocess.RuntimeLogIdentity{
+		Revision: fence.Revision, ProviderGenerationID: fence.ProviderGenerationID, InstanceID: fence.InstanceID,
+		PluginID: fence.PluginID, AgentID: fence.AgentID, PackageDigest: fence.PackageDigest, ArtifactDigest: fence.ArtifactDigest,
+	}
 }
 
 func writePluginLogOutboxAll(writer io.Writer, data []byte) error {

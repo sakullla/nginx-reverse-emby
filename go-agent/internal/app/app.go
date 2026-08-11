@@ -588,6 +588,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.rpcGeneration = modules.rpcGeneration
 	if a.rpcGeneration != nil {
 		a.rpcGeneration.SetHost(a.rpcHost)
+		a.rpcGeneration.SetRuntimeLogFenceRetirer(core.NewPluginRuntimeLogFenceRetirer(a.store))
 	}
 	a.capabilityAudit = modules.capabilityAudit
 	a.processStreams = modules.processStreams

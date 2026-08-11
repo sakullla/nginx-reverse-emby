@@ -498,10 +498,12 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		}
 		authoritySlot := result.AuthoritySlot
 		if report.State == "active" {
-			if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("agent_id = ? AND instance_id = ? AND authority_slot = ? AND operation_id <> ?", report.AgentID, report.InstanceID, "active", report.OperationID).Update("authority_slot", "retired").Error; err != nil {
-				return err
+			// An active report proves the candidate is ready, but does not cut
+			// authority over before the multi-Agent operation commits. Existing
+			// active generations remain authoritative throughout prepare/apply.
+			if result.AuthoritySlot == "active" {
+				authoritySlot = "active"
 			}
-			authoritySlot = "active"
 		} else if report.State == "drained" {
 			if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("agent_id = ? AND instance_id = ? AND authority_slot = ?", report.AgentID, report.InstanceID, "active").Update("authority_slot", "retired").Error; err != nil {
 				return err
