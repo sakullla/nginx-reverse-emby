@@ -61,6 +61,10 @@ type RuntimeLogEvent struct {
 	Entry     RuntimeLogEntry
 }
 
+type RuntimeLogSink interface {
+	CaptureRuntimeLogEvent(RuntimeLogEvent) error
+}
+
 type Status struct {
 	State       string
 	PID         int
@@ -276,6 +280,7 @@ type Supervisor struct {
 	sandbox Sandbox
 	output  io.Writer
 	handles map[string]*Handle
+	logSink RuntimeLogSink
 }
 
 var ErrSupervisorClosed = errors.New("plugin process supervisor is closed")
@@ -293,6 +298,24 @@ func NewSupervisor(runner Runner, sandbox Sandbox, output io.Writer) *Supervisor
 	output = &lockedWriter{target: output}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Supervisor{ctx: ctx, cancel: cancel, runner: runner, sandbox: sandbox, output: output, handles: make(map[string]*Handle)}
+}
+
+func (s *Supervisor) SetRuntimeLogSink(sink RuntimeLogSink) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.logSink = sink
+	s.mu.Unlock()
+}
+
+func (s *Supervisor) RuntimeLogSinkReady() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logSink != nil
 }
 
 type Handle struct {
@@ -316,6 +339,8 @@ type Handle struct {
 	once        bool
 	stdoutLog   *redactingWriter
 	stderrLog   *redactingWriter
+	sensitiveMu sync.Mutex
+	sensitive   []string
 }
 
 func (s *Supervisor) Start(ctx context.Context, spec InstanceSpec) (*Handle, error) {
@@ -400,6 +425,7 @@ func (s *Supervisor) start(ctx context.Context, spec InstanceSpec, once bool) (*
 
 func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 	defer func() {
+		handle.clearRetainedSensitiveValues()
 		close(handle.runDone)
 		handle.maybeFinish()
 	}()
@@ -407,8 +433,17 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 	backoff := handle.spec.InitialBackoff
 	exits := make([]time.Time, 0, handle.spec.RestartLimit+1)
 	for {
-		stdout := newRuntimeLogWriter(s.output, handle.spec.SensitiveValues, "info", handle.spec.RuntimeLogIdentity)
-		stderr := newRuntimeLogWriter(s.output, handle.spec.SensitiveValues, "error", handle.spec.RuntimeLogIdentity)
+		s.mu.Lock()
+		logSink := s.logSink
+		s.mu.Unlock()
+		stdout := newRuntimeLogWriterWithSink(s.output, handle.spec.SensitiveValues, "info", handle.spec.RuntimeLogIdentity, logSink)
+		stderr := newRuntimeLogWriterWithSink(s.output, handle.spec.SensitiveValues, "error", handle.spec.RuntimeLogIdentity, logSink)
+		retained := handle.retainedSensitiveValues()
+		stdout.AddSecrets(retained)
+		stderr.AddSecrets(retained)
+		for index := range retained {
+			retained[index] = ""
+		}
 		handle.mu.Lock()
 		handle.stdoutLog, handle.stderrLog = stdout, stderr
 		handle.mu.Unlock()
@@ -424,6 +459,8 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 		if err != nil {
 			_ = stdout.Close()
 			_ = stderr.Close()
+			stdout.ClearAllSecrets()
+			stderr.ClearAllSecrets()
 			handle.setCleanup(cleanup, cleanup == nil, err)
 			handle.setExit(err, true)
 			if first {
@@ -443,6 +480,8 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 			first = false
 		}
 		err = errors.Join(proc.Wait(), stdout.Close(), stderr.Close())
+		stdout.ClearAllSecrets()
+		stderr.ClearAllSecrets()
 		handle.mu.Lock()
 		handle.stdoutLog, handle.stderrLog = nil, nil
 		handle.mu.Unlock()
@@ -537,6 +576,58 @@ func (h *Handle) ClearSensitiveValues(values []string) {
 	if stderr != nil {
 		stderr.ClearSecrets(values)
 	}
+}
+
+// RetainSensitiveValues keeps exact redaction active until this process
+// attempt reaches a terminal state. Values are memory-only and released by
+// run teardown after stdout/stderr have closed.
+func (h *Handle) RetainSensitiveValues(values []string) {
+	if h == nil || len(values) == 0 {
+		return
+	}
+	h.sensitiveMu.Lock()
+	added := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" || slices.Contains(h.sensitive, value) {
+			continue
+		}
+		h.sensitive = append(h.sensitive, value)
+		added = append(added, value)
+	}
+	h.sensitiveMu.Unlock()
+	h.AddSensitiveValues(added)
+}
+
+func (h *Handle) clearRetainedSensitiveValues() {
+	if h == nil {
+		return
+	}
+	h.sensitiveMu.Lock()
+	values := append([]string(nil), h.sensitive...)
+	for index := range h.sensitive {
+		h.sensitive[index] = ""
+	}
+	h.sensitive = nil
+	h.sensitiveMu.Unlock()
+	h.ClearSensitiveValues(values)
+	h.mu.Lock()
+	for index := range h.spec.SensitiveValues {
+		h.spec.SensitiveValues[index] = ""
+	}
+	h.spec.SensitiveValues = nil
+	h.mu.Unlock()
+	for index := range values {
+		values[index] = ""
+	}
+}
+
+func (h *Handle) retainedSensitiveValues() []string {
+	if h == nil {
+		return nil
+	}
+	h.sensitiveMu.Lock()
+	defer h.sensitiveMu.Unlock()
+	return append([]string(nil), h.sensitive...)
 }
 
 // Done is closed after the supervised process has exited and all per-attempt
@@ -774,6 +865,7 @@ type redactingWriter struct {
 	transientSecrets map[string]int
 	level            string
 	identity         RuntimeLogIdentity
+	sink             RuntimeLogSink
 	mu               sync.Mutex
 	line             []byte
 	dropping         bool
@@ -785,13 +877,17 @@ func newRedactingWriter(target io.Writer, secrets []string) *redactingWriter {
 }
 
 func newRuntimeLogWriter(target io.Writer, secrets []string, level string, identity RuntimeLogIdentity) *redactingWriter {
+	return newRuntimeLogWriterWithSink(target, secrets, level, identity, nil)
+}
+
+func newRuntimeLogWriterWithSink(target io.Writer, secrets []string, level string, identity RuntimeLogIdentity, sink RuntimeLogSink) *redactingWriter {
 	clean := make([]string, 0, len(secrets))
 	for _, secret := range secrets {
 		if strings.TrimSpace(secret) != "" {
 			clean = append(clean, secret)
 		}
 	}
-	return &redactingWriter{target: target, secrets: clean, level: level, identity: identity}
+	return &redactingWriter{target: target, secrets: clean, level: level, identity: identity, sink: sink}
 }
 func (w *redactingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -871,6 +967,23 @@ func (w *redactingWriter) ClearSecrets(values []string) {
 	w.secrets = append([]string(nil), kept...)
 }
 
+// ClearAllSecrets releases all exact-match redaction material after the
+// process stream has closed. The Handle retains any values needed for a
+// supervised restart and reattaches them to the next pair of writers.
+func (w *redactingWriter) ClearAllSecrets() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for index := range w.secrets {
+		w.secrets[index] = ""
+	}
+	w.secrets = nil
+	clear(w.transientSecrets)
+	w.transientSecrets = nil
+}
+
 func (w *redactingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -898,7 +1011,14 @@ func (w *redactingWriter) flushLineLocked(newline bool) error {
 		line = truncateUTF8(line, maxPluginLogMessage)
 		truncated = true
 	}
-	publishRuntimeLogEvent(RuntimeLogEvent{Identity: w.identity, Entry: RuntimeLogEntry{Level: w.level, Message: line, Truncated: truncated}})
+	event := RuntimeLogEvent{CaptureID: nextRuntimeLogCaptureID(), Identity: w.identity, Entry: RuntimeLogEntry{Level: w.level, Message: line, Truncated: truncated}}
+	if w.sink != nil {
+		if err := w.sink.CaptureRuntimeLogEvent(event); err != nil {
+			return err
+		}
+	} else {
+		publishRuntimeLogEvent(event)
+	}
 	if newline {
 		line += "\n"
 	}

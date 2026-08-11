@@ -162,6 +162,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := backfillPluginOperationScopes(ctx, db); err != nil {
 		return err
 	}
+	if err := backfillPluginAgentRuntimeAuthority(ctx, db); err != nil {
+		return err
+	}
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, db, defaultPluginTargetID); err != nil {
 		return err
 	}
@@ -240,6 +243,53 @@ func backfillPluginOperationScopes(ctx context.Context, db *gorm.DB) error {
 		return nil
 	}
 	return db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+func backfillPluginAgentRuntimeAuthority(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("authority_slot = ?", "").Update("authority_slot", "retired").Error; err != nil {
+			return err
+		}
+		var instances []PluginInstanceRow
+		if err := tx.Find(&instances).Error; err != nil {
+			return err
+		}
+		for _, instance := range instances {
+			var installed InstalledPluginRow
+			if err := tx.Where("plugin_id = ?", instance.PluginID).First(&installed).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					continue
+				}
+				return err
+			}
+			if installed.PendingOperationID != "" {
+				if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("plugin_id = ? AND instance_id = ? AND operation_id = ?", instance.PluginID, instance.ID, installed.PendingOperationID).Update("authority_slot", "pending").Error; err != nil {
+					return err
+				}
+			}
+			if installed.CurrentLifecycle != "active" && installed.CurrentLifecycle != "degraded" && installed.PendingOperationID == "" {
+				continue
+			}
+			var targets []string
+			if err := json.Unmarshal([]byte(instance.TargetJSON), &targets); err != nil {
+				return fmt.Errorf("plugin instance %s active targets are invalid: %w", instance.ID, err)
+			}
+			for _, agentID := range targets {
+				var active PluginAgentRuntimeStatusRow
+				err := tx.Where("plugin_id = ? AND instance_id = ? AND agent_id = ? AND operation_id <> ? AND resource_group_id = ? AND target_version = ? AND package_digest = ? AND state IN ?", instance.PluginID, instance.ID, agentID, installed.PendingOperationID, instance.ResourceGroupID, instance.ConfigVersion, installed.ActivePackageDigest, []string{"active", "degraded"}).Order("updated_at DESC").First(&active).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", active.OperationID, active.AgentID, active.InstanceID).Update("authority_slot", "active").Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // prepareMarketplaceRepositorySourceColumns is the one-time legacy boundary:

@@ -44,7 +44,7 @@ func TestPluginRuntimeLogReportFencesOwnershipSequenceAndReplay(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
 	instance := PluginInstanceRow{ID: "instance", PluginID: "official.rpc", ResourceGroupID: "group-a", TargetJSON: `["edge-a"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{}`, ConfigVersion: 1, PendingConfigJSON: ``, PendingTargetJSON: ``, PendingPolicyChainsJSON: `[]`, PendingBindingsJSON: `[]`, PendingSecretHandlesJSON: `[]`, RollbackConfigJSON: ``, RollbackPolicyChainsJSON: `[]`, RollbackBindingsJSON: `[]`, RollbackSecretHandlesJSON: `[]`, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, UpdatedAt: now}
-	status := PluginAgentRuntimeStatusRow{OperationID: "operation", AgentID: "edge-a", InstanceID: instance.ID, PluginID: instance.PluginID, ResourceGroupID: instance.ResourceGroupID, TargetVersion: instance.ConfigVersion, ConfigVersion: instance.ConfigVersion, Revision: 7, GenerationID: "generation-7", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), State: "active", UpdatedAt: now}
+	status := PluginAgentRuntimeStatusRow{OperationID: "operation", AgentID: "edge-a", InstanceID: instance.ID, PluginID: instance.PluginID, ResourceGroupID: instance.ResourceGroupID, TargetVersion: instance.ConfigVersion, ConfigVersion: instance.ConfigVersion, Revision: 7, GenerationID: "generation-7", PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), State: "active", AuthoritySlot: "active", UpdatedAt: now}
 	if err := store.db.Create(&AgentRow{ID: "edge-a", Name: "edge", AgentToken: "token"}).Error; err != nil {
 		t.Fatal(err)
 	}

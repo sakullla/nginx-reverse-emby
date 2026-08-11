@@ -3099,7 +3099,8 @@ func (s *GormStore) MigrateLegacyPluginInstanceSecrets(ctx context.Context, expe
 			"config_json": instance.ConfigJSON, "secret_handles_json": instance.SecretHandlesJSON,
 			"pending_config_json": instance.PendingConfigJSON, "pending_secret_handles_json": instance.PendingSecretHandlesJSON,
 			"rollback_config_json": instance.RollbackConfigJSON, "rollback_secret_handles_json": instance.RollbackSecretHandlesJSON,
-			"state_version": expectedStateVersion + 1, "updated_at": instance.UpdatedAt,
+			"rollback_resource_group_id": instance.RollbackResourceGroupID,
+			"state_version":              expectedStateVersion + 1, "updated_at": instance.UpdatedAt,
 		})
 		if result.Error != nil {
 			return result.Error
@@ -3639,7 +3640,7 @@ func resolvePluginInstanceBindingFencesTx(ctx context.Context, tx *gorm.DB, inst
 	}{
 		{label: "bindings", raw: &instance.BindingsJSON, groupID: instance.ResourceGroupID},
 		{label: "pending bindings", raw: &instance.PendingBindingsJSON, groupID: pendingGroupID},
-		{label: "rollback bindings", raw: &instance.RollbackBindingsJSON, groupID: instance.ResourceGroupID},
+		{label: "rollback bindings", raw: &instance.RollbackBindingsJSON, groupID: instance.RollbackResourceGroupID},
 	}
 	for _, field := range fields {
 		bindings, err := CanonicalPluginInstanceBindings(*field.raw)
@@ -3836,7 +3837,11 @@ func (s *GormStore) RecordPluginOperation(ctx context.Context, operation PluginO
 
 func (s *GormStore) GetInstalledPlugin(ctx context.Context, pluginID string) (InstalledPluginRow, bool, error) {
 	var row InstalledPluginRow
-	err := s.db.WithContext(ctx).Where("plugin_id = ?", pluginID).First(&row).Error
+	db := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := db.Where("plugin_id = ?", pluginID).First(&row).Error
 	if err == gorm.ErrRecordNotFound {
 		return InstalledPluginRow{}, false, nil
 	}
@@ -3887,7 +3892,11 @@ func (s *GormStore) ListPluginGrants(ctx context.Context, pluginID string) ([]Pl
 
 func (s *GormStore) GetPluginInstance(ctx context.Context, id string) (PluginInstanceRow, bool, error) {
 	var row PluginInstanceRow
-	err := s.db.WithContext(ctx).Where("id = ?", id).First(&row).Error
+	db := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := db.Where("id = ?", id).First(&row).Error
 	if err == gorm.ErrRecordNotFound {
 		return PluginInstanceRow{}, false, nil
 	}

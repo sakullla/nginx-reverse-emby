@@ -18,10 +18,14 @@ type PluginLogOutboxStore interface {
 }
 
 type pluginLogOutboxState struct {
-	pending  []model.PluginRuntimeLogReport
-	sequence map[string]uint64
-	batches  map[string][]model.PluginRuntimeLogReport
-	acks     map[string]struct{}
+	pending       []model.PluginRuntimeLogReport
+	sequence      map[string]uint64
+	sequenceOrder []string
+	batches       map[string][]model.PluginRuntimeLogReport
+	batchOrder    []string
+	acks          map[string]struct{}
+	ackOrder      []string
+	records       int
 }
 
 func newPluginLogOutboxState() pluginLogOutboxState {
@@ -59,6 +63,7 @@ func (state *pluginLogOutboxState) enqueue(batchID string, drafts []model.Plugin
 	}
 	assigned := model.ClonePluginRuntimeLogReports(drafts)
 	nextSequence := make(map[string]uint64, len(state.sequence))
+	nextSequenceOrder := append([]string(nil), state.sequenceOrder...)
 	for identity, sequence := range state.sequence {
 		nextSequence[identity] = sequence
 	}
@@ -67,6 +72,9 @@ func (state *pluginLogOutboxState) enqueue(batchID string, drafts []model.Plugin
 			return nil, false, errors.New("plugin runtime log draft already has a sequence")
 		}
 		identity := pluginRuntimeLogFenceIdentity(assigned[index])
+		if _, exists := nextSequence[identity]; !exists {
+			nextSequenceOrder = append(nextSequenceOrder, identity)
+		}
 		sequence := nextSequence[identity] + 1
 		if sequence == 0 {
 			return nil, false, errors.New("plugin runtime log sequence exhausted")
@@ -78,8 +86,11 @@ func (state *pluginLogOutboxState) enqueue(batchID string, drafts []model.Plugin
 		nextSequence[identity] = sequence
 	}
 	state.sequence = nextSequence
+	state.sequenceOrder = nextSequenceOrder
 	state.pending = append(state.pending, model.ClonePluginRuntimeLogReports(assigned)...)
 	state.batches[batchID] = model.ClonePluginRuntimeLogReports(assigned)
+	state.batchOrder = append(state.batchOrder, batchID)
+	state.trimReplayHistory()
 	return assigned, false, nil
 }
 
@@ -126,7 +137,87 @@ func (state *pluginLogOutboxState) acknowledge(sent []model.PluginRuntimeLogRepo
 	}
 	state.pending = model.ClonePluginRuntimeLogReports(kept)
 	state.acks[ackID] = struct{}{}
+	state.ackOrder = append(state.ackOrder, ackID)
+	state.trimReplayHistory()
 	return ackID, identities, changed, nil
+}
+
+const maxPluginLogReplayIdentities = 512
+const maxPluginLogSequenceHighWater = 1024
+
+func (state *pluginLogOutboxState) trimReplayHistory() {
+	if state == nil {
+		return
+	}
+	pending := make(map[string]struct{}, len(state.pending))
+	for _, report := range state.pending {
+		pending[pluginRuntimeLogReportIdentity(report)] = struct{}{}
+	}
+	protectedBatches := make(map[string]struct{})
+	for batchID, reports := range state.batches {
+		for _, report := range reports {
+			if _, ok := pending[pluginRuntimeLogReportIdentity(report)]; ok {
+				protectedBatches[batchID] = struct{}{}
+				break
+			}
+		}
+	}
+	for len(state.batches) > maxPluginLogReplayIdentities && len(state.batchOrder) > 0 {
+		batchID := state.batchOrder[0]
+		state.batchOrder = state.batchOrder[1:]
+		if _, keep := protectedBatches[batchID]; keep {
+			state.batchOrder = append(state.batchOrder, batchID)
+			if len(protectedBatches) == len(state.batches) {
+				break
+			}
+			continue
+		}
+		delete(state.batches, batchID)
+	}
+	protectedSequences := state.protectedSequenceHighWater()
+	for len(protectedSequences) > maxPluginLogSequenceHighWater && len(state.batchOrder) > 0 {
+		batchID := state.batchOrder[0]
+		state.batchOrder = state.batchOrder[1:]
+		if _, keep := protectedBatches[batchID]; keep {
+			state.batchOrder = append(state.batchOrder, batchID)
+			if len(protectedBatches) == len(state.batches) {
+				break
+			}
+			continue
+		}
+		delete(state.batches, batchID)
+		protectedSequences = state.protectedSequenceHighWater()
+	}
+	for len(state.sequence) > maxPluginLogSequenceHighWater && len(state.sequenceOrder) > 0 {
+		identity := state.sequenceOrder[0]
+		state.sequenceOrder = state.sequenceOrder[1:]
+		if _, keep := protectedSequences[identity]; keep {
+			state.sequenceOrder = append(state.sequenceOrder, identity)
+			if len(protectedSequences) == len(state.sequence) {
+				break
+			}
+			continue
+		}
+		delete(state.sequence, identity)
+	}
+	for len(state.acks) > maxPluginLogReplayIdentities && len(state.ackOrder) > 0 {
+		ackID := state.ackOrder[0]
+		state.ackOrder = state.ackOrder[1:]
+		delete(state.acks, ackID)
+	}
+}
+
+func (state *pluginLogOutboxState) protectedSequenceHighWater() map[string]struct{} {
+	protected := make(map[string]struct{})
+	for _, report := range state.pending {
+		protected[pluginRuntimeLogFenceIdentity(report)] = struct{}{}
+	}
+	for _, reports := range state.batches {
+		for _, report := range reports {
+			protected[pluginRuntimeLogFenceIdentity(report)] = struct{}{}
+		}
+	}
+	return protected
 }
 
 func pluginLogBatchDigest(reports []model.PluginRuntimeLogReport) (string, error) {

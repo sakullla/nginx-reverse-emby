@@ -78,18 +78,22 @@ func (s *PluginService) MigrateLegacyWriteOnlySecrets(ctx context.Context) error
 			beforeVersion := instance.StateVersion
 			var writes []storage.PluginSecretWrite
 			for _, slot := range []struct {
-				name, config string
-				handles      *string
-				schema       map[string]any
+				name, config, resourceGroupID string
+				handles                       *string
+				schema                        map[string]any
 			}{
-				{name: "active", config: instance.ConfigJSON, handles: &instance.SecretHandlesJSON, schema: activeSchema},
-				{name: "pending", config: instance.PendingConfigJSON, handles: &instance.PendingSecretHandlesJSON, schema: pendingSchema},
-				{name: "rollback", config: instance.RollbackConfigJSON, handles: &instance.RollbackSecretHandlesJSON, schema: rollbackSchema},
+				{name: "active", config: instance.ConfigJSON, resourceGroupID: instance.ResourceGroupID, handles: &instance.SecretHandlesJSON, schema: activeSchema},
+				{name: "pending", config: instance.PendingConfigJSON, resourceGroupID: instance.PendingResourceGroupID, handles: &instance.PendingSecretHandlesJSON, schema: pendingSchema},
+				{name: "rollback", config: instance.RollbackConfigJSON, resourceGroupID: instance.RollbackResourceGroupID, handles: &instance.RollbackSecretHandlesJSON, schema: rollbackSchema},
 			} {
-				if strings.TrimSpace(slot.config) == "" {
+				empty, err := legacyPluginSecretSlotEmpty(slot.config, *slot.handles)
+				if err != nil {
+					return fmt.Errorf("migrate plugin %s instance %s %s secrets: %w", installed.PluginID, instance.ID, slot.name, err)
+				}
+				if empty {
 					continue
 				}
-				public, handles, prepared, err := s.migrateLegacyPluginSecretSlot(ctx, instance, slot.name, slot.schema, slot.config, *slot.handles)
+				public, handles, prepared, err := s.migrateLegacyPluginSecretSlot(ctx, instance, slot.name, slot.resourceGroupID, slot.schema, slot.config, *slot.handles)
 				if err != nil {
 					return fmt.Errorf("migrate plugin %s instance %s %s secrets: %w", installed.PluginID, instance.ID, slot.name, err)
 				}
@@ -116,7 +120,21 @@ func (s *PluginService) MigrateLegacyWriteOnlySecrets(ctx context.Context) error
 	return nil
 }
 
-func (s *PluginService) migrateLegacyPluginSecretSlot(ctx context.Context, instance storage.PluginInstanceRow, slot string, schema map[string]any, rawConfig, rawHandles string) (string, string, []storage.PluginSecretWrite, error) {
+func legacyPluginSecretSlotEmpty(rawConfig, rawHandles string) (bool, error) {
+	if strings.TrimSpace(rawConfig) != "" {
+		return false, nil
+	}
+	var handles []storage.PluginInstanceSecretHandle
+	if err := json.Unmarshal([]byte(pluginDefaultJSONArray(rawHandles)), &handles); err != nil {
+		return false, ErrPluginReadProjection
+	}
+	if len(handles) != 0 {
+		return false, errors.New("legacy secret handles exist without slot config")
+	}
+	return true, nil
+}
+
+func (s *PluginService) migrateLegacyPluginSecretSlot(ctx context.Context, instance storage.PluginInstanceRow, slot, resourceGroupID string, schema map[string]any, rawConfig, rawHandles string) (string, string, []storage.PluginSecretWrite, error) {
 	value, err := pluginConfigValue(json.RawMessage(rawConfig))
 	if err != nil {
 		return "", "", nil, ErrPluginReadProjection
@@ -129,11 +147,20 @@ func (s *PluginService) migrateLegacyPluginSecretSlot(ctx context.Context, insta
 	if err := json.Unmarshal([]byte(pluginDefaultJSONArray(rawHandles)), &handles); err != nil {
 		return "", "", nil, ErrPluginReadProjection
 	}
+	resourceGroupID = strings.TrimSpace(resourceGroupID)
+	if len(handles) > 0 && (resourceGroupID == "" || s.secretVault == nil) {
+		return "", "", nil, errors.New("legacy secret slot resource ownership is unavailable")
+	}
 	byPointer := make(map[string]storage.PluginInstanceSecretHandle, len(handles))
 	for _, handle := range handles {
 		if handle.Pointer == "" || handle.ID == "" || !pluginPointerIsWriteOnly(schema, public, handle.Pointer) {
 			return "", "", nil, ErrPluginReadProjection
 		}
+		plaintext, err := s.secretVault.ResolvePluginReference(ctx, secrets.OperationContext{ActorID: "system:plugin-secret-migration", CorrelationID: "plugin-secret-migration:" + instance.ID, ResourceGroupID: resourceGroupID}, handle.ID, handle.Version, handle.Purpose, handle.Digest)
+		if err != nil {
+			return "", "", nil, err
+		}
+		clear(plaintext)
 		byPointer[handle.Pointer] = handle
 	}
 	pointers := make([]string, 0, len(submitted))
@@ -142,6 +169,9 @@ func (s *PluginService) migrateLegacyPluginSecretSlot(ctx context.Context, insta
 	}
 	sort.Strings(pointers)
 	writes := make([]storage.PluginSecretWrite, 0, len(pointers))
+	if len(pointers) > 0 && resourceGroupID == "" {
+		return "", "", nil, errors.New("legacy secret slot resource ownership is unavailable")
+	}
 	for _, pointer := range pointers {
 		if _, duplicate := byPointer[pointer]; duplicate {
 			return "", "", nil, errors.New("legacy config contains both plaintext and a secret handle")
@@ -149,7 +179,7 @@ func (s *PluginService) migrateLegacyPluginSecretSlot(ctx context.Context, insta
 		raw := submitted[pointer]
 		digest := sha256.Sum256(raw)
 		pointerDigest := sha256.Sum256([]byte(slot + ":" + pointer))
-		op := secrets.OperationContext{ActorID: "system:plugin-secret-migration", CorrelationID: "plugin-secret-migration:" + instance.ID, ResourceGroupID: instance.ResourceGroupID}
+		op := secrets.OperationContext{ActorID: "system:plugin-secret-migration", CorrelationID: "plugin-secret-migration:" + instance.ID, ResourceGroupID: resourceGroupID}
 		prepared, err := s.secretVault.PreparePluginSecret(op, "plugin-config-migration-"+instance.ID+"-"+hex.EncodeToString(pointerDigest[:6]), "plugin-config:"+instance.ID+":"+pointer, string(raw))
 		if err != nil {
 			return "", "", nil, err

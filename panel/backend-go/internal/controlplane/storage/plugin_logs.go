@@ -205,7 +205,7 @@ func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authentica
 }
 
 func pluginRuntimeLogStatusCurrentTx(tx *gorm.DB, status PluginAgentRuntimeStatusRow) error {
-	if status.ResourceGroupID == "" || status.TargetVersion == 0 || status.State == "failed" || status.State == "drained" || status.State == "draining" {
+	if status.ResourceGroupID == "" || status.TargetVersion == 0 || (status.AuthoritySlot != "active" && status.AuthoritySlot != "pending") || status.State == "failed" || status.State == "drained" || status.State == "draining" {
 		return ErrPluginGenerationStale
 	}
 	var agent AgentRow
@@ -218,6 +218,11 @@ func pluginRuntimeLogStatusCurrentTx(tx *gorm.DB, status PluginAgentRuntimeStatu
 	}
 	var installed InstalledPluginRow
 	if err := tx.Where("plugin_id = ?", status.PluginID).First(&installed).Error; err != nil || installed.DesiredLifecycle != "enabled" {
+		return ErrPluginGenerationStale
+	}
+	pendingAuthority := status.AuthoritySlot == "pending" && installed.PendingOperationID == status.OperationID
+	activeAuthority := status.AuthoritySlot == "active" && (installed.PendingOperationID != "" || installed.LastOperationID == status.OperationID)
+	if !pendingAuthority && !activeAuthority {
 		return ErrPluginGenerationStale
 	}
 	groupID, configVersion, targetsJSON, packageDigest := instance.ResourceGroupID, instance.ConfigVersion, instance.TargetJSON, installed.ActivePackageDigest

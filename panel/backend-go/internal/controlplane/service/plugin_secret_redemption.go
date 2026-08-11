@@ -48,17 +48,39 @@ func (s *PluginService) RedeemAgentPluginSecrets(ctx context.Context, agentID st
 	if agentID == "" || request.Revision <= 0 || request.GenerationID == "" || request.InstanceID == "" || request.PluginID == "" || request.OperationID == "" || !pluginRedemptionDigest(request.PackageDigest) || !pluginRedemptionDigest(request.ArtifactDigest) || len(request.Handles) == 0 || len(request.Handles) > 64 {
 		return PluginSecretRedemptionResponse{}, fmt.Errorf("%w: plugin secret redemption identity is invalid", ErrInvalidArgument)
 	}
-	fences, ok := s.store.(interface {
-		GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
+	transactions, ok := s.store.(interface {
+		PluginSecretRedemptionTransaction(context.Context, func(*storage.GormStore) error) error
 	})
 	if !ok || s.secretVault == nil {
 		return PluginSecretRedemptionResponse{}, errors.New("plugin secret redemption is unavailable")
 	}
-	status, found, err := fences.GetPluginAgentRuntimeStatusFence(ctx, request.OperationID, agentID, request.InstanceID)
+	var response PluginSecretRedemptionResponse
+	err := transactions.PluginSecretRedemptionTransaction(ctx, func(store *storage.GormStore) error {
+		vault, err := s.secretVault.WithStore(store)
+		if err != nil {
+			return err
+		}
+		scoped := *s
+		scoped.store, scoped.secretVault = store, vault
+		response, err = scoped.redeemAgentPluginSecretsCurrent(ctx, agentID, request)
+		return err
+	})
+	return response, err
+}
+
+func (s *PluginService) redeemAgentPluginSecretsCurrent(ctx context.Context, agentID string, request PluginSecretRedemptionRequest) (PluginSecretRedemptionResponse, error) {
+	fences, ok := s.store.(interface {
+		GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
+		GetPluginOperation(context.Context, string) (storage.PluginOperationRow, bool, error)
+	})
+	if !ok || s.secretVault == nil {
+		return PluginSecretRedemptionResponse{}, errors.New("plugin secret redemption is unavailable")
+	}
+	installed, found, err := s.store.GetInstalledPlugin(ctx, request.PluginID)
 	if err != nil {
 		return PluginSecretRedemptionResponse{}, err
 	}
-	if !found || status.PluginID != request.PluginID || status.Revision <= 0 || uint64(status.Revision) != request.Revision || status.GenerationID != request.GenerationID || status.PackageDigest != request.PackageDigest || status.ArtifactDigest != request.ArtifactDigest || status.ResourceGroupID == "" || status.TargetVersion == 0 || status.State == "failed" || status.State == "drained" || status.State == "draining" {
+	if !found {
 		return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationStale
 	}
 	instance, found, err := s.store.GetPluginInstance(ctx, request.InstanceID)
@@ -68,20 +90,32 @@ func (s *PluginService) RedeemAgentPluginSecrets(ctx context.Context, agentID st
 	if !found || instance.PluginID != request.PluginID {
 		return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationStale
 	}
-	installed, found, err := s.store.GetInstalledPlugin(ctx, request.PluginID)
+	operation, found, err := fences.GetPluginOperation(ctx, request.OperationID)
 	if err != nil {
 		return PluginSecretRedemptionResponse{}, err
 	}
-	if !found || installed.DesiredLifecycle != "enabled" {
+	if !found || operation.PluginID != request.PluginID {
+		return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationStale
+	}
+	status, found, err := fences.GetPluginAgentRuntimeStatusFence(ctx, request.OperationID, agentID, request.InstanceID)
+	if err != nil {
+		return PluginSecretRedemptionResponse{}, err
+	}
+	if !found || status.PluginID != request.PluginID || status.Revision <= 0 || uint64(status.Revision) != request.Revision || status.GenerationID != request.GenerationID || status.PackageDigest != request.PackageDigest || status.ArtifactDigest != request.ArtifactDigest || status.ResourceGroupID == "" || status.TargetVersion == 0 || (status.AuthoritySlot != "active" && status.AuthoritySlot != "pending") || status.State == "failed" || status.State == "drained" || status.State == "draining" {
+		return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationStale
+	}
+	pendingAuthority := status.AuthoritySlot == "pending" && installed.PendingOperationID == request.OperationID && (operation.Status == "applying" || operation.Status == "staged")
+	activeAuthority := status.AuthoritySlot == "active" && operation.Status == "succeeded" && (installed.PendingOperationID != "" || installed.LastOperationID == request.OperationID) && (installed.CurrentLifecycle == "active" || installed.CurrentLifecycle == "degraded" || installed.PendingOperationID != "")
+	if !pendingAuthority && !activeAuthority {
 		return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationStale
 	}
 	handlesJSON, targetsJSON, groupID, version, packageDigest := instance.SecretHandlesJSON, instance.TargetJSON, instance.ResourceGroupID, instance.ConfigVersion, installed.ActivePackageDigest
-	if instance.PendingOperationID == request.OperationID && instance.PendingVersion > 0 {
+	if pendingAuthority && instance.PendingOperationID == request.OperationID && instance.PendingVersion > 0 {
 		handlesJSON, targetsJSON, version = instance.PendingSecretHandlesJSON, instance.PendingTargetJSON, instance.PendingVersion
 		if instance.PendingResourceGroupID != "" {
 			groupID = instance.PendingResourceGroupID
 		}
-		if installed.PendingOperationID == request.OperationID && installed.StagedPackageDigest != "" {
+		if installed.StagedPackageDigest != "" {
 			packageDigest = installed.StagedPackageDigest
 		}
 	}
@@ -101,14 +135,9 @@ func (s *PluginService) RedeemAgentPluginSecrets(ctx context.Context, agentID st
 		if handle.Purpose != "plugin-config:"+request.InstanceID+":"+handle.Pointer {
 			return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationConflict
 		}
-		value, err := s.secretVault.Resolve(ctx, secrets.OperationContext{ActorID: "agent:" + agentID, CorrelationID: request.OperationID, ResourceGroupID: groupID}, handle.ID)
+		value, err := s.secretVault.ResolvePluginReference(ctx, secrets.OperationContext{ActorID: "agent:" + agentID, CorrelationID: request.OperationID, ResourceGroupID: groupID}, handle.ID, handle.Version, handle.Purpose, handle.Digest)
 		if err != nil {
 			return PluginSecretRedemptionResponse{}, err
-		}
-		digest := sha256.Sum256(value)
-		if hex.EncodeToString(digest[:]) != handle.Digest {
-			clear(value)
-			return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationConflict
 		}
 		result.Secrets = append(result.Secrets, PluginRedeemedSecret{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose, Value: string(value)})
 		clear(value)

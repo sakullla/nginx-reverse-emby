@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -590,6 +591,136 @@ func TestHandleTransientSensitiveValuesAreRedactedWithoutRetention(t *testing.T)
 	events := DrainRuntimeLogEvents()
 	if len(events) != 1 || events[0].Entry.Message != "[REDACTED]" || strings.Contains(output.String(), "transient-secret") {
 		t.Fatalf("transient secret escaped redaction: events=%+v output=%q", events, output.String())
+	}
+}
+
+type processRuntimeLogSink struct {
+	events []RuntimeLogEvent
+	err    error
+}
+
+func (sink *processRuntimeLogSink) CaptureRuntimeLogEvent(event RuntimeLogEvent) error {
+	if sink.err != nil {
+		return sink.err
+	}
+	sink.events = append(sink.events, event)
+	return nil
+}
+
+func TestRuntimeLogWriterDurablyCapturesBeforeForwardingOutput(t *testing.T) {
+	var output bytes.Buffer
+	sink := &processRuntimeLogSink{}
+	writer := newRuntimeLogWriterWithSink(&output, nil, "info", processRuntimeLogIdentity(), sink)
+	if _, err := writer.Write([]byte("durable line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.events) != 1 || sink.events[0].CaptureID == "" || sink.events[0].Entry.Message != "durable line" || output.String() != "durable line\n" {
+		t.Fatalf("capture boundary = events:%+v output:%q", sink.events, output.String())
+	}
+
+	output.Reset()
+	failing := &processRuntimeLogSink{err: errors.New("durable outbox saturated")}
+	writer = newRuntimeLogWriterWithSink(&output, nil, "error", processRuntimeLogIdentity(), failing)
+	if _, err := writer.Write([]byte("must not escape\n")); err == nil {
+		t.Fatal("writer ignored durable capture failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output forwarded before durable capture: %q", output.String())
+	}
+}
+
+func TestHandleRetainsSecretRedactionUntilTerminalAndClearsIt(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	var output bytes.Buffer
+	writer := newRuntimeLogWriter(&output, nil, "info", processRuntimeLogIdentity())
+	handle := &Handle{stdoutLog: writer}
+	handle.RetainSensitiveValues([]string{"generation-secret"})
+	if _, err := writer.Write([]byte("async generation-secret after activation\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := DrainRuntimeLogEvents()
+	if len(events) != 1 || strings.Contains(events[0].Entry.Message, "generation-secret") || strings.Contains(output.String(), "generation-secret") {
+		t.Fatalf("lifetime redaction failed: events=%+v output=%q", events, output.String())
+	}
+	handle.clearRetainedSensitiveValues()
+	if len(handle.sensitive) != 0 || slices.Contains(writer.secrets, "generation-secret") {
+		t.Fatalf("terminal handle retained secret: handle=%+v writer=%+v", handle.sensitive, writer.secrets)
+	}
+}
+
+type retainedSecretAttempt struct {
+	stdout  *redactingWriter
+	stderr  *redactingWriter
+	process *immediateProcess
+}
+
+type retainedSecretRestartRunner struct {
+	attempts chan retainedSecretAttempt
+}
+
+func (r retainedSecretRestartRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer) (ManagedProcess, func() error, error) {
+	return nil, nil, errors.New("combined output path used")
+}
+
+func (r retainedSecretRestartRunner) StartWithStreams(_ context.Context, _ InstanceSpec, _ Sandbox, stdout, stderr io.Writer) (ManagedProcess, func() error, error) {
+	attempt := retainedSecretAttempt{
+		stdout:  stdout.(*redactingWriter),
+		stderr:  stderr.(*redactingWriter),
+		process: &immediateProcess{done: make(chan error, 1)},
+	}
+	r.attempts <- attempt
+	return attempt.process, func() error { return nil }, nil
+}
+
+func TestSupervisorRetainsSecretRedactionAcrossCrashRestartAndZerosTerminal(t *testing.T) {
+	runner := retainedSecretRestartRunner{attempts: make(chan retainedSecretAttempt, 2)}
+	sink := &processRuntimeLogSink{}
+	supervisor := NewSupervisor(runner, fakeSandbox{available: true}, io.Discard)
+	supervisor.SetRuntimeLogSink(sink)
+	t.Cleanup(func() { _ = supervisor.Close(t.Context()) })
+	handle, err := supervisor.Start(t.Context(), InstanceSpec{
+		ID: "retained-secret", Executable: "synthetic", RestartLimit: 1,
+		RestartWindow: time.Second, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond,
+		SensitiveValues: []string{"startup-secret"}, RuntimeLogIdentity: processRuntimeLogIdentity(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle.RetainSensitiveValues([]string{"redeemed-secret"})
+
+	first := <-runner.attempts
+	if _, err := io.WriteString(first.stdout, "startup-secret redeemed-secret\n"); err != nil {
+		t.Fatal(err)
+	}
+	first.process.done <- errors.New("first crash")
+	second := <-runner.attempts
+	if _, err := io.WriteString(second.stderr, "startup-secret redeemed-secret\n"); err != nil {
+		t.Fatal(err)
+	}
+	second.process.done <- errors.New("second crash")
+	select {
+	case <-handle.Done():
+	case <-time.After(time.Second):
+		t.Fatal("crash-loop terminal state was not reached")
+	}
+
+	if len(sink.events) != 2 {
+		t.Fatalf("captured events = %+v", sink.events)
+	}
+	for _, event := range sink.events {
+		if strings.Contains(event.Entry.Message, "startup-secret") || strings.Contains(event.Entry.Message, "redeemed-secret") {
+			t.Fatalf("secret escaped after crash/restart: %+v", event)
+		}
+	}
+	if len(first.stdout.secrets) != 0 || len(first.stderr.secrets) != 0 || len(second.stdout.secrets) != 0 || len(second.stderr.secrets) != 0 {
+		t.Fatal("terminal writers retained exact-match secret material")
+	}
+	if len(handle.sensitive) != 0 || len(handle.spec.SensitiveValues) != 0 {
+		t.Fatalf("terminal handle retained secret material: retained=%+v spec=%+v", handle.sensitive, handle.spec.SensitiveValues)
 	}
 }
 

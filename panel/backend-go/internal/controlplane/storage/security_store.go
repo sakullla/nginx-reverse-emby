@@ -1543,7 +1543,11 @@ func (s *GormStore) RotateSecret(ctx context.Context, secret SecretRow, version 
 
 func (s *GormStore) GetSecret(ctx context.Context, id string) (SecretRow, error) {
 	var row SecretRow
-	err := s.db.WithContext(ctx).Where("id = ?", id).First(&row).Error
+	db := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := db.Where("id = ?", id).First(&row).Error
 	return row, err
 }
 
@@ -1562,7 +1566,11 @@ func (s *GormStore) ListSecrets(ctx context.Context, resourceGroupIDs []string) 
 
 func (s *GormStore) GetSecretVersion(ctx context.Context, id string, version uint64) (SecretVersionRow, error) {
 	var row SecretVersionRow
-	err := s.db.WithContext(ctx).Where("secret_id = ? AND version = ? AND destroyed_at IS NULL", id, version).First(&row).Error
+	db := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := db.Where("secret_id = ? AND version = ? AND destroyed_at IS NULL", id, version).First(&row).Error
 	return row, err
 }
 

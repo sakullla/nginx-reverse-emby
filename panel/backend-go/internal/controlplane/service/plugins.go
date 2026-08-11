@@ -1121,7 +1121,7 @@ func (s *PluginService) materializeStoredPluginConfig(ctx context.Context, schem
 		if s.secretVault == nil {
 			return nil, nil, errors.New("plugin secret vault is unavailable")
 		}
-		plaintext, err := s.secretVault.Resolve(ctx, secrets.OperationContext{ActorID: actorID, CorrelationID: correlationID, ResourceGroupID: resourceGroupID}, handle.ID)
+		plaintext, err := s.secretVault.ResolvePluginReference(ctx, secrets.OperationContext{ActorID: actorID, CorrelationID: correlationID, ResourceGroupID: resourceGroupID}, handle.ID, handle.Version, handle.Purpose, handle.Digest)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1658,6 +1658,7 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 		grants = grantRows(applyResult.PluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
+			instances[index].RollbackResourceGroupID = instances[index].ResourceGroupID
 			instances[index].RollbackSecretHandlesJSON = instances[index].SecretHandlesJSON
 			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
 			instances[index].RollbackBindingsJSON = instances[index].BindingsJSON
@@ -1750,12 +1751,17 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 	}
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
-		_, _, configErr := s.materializeStoredPluginConfig(ctx, rollbackSchema, instances[index].RollbackConfigJSON, instances[index].RollbackSecretHandlesJSON, instances[index].ResourceGroupID, actorID, operation.CorrelationID)
+		rollbackGroupID := strings.TrimSpace(instances[index].RollbackResourceGroupID)
+		if rollbackGroupID == "" {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, fmt.Errorf("rollback ownership for instance %s is unavailable", instances[index].ID))
+		}
+		_, _, configErr := s.materializeStoredPluginConfig(ctx, rollbackSchema, instances[index].RollbackConfigJSON, instances[index].RollbackSecretHandlesJSON, rollbackGroupID, actorID, operation.CorrelationID)
 		if instances[index].RollbackVersion == 0 || configErr != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, fmt.Errorf("rollback config for instance %s is unavailable or invalid", instances[index].ID))
 		}
 		instances[index].PendingConfigJSON = instances[index].RollbackConfigJSON
 		instances[index].PendingSecretHandlesJSON = instances[index].RollbackSecretHandlesJSON
+		instances[index].PendingResourceGroupID = rollbackGroupID
 		instances[index].PendingPolicyChainsJSON = instances[index].RollbackPolicyChainsJSON
 		instances[index].PendingBindingsJSON = instances[index].RollbackBindingsJSON
 		instances[index].PendingVersion = instances[index].RollbackVersion
@@ -1850,6 +1856,7 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 		grants = grantRows(applyResult.PluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
+			instances[index].RollbackResourceGroupID = instances[index].ResourceGroupID
 			instances[index].RollbackSecretHandlesJSON = instances[index].SecretHandlesJSON
 			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
 			instances[index].RollbackBindingsJSON = instances[index].BindingsJSON

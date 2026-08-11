@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -116,38 +117,11 @@ func (s *PluginService) OperationsForActor(ctx context.Context, pluginID string,
 			result = operations
 			return nil
 		}
-		instances, err := scoped.store.ListPluginInstances(ctx, pluginID)
-		if err != nil {
-			return err
-		}
-		visibleAgents, visibleGroups := map[string]struct{}{}, map[string]struct{}{}
-		defaultTargetID, err := scoped.defaultPluginTargetID(ctx)
-		if err != nil {
-			return err
-		}
-		for _, instance := range instances {
-			if !actor.CanAccessGroup(instance.ResourceGroupID) {
-				continue
-			}
-			visibleGroups[instance.ResourceGroupID] = struct{}{}
-			targets, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON), defaultTargetID)
-			if err != nil {
-				return ErrPluginReadProjection
-			}
-			for _, target := range targets {
-				visibleAgents[target] = struct{}{}
-			}
-		}
-		if len(visibleGroups) == 0 {
-			return authz.ErrForbidden
-		}
 		result = make([]PluginOperationDetail, 0, len(operations))
 		for _, operation := range operations {
-			visibleScopes := make([]PluginOperationScopeDetail, 0, len(operation.Scopes))
-			for _, scope := range operation.Scopes {
-				if _, ok := visibleGroups[scope.ResourceGroupID]; ok {
-					visibleScopes = append(visibleScopes, scope)
-				}
+			visibleScopes, filteredResults, err := pluginScopedOperationAgentResults(operation.AgentResults, operation.Scopes, actor)
+			if err != nil {
+				return err
 			}
 			if len(visibleScopes) == 0 {
 				continue
@@ -155,23 +129,65 @@ func (s *PluginService) OperationsForActor(ctx context.Context, pluginID string,
 			operation.Scopes = visibleScopes
 			operation.InstanceID, operation.ResourceGroupID = "", ""
 			operation.ActorID, operation.SessionID, operation.CorrelationID = "", "", ""
-			var all map[string]json.RawMessage
-			if err := json.Unmarshal(operation.AgentResults, &all); err != nil {
-				return errors.Join(ErrPluginReadProjection, err)
-			}
-			filtered := make(map[string]json.RawMessage)
-			for agentID, value := range all {
-				if _, ok := visibleAgents[agentID]; ok {
-					filtered[agentID] = value
-				}
-			}
-			operation.AgentResults, err = json.Marshal(filtered)
-			if err != nil {
-				return err
-			}
+			operation.AgentResults = filteredResults
 			result = append(result, operation)
 		}
 		return nil
 	})
+	if err == nil && len(result) == 0 && !actor.Has(authz.PermissionSystemAdmin) && !actor.Bootstrap {
+		return nil, authz.ErrForbidden
+	}
 	return result, err
+}
+
+func pluginScopedOperationAgentResults(raw json.RawMessage, scopes []PluginOperationScopeDetail, actor authz.Actor) ([]PluginOperationScopeDetail, json.RawMessage, error) {
+	visibleScopes := make([]PluginOperationScopeDetail, 0, len(scopes))
+	allScopes := make(map[string]PluginOperationScopeDetail, len(scopes))
+	visibleInstances := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if scope.InstanceID == "" || scope.ResourceGroupID == "" {
+			return nil, nil, ErrPluginReadProjection
+		}
+		if _, duplicate := allScopes[scope.InstanceID]; duplicate {
+			return nil, nil, ErrPluginReadProjection
+		}
+		allScopes[scope.InstanceID] = scope
+		if actor.CanAccessGroup(scope.ResourceGroupID) {
+			visibleScopes = append(visibleScopes, scope)
+			visibleInstances[scope.InstanceID] = struct{}{}
+		}
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil || all == nil {
+		if err == nil {
+			err = ErrPluginReadProjection
+		}
+		return nil, nil, errors.Join(ErrPluginReadProjection, err)
+	}
+	filtered := make(map[string]json.RawMessage)
+	for identity, value := range all {
+		agentID, instanceID, ok := pluginOperationAgentResultIdentity(identity)
+		if !ok {
+			return nil, nil, ErrPluginReadProjection
+		}
+		if _, exists := allScopes[instanceID]; !exists {
+			return nil, nil, ErrPluginReadProjection
+		}
+		if _, visible := visibleInstances[instanceID]; visible {
+			filtered[agentID+"/"+instanceID] = value
+		}
+	}
+	encoded, err := json.Marshal(filtered)
+	return visibleScopes, encoded, err
+}
+
+func pluginOperationAgentResultIdentity(identity string) (string, string, bool) {
+	if identity != strings.TrimSpace(identity) || strings.Count(identity, "/") != 1 {
+		return "", "", false
+	}
+	parts := strings.SplitN(identity, "/", 2)
+	if parts[0] == "" || parts[1] == "" || strings.ContainsAny(parts[0], "\r\n\x00") || strings.ContainsAny(parts[1], "\r\n\x00") {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }

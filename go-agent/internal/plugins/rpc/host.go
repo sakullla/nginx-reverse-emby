@@ -721,9 +721,8 @@ func transientLifecycleRequest(ctx context.Context, redeemer SecretRedeemer, can
 		return pluginsdk.LifecycleRequest{}, func() {}, err
 	}
 	config = materialized
-	handle.AddSensitiveValues(values)
+	handle.RetainSensitiveValues(values)
 	clear = func() {
-		handle.ClearSensitiveValues(values)
 		for index := range values {
 			values[index] = ""
 		}

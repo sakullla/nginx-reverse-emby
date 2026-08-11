@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
@@ -13,6 +15,25 @@ type pluginScopedReadStore struct {
 	installed  []storage.InstalledPluginRow
 	instances  map[string][]storage.PluginInstanceRow
 	operations map[string][]storage.PluginOperationRow
+}
+
+func TestPluginScopedOperationAgentResultsUseImmutableInstanceScopes(t *testing.T) {
+	actor := authz.Actor{ID: "member", Permissions: []string{authz.PermissionResourceRead}, VisibleResourceGroups: []string{"group-a"}}
+	scopes := []PluginOperationScopeDetail{{InstanceID: "visible", ResourceGroupID: "group-a"}, {InstanceID: "hidden", ResourceGroupID: "group-b"}}
+	visible, results, err := pluginScopedOperationAgentResults(json.RawMessage(`{"shared-agent/visible":{"state":"active"},"shared-agent/hidden":{"state":"failed"}}`), scopes, actor)
+	if err != nil || len(visible) != 1 || visible[0].InstanceID != "visible" || string(results) != `{"shared-agent/visible":{"state":"active"}}` {
+		t.Fatalf("visible=%+v results=%s err=%v", visible, results, err)
+	}
+	for label, raw := range map[string]json.RawMessage{
+		"bare agent":       json.RawMessage(`{"shared-agent":{"state":"active"}}`),
+		"unknown instance": json.RawMessage(`{"shared-agent/missing":{"state":"active"}}`),
+		"extra separator":  json.RawMessage(`{"shared-agent/visible/extra":{"state":"active"}}`),
+		"non-object":       json.RawMessage(`[]`),
+	} {
+		if _, _, err := pluginScopedOperationAgentResults(raw, scopes, actor); !errors.Is(err, ErrPluginReadProjection) {
+			t.Fatalf("%s error=%v", label, err)
+		}
+	}
 }
 
 func (s *pluginScopedReadStore) ListInstalledPlugins(context.Context) ([]storage.InstalledPluginRow, error) {

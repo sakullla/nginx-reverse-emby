@@ -548,6 +548,7 @@ func newAppWithAllDeps(
 		cfg.HeartbeatInterval = model.Default().HeartbeatInterval
 	}
 	rpcProcesses := pluginprocess.NewSupervisor(nil, nil, nil)
+	rpcProcesses.SetRuntimeLogSink(core.NewPluginRuntimeLogSink(st))
 	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(cfg.DataDir, "plugins", "rpc-runtime")}, rpcProcesses, nil)
 	if redeemer, ok := client.(pluginrpc.SecretRedeemer); ok {
 		rpcHost.SetSecretRedeemer(redeemer)

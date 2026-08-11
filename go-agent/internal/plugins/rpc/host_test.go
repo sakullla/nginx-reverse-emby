@@ -1038,6 +1038,43 @@ func TestRPCHostRepeatedCrashesOpenCircuit(t *testing.T) {
 	}
 }
 
+func TestRPCHostRestartRedeemsSecretsForFreshProcessAttempt(t *testing.T) {
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.OperationID = "operation-1"
+	candidate.Config = []byte(`{"token":"placeholder"}`)
+	value := `"restart-secret"`
+	digest := sha256.Sum256([]byte(value))
+	handle := model.PluginSecretHandle{ID: "secret-restart", Version: 2, Digest: hex.EncodeToString(digest[:]), Purpose: "plugin-config:" + candidate.InstanceID + ":/token"}
+	candidate.SecretHandles = []model.PluginSecretHandle{handle}
+	redeemer := &recordingSecretRedeemer{secrets: []model.PluginRedeemedSecret{{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose, Value: value}}}
+	runner := &restartHostRunner{started: make(chan *hostProcess, 4)}
+	counts := &hostLifecycleCounts{}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return countingHostClient{counts: counts}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.SetSecretRedeemer(redeemer)
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	first := nextHostProcess(t, runner.started)
+	first.done <- errors.New("crashed")
+	waitHostStatus(t, host, candidate.InstanceID, func(status RuntimeStatus) bool {
+		return status.State == "healthy" && status.RestartCount == 1
+	})
+	_ = nextHostProcess(t, runner.started)
+	redeemer.mu.Lock()
+	calls := redeemer.calls
+	redeemer.mu.Unlock()
+	if calls != 4 {
+		t.Fatalf("secret redemption calls = %d, want Prepare+Activate for each of two attempts", calls)
+	}
+}
+
 func TestRPCHostCloseCancelsAndJoinsBlockedInstall(t *testing.T) {
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)
@@ -1216,13 +1253,18 @@ func TestTransientLifecycleRequestRejectsUnsafeRedemptionWithoutLeakingValue(t *
 }
 
 type recordingSecretRedeemer struct {
+	mu      sync.Mutex
 	request model.PluginSecretRedemptionRequest
 	secrets []model.PluginRedeemedSecret
 	err     error
+	calls   int
 }
 
 func (r *recordingSecretRedeemer) RedeemPluginSecrets(_ context.Context, request model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.request = request
+	r.calls++
 	return append([]model.PluginRedeemedSecret(nil), r.secrets...), r.err
 }
 

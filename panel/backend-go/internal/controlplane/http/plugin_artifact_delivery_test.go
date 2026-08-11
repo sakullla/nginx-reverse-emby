@@ -154,6 +154,18 @@ func TestAgentPluginSecretRedemptionRequiresAgentAuthAndStrictGenerationBody(t *
 	if unknown.Code != http.StatusBadRequest || secrets.calls != 0 {
 		t.Fatalf("unknown-field status=%d calls=%d", unknown.Code, secrets.calls)
 	}
+	for label, invalidBody := range map[string]string{
+		"second value":       body + `{}`,
+		"malformed trailing": body + `{"unterminated"`,
+	} {
+		invalid := httptest.NewRecorder()
+		invalidRequest := httptest.NewRequest(http.MethodPost, "/api/agent-plugin-secrets/redeem", strings.NewReader(invalidBody))
+		invalidRequest.Header.Set("X-Agent-Token", "agent-secret")
+		deps.handleAgentPluginSecretRedemption(invalid, invalidRequest)
+		if invalid.Code != http.StatusBadRequest || secrets.calls != 0 {
+			t.Fatalf("%s status=%d calls=%d", label, invalid.Code, secrets.calls)
+		}
+	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/agent-plugin-secrets/redeem", strings.NewReader(body))
 	request.Header.Set("X-Agent-Token", "agent-secret")

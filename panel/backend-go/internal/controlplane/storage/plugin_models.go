@@ -309,6 +309,7 @@ type PluginInstanceRow struct {
 	PendingSecretHandlesJSON  string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	RollbackConfigJSON        string    `gorm:"type:text;not null" json:"-"`
 	RollbackVersion           uint64    `gorm:"not null;default:0" json:"-"`
+	RollbackResourceGroupID   string    `gorm:"size:64;not null;default:''" json:"-"`
 	RollbackPolicyChainsJSON  string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	RollbackBindingsJSON      string    `gorm:"type:text;not null;default:'[]'" json:"-"`
 	RollbackSecretHandlesJSON string    `gorm:"type:text;not null;default:'[]'" json:"-"`
@@ -415,6 +416,7 @@ type PluginAgentRuntimeStatusRow struct {
 	PluginID        string     `gorm:"index;size:190;not null" json:"plugin_id"`
 	ResourceGroupID string     `gorm:"index;size:64;not null;default:''" json:"resource_group_id"`
 	TargetVersion   uint64     `gorm:"not null;default:0" json:"target_version"`
+	AuthoritySlot   string     `gorm:"index;size:16;not null;default:''" json:"-"`
 	Revision        int64      `gorm:"index;not null" json:"revision"`
 	GenerationID    string     `gorm:"size:64;not null" json:"generation_id"`
 	PackageDigest   string     `gorm:"size:64;not null" json:"package_digest"`

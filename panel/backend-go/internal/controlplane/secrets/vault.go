@@ -125,6 +125,18 @@ func NewVault(store Store, keyring Keyring) (*Vault, error) {
 	return &Vault{store: store, keyring: Keyring{CurrentKeyID: keyID, Keys: keys}, now: func() time.Time { return time.Now().UTC() }, revocations: &targetRevocationOwner{}}, nil
 }
 
+// WithStore scopes trusted Vault work to an existing storage transaction.
+// Key material and revocation ownership remain shared; plaintext is never
+// copied into durable state.
+func (v *Vault) WithStore(store Store) (*Vault, error) {
+	if v == nil || store == nil {
+		return nil, ErrKeyUnavailable
+	}
+	scoped := *v
+	scoped.store = store
+	return &scoped, nil
+}
+
 func (v *Vault) SetPluginCapabilityTargetRevoker(revoker interface{ RevokeTarget(pluginsdk.HostTarget) }) {
 	if v == nil || v.revocations == nil {
 		return
@@ -282,6 +294,19 @@ func (v *Vault) List(ctx context.Context, visibleGroupIDs []string) ([]Metadata,
 // Resolve is for trusted control-plane consumers. It never exposes plaintext
 // through HTTP metadata types and records only the secret fingerprint.
 func (v *Vault) Resolve(ctx context.Context, op OperationContext, id string) ([]byte, error) {
+	return v.resolve(ctx, op, id, 0, "", "")
+}
+
+// ResolvePluginReference additionally binds an opaque plugin handle to the
+// exact immutable Vault version, purpose, and plaintext digest.
+func (v *Vault) ResolvePluginReference(ctx context.Context, op OperationContext, id string, version uint64, purpose, digest string) ([]byte, error) {
+	if version == 0 || strings.TrimSpace(purpose) == "" || len(strings.TrimSpace(digest)) != sha256.Size*2 {
+		return nil, ErrInvalidSecret
+	}
+	return v.resolve(ctx, op, id, version, strings.TrimSpace(purpose), strings.ToLower(strings.TrimSpace(digest)))
+}
+
+func (v *Vault) resolve(ctx context.Context, op OperationContext, id string, expectedVersion uint64, expectedPurpose, expectedDigest string) ([]byte, error) {
 	row, err := v.store.GetSecret(ctx, id)
 	if err != nil {
 		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
@@ -296,6 +321,10 @@ func (v *Vault) Resolve(ctx context.Context, op OperationContext, id string) ([]
 		err := ErrInvalidSecret
 		return nil, errors.Join(err, v.audit(ctx, auditOp, "secret.use", id, "error", errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion}))
 	}
+	if expectedVersion != 0 && (row.ActiveVersion != expectedVersion || row.Purpose != expectedPurpose) {
+		err := ErrInvalidSecret
+		return nil, errors.Join(err, v.audit(ctx, auditOp, "secret.use", id, "error", errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion, "reference_mismatch": true}))
+	}
 	version, err := v.store.GetSecretVersion(ctx, id, row.ActiveVersion)
 	if err != nil {
 		return nil, errors.Join(err, v.audit(ctx, auditOp, "secret.use", id, "error", errorClass(err), nil))
@@ -303,6 +332,14 @@ func (v *Vault) Resolve(ctx context.Context, op OperationContext, id string) ([]
 	plaintext, err := v.decrypt(row, version)
 	if err != nil {
 		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion}))
+	}
+	if expectedDigest != "" {
+		digest := sha256.Sum256(plaintext)
+		if hex.EncodeToString(digest[:]) != expectedDigest {
+			clear(plaintext)
+			err := ErrInvalidSecret
+			return nil, errors.Join(err, v.audit(ctx, auditOp, "secret.use", id, "error", errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion, "digest_mismatch": true}))
+		}
 	}
 	err = v.transaction(ctx, func(tx *Vault) error {
 		if err := tx.store.MarkSecretUsed(ctx, id, v.now()); err != nil {

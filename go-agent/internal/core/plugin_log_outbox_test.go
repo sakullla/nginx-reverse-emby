@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -165,6 +167,145 @@ func TestFilesystemPluginLogOutboxSerializesConcurrentEnqueue(t *testing.T) {
 		if _, ok := seen[sequence]; !ok {
 			t.Fatalf("missing sequence %d", sequence)
 		}
+	}
+}
+
+func TestFilesystemPluginLogOutboxCompactsLongRunningReplayState(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cycles = 300
+	for index := 1; index <= cycles; index++ {
+		assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(index), []model.PluginRuntimeLogReport{pluginLogTestDraft(fmt.Sprintf("cycle-%d", index))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if assigned[0].Sequence != uint64(index) {
+			t.Fatalf("cycle %d sequence = %d", index, assigned[0].Sequence)
+		}
+		if err := store.AcknowledgePluginLogReports(assigned); err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal, err := os.ReadFile(filepath.Join(directory, pluginLogOutboxFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := bytes.Count(journal, []byte("\n")); records > maxPluginLogOutboxJournalRecords {
+		t.Fatalf("compacted journal retained %d records", records)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(cycles+1), []model.PluginRuntimeLogReport{pluginLogTestDraft("after checkpoint")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next[0].Sequence != cycles+1 {
+		t.Fatalf("post-checkpoint sequence = %d", next[0].Sequence)
+	}
+	restarted.mu.Lock()
+	state, err := restarted.loadPluginLogOutboxLocked()
+	restarted.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
+		t.Fatalf("replay identities are unbounded: batches=%d ACKs=%d", len(state.batches), len(state.acks))
+	}
+}
+
+func TestFilesystemPluginLogOutboxCheckpointCommitUncertaintyRestartsExactly(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchID := pluginLogTestBatchID(1)
+	assigned, err := store.EnqueuePluginLogReports(batchID, []model.PluginRuntimeLogReport{pluginLogTestDraft("pending")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	state, err := store.loadPluginLogOutboxLocked()
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	state.records = maxPluginLogOutboxJournalRecords + 1
+	store.syncDirectory = func(string) error { return errors.New("injected checkpoint directory sync failure") }
+	err = store.maybeCompactPluginLogOutboxLocked(&state)
+	store.mu.Unlock()
+	if !isFilesystemCommitUncertain(err) {
+		t.Fatalf("checkpoint error = %v", err)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := restarted.PendingPluginLogReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Sequence != assigned[0].Sequence {
+		t.Fatalf("checkpoint restart pending = %+v", pending)
+	}
+	retried, err := restarted.EnqueuePluginLogReports(batchID, []model.PluginRuntimeLogReport{pluginLogTestDraft("pending")})
+	if err != nil || len(retried) != 1 || retried[0].Sequence != 1 {
+		t.Fatalf("checkpoint retry = %+v, %v", retried, err)
+	}
+}
+
+func TestFilesystemPluginLogOutboxIgnoresPreRenameCheckpointCrashFile(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{pluginLogTestDraft("authoritative")}); err != nil {
+		t.Fatal(err)
+	}
+	crashFile, err := os.CreateTemp(directory, pluginLogOutboxFile+".checkpoint-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := crashFile.WriteString(`{"partial_checkpoint":`); err != nil {
+		t.Fatal(err)
+	}
+	if err := crashFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := restarted.PendingPluginLogReports()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Entries[0].Message != "authoritative" {
+		t.Fatalf("pre-rename crash file replaced journal: %+v", pending)
+	}
+}
+
+func TestPluginLogOutboxBoundsHistoricalFenceHighWater(t *testing.T) {
+	state := newPluginLogOutboxState()
+	for index := 1; index <= maxPluginLogSequenceHighWater+100; index++ {
+		draft := pluginLogTestDraft("historical")
+		draft.GenerationID = fmt.Sprintf("generation-%d", index)
+		assigned, _, err := state.enqueue(pluginLogTestBatchID(index), []model.PluginRuntimeLogReport{draft})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := state.acknowledge(assigned); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(state.sequence) > maxPluginLogSequenceHighWater || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
+		t.Fatalf("historical replay state is unbounded: sequences=%d batches=%d ACKs=%d", len(state.sequence), len(state.batches), len(state.acks))
 	}
 }
 

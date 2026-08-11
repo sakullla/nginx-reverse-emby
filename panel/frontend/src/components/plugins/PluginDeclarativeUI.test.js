@@ -39,7 +39,7 @@ describe('PluginDeclarativeUI', () => {
     expect(wrapper.emitted('dynamic')[0][0]).toEqual({ action: document.actions[1], target_id: 'relay-1', confirmed: true })
 	})
 
-  it('keeps declarative secrets write-only and distinguishes preserve, rotate, and clear', async () => {
+	it('keeps required declarative secrets write-only and allows only preserve or rotate', async () => {
     const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
     const password = wrapper.get('input[type="password"]')
     expect(password.element.value).toBe('')
@@ -50,10 +50,17 @@ describe('PluginDeclarativeUI', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
     expect(wrapper.emitted('submit')[1][0].secret_replacements).toEqual({ '/token': 'rotated-secret' })
     expect(wrapper.emitted('submit')[1][0].config).not.toHaveProperty('token')
-    await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
-    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-    expect(wrapper.emitted('submit')[2][0].secret_replacements).toEqual({ '/token': null })
-  })
+		expect(wrapper.findAll('button').some((button) => button.text() === '清除凭据')).toBe(false)
+	})
+
+	it('allows an existing optional secret to be explicitly cleared', async () => {
+		const optionalDocument = structuredClone(document)
+		optionalDocument.components[0].children[1].required = false
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: optionalDocument, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
+		await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
+		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+		expect(wrapper.emitted('submit')[0][0].secret_replacements).toEqual({ '/token': null })
+	})
 
 	it('keeps configuration hidden for resource writers while allowing dynamic actions', async () => {
 		vi.spyOn(window, 'confirm').mockReturnValue(true)

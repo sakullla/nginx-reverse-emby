@@ -60,13 +60,28 @@ func TestLegacyPluginSecretSlotMigrationScrubsRecursivePlaintext(t *testing.T) {
 	service.SetSecretVault(vault)
 	schema := map[string]any{"type": "object", "properties": map[string]any{"accounts": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"token": map[string]any{"type": "string", "writeOnly": true}}}}}}
 	instance := storage.PluginInstanceRow{ID: "legacy-instance", PluginID: "plugin", ResourceGroupID: "default"}
+	groups := map[string]string{"active": "group-a", "pending": "group-b", "rollback": "group-c"}
 	for _, slot := range []string{"active", "pending", "rollback"} {
-		public, handles, writes, err := service.migrateLegacyPluginSecretSlot(context.Background(), instance, slot, schema, `{"accounts":[{"token":"legacy-plaintext"}]}`, `[]`)
+		public, handles, writes, err := service.migrateLegacyPluginSecretSlot(context.Background(), instance, slot, groups[slot], schema, `{"accounts":[{"token":"legacy-plaintext"}]}`, `[]`)
 		if err != nil || strings.Contains(public, "legacy-plaintext") || strings.Contains(handles, "legacy-plaintext") || len(writes) != 1 || !strings.Contains(writes[0].Secret.Purpose, "/accounts/0/token") {
 			t.Fatalf("slot=%s public=%s handles=%s writes=%+v err=%v", slot, public, handles, writes, err)
 		}
 		if len(writes[0].Version.Ciphertext) == 0 || strings.Contains(string(writes[0].Version.Ciphertext), "legacy-plaintext") {
 			t.Fatalf("slot=%s did not envelope-encrypt plaintext", slot)
+		}
+		if writes[0].Secret.ResourceGroupID != groups[slot] {
+			t.Fatalf("slot=%s resource group=%q", slot, writes[0].Secret.ResourceGroupID)
+		}
+	}
+	if _, _, _, err := service.migrateLegacyPluginSecretSlot(context.Background(), instance, "pending", "", schema, `{"accounts":[{"token":"legacy-plaintext"}]}`, `[]`); err == nil {
+		t.Fatal("pending legacy plaintext migrated without immutable resource ownership")
+	}
+	if empty, err := legacyPluginSecretSlotEmpty("", `[]`); err != nil || !empty {
+		t.Fatalf("empty legacy slot was not accepted: empty=%t err=%v", empty, err)
+	}
+	for _, handles := range []string{`[{"pointer":"/accounts/0/token","id":"orphan"}]`, `{not-json`} {
+		if _, err := legacyPluginSecretSlotEmpty("", handles); err == nil {
+			t.Fatalf("empty legacy slot accepted orphaned handles %q", handles)
 		}
 	}
 }

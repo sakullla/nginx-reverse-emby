@@ -34,6 +34,15 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
+	if err := store.CreateResourceGroup(ctx, storage.ResourceGroupRow{ID: "other", Name: "Other", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-other", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "edge-other-binding", ResourceKind: "agent", ResourceID: "edge-other", ResourceGroupID: "other", UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	cacheRoot := pluginTestCacheRoot(t)
 	service := newPluginTestServiceAtRoot(t, store, cacheRoot)
 	vault, err := secrets.NewVault(store, secrets.Keyring{CurrentKeyID: "test", Keys: map[string][]byte{"test": []byte("0123456789abcdef0123456789abcdef")}})
@@ -89,6 +98,9 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if err := store.StagePluginAgentRuntimeStatuses(ctx, []storage.PluginAgentRuntimeStatusRow{status}); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.RecordPluginAgentRuntimeReport(ctx, storage.PluginGenerationReport{OperationID: status.OperationID, AgentID: status.AgentID, InstanceID: status.InstanceID, PluginID: status.PluginID, Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest, ArtifactDigest: status.ArtifactDigest, State: "active", Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
 	requestHandles := []storage.PluginGenerationSecretHandle{{ID: handles[0].ID, Version: handles[0].Version, Digest: handles[0].Digest, Purpose: handles[0].Purpose}}
 	redeemed, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles})
 	if err != nil || len(redeemed.Secrets) != 1 || redeemed.Secrets[0].Value != `"install-plaintext"` {
@@ -97,6 +109,58 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if _, err := service.RedeemAgentPluginSecrets(ctx, "other-agent", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
 		t.Fatal("cross-Agent secret redemption was accepted")
 	}
+	_, err = service.Disable(ctx, installed.PluginID, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"local": "drained"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
+		t.Fatal("disabled historical generation redeemed current credentials")
+	}
+	if _, err = service.Enable(ctx, installed.PluginID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, map[string]string{"local": "active"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
+		t.Fatal("re-enabled plugin accepted superseded generation redemption")
+	}
+	rotating, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "other", Targets: []string{"edge-other"}, Config: json.RawMessage(`{"mode":"block","token":null}`), SecretReplacements: map[string]json.RawMessage{"/token": json.RawMessage(`"rotated-concurrent"`)}, ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRotation := pendingApplyResult(t, store, installed.PluginID, rotating.ID, true, map[string]string{"edge-other": "active"})
+	start := make(chan struct{})
+	var concurrentRedeem PluginSecretRedemptionResponse
+	var concurrentRedeemErr, completeRotationErr error
+	var completedRotation storage.PluginInstanceRow
+	var race sync.WaitGroup
+	race.Add(2)
+	go func() {
+		defer race.Done()
+		<-start
+		concurrentRedeem, concurrentRedeemErr = service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles})
+	}()
+	go func() {
+		defer race.Done()
+		<-start
+		completedRotation, completeRotationErr = service.CompleteConfigure(ctx, applyRotation)
+	}()
+	close(start)
+	race.Wait()
+	if completeRotationErr != nil {
+		t.Fatal(completeRotationErr)
+	}
+	if concurrentRedeemErr == nil && (len(concurrentRedeem.Secrets) != 1 || concurrentRedeem.Secrets[0].Value != `"install-plaintext"`) {
+		t.Fatalf("concurrent redemption crossed rotation boundary: %+v", concurrentRedeem)
+	}
+	if _, err := service.RedeemAgentPluginSecrets(ctx, "local", PluginSecretRedemptionRequest{Revision: uint64(status.Revision), GenerationID: generationID, InstanceID: instance.ID, PluginID: installed.PluginID, OperationID: enableOperation.ID, PackageDigest: enabled.ActivePackageDigest, ArtifactDigest: artifactDigest, Handles: requestHandles}); err == nil {
+		t.Fatal("completed rebind/rotation accepted superseded credentials")
+	}
+	instance = completedRotation
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +179,7 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if err != nil || strings.Contains(string(detail.Instances[0].Config), "install-plaintext") || !detail.Instances[0].SecretFields[0].Present {
 		t.Fatalf("restart detail=%+v error=%v", detail, err)
 	}
-	preserved, err := restarted.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"block","token":null}`), ActorID: "admin"})
+	preserved, err := restarted.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "other", Targets: []string{"edge-other"}, Config: json.RawMessage(`{"mode":"block","token":null}`), ActorID: "admin"})
 	if err != nil || strings.Contains(preserved.PendingConfigJSON, "install-plaintext") || preserved.PendingSecretHandlesJSON != instance.SecretHandlesJSON {
 		t.Fatalf("preserved=%+v error=%v", preserved, err)
 	}

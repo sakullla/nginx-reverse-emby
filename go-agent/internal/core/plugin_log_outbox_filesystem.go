@@ -16,13 +16,24 @@ import (
 
 const pluginLogOutboxFile = "plugin-log-outbox.jsonl"
 
+const maxPluginLogOutboxJournalRecords = 512
+
+type pluginLogOutboxBatch struct {
+	ID      string                         `json:"id"`
+	Reports []model.PluginRuntimeLogReport `json:"reports"`
+}
+
 type pluginLogOutboxRecord struct {
-	Version    int                            `json:"version"`
-	Operation  string                         `json:"operation"`
-	BatchID    string                         `json:"batch_id"`
-	Reports    []model.PluginRuntimeLogReport `json:"reports,omitempty"`
-	Identities []string                       `json:"identities,omitempty"`
-	Digest     string                         `json:"digest"`
+	Version       int                            `json:"version"`
+	Operation     string                         `json:"operation"`
+	BatchID       string                         `json:"batch_id"`
+	Reports       []model.PluginRuntimeLogReport `json:"reports,omitempty"`
+	Identities    []string                       `json:"identities,omitempty"`
+	Sequences     map[string]uint64              `json:"sequences,omitempty"`
+	SequenceOrder []string                       `json:"sequence_order,omitempty"`
+	Batches       []pluginLogOutboxBatch         `json:"batches,omitempty"`
+	Acks          []string                       `json:"acks,omitempty"`
+	Digest        string                         `json:"digest"`
 }
 
 func (f *Filesystem) EnqueuePluginLogReports(batchID string, drafts []model.PluginRuntimeLogReport) ([]model.PluginRuntimeLogReport, error) {
@@ -49,6 +60,10 @@ func (f *Filesystem) EnqueuePluginLogReports(batchID string, drafts []model.Plug
 	}
 	record := pluginLogOutboxRecord{Version: 1, Operation: "enqueue", BatchID: batchID, Reports: assigned}
 	if err := f.appendPluginLogOutboxRecordLocked(record); err != nil {
+		return nil, err
+	}
+	state.records++
+	if err := f.maybeCompactPluginLogOutboxLocked(&state); err != nil {
 		return nil, err
 	}
 	return model.ClonePluginRuntimeLogReports(assigned), nil
@@ -78,7 +93,11 @@ func (f *Filesystem) AcknowledgePluginLogReports(sent []model.PluginRuntimeLogRe
 	if err != nil || !changed {
 		return err
 	}
-	return f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "ack", BatchID: ackID, Identities: identities})
+	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "ack", BatchID: ackID, Identities: identities}); err != nil {
+		return err
+	}
+	state.records++
+	return f.maybeCompactPluginLogOutboxLocked(&state)
 }
 
 func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
@@ -124,7 +143,15 @@ func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 		if err := validatePluginLogOutboxRecord(record); err != nil {
 			return state, fmt.Errorf("validate plugin log outbox record %d: %w", index+1, err)
 		}
+		state.records++
 		switch record.Operation {
+		case "checkpoint":
+			checkpoint, err := pluginLogOutboxStateFromCheckpoint(record)
+			if err != nil {
+				return state, fmt.Errorf("restore plugin log outbox checkpoint %d: %w", index+1, err)
+			}
+			checkpoint.records = 1
+			state = checkpoint
 		case "enqueue":
 			if existing, exists := state.batches[record.BatchID]; exists {
 				if !pluginLogReportsEqual(existing, record.Reports) {
@@ -143,15 +170,20 @@ func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 				if report.Sequence <= state.sequence[identity] {
 					return state, errors.New("plugin log outbox sequence is not monotonic")
 				}
+				if _, exists := state.sequence[identity]; !exists {
+					state.sequenceOrder = append(state.sequenceOrder, identity)
+				}
 				state.sequence[identity] = report.Sequence
 			}
 			state.pending = append(state.pending, model.ClonePluginRuntimeLogReports(record.Reports)...)
 			state.batches[record.BatchID] = model.ClonePluginRuntimeLogReports(record.Reports)
+			state.batchOrder = append(state.batchOrder, record.BatchID)
 		case "ack":
 			if _, exists := state.acks[record.BatchID]; exists {
 				continue
 			}
 			state.acks[record.BatchID] = struct{}{}
+			state.ackOrder = append(state.ackOrder, record.BatchID)
 			acked := make(map[string]struct{}, len(record.Identities))
 			for _, identity := range record.Identities {
 				acked[identity] = struct{}{}
@@ -164,6 +196,133 @@ func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 			}
 			state.pending = model.ClonePluginRuntimeLogReports(kept)
 		}
+		state.trimReplayHistory()
+	}
+	return state, nil
+}
+
+func (f *Filesystem) maybeCompactPluginLogOutboxLocked(state *pluginLogOutboxState) error {
+	if state == nil || state.records <= maxPluginLogOutboxJournalRecords {
+		return nil
+	}
+	state.trimReplayHistory()
+	record := pluginLogOutboxRecord{
+		Version: 1, Operation: "checkpoint", BatchID: pluginLogCheckpointID(*state),
+		Reports: model.ClonePluginRuntimeLogReports(state.pending), Sequences: make(map[string]uint64, len(state.sequence)),
+		Acks:          append([]string(nil), state.ackOrder...),
+		SequenceOrder: append([]string(nil), state.sequenceOrder...),
+	}
+	for identity, sequence := range state.sequence {
+		record.Sequences[identity] = sequence
+	}
+	for _, batchID := range state.batchOrder {
+		reports, ok := state.batches[batchID]
+		if !ok {
+			continue
+		}
+		record.Batches = append(record.Batches, pluginLogOutboxBatch{ID: batchID, Reports: model.ClonePluginRuntimeLogReports(reports)})
+	}
+	sealed, err := sealPluginLogOutboxRecord(record)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(f.root, pluginLogOutboxFile+".checkpoint-")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	removeTemp := func() { _ = os.Remove(tempPath) }
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		removeTemp()
+		return err
+	}
+	writeErr := writePluginLogOutboxAll(temp, append(sealed, '\n'))
+	if writeErr == nil {
+		writeErr = temp.Sync()
+	}
+	closeErr := temp.Close()
+	if writeErr != nil || closeErr != nil {
+		removeTemp()
+		return errors.Join(writeErr, closeErr)
+	}
+	if err := os.Rename(tempPath, filepath.Join(f.root, pluginLogOutboxFile)); err != nil {
+		removeTemp()
+		return err
+	}
+	state.records = 1
+	if f.syncDirectory != nil {
+		if err := f.syncDirectory(f.root); err != nil {
+			return &filesystemCommitUncertainError{err: err}
+		}
+	}
+	return nil
+}
+
+func pluginLogCheckpointID(state pluginLogOutboxState) string {
+	payload, _ := json.Marshal(struct {
+		Pending  []model.PluginRuntimeLogReport
+		Sequence map[string]uint64
+	}{state.pending, state.sequence})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
+}
+
+func pluginLogOutboxStateFromCheckpoint(record pluginLogOutboxRecord) (pluginLogOutboxState, error) {
+	state := newPluginLogOutboxState()
+	state.pending = model.ClonePluginRuntimeLogReports(record.Reports)
+	if len(record.SequenceOrder) != len(record.Sequences) {
+		return state, errors.New("checkpoint sequence order is invalid")
+	}
+	seenSequences := make(map[string]struct{}, len(record.SequenceOrder))
+	for _, identity := range record.SequenceOrder {
+		if _, ok := record.Sequences[identity]; !ok {
+			return state, errors.New("checkpoint sequence order is dangling")
+		}
+		if _, duplicate := seenSequences[identity]; duplicate {
+			return state, errors.New("checkpoint sequence order is duplicated")
+		}
+		seenSequences[identity] = struct{}{}
+		state.sequenceOrder = append(state.sequenceOrder, identity)
+	}
+	for identity, sequence := range record.Sequences {
+		if identity == "" || sequence == 0 {
+			return state, errors.New("checkpoint sequence is invalid")
+		}
+		state.sequence[identity] = sequence
+	}
+	for _, report := range state.pending {
+		if err := report.Validate(); err != nil || state.sequence[pluginRuntimeLogFenceIdentity(report)] < report.Sequence {
+			return state, errors.New("checkpoint pending report exceeds sequence high-water")
+		}
+	}
+	for _, batch := range record.Batches {
+		if !validPluginLogOutboxID(batch.ID) || len(batch.Reports) == 0 {
+			return state, errors.New("checkpoint replay batch is invalid")
+		}
+		if _, duplicate := state.batches[batch.ID]; duplicate {
+			return state, errors.New("checkpoint replay batch is duplicated")
+		}
+		for _, report := range batch.Reports {
+			if err := report.Validate(); err != nil {
+				return state, err
+			}
+		}
+		state.batches[batch.ID] = model.ClonePluginRuntimeLogReports(batch.Reports)
+		state.batchOrder = append(state.batchOrder, batch.ID)
+	}
+	for _, ackID := range record.Acks {
+		if !validPluginLogOutboxID(ackID) {
+			return state, errors.New("checkpoint ACK identity is invalid")
+		}
+		if _, duplicate := state.acks[ackID]; duplicate {
+			return state, errors.New("checkpoint ACK identity is duplicated")
+		}
+		state.acks[ackID] = struct{}{}
+		state.ackOrder = append(state.ackOrder, ackID)
+	}
+	if len(state.pending) > model.MaxPendingPluginLogReports || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities || len(state.sequence) > maxPluginLogSequenceHighWater {
+		return state, errors.New("checkpoint exceeds Agent bounds")
 	}
 	return state, nil
 }
@@ -209,7 +368,7 @@ func sealPluginLogOutboxRecord(record pluginLogOutboxRecord) ([]byte, error) {
 }
 
 func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
-	if record.Version != 1 || (record.Operation != "enqueue" && record.Operation != "ack") ||
+	if record.Version != 1 || (record.Operation != "enqueue" && record.Operation != "ack" && record.Operation != "checkpoint") ||
 		!validPluginLogOutboxID(record.BatchID) || !validPluginLogOutboxID(record.Digest) {
 		return errors.New("plugin log outbox record identity is invalid")
 	}
@@ -223,8 +382,9 @@ func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
 	if hex.EncodeToString(digest[:]) != want {
 		return errors.New("plugin log outbox record digest mismatch")
 	}
-	if (record.Operation == "enqueue" && (len(record.Reports) == 0 || len(record.Identities) != 0)) ||
-		(record.Operation == "ack" && (len(record.Reports) != 0 || len(record.Identities) == 0)) {
+	if (record.Operation == "enqueue" && (len(record.Reports) == 0 || len(record.Identities) != 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0)) ||
+		(record.Operation == "ack" && (len(record.Reports) != 0 || len(record.Identities) == 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0)) ||
+		(record.Operation == "checkpoint" && (len(record.Identities) != 0 || record.Sequences == nil || len(record.SequenceOrder) != len(record.Sequences) || len(record.Sequences) > maxPluginLogSequenceHighWater || len(record.Batches) > maxPluginLogReplayIdentities || len(record.Acks) > maxPluginLogReplayIdentities)) {
 		return errors.New("plugin log outbox record payload is invalid")
 	}
 	seen := make(map[string]struct{}, len(record.Identities))

@@ -369,7 +369,7 @@ func BuildPluginAgentRuntimeStatuses(agentID string, revision int64, generations
 		row := PluginAgentRuntimeStatusRow{
 			OperationID: generation.OperationID, AgentID: agentID, InstanceID: generation.InstanceID, PluginID: generation.PluginID,
 			Revision: revision, GenerationID: generation.ID, PackageDigest: generation.PackageDigest,
-			ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion, ResourceGroupID: generation.Target.ResourceGroupID, TargetVersion: generation.Target.Version,
+			ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion, ResourceGroupID: generation.Target.ResourceGroupID, TargetVersion: generation.Target.Version, AuthoritySlot: "pending",
 		}
 		if generation.Revision != revision || generation.Target.ID != agentID {
 			return nil, ErrPluginGenerationConflict
@@ -397,7 +397,11 @@ func (s *GormStore) StagePluginAgentRuntimeStatuses(ctx context.Context, rows []
 				return errors.New("plugin Agent runtime status must start applying or draining")
 			}
 			row.DetailsJSON, row.BudgetJSON = "{}", "{}"
+			row.AuthoritySlot = "pending"
 			row.UpdatedAt = time.Now().UTC()
+			if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("agent_id = ? AND instance_id = ? AND authority_slot = ? AND operation_id <> ?", row.AgentID, row.InstanceID, "pending", row.OperationID).Update("authority_slot", "retired").Error; err != nil {
+				return err
+			}
 			var current PluginAgentRuntimeStatusRow
 			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", row.OperationID, row.AgentID, row.InstanceID).First(&current).Error
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -471,8 +475,11 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
 			return err
 		}
-		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: report.AgentID, InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest, ResourceGroupID: result.ResourceGroupID, TargetVersion: result.TargetVersion}
+		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: report.AgentID, InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest, ResourceGroupID: result.ResourceGroupID, TargetVersion: result.TargetVersion, AuthoritySlot: result.AuthoritySlot}
 		if !samePluginAgentRuntimeFence(result, expected) {
+			return ErrPluginGenerationStale
+		}
+		if result.AuthoritySlot != "pending" && result.AuthoritySlot != "active" {
 			return ErrPluginGenerationStale
 		}
 		if report.Sequence < result.ReportSequence {
@@ -489,7 +496,19 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		if reportedAt.IsZero() {
 			reportedAt = time.Now().UTC()
 		}
-		updates := map[string]any{"state": report.State, "report_sequence": report.Sequence, "report_digest": digest, "error_code": report.ErrorCode, "details_json": string(details), "budget_json": string(budget), "reported_at": reportedAt, "updated_at": time.Now().UTC()}
+		authoritySlot := result.AuthoritySlot
+		if report.State == "active" {
+			if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("agent_id = ? AND instance_id = ? AND authority_slot = ? AND operation_id <> ?", report.AgentID, report.InstanceID, "active", report.OperationID).Update("authority_slot", "retired").Error; err != nil {
+				return err
+			}
+			authoritySlot = "active"
+		} else if report.State == "drained" {
+			if err := tx.Model(&PluginAgentRuntimeStatusRow{}).Where("agent_id = ? AND instance_id = ? AND authority_slot = ?", report.AgentID, report.InstanceID, "active").Update("authority_slot", "retired").Error; err != nil {
+				return err
+			}
+			authoritySlot = "retired"
+		}
+		updates := map[string]any{"state": report.State, "authority_slot": authoritySlot, "report_sequence": report.Sequence, "report_digest": digest, "error_code": report.ErrorCode, "details_json": string(details), "budget_json": string(budget), "reported_at": reportedAt, "updated_at": time.Now().UTC()}
 		if err := tx.Model(&result).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -536,16 +555,35 @@ func (s *GormStore) ListPluginAgentRuntimeStatuses(ctx context.Context, operatio
 
 func (s *GormStore) GetPluginAgentRuntimeStatusFence(ctx context.Context, operationID, agentID, instanceID string) (PluginAgentRuntimeStatusRow, bool, error) {
 	var row PluginAgentRuntimeStatusRow
-	err := s.db.WithContext(ctx).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", operationID, agentID, instanceID).First(&row).Error
+	db := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := db.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", operationID, agentID, instanceID).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return PluginAgentRuntimeStatusRow{}, false, nil
 	}
 	return row, err == nil, err
 }
 
+// PluginSecretRedemptionTransaction binds generation authorization, secret
+// resolution, usage audit, and lifecycle-state reads to one durable snapshot.
+func (s *GormStore) PluginSecretRedemptionTransaction(ctx context.Context, redeem func(*GormStore) error) error {
+	if redeem == nil {
+		return gorm.ErrInvalidDB
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		return redeem(s.transactionView(tx))
+	})
+}
+
 func (s *GormStore) GetPluginOperation(ctx context.Context, operationID string) (PluginOperationRow, bool, error) {
 	var row PluginOperationRow
-	err := s.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(operationID)).First(&row).Error
+	db := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := db.Where("id = ?", strings.TrimSpace(operationID)).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return PluginOperationRow{}, false, nil
 	}
@@ -560,7 +598,7 @@ func validatePluginAgentRuntimeStatusIdentity(row PluginAgentRuntimeStatusRow) e
 }
 
 func samePluginAgentRuntimeFence(left, right PluginAgentRuntimeStatusRow) bool {
-	return left.OperationID == right.OperationID && left.AgentID == right.AgentID && left.InstanceID == right.InstanceID && left.PluginID == right.PluginID && left.Revision == right.Revision && left.ConfigVersion == right.ConfigVersion && left.ResourceGroupID == right.ResourceGroupID && left.TargetVersion == right.TargetVersion && strings.EqualFold(left.GenerationID, right.GenerationID) && strings.EqualFold(left.PackageDigest, right.PackageDigest) && strings.EqualFold(left.ArtifactDigest, right.ArtifactDigest)
+	return left.OperationID == right.OperationID && left.AgentID == right.AgentID && left.InstanceID == right.InstanceID && left.PluginID == right.PluginID && left.Revision == right.Revision && left.ConfigVersion == right.ConfigVersion && left.ResourceGroupID == right.ResourceGroupID && left.TargetVersion == right.TargetVersion && left.AuthoritySlot == right.AuthoritySlot && strings.EqualFold(left.GenerationID, right.GenerationID) && strings.EqualFold(left.PackageDigest, right.PackageDigest) && strings.EqualFold(left.ArtifactDigest, right.ArtifactDigest)
 }
 
 func validPluginGenerationReportState(state string) bool {

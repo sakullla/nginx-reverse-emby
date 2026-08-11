@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -79,7 +80,7 @@ func (d Dependencies) handleAgentPluginSecretRedemption(w http.ResponseWriter, r
 		return
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
 		return
 	}

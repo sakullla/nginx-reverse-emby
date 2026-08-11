@@ -220,7 +220,7 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	}
 	report := PluginGenerationReport{OperationID: row.OperationID, AgentID: row.AgentID, InstanceID: row.InstanceID, PluginID: row.PluginID, Revision: row.Revision, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "active", Sequence: 1, SafeDetail: "runtime ready", Details: json.RawMessage(`{"ready":true}`), ReportedAt: time.Now().UTC()}
 	updated, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), report)
-	if err != nil || replayed || updated.State != "active" {
+	if err != nil || replayed || updated.State != "active" || updated.AuthoritySlot != "active" {
 		t.Fatalf("first report = %+v replay=%v err=%v", updated, replayed, err)
 	}
 	if !strings.Contains(updated.DetailsJSON, `"safe_detail":"runtime ready"`) {
@@ -250,5 +250,27 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 	stale.Sequence = 3
 	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), stale); !errors.Is(err, ErrPluginGenerationStale) {
 		t.Fatalf("stale report error = %v", err)
+	}
+	nextDigest := strings.Repeat("a", 64)
+	next := row
+	next.OperationID, next.Revision, next.GenerationID = "operation-next", 10, nextDigest
+	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []PluginAgentRuntimeStatusRow{next}); err != nil {
+		t.Fatal(err)
+	}
+	previous, found, err := store.GetPluginAgentRuntimeStatusFence(t.Context(), row.OperationID, row.AgentID, row.InstanceID)
+	if err != nil || !found || previous.AuthoritySlot != "active" {
+		t.Fatalf("active authority during prepare = %+v found=%v err=%v", previous, found, err)
+	}
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), PluginGenerationReport{OperationID: next.OperationID, AgentID: next.AgentID, InstanceID: next.InstanceID, PluginID: next.PluginID, Revision: next.Revision, GenerationID: next.GenerationID, PackageDigest: next.PackageDigest, ArtifactDigest: next.ArtifactDigest, State: "active", Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	previous, found, err = store.GetPluginAgentRuntimeStatusFence(t.Context(), row.OperationID, row.AgentID, row.InstanceID)
+	if err != nil || !found || previous.AuthoritySlot != "retired" {
+		t.Fatalf("superseded authority = %+v found=%v err=%v", previous, found, err)
+	}
+	postSupersede := postAck
+	postSupersede.Sequence = 3
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), postSupersede); !errors.Is(err, ErrPluginGenerationStale) {
+		t.Fatalf("superseded report error = %v", err)
 	}
 }

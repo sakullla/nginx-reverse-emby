@@ -120,6 +120,9 @@ func TestNewAppWiresGenerationFencedPluginSecretRedeemer(t *testing.T) {
 	if application.rpcHost == nil || !application.rpcHost.SecretRedemptionReady() {
 		t.Fatal("RPC host did not receive the sync client's plugin secret redeemer")
 	}
+	if application.rpcProcesses == nil || !application.rpcProcesses.RuntimeLogSinkReady() {
+		t.Fatal("RPC process supervisor did not receive the durable plugin log sink")
+	}
 }
 
 func TestNewEmbeddedWiresGenerationFencedPluginSecretRedeemer(t *testing.T) {
@@ -130,6 +133,9 @@ func TestNewEmbeddedWiresGenerationFencedPluginSecretRedeemer(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 	if application.PluginRPCHost() == nil || !application.PluginRPCHost().SecretRedemptionReady() {
 		t.Fatal("embedded RPC host did not receive the local plugin secret redeemer")
+	}
+	if application.rpcProcesses == nil || !application.rpcProcesses.RuntimeLogSinkReady() {
+		t.Fatal("embedded RPC process supervisor did not receive the durable plugin log sink")
 	}
 }
 
