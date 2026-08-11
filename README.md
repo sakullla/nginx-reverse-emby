@@ -83,7 +83,9 @@ environment:
 
 `API_TOKEN` 和 `MASTER_REGISTER_TOKEN` 都要用 32 位以上随机字符串，且互不相同。`PANEL_VAULT_MASTER_KEY` 不会写入数据库，必须在每次重启时提供同一值并单独安全备份。已存储 secret 后，丢失或直接替换 master key 会使既有 ciphertext 永久不可解；在提供受控重加密流程前，不要手动轮换 key 或 key ID。一键部署脚本会在 `.env` 中自动生成并持久保留该 key，且将文件权限收紧为 `0600`。
 
-官方插件市场默认读取镜像内的 `/opt/nginx-reverse-emby/official-market.lock`。需要使用其它策略文件时，可设置 `PANEL_OFFICIAL_MARKET_LOCK_FILE`；该值必须是容器内的绝对路径，并指向普通文件而非符号链接。该文件只固定官方仓库身份、可切换的 `ref_kind: branch`/`ref_name` 更新通道、支持的 SDK ABI 与官方签名根，不固定 commit、tag、版本或 `market.yaml` 摘要。每次刷新都会解析所配置 branch 的当前 full OID，复核刷新期间 ref 未移动，完整验证市场与包签名后才持久化该 OID 和摘要 provenance；切换 branch 会先使旧 catalog 失效并建立新的 source generation。文件缺失、身份或签名验证失败会拒绝刷新并保留当前快照。
+官方插件市场默认读取镜像内的 `/opt/nginx-reverse-emby/official-market.lock`，并跟踪 `sakullla/sakullla-plugins` 的 `official-market` 分支。需要使用其它策略文件时，可设置 `PANEL_OFFICIAL_MARKET_LOCK_FILE`；该值必须是容器内的绝对路径，并指向普通文件而非符号链接。该文件只固定官方仓库身份、可切换的 `ref_kind: branch`/`ref_name` 更新通道、支持的 SDK ABI 与官方签名根，不固定 commit、tag、版本或 `market.yaml` 摘要。每次刷新都会解析所配置 branch 的当前 full OID，复核刷新期间 ref 未移动，完整验证市场与包签名后才持久化该 OID 和摘要 provenance；切换 branch 会先使旧 catalog 失效并建立新的 source generation。文件缺失、身份或签名验证失败会拒绝刷新并保留当前快照。
+
+官方发布物只接受一套 v1 契约：`market.yaml` 使用 `schema_version`、`commit`、`sdk_abi` 与 `packages`；每个包使用完整的 `plugin.yaml` runtime manifest、`package.files.json` 和 `signature.json`。`signature.json` 必须由 `sakullla-official-root-2026` 对 `payload_sha256` 解码后的原始 32-byte SHA-256 做 Ed25519 签名。旧的 `package.sha256`、`package.sig` 或对 ASCII hex digest 的签名不会作为官方兼容格式接受。包内 manifest、文件清单、任一 payload 文件、签名或完整 package digest 不一致时，整个市场刷新失败并保留上一个可用快照。
 
 启动：
 

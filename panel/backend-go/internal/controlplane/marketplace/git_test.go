@@ -11,6 +11,7 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
@@ -172,5 +173,52 @@ func TestBudgetedCheckoutRejectsBlobBeforeWritingDestination(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(destination); err != nil && !os.IsNotExist(err) || err == nil && len(entries) != 0 {
 		t.Fatalf("destination peak was not bounded before checkout: %v, %v", entries, err)
+	}
+}
+
+func TestBudgetedCheckoutAcceptsExecutableGitBlobButWritesNonExecutable(t *testing.T) {
+	repository, err := git.PlainInit(t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := repository.Storer.NewEncodedObject()
+	blob.SetType(plumbing.BlobObject)
+	writer, err := blob.Writer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("native executable fixture")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	blobHash, err := repository.Storer.SetEncodedObject(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeValue := &object.Tree{Entries: []object.TreeEntry{{Name: "plugin", Mode: filemode.Executable, Hash: blobHash}}}
+	treeObject := repository.Storer.NewEncodedObject()
+	if err := treeValue.Encode(treeObject); err != nil {
+		t.Fatal(err)
+	}
+	treeHash, err := repository.Storer.SetEncodedObject(treeObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := repository.TreeObject(treeHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "checkout")
+	if err := checkoutBudgetedTree(context.Background(), tree, destination, 10, 1024); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(destination, "plugin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		t.Fatalf("verified checkout artifact is executable: %s", info.Mode())
 	}
 }

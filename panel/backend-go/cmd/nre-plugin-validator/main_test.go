@@ -90,7 +90,7 @@ func TestValidatorCLIMarketFlagDefaultsOfficial(t *testing.T) {
 	marketPath := filepath.Join(root, plugins.MarketManifestFile)
 	writeValidatorFixture(t, root, plugins.MarketManifestFile, "schema_version: 1\nname: Official\nplugins: []\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--market", marketPath}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"valid":true`) {
+	if code := run([]string{"--market", marketPath}, &stdout, &stderr); code != 1 || !strings.Contains(stdout.String(), `"valid":false`) || !strings.Contains(stdout.String(), `"market_schema"`) {
 		t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
 }

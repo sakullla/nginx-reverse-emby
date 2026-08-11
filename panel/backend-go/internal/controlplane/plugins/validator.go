@@ -36,7 +36,7 @@ const MarketManifestFile = "market.yaml"
 
 const OfficialSignatureKeyID = "sakullla-official-root-2026"
 
-const officialSignaturePublicKeyHex = "743736b23bc694e094edb0ebea98b10634d922ee053d5a079752ceae13f438af"
+const officialSignaturePublicKeyHex = "9edfaf2a05f9eb3aeff6e9c68f587f8c330a497eadd6f80d4dacb21eb9ff47ce"
 
 const (
 	DefaultMaxMarketFiles      = 16384
@@ -320,7 +320,29 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 	if err != nil {
 		return ValidatedPackage{}, err
 	}
+	return v.validatePackageContent(root, sourceRoot, expected, stats, v.validateLegacyPackageDigest, v.verifyPackageSignature)
+}
 
+func (v *Validator) validateLegacyPackageDigest(root string, expected PackageExpectation) (string, error) {
+	digest, err := ComputePackageDigest(root)
+	if err != nil {
+		return "", err
+	}
+	declaredData, err := readBoundedFile(filepath.Join(root, PackageDigestFile), 4096)
+	if err != nil {
+		return "", validationError("checksum_missing", PackageDigestFile, err)
+	}
+	declared := strings.ToLower(strings.TrimSpace(string(declaredData)))
+	if !hexDigestPattern.MatchString(declared) || !strings.EqualFold(digest, declared) {
+		return "", validationError("checksum_mismatch", PackageDigestFile, fmt.Errorf("declared %q does not match computed digest", declared))
+	}
+	if expected.SHA256 != "" && !strings.EqualFold(strings.TrimSpace(expected.SHA256), digest) {
+		return "", validationError("index_checksum_mismatch", PackageDigestFile, fmt.Errorf("market digest does not match package"))
+	}
+	return digest, nil
+}
+
+func (v *Validator) validatePackageContent(root, sourceRoot string, expected PackageExpectation, stats packageStats, packageDigest func(string, PackageExpectation) (string, error), verifySignature func(string, Manifest, string, string) error) (ValidatedPackage, error) {
 	manifestPath := filepath.Join(root, PackageManifestFile)
 	manifestData, err := readBoundedFile(manifestPath, v.options.MaxFileBytes)
 	if err != nil {
@@ -380,23 +402,12 @@ func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected Pa
 	}
 	v.runSnapshotHook("schema", sourceRoot, root)
 
-	digest, err := ComputePackageDigest(root)
+	digest, err := packageDigest(root, expected)
 	if err != nil {
 		return ValidatedPackage{}, err
 	}
-	declaredData, err := readBoundedFile(filepath.Join(root, PackageDigestFile), 4096)
-	if err != nil {
-		return ValidatedPackage{}, validationError("checksum_missing", PackageDigestFile, err)
-	}
-	declared := strings.ToLower(strings.TrimSpace(string(declaredData)))
-	if !hexDigestPattern.MatchString(declared) || !strings.EqualFold(digest, declared) {
-		return ValidatedPackage{}, validationError("checksum_mismatch", PackageDigestFile, fmt.Errorf("declared %q does not match computed digest", declared))
-	}
-	if expected.SHA256 != "" && !strings.EqualFold(strings.TrimSpace(expected.SHA256), digest) {
-		return ValidatedPackage{}, validationError("index_checksum_mismatch", PackageDigestFile, fmt.Errorf("market digest does not match package"))
-	}
 	v.runSnapshotHook("digest", sourceRoot, root)
-	if err := v.verifyPackageSignature(root, manifest, digest, expected.SignatureKeyID); err != nil {
+	if err := verifySignature(root, manifest, digest, expected.SignatureKeyID); err != nil {
 		return ValidatedPackage{}, err
 	}
 	v.runSnapshotHook("signature", sourceRoot, root)
@@ -495,6 +506,9 @@ func (v *Validator) validateMarketSnapshot(root, sourceRoot string, officialSour
 		}
 	}
 	v.runSnapshotHook("market_manifest", sourceRoot, root)
+	if officialSource {
+		return v.validateOfficialMarketV1Snapshot(root, sourceRoot, data)
+	}
 	var manifest MarketManifest
 	if err := decodeStrictYAML(data, &manifest); err != nil {
 		return ValidatedMarket{}, validationError("market_schema", MarketManifestFile, err)
@@ -781,7 +795,7 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	if err := validateCleanup(manifest.Cleanup); err != nil {
 		return validationError("cleanup", PackageManifestFile, err)
 	}
-	paths := []string{manifest.ConfigSchema, PackageSignatureFile}
+	paths := []string{manifest.ConfigSchema, manifest.Signature.File}
 	if manifest.UISchema != "" {
 		if manifest.UISchema != UISchemaFile && path.Ext(filepath.ToSlash(manifest.UISchema)) != ".json" {
 			return validationError("ui_schema", manifest.UISchema, errors.New("UI schema must be a declarative JSON document"))

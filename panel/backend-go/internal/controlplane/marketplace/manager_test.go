@@ -169,7 +169,7 @@ func TestManagerUsesPersistedSourceBoundSigner(t *testing.T) {
 	}
 }
 
-func TestProductionOfficialRefreshResolvesCurrentBranchAndInvalidPolicyKeepsCurrent(t *testing.T) {
+func TestProductionOfficialRefreshResolvesCurrentBranchAndRejectsInvalidSignedTree(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{OfficialSourceID: {ID: "stable", SourceID: OfficialSourceID, Commit: "stable-commit"}}}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
@@ -200,28 +200,23 @@ func TestProductionOfficialRefreshResolvesCurrentBranchAndInvalidPolicyKeepsCurr
 	lockYAML := func(branch string) string {
 		return fmt.Sprintf("schema_version: 1\nrepository: %s\nref_kind: branch\nref_name: %s\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: %s\n", lock.Repository, branch, lock.SignatureKeyID)
 	}
-	if err := os.WriteFile(lockPath, []byte(lockYAML("main")), 0o644); err != nil {
+	if err := os.WriteFile(lockPath, []byte(lockYAML("official-market")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for index, wantCommit := range fetcher.commits {
+	for index := range fetcher.commits {
 		if index == 1 {
 			if err := os.WriteFile(lockPath, []byte(lockYAML("release")), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
-		snapshot, err := manager.Refresh(ctx, OfficialSource(), OperationActor{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if snapshot.Commit != wantCommit {
-			t.Fatalf("refresh %d commit = %q, want %q", index, snapshot.Commit, wantCommit)
-		}
-		wantBranch := []string{"main", "release"}[index]
-		if snapshot.RefName != wantBranch {
-			t.Fatalf("refresh %d branch = %q, want %q", index, snapshot.RefName, wantBranch)
+		if _, err := manager.Refresh(ctx, OfficialSource(), OperationActor{}); err == nil {
+			t.Fatalf("legacy official tree %d was accepted", index)
 		}
 	}
-	if fetcher.normalCalls != len(fetcher.commits) || fetcher.lastOID != fetcher.commits[len(fetcher.commits)-1] || !slices.Equal(fetcher.refs, []string{"main", "release"}) {
+	if current, _, _ := repository.CurrentSnapshot(ctx, OfficialSourceID); current.ID != "stable" {
+		t.Fatalf("invalid official refresh replaced current snapshot: %+v", current)
+	}
+	if fetcher.normalCalls != len(fetcher.commits) || fetcher.lastOID != fetcher.commits[len(fetcher.commits)-1] || !slices.Equal(fetcher.refs, []string{"official-market", "release"}) {
 		t.Fatalf("official refresh did not resolve each current branch head: fetcher=%+v", fetcher)
 	}
 }

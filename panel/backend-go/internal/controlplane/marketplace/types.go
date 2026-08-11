@@ -103,7 +103,7 @@ type SignatureTrust struct {
 }
 
 func OfficialSource() Source {
-	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Purpose: SourcePurposeMarket, Name: "Sakullla Official", URL: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "main", ConfigRevision: 1, RefreshInterval: OfficialRefreshInterval}
+	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Purpose: SourcePurposeMarket, Name: "Sakullla Official", URL: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "official-market", ConfigRevision: 1, RefreshInterval: OfficialRefreshInterval}
 }
 
 func OfficialSourceForBranch(branch string, revision uint64) (Source, error) {

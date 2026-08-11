@@ -32,7 +32,7 @@ func TestOfficialLockRequiresRepositoryAndTrustIdentity(t *testing.T) {
 }
 
 func TestOfficialLockSchemaRejectsVersionPins(t *testing.T) {
-	base := "schema_version: 1\nrepository: " + OfficialSourceURL + "\nref_kind: branch\nref_name: main\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: " + plugins.OfficialSignatureKeyID + "\n"
+	base := "schema_version: 1\nrepository: " + OfficialSourceURL + "\nref_kind: branch\nref_name: official-market\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: " + plugins.OfficialSignatureKeyID + "\n"
 	for name, field := range map[string]string{
 		"commit":        "commit: " + strings.Repeat("a", 40) + "\n",
 		"market_digest": "market_sha256: " + strings.Repeat("b", 64) + "\n",
@@ -73,12 +73,12 @@ func TestRepositoryOfficialMarketPolicyTracksMovableBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock.RefKind != GitRefKindBranch || lock.RefName != "main" {
+	if lock.RefKind != GitRefKindBranch || lock.RefName != "official-market" {
 		t.Fatalf("repository official market policy = %+v", lock)
 	}
 }
 
-func TestOfficialLockCheckoutAcceptsChangingFullOIDAndRequiresCleanSignedTree(t *testing.T) {
+func TestOfficialLockCheckoutRequiresFullOIDBeforeValidatingSignedTree(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, plugins.MarketManifestFile), []byte("schema_version: 1\nname: Official\nplugins: []\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -86,25 +86,19 @@ func TestOfficialLockCheckoutAcceptsChangingFullOIDAndRequiresCleanSignedTree(t 
 	lock := validOfficialLock()
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
 	for _, oid := range []string{strings.Repeat("a", 40), strings.Repeat("b", 40)} {
-		validated, err := ValidateOfficialLockCheckout(lock, root, oid, validator)
-		if err != nil || len(validated.Packages) != 0 {
-			t.Fatalf("official checkout %s validation: %+v, %v", oid, validated, err)
+		_, err := ValidateOfficialLockCheckout(lock, root, oid, validator)
+		if err == nil || strings.Contains(err.Error(), "requires a non-zero lowercase full Git OID") {
+			t.Fatalf("full OID %s did not reach signed market validation: %v", oid, err)
 		}
 	}
 	if _, err := ValidateOfficialLockCheckout(lock, root, "main", validator); err == nil {
 		t.Fatal("non-OID official checkout provenance was accepted")
 	}
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ValidateOfficialLockCheckout(lock, root, strings.Repeat("c", 40), validator); err == nil {
-		t.Fatal("checkout with Git metadata was accepted")
-	}
 }
 
 func validOfficialLock() OfficialMarketLock {
 	return OfficialMarketLock{
-		SchemaVersion: 1, Repository: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "main",
+		SchemaVersion: 1, Repository: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "official-market",
 		SDKABIs: []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}, SignatureKeyID: plugins.OfficialSignatureKeyID,
 	}
 }

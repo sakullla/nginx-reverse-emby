@@ -5,6 +5,6 @@
 schema_version: 1
 repository: https://github.com/sakullla/sakullla-plugins.git
 ref_kind: branch
-ref_name: main
+ref_name: official-market
 sdk_abis: [nre:policy/v1, nre:rpc/v1]
 signature_key_id: sakullla-official-root-2026

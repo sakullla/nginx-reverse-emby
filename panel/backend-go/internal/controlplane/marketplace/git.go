@@ -324,7 +324,7 @@ func checkoutBudgetedTree(ctx context.Context, tree *object.Tree, destination st
 	total := int64(0)
 	iter := tree.Files()
 	err := iter.ForEach(func(file *object.File) error {
-		if file.Mode != filemode.Regular && file.Mode != filemode.Deprecated {
+		if file.Mode != filemode.Regular && file.Mode != filemode.Deprecated && file.Mode != filemode.Executable {
 			return fmt.Errorf("marketplace Git tree contains unsupported mode %s", file.Mode)
 		}
 		if len(files)+1 > maxFiles || file.Blob.Size < 0 || total+file.Blob.Size > maxBytes {
@@ -356,6 +356,9 @@ func checkoutBudgetedTree(ctx context.Context, tree *object.Tree, destination st
 		if err != nil {
 			return err
 		}
+		// Checkout content is always non-executable. The signed package manifest
+		// retains the canonical 0755 artifact role, and the runtime installer only
+		// restores execution permission after platform and digest verification.
 		writer, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
 			_ = reader.Close()

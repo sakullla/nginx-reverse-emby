@@ -85,6 +85,9 @@ func TestSignatureCanonicalKeyIDAndExactTrustValidator(t *testing.T) {
 	if official.KeyID != OfficialSignatureKeyID || len(official.PublicKey) != ed25519.PublicKeySize {
 		t.Fatalf("official signer identity = %+v", official)
 	}
+	if got := hex.EncodeToString(official.PublicKey); got != "9edfaf2a05f9eb3aeff6e9c68f587f8c330a497eadd6f80d4dacb21eb9ff47ce" {
+		t.Fatalf("official signer public key = %s", got)
+	}
 	official.PublicKey[0] ^= 0xff
 	if bytes.Equal(official.PublicKey, OfficialSignerIdentity().PublicKey) {
 		t.Fatal("official signer identity returned mutable shared key storage")
@@ -892,7 +895,7 @@ func TestRuntimeMarketSignatureAndCapabilityContract(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Official\nplugins:\n"+baseEntry)
 	_, err := newTestValidator(ValidatorOptions{}).ValidateMarket(root, true)
-	assertValidationCode(t, err, "signature_identity")
+	assertValidationCode(t, err, "market_schema")
 
 	root = t.TempDir()
 	entryWithoutCapability := strings.Replace(baseEntry, "    capabilities: [http.request]\n", "", 1)

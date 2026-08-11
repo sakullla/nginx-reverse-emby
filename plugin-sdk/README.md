@@ -67,12 +67,19 @@ older action guests before cutover. Under that feature, `PlanAction` requests
 bounded typed operations against opaque handles, and `InvokeAction` receives
 only bounded results—never raw resource identity, sockets, or credentials.
 
-Packages use the repository's single `plugin.yaml`/`market.yaml` schema. Their
-canonical digest excludes `package.sha256` and `package.sig`, includes each
-declared artifact mode, and the digest text is signed by a trusted Ed25519 key.
-WASM policy packages must declare `runtime.policy_kind` as exactly `ip`,
-`rate`, or `waf`; RPC packages must omit it. This is part of the current single
-manifest schema, not a parallel compatibility version.
+`go.Manifest` and `go/schema/plugin-manifest-v1.schema.json` are the canonical
+structural `plugin.yaml v1` contract for publishers and hosts. Each package
+still owns the `config.schema.json` referenced by its manifest and may provide
+the host-rendered `ui.schema.json`; plugins do not define alternate manifest
+schemas. WASM policy packages declare `runtime.policy_kind` as exactly `ip`,
+`rate`, or `waf`; RPC packages omit it. Host validation adds runtime artifact,
+budget, permission, cleanup, and official signing-profile semantics to the
+shared structural schema.
+
+Official packages use `package.files.json` plus `signature.json`. The Ed25519
+signature covers the raw 32-byte value decoded from `payload_sha256`, never its
+ASCII hexadecimal spelling. `package.sha256` and `package.sig` remain only in
+the legacy custom-source package path and are not an alternate official format.
 RPC files remain non-executable in the verified cache and gain execution
 permission only after a target host re-verifies and copies one platform
 artifact into an isolated runtime directory.

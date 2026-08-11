@@ -29,6 +29,32 @@ execution overlap on developer and CI machines. Tests that own isolated
 temporary stores use `t.Parallel`; process environment, fixed-port, and shared
 router-state tests remain serial.
 
+## Official Plugin Market
+
+The official-market unit suite is offline. It creates nine canonical packages
+under `t.TempDir()`, signs their raw 32-byte payload digests with an ephemeral
+Ed25519 fixture key, and verifies the market, complete package digests, file
+manifests, and tamper rejection without cloning or contacting GitHub:
+
+```sh
+cd panel/backend-go
+go test ./internal/controlplane/plugins/... -run 'OfficialMarketV1' -count=1
+go test ./internal/controlplane/marketplace/... -count=1
+```
+
+The release acceptance command is intentionally separate and requires network
+access. It resolves the current `official-market` branch through the repository
+root policy file, validates the isolated checkout, and reports the exact Git OID
+and package count that were consumed:
+
+```sh
+cd panel/backend-go
+go run ./cmd/nre-plugin-validator --official-lock ../../official-market.lock
+```
+
+Run that command only as an explicit release/integration gate. Ordinary unit and
+short test tiers never fetch the official repository.
+
 ## Internal PKI Multi-Process E2E
 
 The internal PKI harness is a third, standalone Go module. Its canonical entry point is identical on Windows and Linux and does not require a shell, WSL, Docker, or the local ACME fixture:
