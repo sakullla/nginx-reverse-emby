@@ -23,6 +23,21 @@ export const accessNavigation = Object.freeze([
   { id: 'audit', label: '审计', permission: 'audit.read' }
 ])
 
+export function filterPluginDetailForActor(detail, currentActor) {
+  if (!detail || typeof detail !== 'object') return null
+  const permissions = new Set(currentActor?.permissions || [])
+  if (permissions.has('*')) return detail
+  const visibleGroups = new Set(currentActor?.visible_resource_groups || [])
+  const instances = (detail.instances || []).filter((instance) => visibleGroups.has(instance.resource_group_id))
+  if (!instances.length) return null
+  const instanceIDs = new Set(instances.map((instance) => instance.id))
+  return {
+    ...detail,
+    instances,
+    agent_statuses: (detail.agent_statuses || []).filter((status) => instanceIDs.has(status.instance_id))
+  }
+}
+
 export function useAccessControl() {
   const permissionSet = computed(() => new Set(actor.value?.permissions || []))
   const can = (permission) => permissionSet.value.has('*') || permissionSet.value.has(permission)

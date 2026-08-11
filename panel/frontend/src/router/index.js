@@ -74,10 +74,28 @@ const routes = [
         meta: { title: '版本策略' }
       },
       {
+        path: 'plugins',
+        name: 'plugins',
+        component: () => import('../pages/plugins/PluginsPage.vue'),
+        meta: { title: '已安装插件' }
+      },
+      {
+        path: 'plugins/marketplace',
+        name: 'plugin-marketplace',
+        component: () => import('../pages/plugins/PluginMarketplacePage.vue'),
+        meta: { title: '插件市场' }
+      },
+      {
         path: 'plugins/repositories',
         name: 'plugin-repositories',
         component: () => import('../pages/plugins/PluginRepositoriesPage.vue'),
         meta: { title: '插件仓库' }
+      },
+      {
+        path: 'plugins/:id',
+        name: 'plugin-detail',
+        component: () => import('../pages/plugins/PluginDetailPage.vue'),
+        meta: { title: '插件详情' }
       },
 	  {
 		path: 'settings',

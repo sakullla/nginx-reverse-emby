@@ -123,6 +123,13 @@ const navItems = [
       { label: '证书中心', to: '/certs', icon: icons.lock, activeMatch: (name) => name === 'certs' || name === 'pki' },
       { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
       { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
+    ],
+  },
+  {
+    type: 'group', label: '插件', icon: icons.plugin,
+    children: [
+      { label: '插件市场', to: '/plugins/marketplace', icon: icons.plugin, activeMatch: (name) => name === 'plugin-marketplace' },
+      { label: '已安装插件', to: '/plugins', icon: icons.plugin, activeMatch: (name) => name === 'plugins' || name === 'plugin-detail' },
       { label: '插件仓库', to: '/plugins/repositories', icon: icons.plugin, activeMatch: (name) => name === 'plugin-repositories' },
     ],
   },

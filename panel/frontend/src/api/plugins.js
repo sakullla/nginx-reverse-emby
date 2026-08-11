@@ -1,0 +1,53 @@
+import { api } from './client'
+import { redactPluginData } from './pluginSecurity'
+
+const pluginRoot = '/plugins'
+
+function identity(value, label) {
+  const result = String(value || '').trim()
+  if (!result) throw new Error(`${label} is required`)
+  return encodeURIComponent(result)
+}
+
+function pluginPath(pluginID, suffix = '') {
+  return `${pluginRoot}/${identity(pluginID, 'plugin id')}${suffix}`
+}
+
+export async function fetchPlugins() {
+  const { data } = await api.get(pluginRoot)
+  return Array.isArray(data?.plugins) ? data.plugins.map((item) => redactPluginData(item)) : []
+}
+
+export async function fetchPluginDetail(pluginID) {
+  const { data } = await api.get(pluginPath(pluginID))
+  return redactPluginData(data)
+}
+
+export async function fetchPluginOperations(pluginID) {
+  const { data } = await api.get(pluginPath(pluginID, '/operations'))
+  return Array.isArray(data?.operations) ? data.operations.map((item) => redactPluginData(item)) : []
+}
+
+export async function fetchPluginPackageDetail(selection) {
+  const { data } = await api.post(`${pluginRoot}/package-detail`, selection)
+  return redactPluginData(data?.package || {})
+}
+
+export async function installPlugin(selection) {
+  const { data } = await api.post(`${pluginRoot}/install`, selection)
+  return redactPluginData(data?.plugin || {})
+}
+
+export async function runPluginAction(pluginID, action, payload = {}) {
+  const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall'])
+  if (!allowed.has(action)) throw new Error('plugin action is invalid')
+  const { data } = await api.post(pluginPath(pluginID, `/${action}`), payload)
+  return redactPluginData(data?.result)
+}
+
+export const enablePlugin = (pluginID) => runPluginAction(pluginID, 'enable')
+export const disablePlugin = (pluginID) => runPluginAction(pluginID, 'disable')
+export const rollbackPlugin = (pluginID, confirmedPermissions = []) => runPluginAction(pluginID, 'rollback', { confirmed_permissions: confirmedPermissions })
+export const configurePlugin = (pluginID, payload) => runPluginAction(pluginID, 'configure', payload)
+export const upgradePlugin = (pluginID, selection) => runPluginAction(pluginID, 'upgrade', selection)
+export const uninstallPlugin = (pluginID) => runPluginAction(pluginID, 'uninstall', { drained: true })
