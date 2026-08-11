@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
@@ -938,11 +939,11 @@ func TestGenerationViewDrainedWriteFailureRetriesOutsideDestroyOnce(t *testing.T
 		t.Fatal(err)
 	}
 	active, _ := prepared.Publish()
-	if err := active.Destroy(t.Context()); err == nil {
-		t.Fatal("GenerationView hid drained write failure")
+	if err := active.Destroy(t.Context()); err != nil {
+		t.Fatalf("GenerationView treated managed drained write failure as terminal: %v", err)
 	}
-	if err := active.Destroy(t.Context()); err == nil {
-		t.Fatal("GenerationView did not cache its first Destroy failure")
+	if err := active.Destroy(t.Context()); err != nil {
+		t.Fatalf("GenerationView cached a managed persistence error: %v", err)
 	}
 	if _, err := store.PendingPluginLogReports(); err != nil {
 		t.Fatalf("store-owned drained retry failed: %v", err)
@@ -956,6 +957,94 @@ func TestGenerationViewDrainedWriteFailureRetriesOutsideDestroyOnce(t *testing.T
 	if intent, ok := state.retireIntents[intentID]; !ok || !intent.Drained {
 		t.Fatalf("drained retry state = %+v", state.retireIntents)
 	}
+}
+
+func TestGenerationDrainReleasesViewWhenStoreOwnsRetirementPersistenceRetry(t *testing.T) {
+	for _, failure := range []string{"load", "drained_write"} {
+		t.Run(failure, func(t *testing.T) {
+			store, err := NewFilesystem(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft := pluginLogTestDraft("managed generation drain")
+			intentID := strings.Repeat("7", 64)
+			if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+				t.Fatal(err)
+			}
+			failed := false
+			switch failure {
+			case "load":
+				store.pluginLogLoadFailure = func() error {
+					if !failed {
+						failed = true
+						return errors.New("injected retirement journal load failure")
+					}
+					return nil
+				}
+			case "drained_write":
+				store.pluginLogAppendFailure = func(operation string) error {
+					if operation == "retire_intent_drained" && !failed {
+						failed = true
+						return errors.New("injected retirement drained write failure")
+					}
+					return nil
+				}
+			}
+			registry := module.NewRegistry()
+			if err := registry.Register(revisionRetirementModule{store: store, intentID: intentID}); err != nil {
+				t.Fatal(err)
+			}
+			manager := NewManagedGenerationManager(registry, NewGenerationDrain(nil), time.Second)
+			previous := model.Snapshot{}
+			current := revisionSnapshot(7)
+			first, err := manager.Apply(t.Context(), previous, current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := revisionSnapshot(8)
+			if _, err := manager.Apply(t.Context(), current, next); err != nil {
+				t.Fatalf("rollout with managed retirement failure: %v", err)
+			}
+			waitForRevisionGenerationReleased(t, manager.DrainController(), first.Active.ID())
+			if _, err := store.PendingPluginLogReports(); err != nil {
+				t.Fatalf("store retirement retry: %v", err)
+			}
+			store.mu.Lock()
+			state, err := store.loadPluginLogOutboxLocked()
+			store.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if intent, ok := state.retireIntents[intentID]; !ok || !intent.Drained {
+				t.Fatalf("store retry state = %+v", state.retireIntents)
+			}
+			for revision := int64(9); revision <= 13; revision++ {
+				prior := next
+				next = revisionSnapshot(revision)
+				cutover, err := manager.Apply(t.Context(), prior, next)
+				if err != nil {
+					t.Fatalf("rollout revision %d hit retained generation limit: %v", revision, err)
+				}
+				if cutover.Previous != nil {
+					waitForRevisionGenerationReleased(t, manager.DrainController(), cutover.Previous.ID())
+				}
+			}
+		})
+	}
+}
+
+func waitForRevisionGenerationReleased(t *testing.T, controller *generation.DrainController, generationID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, status := range controller.Snapshot().Generations {
+			if status.GenerationID == generationID && status.State == model.GenerationDrainStateDrained && !status.CompletedAt.IsZero() {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("generation %s was not released: %+v", generationID, controller.Snapshot())
 }
 
 func TestRevisionSyncRestartDoesNotCompleteRetirementWhenPreviousIdentityReactivates(t *testing.T) {

@@ -412,8 +412,8 @@ func TestFilesystemPluginLogRetirementIntentRetriesTransientDrainedWrite(t *test
 		}
 		return nil
 	}
-	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err == nil {
-		t.Fatal("drained retirement write failure was hidden")
+	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err != nil {
+		t.Fatalf("drained persistence handoff returned terminal error: %v", err)
 	}
 	if _, err := store.PendingPluginLogReports(); err != nil {
 		t.Fatalf("same-process drained retry failed: %v", err)

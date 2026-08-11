@@ -26,6 +26,7 @@ type Filesystem struct {
 	mu                     sync.Mutex
 	syncDirectory          func(string) error
 	pluginLogAppendFailure func(string) error
+	pluginLogLoadFailure   func() error
 	pluginLogSessionID     string
 	pluginLogDrainRetries  map[string]struct{}
 	logCapacity            pluginLogCapacitySignal

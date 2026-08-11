@@ -30,6 +30,7 @@ type generationLifecycleClient struct {
 	stops                             int
 	prepareErr                        error
 	activateErr                       error
+	stopErr                           error
 }
 
 type generationTestSandbox struct{}
@@ -181,7 +182,11 @@ func (c *generationLifecycleClient) Activate(context.Context, pluginsdk.Lifecycl
 func (c *generationLifecycleClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
 	c.mu.Lock()
 	c.stops++
+	err := c.stopErr
 	c.mu.Unlock()
+	if err != nil {
+		return pluginsdk.LifecycleResponse{}, err
+	}
 	return readyLifecycleResponse(), nil
 }
 
@@ -439,7 +444,7 @@ func TestRPCGenerationReplacementAndRemovalRetireOldOnlyAfterDrain(t *testing.T)
 	}
 }
 
-func TestRPCGenerationRetirementDrainedMarkerRetriesAfterTransientCleanupFailure(t *testing.T) {
+func TestRPCGenerationRetirementHandoffContractErrorRemainsVisible(t *testing.T) {
 	root := t.TempDir()
 	oldGeneration := rpcPluginGenerationForTest(t, root, 17, "operation-17")
 	client := &generationLifecycleClient{}
@@ -450,14 +455,14 @@ func TestRPCGenerationRetirementDrainedMarkerRetriesAfterTransientCleanupFailure
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	retirer := &generationLogFenceRetirer{markErrors: []error{errors.New("injected durable drained failure")}}
+	retirer := &generationLogFenceRetirer{markErrors: []error{errors.New("injected retirement handoff contract rejection")}}
 	moduleUnderTest := NewGenerationModule(host)
 	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
 	oldSnapshot := model.Snapshot{Revision: 17, PluginGenerations: []model.PluginGeneration{oldGeneration}}
 	old := preparePublishRPCGeneration(t, moduleUnderTest, model.Snapshot{}, oldSnapshot)
 	next := preparePublishRPCGeneration(t, moduleUnderTest, oldSnapshot, model.Snapshot{Revision: 18, PluginGenerations: []model.PluginGeneration{}})
 	if err := old.Destroy(t.Context()); err == nil {
-		t.Fatal("transient retirement completion failure was hidden")
+		t.Fatal("retirement handoff contract rejection was hidden")
 	}
 	if len(retirer.identities) != 0 || len(retirer.drained) != 0 {
 		t.Fatalf("failed drained write retired fence: drained=%v completed=%+v", retirer.drained, retirer.identities)
@@ -473,6 +478,34 @@ func TestRPCGenerationRetirementDrainedMarkerRetriesAfterTransientCleanupFailure
 	}
 	if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(oldGeneration) {
 		t.Fatalf("cutover retirement = %+v", retirer.identities)
+	}
+	if err := next.Destroy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRPCGenerationRealProcessCleanupFailureRemainsTerminal(t *testing.T) {
+	root := t.TempDir()
+	oldGeneration := rpcPluginGenerationForTest(t, root, 21, "operation-21")
+	client := &generationLifecycleClient{stopErr: errors.New("injected guest credential cleanup failure")}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	retirer := &generationLogFenceRetirer{}
+	moduleUnderTest := NewGenerationModule(host)
+	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
+	oldSnapshot := model.Snapshot{Revision: 21, PluginGenerations: []model.PluginGeneration{oldGeneration}}
+	old := preparePublishRPCGeneration(t, moduleUnderTest, model.Snapshot{}, oldSnapshot)
+	next := preparePublishRPCGeneration(t, moduleUnderTest, oldSnapshot, model.Snapshot{Revision: 22, PluginGenerations: []model.PluginGeneration{}})
+	if err := old.Destroy(t.Context()); err == nil || !strings.Contains(err.Error(), "credential cleanup failure") {
+		t.Fatalf("real process cleanup error = %v", err)
+	}
+	if len(retirer.drained) != 0 || len(retirer.identities) != 0 {
+		t.Fatalf("failed process cleanup marked retirement: drained=%v completed=%+v", retirer.drained, retirer.identities)
 	}
 	if err := next.Destroy(t.Context()); err != nil {
 		t.Fatal(err)

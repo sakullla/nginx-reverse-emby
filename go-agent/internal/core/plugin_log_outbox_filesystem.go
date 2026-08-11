@@ -171,13 +171,24 @@ func (f *Filesystem) CompletePluginRuntimeLogRetirementIntent(id string) error {
 }
 
 func (f *Filesystem) MarkPluginRuntimeLogRetirementIntentDrained(id string) error {
+	if !validPluginLogOutboxID(id) {
+		return errors.New("plugin runtime log retirement intent identity is invalid")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	state, err := f.loadPluginLogOutboxLocked()
 	if err != nil {
-		return err
+		f.rememberPluginLogDrainRetryLocked(id)
+		return nil
 	}
-	return f.markPluginLogRetirementIntentDrainedLocked(&state, id, true)
+	if err := f.markPluginLogRetirementIntentDrainedLocked(&state, id, true); err != nil {
+		// Process destruction has already succeeded. Persistence retry ownership
+		// belongs to the store from this point so a once-only GenerationView does
+		// not turn a transient journal failure into a terminal resource failure.
+		f.rememberPluginLogDrainRetryLocked(id)
+		return nil
+	}
+	return nil
 }
 
 func (f *Filesystem) AbortPluginRuntimeLogRetirementIntent(id string) error {
@@ -221,16 +232,20 @@ func (f *Filesystem) markPluginLogRetirementIntentDrainedLocked(state *pluginLog
 	}
 	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent_drained", BatchID: id}); err != nil {
 		if rememberFailure {
-			if f.pluginLogDrainRetries == nil {
-				f.pluginLogDrainRetries = make(map[string]struct{})
-			}
-			f.pluginLogDrainRetries[id] = struct{}{}
+			f.rememberPluginLogDrainRetryLocked(id)
 		}
 		return err
 	}
 	delete(f.pluginLogDrainRetries, id)
 	state.records++
 	return f.maybeCompactPluginLogOutboxLocked(state)
+}
+
+func (f *Filesystem) rememberPluginLogDrainRetryLocked(id string) {
+	if f.pluginLogDrainRetries == nil {
+		f.pluginLogDrainRetries = make(map[string]struct{})
+	}
+	f.pluginLogDrainRetries[id] = struct{}{}
 }
 
 func (f *Filesystem) retryPluginLogRetirementDrainsLocked(state *pluginLogOutboxState) error {
@@ -272,6 +287,11 @@ func (f *Filesystem) AuthorizePluginRuntimeLogRetirementIntents(applied model.Sn
 
 func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 	state := newPluginLogOutboxState()
+	if f.pluginLogLoadFailure != nil {
+		if err := f.pluginLogLoadFailure(); err != nil {
+			return state, err
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(f.root, pluginLogOutboxFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return state, nil
