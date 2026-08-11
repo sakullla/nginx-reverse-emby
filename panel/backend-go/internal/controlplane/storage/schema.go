@@ -143,6 +143,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&PluginOperationRow{},
 		&PluginAgentRuntimeStatusRow{},
 		&PluginRuntimeLogRow{},
+		&PluginRuntimeLogReportRow{},
 	); err != nil {
 		return err
 	}

@@ -72,6 +72,17 @@ func (hostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginproce
 	return &hostProcess{done: make(chan error, 1)}, func() error { return nil }, nil
 }
 
+type loggingHostRunner struct{}
+
+func (loggingHostRunner) Start(_ context.Context, _ pluginprocess.InstanceSpec, _ pluginprocess.Sandbox, output io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
+	for _, chunk := range []string{`{"safe":"candidate-`, `secret","token":"quoted-secret"}` + "\n"} {
+		if _, err := io.WriteString(output, chunk); err != nil {
+			return nil, nil, err
+		}
+	}
+	return &hostProcess{done: make(chan error, 1)}, func() error { return nil }, nil
+}
+
 type failingStartHostRunner struct{ err error }
 
 func (r failingStartHostRunner) Start(context.Context, pluginprocess.InstanceSpec, pluginprocess.Sandbox, io.Writer) (pluginprocess.ManagedProcess, func() error, error) {
@@ -352,6 +363,38 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 	}
 	if err := host.InvokeAction(t.Context(), "instance", "g1", pluginsdk.RPCActionRequest{Generation: "g1", ActionID: "rotate", TargetKind: "relay", TargetID: "relay-1", OperationID: "operation-1"}); err == nil {
 		t.Fatal("InvokeAction accepted drained generation")
+	}
+}
+
+func TestRPCHostBindsCapturedOutputToProviderGenerationFence(t *testing.T) {
+	pluginprocess.DrainRuntimeLogEvents()
+	t.Cleanup(func() { pluginprocess.DrainRuntimeLogEvents() })
+	root := t.TempDir()
+	candidate := newRestartHostCandidate(t, root)
+	candidate.ProviderGenerationID = "provider-generation-7"
+	candidate.AgentID = "edge-7"
+	candidate.Revision = 7
+	candidate.Process.SensitiveValues = []string{"candidate-secret"}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(loggingHostRunner{}, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	if _, err := host.Activate(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	events := pluginprocess.DrainRuntimeLogEvents()
+	if len(events) != 1 {
+		t.Fatalf("captured events = %+v", events)
+	}
+	identity := events[0].Identity
+	if identity.ProviderGenerationID != candidate.ProviderGenerationID || identity.InstanceID != candidate.InstanceID || identity.PluginID != candidate.PluginID || identity.AgentID != candidate.AgentID || identity.Revision != candidate.Revision || identity.PackageDigest != candidate.PackageDigest || identity.ArtifactDigest != candidate.Artifact.SHA256 {
+		t.Fatalf("captured generation fence = %+v, candidate = %+v", identity, candidate)
+	}
+	if strings.Contains(events[0].Entry.Message, "candidate-secret") || strings.Contains(events[0].Entry.Message, "quoted-secret") {
+		t.Fatalf("captured event retained raw secret: %q", events[0].Entry.Message)
 	}
 }
 
@@ -1077,12 +1120,15 @@ func newRestartHostCandidate(t *testing.T, root string) HostCandidate {
 	digest := sha256.Sum256(payload)
 	encoded := hex.EncodeToString(digest[:])
 	return HostCandidate{
-		InstanceID:    "restart-instance",
-		PluginID:      "plugin",
-		PluginVersion: "1",
-		PackageDigest: encoded,
-		Requirement:   agentSandboxRequirement(t, encoded),
-		Generation:    "g1",
+		InstanceID:           "restart-instance",
+		PluginID:             "plugin",
+		PluginVersion:        "1",
+		PackageDigest:        encoded,
+		Requirement:          agentSandboxRequirement(t, encoded),
+		Generation:           "g1",
+		ProviderGenerationID: "provider-generation-1",
+		AgentID:              "edge-1",
+		Revision:             1,
 		Artifact: pluginprocess.Artifact{
 			CachePath: cache,
 			SHA256:    encoded,

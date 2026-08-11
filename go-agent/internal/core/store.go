@@ -61,6 +61,7 @@ func (s *InMemory) SaveRuntimeState(state RuntimeState) error {
 	copyState := state
 	copyState.Metadata = cloneStringMap(state.Metadata)
 	copyState.PluginStatuses = clonePluginRuntimeStatuses(state.PluginStatuses)
+	copyState.PluginLogReports = model.ClonePluginRuntimeLogReports(state.PluginLogReports)
 	s.runtime = copyState
 	return nil
 }
@@ -71,6 +72,7 @@ func (s *InMemory) LoadRuntimeState() (RuntimeState, error) {
 	result := s.runtime
 	result.Metadata = cloneStringMap(result.Metadata)
 	result.PluginStatuses = clonePluginRuntimeStatuses(result.PluginStatuses)
+	result.PluginLogReports = model.ClonePluginRuntimeLogReports(result.PluginLogReports)
 	return result, nil
 }
 

@@ -180,7 +180,7 @@ async function retryAgent(status) {
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
         </div>
-        <PluginDeclarativeUI v-if="selectedInstance && canWrite && detail.package.declarative_ui" :document="detail.package.declarative_ui" :config="selectedInstance.config" :saving="busy === 'configure'" :action-busy="!!actionBusy" @submit="saveConfig" @dynamic="runDynamicAction" />
+		<PluginDeclarativeUI v-if="selectedInstance && (admin || canWrite) && detail.package.declarative_ui" :document="detail.package.declarative_ui" :config="selectedInstance.config" :saving="busy === 'configure'" :action-busy="!!actionBusy" :can-configure="admin" :can-act="canWrite" @submit="saveConfig" @dynamic="runDynamicAction" />
         <PluginConfigForm v-else-if="selectedInstance && admin" :schema="detail.package.config_schema" :config="selectedInstance.config" :saving="busy === 'configure'" @submit="saveConfig" />
         <p v-else-if="selectedInstance">当前身份只有只读权限。</p>
       </section>

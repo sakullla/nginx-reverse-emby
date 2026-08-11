@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/sanitize"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -35,6 +36,7 @@ type Candidate struct {
 	Artifact                                              Artifact
 	Identity                                              Identity
 	Config                                                []byte
+	LogSecrets                                            []string
 	Args, Environment                                     []string
 	Endpoint                                              Endpoint
 	Requirement                                           SandboxRequirement
@@ -133,6 +135,7 @@ type Host struct {
 	active         map[string]*Instance
 	prepared       map[*Instance]struct{}
 	observer       func(RuntimeStatus) error
+	logObserver    func(Candidate, string)
 	observerErrors map[string]error
 }
 
@@ -242,6 +245,14 @@ func (h *Host) SetStatusObserver(observer func(RuntimeStatus) error) {
 	h.observer = observer
 }
 
+// SetLogObserver receives only line-buffered, bounded, sanitized guest output.
+// The observer must remain non-blocking; Host output cannot wait on durable IO.
+func (h *Host) SetLogObserver(observer func(Candidate, string)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.logObserver = observer
+}
+
 func (h *Host) StatusPersistenceError(instanceID string) error {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -321,7 +332,8 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
-	logWriter := newRedactor(h.logs, []string{candidate.Endpoint.Cookie})
+	logSecrets := append([]string{candidate.Endpoint.Cookie}, candidate.LogSecrets...)
+	logWriter := newRedactor(&candidateLogTarget{host: h, candidate: candidate}, logSecrets)
 	process, err := h.launcher.Start(attemptCtx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
 	if err != nil {
 		_ = logWriter.Close()
@@ -1601,6 +1613,26 @@ type redactor struct {
 	dropping, closed bool
 }
 
+type candidateLogTarget struct {
+	host      *Host
+	candidate Candidate
+}
+
+func (w *candidateLogTarget) Write(p []byte) (int, error) {
+	w.host.mu.RLock()
+	target, observer := w.host.logs, w.host.logObserver
+	w.host.mu.RUnlock()
+	if target != nil {
+		if _, err := target.Write(p); err != nil {
+			return 0, err
+		}
+	}
+	if observer != nil {
+		observer(w.candidate, strings.TrimSuffix(string(p), "\n"))
+	}
+	return len(p), nil
+}
+
 func newRedactor(target io.Writer, secrets []string) *redactor {
 	return &redactor{target: target, secrets: secrets}
 }
@@ -1645,18 +1677,7 @@ func (w *redactor) flushLocked(newline bool) error {
 		line = "[REDACTED oversized plugin log line]"
 		w.dropping = false
 	} else {
-		for _, secret := range w.secrets {
-			if secret != "" {
-				line = strings.ReplaceAll(line, secret, "[REDACTED]")
-			}
-		}
-		lower := strings.ToLower(line)
-		for _, marker := range []string{"authorization:", "cookie=", "password=", "token=", "secret="} {
-			if strings.Contains(lower, marker) {
-				line = "[REDACTED sensitive plugin log line]"
-				break
-			}
-		}
+		line = sanitize.Text(line, w.secrets)
 	}
 	if line == "" && !newline {
 		return nil

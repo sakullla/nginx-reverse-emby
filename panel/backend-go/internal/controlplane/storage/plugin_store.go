@@ -3063,6 +3063,13 @@ type PluginMutation struct {
 	AcquisitionDigest          string
 	ValidateInstanceScope      bool
 	PromoteInstanceBinding     bool
+	SecretWrites               []PluginSecretWrite
+}
+
+type PluginSecretWrite struct {
+	Secret  SecretRow
+	Version SecretVersionRow
+	Audit   AuditEventRow
 }
 
 func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMutation) error {
@@ -3090,6 +3097,20 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 }
 
 func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, mutation PluginMutation) error {
+	for _, write := range mutation.SecretWrites {
+		if write.Secret.ID == "" || write.Version.SecretID != write.Secret.ID || write.Version.Version != write.Secret.ActiveVersion || write.Audit.TargetID != write.Secret.ID {
+			return errors.New("plugin secret write identity is invalid")
+		}
+		if err := tx.Create(&write.Secret).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&write.Version).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&write.Audit).Error; err != nil {
+			return err
+		}
+	}
 	if mutation.RequireAcquisition {
 		if mutation.Package == nil {
 			return errors.New("package acquisition promotion requires package metadata")

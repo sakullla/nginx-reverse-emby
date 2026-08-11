@@ -80,6 +80,32 @@ type OperationContext struct {
 	ResourceGroupID string
 }
 
+// PreparedPluginSecret contains only encrypted durable rows. It is committed
+// by the plugin mutation transaction so a failed instance stage cannot leave a
+// newly-created usable secret behind.
+type PreparedPluginSecret struct {
+	Metadata Metadata
+	Secret   storage.SecretRow
+	Version  storage.SecretVersionRow
+	Audit    storage.AuditEventRow
+}
+
+func (v *Vault) PreparePluginSecret(op OperationContext, name, purpose, plaintext string) (PreparedPluginSecret, error) {
+	name, purpose = strings.TrimSpace(name), strings.TrimSpace(purpose)
+	if name == "" || purpose == "" || plaintext == "" || strings.TrimSpace(op.ResourceGroupID) == "" {
+		return PreparedPluginSecret{}, ErrInvalidSecret
+	}
+	now := v.now()
+	row := storage.SecretRow{ID: randomID("sec"), Name: name, Purpose: purpose, OwnerUserID: op.ActorID, ResourceGroupID: op.ResourceGroupID, ActiveVersion: 1, Fingerprint: v.fingerprint(plaintext), CreatedAt: now, RotatedAt: now}
+	version, err := v.encrypt(row, 1, plaintext, now)
+	if err != nil {
+		return PreparedPluginSecret{}, err
+	}
+	metadata, _ := json.Marshal(Redact(map[string]any{"name": name, "purpose": purpose, "fingerprint": row.Fingerprint}))
+	audit := storage.AuditEventRow{ID: randomID("audit"), ActorID: op.ActorID, SessionID: op.SessionID, Action: "secret.create", TargetKind: "secret", TargetID: row.ID, ResourceGroupID: op.ResourceGroupID, CorrelationID: op.CorrelationID, Result: "success", MetadataJSON: string(metadata), CreatedAt: now}
+	return PreparedPluginSecret{Metadata: metadataFromRow(row), Secret: row, Version: version, Audit: audit}, nil
+}
+
 func NewVault(store Store, keyring Keyring) (*Vault, error) {
 	if store == nil {
 		return nil, fmt.Errorf("vault store is required")

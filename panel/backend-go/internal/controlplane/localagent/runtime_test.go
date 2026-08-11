@@ -28,6 +28,16 @@ type bridgeStoreStub struct {
 	saveManagedCalled    bool
 	credentialTargets    []storage.RelayListener
 	credentialTargetID   string
+	pluginLogs           []storage.PluginRuntimeLogReport
+	pluginLogErr         error
+}
+
+func (s *bridgeStoreStub) RecordPluginRuntimeLogReport(_ context.Context, _ string, report storage.PluginRuntimeLogReport) (bool, error) {
+	if s.pluginLogErr != nil {
+		return false, s.pluginLogErr
+	}
+	s.pluginLogs = append(s.pluginLogs, report)
+	return true, nil
 }
 
 type embeddedRuntimeStub struct {
@@ -532,15 +542,37 @@ func TestEmbeddedBridgePreservesPluginGenerationAndRuntimeStatus(t *testing.T) {
 		t.Fatalf("embedded plugin dependencies = %+v", embedded.PluginDependencies)
 	}
 
-	request := fromEmbeddedSyncRequest(goagentembedded.SyncRequest{PluginStatuses: []goagentembedded.PluginRuntimeStatus{{
-		InstanceID: "instance", OperationID: "operation", Sequence: 3, State: "degraded",
-	}}})
+	embeddedRequest := goagentembedded.SyncRequest{PluginStatuses: []goagentembedded.PluginRuntimeStatus{{InstanceID: "instance", OperationID: "operation", Sequence: 3, State: "degraded"}}}
+	if err := json.Unmarshal([]byte(`{"PluginLogs":[{"revision":7,"generation_id":"generation","instance_id":"instance","plugin_id":"plugin","agent_id":"local","package_digest":"`+digest+`","artifact_digest":"`+digest+`","sequence":2,"entries":[{"level":"info","message":"safe","truncated":false}]}]}`), &embeddedRequest); err != nil {
+		t.Fatal(err)
+	}
+	request := fromEmbeddedSyncRequest(embeddedRequest)
 	if len(request.PluginStatuses) != 1 || request.PluginStatuses[0].Sequence != 3 || request.PluginStatuses[0].State != "degraded" {
 		t.Fatalf("embedded plugin statuses = %+v", request.PluginStatuses)
+	}
+	if len(request.PluginLogs) != 1 || request.PluginLogs[0].Sequence != 2 {
+		t.Fatalf("embedded plugin logs = %+v", request.PluginLogs)
 	}
 	state := fromEmbeddedRuntimeState(goagentembedded.RuntimeState{PluginStatuses: []goagentembedded.PluginRuntimeStatus{{InstanceID: "instance", Sequence: 4}}})
 	if len(state.PluginStatuses) != 1 || state.PluginStatuses[0].Sequence != 4 {
 		t.Fatalf("embedded runtime state statuses = %+v", state.PluginStatuses)
+	}
+}
+
+func TestEmbeddedPluginLogsAcknowledgeOnlyAfterSuccessfulIngestion(t *testing.T) {
+	store := &bridgeStoreStub{snapshot: Snapshot{}}
+	source := NewSyncSource(store, "local")
+	acknowledged := 0
+	request := goagentembedded.SyncRequest{PluginLogsAcknowledged: func() error { acknowledged++; return nil }}
+	if err := json.Unmarshal([]byte(`{"PluginLogs":[{"sequence":1}]}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (syncSourceAdapter{source: source}).Sync(t.Context(), request); err != nil || acknowledged != 1 {
+		t.Fatalf("success acknowledged=%d error=%v", acknowledged, err)
+	}
+	store.pluginLogErr = errors.New("persist failed")
+	if _, err := (syncSourceAdapter{source: source}).Sync(t.Context(), request); err == nil || acknowledged != 1 {
+		t.Fatalf("failure acknowledged=%d error=%v", acknowledged, err)
 	}
 }
 

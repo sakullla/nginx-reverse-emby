@@ -290,31 +290,33 @@ type InstalledPluginRow struct {
 func (InstalledPluginRow) TableName() string { return "installed_plugins" }
 
 type PluginInstanceRow struct {
-	ID                       string    `gorm:"primaryKey;size:64" json:"id"`
-	PluginID                 string    `gorm:"index;size:190;not null" json:"plugin_id"`
-	ResourceGroupID          string    `gorm:"index;size:64;not null" json:"resource_group_id"`
-	TargetJSON               string    `gorm:"type:text;not null" json:"targets"`
-	PolicyChainsJSON         string    `gorm:"type:text;not null;default:'[]'" json:"policy_chains"`
-	SecretHandlesJSON        string    `gorm:"type:text;not null;default:'[]'" json:"-"`
-	BindingsJSON             string    `gorm:"type:text;not null;default:'[]'" json:"-"`
-	ConfigJSON               string    `gorm:"type:text;not null" json:"config"`
-	ConfigVersion            uint64    `gorm:"not null;default:0" json:"config_version"`
-	PendingConfigJSON        string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
-	PendingVersion           uint64    `gorm:"not null;default:0" json:"pending_version,omitempty"`
-	PendingOperationID       string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
-	PendingResourceGroupID   string    `gorm:"size:64;not null;default:''" json:"pending_resource_group_id,omitempty"`
-	PendingTargetJSON        string    `gorm:"type:text;not null" json:"pending_targets,omitempty"`
-	PendingPolicyChainsJSON  string    `gorm:"type:text;not null;default:'[]'" json:"pending_policy_chains,omitempty"`
-	PendingBindingsJSON      string    `gorm:"type:text;not null;default:'[]'" json:"-"`
-	RollbackConfigJSON       string    `gorm:"type:text;not null" json:"-"`
-	RollbackVersion          uint64    `gorm:"not null;default:0" json:"-"`
-	RollbackPolicyChainsJSON string    `gorm:"type:text;not null;default:'[]'" json:"-"`
-	RollbackBindingsJSON     string    `gorm:"type:text;not null;default:'[]'" json:"-"`
-	DesiredEnabled           bool      `gorm:"not null;default:false" json:"desired_enabled"`
-	CurrentState             string    `gorm:"index;size:32;not null" json:"current_state"`
-	StatusSummaryJSON        string    `gorm:"type:text;not null" json:"status_summary"`
-	StateVersion             uint64    `gorm:"not null;default:1" json:"state_version"`
-	UpdatedAt                time.Time `gorm:"not null" json:"updated_at"`
+	ID                        string    `gorm:"primaryKey;size:64" json:"id"`
+	PluginID                  string    `gorm:"index;size:190;not null" json:"plugin_id"`
+	ResourceGroupID           string    `gorm:"index;size:64;not null" json:"resource_group_id"`
+	TargetJSON                string    `gorm:"type:text;not null" json:"targets"`
+	PolicyChainsJSON          string    `gorm:"type:text;not null;default:'[]'" json:"policy_chains"`
+	SecretHandlesJSON         string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	BindingsJSON              string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	ConfigJSON                string    `gorm:"type:text;not null" json:"config"`
+	ConfigVersion             uint64    `gorm:"not null;default:0" json:"config_version"`
+	PendingConfigJSON         string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
+	PendingVersion            uint64    `gorm:"not null;default:0" json:"pending_version,omitempty"`
+	PendingOperationID        string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
+	PendingResourceGroupID    string    `gorm:"size:64;not null;default:''" json:"pending_resource_group_id,omitempty"`
+	PendingTargetJSON         string    `gorm:"type:text;not null" json:"pending_targets,omitempty"`
+	PendingPolicyChainsJSON   string    `gorm:"type:text;not null;default:'[]'" json:"pending_policy_chains,omitempty"`
+	PendingBindingsJSON       string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	PendingSecretHandlesJSON  string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	RollbackConfigJSON        string    `gorm:"type:text;not null" json:"-"`
+	RollbackVersion           uint64    `gorm:"not null;default:0" json:"-"`
+	RollbackPolicyChainsJSON  string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	RollbackBindingsJSON      string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	RollbackSecretHandlesJSON string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	DesiredEnabled            bool      `gorm:"not null;default:false" json:"desired_enabled"`
+	CurrentState              string    `gorm:"index;size:32;not null" json:"current_state"`
+	StatusSummaryJSON         string    `gorm:"type:text;not null" json:"status_summary"`
+	StateVersion              uint64    `gorm:"not null;default:1" json:"state_version"`
+	UpdatedAt                 time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (PluginInstanceRow) TableName() string { return "plugin_instances" }
@@ -347,6 +349,8 @@ func (PluginGrantRow) TableName() string { return "plugin_grants" }
 type PluginOperationRow struct {
 	ID                         string     `gorm:"primaryKey;size:64" json:"id"`
 	PluginID                   string     `gorm:"index;size:190;not null" json:"plugin_id"`
+	InstanceID                 string     `gorm:"index;size:64;not null;default:''" json:"instance_id,omitempty"`
+	ResourceGroupID            string     `gorm:"index;size:64;not null;default:''" json:"resource_group_id,omitempty"`
 	Kind                       string     `gorm:"index;size:32;not null" json:"kind"`
 	Status                     string     `gorm:"index;size:32;not null" json:"status"`
 	TargetPackageDigest        string     `gorm:"size:64;not null;default:''" json:"target_package_digest,omitempty"`
@@ -412,3 +416,21 @@ type PluginRuntimeLogRow struct {
 }
 
 func (PluginRuntimeLogRow) TableName() string { return "plugin_runtime_logs" }
+
+// PluginRuntimeLogReportRow is the authenticated replay fence for one Agent
+// runtime generation. Log fragments are stored separately only after the
+// immutable generation identity and digest have matched.
+type PluginRuntimeLogReportRow struct {
+	AgentID        string    `gorm:"primaryKey;size:64"`
+	InstanceID     string    `gorm:"primaryKey;size:64"`
+	GenerationID   string    `gorm:"primaryKey;size:64"`
+	Revision       int64     `gorm:"index;not null"`
+	PluginID       string    `gorm:"index;size:190;not null"`
+	PackageDigest  string    `gorm:"size:64;not null"`
+	ArtifactDigest string    `gorm:"size:64;not null"`
+	Sequence       uint64    `gorm:"not null"`
+	ReportDigest   string    `gorm:"size:64;not null"`
+	UpdatedAt      time.Time `gorm:"not null"`
+}
+
+func (PluginRuntimeLogReportRow) TableName() string { return "plugin_runtime_log_reports" }

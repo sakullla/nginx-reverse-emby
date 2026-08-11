@@ -19,7 +19,7 @@ const document = {
 
 describe('PluginDeclarativeUI', () => {
   it('renders only fixed host controls and never interprets package markup', async () => {
-    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' } } })
+		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, canConfigure: true, canAct: true } })
     expect(wrapper.findAll('script')).toHaveLength(0)
     expect(wrapper.findAll('img')).toHaveLength(0)
     expect(wrapper.text()).toContain('<script>guest()</script>')
@@ -30,11 +30,23 @@ describe('PluginDeclarativeUI', () => {
 
   it('requires host confirmation and emits only the typed action target', async () => {
     vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
-    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: {} } })
+		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: {}, canConfigure: true, canAct: true } })
     await wrapper.get('.declarative-target input').setValue('relay-1')
     await wrapper.findAll('button')[1].trigger('click')
     expect(wrapper.emitted('dynamic')).toBeUndefined()
     await wrapper.findAll('button')[1].trigger('click')
     expect(wrapper.emitted('dynamic')[0][0]).toEqual({ action: document.actions[1], target_id: 'relay-1', confirmed: true })
-  })
+	})
+
+	it('keeps configuration hidden for resource writers while allowing dynamic actions', async () => {
+		vi.spyOn(window, 'confirm').mockReturnValue(true)
+		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'private-config' }, canConfigure: false, canAct: true } })
+		expect(wrapper.find('.declarative-section').exists()).toBe(false)
+		expect(wrapper.text()).not.toContain('Save')
+		expect(wrapper.text()).not.toContain('private-config')
+		await wrapper.get('.declarative-target input').setValue('relay-1')
+		await wrapper.get('button').trigger('click')
+		expect(wrapper.emitted('submit')).toBeUndefined()
+		expect(wrapper.emitted('dynamic')[0][0].target_id).toBe('relay-1')
+	})
 })

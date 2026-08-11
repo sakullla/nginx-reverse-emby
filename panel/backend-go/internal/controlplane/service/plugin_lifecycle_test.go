@@ -20,9 +20,73 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	"gorm.io/gorm"
 )
+
+func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test-secret")
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	cacheRoot := pluginTestCacheRoot(t)
+	service := newPluginTestServiceAtRoot(t, store, cacheRoot)
+	vault, err := secrets.NewVault(store, secrets.Keyring{CurrentKeyID: "test", Keys: map[string][]byte{"test": []byte("0123456789abcdef0123456789abcdef")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetSecretVault(vault)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	schema := `{"type":"object","additionalProperties":false,"properties":{"mode":{"type":"string"},"token":{"type":"string","writeOnly":true}},"required":["mode","token"]}`
+	ui := `{"schema_version":1,"title":"Secret config","components":[{"type":"secret","id":"token","label":"Token","binding":"/token","required":true}],"actions":[{"type":"submit","id":"save","label":"Save"}]}`
+	candidate := pluginCustomCandidateFixture(t, "official.secret-config", "1.0.0", cleanup, schema, "ui_schema: ui.schema.json\n", map[string]string{"ui.schema.json": ui}, "*", "*")
+	installed, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "secret-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe","token":null}`), SecretReplacements: map[string]json.RawMessage{"/token": json.RawMessage(`"install-plaintext"`)}, ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(instance.PendingConfigJSON, "install-plaintext") || strings.Contains(instance.PendingSecretHandlesJSON, "install-plaintext") || instance.PendingSecretHandlesJSON == "[]" {
+		t.Fatalf("plaintext persisted in staged instance: %+v", instance)
+	}
+	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"local": "active"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Detail(ctx, installed.PluginID)
+	if err != nil || len(detail.Instances) != 1 || strings.Contains(string(detail.Instances[0].Config), "install-plaintext") || len(detail.Instances[0].SecretFields) != 1 || !detail.Instances[0].SecretFields[0].Present {
+		t.Fatalf("detail=%+v error=%v", detail, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted := newPluginTestServiceAtRoot(t, reopened, cacheRoot)
+	restartedVault, err := secrets.NewVault(reopened, secrets.Keyring{CurrentKeyID: "test", Keys: map[string][]byte{"test": []byte("0123456789abcdef0123456789abcdef")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.SetSecretVault(restartedVault)
+	detail, err = restarted.Detail(ctx, installed.PluginID)
+	if err != nil || strings.Contains(string(detail.Instances[0].Config), "install-plaintext") || !detail.Instances[0].SecretFields[0].Present {
+		t.Fatalf("restart detail=%+v error=%v", detail, err)
+	}
+	preserved, err := restarted.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"block","token":null}`), ActorID: "admin"})
+	if err != nil || strings.Contains(preserved.PendingConfigJSON, "install-plaintext") || preserved.PendingSecretHandlesJSON != instance.SecretHandlesJSON {
+		t.Fatalf("preserved=%+v error=%v", preserved, err)
+	}
+}
 
 func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")

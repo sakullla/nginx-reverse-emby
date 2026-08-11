@@ -133,6 +133,51 @@ func TestPluginDependencyProductionWireRoundTripPreservesConsumerAuthority(t *te
 	}
 }
 
+func TestPluginRuntimeLogReportStrictWireAndBounds(t *testing.T) {
+	report := PluginRuntimeLogReport{
+		Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), Sequence: 3,
+		Entries: []PluginRuntimeLogEntry{{Level: "error", Message: "safe message", Truncated: true}},
+	}
+	if err := report.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	wire, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{`"generation_id":"generation-7"`, `"artifact_digest":"` + strings.Repeat("b", 64) + `"`, `"sequence":3`, `"truncated":true`} {
+		if !strings.Contains(string(wire), fragment) {
+			t.Fatalf("plugin log wire %s lacks %s", wire, fragment)
+		}
+	}
+	entryWire, err := json.Marshal(PluginRuntimeLogEntry{Level: "info", Message: "safe"})
+	if err != nil || !strings.Contains(string(entryWire), `"truncated":false`) {
+		t.Fatalf("non-truncated entry wire = %s, error = %v", entryWire, err)
+	}
+
+	for name, mutate := range map[string]func(*PluginRuntimeLogReport){
+		"missing generation": func(value *PluginRuntimeLogReport) { value.GenerationID = "" },
+		"missing agent":      func(value *PluginRuntimeLogReport) { value.AgentID = "" },
+		"bad digest":         func(value *PluginRuntimeLogReport) { value.ArtifactDigest = strings.Repeat("B", 64) },
+		"zero sequence":      func(value *PluginRuntimeLogReport) { value.Sequence = 0 },
+		"bad level":          func(value *PluginRuntimeLogReport) { value.Entries[0].Level = "fatal" },
+		"oversized message": func(value *PluginRuntimeLogReport) {
+			value.Entries[0].Message = strings.Repeat("x", MaxPluginRuntimeLogMessage+1)
+		},
+		"empty entries": func(value *PluginRuntimeLogReport) { value.Entries = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := report
+			invalid.Entries = append([]PluginRuntimeLogEntry(nil), report.Entries...)
+			mutate(&invalid)
+			if err := invalid.Validate(); err == nil {
+				t.Fatal("Validate() accepted invalid plugin runtime log report")
+			}
+		})
+	}
+}
+
 func TestPluginDependenciesRejectDanglingDuplicateCrossTargetAndInvalidConsumers(t *testing.T) {
 	provider := validPluginGenerationForTest()
 	base := Snapshot{Revision: 7, Rules: []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}}, PluginGenerations: []PluginGeneration{provider}}

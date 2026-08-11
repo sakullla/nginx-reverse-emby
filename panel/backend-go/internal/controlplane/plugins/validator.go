@@ -1602,9 +1602,8 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 	if readOnly && writeOnly {
 		return errors.New("readOnly and writeOnly cannot both be true")
 	}
-	if writeOnly {
-		return errors.New("writeOnly config fields require brokered secret storage")
-	}
+	// writeOnly values are accepted only through the control-plane broker; the
+	// ordinary config document and read DTO never carry their plaintext.
 	if typeName == "object" {
 		properties, _ := schema["properties"].(map[string]any)
 		for _, name := range stringList(schema["required"]) {

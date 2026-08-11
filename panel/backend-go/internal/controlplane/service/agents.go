@@ -214,6 +214,7 @@ type HeartbeatRequest struct {
 	PKISecurityAck            *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
 	PKIEnrollmentRequests     []PKIControlEnrollmentRequest       `json:"pki_enrollment_requests,omitempty"`
 	PluginStatuses            []storage.PluginRuntimeStatus       `json:"plugin_statuses,omitempty"`
+	PluginLogs                []storage.PluginRuntimeLogReport    `json:"plugin_logs,omitempty"`
 	HasAgentURL               bool                                `json:"-"`
 	HasTags                   bool                                `json:"-"`
 	HasCapabilities           bool                                `json:"-"`
@@ -1405,6 +1406,17 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 				return HeartbeatReply{}, err
 			}
 		}
+	}
+	if logStore, ok := s.store.(interface {
+		RecordPluginRuntimeLogReport(context.Context, string, storage.PluginRuntimeLogReport) (bool, error)
+	}); ok {
+		for _, report := range request.PluginLogs {
+			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, row.ID, report); err != nil {
+				return HeartbeatReply{}, err
+			}
+		}
+	} else if len(request.PluginLogs) > 0 {
+		return HeartbeatReply{}, errors.New("plugin runtime log ingestion is unavailable")
 	}
 	// Fire-and-forget: fresh reported IPs may warrant a master-side A/AAAA
 	// refresh. This MUST NOT affect the heartbeat return — triggerDDNSReconcile

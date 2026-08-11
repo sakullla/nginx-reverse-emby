@@ -60,6 +60,17 @@ func (generationTestSandbox) Configure(*exec.Cmd, pluginprocess.Security) (func(
 	return nil, nil, nil, nil
 }
 
+func TestHostCandidatePreservesProviderGenerationAndAgentIdentity(t *testing.T) {
+	generation := rpcPluginGenerationForTest(t, t.TempDir(), 7, "operation-7")
+	candidate, err := hostCandidateFromGeneration(generation, "module-generation-context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Generation != "module-generation-context" || candidate.ProviderGenerationID != generation.ID || candidate.AgentID != generation.Target.ID || candidate.Revision != generation.Revision || candidate.InstanceID != generation.InstanceID || candidate.PackageDigest != generation.PackageDigest || candidate.Artifact.SHA256 != generation.Artifact.SHA256 {
+		t.Fatalf("host candidate identity = %+v, generation = %+v", candidate, generation)
+	}
+}
+
 func (c *generationLifecycleClient) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
 	c.mu.Lock()
 	c.handshakes++

@@ -113,6 +113,12 @@ func (s *GormStore) readSnapshotTransaction(ctx context.Context, read func(*Gorm
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 }
 
+// PluginReadTransaction exposes a stable read-only snapshot to the plugin
+// admin service without leaking the underlying gorm transaction.
+func (s *GormStore) PluginReadTransaction(ctx context.Context, read func(*GormStore) error) error {
+	return s.readSnapshotTransaction(ctx, read)
+}
+
 func (s *GormStore) ensureSQLiteWriteDB() error {
 	if s.writeDB != nil || strings.TrimSpace(s.writeDSN) == "" {
 		return nil

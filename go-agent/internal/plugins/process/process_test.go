@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -139,6 +140,127 @@ func TestProcessLogsRedactAcrossWriteBoundariesAndDropOversizedLines(t *testing.
 	}
 	if !strings.Contains(got, "oversized") {
 		t.Fatalf("oversized line was not fail-closed: %q", got)
+	}
+}
+
+func TestProcessRuntimeLogsStructuredRedactionNeverRetainsRawInput(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	identity := RuntimeLogIdentity{
+		Revision: 9, ProviderGenerationID: "generation-9", InstanceID: "instance-9", PluginID: "example.rpc", AgentID: "edge-9",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+	}
+	const arbitrarySecret = `arbitrary"secret-value`
+	var output bytes.Buffer
+	w := newRuntimeLogWriter(&output, []string{arbitrarySecret, "split-secret", "rpc-cookie"}, "error", identity)
+	chunks := []string{
+		`{"outer":{"token":"quoted-token","safe":"arbitrary\"`,
+		`secret-value"},"items":[{"cookie":"rpc-cookie"}],"note":"split-`,
+		"secret" + `"}` + "\n",
+	}
+	for _, chunk := range chunks {
+		if _, err := io.WriteString(w, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := DrainRuntimeLogEvents()
+	if len(events) != 1 || events[0].Identity != identity || events[0].Entry.Level != "error" {
+		t.Fatalf("runtime log events = %+v", events)
+	}
+	for _, leaked := range []string{"quoted-token", "rpc-cookie", "split-secret", "secret-value"} {
+		if strings.Contains(events[0].Entry.Message, leaked) || strings.Contains(output.String(), leaked) {
+			t.Fatalf("runtime log retained %q: event=%q output=%q", leaked, events[0].Entry.Message, output.String())
+		}
+	}
+	var sanitized map[string]any
+	if err := json.Unmarshal([]byte(events[0].Entry.Message), &sanitized); err != nil {
+		t.Fatalf("sanitized structured log is not JSON: %v, %q", err, events[0].Entry.Message)
+	}
+	outer := sanitized["outer"].(map[string]any)
+	if outer["token"] != "[REDACTED]" || outer["safe"] != "[REDACTED]" {
+		t.Fatalf("nested structured redaction = %+v", sanitized)
+	}
+	malformed := sanitizePluginLogLine(`{"token" : "must-not-survive"`, nil)
+	if strings.Contains(malformed, "must-not-survive") {
+		t.Fatalf("malformed quoted credential survived fallback sanitizer: %q", malformed)
+	}
+}
+
+func TestProcessRuntimeLogsAreBoundedAndMarkedTruncated(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	identity := RuntimeLogIdentity{
+		Revision: 10, ProviderGenerationID: "generation-10", InstanceID: "instance-10", PluginID: "example.rpc", AgentID: "edge-10",
+		PackageDigest: strings.Repeat("c", 64), ArtifactDigest: strings.Repeat("d", 64),
+	}
+	w := newRuntimeLogWriter(io.Discard, nil, "info", identity)
+	if _, err := io.WriteString(w, strings.Repeat("界", maxPluginLogMessage)+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := DrainRuntimeLogEvents()
+	if len(events) != 1 || !events[0].Entry.Truncated || len(events[0].Entry.Message) > maxPluginLogMessage || !strings.HasPrefix(events[0].Entry.Message, "界") {
+		t.Fatalf("bounded runtime log event = %+v", events)
+	}
+}
+
+func TestProcessRuntimeLogBacklogIsBoundedWithTruncationMarker(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	identity := RuntimeLogIdentity{ProviderGenerationID: "generation", InstanceID: "instance"}
+	for index := 0; index <= maxPendingRuntimeLogEvents; index++ {
+		publishRuntimeLogEvent(RuntimeLogEvent{Identity: identity, Entry: RuntimeLogEntry{Level: "info", Message: "line"}})
+	}
+	events := DrainRuntimeLogEvents()
+	if len(events) != maxPendingRuntimeLogEvents || !events[len(events)-1].Entry.Truncated || !strings.Contains(events[len(events)-1].Entry.Message, "backlog") {
+		t.Fatalf("bounded runtime log backlog = %d, tail=%+v", len(events), events[len(events)-1])
+	}
+}
+
+type splitRuntimeLogRunner struct{ process *immediateProcess }
+
+func (r splitRuntimeLogRunner) Start(context.Context, InstanceSpec, Sandbox, io.Writer) (ManagedProcess, func() error, error) {
+	return nil, nil, errors.New("combined output path used")
+}
+
+func (r splitRuntimeLogRunner) StartWithStreams(_ context.Context, _ InstanceSpec, _ Sandbox, stdout, stderr io.Writer) (ManagedProcess, func() error, error) {
+	if _, err := io.WriteString(stdout, "stdout line\n"); err != nil {
+		return nil, nil, err
+	}
+	if _, err := io.WriteString(stderr, "stderr line\n"); err != nil {
+		return nil, nil, err
+	}
+	return r.process, func() error { return nil }, nil
+}
+
+func TestSupervisorCapturesStdoutAndStderrWithDistinctLevels(t *testing.T) {
+	DrainRuntimeLogEvents()
+	t.Cleanup(func() { DrainRuntimeLogEvents() })
+	process := &immediateProcess{done: make(chan error, 1)}
+	supervisor := NewSupervisor(splitRuntimeLogRunner{process: process}, fakeSandbox{available: true}, io.Discard)
+	t.Cleanup(func() { _ = supervisor.Close(t.Context()) })
+	identity := RuntimeLogIdentity{
+		Revision: 11, ProviderGenerationID: "generation-11", InstanceID: "instance-11", PluginID: "example.rpc", AgentID: "edge-11",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+	}
+	handle, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "instance-11", Executable: "synthetic", RuntimeLogIdentity: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.done <- nil
+	select {
+	case <-handle.Done():
+	case <-time.After(time.Second):
+		t.Fatal("synthetic process did not finish")
+	}
+	events := DrainRuntimeLogEvents()
+	if len(events) != 2 || events[0].Entry.Level != "info" || events[0].Entry.Message != "stdout line" || events[1].Entry.Level != "error" || events[1].Entry.Message != "stderr line" {
+		t.Fatalf("split output events = %+v", events)
 	}
 }
 

@@ -89,10 +89,27 @@ type pluginReadAPIFake struct {
 	configureCalls int
 }
 
+func (f *pluginReadAPIFake) ListForActor(context.Context, authz.Actor) ([]service.PluginSummary, error) {
+	return f.installed, nil
+}
+func (f *pluginReadAPIFake) DetailForActor(context.Context, string, authz.Actor) (service.PluginDetail, error) {
+	return f.detail, f.detailErr
+}
+func (f *pluginReadAPIFake) OperationsForActor(context.Context, string, authz.Actor) ([]service.PluginOperationDetail, error) {
+	return f.operations, nil
+}
+
+func pluginReadRequest(method, target string) *http.Request {
+	request := httptest.NewRequest(method, target, nil)
+	return request.WithContext(context.WithValue(request.Context(), actorContextKey{}, authz.Actor{ID: "admin", Permissions: []string{authz.PermissionSystemAdmin}}))
+}
+
 type scopedPluginReadFake struct {
 	*pluginReadAPIFake
 	actor authz.Actor
 }
+
+type unscopedPluginReadFake struct{ PluginAPI }
 
 func (f *scopedPluginReadFake) ListForActor(_ context.Context, actor authz.Actor) ([]service.PluginSummary, error) {
 	f.actor = actor
@@ -156,6 +173,21 @@ func TestPluginReadHandlersUseAuthenticatedResourceScopedProjection(t *testing.T
 	Dependencies{PluginService: api}.handlePluginLogs(logResponse, logRequest)
 	if logResponse.Code != http.StatusOK || strings.Contains(logResponse.Body.String(), "plaintext") || !strings.Contains(logResponse.Body.String(), "[REDACTED]") || !strings.Contains(logResponse.Body.String(), "opaque-next") {
 		t.Fatalf("log status=%d body=%s", logResponse.Code, logResponse.Body.String())
+	}
+}
+
+func TestPluginReadHandlersFailClosedWithoutActorOrScopedImplementation(t *testing.T) {
+	missingActor := httptest.NewRecorder()
+	Dependencies{PluginService: &pluginReadAPIFake{}}.handlePlugins(missingActor, httptest.NewRequest(http.MethodGet, "/panel-api/plugins", nil))
+	if missingActor.Code != http.StatusUnauthorized {
+		t.Fatalf("missing actor status=%d body=%s", missingActor.Code, missingActor.Body.String())
+	}
+	request := httptest.NewRequest(http.MethodGet, "/panel-api/plugins", nil)
+	request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, authz.Actor{ID: "member", Permissions: []string{authz.PermissionResourceRead}}))
+	missingScoped := httptest.NewRecorder()
+	Dependencies{PluginService: &unscopedPluginReadFake{}}.handlePlugins(missingScoped, request)
+	if missingScoped.Code == http.StatusOK {
+		t.Fatalf("missing scoped implementation status=%d body=%s", missingScoped.Code, missingScoped.Body.String())
 	}
 }
 
@@ -224,12 +256,12 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	pluginAPI := &pluginReadAPIFake{installed: []service.PluginSummary{pluginSummary}, detail: service.PluginDetail{Plugin: pluginSummary, Package: packageDetail, Instances: []service.PluginInstanceDetail{instanceDetail}, Grants: []service.PluginGrantDetail{grantDetail}, AgentStatuses: []service.PluginAgentStatus{}}, preview: packageDetail, operations: []service.PluginOperationDetail{operationDetail}, mutation: pluginSummary, configured: instanceDetail}
 
 	listResponse := httptest.NewRecorder()
-	Dependencies{PluginService: pluginAPI}.handlePlugins(listResponse, httptest.NewRequest(http.MethodGet, "/panel-api/plugins", nil))
+	Dependencies{PluginService: pluginAPI}.handlePlugins(listResponse, pluginReadRequest(http.MethodGet, "/panel-api/plugins"))
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"plugins"`) || !strings.Contains(listResponse.Body.String(), installed.PluginID) {
 		t.Fatalf("plugin list status=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
 
-	detailRequest := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/official.read", nil)
+	detailRequest := pluginReadRequest(http.MethodGet, "/panel-api/plugins/official.read")
 	detailRequest.SetPathValue("id", installed.PluginID)
 	detailResponse := httptest.NewRecorder()
 	Dependencies{PluginService: pluginAPI}.handlePlugin(detailResponse, detailRequest)
@@ -259,7 +291,7 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 		t.Fatalf("plugin detail leaked storage grant key: %s", detailResponse.Body.String())
 	}
 
-	operationsRequest := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/official.read/operations", nil)
+	operationsRequest := pluginReadRequest(http.MethodGet, "/panel-api/plugins/official.read/operations")
 	operationsRequest.SetPathValue("id", installed.PluginID)
 	operationsResponse := httptest.NewRecorder()
 	Dependencies{PluginService: pluginAPI}.handlePluginOperations(operationsResponse, operationsRequest)
@@ -359,6 +391,7 @@ func TestPluginDetailProjectionFailureIsFailClosedAndRedacted(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/official.read", nil)
 	request.SetPathValue("id", "official.read")
 	response := httptest.NewRecorder()
+	request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, authz.Actor{ID: "admin", Permissions: []string{authz.PermissionSystemAdmin}}))
 	Dependencies{PluginService: &pluginReadAPIFake{detailErr: fmt.Errorf("%w: secret persisted json", service.ErrPluginReadProjection)}}.handlePlugin(response, request)
 	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret persisted") || !strings.Contains(response.Body.String(), "internal marketplace or plugin service error") {
 		t.Fatalf("projection error status=%d body=%s", response.Code, response.Body.String())

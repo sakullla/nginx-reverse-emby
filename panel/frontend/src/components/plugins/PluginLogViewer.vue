@@ -1,18 +1,29 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchPluginLogs } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 const props = defineProps({ pluginId: { type: String, required: true }, instanceId: { type: String, required: true }, agents: { type: Array, default: () => [] } })
 const entries = ref([]); const nextCursor = ref(''); const agentID = ref(''); const loading = ref(false); const error = ref('')
-onMounted(() => load(false)); watch(() => props.instanceId, () => load(false)); watch(agentID, () => load(false))
-async function load(more) {
-  if (loading.value) return
-  loading.value = true; error.value = ''
-  try {
-    const page = await fetchPluginLogs(props.pluginId, props.instanceId, { agentID: agentID.value, cursor: more ? nextCursor.value : '', limit: 50 })
-    entries.value = more ? entries.value.concat(page.entries) : page.entries
-    nextCursor.value = page.next_cursor
-  } catch (cause) { error.value = sanitizePluginText(cause?.message || '读取运行日志失败') } finally { loading.value = false }
+let generation = 0
+let controller = null
+onMounted(() => load(false, true))
+watch(() => [props.pluginId, props.instanceId, agentID.value], () => load(false, true))
+onBeforeUnmount(() => controller?.abort())
+async function load(more, selectionChanged = false) {
+	if (loading.value && !selectionChanged) return
+	if (selectionChanged) controller?.abort()
+	const requestGeneration = ++generation
+	controller = new AbortController()
+	loading.value = true; error.value = ''
+	const identity = { pluginID: props.pluginId, instanceID: props.instanceId, agentID: agentID.value }
+	try {
+		const page = await fetchPluginLogs(identity.pluginID, identity.instanceID, { agentID: identity.agentID, cursor: more ? nextCursor.value : '', limit: 50, signal: controller.signal })
+		if (requestGeneration !== generation) return
+		entries.value = more ? entries.value.concat(page.entries) : page.entries
+		nextCursor.value = page.next_cursor
+	} catch (cause) {
+		if (requestGeneration === generation && cause?.name !== 'AbortError' && cause?.code !== 'ERR_CANCELED') error.value = sanitizePluginText(cause?.message || '读取运行日志失败')
+	} finally { if (requestGeneration === generation) loading.value = false }
 }
 </script>
 

@@ -2,14 +2,19 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
-	"regexp"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/sanitize"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -17,10 +22,6 @@ const (
 	pluginRuntimeLogPageMax    = 100
 	pluginRuntimeLogRetention  = 1000
 )
-
-var pluginRuntimeCredentialPattern = regexp.MustCompile(`(?i)((?:authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+|Bearer\s+[^\s,;]+`)
-var pluginRuntimeURLCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+@`)
-var pluginRuntimePrivateKeyPattern = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
 
 type PluginRuntimeLogQuery struct {
 	InstanceID string
@@ -32,6 +33,106 @@ type PluginRuntimeLogQuery struct {
 type PluginRuntimeLogPage struct {
 	Rows       []PluginRuntimeLogRow
 	NextCursor string
+}
+
+// AppendControlPlanePluginRuntimeLog derives ownership from durable runtime
+// and instance rows; callers cannot stamp a resource group onto guest output.
+func (s *GormStore) AppendControlPlanePluginRuntimeLog(ctx context.Context, instanceID, pluginID, generation, message string) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var runtime PluginRuntimeInstanceRow
+		if err := tx.Where("instance_id = ? AND plugin_id = ? AND (active_generation = ? OR candidate_generation = ?)", instanceID, pluginID, generation, generation).First(&runtime).Error; err != nil {
+			return err
+		}
+		var instance PluginInstanceRow
+		if err := tx.Where("id = ? AND plugin_id = ?", instanceID, pluginID).First(&instance).Error; err != nil {
+			return err
+		}
+		row := PluginRuntimeLogRow{InstanceID: instanceID, PluginID: pluginID, AgentID: "control-plane", ResourceGroupID: instance.ResourceGroupID, Level: "info", Message: message, CreatedAt: time.Now().UTC()}
+		row.Message, row.Truncated = sanitizePluginRuntimeLog(row.Message)
+		return appendPluginRuntimeLogTx(tx, &row)
+	})
+}
+
+type PluginRuntimeLogEntry struct {
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Truncated bool   `json:"truncated"`
+}
+
+type PluginRuntimeLogReport struct {
+	Revision       int64                   `json:"revision"`
+	GenerationID   string                  `json:"generation_id"`
+	InstanceID     string                  `json:"instance_id"`
+	PluginID       string                  `json:"plugin_id"`
+	AgentID        string                  `json:"agent_id"`
+	PackageDigest  string                  `json:"package_digest"`
+	ArtifactDigest string                  `json:"artifact_digest"`
+	Sequence       uint64                  `json:"sequence"`
+	Entries        []PluginRuntimeLogEntry `json:"entries"`
+}
+
+// RecordPluginRuntimeLogReport validates immutable runtime ownership and a
+// monotonic per-generation replay fence before persisting sanitized fragments.
+func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authenticatedAgentID string, report PluginRuntimeLogReport) (bool, error) {
+	authenticatedAgentID = strings.TrimSpace(authenticatedAgentID)
+	if authenticatedAgentID == "" || report.AgentID != authenticatedAgentID || report.Revision <= 0 || report.Sequence == 0 ||
+		strings.TrimSpace(report.GenerationID) == "" || strings.TrimSpace(report.InstanceID) == "" || strings.TrimSpace(report.PluginID) == "" ||
+		len(report.PackageDigest) != 64 || len(report.ArtifactDigest) != 64 || len(report.Entries) == 0 || len(report.Entries) > 32 {
+		return false, errors.New("plugin runtime log report identity is invalid")
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		return false, err
+	}
+	digestBytes := sha256.Sum256(encoded)
+	digest := hex.EncodeToString(digestBytes[:])
+	accepted := false
+	err = s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var status PluginAgentRuntimeStatusRow
+		if err := tx.Where("agent_id = ? AND instance_id = ? AND generation_id = ? AND revision = ? AND plugin_id = ? AND package_digest = ? AND artifact_digest = ?",
+			report.AgentID, report.InstanceID, report.GenerationID, report.Revision, report.PluginID, report.PackageDigest, report.ArtifactDigest).Order("updated_at DESC").First(&status).Error; err != nil {
+			return fmt.Errorf("plugin runtime log generation is not authoritative: %w", err)
+		}
+		var instance PluginInstanceRow
+		if err := tx.Where("id = ? AND plugin_id = ?", report.InstanceID, report.PluginID).First(&instance).Error; err != nil {
+			return fmt.Errorf("plugin runtime log instance is unavailable: %w", err)
+		}
+		groupID := instance.ResourceGroupID
+		if instance.PendingOperationID == status.OperationID && strings.TrimSpace(instance.PendingResourceGroupID) != "" {
+			groupID = instance.PendingResourceGroupID
+		}
+		var fence PluginRuntimeLogReportRow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ? AND instance_id = ? AND generation_id = ?", report.AgentID, report.InstanceID, report.GenerationID).First(&fence).Error
+		if err == nil {
+			if report.Sequence < fence.Sequence {
+				return errors.New("plugin runtime log report is stale")
+			}
+			if report.Sequence == fence.Sequence {
+				if digest != fence.ReportDigest {
+					return errors.New("plugin runtime log report replay digest differs")
+				}
+				return nil
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		createdAt := time.Now().UTC()
+		for _, entry := range report.Entries {
+			row := PluginRuntimeLogRow{InstanceID: report.InstanceID, PluginID: report.PluginID, AgentID: report.AgentID, ResourceGroupID: groupID, Level: entry.Level, Message: entry.Message, Truncated: entry.Truncated, CreatedAt: createdAt}
+			row.Message, row.Truncated = sanitizePluginRuntimeLog(row.Message)
+			row.Truncated = row.Truncated || entry.Truncated
+			if err := appendPluginRuntimeLogTx(tx, &row); err != nil {
+				return err
+			}
+		}
+		fence = PluginRuntimeLogReportRow{AgentID: report.AgentID, InstanceID: report.InstanceID, GenerationID: report.GenerationID, Revision: report.Revision, PluginID: report.PluginID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest, Sequence: report.Sequence, ReportDigest: digest, UpdatedAt: createdAt}
+		if err := tx.Save(&fence).Error; err != nil {
+			return err
+		}
+		accepted = true
+		return nil
+	})
+	return accepted, err
 }
 
 func (s *GormStore) AppendPluginRuntimeLog(ctx context.Context, row PluginRuntimeLogRow) (PluginRuntimeLogRow, error) {
@@ -112,17 +213,7 @@ func sanitizePluginRuntimeLog(message string) (string, bool) {
 		}
 		return r
 	}, message)
-	message = pluginRuntimeCredentialPattern.ReplaceAllStringFunc(message, func(match string) string {
-		if strings.HasPrefix(strings.ToLower(match), "bearer ") {
-			return "Bearer [REDACTED]"
-		}
-		if index := strings.IndexAny(match, ":="); index >= 0 {
-			return match[:index+1] + "[REDACTED]"
-		}
-		return "[REDACTED]"
-	})
-	message = pluginRuntimeURLCredentialPattern.ReplaceAllString(message, `${1}[REDACTED]@`)
-	message = pluginRuntimePrivateKeyPattern.ReplaceAllString(message, `[REDACTED PRIVATE KEY]`)
+	message = sanitize.Text(message, nil)
 	truncated := len(message) > pluginRuntimeLogMessageMax
 	if truncated {
 		message = message[:pluginRuntimeLogMessageMax]

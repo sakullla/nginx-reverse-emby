@@ -75,6 +75,7 @@ func (fn closeFunc) Close() error { return fn() }
 type HostCandidate struct {
 	InstanceID, PluginID, PluginVersion, PackageDigest, Generation, OperationID string
 	Revision                                                                    int64
+	ProviderGenerationID, AgentID                                               string
 	Artifact                                                                    pluginprocess.Artifact
 	Requirement                                                                 pluginprocess.SandboxRequirement
 	Scopes                                                                      []string
@@ -555,6 +556,15 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	candidate.Process.Security.GuestEndpoint = security.guestEndpoint
 	candidate.Process.GeneratedEnvironment = replaceGeneratedEnvironment(candidate.Process.GeneratedEnvironment, security.environment)
 	candidate.Process.SensitiveValues = append(candidate.Process.SensitiveValues, candidate.Dial.Cookie)
+	candidate.Process.RuntimeLogIdentity = pluginprocess.RuntimeLogIdentity{
+		Revision:             candidate.Revision,
+		ProviderGenerationID: candidate.ProviderGenerationID,
+		InstanceID:           candidate.InstanceID,
+		PluginID:             candidate.PluginID,
+		AgentID:              candidate.AgentID,
+		PackageDigest:        candidate.PackageDigest,
+		ArtifactDigest:       candidate.Artifact.SHA256,
+	}
 	handle, err := h.supervisor.StartOnce(ctx, candidate.Process)
 	if err != nil {
 		return attempt, err

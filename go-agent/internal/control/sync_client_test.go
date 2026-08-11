@@ -329,6 +329,8 @@ func TestHeartbeatSync(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	pluginLogsAcknowledged := 0
+	pluginLog := testPluginRuntimeLogReport(4)
 
 	snap, err := client.Sync(ctx, SyncRequest{
 		CurrentRevision:   42,
@@ -352,6 +354,11 @@ func TestHeartbeatSync(t *testing.T) {
 			UpdatedAt: "2026-04-11T00:00:00Z",
 		}},
 		PluginStatuses: []model.PluginRuntimeStatus{{InstanceID: "instance-heartbeat", Sequence: 2}},
+		PluginLogs:     []model.PluginRuntimeLogReport{pluginLog},
+		PluginLogsAcknowledged: func() error {
+			pluginLogsAcknowledged++
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -361,6 +368,9 @@ func TestHeartbeatSync(t *testing.T) {
 	}
 	if snap.Revision != 42 {
 		t.Fatalf("expected revision=42, got %d", snap.Revision)
+	}
+	if pluginLogsAcknowledged != 1 {
+		t.Fatalf("plugin log acknowledgement calls = %d, want 1", pluginLogsAcknowledged)
 	}
 	if !reflect.DeepEqual(snap.VersionPackage, &model.VersionPackage{
 		URL:      "https://example.com/nre-agent-linux-amd64",
@@ -465,6 +475,7 @@ func TestHeartbeatSync(t *testing.T) {
 			Version                   string                           `json:"version"`
 			Platform                  string                           `json:"platform"`
 			PluginStatuses            []model.PluginRuntimeStatus      `json:"plugin_statuses"`
+			PluginLogs                []model.PluginRuntimeLogReport   `json:"plugin_logs"`
 		}
 		if err := json.NewDecoder(bytes.NewReader(req.Body)).Decode(&payload); err != nil {
 			t.Fatalf("failed to decode payload: %v", err)
@@ -498,8 +509,54 @@ func TestHeartbeatSync(t *testing.T) {
 		if len(payload.PluginStatuses) != 1 || payload.PluginStatuses[0].InstanceID != "instance-heartbeat" || payload.PluginStatuses[0].Sequence != 2 {
 			t.Fatalf("unexpected plugin_statuses payload %+v", payload.PluginStatuses)
 		}
+		if !reflect.DeepEqual(payload.PluginLogs, []model.PluginRuntimeLogReport{pluginLog}) {
+			t.Fatalf("unexpected plugin_logs payload %+v", payload.PluginLogs)
+		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")
+	}
+}
+
+func TestHeartbeatPluginLogsAreAcknowledgedOnlyAfterAuthenticatedDecodedSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{name: "non-2xx", statusCode: http.StatusUnauthorized, body: `{"message":"unauthorized"}`},
+		{name: "malformed response", statusCode: http.StatusOK, body: `{`},
+		{name: "malformed sync", statusCode: http.StatusOK, body: `{"sync":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			acknowledged := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.statusCode)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "token", AgentID: "edge-1"}, server.Client())
+			_, err := client.Sync(t.Context(), SyncRequest{
+				PluginLogs: []model.PluginRuntimeLogReport{testPluginRuntimeLogReport(1)},
+				PluginLogsAcknowledged: func() error {
+					acknowledged++
+					return nil
+				},
+			})
+			if err == nil {
+				t.Fatal("Sync() accepted failed heartbeat")
+			}
+			if acknowledged != 0 {
+				t.Fatalf("failed heartbeat acknowledged %d plugin log batches", acknowledged)
+			}
+		})
+	}
+}
+
+func testPluginRuntimeLogReport(sequence uint64) model.PluginRuntimeLogReport {
+	return model.PluginRuntimeLogReport{
+		Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-1",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), Sequence: sequence,
+		Entries: []model.PluginRuntimeLogEntry{{Level: "info", Message: "safe"}},
 	}
 }
 

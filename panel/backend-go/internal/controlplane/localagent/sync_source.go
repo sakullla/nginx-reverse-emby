@@ -3,6 +3,7 @@ package localagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type SyncRequest struct {
 	LastSeenIPv4              string
 	LastSeenIPv6              string
 	PluginStatuses            []storage.PluginRuntimeStatus
+	PluginLogs                []storage.PluginRuntimeLogReport
 }
 
 type SnapshotStore interface {
@@ -54,6 +56,10 @@ type localDDNSHeartbeatStore interface {
 
 type localPluginRuntimeReportStore interface {
 	RecordPluginAgentRuntimeReport(context.Context, storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error)
+}
+
+type localPluginRuntimeLogStore interface {
+	RecordPluginRuntimeLogReport(context.Context, string, storage.PluginRuntimeLogReport) (bool, error)
 }
 
 func NewSyncSource(store SnapshotStore, agentID string) *SyncSource {
@@ -100,6 +106,15 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 				return Snapshot{}, err
 			}
 		}
+	}
+	if logStore, ok := s.store.(localPluginRuntimeLogStore); ok {
+		for _, report := range request.PluginLogs {
+			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, s.agentID, report); err != nil {
+				return Snapshot{}, err
+			}
+		}
+	} else if len(request.PluginLogs) > 0 {
+		return Snapshot{}, errors.New("plugin runtime log ingestion is unavailable")
 	}
 	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
 	if err != nil {
@@ -208,6 +223,7 @@ func (b *syncRequestBridge) Load() SyncRequest {
 func cloneSyncRequest(request SyncRequest) SyncRequest {
 	copyValue := request
 	copyValue.PluginStatuses = append([]storage.PluginRuntimeStatus(nil), request.PluginStatuses...)
+	copyValue.PluginLogs = append([]storage.PluginRuntimeLogReport(nil), request.PluginLogs...)
 	if len(request.ManagedCertificateReports) > 0 {
 		copyValue.ManagedCertificateReports = append([]storage.ManagedCertificateReport(nil), request.ManagedCertificateReports...)
 	}

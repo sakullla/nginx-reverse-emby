@@ -4,20 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/sanitize"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
-
-var pluginRuntimeErrorCredentialPattern = regexp.MustCompile(`(?i)((?:authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+|Bearer\s+[^\s,;]+`)
-var pluginRuntimeErrorURLCredentialPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+@`)
-var pluginRuntimeErrorPrivateKeyPattern = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
 
 type PluginRuntimeRepository interface {
 	StagePluginRuntime(context.Context, storage.PluginRuntimeInstanceRow) error
@@ -81,6 +76,12 @@ type PluginRuntimeHost struct {
 	pendingMu  sync.Mutex
 	pending    map[*pluginhost.Instance]pendingRuntimeCleanup
 	revoker    PluginCapabilityGenerationRevoker
+	logQueue   chan pluginRuntimeHostLog
+}
+
+type pluginRuntimeHostLog struct {
+	candidate pluginhost.Candidate
+	message   string
 }
 
 type PluginCapabilityGenerationRevoker interface {
@@ -102,12 +103,36 @@ func NewPluginRuntimeHost(host *pluginhost.Host, repository PluginRuntimeReposit
 		return nil, errors.New("plugin runtime host and repository are required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, terminals: make(map[terminalResultKey]pluginhost.TerminalResult), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup)}
+	service := &PluginRuntimeHost{host: host, repository: repository, ctx: ctx, cancel: cancel, terminals: make(map[terminalResultKey]pluginhost.TerminalResult), pending: make(map[*pluginhost.Instance]pendingRuntimeCleanup), logQueue: make(chan pluginRuntimeHostLog, 128)}
 	host.SetStatusObserver(func(status pluginhost.RuntimeStatus) error {
 		observerCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
 		defer cancel()
 		return repository.UpdatePluginRuntimeHealth(observerCtx, status.InstanceID, status.Generation, status.State, status.PID, status.RestartCount, status.CircuitOpen, status.LastError)
 	})
+	if sink, ok := repository.(interface {
+		AppendControlPlanePluginRuntimeLog(context.Context, string, string, string, string) error
+	}); ok {
+		host.SetLogObserver(func(candidate pluginhost.Candidate, message string) {
+			select {
+			case service.logQueue <- pluginRuntimeHostLog{candidate: candidate, message: message}:
+			default:
+			}
+		})
+		service.operations.Add(1)
+		go func() {
+			defer service.operations.Done()
+			for {
+				select {
+				case <-service.ctx.Done():
+					return
+				case entry := <-service.logQueue:
+					writeCtx, cancel := context.WithTimeout(service.ctx, pluginRuntimeHealthWriteTimeout)
+					_ = sink.AppendControlPlanePluginRuntimeLog(writeCtx, entry.candidate.InstanceID, entry.candidate.Identity.PluginID, entry.candidate.Identity.Generation, entry.message)
+					cancel()
+				}
+			}
+		}()
+	}
 	return service, nil
 }
 
@@ -438,18 +463,7 @@ func safeRuntimeError(err error) string {
 	if err == nil {
 		return ""
 	}
-	value := err.Error()
-	value = pluginRuntimeErrorCredentialPattern.ReplaceAllStringFunc(value, func(match string) string {
-		if len(match) >= 7 && strings.EqualFold(match[:7], "Bearer ") {
-			return "Bearer [REDACTED]"
-		}
-		if index := strings.IndexAny(match, ":="); index >= 0 {
-			return match[:index+1] + "[REDACTED]"
-		}
-		return "[REDACTED]"
-	})
-	value = pluginRuntimeErrorURLCredentialPattern.ReplaceAllString(value, `${1}[REDACTED]@`)
-	value = pluginRuntimeErrorPrivateKeyPattern.ReplaceAllString(value, `[REDACTED PRIVATE KEY]`)
+	value := sanitize.Text(err.Error(), nil)
 	if len(value) > 256 {
 		return value[:256]
 	}

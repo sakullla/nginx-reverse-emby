@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestPluginWriteOnlyConfigProjectionAndPreservation(t *testing.T) {
@@ -29,15 +31,24 @@ func TestPluginWriteOnlyConfigProjectionAndPreservation(t *testing.T) {
 		t.Fatalf("writeOnly schema leaked a secret default: %s", publicSchema)
 	}
 
-	preserved, err := pluginMergeWriteOnlyConfig(schema, json.RawMessage(`{"mode":"block"}`), `{"mode":"observe","credentials":{"token":"plaintext-secret"}}`, nil)
-	if err != nil || !strings.Contains(string(preserved), "plaintext-secret") || !strings.Contains(string(preserved), `"mode":"block"`) {
-		t.Fatalf("preserve result=%s error=%v", preserved, err)
+	public, replacements, retained, err := pluginPrepareBrokeredConfig(schema, json.RawMessage(`{"mode":"block","credentials":{}}`), []storage.PluginInstanceSecretHandle{{Pointer: "/credentials/token", ID: "secret-1"}}, nil)
+	if err != nil || strings.Contains(string(public), "plaintext") || len(replacements) != 0 || len(retained) != 1 {
+		t.Fatalf("preserve public=%s replacements=%v retained=%+v error=%v", public, replacements, retained, err)
 	}
-	replaced, err := pluginMergeWriteOnlyConfig(schema, json.RawMessage(`{"mode":"block"}`), string(preserved), map[string]json.RawMessage{"/credentials/token": json.RawMessage(`"replacement"`)})
-	if err != nil || strings.Contains(string(replaced), "plaintext-secret") || !strings.Contains(string(replaced), "replacement") {
-		t.Fatalf("replace result=%s error=%v", replaced, err)
+	public, replacements, retained, err = pluginPrepareBrokeredConfig(schema, json.RawMessage(`{"mode":"block","credentials":{}}`), retained, map[string]json.RawMessage{"/credentials/token": json.RawMessage(`"replacement"`)})
+	if err != nil || strings.Contains(string(public), "replacement") || string(replacements["/credentials/token"]) != `"replacement"` || len(retained) != 0 {
+		t.Fatalf("replace public=%s replacements=%v retained=%+v error=%v", public, replacements, retained, err)
 	}
-	if _, err := pluginMergeWriteOnlyConfig(schema, json.RawMessage(`{"mode":"block","credentials":{"token":"caller-plaintext"}}`), string(replaced), nil); err == nil {
+	if _, _, _, err := pluginPrepareBrokeredConfig(schema, json.RawMessage(`{"mode":"block","credentials":{"token":"caller-plaintext"}}`), nil, nil); err == nil {
 		t.Fatal("writeOnly value in ordinary config was accepted")
+	}
+}
+
+func TestPluginBrokeredConfigSupportsArrayPointersAndExplicitDelete(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"accounts": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"token": map[string]any{"type": "string", "writeOnly": true}}}}}}
+	handles := []storage.PluginInstanceSecretHandle{{Pointer: "/accounts/0/token", ID: "secret-a"}, {Pointer: "/accounts/1/token", ID: "secret-b"}}
+	public, replacements, retained, err := pluginPrepareBrokeredConfig(schema, json.RawMessage(`{"accounts":[{"token":null},{"token":null}]}`), handles, map[string]json.RawMessage{"/accounts/0/token": json.RawMessage(`null`), "/accounts/1/token": json.RawMessage(`"next"`)})
+	if err != nil || strings.Contains(string(public), "next") || len(replacements) != 1 || replacements["/accounts/1/token"] == nil || len(retained) != 0 {
+		t.Fatalf("array public=%s replacements=%v retained=%+v error=%v", public, replacements, retained, err)
 	}
 }

@@ -2,7 +2,7 @@
 import { reactive, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
 
-const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false } })
+const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
 const emit = defineEmits(['submit', 'dynamic'])
 const model = reactive({})
 const targets = reactive({})
@@ -16,6 +16,7 @@ function setValue(pointer, value) {
   current[parts.at(-1)] = value
 }
 function action(action) {
+	if (action.type === 'dynamic' ? !props.canAct : !props.canConfigure) return
   if (action.type === 'submit') emit('submit', { config: clone(model), secret_replacements: {} })
   else if (action.type === 'reset' && (!action.confirm || window.confirm(action.confirm))) reset()
   else if (action.type === 'dynamic' && (!action.confirm || window.confirm(action.confirm))) emit('dynamic', { action, target_id: targets[action.id] || '', confirmed: true })
@@ -25,9 +26,9 @@ function action(action) {
 <template>
   <section class="declarative-ui">
     <header><h3>{{ document.title }}</h3><p v-if="document.description">{{ document.description }}</p></header>
-    <PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" @change="setValue" />
+		<template v-if="canConfigure"><PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" @change="setValue" /></template>
     <div class="declarative-actions">
-      <template v-for="item in document.actions || []" :key="item.id">
+			<template v-for="item in (document.actions || []).filter((action) => action.type === 'dynamic' ? canAct : canConfigure)" :key="item.id">
         <label v-if="item.type === 'dynamic'" class="declarative-target"><span>{{ item.target_kind }} ID</span><input v-model="targets[item.id]" type="text" autocomplete="off"></label>
         <button class="btn" :class="item.type === 'submit' ? 'btn-primary' : 'btn-secondary'" type="button" :disabled="saving || actionBusy || (item.type === 'dynamic' && !targets[item.id])" @click="action(item)">{{ item.label }}</button>
       </template>

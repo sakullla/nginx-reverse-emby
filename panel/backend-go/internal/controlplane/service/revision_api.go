@@ -209,18 +209,19 @@ type RemoteRevisionStart struct {
 }
 
 type RemoteRevisionReport struct {
-	AgentID        string                        `json:"agent_id"`
-	Revision       int64                         `json:"revision"`
-	RetryCycle     int                           `json:"retry_cycle"`
-	Attempt        int                           `json:"attempt"`
-	LeaseID        string                        `json:"lease_id"`
-	GenerationID   string                        `json:"generation_id"`
-	Status         string                        `json:"status"`
-	ErrorCode      string                        `json:"error_code,omitempty"`
-	ErrorMessage   string                        `json:"error_message,omitempty"`
-	Forced         bool                          `json:"forced,omitempty"`
-	ForceReason    string                        `json:"force_reason,omitempty"`
-	PluginStatuses []storage.PluginRuntimeStatus `json:"plugin_statuses,omitempty"`
+	AgentID        string                           `json:"agent_id"`
+	Revision       int64                            `json:"revision"`
+	RetryCycle     int                              `json:"retry_cycle"`
+	Attempt        int                              `json:"attempt"`
+	LeaseID        string                           `json:"lease_id"`
+	GenerationID   string                           `json:"generation_id"`
+	Status         string                           `json:"status"`
+	ErrorCode      string                           `json:"error_code,omitempty"`
+	ErrorMessage   string                           `json:"error_message,omitempty"`
+	Forced         bool                             `json:"forced,omitempty"`
+	ForceReason    string                           `json:"force_reason,omitempty"`
+	PluginStatuses []storage.PluginRuntimeStatus    `json:"plugin_statuses,omitempty"`
+	PluginLogs     []storage.PluginRuntimeLogReport `json:"plugin_logs,omitempty"`
 }
 
 func (s *RevisionAPI) SetPluginLifecycleReconciler(reconciler *PluginLifecycleReconciler) {
@@ -808,6 +809,17 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID string, input RemoteRevisionReport, terminalState string) error {
 	if s == nil || s.pluginLifecycle == nil {
 		return nil
+	}
+	if logStore, ok := s.pluginLifecycle.store.(interface {
+		RecordPluginRuntimeLogReport(context.Context, string, storage.PluginRuntimeLogReport) (bool, error)
+	}); ok {
+		for _, report := range input.PluginLogs {
+			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, agentID, report); err != nil {
+				return err
+			}
+		}
+	} else if len(input.PluginLogs) > 0 {
+		return errors.New("plugin runtime log ingestion is unavailable")
 	}
 	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, input.Revision)
 	if err != nil || !found {

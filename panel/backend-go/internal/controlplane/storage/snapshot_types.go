@@ -108,6 +108,17 @@ type PluginGenerationSecretHandle struct {
 	Purpose string `json:"purpose,omitempty"`
 }
 
+// PluginInstanceSecretHandle binds a schema JSON pointer to an opaque Vault
+// version. The plaintext is deliberately absent from every durable plugin
+// configuration column and read projection.
+type PluginInstanceSecretHandle struct {
+	Pointer string `json:"pointer"`
+	ID      string `json:"id"`
+	Version uint64 `json:"version"`
+	Digest  string `json:"digest"`
+	Purpose string `json:"purpose"`
+}
+
 type PluginGenerationResourceBudget struct {
 	TimeoutMS   int64 `json:"timeout_ms"`
 	MemoryBytes int64 `json:"memory_bytes"`

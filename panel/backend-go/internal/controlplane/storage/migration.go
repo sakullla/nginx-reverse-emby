@@ -85,6 +85,7 @@ func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, jo
 		&PluginOperationRow{},
 		&PluginAgentRuntimeStatusRow{},
 		&PluginRuntimeLogRow{},
+		&PluginRuntimeLogReportRow{},
 	}
 	for _, table := range tables {
 		if _, ok := table.(*MarketSnapshotRow); ok {
@@ -1629,6 +1630,8 @@ func newSliceForModel(model any) any {
 		return &[]PluginAgentRuntimeStatusRow{}
 	case *PluginRuntimeLogRow:
 		return &[]PluginRuntimeLogRow{}
+	case *PluginRuntimeLogReportRow:
+		return &[]PluginRuntimeLogReportRow{}
 	default:
 		panic(fmt.Sprintf("unsupported migration model %T", model))
 	}
@@ -1739,6 +1742,8 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]PluginAgentRuntimeStatusRow:
 		return len(*typed) == 0
 	case *[]PluginRuntimeLogRow:
+		return len(*typed) == 0
+	case *[]PluginRuntimeLogReportRow:
 		return len(*typed) == 0
 	default:
 		panic(fmt.Sprintf("unsupported migration rows %T", rows))

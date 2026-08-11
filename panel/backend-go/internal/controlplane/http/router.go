@@ -652,6 +652,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
 	if d.PluginService == nil {
 		pluginService := service.NewPluginServiceWithValidator(store, validator, cacheRoot)
+		pluginService.SetSecretVault(d.SecretVault)
 		pluginService.ConfigureRevisionMutations(d.Config, store)
 		if revisionAPI, ok := d.RevisionService.(*service.RevisionAPI); ok {
 			reconciler, reconcileErr := service.NewPluginLifecycleReconciler(store, pluginService)

@@ -1,12 +1,14 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -25,6 +27,7 @@ func TestPluginRuntimeHTTPDTOExposesStableRuntimeAndArtifactFields(t *testing.T)
 	api := &pluginReadAPIFake{installed: []service.PluginSummary{summary}, detail: service.PluginDetail{Plugin: summary, Package: packageDetail, Instances: []service.PluginInstanceDetail{}, Grants: []service.PluginGrantDetail{}, AgentStatuses: []service.PluginAgentStatus{}}}
 
 	request := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/runtime.http", nil)
+	request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, authz.Actor{ID: "admin", Permissions: []string{authz.PermissionSystemAdmin}}))
 	request.SetPathValue("id", "runtime.http")
 	response := httptest.NewRecorder()
 	Dependencies{PluginService: api}.handlePlugin(response, request)

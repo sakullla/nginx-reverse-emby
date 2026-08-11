@@ -100,6 +100,7 @@ func (r *Runtime) State() model.RuntimeState {
 	stateCopy := r.state
 	stateCopy.Metadata = cloneStringMap(stateCopy.Metadata)
 	stateCopy.PluginStatuses = slices.Clone(stateCopy.PluginStatuses)
+	stateCopy.PluginLogReports = model.ClonePluginRuntimeLogReports(stateCopy.PluginLogReports)
 	if r.generations != nil {
 		if active := r.generations.ActiveGeneration(); active != nil {
 			stateCopy.PluginStatuses = active.PluginRuntimeStatuses()

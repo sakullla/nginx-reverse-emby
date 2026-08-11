@@ -193,6 +193,11 @@ func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.Syn
 	if err != nil {
 		return goagentembedded.Snapshot{}, err
 	}
+	if len(request.PluginLogs) > 0 && request.PluginLogsAcknowledged != nil {
+		if err := request.PluginLogsAcknowledged(); err != nil {
+			return goagentembedded.Snapshot{}, err
+		}
+	}
 	return toEmbeddedSnapshot(snapshot), nil
 }
 
@@ -456,6 +461,9 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 	}
 	if data, err := json.Marshal(request.PluginStatuses); err == nil {
 		_ = json.Unmarshal(data, &copyValue.PluginStatuses)
+	}
+	if data, err := json.Marshal(request.PluginLogs); err == nil {
+		_ = json.Unmarshal(data, &copyValue.PluginLogs)
 	}
 	if statsPresent {
 		if data, err := json.Marshal(request.Stats); err == nil {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -231,6 +233,8 @@ type PluginGrantDetail struct {
 type PluginOperationDetail struct {
 	ID                  string          `json:"id"`
 	PluginID            string          `json:"plugin_id"`
+	InstanceID          string          `json:"instance_id,omitempty"`
+	ResourceGroupID     string          `json:"resource_group_id,omitempty"`
 	Kind                string          `json:"kind"`
 	Status              string          `json:"status"`
 	TargetPackageDigest string          `json:"target_package_digest,omitempty"`
@@ -305,6 +309,13 @@ type PluginService struct {
 	mutationExecutor *revision.Executor
 	revisionMutation bool
 	revisionNumbers  map[string]int64
+	secretVault      *secrets.Vault
+}
+
+func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
+	if s != nil {
+		s.secretVault = vault
+	}
 }
 
 type controlPlanePluginRuntimePlan struct {
@@ -461,7 +472,7 @@ func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]Plug
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, PluginOperationDetail{ID: row.ID, PluginID: row.PluginID, Kind: row.Kind, Status: row.Status, TargetPackageDigest: row.TargetPackageDigest, TargetRevision: row.TargetRevision, AgentResults: agentResults, ErrorClass: row.ErrorClass, Error: row.Error, ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID, SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: row.CreatedAt, CompletedAt: row.CompletedAt})
+		result = append(result, PluginOperationDetail{ID: row.ID, PluginID: row.PluginID, InstanceID: row.InstanceID, ResourceGroupID: row.ResourceGroupID, Kind: row.Kind, Status: row.Status, TargetPackageDigest: row.TargetPackageDigest, TargetRevision: row.TargetRevision, AgentResults: agentResults, ErrorClass: row.ErrorClass, Error: row.Error, ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID, SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: row.CreatedAt, CompletedAt: row.CompletedAt})
 	}
 	return result, nil
 }
@@ -978,15 +989,34 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 			continue
 		}
 		config, configVersion, resourceGroupID := instance.ConfigJSON, instance.ConfigVersion, instance.ResourceGroupID
+		secretHandlesJSON := instance.SecretHandlesJSON
 		if instance.PendingOperationID == operation.ID && instance.PendingVersion > 0 {
 			config, configVersion = instance.PendingConfigJSON, instance.PendingVersion
+			secretHandlesJSON = instance.PendingSecretHandlesJSON
 			if instance.PendingResourceGroupID != "" {
 				resourceGroupID = instance.PendingResourceGroupID
 			}
 		}
-		var secretHandles []storage.PluginGenerationSecretHandle
-		if err := json.Unmarshal([]byte(pluginDefaultJSONArray(instance.SecretHandlesJSON)), &secretHandles); err != nil {
+		var instanceSecretHandles []storage.PluginInstanceSecretHandle
+		if err := json.Unmarshal([]byte(pluginDefaultJSONArray(secretHandlesJSON)), &instanceSecretHandles); err != nil {
 			return plan, err
+		}
+		secretHandles := make([]storage.PluginGenerationSecretHandle, 0, len(instanceSecretHandles))
+		logSecrets := make([]string, 0, len(instanceSecretHandles))
+		for _, handle := range instanceSecretHandles {
+			secretHandles = append(secretHandles, storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose})
+			if s.secretVault == nil {
+				return plan, errors.New("control-plane plugin secret vault is unavailable")
+			}
+			plaintext, err := s.secretVault.Resolve(ctx, secrets.OperationContext{ActorID: operation.ActorID, ResourceGroupID: resourceGroupID, CorrelationID: operation.CorrelationID}, handle.ID)
+			if err != nil {
+				return plan, err
+			}
+			var text string
+			if json.Unmarshal(plaintext, &text) != nil {
+				text = string(plaintext)
+			}
+			logSecrets = append(logSecrets, text)
 		}
 		generation := storage.PluginGeneration{
 			InstanceID: instance.ID, OperationID: operation.ID, Revision: operation.TargetRevision,
@@ -1006,7 +1036,7 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 			InstanceID: instance.ID,
 			Artifact:   pluginhost.Artifact{CachePath: filepath.Join(packageRow.CachePath, filepath.FromSlash(runtimeArtifact.Path)), SHA256: runtimeArtifact.SHA256, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH},
 			Identity:   pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
-			Config:     append([]byte(nil), generation.Config...), Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
+			Config:     append([]byte(nil), generation.Config...), LogSecrets: logSecrets, Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
 			Deadline: time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
 			Restart: manifest.FailurePolicy.Restart, RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
 		})
@@ -1048,6 +1078,42 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 	return s.configureWithProspectiveDetail(ctx, request, nil)
 }
 
+func (s *PluginService) materializeStoredPluginConfig(ctx context.Context, schema map[string]any, rawConfig, rawHandles, resourceGroupID, actorID, correlationID string) (json.RawMessage, []storage.PluginInstanceSecretHandle, error) {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(rawConfig))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, nil, ErrPluginReadProjection
+	}
+	var handles []storage.PluginInstanceSecretHandle
+	if err := json.Unmarshal([]byte(pluginDefaultJSONArray(rawHandles)), &handles); err != nil {
+		return nil, nil, ErrPluginReadProjection
+	}
+	for _, handle := range handles {
+		if s.secretVault == nil {
+			return nil, nil, errors.New("plugin secret vault is unavailable")
+		}
+		plaintext, err := s.secretVault.Resolve(ctx, secrets.OperationContext{ActorID: actorID, CorrelationID: correlationID, ResourceGroupID: resourceGroupID}, handle.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		var secret any
+		secretDecoder := json.NewDecoder(strings.NewReader(string(plaintext)))
+		secretDecoder.UseNumber()
+		if err := secretDecoder.Decode(&secret); err != nil || pluginSetJSONPointer(value, handle.Pointer, secret) != nil {
+			return nil, nil, ErrPluginReadProjection
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || plugins.ValidateConfig(schema, encoded) != nil {
+		if err == nil {
+			err = plugins.ValidateConfig(schema, encoded)
+		}
+		return nil, nil, err
+	}
+	return encoded, handles, nil
+}
+
 func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, request PluginConfigureRequest, prospective *PluginInstanceDetail) (storage.PluginInstanceRow, error) {
 	installed, ok, err := s.store.GetInstalledPlugin(ctx, request.PluginID)
 	if err != nil {
@@ -1085,21 +1151,10 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance identity mismatch", ErrInvalidArgument))
 		}
 	}
-	currentConfig := "{}"
-	if exists {
-		currentConfig = instance.ConfigJSON
-	}
-	request.Config, err = pluginMergeWriteOnlyConfig(schema, request.Config, currentConfig, request.SecretReplacements)
-	if err != nil {
-		return storage.PluginInstanceRow{}, err
-	}
 	if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	if err := ensureNoPendingOperation(installed); err != nil {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
-	}
-	if err := plugins.ValidateConfig(schema, request.Config); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	var manifest plugins.Manifest
@@ -1136,9 +1191,84 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if strings.TrimSpace(request.InstanceID) == "" {
 		request.InstanceID = lifecycleID("instance")
 	}
+	operation.InstanceID = request.InstanceID
+	operation.ResourceGroupID = request.ResourceGroupID
 	if err := storage.ValidatePluginPolicyIdentity(request.InstanceID); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin instance identity: %v", ErrInvalidArgument, err))
 	}
+	var currentHandles []storage.PluginInstanceSecretHandle
+	if exists && strings.TrimSpace(instance.SecretHandlesJSON) != "" {
+		if err := json.Unmarshal([]byte(pluginDefaultJSONArray(instance.SecretHandlesJSON)), &currentHandles); err != nil {
+			return storage.PluginInstanceRow{}, ErrPluginReadProjection
+		}
+	}
+	publicConfig, replacements, retainedHandles, err := pluginPrepareBrokeredConfig(schema, request.Config, currentHandles, request.SecretReplacements)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	var materialized any
+	decoder := json.NewDecoder(strings.NewReader(string(publicConfig)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&materialized); err != nil {
+		return storage.PluginInstanceRow{}, ErrPluginReadProjection
+	}
+	vaultOp := secrets.OperationContext{ActorID: request.ActorID, CorrelationID: operation.CorrelationID, ResourceGroupID: request.ResourceGroupID}
+	for _, handle := range retainedHandles {
+		if s.secretVault == nil {
+			return storage.PluginInstanceRow{}, errors.New("plugin secret vault is unavailable")
+		}
+		plaintext, err := s.secretVault.Resolve(ctx, vaultOp, handle.ID)
+		if err != nil {
+			return storage.PluginInstanceRow{}, err
+		}
+		var value any
+		valueDecoder := json.NewDecoder(strings.NewReader(string(plaintext)))
+		valueDecoder.UseNumber()
+		if err := valueDecoder.Decode(&value); err != nil || pluginSetJSONPointer(materialized, handle.Pointer, value) != nil {
+			return storage.PluginInstanceRow{}, ErrPluginReadProjection
+		}
+	}
+	secretWrites := make([]storage.PluginSecretWrite, 0, len(replacements))
+	for pointer, raw := range replacements {
+		if s.secretVault == nil {
+			return storage.PluginInstanceRow{}, errors.New("plugin secret vault is unavailable")
+		}
+		pointerDigest := sha256.Sum256([]byte(pointer))
+		prepared, err := s.secretVault.PreparePluginSecret(vaultOp, "plugin-config-"+operation.ID+"-"+hex.EncodeToString(pointerDigest[:6]), "plugin-config:"+request.InstanceID+":"+pointer, string(raw))
+		if err != nil {
+			return storage.PluginInstanceRow{}, err
+		}
+		digest := sha256.Sum256(raw)
+		retainedHandles = append(retainedHandles, storage.PluginInstanceSecretHandle{Pointer: pointer, ID: prepared.Metadata.ID, Version: prepared.Metadata.ActiveVersion, Digest: hex.EncodeToString(digest[:]), Purpose: prepared.Metadata.Purpose})
+		secretWrites = append(secretWrites, storage.PluginSecretWrite{Secret: prepared.Secret, Version: prepared.Version, Audit: prepared.Audit})
+		var value any
+		valueDecoder := json.NewDecoder(strings.NewReader(string(raw)))
+		valueDecoder.UseNumber()
+		if err := valueDecoder.Decode(&value); err != nil || pluginSetJSONPointer(materialized, pointer, value) != nil {
+			return storage.PluginInstanceRow{}, ErrInvalidArgument
+		}
+	}
+	materializedConfig, err := json.Marshal(materialized)
+	if err != nil || plugins.ValidateConfig(schema, materializedConfig) != nil {
+		if err == nil {
+			err = plugins.ValidateConfig(schema, materializedConfig)
+		}
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+	}
+	cleanedConfig, _, err := pluginStripWriteOnly(schema, materialized, "")
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	publicConfig, err = json.Marshal(cleanedConfig)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	sort.Slice(retainedHandles, func(i, j int) bool { return retainedHandles[i].Pointer < retainedHandles[j].Pointer })
+	handlesJSON, err := json.Marshal(retainedHandles)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	request.Config = publicConfig
 	if !exists && strings.TrimSpace(request.InstanceID) != "" {
 		instance, exists, err = s.store.GetPluginInstance(ctx, request.InstanceID)
 		if err != nil {
@@ -1204,9 +1334,10 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 		version = instance.PendingVersion + 1
 	}
 	if !exists {
-		instance = storage.PluginInstanceRow{ID: request.InstanceID, PluginID: request.PluginID, ResourceGroupID: request.ResourceGroupID, TargetJSON: string(targetJSON), PolicyChainsJSON: "[]", BindingsJSON: "[]", ConfigJSON: "{}", StatusSummaryJSON: "{}"}
+		instance = storage.PluginInstanceRow{ID: request.InstanceID, PluginID: request.PluginID, ResourceGroupID: request.ResourceGroupID, TargetJSON: string(targetJSON), PolicyChainsJSON: "[]", BindingsJSON: "[]", SecretHandlesJSON: "[]", ConfigJSON: "{}", StatusSummaryJSON: "{}"}
 	}
 	instance.PendingConfigJSON = string(request.Config)
+	instance.PendingSecretHandlesJSON = string(handlesJSON)
 	instance.PendingResourceGroupID = request.ResourceGroupID
 	instance.PendingTargetJSON = string(targetJSON)
 	instance.PendingPolicyChainsJSON = policyChainsJSON
@@ -1226,7 +1357,7 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}
-	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance, ValidateInstanceScope: true, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now)})
+	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance, ValidateInstanceScope: true, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), SecretWrites: secretWrites})
 	if err == nil && prospective != nil {
 		*prospective = details[0]
 	}
@@ -1260,6 +1391,7 @@ func (s *PluginService) CompleteConfigure(ctx context.Context, applyResult Plugi
 	operation.AgentResultsJSON, operation.CompletedAt = encodedResults, &now
 	if applyResult.Applied {
 		instance.ConfigJSON, instance.ConfigVersion = instance.PendingConfigJSON, instance.PendingVersion
+		instance.SecretHandlesJSON = instance.PendingSecretHandlesJSON
 		instance.ResourceGroupID, instance.TargetJSON = instance.PendingResourceGroupID, instance.PendingTargetJSON
 		instance.PolicyChainsJSON = instance.PendingPolicyChainsJSON
 		instance.BindingsJSON = instance.PendingBindingsJSON
@@ -1338,6 +1470,10 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	if err := json.Unmarshal([]byte(activePackage.ManifestJSON), &activeManifest); err != nil {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
+	activeSchema, err := plugins.DecodeConfigSchema([]byte(activePackage.ConfigSchemaJSON))
+	if err != nil {
+		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+	}
 	instances, err := s.store.ListPluginInstances(ctx, request.PluginID)
 	if err != nil {
 		return storage.InstalledPluginRow{}, err
@@ -1352,7 +1488,10 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	}
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
-		staged := json.RawMessage(instances[index].ConfigJSON)
+		staged, handles, err := s.materializeStoredPluginConfig(ctx, activeSchema, instances[index].ConfigJSON, instances[index].SecretHandlesJSON, instances[index].ResourceGroupID, request.ActorID, operation.CorrelationID)
+		if err != nil {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+		}
 		if len(request.Package.Package.Manifest.Migrations) > 0 {
 			staged, err = plugins.ApplyMigrationChain(request.Package.CachePath, request.Package.Package.Manifest, activeManifest.Version, staged)
 			if err != nil {
@@ -1362,7 +1501,25 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 		if err := plugins.ValidateConfig(request.Package.Package.ConfigSchema, staged); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("candidate config for instance %s is incompatible after migration: %w", instances[index].ID, err))
 		}
-		instances[index].PendingConfigJSON = string(staged)
+		stagedValue, err := pluginConfigValue(staged)
+		if err != nil {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+		}
+		cleaned, _, err := pluginStripWriteOnly(request.Package.Package.ConfigSchema, stagedValue, "")
+		if err != nil {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+		}
+		for _, handle := range handles {
+			if !pluginPointerIsWriteOnly(request.Package.Package.ConfigSchema, cleaned, handle.Pointer) {
+				return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("plugin migration changed a brokered secret pointer"))
+			}
+		}
+		publicStaged, err := json.Marshal(cleaned)
+		if err != nil {
+			return storage.InstalledPluginRow{}, err
+		}
+		instances[index].PendingConfigJSON = string(publicStaged)
+		instances[index].PendingSecretHandlesJSON = instances[index].SecretHandlesJSON
 		instances[index].PendingPolicyChainsJSON = instances[index].PolicyChainsJSON
 		instances[index].PendingBindingsJSON = instances[index].BindingsJSON
 		instances[index].PendingVersion = instances[index].ConfigVersion + 1
@@ -1467,9 +1624,11 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 		grants = grantRows(applyResult.PluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
+			instances[index].RollbackSecretHandlesJSON = instances[index].SecretHandlesJSON
 			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
 			instances[index].RollbackBindingsJSON = instances[index].BindingsJSON
 			instances[index].ConfigJSON, instances[index].ConfigVersion = instances[index].PendingConfigJSON, instances[index].PendingVersion
+			instances[index].SecretHandlesJSON = instances[index].PendingSecretHandlesJSON
 			instances[index].PolicyChainsJSON = instances[index].PendingPolicyChainsJSON
 			instances[index].BindingsJSON = instances[index].PendingBindingsJSON
 			clearPendingInstance(&instances[index])
@@ -1557,10 +1716,12 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 	}
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	for index := range instances {
-		if instances[index].RollbackVersion == 0 || plugins.ValidateConfig(rollbackSchema, json.RawMessage(instances[index].RollbackConfigJSON)) != nil {
+		_, _, configErr := s.materializeStoredPluginConfig(ctx, rollbackSchema, instances[index].RollbackConfigJSON, instances[index].RollbackSecretHandlesJSON, instances[index].ResourceGroupID, actorID, operation.CorrelationID)
+		if instances[index].RollbackVersion == 0 || configErr != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, fmt.Errorf("rollback config for instance %s is unavailable or invalid", instances[index].ID))
 		}
 		instances[index].PendingConfigJSON = instances[index].RollbackConfigJSON
+		instances[index].PendingSecretHandlesJSON = instances[index].RollbackSecretHandlesJSON
 		instances[index].PendingPolicyChainsJSON = instances[index].RollbackPolicyChainsJSON
 		instances[index].PendingBindingsJSON = instances[index].RollbackBindingsJSON
 		instances[index].PendingVersion = instances[index].RollbackVersion
@@ -1655,9 +1816,11 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 		grants = grantRows(applyResult.PluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 		for index := range instances {
 			instances[index].RollbackConfigJSON, instances[index].RollbackVersion = instances[index].ConfigJSON, instances[index].ConfigVersion
+			instances[index].RollbackSecretHandlesJSON = instances[index].SecretHandlesJSON
 			instances[index].RollbackPolicyChainsJSON = instances[index].PolicyChainsJSON
 			instances[index].RollbackBindingsJSON = instances[index].BindingsJSON
 			instances[index].ConfigJSON, instances[index].ConfigVersion = instances[index].PendingConfigJSON, instances[index].PendingVersion
+			instances[index].SecretHandlesJSON = instances[index].PendingSecretHandlesJSON
 			instances[index].PolicyChainsJSON = instances[index].PendingPolicyChainsJSON
 			instances[index].BindingsJSON = instances[index].PendingBindingsJSON
 			clearPendingInstance(&instances[index])
@@ -2049,6 +2212,7 @@ func clearPendingInstance(instance *storage.PluginInstanceRow) {
 	instance.PendingTargetJSON = ""
 	instance.PendingPolicyChainsJSON = "[]"
 	instance.PendingBindingsJSON = "[]"
+	instance.PendingSecretHandlesJSON = "[]"
 	instance.PendingVersion = 0
 	instance.PendingOperationID = ""
 }
@@ -2342,6 +2506,10 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		if err != nil {
 			return nil, err
 		}
+		secretFields, err = pluginSecretFieldStates(row.SecretHandlesJSON, secretFields)
+		if err != nil {
+			return nil, err
+		}
 		statusSummary, err := pluginReadStatusObject(row.StatusSummaryJSON)
 		if err != nil {
 			return nil, err
@@ -2357,6 +2525,10 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, PolicyChains: policyChains, Bindings: bindings, Config: config, SecretFields: secretFields, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
 		if strings.TrimSpace(row.PendingConfigJSON) != "" {
 			detail.PendingConfig, detail.PendingSecretFields, err = pluginRedactedConfig(schema, row.PendingConfigJSON)
+			if err != nil {
+				return nil, err
+			}
+			detail.PendingSecretFields, err = pluginSecretFieldStates(row.PendingSecretHandlesJSON, detail.PendingSecretFields)
 			if err != nil {
 				return nil, err
 			}

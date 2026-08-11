@@ -65,8 +65,8 @@ export async function invokePluginDynamicAction(pluginID, instanceID, actionID, 
   return redactPluginData(data)
 }
 
-export async function fetchPluginLogs(pluginID, instanceID, { agentID = '', cursor = '', limit = 50 } = {}) {
+export async function fetchPluginLogs(pluginID, instanceID, { agentID = '', cursor = '', limit = 50, signal } = {}) {
   const path = pluginPath(pluginID, `/instances/${identity(instanceID, 'instance id')}/logs`)
-  const { data } = await api.get(path, { params: { agent_id: agentID || undefined, cursor: cursor || undefined, limit } })
+	const { data } = await api.get(path, { params: { agent_id: agentID || undefined, cursor: cursor || undefined, limit }, signal })
   return redactPluginData({ entries: Array.isArray(data?.entries) ? data.entries : [], next_cursor: data?.next_cursor || '' })
 }

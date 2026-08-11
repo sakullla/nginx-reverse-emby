@@ -5,11 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 func TestFilesystemStorePersistsGenerationJournalAndLastKnownGood(t *testing.T) {
@@ -311,6 +314,11 @@ func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 
 	expected := model.RuntimeState{
 		NodeID: "agent-42",
+		PluginLogReports: []model.PluginRuntimeLogReport{{
+			Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
+			PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64), Sequence: 2,
+			Entries: []model.PluginRuntimeLogEntry{{Level: "error", Message: "persisted", Truncated: true}},
+		}},
 		Metadata: map[string]string{
 			"session": "abc123",
 		},
@@ -336,6 +344,26 @@ func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 
 	if val := got.Metadata["session"]; val != "abc123" {
 		t.Fatalf("expected metadata session=abc123, got %q", val)
+	}
+	if !reflect.DeepEqual(got.PluginLogReports, expected.PluginLogReports) {
+		t.Fatalf("restarted filesystem outbox = %+v, want %+v", got.PluginLogReports, expected.PluginLogReports)
+	}
+	pluginprocess.DrainRuntimeLogEvents()
+	t.Cleanup(func() { pluginprocess.DrainRuntimeLogEvents() })
+	persisted := got.PluginLogReports[0]
+	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{{
+		Identity: pluginprocess.RuntimeLogIdentity{
+			Revision: persisted.Revision, ProviderGenerationID: persisted.GenerationID, InstanceID: persisted.InstanceID,
+			PluginID: persisted.PluginID, AgentID: persisted.AgentID, PackageDigest: persisted.PackageDigest, ArtifactDigest: persisted.ArtifactDigest,
+		},
+		Entry: pluginprocess.RuntimeLogEntry{Level: "info", Message: "after restart"},
+	}})
+	plan, err := (&SyncController{Store: s2}).BuildSyncPlan(t.Context(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Request.PluginLogs) != 2 || plan.Request.PluginLogs[1].Sequence != 3 || plan.Request.PluginLogs[1].Entries[0].Message != "after restart" {
+		t.Fatalf("restarted outbox continuation = %+v", plan.Request.PluginLogs)
 	}
 }
 

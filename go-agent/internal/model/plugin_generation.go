@@ -155,6 +155,62 @@ type PluginRuntimeStatus struct {
 	CircuitOpen     bool            `json:"circuit_open,omitempty"`
 }
 
+const (
+	MaxPluginRuntimeLogEntries = 32
+	MaxPluginRuntimeLogMessage = 4 << 10
+	MaxPendingPluginLogReports = 256
+)
+
+type PluginRuntimeLogEntry struct {
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Truncated bool   `json:"truncated"`
+}
+
+type PluginRuntimeLogReport struct {
+	Revision       int64                   `json:"revision"`
+	GenerationID   string                  `json:"generation_id"`
+	InstanceID     string                  `json:"instance_id"`
+	PluginID       string                  `json:"plugin_id"`
+	AgentID        string                  `json:"agent_id"`
+	PackageDigest  string                  `json:"package_digest"`
+	ArtifactDigest string                  `json:"artifact_digest"`
+	Sequence       uint64                  `json:"sequence"`
+	Entries        []PluginRuntimeLogEntry `json:"entries"`
+}
+
+func (report PluginRuntimeLogReport) Validate() error {
+	if report.Revision <= 0 || report.Sequence == 0 ||
+		!validPluginIdentity(report.GenerationID) || !validPluginIdentity(report.InstanceID) ||
+		!validPluginIdentity(report.PluginID) || !validPluginIdentity(report.AgentID) ||
+		!validPluginSHA256(report.PackageDigest) || !validPluginSHA256(report.ArtifactDigest) {
+		return errors.New("plugin runtime log report fence is invalid")
+	}
+	if len(report.Entries) == 0 || len(report.Entries) > MaxPluginRuntimeLogEntries {
+		return errors.New("plugin runtime log report entries are invalid")
+	}
+	for _, entry := range report.Entries {
+		if entry.Level != "debug" && entry.Level != "info" && entry.Level != "warn" && entry.Level != "error" {
+			return errors.New("plugin runtime log entry level is invalid")
+		}
+		if entry.Message == "" || len(entry.Message) > MaxPluginRuntimeLogMessage {
+			return errors.New("plugin runtime log entry message is invalid")
+		}
+	}
+	return nil
+}
+
+func ClonePluginRuntimeLogReports(reports []PluginRuntimeLogReport) []PluginRuntimeLogReport {
+	if reports == nil {
+		return nil
+	}
+	cloned := append([]PluginRuntimeLogReport(nil), reports...)
+	for index := range cloned {
+		cloned[index].Entries = append([]PluginRuntimeLogEntry(nil), reports[index].Entries...)
+	}
+	return cloned
+}
+
 func ValidatePluginGenerations(snapshot Snapshot, materialized bool) error {
 	seen := make(map[string]struct{}, len(snapshot.PluginGenerations))
 	seenIDs := make(map[string]struct{}, len(snapshot.PluginGenerations))

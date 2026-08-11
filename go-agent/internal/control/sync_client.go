@@ -66,6 +66,8 @@ type SyncRequest struct {
 	LastSeenIPv4              string
 	LastSeenIPv6              string
 	PluginStatuses            []model.PluginRuntimeStatus
+	PluginLogs                []model.PluginRuntimeLogReport
+	PluginLogsAcknowledged    func() error
 }
 
 func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
@@ -118,6 +120,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		PKISecurityAck            *model.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
 		PKIEnrollmentRequests     []model.PKIEnrollmentRequest      `json:"pki_enrollment_requests,omitempty"`
 		PluginStatuses            []model.PluginRuntimeStatus       `json:"plugin_statuses,omitempty"`
+		PluginLogs                []model.PluginRuntimeLogReport    `json:"plugin_logs,omitempty"`
 	}{
 		Name:           c.cfg.AgentName,
 		AgentID:        c.cfg.AgentID,
@@ -142,6 +145,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	payload.LastSeenIPv4 = request.LastSeenIPv4
 	payload.LastSeenIPv6 = request.LastSeenIPv6
 	payload.PluginStatuses = append([]model.PluginRuntimeStatus(nil), request.PluginStatuses...)
+	payload.PluginLogs = model.ClonePluginRuntimeLogReports(request.PluginLogs)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -175,6 +179,9 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		return Snapshot{}, err
 	}
 	if len(reply.Sync) == 0 {
+		if err := acknowledgePluginLogs(request); err != nil {
+			return Snapshot{}, err
+		}
 		return Snapshot{}, nil
 	}
 
@@ -238,8 +245,18 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	if err := c.preparePluginArtifacts(ctx, &snapshot, snapshot.Revision, syncMeta.SnapshotDigest); err != nil {
 		return Snapshot{}, err
 	}
+	if err := acknowledgePluginLogs(request); err != nil {
+		return Snapshot{}, err
+	}
 
 	return snapshot, nil
+}
+
+func acknowledgePluginLogs(request SyncRequest) error {
+	if len(request.PluginLogs) == 0 || request.PluginLogsAcknowledged == nil {
+		return nil
+	}
+	return request.PluginLogsAcknowledged()
 }
 
 func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, error) {

@@ -126,7 +126,7 @@ func TestValidatorDeclarativeUICrossChecksConfigSchema(t *testing.T) {
 	}
 }
 
-func TestValidatorRejectsSignedSecretConfigContracts(t *testing.T) {
+func TestValidatorRejectsMismatchedSignedSecretConfigContracts(t *testing.T) {
 	tests := []struct {
 		name         string
 		mutateUI     func(map[string]any)
@@ -137,14 +137,14 @@ func TestValidatorRejectsSignedSecretConfigContracts(t *testing.T) {
 		{
 			name:         "writeOnly config property",
 			mutateSchema: func(schema map[string]any) { configProperty(schema, "endpoint")["writeOnly"] = true },
-			code:         "config_schema",
-			marker:       "brokered secret storage",
+			code:         "ui_schema",
+			marker:       "must match",
 		},
 		{
 			name:     "secret UI component binding",
 			mutateUI: func(document map[string]any) { componentByID(document, "endpoint")["type"] = UIComponentSecret },
 			code:     "ui_schema",
-			marker:   "brokered secret storage",
+			marker:   "must match",
 		},
 	}
 	for _, test := range tests {
@@ -168,6 +168,20 @@ func TestValidatorRejectsSignedSecretConfigContracts(t *testing.T) {
 				t.Fatalf("secret contract error = %v, want marker %q", err, test.marker)
 			}
 		})
+	}
+}
+
+func TestValidatorAcceptsMatchedWriteOnlySecretComponent(t *testing.T) {
+	schema := validDeclarativeUIConfigSchema(t)
+	configProperty(schema, "endpoint")["writeOnly"] = true
+	uiData := mutateDeclarativeUI(func(document map[string]any) { componentByID(document, "endpoint")["type"] = UIComponentSecret })(t)
+	root := newPackageFixture(t)
+	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"ui_schema: "+UISchemaFile+"\n")
+	writeFixtureBytes(t, root, ConfigSchemaFile, mustMarshalJSON(t, schema))
+	writeFixtureBytes(t, root, UISchemaFile, uiData)
+	refreshFixtureDigest(t, root)
+	if _, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("ValidatePackage() error = %v", err)
 	}
 }
 

@@ -181,12 +181,14 @@ func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	config := instance.ConfigJSON
 	configVersion := instance.ConfigVersion
 	resourceGroupID := instance.ResourceGroupID
+	secretHandlesJSON := instance.SecretHandlesJSON
 	operationID := installed.PendingOperationID
 	if operationID == "" {
 		operationID = installed.LastOperationID
 	}
 	if instance.PendingOperationID != "" && instance.PendingOperationID == installed.PendingOperationID && instance.PendingVersion != 0 {
 		config, configVersion = instance.PendingConfigJSON, instance.PendingVersion
+		secretHandlesJSON = instance.PendingSecretHandlesJSON
 		if instance.PendingResourceGroupID != "" {
 			resourceGroupID = instance.PendingResourceGroupID
 		}
@@ -195,7 +197,7 @@ func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	if err != nil {
 		return PluginGeneration{}, fmt.Errorf("plugin instance %s config: %w", instance.ID, err)
 	}
-	secretHandles, err := decodePluginGenerationList[PluginGenerationSecretHandle](instance.SecretHandlesJSON)
+	secretHandles, err := decodePluginGenerationList[PluginGenerationSecretHandle](secretHandlesJSON)
 	if err != nil {
 		return PluginGeneration{}, fmt.Errorf("plugin instance %s secret handles: %w", instance.ID, err)
 	}

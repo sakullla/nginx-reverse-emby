@@ -326,19 +326,19 @@ func (d Dependencies) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	var installed []service.PluginSummary
-	var err error
-	if actor, ok := actorFromRequest(r); ok {
-		if scoped, supported := d.PluginService.(interface {
-			ListForActor(context.Context, authz.Actor) ([]service.PluginSummary, error)
-		}); supported {
-			installed, err = scoped.ListForActor(r.Context(), actor)
-		} else {
-			installed, err = d.PluginService.List(r.Context())
-		}
-	} else {
-		installed, err = d.PluginService.List(r.Context())
+	actor, ok := actorFromRequest(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorPayload("plugin actor is unavailable"))
+		return
 	}
+	scoped, supported := d.PluginService.(interface {
+		ListForActor(context.Context, authz.Actor) ([]service.PluginSummary, error)
+	})
+	if !supported {
+		writePluginError(w, errors.New("scoped plugin reads are unavailable"))
+		return
+	}
+	installed, err := scoped.ListForActor(r.Context(), actor)
 	if err != nil {
 		writePluginError(w, err)
 		return
@@ -397,19 +397,19 @@ func (d Dependencies) handlePlugin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	var detail service.PluginDetail
-	var err error
-	if actor, ok := actorFromRequest(r); ok {
-		if scoped, supported := d.PluginService.(interface {
-			DetailForActor(context.Context, string, authz.Actor) (service.PluginDetail, error)
-		}); supported {
-			detail, err = scoped.DetailForActor(r.Context(), r.PathValue("id"), actor)
-		} else {
-			detail, err = d.PluginService.Detail(r.Context(), r.PathValue("id"))
-		}
-	} else {
-		detail, err = d.PluginService.Detail(r.Context(), r.PathValue("id"))
+	actor, ok := actorFromRequest(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorPayload("plugin actor is unavailable"))
+		return
 	}
+	scoped, supported := d.PluginService.(interface {
+		DetailForActor(context.Context, string, authz.Actor) (service.PluginDetail, error)
+	})
+	if !supported {
+		writePluginError(w, errors.New("scoped plugin reads are unavailable"))
+		return
+	}
+	detail, err := scoped.DetailForActor(r.Context(), r.PathValue("id"), actor)
 	if err != nil {
 		writePluginError(w, err)
 		return
@@ -422,19 +422,19 @@ func (d Dependencies) handlePluginOperations(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	var operations []service.PluginOperationDetail
-	var err error
-	if actor, ok := actorFromRequest(r); ok {
-		if scoped, supported := d.PluginService.(interface {
-			OperationsForActor(context.Context, string, authz.Actor) ([]service.PluginOperationDetail, error)
-		}); supported {
-			operations, err = scoped.OperationsForActor(r.Context(), r.PathValue("id"), actor)
-		} else {
-			operations, err = d.PluginService.Operations(r.Context(), r.PathValue("id"))
-		}
-	} else {
-		operations, err = d.PluginService.Operations(r.Context(), r.PathValue("id"))
+	actor, ok := actorFromRequest(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorPayload("plugin actor is unavailable"))
+		return
 	}
+	scoped, supported := d.PluginService.(interface {
+		OperationsForActor(context.Context, string, authz.Actor) ([]service.PluginOperationDetail, error)
+	})
+	if !supported {
+		writePluginError(w, errors.New("scoped plugin reads are unavailable"))
+		return
+	}
+	operations, err := scoped.OperationsForActor(r.Context(), r.PathValue("id"), actor)
 	if err != nil {
 		writePluginError(w, err)
 		return

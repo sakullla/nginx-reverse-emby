@@ -10,7 +10,99 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
+
+func TestSyncControllerPluginLogOutboxPersistsSequencesAndAcknowledgesExactSentBatch(t *testing.T) {
+	pluginprocess.DrainRuntimeLogEvents()
+	t.Cleanup(func() { pluginprocess.DrainRuntimeLogEvents() })
+	store := newSyncControllerStore()
+	controller := &SyncController{Store: store}
+	firstEvent := syncControllerPluginLogEvent("first")
+	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{firstEvent})
+	first, err := controller.BuildSyncPlan(t.Context(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Request.PluginLogs) != 1 || first.Request.PluginLogs[0].Sequence != 1 || first.Request.PluginLogs[0].Entries[0].Message != "first" {
+		t.Fatalf("first plugin log plan = %+v", first.Request.PluginLogs)
+	}
+
+	secondEvent := syncControllerPluginLogEvent("second")
+	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{secondEvent})
+	second, err := controller.BuildSyncPlan(t.Context(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Request.PluginLogs) != 2 || second.Request.PluginLogs[1].Sequence != 2 {
+		t.Fatalf("second plugin log plan = %+v", second.Request.PluginLogs)
+	}
+	if err := first.Request.PluginLogsAcknowledged(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PluginLogReports) != 1 || state.PluginLogReports[0].Sequence != 2 || state.PluginLogReports[0].Entries[0].Message != "second" {
+		t.Fatalf("exact acknowledgement removed concurrent report: %+v", state.PluginLogReports)
+	}
+	if err := first.Request.PluginLogsAcknowledged(); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = store.LoadRuntimeState()
+	if len(state.PluginLogReports) != 1 || state.PluginLogReports[0].Sequence != 2 {
+		t.Fatalf("duplicate acknowledgement changed outbox: %+v", state.PluginLogReports)
+	}
+	if err := second.Request.PluginLogsAcknowledged(); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = store.LoadRuntimeState()
+	if len(state.PluginLogReports) != 0 {
+		t.Fatalf("successful acknowledgement retained reports: %+v", state.PluginLogReports)
+	}
+
+	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{syncControllerPluginLogEvent("third")})
+	third, err := controller.BuildSyncPlan(t.Context(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third.Request.PluginLogs) != 1 || third.Request.PluginLogs[0].Sequence != 3 {
+		t.Fatalf("post-ack sequence = %+v, want sequence 3", third.Request.PluginLogs)
+	}
+}
+
+func TestSyncControllerPluginLogOutboxRetainsFailedHeartbeat(t *testing.T) {
+	pluginprocess.DrainRuntimeLogEvents()
+	t.Cleanup(func() { pluginprocess.DrainRuntimeLogEvents() })
+	pluginprocess.RestoreRuntimeLogEvents([]pluginprocess.RuntimeLogEvent{syncControllerPluginLogEvent("retain")})
+	store := newSyncControllerStore()
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: &syncControllerClient{err: errors.New("heartbeat unavailable")}}
+	plan, err := controller.BuildSyncPlan(t.Context(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.PerformSyncPlan(t.Context(), plan); err == nil {
+		t.Fatal("PerformSyncPlan() accepted failed heartbeat")
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PluginLogReports) != 1 || state.PluginLogReports[0].Entries[0].Message != "retain" {
+		t.Fatalf("failed heartbeat dropped plugin logs: %+v", state.PluginLogReports)
+	}
+}
+
+func syncControllerPluginLogEvent(message string) pluginprocess.RuntimeLogEvent {
+	return pluginprocess.RuntimeLogEvent{
+		Identity: pluginprocess.RuntimeLogIdentity{
+			Revision: 7, ProviderGenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
+			PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		},
+		Entry: pluginprocess.RuntimeLogEntry{Level: "info", Message: message},
+	}
+}
 
 func TestSyncControllerSuccessfulSyncPersistsSnapshotsRuntimeStateAndClearsLastSyncError(t *testing.T) {
 	st := newSyncControllerStore()
@@ -1208,6 +1300,7 @@ func (s *syncControllerStore) LoadRuntimeState() (RuntimeState, error) {
 
 func copySyncControllerRuntimeState(state RuntimeState) RuntimeState {
 	copied := state
+	copied.PluginLogReports = model.ClonePluginRuntimeLogReports(state.PluginLogReports)
 	if state.Metadata != nil {
 		copied.Metadata = make(map[string]string, len(state.Metadata))
 		for key, value := range state.Metadata {

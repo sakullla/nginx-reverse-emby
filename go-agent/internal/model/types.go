@@ -96,11 +96,12 @@ func (s *Snapshot) UnmarshalJSON(data []byte) error {
 }
 
 type RuntimeState struct {
-	NodeID          string                `json:"node_id,omitempty"`
-	CurrentRevision int64                 `json:"current_revision,omitempty"`
-	Status          string                `json:"status,omitempty"`
-	PluginStatuses  []PluginRuntimeStatus `json:"plugin_statuses,omitempty"`
-	Metadata        map[string]string     `json:"metadata,omitempty"`
+	NodeID           string                   `json:"node_id,omitempty"`
+	CurrentRevision  int64                    `json:"current_revision,omitempty"`
+	Status           string                   `json:"status,omitempty"`
+	PluginStatuses   []PluginRuntimeStatus    `json:"plugin_statuses,omitempty"`
+	PluginLogReports []PluginRuntimeLogReport `json:"plugin_log_reports,omitempty"`
+	Metadata         map[string]string        `json:"metadata,omitempty"`
 }
 
 type EgressProfile struct {

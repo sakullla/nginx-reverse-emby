@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
@@ -30,7 +28,7 @@ func (*pluginScopedReadStore) LocalAgentBuild(context.Context) (string, string, 
 	return "local", "1.0.0", true, nil
 }
 
-func TestPluginReadsFilterRealMemberAcrossTwoGroups(t *testing.T) {
+func TestPluginReadsFailClosedWithoutStableStorageTransaction(t *testing.T) {
 	store := &pluginScopedReadStore{
 		installed: []storage.InstalledPluginRow{{PluginID: "shared"}, {PluginID: "hidden"}, {PluginID: "empty"}},
 		instances: map[string][]storage.PluginInstanceRow{
@@ -41,19 +39,7 @@ func TestPluginReadsFilterRealMemberAcrossTwoGroups(t *testing.T) {
 	}
 	service := NewPluginService(store, "")
 	member := authz.Actor{ID: "member", Permissions: []string{authz.PermissionResourceRead}, VisibleResourceGroups: []string{"group-a"}}
-	plugins, err := service.ListForActor(t.Context(), member)
-	if err != nil || len(plugins) != 1 || plugins[0].PluginID != "shared" {
-		t.Fatalf("member list=%+v error=%v", plugins, err)
-	}
-	operations, err := service.OperationsForActor(t.Context(), "shared", member)
-	if err != nil || len(operations) != 1 {
-		t.Fatalf("member operations=%+v error=%v", operations, err)
-	}
-	var results map[string]any
-	if err := json.Unmarshal(operations[0].AgentResults, &results); err != nil || results["edge-a"] == nil || results["edge-b"] != nil || operations[0].ActorID != "" {
-		t.Fatalf("member operation projection=%s error=%v", operations[0].AgentResults, err)
-	}
-	if _, err := service.OperationsForActor(t.Context(), "hidden", member); !errors.Is(err, authz.ErrForbidden) {
-		t.Fatalf("hidden operations error=%v", err)
+	if plugins, err := service.ListForActor(t.Context(), member); err == nil || plugins != nil {
+		t.Fatalf("member list=%+v error=%v, want stable transaction failure", plugins, err)
 	}
 }

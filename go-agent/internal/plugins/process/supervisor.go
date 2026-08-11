@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type InstanceSpec struct {
@@ -29,6 +31,28 @@ type InstanceSpec struct {
 	InitialBackoff       time.Duration
 	MaximumBackoff       time.Duration
 	SensitiveValues      []string
+	RuntimeLogIdentity   RuntimeLogIdentity
+}
+
+type RuntimeLogIdentity struct {
+	Revision             int64
+	ProviderGenerationID string
+	InstanceID           string
+	PluginID             string
+	AgentID              string
+	PackageDigest        string
+	ArtifactDigest       string
+}
+
+type RuntimeLogEntry struct {
+	Level     string
+	Message   string
+	Truncated bool
+}
+
+type RuntimeLogEvent struct {
+	Identity RuntimeLogIdentity
+	Entry    RuntimeLogEntry
 }
 
 type Status struct {
@@ -53,9 +77,17 @@ type Runner interface {
 	Start(context.Context, InstanceSpec, Sandbox, io.Writer) (ManagedProcess, func() error, error)
 }
 
+type splitOutputRunner interface {
+	StartWithStreams(context.Context, InstanceSpec, Sandbox, io.Writer, io.Writer) (ManagedProcess, func() error, error)
+}
+
 type ExecRunner struct{}
 
 func (ExecRunner) Start(ctx context.Context, spec InstanceSpec, sandbox Sandbox, output io.Writer) (ManagedProcess, func() error, error) {
+	return (ExecRunner{}).StartWithStreams(ctx, spec, sandbox, output, output)
+}
+
+func (ExecRunner) StartWithStreams(ctx context.Context, spec InstanceSpec, sandbox Sandbox, stdout, stderr io.Writer) (ManagedProcess, func() error, error) {
 	if err := validateProcessLocation(spec); err != nil {
 		return nil, nil, err
 	}
@@ -69,7 +101,7 @@ func (ExecRunner) Start(ctx context.Context, spec InstanceSpec, sandbox Sandbox,
 		return nil, nil, err
 	}
 	cmd.Env = environment
-	cmd.Stdout, cmd.Stderr = output, output
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	prepareCleanup := func() error { return nil }
 	cleanup := func() error { return nil }
 	afterStart := func(int) error { return nil }
@@ -252,6 +284,7 @@ func NewSupervisor(runner Runner, sandbox Sandbox, output io.Writer) *Supervisor
 	if output == nil {
 		output = io.Discard
 	}
+	output = &lockedWriter{target: output}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Supervisor{ctx: ctx, cancel: cancel, runner: runner, sandbox: sandbox, output: output, handles: make(map[string]*Handle)}
 }
@@ -366,10 +399,20 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 	backoff := handle.spec.InitialBackoff
 	exits := make([]time.Time, 0, handle.spec.RestartLimit+1)
 	for {
-		output := newRedactingWriter(s.output, handle.spec.SensitiveValues)
-		proc, cleanup, err := s.runner.Start(ctx, handle.spec, s.sandbox, output)
+		stdout := newRuntimeLogWriter(s.output, handle.spec.SensitiveValues, "info", handle.spec.RuntimeLogIdentity)
+		stderr := newRuntimeLogWriter(s.output, handle.spec.SensitiveValues, "error", handle.spec.RuntimeLogIdentity)
+		var proc ManagedProcess
+		var cleanup func() error
+		var err error
+		if runner, ok := s.runner.(splitOutputRunner); ok {
+			proc, cleanup, err = runner.StartWithStreams(ctx, handle.spec, s.sandbox, stdout, stderr)
+		} else {
+			proc, cleanup, err = s.runner.Start(ctx, handle.spec, s.sandbox, stdout)
+			_ = stderr.Close()
+		}
 		if err != nil {
-			_ = output.Close()
+			_ = stdout.Close()
+			_ = stderr.Close()
 			handle.setCleanup(cleanup, cleanup == nil, err)
 			handle.setExit(err, true)
 			if first {
@@ -388,7 +431,7 @@ func (s *Supervisor) run(ctx context.Context, handle *Handle) {
 			handle.started <- nil
 			first = false
 		}
-		err = errors.Join(proc.Wait(), output.Close())
+		err = errors.Join(proc.Wait(), stdout.Close(), stderr.Close())
 		now := time.Now().UTC()
 		handle.mu.Lock()
 		handle.process = nil
@@ -672,11 +715,17 @@ func safeError(err error) string {
 	return value
 }
 
-const maxPluginLogLine = 64 << 10
+const (
+	maxPluginLogLine           = 64 << 10
+	maxPluginLogMessage        = 4 << 10
+	maxPendingRuntimeLogEvents = 2048
+)
 
 type redactingWriter struct {
 	target   io.Writer
 	secrets  []string
+	level    string
+	identity RuntimeLogIdentity
 	mu       sync.Mutex
 	line     []byte
 	dropping bool
@@ -684,13 +733,17 @@ type redactingWriter struct {
 }
 
 func newRedactingWriter(target io.Writer, secrets []string) *redactingWriter {
+	return newRuntimeLogWriter(target, secrets, "info", RuntimeLogIdentity{})
+}
+
+func newRuntimeLogWriter(target io.Writer, secrets []string, level string, identity RuntimeLogIdentity) *redactingWriter {
 	clean := make([]string, 0, len(secrets))
 	for _, secret := range secrets {
 		if strings.TrimSpace(secret) != "" {
 			clean = append(clean, secret)
 		}
 	}
-	return &redactingWriter{target: target, secrets: clean}
+	return &redactingWriter{target: target, secrets: clean, level: level, identity: identity}
 }
 func (w *redactingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -730,27 +783,152 @@ func (w *redactingWriter) Close() error {
 func (w *redactingWriter) flushLineLocked(newline bool) error {
 	line := string(w.line)
 	w.line = w.line[:0]
+	truncated := false
 	if w.dropping {
 		line = "[REDACTED oversized plugin log line]"
 		w.dropping = false
+		truncated = true
 	} else {
-		for _, secret := range w.secrets {
-			line = strings.ReplaceAll(line, secret, "[REDACTED]")
-		}
-		lower := strings.ToLower(line)
-		for _, marker := range []string{"authorization:", "cookie=", "password=", "token=", "secret="} {
-			if strings.Contains(lower, marker) {
-				line = "[REDACTED sensitive plugin log line]"
-				break
-			}
-		}
+		line = sanitizePluginLogLine(line, w.secrets)
 	}
 	if line == "" && !newline {
 		return nil
 	}
+	if len(line) > maxPluginLogMessage {
+		line = truncateUTF8(line, maxPluginLogMessage)
+		truncated = true
+	}
+	publishRuntimeLogEvent(RuntimeLogEvent{Identity: w.identity, Entry: RuntimeLogEntry{Level: w.level, Message: line, Truncated: truncated}})
 	if newline {
 		line += "\n"
 	}
 	_, err := io.WriteString(w.target, line)
 	return err
+}
+
+func sanitizePluginLogLine(line string, secrets []string) string {
+	for _, secret := range secrets {
+		line = strings.ReplaceAll(line, secret, "[REDACTED]")
+		encoded, _ := json.Marshal(secret)
+		if len(encoded) >= 2 {
+			line = strings.ReplaceAll(line, string(encoded[1:len(encoded)-1]), "[REDACTED]")
+		}
+	}
+	var structured any
+	decoder := json.NewDecoder(strings.NewReader(line))
+	decoder.UseNumber()
+	if decoder.Decode(&structured) == nil {
+		var trailing any
+		if decoder.Decode(&trailing) == io.EOF {
+			structured = sanitizePluginLogJSON(structured)
+			if encoded, err := json.Marshal(structured); err == nil {
+				return string(encoded)
+			}
+		}
+	}
+	lower := strings.ToLower(line)
+	for _, key := range []string{"authorization", "cookie", "password", "passwd", "token", "secret", "credential", "api_key", "apikey", "private_key"} {
+		if strings.Contains(lower, `"`+key+`"`) {
+			return "[REDACTED sensitive plugin log line]"
+		}
+	}
+	for _, marker := range []string{"authorization:", "authorization=", "cookie:", "cookie=", "password:", "password=", "token:", "token=", "secret:", "secret=", "credential:", "credential="} {
+		if strings.Contains(lower, marker) {
+			return "[REDACTED sensitive plugin log line]"
+		}
+	}
+	return line
+}
+
+func sanitizePluginLogJSON(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if sensitivePluginLogKey(key) {
+				typed[key] = "[REDACTED]"
+			} else {
+				typed[key] = sanitizePluginLogJSON(child)
+			}
+		}
+	case []any:
+		for index := range typed {
+			typed[index] = sanitizePluginLogJSON(typed[index])
+		}
+	}
+	return value
+}
+
+func sensitivePluginLogKey(key string) bool {
+	normalized := strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	for _, marker := range []string{"authorization", "cookie", "password", "passwd", "token", "secret", "credential", "apikey", "privatekey"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.ValidString(value[:cut]) {
+		cut--
+	}
+	return value[:cut]
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	target io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.target.Write(p)
+}
+
+var runtimeLogEvents = struct {
+	sync.Mutex
+	events []RuntimeLogEvent
+}{}
+
+func publishRuntimeLogEvent(event RuntimeLogEvent) {
+	if event.Identity.ProviderGenerationID == "" || event.Identity.InstanceID == "" || event.Entry.Message == "" {
+		return
+	}
+	runtimeLogEvents.Lock()
+	defer runtimeLogEvents.Unlock()
+	if len(runtimeLogEvents.events) >= maxPendingRuntimeLogEvents {
+		runtimeLogEvents.events = runtimeLogEvents.events[1:]
+		event.Entry.Message = "[TRUNCATED plugin log backlog]"
+		event.Entry.Truncated = true
+	}
+	runtimeLogEvents.events = append(runtimeLogEvents.events, event)
+}
+
+func DrainRuntimeLogEvents() []RuntimeLogEvent {
+	runtimeLogEvents.Lock()
+	defer runtimeLogEvents.Unlock()
+	events := append([]RuntimeLogEvent(nil), runtimeLogEvents.events...)
+	runtimeLogEvents.events = nil
+	return events
+}
+
+func RestoreRuntimeLogEvents(events []RuntimeLogEvent) {
+	if len(events) == 0 {
+		return
+	}
+	runtimeLogEvents.Lock()
+	defer runtimeLogEvents.Unlock()
+	remaining := maxPendingRuntimeLogEvents - len(runtimeLogEvents.events)
+	if remaining <= 0 {
+		return
+	}
+	if len(events) > remaining {
+		events = events[:remaining]
+	}
+	runtimeLogEvents.events = append(append([]RuntimeLogEvent(nil), events...), runtimeLogEvents.events...)
 }

@@ -417,6 +417,7 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 	return HostCandidate{
 		InstanceID: generation.InstanceID, PluginID: generation.PluginID, PluginVersion: generation.PluginVersion,
 		PackageDigest: generation.PackageDigest, Generation: generationID, OperationID: generation.OperationID, Revision: generation.Revision,
+		ProviderGenerationID: generation.ID, AgentID: generation.Target.ID,
 		Artifact: pluginprocess.Artifact{CachePath: generation.Artifact.LocalPath, SHA256: generation.Artifact.SHA256,
 			GOOS: generation.Artifact.GOOS, GOARCH: generation.Artifact.GOARCH},
 		Requirement: requirement, Scopes: scopes, Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
