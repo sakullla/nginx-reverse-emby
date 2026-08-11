@@ -421,6 +421,92 @@ func rejectPluginConsumerOwnershipMutationTx(tx *gorm.DB, resources map[string]R
 	return nil
 }
 
+// rejectAgentPluginConsumerGroupMoveTx checks consumer owners that are not
+// necessarily children of the Agent binding. BindResource locks the Agent
+// binding class before calling this helper. Exact consumer bindings are then
+// locked in canonical order, before addAgentPluginBindingsTx locks plugin
+// instances, preserving the resource-binding -> plugin-instance lock order.
+func rejectAgentPluginConsumerGroupMoveTx(tx *gorm.DB, agentBinding ResourceBindingRow, defaultTargetID string) error {
+	type check struct {
+		instanceID      string
+		field           string
+		binding         PluginInstanceBinding
+		providerGroupID string
+		ownerKey        string
+	}
+
+	var instances []PluginInstanceRow
+	if err := tx.Order("id").Find(&instances).Error; err != nil {
+		return err
+	}
+	checks := make([]check, 0)
+	for _, instance := range instances {
+		activeTargets, err := pluginInstanceTargets(instance.TargetJSON, defaultTargetID)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+		}
+		activeGroupID := strings.TrimSpace(instance.ResourceGroupID)
+		if containsPluginTarget(activeTargets, agentBinding.ResourceID) {
+			activeGroupID = agentBinding.ResourceGroupID
+		}
+		pendingGroupID := strings.TrimSpace(instance.PendingResourceGroupID)
+		if pendingGroupID == "" {
+			pendingGroupID = activeGroupID
+		}
+		if instance.PendingOperationID != "" && strings.TrimSpace(instance.PendingTargetJSON) != "" {
+			pendingTargets, err := pluginInstanceTargets(instance.PendingTargetJSON, defaultTargetID)
+			if err != nil {
+				return fmt.Errorf("plugin instance %s pending targets: %w", instance.ID, err)
+			}
+			if containsPluginTarget(pendingTargets, agentBinding.ResourceID) {
+				pendingGroupID = agentBinding.ResourceGroupID
+			}
+		}
+		fields := []struct {
+			name, raw, providerGroupID string
+		}{
+			{name: "active", raw: instance.BindingsJSON, providerGroupID: activeGroupID},
+			{name: "pending", raw: instance.PendingBindingsJSON, providerGroupID: pendingGroupID},
+			{name: "rollback", raw: instance.RollbackBindingsJSON, providerGroupID: activeGroupID},
+		}
+		for _, field := range fields {
+			bindings, err := CanonicalPluginInstanceBindings(field.raw)
+			if err != nil {
+				return fmt.Errorf("plugin instance %s %s bindings: %w", instance.ID, field.name, err)
+			}
+			for _, binding := range bindings {
+				if binding.TargetAgentID != agentBinding.ResourceID {
+					continue
+				}
+				checks = append(checks, check{
+					instanceID: instance.ID, field: field.name, binding: binding,
+					providerGroupID: field.providerGroupID,
+					ownerKey:        binding.Consumer.Kind + "\x00" + binding.TargetAgentID + ":" + binding.Consumer.ID,
+				})
+			}
+		}
+	}
+	sort.Slice(checks, func(i, j int) bool {
+		if checks[i].ownerKey != checks[j].ownerKey {
+			return checks[i].ownerKey < checks[j].ownerKey
+		}
+		if checks[i].instanceID != checks[j].instanceID {
+			return checks[i].instanceID < checks[j].instanceID
+		}
+		return checks[i].field < checks[j].field
+	})
+	for _, item := range checks {
+		authoritative, err := resolvePluginInstanceBindingRequestsTx(tx.Statement.Context, tx, PluginInstanceBindingRequests([]PluginInstanceBinding{item.binding}), item.providerGroupID, true)
+		if err != nil {
+			return fmt.Errorf("%w: plugin instance %s %s binding cannot follow Agent %s to resource group %s: %v", ErrPluginDependencyConsumerInUse, item.instanceID, item.field, agentBinding.ResourceID, item.providerGroupID, err)
+		}
+		if len(authoritative) != 1 || authoritative[0] != item.binding {
+			return fmt.Errorf("%w: plugin instance %s %s binding ownership fence is stale", ErrPluginDependencyConsumerInUse, item.instanceID, item.field)
+		}
+	}
+	return nil
+}
+
 func detachPluginConsumerBindingsTx(tx *gorm.DB, resourceKind, resourceID string, now time.Time) error {
 	if resourceKind != PluginDependencyConsumerHTTPRule && resourceKind != PluginDependencyConsumerL4Rule {
 		return nil

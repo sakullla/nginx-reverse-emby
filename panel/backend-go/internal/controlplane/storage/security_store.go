@@ -393,6 +393,9 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 				affected[child.ResourceKind+"\x00"+child.ResourceID] = child
 			}
 			if movingGroups {
+				if err := rejectAgentPluginConsumerGroupMoveTx(tx, row, s.LocalAgentID()); err != nil {
+					return err
+				}
 				if err := rejectPluginConsumerOwnershipMutationTx(tx, affected); err != nil {
 					return err
 				}
