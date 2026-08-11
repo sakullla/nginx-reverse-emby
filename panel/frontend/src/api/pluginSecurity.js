@@ -19,6 +19,58 @@ export function redactPluginData(value, key = '', depth = 0) {
   return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactPluginData(item, name, depth + 1)]))
 }
 
+function sanitizePluginStructure(value, depth = 0) {
+  if (depth > 12) return '[TRUNCATED]'
+  if (typeof value === 'string') return sanitizePluginText(value)
+  if (Array.isArray(value)) return value.slice(0, 500).map((item) => sanitizePluginStructure(item, depth + 1))
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, sanitizePluginStructure(item, depth + 1)]))
+}
+
+function pruneSecretPointer(config, pointer) {
+  if (!config || typeof config !== 'object' || typeof pointer !== 'string' || !pointer.startsWith('/')) return
+  const segments = pointer.slice(1).split('/').map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))
+  let parent = config
+  for (const segment of segments.slice(0, -1)) {
+    if (!parent || typeof parent !== 'object' || !Object.hasOwn(parent, segment)) return
+    parent = parent[segment]
+  }
+  const leaf = segments.at(-1)
+  if (parent && typeof parent === 'object' && leaf !== undefined) {
+    if (Array.isArray(parent)) parent[Number(leaf)] = null
+    else delete parent[leaf]
+  }
+}
+
+function stripWriteOnlySchemaValues(schema) {
+  if (!schema || typeof schema !== 'object') return
+  if (schema.writeOnly === true) {
+    delete schema.default
+    delete schema.const
+    delete schema.examples
+  }
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const field of Object.values(schema.properties)) stripWriteOnlySchemaValues(field)
+  }
+  if (schema.items && typeof schema.items === 'object') stripWriteOnlySchemaValues(schema.items)
+}
+
+// Plugin read DTOs contain security metadata whose names are intentionally
+// descriptive (for example `secret_fields` and a schema property named
+// `token`). Keep that structure intact, sanitize text values, and prune only
+// broker-owned config values identified by the server's JSON pointers.
+export function redactPluginProjection(value) {
+  const result = sanitizePluginStructure(value)
+  const schema = result?.package?.config_schema || result?.config_schema
+  stripWriteOnlySchemaValues(schema)
+  const instances = Array.isArray(result?.instances) ? result.instances : []
+  for (const instance of instances) {
+    for (const pointer of Array.isArray(instance.secret_fields) ? instance.secret_fields : []) pruneSecretPointer(instance.config, pointer)
+    for (const pointer of Array.isArray(instance.pending_secret_fields) ? instance.pending_secret_fields : []) pruneSecretPointer(instance.pending_config, pointer)
+  }
+  return result
+}
+
 export function safePluginJSON(value) {
   return JSON.stringify(redactPluginData(value), null, 2)
 }
@@ -42,7 +94,7 @@ export function normalizePluginConfigSchema(schema) {
   return Object.entries(properties).flatMap(([name, field]) => {
     if (!field || typeof field !== 'object' || Array.isArray(field)) return []
     if (!allowedSchemaTypes.has(field.type) || field.$ref || field.contentMediaType === 'text/html') return []
-    const secret = field.writeOnly === true || field['x-secret'] === true || ['password', 'secret'].includes(field.format) || sensitiveKey.test(name)
+    const secret = field.writeOnly === true
     const normalized = {
       name,
       type: field.type,
@@ -61,7 +113,14 @@ export function normalizePluginConfigSchema(schema) {
 }
 
 export function safePluginExport(detail, operations) {
-  return redactPluginData({ exported_at: new Date().toISOString(), plugin: detail, operations })
+  const structuredDetail = detail && typeof detail === 'object' && (
+    Object.hasOwn(detail, 'plugin') || Object.hasOwn(detail, 'package') || Array.isArray(detail.instances)
+  )
+  return {
+    exported_at: new Date().toISOString(),
+    plugin: structuredDetail ? redactPluginProjection(detail) : redactPluginData(detail),
+    operations: redactPluginData(operations)
+  }
 }
 
 export function pluginRiskNotices(packageDetail = {}, source = {}) {

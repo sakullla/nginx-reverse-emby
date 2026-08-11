@@ -3,6 +3,7 @@ import {
   normalizePluginConfigSchema,
   pluginRiskNotices,
   redactPluginData,
+  redactPluginProjection,
   safePluginExport,
   sanitizePluginText
 } from './pluginSecurity'
@@ -30,7 +31,7 @@ describe('plugin UI security boundary', () => {
       required: ['mode', 'api_token'],
       properties: {
         mode: { type: 'string', enum: ['observe', 'block'], default: 'observe' },
-        api_token: { type: 'string', format: 'password', default: 'must-not-render' },
+        api_token: { type: 'string', writeOnly: true, default: 'must-not-render' },
         injected: { type: 'string', contentMediaType: 'text/html', default: '<script>bad()</script>' },
         remote: { $ref: 'https://plugins.example/schema.json' }
       },
@@ -39,6 +40,26 @@ describe('plugin UI security boundary', () => {
     expect(fields.map((field) => field.name)).toEqual(['mode', 'api_token'])
     expect(fields[1]).toMatchObject({ secret: true, required: true })
     expect(fields[1]).not.toHaveProperty('default')
+  })
+
+  it('preserves structured DTO metadata while pruning only broker-owned values', () => {
+    const projected = redactPluginProjection({
+      package: { config_schema: { type: 'object', properties: {
+        token: { type: 'string', title: '普通 token 字段' },
+        credential: { type: 'string', writeOnly: true, default: 'package-secret' }
+      } } },
+      instances: [{
+        config: { token: 'routing-token', credential: 'must-not-survive' },
+        secret_fields: ['/credential']
+      }]
+    })
+    expect(projected.package.config_schema.properties.token.title).toBe('普通 token 字段')
+    expect(projected.package.config_schema.properties.credential).not.toHaveProperty('default')
+    expect(projected.instances[0].secret_fields).toEqual(['/credential'])
+    expect(projected.instances[0].config).toEqual({ token: 'routing-token' })
+    const exported = safePluginExport(projected, [])
+    expect(exported.plugin.package.config_schema.properties.token.title).toBe('普通 token 字段')
+    expect(exported.plugin.instances[0].secret_fields).toEqual(['/credential'])
   })
 
   it('states relevant runtime risks and the no-package-frontend boundary', () => {

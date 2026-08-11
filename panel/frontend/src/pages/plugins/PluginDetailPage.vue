@@ -37,6 +37,10 @@ const actionBusy = ref('')
 const admin = computed(() => can('*'))
 const canWrite = computed(() => admin.value || can('resource.write'))
 const selectedInstance = computed(() => detail.value?.instances.find((instance) => instance.id === selectedInstanceID.value) || null)
+const selectedConfig = computed(() => selectedInstance.value?.pending_operation_id ? (selectedInstance.value.pending_config || {}) : (selectedInstance.value?.config || {}))
+const selectedSecretFields = computed(() => selectedInstance.value?.pending_operation_id
+  ? (selectedInstance.value.pending_secret_fields || [])
+  : (selectedInstance.value?.secret_fields || []))
 const source = computed(() => ({ kind: detail.value?.plugin.active_source_kind, risk_label: detail.value?.plugin.active_source_risk_label }))
 
 onMounted(load)
@@ -180,8 +184,8 @@ async function retryAgent(status) {
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
         </div>
-		<PluginDeclarativeUI v-if="selectedInstance && (admin || canWrite) && detail.package.declarative_ui" :document="detail.package.declarative_ui" :config="selectedInstance.config" :secret-fields="selectedInstance.secret_fields || []" :saving="busy === 'configure'" :action-busy="!!actionBusy" :can-configure="admin" :can-act="canWrite" @submit="saveConfig" @dynamic="runDynamicAction" />
-        <PluginConfigForm v-else-if="selectedInstance && admin" :schema="detail.package.config_schema" :config="selectedInstance.config" :saving="busy === 'configure'" @submit="saveConfig" />
+		<PluginDeclarativeUI v-if="selectedInstance && (admin || canWrite) && detail.package.declarative_ui" :document="detail.package.declarative_ui" :config="selectedConfig" :secret-fields="selectedSecretFields" :saving="busy === 'configure'" :action-busy="!!actionBusy" :can-configure="admin" :can-act="canWrite" @submit="saveConfig" @dynamic="runDynamicAction" />
+        <PluginConfigForm v-else-if="selectedInstance && admin" :schema="detail.package.config_schema" :config="selectedConfig" :secret-fields="selectedSecretFields" :saving="busy === 'configure'" @submit="saveConfig" />
         <p v-else-if="selectedInstance">当前身份只有只读权限。</p>
       </section>
       <section class="plugin-section"><h2>逐 Agent 状态、预算与故障</h2><PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" /></section>

@@ -34,10 +34,21 @@ describe('plugin administration API', () => {
   })
 
   it('redacts secret-bearing read projections and rejects arbitrary actions', async () => {
-    get.mockResolvedValue({ data: { plugin: {}, instances: [{ config: { api_token: 'raw-token', mode: 'safe' } }], agent_statuses: [{ last_apply_message: 'authorization=raw' }] } })
+    get.mockResolvedValue({ data: {
+      plugin: {},
+      package: { config_schema: { type: 'object', properties: {
+        token: { type: 'string', title: 'ordinary token metadata' },
+        api_credential: { type: 'string', writeOnly: true }
+      } } },
+      instances: [{ config: { api_credential: 'raw-secret', token: 'ordinary-token', mode: 'safe' }, secret_fields: ['/api_credential'] }],
+      agent_statuses: [{ last_apply_message: 'authorization=raw' }]
+    } })
     const detail = await plugins.fetchPluginDetail('team/plugin')
-    expect(detail.instances[0].config.api_token).toBe('[REDACTED]')
+    expect(detail.instances[0].config).not.toHaveProperty('api_credential')
+    expect(detail.instances[0].config.token).toBe('ordinary-token')
     expect(detail.instances[0].config.mode).toBe('safe')
+    expect(detail.instances[0].secret_fields).toEqual(['/api_credential'])
+    expect(detail.package.config_schema.properties.token.title).toBe('ordinary token metadata')
     expect(detail.agent_statuses[0].last_apply_message).toContain('[REDACTED]')
     await expect(plugins.runPluginAction('team/plugin', 'execute-script')).rejects.toThrow('plugin action is invalid')
     expect(get).toHaveBeenCalledWith('/plugins/team%2Fplugin')

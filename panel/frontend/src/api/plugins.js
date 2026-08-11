@@ -1,5 +1,5 @@
 import { api } from './client'
-import { redactPluginData } from './pluginSecurity'
+import { redactPluginData, redactPluginProjection } from './pluginSecurity'
 
 const pluginRoot = '/plugins'
 
@@ -15,34 +15,34 @@ function pluginPath(pluginID, suffix = '') {
 
 export async function fetchPlugins() {
   const { data } = await api.get(pluginRoot)
-  return Array.isArray(data?.plugins) ? data.plugins.map((item) => redactPluginData(item)) : []
+  return Array.isArray(data?.plugins) ? data.plugins.map((item) => redactPluginProjection(item)) : []
 }
 
 export async function fetchPluginDetail(pluginID) {
   const { data } = await api.get(pluginPath(pluginID))
-  return redactPluginData(data)
+  return redactPluginProjection(data)
 }
 
 export async function fetchPluginOperations(pluginID) {
   const { data } = await api.get(pluginPath(pluginID, '/operations'))
-  return Array.isArray(data?.operations) ? data.operations.map((item) => redactPluginData(item)) : []
+  return Array.isArray(data?.operations) ? data.operations.map((item) => redactPluginProjection(item)) : []
 }
 
 export async function fetchPluginPackageDetail(selection) {
   const { data } = await api.post(`${pluginRoot}/package-detail`, selection)
-  return redactPluginData(data?.package || {})
+  return redactPluginProjection(data?.package || {})
 }
 
 export async function installPlugin(selection) {
   const { data } = await api.post(`${pluginRoot}/install`, selection)
-  return redactPluginData(data?.plugin || {})
+  return redactPluginProjection(data?.plugin || {})
 }
 
 export async function runPluginAction(pluginID, action, payload = {}) {
   const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall'])
   if (!allowed.has(action)) throw new Error('plugin action is invalid')
   const { data } = await api.post(pluginPath(pluginID, `/${action}`), payload)
-  return redactPluginData(data?.result)
+  return redactPluginProjection(data?.result)
 }
 
 export const enablePlugin = (pluginID) => runPluginAction(pluginID, 'enable')
@@ -62,7 +62,7 @@ export function newPluginActionKey() {
 export async function invokePluginDynamicAction(pluginID, instanceID, actionID, targetID, confirmed, idempotencyKey = newPluginActionKey()) {
   const path = pluginPath(pluginID, `/instances/${identity(instanceID, 'instance id')}/actions/${identity(actionID, 'action id')}`)
   const { data } = await api.post(path, { target_id: String(targetID || '').trim(), confirmed: confirmed === true }, { headers: { 'Idempotency-Key': idempotencyKey } })
-  return redactPluginData(data)
+  return redactPluginProjection(data)
 }
 
 export async function fetchPluginLogs(pluginID, instanceID, { agentID = '', cursor = '', limit = 50, signal } = {}) {

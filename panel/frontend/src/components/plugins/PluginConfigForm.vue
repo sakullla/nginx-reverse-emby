@@ -6,16 +6,28 @@ import SecretWriteOnlyField from '../access/SecretWriteOnlyField.vue'
 const props = defineProps({
   schema: { type: Object, default: () => ({}) },
   config: { type: Object, default: () => ({}) },
+  secretFields: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false }
 })
 const emit = defineEmits(['submit'])
 const model = reactive({})
+const clearedSecrets = reactive(new Set())
 const fields = computed(() => normalizePluginConfigSchema(props.schema))
+const secretPointers = computed(() => new Set((props.secretFields || []).filter((pointer) => typeof pointer === 'string')))
 
-watch([fields, () => props.config], initialize, { immediate: true, deep: true })
+watch([fields, () => props.config, () => props.secretFields], initialize, { immediate: true, deep: true })
+
+function pointerFor(name) {
+  return `/${name.replaceAll('~', '~0').replaceAll('/', '~1')}`
+}
+
+function hasSecret(field) {
+  return secretPointers.value.has(pointerFor(field.name))
+}
 
 function initialize() {
   for (const key of Object.keys(model)) delete model[key]
+  clearedSecrets.clear()
   for (const field of fields.value) {
     if (field.secret) {
       model[field.name] = ''
@@ -36,12 +48,27 @@ function submit() {
   const secretReplacements = {}
   for (const field of fields.value) {
     const value = model[field.name]
+    const pointer = pointerFor(field.name)
+    if (field.secret && clearedSecrets.has(pointer)) {
+      secretReplacements[pointer] = null
+      continue
+    }
     if (field.secret && value === '') continue
     const normalized = field.type === 'integer' ? Number.parseInt(value, 10) : field.type === 'number' ? Number(value) : value
-    if (field.secret) secretReplacements[`/${field.name.replaceAll('~', '~0').replaceAll('/', '~1')}`] = normalized
+    if (field.secret) secretReplacements[pointer] = normalized
     else config[field.name] = normalized
   }
   emit('submit', { config, secret_replacements: secretReplacements })
+}
+
+function clearSecret(field) {
+  model[field.name] = ''
+  clearedSecrets.add(pointerFor(field.name))
+}
+
+function replaceSecret(field, value) {
+  model[field.name] = value
+  clearedSecrets.delete(pointerFor(field.name))
 }
 </script>
 
@@ -51,9 +78,13 @@ function submit() {
     <template v-for="field in fields" :key="field.name">
       <SecretWriteOnlyField
         v-if="field.secret"
-        v-model="model[field.name]"
+        :model-value="model[field.name]"
         :label="field.title"
-        :required="field.required"
+        :required="field.required && !hasSecret(field)"
+        :present="hasSecret(field)"
+        :clearable="!field.required && hasSecret(field)"
+        @update:model-value="replaceSecret(field, $event)"
+        @clear="clearSecret(field)"
       />
       <label v-else-if="field.type === 'boolean'" class="plugin-config-form__check">
         <input v-model="model[field.name]" type="checkbox">

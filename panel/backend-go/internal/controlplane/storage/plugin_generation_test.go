@@ -314,3 +314,66 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 		t.Fatalf("failed candidate displaced active authority = %+v found=%v err=%v", current, found, err)
 	}
 }
+
+func TestPluginAgentRuntimeReportLogsKeepImmutableRebindAuthority(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	digest := strings.Repeat("d", 64)
+	status := PluginAgentRuntimeStatusRow{
+		OperationID: "configure-rebind", AgentID: "edge-a", InstanceID: "instance-a", PluginID: "plugin-a",
+		Revision: 12, GenerationID: digest, PackageDigest: strings.Repeat("e", 64), ArtifactDigest: strings.Repeat("f", 64),
+		ConfigVersion: 4, ResourceGroupID: "group-before-rebind", TargetVersion: 4,
+	}
+	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []PluginAgentRuntimeStatusRow{status}); err != nil {
+		t.Fatal(err)
+	}
+	// The mutable instance has already been rebound while the staged runtime
+	// report remains owned by its immutable operation/generation authority.
+	instance := PluginInstanceRow{
+		ID: status.InstanceID, PluginID: status.PluginID, ResourceGroupID: "group-after-rebind", TargetJSON: `["edge-a"]`,
+		PolicyChainsJSON: `[]`, BindingsJSON: `[]`, SecretHandlesJSON: `[]`, ConfigJSON: `{}`, ConfigVersion: 5,
+		DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 2, UpdatedAt: now,
+	}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	report := PluginGenerationReport{
+		OperationID: status.OperationID, AgentID: status.AgentID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+		Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest, ArtifactDigest: status.ArtifactDigest,
+		State: "active", Sequence: 1, SafeDetail: "candidate ready", ReportedAt: now,
+	}
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), report); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.ListPluginRuntimeLogs(t.Context(), PluginRuntimeLogQuery{InstanceID: status.InstanceID, ResourceGroupID: status.ResourceGroupID})
+	if err != nil || len(pending.Rows) != 1 {
+		t.Fatalf("pending-rebind logs = %+v err=%v", pending, err)
+	}
+	row := pending.Rows[0]
+	if row.ResourceGroupID != status.ResourceGroupID || row.OperationID != status.OperationID || row.GenerationID != status.GenerationID || row.Revision != status.Revision || row.PackageDigest != status.PackageDigest || row.ArtifactDigest != status.ArtifactDigest {
+		t.Fatalf("pending-rebind log authority = %+v", row)
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return completePluginAgentRuntimeAuthorityTx(tx, PluginOperationRow{ID: status.OperationID, Status: "succeeded"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report.Sequence = 2
+	report.State = "degraded"
+	report.SafeDetail = "bounded restart"
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), report); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.ListPluginRuntimeLogs(t.Context(), PluginRuntimeLogQuery{InstanceID: status.InstanceID, ResourceGroupID: status.ResourceGroupID})
+	if err != nil || len(completed.Rows) != 2 {
+		t.Fatalf("completed-rebind logs = %+v err=%v", completed, err)
+	}
+	foreign, err := store.ListPluginRuntimeLogs(t.Context(), PluginRuntimeLogQuery{InstanceID: status.InstanceID, ResourceGroupID: instance.ResourceGroupID})
+	if err != nil || len(foreign.Rows) != 0 {
+		t.Fatalf("logs leaked into mutable instance group: %+v err=%v", foreign, err)
+	}
+}
