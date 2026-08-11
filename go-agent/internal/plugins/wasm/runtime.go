@@ -165,7 +165,7 @@ func newCompilerRuntime(
 		return nil, &RuntimeError{Code: ErrorUnavailable, Operation: "initialize_compiler", Cause: errors.New("compiler configuration is unavailable")}
 	}
 	configuration = configuration.
-		WithCoreFeatures(api.CoreFeaturesV1).
+		WithCoreFeatures(api.CoreFeaturesV2).
 		WithMemoryLimitPages(memoryPages).
 		WithCloseOnContextDone(true).
 		WithDebugInfoEnabled(false)

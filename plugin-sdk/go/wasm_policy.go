@@ -79,7 +79,7 @@ func validatePolicyV1WithCompiler(
 		return errors.New("WebAssembly compiler is unavailable: compiler configuration is unavailable")
 	}
 	configuration = configuration.
-		WithCoreFeatures(api.CoreFeaturesV1).
+		WithCoreFeatures(api.CoreFeaturesV2).
 		WithCloseOnContextDone(true).
 		WithDebugInfoEnabled(false)
 	runtime = runtimeFactory(ctx, configuration)

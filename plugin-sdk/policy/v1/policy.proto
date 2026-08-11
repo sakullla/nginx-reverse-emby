@@ -4,7 +4,8 @@ package nre.plugin.policy.v1;
 
 option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policyv1";
 
-// nre:policy/v1 uses WebAssembly 1.0 i32/i64 values and protobuf bytes.
+// nre:policy/v1 uses WebAssembly 2.0 core features, i32/i64 ABI values, and
+// protobuf bytes.
 // Required guest exports are:
 //   memory: memory
 //   nre_policy_version() -> i32 (canonical static body: i32.const 1; end)
