@@ -91,6 +91,33 @@ func TestWASMHostEmitEventAcceptsOnlyFixedWireEnums(t *testing.T) {
 	}
 }
 
+func TestWASMHostNormalizedHTTPSnapshotUsesOneFixedResponse(t *testing.T) {
+	host := &normalizedHTTPPolicyHost{snapshot: pluginsdk.PolicyNormalizedHTTP{
+		Path: []byte("/items"), Query: []byte("q=1"), Headers: []byte("user-agent:test"),
+		TrustedSource: []byte("198.51.100.10"), TrustedSourceAuthenticated: true, BodyWindowComplete: true,
+	}}
+	encoded, status, _ := dispatchHost(t.Context(), host, pluginsdk.PolicyHostReadNormalizedHTTP, nil)
+	if status != pluginsdk.PolicyStatusOK || host.calls != 1 {
+		t.Fatalf("snapshot status=%d calls=%d", status, host.calls)
+	}
+	message, err := decodePolicyMessage("NormalizedHTTPResponse", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(messageBytes(message, "path")); got != "/items" {
+		t.Fatalf("snapshot path = %q", got)
+	}
+	if got := string(messageBytes(message, "headers")); got != "user-agent:test" {
+		t.Fatalf("snapshot headers = %q", got)
+	}
+	if !messageBool(message, "trusted_source_authenticated") || !messageBool(message, "body_window_complete") {
+		t.Fatal("snapshot booleans were not preserved")
+	}
+	if _, status, _ := dispatchHost(t.Context(), &testPolicyHost{}, pluginsdk.PolicyHostReadNormalizedHTTP, nil); status != pluginsdk.PolicyStatusIncompatibleABI {
+		t.Fatalf("legacy host snapshot status=%d, want incompatible ABI", status)
+	}
+}
+
 func TestWASMRuntimeExecutableMemoryPanicIsTypedUnavailable(t *testing.T) {
 	hostRuntime, err := NewRuntime(context.Background(), RuntimeOptions{
 		compilerConfigFactory: wazero.NewRuntimeConfigCompiler,
@@ -964,6 +991,17 @@ type eventCapturePolicyHost struct {
 	testPolicyHost
 	event pluginsdk.PolicySecurityEvent
 	calls int
+}
+
+type normalizedHTTPPolicyHost struct {
+	testPolicyHost
+	snapshot pluginsdk.PolicyNormalizedHTTP
+	calls    int
+}
+
+func (host *normalizedHTTPPolicyHost) ReadNormalizedHTTP(context.Context) (pluginsdk.PolicyNormalizedHTTP, error) {
+	host.calls++
+	return host.snapshot, nil
 }
 
 func (host *eventCapturePolicyHost) EmitEvent(_ context.Context, event pluginsdk.PolicySecurityEvent) error {

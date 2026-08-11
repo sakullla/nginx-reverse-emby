@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,6 +152,44 @@ func (host *requestHost) ReadField(ctx context.Context, name string) ([]byte, er
 		return clonePresentBytes(field), nil
 	}
 	return []byte(value), nil
+}
+
+func (host *requestHost) ReadNormalizedHTTP(ctx context.Context) (pluginsdk.PolicyNormalizedHTTP, error) {
+	if host.input.extensionPoint != ExtensionHTTP || !host.granted("http.inspect") {
+		return pluginsdk.PolicyNormalizedHTTP{}, permissionDenied("normalized HTTP access is not granted")
+	}
+	if _, err := hostapi.NewTrustedSource(host.input.metadata.source, host.input.metadata.peer, string(host.input.metadata.kind), host.input.metadata.authorized); err != nil {
+		return pluginsdk.PolicyNormalizedHTTP{}, permissionDenied("trusted source metadata is unavailable")
+	}
+	if err := host.authorizeCapability(ctx, pluginsdk.CapabilityPolicyTrustedSource); err != nil {
+		return pluginsdk.PolicyNormalizedHTTP{}, err
+	}
+
+	headerNames := make([]string, 0, len(host.input.fields))
+	for name := range host.input.fields {
+		if strings.HasPrefix(name, FieldRequestHeaderPrefix) {
+			headerNames = append(headerNames, name)
+		}
+	}
+	sort.Strings(headerNames)
+	var headers []byte
+	for _, name := range headerNames {
+		if len(headers) != 0 {
+			headers = append(headers, '\n')
+		}
+		headers = append(headers, strings.TrimPrefix(name, FieldRequestHeaderPrefix)...)
+		headers = append(headers, ':')
+		headers = append(headers, host.input.fields[name]...)
+	}
+
+	return pluginsdk.PolicyNormalizedHTTP{
+		Path:                       clonePresentBytes(host.input.fields[FieldRequestPath]),
+		Query:                      clonePresentBytes(host.input.fields[FieldRequestQuery]),
+		Headers:                    headers,
+		TrustedSource:              []byte(host.input.metadata.source.Addr().String()),
+		TrustedSourceAuthenticated: host.input.metadata.authorized,
+		BodyWindowComplete:         host.input.body.complete,
+	}, nil
 }
 
 func (host *requestHost) ReadBodyWindow(_ context.Context, offset, length uint32) ([]byte, error) {

@@ -501,6 +501,43 @@ func TestPolicyHostPreservesEmptyFieldPresenceAndEmitsSafeEvent(t *testing.T) {
 	}
 }
 
+func TestPolicyHostReturnsOneCanonicalNormalizedHTTPSnapshot(t *testing.T) {
+	input := testInput(t, ExtensionHTTP, map[string][]byte{
+		FieldRequestPath:                     []byte("/library/%2e%2e/item"),
+		FieldRequestQuery:                    []byte("sort=created"),
+		FieldRequestHeaderPrefix + "z-last":  []byte("two"),
+		FieldRequestHeaderPrefix + "a-first": []byte("one"),
+	}, testCompleteBody(t, nil))
+	host := &requestHost{
+		input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
+		stage: model.PolicyStage{
+			PluginID: "official.waf", ResourceGroupID: "group-a",
+			DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyTrustedSource)},
+			GrantedScopes:  []string{"http.inspect", string(pluginsdk.CapabilityPolicyTrustedSource)},
+		},
+		state: newGenerationState(), capabilityAuditor: acknowledgedCapabilityAudit{},
+	}
+	snapshot, err := host.ReadNormalizedHTTP(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snapshot.Path) != "/library/%2e%2e/item" || string(snapshot.Query) != "sort=created" {
+		t.Fatalf("snapshot path/query = %q, %q", snapshot.Path, snapshot.Query)
+	}
+	if string(snapshot.Headers) != "a-first:one\nz-last:two" {
+		t.Fatalf("snapshot headers = %q", snapshot.Headers)
+	}
+	if len(snapshot.TrustedSource) == 0 || !snapshot.TrustedSourceAuthenticated || !snapshot.BodyWindowComplete {
+		t.Fatalf("snapshot metadata = %+v", snapshot)
+	}
+
+	host.stage.DeclaredScopes = nil
+	host.authorizer = nil
+	if _, err := host.ReadNormalizedHTTP(t.Context()); !isPermissionDenied(err) {
+		t.Fatalf("snapshot without trusted-source declaration error = %v", err)
+	}
+}
+
 func TestPolicyGuestCannotRelayHeaderOrBodySecretsToRecorder(t *testing.T) {
 	headerSecret := "actual-header-credential-7c993"
 	bodySecret := "actual-body-secret-1fa26"

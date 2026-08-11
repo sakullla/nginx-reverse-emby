@@ -107,6 +107,16 @@ func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, r
 		}
 		value, err := host.ReadField(ctx, messageString(message, "name"))
 		return encodeBytesResponse(value, value != nil, err)
+	case pluginsdk.PolicyHostReadNormalizedHTTP:
+		if _, err := decodePolicyMessage("ReadNormalizedHTTPRequest", request); err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
+		}
+		normalizedHost, ok := host.(pluginsdk.PolicyNormalizedHTTPHost)
+		if !ok {
+			return nil, pluginsdk.PolicyStatusIncompatibleABI, ""
+		}
+		value, err := normalizedHost.ReadNormalizedHTTP(ctx)
+		return encodeNormalizedHTTPResponse(value, err)
 	case pluginsdk.PolicyHostReadBodyWindow:
 		message, err := decodePolicyMessage("ReadBodyWindowRequest", request)
 		if err != nil {
@@ -146,6 +156,27 @@ func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, r
 	default:
 		return nil, pluginsdk.PolicyStatusPermissionDenied, ""
 	}
+}
+
+func encodeNormalizedHTTPResponse(value pluginsdk.PolicyNormalizedHTTP, hostErr error) ([]byte, pluginsdk.PolicyStatus, pluginsdk.BudgetDimension) {
+	if hostErr != nil {
+		return nil, statusForHostError(hostErr), budgetDimensionForHostError(hostErr)
+	}
+	message, err := newPolicyMessage("NormalizedHTTPResponse")
+	if err != nil {
+		return nil, pluginsdk.PolicyStatusInternal, ""
+	}
+	setMessageBytes(message, "path", value.Path)
+	setMessageBytes(message, "query", value.Query)
+	setMessageBytes(message, "headers", value.Headers)
+	setMessageBytes(message, "trusted_source", value.TrustedSource)
+	setMessageBool(message, "trusted_source_authenticated", value.TrustedSourceAuthenticated)
+	setMessageBool(message, "body_window_complete", value.BodyWindowComplete)
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		return nil, pluginsdk.PolicyStatusInternal, ""
+	}
+	return encoded, pluginsdk.PolicyStatusOK, ""
 }
 
 func encodeEmpty(err error) ([]byte, pluginsdk.PolicyStatus, pluginsdk.BudgetDimension) {
@@ -264,6 +295,10 @@ func messageUint32(message protoreflect.ProtoMessage, name protoreflect.Name) ui
 
 func messageInt64(message protoreflect.ProtoMessage, name protoreflect.Name) int64 {
 	return message.ProtoReflect().Get(policyField(message, name)).Int()
+}
+
+func messageBool(message protoreflect.ProtoMessage, name protoreflect.Name) bool {
+	return message.ProtoReflect().Get(policyField(message, name)).Bool()
 }
 
 func messageEnum(message protoreflect.ProtoMessage, name protoreflect.Name) int32 {

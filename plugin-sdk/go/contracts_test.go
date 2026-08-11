@@ -75,8 +75,12 @@ func appendBytesField(target []byte, number protowire.Number, value []byte) []by
 func TestPolicyV1WASMABICallingConventionIsStable(t *testing.T) {
 	guest := PolicyV1GuestFunctions()
 	host := PolicyV1HostFunctions()
-	if len(guest) != 6 || len(host) != 6 || PolicyHostModule != PolicyABIV1 {
+	requiredHost := PolicyV1RequiredHostFunctions()
+	if len(guest) != 6 || len(host) != 7 || len(requiredHost) != 6 || PolicyHostModule != PolicyABIV1 {
 		t.Fatalf("unexpected policy ABI surface: guest=%d host=%d module=%q", len(guest), len(host), PolicyHostModule)
+	}
+	if _, ok := requiredHost[PolicyHostReadNormalizedHTTP]; ok {
+		t.Fatal("additive normalized HTTP import became mandatory for legacy policy/v1 guests")
 	}
 	if got := guest[PolicyExportEvaluate]; !sameWASMSignature(got, WASMFunctionSignature{Parameters: []WASMValueType{WASMI32, WASMI32}, Results: []WASMValueType{WASMI64}}) {
 		t.Fatalf("evaluate signature changed: %+v", got)

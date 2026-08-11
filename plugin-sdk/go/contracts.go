@@ -97,13 +97,14 @@ const (
 	PolicyExportReset    = "nre_policy_reset"
 	PolicyExportMemory   = "memory"
 
-	PolicyHostModule         = PolicyABIV1
-	PolicyHostReadField      = "nre_host_read_field"
-	PolicyHostReadBodyWindow = "nre_host_read_body_window"
-	PolicyHostStateGet       = "nre_host_state_get"
-	PolicyHostStatePut       = "nre_host_state_put"
-	PolicyHostEmitEvent      = "nre_host_emit_event"
-	PolicyHostAddMetric      = "nre_host_add_metric"
+	PolicyHostModule             = PolicyABIV1
+	PolicyHostReadField          = "nre_host_read_field"
+	PolicyHostReadNormalizedHTTP = "nre_host_read_normalized_http"
+	PolicyHostReadBodyWindow     = "nre_host_read_body_window"
+	PolicyHostStateGet           = "nre_host_state_get"
+	PolicyHostStatePut           = "nre_host_state_put"
+	PolicyHostEmitEvent          = "nre_host_emit_event"
+	PolicyHostAddMetric          = "nre_host_add_metric"
 
 	PolicyABIMajorVersion uint32 = 1
 )
@@ -140,9 +141,10 @@ func PolicyV1GuestFunctions() map[string]WASMFunctionSignature {
 // Every call uses protobuf request bytes and a caller-owned response buffer:
 // (request_ptr, request_len, response_ptr, response_capacity) -> status/length.
 func PolicyV1HostFunctions() map[string]WASMFunctionSignature {
-	result := make(map[string]WASMFunctionSignature, 6)
+	result := make(map[string]WASMFunctionSignature, 7)
 	for _, name := range []string{
 		PolicyHostReadField,
+		PolicyHostReadNormalizedHTTP,
 		PolicyHostReadBodyWindow,
 		PolicyHostStateGet,
 		PolicyHostStatePut,
@@ -154,6 +156,15 @@ func PolicyV1HostFunctions() map[string]WASMFunctionSignature {
 			[]WASMValueType{WASMI64},
 		)
 	}
+	return result
+}
+
+// PolicyV1RequiredHostFunctions returns the original policy/v1 imports which
+// every guest must retain. Additive imports are intentionally absent so an
+// updated host continues accepting already-published policy/v1 guests.
+func PolicyV1RequiredHostFunctions() map[string]WASMFunctionSignature {
+	result := PolicyV1HostFunctions()
+	delete(result, PolicyHostReadNormalizedHTTP)
 	return result
 }
 
@@ -350,6 +361,24 @@ type PolicyHost interface {
 	StatePut(context.Context, string, []byte) error
 	EmitEvent(context.Context, PolicySecurityEvent) error
 	AddMetric(context.Context, string, int64) error
+}
+
+// PolicyNormalizedHTTP is the fixed, request-scoped HTTP projection returned
+// by the additive normalized HTTP host import. Headers is a deterministic
+// lower-case name/value projection and must never be silently truncated.
+type PolicyNormalizedHTTP struct {
+	Path                       []byte
+	Query                      []byte
+	Headers                    []byte
+	TrustedSource              []byte
+	TrustedSourceAuthenticated bool
+	BodyWindowComplete         bool
+}
+
+// PolicyNormalizedHTTPHost is optional for policy/v1 hosts so existing hosts
+// and guests remain source- and binary-compatible with the original v1 ABI.
+type PolicyNormalizedHTTPHost interface {
+	ReadNormalizedHTTP(context.Context) (PolicyNormalizedHTTP, error)
 }
 
 type RPCHandshakeRequest struct {

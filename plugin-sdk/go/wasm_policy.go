@@ -106,14 +106,15 @@ func WASMPagesToBytes(pages uint64) (uint64, error) {
 }
 
 func validatePolicyV1CompiledModule(module wazero.CompiledModule, memoryBudgetBytes int64) error {
-	requiredImports := PolicyV1HostFunctions()
-	seenImports := make(map[string]bool, len(requiredImports))
+	allowedImports := PolicyV1HostFunctions()
+	requiredImports := PolicyV1RequiredHostFunctions()
+	seenImports := make(map[string]bool, len(allowedImports))
 	for _, imported := range module.ImportedFunctions() {
 		moduleName, name, ok := imported.Import()
 		if !ok || moduleName != PolicyHostModule {
 			return fmt.Errorf("dangerous import %q.%q is not allowed", moduleName, name)
 		}
-		want, allowed := requiredImports[name]
+		want, allowed := allowedImports[name]
 		if !allowed {
 			return fmt.Errorf("dangerous import %q.%q is not allowed", moduleName, name)
 		}

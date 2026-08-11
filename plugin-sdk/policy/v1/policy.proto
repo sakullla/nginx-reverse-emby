@@ -29,12 +29,17 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policy
 // payload-only limits. A host must marshal the complete frame before admission
 // and must not promise a payload field equal to the whole frame budget.
 //
-// Required function imports use module "nre:policy/v1" and names
-// nre_host_read_field, nre_host_read_body_window, nre_host_state_get,
-// nre_host_state_put, nre_host_emit_event, and nre_host_add_metric. Every
+// Allowed function imports use module "nre:policy/v1" and names
+// nre_host_read_field, nre_host_read_normalized_http,
+// nre_host_read_body_window, nre_host_state_get,
+// nre_host_state_put, nre_host_emit_event, and nre_host_add_metric. The
+// normalized HTTP import is additive and optional; the original six imports
+// remain required for every policy/v1 guest. Every
 // signature is (request_ptr: i32, request_len: i32, response_ptr: i32,
 // response_capacity: i32) -> i64. Requests and responses are the protobuf
 // messages below: read_field uses ReadFieldRequest/BytesResponse,
+// read_normalized_http uses an empty ReadNormalizedHTTPRequest and
+// NormalizedHTTPResponse,
 // read_body_window uses ReadBodyWindowRequest/BytesResponse, state_get uses
 // StateGetRequest/BytesResponse, and state_put, emit_event, and add_metric use
 // their corresponding request with an empty response. The returned frame is
@@ -109,6 +114,23 @@ message RuntimeError {
 
 message ReadFieldRequest {
   string name = 1;
+}
+
+// ReadNormalizedHTTPRequest is empty so the common WAF path performs one
+// guest-to-host transition without guest-controlled field selection. The
+// import is an additive policy/v1 feature: hosts expose it when supported,
+// while validators continue accepting policy/v1 guests which predate it.
+message ReadNormalizedHTTPRequest {}
+
+message NormalizedHTTPResponse {
+  bytes path = 1;
+  bytes query = 2;
+  // Deterministic lower-case "name:value\n" records. Hosts fail with
+  // RESOURCE_EXHAUSTED rather than truncate this security-sensitive view.
+  bytes headers = 3;
+  bytes trusted_source = 4;
+  bool trusted_source_authenticated = 5;
+  bool body_window_complete = 6;
 }
 
 message ReadBodyWindowRequest {
