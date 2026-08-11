@@ -44,6 +44,9 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
 	}
+	if err := c.authorizeJournalPluginLogRetirements(journal); err != nil {
+		return c.recordRuntimeError(err)
+	}
 	acknowledgementErr := c.recoverActiveRevisionAcknowledgement(ctx, client, store, &journal)
 	if acknowledgementErr == nil {
 		if err := c.reportCompletedGenerationDrains(ctx, client, store, &journal); err != nil {
@@ -200,6 +203,9 @@ func (c *SyncController) performRevisionSyncPlan(
 				if identityErr := c.validateActiveRuntimeGeneration(candidate); identityErr != nil {
 					return c.recordRuntimeError(identityErr)
 				}
+				if err := c.authorizePluginLogRetirements(applied); err != nil {
+					return c.recordRuntimeError(err)
+				}
 				if err := c.persistRuntimeState(true); err != nil {
 					return c.recordRuntimeError(err)
 				}
@@ -244,6 +250,9 @@ func (c *SyncController) performRevisionSyncPlan(
 		if applied.Revision == lease.Revision && sameSnapshot {
 			if identityErr := c.validateActiveRuntimeGeneration(candidate); identityErr != nil {
 				return c.recordRuntimeError(identityErr)
+			}
+			if err := c.authorizePluginLogRetirements(applied); err != nil {
+				return c.recordRuntimeError(err)
 			}
 			if err := c.persistRuntimeState(true); err != nil {
 				return c.recordRuntimeError(err)
@@ -327,6 +336,9 @@ func (c *SyncController) performRevisionSyncPlan(
 		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
+	if err := c.authorizePluginLogRetirements(candidateApplied); err != nil {
+		return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
+	}
 	if err := c.persistRuntimeState(true); err != nil {
 		if c.Runtime.UsesGenerationManager() || isFilesystemCommitUncertain(err) {
 			return c.recordRuntimeError(err)
@@ -351,6 +363,61 @@ func heartbeatTrafficRuntime(snapshot model.Snapshot) (model.AgentConfig, bool) 
 		TrafficBlocked:      snapshot.AgentConfig.TrafficBlocked,
 		TrafficBlockReason:  strings.TrimSpace(snapshot.AgentConfig.TrafficBlockReason),
 	}, true
+}
+
+func (c *SyncController) authorizePluginLogRetirements(applied model.Snapshot) error {
+	if c == nil || c.Store == nil {
+		return nil
+	}
+	store, ok := c.Store.(PluginLogRetirementCutoverStore)
+	if !ok {
+		return nil
+	}
+	if err := store.AuthorizePluginRuntimeLogRetirementIntents(applied); err != nil {
+		return fmt.Errorf("authorize plugin runtime log retirement after durable cutover: %w", err)
+	}
+	return nil
+}
+
+func (c *SyncController) authorizeJournalPluginLogRetirements(journal model.GenerationJournal) error {
+	if c == nil || c.Store == nil {
+		return nil
+	}
+	var records []*model.GenerationRecord
+	if journal.Candidate != nil && journal.Candidate.Phase == model.GenerationPhaseCutover {
+		records = append(records, journal.Candidate)
+	}
+	if journal.Active != nil {
+		records = append(records, journal.Active)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	applied, err := c.Store.LoadAppliedSnapshot()
+	if err != nil {
+		return err
+	}
+	digest, err := revisionSnapshotDigest(applied)
+	if err != nil {
+		return err
+	}
+	activeIdentity, managed := c.Runtime.ActiveGenerationIdentity()
+	for _, record := range records {
+		if record.Revision != applied.Revision {
+			continue
+		}
+		if record.RuntimeGenerationID != "" || record.RuntimeSnapshotHash != "" {
+			if managed && activeIdentity.ID == record.RuntimeGenerationID && activeIdentity.Revision == record.Revision &&
+				strings.EqualFold(activeIdentity.SnapshotHash, record.RuntimeSnapshotHash) && strings.EqualFold(digest, record.RuntimeSnapshotHash) {
+				return c.authorizePluginLogRetirements(applied)
+			}
+			continue
+		}
+		if strings.EqualFold(record.SnapshotDigest, digest) {
+			return c.authorizePluginLogRetirements(applied)
+		}
+	}
+	return nil
 }
 
 func (c *SyncController) commitHeartbeatTrafficRuntime(ctx context.Context, snapshot model.Snapshot) error {

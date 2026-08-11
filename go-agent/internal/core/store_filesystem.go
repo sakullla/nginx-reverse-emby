@@ -27,6 +27,7 @@ type Filesystem struct {
 	syncDirectory          func(string) error
 	pluginLogAppendFailure func(string) error
 	pluginLogSessionID     string
+	pluginLogDrainRetries  map[string]struct{}
 	logCapacity            pluginLogCapacitySignal
 }
 
@@ -41,7 +42,7 @@ func NewFilesystem(root string) (*Filesystem, error) {
 	if _, err := rand.Read(sessionBytes); err != nil {
 		return nil, err
 	}
-	return &Filesystem{root: root, syncDirectory: syncFilesystemDirectory, pluginLogSessionID: hex.EncodeToString(sessionBytes)}, nil
+	return &Filesystem{root: root, syncDirectory: syncFilesystemDirectory, pluginLogSessionID: hex.EncodeToString(sessionBytes), pluginLogDrainRetries: make(map[string]struct{})}, nil
 }
 
 func (f *Filesystem) SaveDesiredSnapshot(snapshot Snapshot) error {

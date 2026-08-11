@@ -383,7 +383,7 @@ func TestFilesystemPluginLogOutboxRetirementRetainsPendingAndLiveResumeAcrossChe
 	}
 }
 
-func TestFilesystemPluginLogRetirementIntentRetriesTransientFinalWrite(t *testing.T) {
+func TestFilesystemPluginLogRetirementIntentRetriesTransientDrainedWrite(t *testing.T) {
 	directory := t.TempDir()
 	store, err := NewFilesystem(directory)
 	if err != nil {
@@ -406,17 +406,29 @@ func TestFilesystemPluginLogRetirementIntentRetriesTransientFinalWrite(t *testin
 	}
 	failed := false
 	store.pluginLogAppendFailure = func(operation string) error {
-		if operation == "retire_intent_complete" && !failed {
+		if operation == "retire_intent_drained" && !failed {
 			failed = true
-			return errors.New("injected final retirement write failure")
+			return errors.New("injected drained retirement write failure")
 		}
 		return nil
 	}
-	if err := store.CompletePluginRuntimeLogRetirementIntent(intentID); err == nil {
-		t.Fatal("final retirement write failure was hidden")
+	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err == nil {
+		t.Fatal("drained retirement write failure was hidden")
 	}
 	if _, err := store.PendingPluginLogReports(); err != nil {
-		t.Fatalf("same-process cleanup retry failed: %v", err)
+		t.Fatalf("same-process drained retry failed: %v", err)
+	}
+	store.mu.Lock()
+	drainedState, err := store.loadPluginLogOutboxLocked()
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent, ok := drainedState.retireIntents[intentID]; !ok || !intent.Drained {
+		t.Fatalf("drained intent was not durable before authorization: %+v", drainedState.retireIntents)
+	}
+	if err := store.AuthorizePluginRuntimeLogRetirementIntents(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
+		t.Fatalf("cutover authorization failed: %v", err)
 	}
 	store.mu.Lock()
 	state, err := store.loadPluginLogOutboxLocked()
@@ -430,6 +442,52 @@ func TestFilesystemPluginLogRetirementIntentRetriesTransientFinalWrite(t *testin
 	}
 	if _, retired := state.retired[fenceID]; !retired {
 		t.Fatalf("fence %q was not durably retired", fenceID)
+	}
+}
+
+func TestFilesystemPluginLogRetirementCompletionRetriesAfterAuthorizationFailure(t *testing.T) {
+	store, err := NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pluginLogTestDraft("completion retry")
+	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
+		t.Fatal(err)
+	}
+	intentID := strings.Repeat("e", 64)
+	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	store.pluginLogAppendFailure = func(operation string) error {
+		if operation == "retire_intent_complete" && !failed {
+			failed = true
+			return errors.New("injected completion write failure")
+		}
+		return nil
+	}
+	applied := model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}
+	if err := store.AuthorizePluginRuntimeLogRetirementIntents(applied); err == nil {
+		t.Fatal("completion write failure was hidden")
+	}
+	if err := store.AuthorizePluginRuntimeLogRetirementIntents(applied); err != nil {
+		t.Fatalf("completion authorization retry failed: %v", err)
+	}
+	store.mu.Lock()
+	state, err := store.loadPluginLogOutboxLocked()
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.retireIntents) != 0 {
+		t.Fatalf("completion retry left intents = %+v", state.retireIntents)
 	}
 }
 
@@ -470,7 +528,7 @@ func TestFilesystemPluginLogRetirementIntentRecoversOnlyAfterRestart(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restarted.PendingPluginLogReports(); err != nil {
+	if err := restarted.AuthorizePluginRuntimeLogRetirementIntents(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
 		t.Fatalf("restart retirement recovery failed: %v", err)
 	}
 	restarted.mu.Lock()

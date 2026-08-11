@@ -385,6 +385,22 @@ func (s *persistentBridgeStore) CompletePluginRuntimeLogRetirementIntent(id stri
 	return retirement.CompletePluginRuntimeLogRetirementIntent(id)
 }
 
+func (s *persistentBridgeStore) MarkPluginRuntimeLogRetirementIntentDrained(id string) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.MarkPluginRuntimeLogRetirementIntentDrained(id)
+}
+
+func (s *persistentBridgeStore) AuthorizePluginRuntimeLogRetirementIntents(applied Snapshot) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementCutoverStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement cutover store is unavailable")
+	}
+	return retirement.AuthorizePluginRuntimeLogRetirementIntents(sanitizeSnapshot(applied))
+}
+
 func (s *persistentBridgeStore) AbortPluginRuntimeLogRetirementIntent(id string) error {
 	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
 	if !ok {

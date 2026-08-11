@@ -83,7 +83,7 @@ func (f *Filesystem) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, 
 	if err != nil {
 		return nil, err
 	}
-	if err := f.recoverPluginLogRetirementIntentsLocked(&state); err != nil {
+	if err := f.retryPluginLogRetirementDrainsLocked(&state); err != nil {
 		return nil, err
 	}
 	return model.ClonePluginRuntimeLogReports(state.pending), nil
@@ -170,6 +170,16 @@ func (f *Filesystem) CompletePluginRuntimeLogRetirementIntent(id string) error {
 	return f.completePluginLogRetirementIntentLocked(&state, id)
 }
 
+func (f *Filesystem) MarkPluginRuntimeLogRetirementIntentDrained(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state, err := f.loadPluginLogOutboxLocked()
+	if err != nil {
+		return err
+	}
+	return f.markPluginLogRetirementIntentDrainedLocked(&state, id, true)
+}
+
 func (f *Filesystem) AbortPluginRuntimeLogRetirementIntent(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -189,16 +199,6 @@ func (f *Filesystem) AbortPluginRuntimeLogRetirementIntent(id string) error {
 }
 
 func (f *Filesystem) completePluginLogRetirementIntentLocked(state *pluginLogOutboxState, id string) error {
-	drained, err := state.markRetirementIntentDrained(id)
-	if err != nil {
-		return err
-	}
-	if drained {
-		if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent_drained", BatchID: id}); err != nil {
-			return err
-		}
-		state.records++
-	}
 	changed, err := state.completeRetirementIntent(id)
 	if err != nil || !changed {
 		return err
@@ -210,46 +210,64 @@ func (f *Filesystem) completePluginLogRetirementIntentLocked(state *pluginLogOut
 	return f.maybeCompactPluginLogOutboxLocked(state)
 }
 
-func (f *Filesystem) recoverPluginLogRetirementIntentsLocked(state *pluginLogOutboxState) error {
-	if state == nil || len(state.retireIntents) == 0 {
-		return nil
-	}
-	applied, err := f.loadPluginLogRetirementSnapshotLocked()
+func (f *Filesystem) markPluginLogRetirementIntentDrainedLocked(state *pluginLogOutboxState, id string, rememberFailure bool) error {
+	changed, err := state.markRetirementIntentDrained(id)
 	if err != nil {
 		return err
 	}
-	for _, id := range state.recoverableRetirementIntents(applied, f.pluginLogSessionID) {
-		if err := f.completePluginLogRetirementIntentLocked(state, id); err != nil {
+	if !changed {
+		delete(f.pluginLogDrainRetries, id)
+		return nil
+	}
+	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent_drained", BatchID: id}); err != nil {
+		if rememberFailure {
+			if f.pluginLogDrainRetries == nil {
+				f.pluginLogDrainRetries = make(map[string]struct{})
+			}
+			f.pluginLogDrainRetries[id] = struct{}{}
+		}
+		return err
+	}
+	delete(f.pluginLogDrainRetries, id)
+	state.records++
+	return f.maybeCompactPluginLogOutboxLocked(state)
+}
+
+func (f *Filesystem) retryPluginLogRetirementDrainsLocked(state *pluginLogOutboxState) error {
+	ids := make([]string, 0, len(f.pluginLogDrainRetries))
+	for id := range f.pluginLogDrainRetries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := f.markPluginLogRetirementIntentDrainedLocked(state, id, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (f *Filesystem) loadPluginLogRetirementSnapshotLocked() (model.Snapshot, error) {
-	load := func(name string) (model.Snapshot, error) {
-		var snapshot model.Snapshot
-		data, err := os.ReadFile(filepath.Join(f.root, name))
-		if err != nil {
-			return snapshot, err
+func (f *Filesystem) AuthorizePluginRuntimeLogRetirementIntents(applied model.Snapshot) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state, err := f.loadPluginLogOutboxLocked()
+	if err != nil {
+		return err
+	}
+	if err := f.retryPluginLogRetirementDrainsLocked(&state); err != nil {
+		return err
+	}
+	for _, id := range state.restartDrainableRetirementIntents(applied, f.pluginLogSessionID) {
+		if err := f.markPluginLogRetirementIntentDrainedLocked(&state, id, false); err != nil {
+			return err
 		}
-		if err := json.Unmarshal(data, &snapshot); err != nil {
-			return model.Snapshot{}, err
+	}
+	for _, id := range state.recoverableRetirementIntents(applied) {
+		if err := f.completePluginLogRetirementIntentLocked(&state, id); err != nil {
+			return err
 		}
-		return snapshot, nil
 	}
-	applied, err := load(appliedSnapshotFile)
-	if err == nil {
-		return applied, nil
-	}
-	fallback, fallbackErr := load(lastKnownGoodSnapshotFile)
-	if fallbackErr == nil && fallback.Revision > 0 {
-		return fallback, nil
-	}
-	if errors.Is(err, os.ErrNotExist) && errors.Is(fallbackErr, os.ErrNotExist) {
-		return model.Snapshot{}, nil
-	}
-	return model.Snapshot{}, errors.Join(err, fallbackErr)
+	return nil
 }
 
 func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {

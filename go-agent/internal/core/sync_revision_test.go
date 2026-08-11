@@ -13,6 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 func TestRevisionSyncHeartbeatIsTelemetryOnlyWithoutLease(t *testing.T) {
@@ -903,6 +904,169 @@ func TestRevisionSyncRestoresPersistedAppliedSnapshotBeforeNoUpdate(t *testing.T
 	assertEventOrder(t, events, "runtime:restore:6", "heartbeat", "pull")
 }
 
+func TestGenerationViewDrainedWriteFailureRetriesOutsideDestroyOnce(t *testing.T) {
+	store, err := NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pluginLogTestDraft("generation view drain")
+	intentID := strings.Repeat("8", 64)
+	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	store.pluginLogAppendFailure = func(operation string) error {
+		if operation == "retire_intent_drained" && !failed {
+			failed = true
+			return errors.New("injected GenerationView drained write failure")
+		}
+		return nil
+	}
+	registry := module.NewRegistry()
+	if err := registry.Register(revisionRetirementModule{store: store, intentID: intentID}); err != nil {
+		t.Fatal(err)
+	}
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, revisionSnapshot(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := registry.PrepareGeneration(t.Context(), generationContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := prepared.Publish()
+	if err := active.Destroy(t.Context()); err == nil {
+		t.Fatal("GenerationView hid drained write failure")
+	}
+	if err := active.Destroy(t.Context()); err == nil {
+		t.Fatal("GenerationView did not cache its first Destroy failure")
+	}
+	if _, err := store.PendingPluginLogReports(); err != nil {
+		t.Fatalf("store-owned drained retry failed: %v", err)
+	}
+	store.mu.Lock()
+	state, err := store.loadPluginLogOutboxLocked()
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent, ok := state.retireIntents[intentID]; !ok || !intent.Drained {
+		t.Fatalf("drained retry state = %+v", state.retireIntents)
+	}
+}
+
+func TestRevisionSyncRestartDoesNotCompleteRetirementWhenPreviousIdentityReactivates(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pluginLogTestDraft("previous identity")
+	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
+		t.Fatal(err)
+	}
+	intentID := strings.Repeat("9", 64)
+	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err != nil {
+		t.Fatal(err)
+	}
+	previous := revisionPluginLogSnapshot(7, draft)
+	candidate := revisionSnapshot(8)
+	previousDigest, _ := revisionSnapshotDigest(previous)
+	candidateDigest, _ := revisionSnapshotDigest(candidate)
+	journal := model.GenerationJournal{Version: 1, AgentID: "edge-1",
+		Active:    &model.GenerationRecord{GenerationID: "generation-7", Revision: 7, SnapshotDigest: previousDigest, Phase: model.GenerationPhaseActive, Acknowledged: true},
+		Candidate: &model.GenerationRecord{GenerationID: "generation-8", Revision: 8, SnapshotDigest: candidateDigest, Phase: model.GenerationPhaseStarted},
+	}
+	if err := store.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeState(model.RuntimeState{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(journal); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := &SyncController{Store: restarted, Runtime: NewRuntime(), SyncClient: &revisionClientStub{pull: model.RevisionPull{DesiredRevision: 7}}}
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(2), []model.PluginRuntimeLogReport{draft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed[0].Sequence != 2 {
+		t.Fatalf("reactivated previous identity sequence = %d, want 2", resumed[0].Sequence)
+	}
+}
+
+func TestRevisionSyncRestartCompletesRetirementAfterDurableCutover(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pluginLogTestDraft("durable cutover")
+	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
+		t.Fatal(err)
+	}
+	intentID := strings.Repeat("a", 64)
+	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := revisionSnapshot(8)
+	candidateDigest, _ := revisionSnapshotDigest(candidate)
+	journal := model.GenerationJournal{Version: 1, AgentID: "edge-1",
+		Active: &model.GenerationRecord{GenerationID: "generation-8", Revision: 8, SnapshotDigest: candidateDigest, Phase: model.GenerationPhaseActive, Acknowledged: true},
+	}
+	if err := store.SaveAppliedSnapshot(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeState(model.RuntimeState{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(journal); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := &SyncController{Store: restarted, Runtime: NewRuntime(), SyncClient: &revisionClientStub{pull: model.RevisionPull{DesiredRevision: 8}}}
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	restarted.mu.Lock()
+	state, err := restarted.loadPluginLogOutboxLocked()
+	restarted.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.retireIntents) != 0 {
+		t.Fatalf("durable cutover left retirement intents = %+v", state.retireIntents)
+	}
+	if _, retired := state.retired[pluginRuntimeLogFenceIdentity(draft)]; !retired {
+		t.Fatal("durable cutover restart did not complete retirement")
+	}
+}
+
 func TestIntegrationRevisionSyncBootstrapsFreshAndLegacyFilesystemStores(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -1667,6 +1831,35 @@ func (tx revisionGenerationTransaction) Commit() error {
 }
 func (revisionGenerationTransaction) Rollback() error { return nil }
 
+type revisionRetirementModule struct {
+	store    PluginLogRetirementIntentStore
+	intentID string
+}
+
+func (revisionRetirementModule) Name() string { return "revision-retirement" }
+func (revisionRetirementModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: "revision-retirement"}
+}
+func (revisionRetirementModule) RegisterProviders(module.ProviderRegistry) error      { return nil }
+func (revisionRetirementModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+func (revisionRetirementModule) Stop(context.Context) error                           { return nil }
+func (m revisionRetirementModule) Apply(context.Context, module.ApplyRequest) error   { return nil }
+func (m revisionRetirementModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return revisionRetirementTransaction{store: m.store, intentID: m.intentID}, nil
+}
+
+type revisionRetirementTransaction struct {
+	store    PluginLogRetirementIntentStore
+	intentID string
+}
+
+func (revisionRetirementTransaction) Ready(context.Context) error { return nil }
+func (tx revisionRetirementTransaction) Destroy(context.Context) error {
+	return tx.store.MarkPluginRuntimeLogRetirementIntentDrained(tx.intentID)
+}
+func (revisionRetirementTransaction) Commit() error   { return nil }
+func (revisionRetirementTransaction) Rollback() error { return nil }
+
 func (s *revisionTestStore) LoadLastKnownGoodSnapshot() (model.Snapshot, error) {
 	return s.lkg, nil
 }
@@ -1692,6 +1885,16 @@ func revisionSnapshot(revision int64) model.Snapshot {
 	if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
 		panic(err)
 	}
+	return snapshot
+}
+
+func revisionPluginLogSnapshot(revision int64, report model.PluginRuntimeLogReport) model.Snapshot {
+	snapshot := revisionSnapshot(revision)
+	snapshot.PluginGenerations = []model.PluginGeneration{{
+		ID: report.GenerationID, Revision: report.Revision, InstanceID: report.InstanceID, PluginID: report.PluginID,
+		PackageDigest: report.PackageDigest, Artifact: model.PluginArtifactDescriptor{SHA256: report.ArtifactDigest},
+		Target: model.PluginTargetBinding{ID: report.AgentID},
+	}}
 	return snapshot
 }
 

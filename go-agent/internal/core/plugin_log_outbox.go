@@ -32,8 +32,13 @@ type PluginLogFenceRetirementStore interface {
 type PluginLogRetirementIntentStore interface {
 	PluginLogFenceRetirementStore
 	StagePluginRuntimeLogRetirementIntent(string, int64, []pluginprocess.RuntimeLogIdentity) error
+	MarkPluginRuntimeLogRetirementIntentDrained(string) error
 	CompletePluginRuntimeLogRetirementIntent(string) error
 	AbortPluginRuntimeLogRetirementIntent(string) error
+}
+
+type PluginLogRetirementCutoverStore interface {
+	AuthorizePluginRuntimeLogRetirementIntents(model.Snapshot) error
 }
 
 var ErrPluginLogOutboxFull = errors.New("plugin runtime log outbox is full")
@@ -330,6 +335,9 @@ func (state *pluginLogOutboxState) completeRetirementIntent(id string) (bool, er
 	if !ok {
 		return false, nil
 	}
+	if !intent.Drained {
+		return false, errors.New("plugin runtime log retirement intent is not drained")
+	}
 	for _, fence := range intent.Fences {
 		if _, _, err := state.retire(fence.runtimeIdentity()); err != nil {
 			return false, err
@@ -350,7 +358,7 @@ func (state *pluginLogOutboxState) abortRetirementIntent(id string) (bool, error
 	return true, nil
 }
 
-func (state *pluginLogOutboxState) recoverableRetirementIntents(applied model.Snapshot, sessionID string) []string {
+func (state *pluginLogOutboxState) recoverableRetirementIntents(applied model.Snapshot) []string {
 	if state == nil || applied.Revision <= 0 {
 		return nil
 	}
@@ -370,7 +378,47 @@ func (state *pluginLogOutboxState) recoverableRetirementIntents(applied model.Sn
 		if applied.Revision < intent.Revision {
 			continue
 		}
-		if !intent.Drained && (sessionID == "" || intent.SessionID == "" || intent.SessionID == sessionID) {
+		if !intent.Drained {
+			continue
+		}
+		removed := true
+		for _, fence := range intent.Fences {
+			identity, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(fence.runtimeIdentity())
+			if err != nil {
+				removed = false
+				break
+			}
+			if _, stillActive := active[identity]; stillActive {
+				removed = false
+				break
+			}
+		}
+		if removed {
+			result = append(result, id)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (state *pluginLogOutboxState) restartDrainableRetirementIntents(applied model.Snapshot, sessionID string) []string {
+	if state == nil || applied.Revision <= 0 || sessionID == "" {
+		return nil
+	}
+	active := make(map[string]struct{}, len(applied.PluginGenerations))
+	for _, generation := range applied.PluginGenerations {
+		identity := pluginprocess.RuntimeLogIdentity{
+			Revision: generation.Revision, ProviderGenerationID: generation.ID, InstanceID: generation.InstanceID,
+			PluginID: generation.PluginID, AgentID: generation.Target.ID, PackageDigest: generation.PackageDigest,
+			ArtifactDigest: generation.Artifact.SHA256,
+		}
+		if fence, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(identity); err == nil {
+			active[fence] = struct{}{}
+		}
+	}
+	var result []string
+	for id, intent := range state.retireIntents {
+		if intent.Drained || intent.SessionID == "" || intent.SessionID == sessionID || applied.Revision < intent.Revision {
 			continue
 		}
 		removed := true

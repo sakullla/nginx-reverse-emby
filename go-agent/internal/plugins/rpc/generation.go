@@ -31,7 +31,7 @@ type GenerationModule struct {
 
 type RuntimeLogFenceRetirer interface {
 	StagePluginRuntimeLogRetirementIntent(string, int64, []pluginprocess.RuntimeLogIdentity) error
-	CompletePluginRuntimeLogRetirementIntent(string) error
+	MarkPluginRuntimeLogRetirementIntentDrained(string) error
 	AbortPluginRuntimeLogRetirementIntent(string) error
 }
 
@@ -292,9 +292,10 @@ func (t *generationTransaction) FinalizeGenerationPublication() {
 		return
 	}
 	// With no prior in-memory RPC transaction (for example after an Agent
-	// restart), the previous process lifecycle is already absent. Publication
-	// is therefore the final drain barrier for the signed semantic removal.
-	if err := t.completeRuntimeLogRetirementIntent(intentID); err != nil {
+	// restart), the previous process lifecycle is already absent. Record only
+	// that drain fact here; sync_revision authorizes fence completion after its
+	// cutover journal and applied snapshot are durable.
+	if err := t.markRuntimeLogRetirementIntentDrained(intentID); err != nil {
 		t.mu.Lock()
 		t.committedRetirementIntents = append(t.committedRetirementIntents, intentID)
 		t.mu.Unlock()
@@ -319,7 +320,7 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 	if t.closed {
 		intentIDs := append([]string(nil), t.committedRetirementIntents...)
 		t.mu.Unlock()
-		if err := t.completeRuntimeLogRetirementIntents(intentIDs); err != nil {
+		if err := t.markRuntimeLogRetirementIntentsDrained(intentIDs); err != nil {
 			return err
 		}
 		t.mu.Lock()
@@ -361,7 +362,7 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 	if destroyErr != nil {
 		return destroyErr
 	}
-	if err := t.completeRuntimeLogRetirementIntents(intentIDs); err != nil {
+	if err := t.markRuntimeLogRetirementIntentsDrained(intentIDs); err != nil {
 		return err
 	}
 	t.mu.Lock()
@@ -379,15 +380,15 @@ func (t *generationTransaction) addCommittedRetirementIntent(id string) {
 	t.mu.Unlock()
 }
 
-func (t *generationTransaction) completeRuntimeLogRetirementIntents(ids []string) error {
+func (t *generationTransaction) markRuntimeLogRetirementIntentsDrained(ids []string) error {
 	var err error
 	for _, id := range ids {
-		err = errors.Join(err, t.completeRuntimeLogRetirementIntent(id))
+		err = errors.Join(err, t.markRuntimeLogRetirementIntentDrained(id))
 	}
 	return err
 }
 
-func (t *generationTransaction) completeRuntimeLogRetirementIntent(id string) error {
+func (t *generationTransaction) markRuntimeLogRetirementIntentDrained(id string) error {
 	if t == nil || id == "" || t.module == nil {
 		return nil
 	}
@@ -397,7 +398,7 @@ func (t *generationTransaction) completeRuntimeLogRetirementIntent(id string) er
 	if retirer == nil {
 		return nil
 	}
-	return retirer.CompletePluginRuntimeLogRetirementIntent(id)
+	return retirer.MarkPluginRuntimeLogRetirementIntentDrained(id)
 }
 
 func (t *generationTransaction) abortRuntimeLogRetirementIntent(id string) error {

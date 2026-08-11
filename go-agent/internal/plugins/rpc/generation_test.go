@@ -40,13 +40,31 @@ type generationControlledRunner struct {
 }
 
 type generationLogFenceRetirer struct {
-	identities     []pluginprocess.RuntimeLogIdentity
-	intents        map[string][]pluginprocess.RuntimeLogIdentity
-	staged         []string
-	aborted        []string
-	store          agentcore.PluginLogRetirementIntentStore
-	err            error
-	completeErrors []error
+	identities []pluginprocess.RuntimeLogIdentity
+	intents    map[string][]pluginprocess.RuntimeLogIdentity
+	staged     []string
+	drained    []string
+	aborted    []string
+	store      agentcore.PluginLogRetirementIntentStore
+	err        error
+	markErrors []error
+}
+
+func (retirer *generationLogFenceRetirer) MarkPluginRuntimeLogRetirementIntentDrained(id string) error {
+	if len(retirer.markErrors) > 0 {
+		err := retirer.markErrors[0]
+		retirer.markErrors = retirer.markErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
+	if retirer.store != nil {
+		if err := retirer.store.MarkPluginRuntimeLogRetirementIntentDrained(id); err != nil {
+			return err
+		}
+	}
+	retirer.drained = append(retirer.drained, id)
+	return retirer.err
 }
 
 func (retirer *generationLogFenceRetirer) StagePluginRuntimeLogRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity) error {
@@ -64,13 +82,6 @@ func (retirer *generationLogFenceRetirer) StagePluginRuntimeLogRetirementIntent(
 }
 
 func (retirer *generationLogFenceRetirer) CompletePluginRuntimeLogRetirementIntent(id string) error {
-	if len(retirer.completeErrors) > 0 {
-		err := retirer.completeErrors[0]
-		retirer.completeErrors = retirer.completeErrors[1:]
-		if err != nil {
-			return err
-		}
-	}
 	if retirer.err != nil {
 		return retirer.err
 	}
@@ -313,8 +324,11 @@ func TestRPCGenerationRestartThenRemovalRetiresSemanticFenceAndAllowsReclamation
 	previous := model.Snapshot{Revision: 12, PluginGenerations: []model.PluginGeneration{generation}}
 	next := model.Snapshot{Revision: 13, PluginGenerations: []model.PluginGeneration{}}
 	removed := preparePublishRPCGeneration(t, moduleUnderTest, previous, next)
-	if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(generation) {
-		t.Fatalf("restart removal retirement = %+v", retirer.identities)
+	if len(retirer.drained) != 1 || len(retirer.identities) != 0 {
+		t.Fatalf("restart removal drain/completion = %v/%+v", retirer.drained, retirer.identities)
+	}
+	if err := retirer.CompletePluginRuntimeLogRetirementIntent(retirer.drained[0]); err != nil {
+		t.Fatal(err)
 	}
 	for index := 0; index < generationTestReplayChurn; index++ {
 		churn := draft
@@ -406,8 +420,14 @@ func TestRPCGenerationReplacementAndRemovalRetireOldOnlyAfterDrain(t *testing.T)
 			if err := old.Destroy(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			if len(retirer.drained) != 1 || len(retirer.identities) != 0 {
+				t.Fatalf("post-drain state = drained:%v completed:%+v", retirer.drained, retirer.identities)
+			}
+			if err := retirer.CompletePluginRuntimeLogRetirementIntent(retirer.drained[0]); err != nil {
+				t.Fatal(err)
+			}
 			if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(oldGeneration) {
-				t.Fatalf("post-drain retirement = %+v", retirer.identities)
+				t.Fatalf("post-cutover retirement = %+v", retirer.identities)
 			}
 			if err := next.Destroy(t.Context()); err != nil {
 				t.Fatal(err)
@@ -419,7 +439,7 @@ func TestRPCGenerationReplacementAndRemovalRetireOldOnlyAfterDrain(t *testing.T)
 	}
 }
 
-func TestRPCGenerationRetirementCompletionRetriesAfterTransientCleanupFailure(t *testing.T) {
+func TestRPCGenerationRetirementDrainedMarkerRetriesAfterTransientCleanupFailure(t *testing.T) {
 	root := t.TempDir()
 	oldGeneration := rpcPluginGenerationForTest(t, root, 17, "operation-17")
 	client := &generationLifecycleClient{}
@@ -430,7 +450,7 @@ func TestRPCGenerationRetirementCompletionRetriesAfterTransientCleanupFailure(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	retirer := &generationLogFenceRetirer{completeErrors: []error{errors.New("injected durable completion failure")}}
+	retirer := &generationLogFenceRetirer{markErrors: []error{errors.New("injected durable drained failure")}}
 	moduleUnderTest := NewGenerationModule(host)
 	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
 	oldSnapshot := model.Snapshot{Revision: 17, PluginGenerations: []model.PluginGeneration{oldGeneration}}
@@ -439,14 +459,20 @@ func TestRPCGenerationRetirementCompletionRetriesAfterTransientCleanupFailure(t 
 	if err := old.Destroy(t.Context()); err == nil {
 		t.Fatal("transient retirement completion failure was hidden")
 	}
-	if len(retirer.identities) != 0 {
-		t.Fatalf("failed completion retired fence: %+v", retirer.identities)
+	if len(retirer.identities) != 0 || len(retirer.drained) != 0 {
+		t.Fatalf("failed drained write retired fence: drained=%v completed=%+v", retirer.drained, retirer.identities)
 	}
 	if err := old.Destroy(t.Context()); err != nil {
 		t.Fatalf("cleanup retry failed: %v", err)
 	}
+	if len(retirer.drained) != 1 || len(retirer.identities) != 0 {
+		t.Fatalf("cleanup retry drain = %v/%+v", retirer.drained, retirer.identities)
+	}
+	if err := retirer.CompletePluginRuntimeLogRetirementIntent(retirer.drained[0]); err != nil {
+		t.Fatal(err)
+	}
 	if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(oldGeneration) {
-		t.Fatalf("cleanup retry retirement = %+v", retirer.identities)
+		t.Fatalf("cutover retirement = %+v", retirer.identities)
 	}
 	if err := next.Destroy(t.Context()); err != nil {
 		t.Fatal(err)
@@ -476,8 +502,8 @@ func TestRPCGenerationFailedRequiredCandidateAbortsStagedRetirement(t *testing.T
 	if len(retirer.staged) != 1 || len(retirer.aborted) != 1 || retirer.staged[0] != retirer.aborted[0] {
 		t.Fatalf("failed candidate retirement intent lifecycle: staged=%v aborted=%v", retirer.staged, retirer.aborted)
 	}
-	if len(retirer.identities) != 0 || len(retirer.intents) != 0 {
-		t.Fatalf("failed candidate retired old fence: identities=%+v intents=%+v", retirer.identities, retirer.intents)
+	if len(retirer.identities) != 0 || len(retirer.drained) != 0 || len(retirer.intents) != 0 {
+		t.Fatalf("failed candidate retired old fence: identities=%+v drained=%v intents=%+v", retirer.identities, retirer.drained, retirer.intents)
 	}
 }
 
