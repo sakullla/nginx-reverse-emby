@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
@@ -25,16 +26,6 @@ type pluginLogOutboxBatch struct {
 	Reports []model.PluginRuntimeLogReport `json:"reports"`
 }
 
-type pluginLogOutboxFence struct {
-	Revision             int64  `json:"revision"`
-	ProviderGenerationID string `json:"generation_id"`
-	InstanceID           string `json:"instance_id"`
-	PluginID             string `json:"plugin_id"`
-	AgentID              string `json:"agent_id"`
-	PackageDigest        string `json:"package_digest"`
-	ArtifactDigest       string `json:"artifact_digest"`
-}
-
 type pluginLogOutboxRecord struct {
 	Version       int                            `json:"version"`
 	Operation     string                         `json:"operation"`
@@ -46,7 +37,9 @@ type pluginLogOutboxRecord struct {
 	Batches       []pluginLogOutboxBatch         `json:"batches,omitempty"`
 	Acks          []string                       `json:"acks,omitempty"`
 	Retired       []string                       `json:"retired,omitempty"`
-	Fence         *pluginLogOutboxFence          `json:"fence,omitempty"`
+	Fence         *pluginLogRetirementFence      `json:"fence,omitempty"`
+	Intent        *pluginLogRetirementIntent     `json:"intent,omitempty"`
+	Intents       []pluginLogRetirementIntent    `json:"intents,omitempty"`
 	Digest        string                         `json:"digest"`
 }
 
@@ -88,6 +81,9 @@ func (f *Filesystem) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, 
 	defer f.mu.Unlock()
 	state, err := f.loadPluginLogOutboxLocked()
 	if err != nil {
+		return nil, err
+	}
+	if err := f.recoverPluginLogRetirementIntentsLocked(&state); err != nil {
 		return nil, err
 	}
 	return model.ClonePluginRuntimeLogReports(state.pending), nil
@@ -136,13 +132,124 @@ func (f *Filesystem) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeL
 	}
 	digest := sha256.Sum256([]byte(fenceID))
 	record := pluginLogOutboxRecord{
-		Version: 1, Operation: "retire", BatchID: hex.EncodeToString(digest[:]), Fence: pluginLogOutboxFenceFromIdentity(identity),
+		Version: 1, Operation: "retire", BatchID: hex.EncodeToString(digest[:]), Fence: ptrPluginLogRetirementFence(pluginLogRetirementFenceFromIdentity(identity)),
 	}
 	if err := f.appendPluginLogOutboxRecordLocked(record); err != nil {
 		return err
 	}
 	state.records++
 	return f.maybeCompactPluginLogOutboxLocked(&state)
+}
+
+func (f *Filesystem) StagePluginRuntimeLogRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state, err := f.loadPluginLogOutboxLocked()
+	if err != nil {
+		return err
+	}
+	changed, err := state.stageRetirementIntent(id, revision, identities, f.pluginLogSessionID)
+	if err != nil || !changed {
+		return err
+	}
+	intent := clonePluginLogRetirementIntent(state.retireIntents[id])
+	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent", BatchID: id, Intent: &intent}); err != nil {
+		return err
+	}
+	state.records++
+	return f.maybeCompactPluginLogOutboxLocked(&state)
+}
+
+func (f *Filesystem) CompletePluginRuntimeLogRetirementIntent(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state, err := f.loadPluginLogOutboxLocked()
+	if err != nil {
+		return err
+	}
+	return f.completePluginLogRetirementIntentLocked(&state, id)
+}
+
+func (f *Filesystem) AbortPluginRuntimeLogRetirementIntent(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state, err := f.loadPluginLogOutboxLocked()
+	if err != nil {
+		return err
+	}
+	changed, err := state.abortRetirementIntent(id)
+	if err != nil || !changed {
+		return err
+	}
+	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent_abort", BatchID: id}); err != nil {
+		return err
+	}
+	state.records++
+	return f.maybeCompactPluginLogOutboxLocked(&state)
+}
+
+func (f *Filesystem) completePluginLogRetirementIntentLocked(state *pluginLogOutboxState, id string) error {
+	drained, err := state.markRetirementIntentDrained(id)
+	if err != nil {
+		return err
+	}
+	if drained {
+		if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent_drained", BatchID: id}); err != nil {
+			return err
+		}
+		state.records++
+	}
+	changed, err := state.completeRetirementIntent(id)
+	if err != nil || !changed {
+		return err
+	}
+	if err := f.appendPluginLogOutboxRecordLocked(pluginLogOutboxRecord{Version: 1, Operation: "retire_intent_complete", BatchID: id}); err != nil {
+		return err
+	}
+	state.records++
+	return f.maybeCompactPluginLogOutboxLocked(state)
+}
+
+func (f *Filesystem) recoverPluginLogRetirementIntentsLocked(state *pluginLogOutboxState) error {
+	if state == nil || len(state.retireIntents) == 0 {
+		return nil
+	}
+	applied, err := f.loadPluginLogRetirementSnapshotLocked()
+	if err != nil {
+		return err
+	}
+	for _, id := range state.recoverableRetirementIntents(applied, f.pluginLogSessionID) {
+		if err := f.completePluginLogRetirementIntentLocked(state, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *Filesystem) loadPluginLogRetirementSnapshotLocked() (model.Snapshot, error) {
+	load := func(name string) (model.Snapshot, error) {
+		var snapshot model.Snapshot
+		data, err := os.ReadFile(filepath.Join(f.root, name))
+		if err != nil {
+			return snapshot, err
+		}
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return model.Snapshot{}, err
+		}
+		return snapshot, nil
+	}
+	applied, err := load(appliedSnapshotFile)
+	if err == nil {
+		return applied, nil
+	}
+	fallback, fallbackErr := load(lastKnownGoodSnapshotFile)
+	if fallbackErr == nil && fallback.Revision > 0 {
+		return fallback, nil
+	}
+	if errors.Is(err, os.ErrNotExist) && errors.Is(fallbackErr, os.ErrNotExist) {
+		return model.Snapshot{}, nil
+	}
+	return model.Snapshot{}, errors.Join(err, fallbackErr)
 }
 
 func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
@@ -248,6 +355,35 @@ func (f *Filesystem) loadPluginLogOutboxLocked() (pluginLogOutboxState, error) {
 			if _, _, err := state.retire(record.Fence.runtimeIdentity()); err != nil {
 				return state, err
 			}
+		case "retire_intent":
+			if record.Intent == nil {
+				return state, errors.New("plugin log retirement intent is missing")
+			}
+			identities := make([]pluginprocess.RuntimeLogIdentity, 0, len(record.Intent.Fences))
+			for _, fence := range record.Intent.Fences {
+				identities = append(identities, fence.runtimeIdentity())
+			}
+			if _, err := state.stageRetirementIntent(record.Intent.ID, record.Intent.Revision, identities, record.Intent.SessionID); err != nil {
+				return state, err
+			}
+		case "retire_intent_drained":
+			if changed, err := state.markRetirementIntentDrained(record.BatchID); err != nil {
+				return state, err
+			} else if !changed {
+				return state, errors.New("plugin log retirement drained marker is dangling")
+			}
+		case "retire_intent_complete":
+			if changed, err := state.completeRetirementIntent(record.BatchID); err != nil {
+				return state, err
+			} else if !changed {
+				return state, errors.New("plugin log retirement completion is dangling")
+			}
+		case "retire_intent_abort":
+			if changed, err := state.abortRetirementIntent(record.BatchID); err != nil {
+				return state, err
+			} else if !changed {
+				return state, errors.New("plugin log retirement abort is dangling")
+			}
 		}
 		state.trimReplayHistory()
 	}
@@ -264,6 +400,14 @@ func (f *Filesystem) maybeCompactPluginLogOutboxLocked(state *pluginLogOutboxSta
 		Reports: model.ClonePluginRuntimeLogReports(state.pending), Sequences: make(map[string]uint64, len(state.sequence)),
 		Acks:          append([]string(nil), state.ackOrder...),
 		SequenceOrder: append([]string(nil), state.sequenceOrder...),
+	}
+	intentIDs := make([]string, 0, len(state.retireIntents))
+	for id := range state.retireIntents {
+		intentIDs = append(intentIDs, id)
+	}
+	sort.Strings(intentIDs)
+	for _, id := range intentIDs {
+		record.Intents = append(record.Intents, clonePluginLogRetirementIntent(state.retireIntents[id]))
 	}
 	for identity, sequence := range state.sequence {
 		record.Sequences[identity] = sequence
@@ -319,10 +463,11 @@ func (f *Filesystem) maybeCompactPluginLogOutboxLocked(state *pluginLogOutboxSta
 
 func pluginLogCheckpointID(state pluginLogOutboxState) string {
 	payload, _ := json.Marshal(struct {
-		Pending  []model.PluginRuntimeLogReport
-		Sequence map[string]uint64
-		Retired  map[string]struct{}
-	}{state.pending, state.sequence, state.retired})
+		Pending       []model.PluginRuntimeLogReport
+		Sequence      map[string]uint64
+		Retired       map[string]struct{}
+		RetireIntents map[string]pluginLogRetirementIntent
+	}{state.pending, state.sequence, state.retired, state.retireIntents})
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])
 }
@@ -389,6 +534,22 @@ func pluginLogOutboxStateFromCheckpoint(record pluginLogOutboxRecord) (pluginLog
 		state.acks[ackID] = struct{}{}
 		state.ackOrder = append(state.ackOrder, ackID)
 	}
+	for _, intent := range record.Intents {
+		identities := make([]pluginprocess.RuntimeLogIdentity, 0, len(intent.Fences))
+		for _, fence := range intent.Fences {
+			identities = append(identities, fence.runtimeIdentity())
+		}
+		if changed, err := state.stageRetirementIntent(intent.ID, intent.Revision, identities, intent.SessionID); err != nil {
+			return state, err
+		} else if !changed {
+			return state, errors.New("checkpoint retirement intent is duplicated")
+		}
+		if intent.Drained {
+			if _, err := state.markRetirementIntentDrained(intent.ID); err != nil {
+				return state, err
+			}
+		}
+	}
 	state.trimReplayHistory()
 	if len(state.pending) > model.MaxPendingPluginLogReports || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
 		return state, errors.New("checkpoint exceeds Agent bounds")
@@ -397,6 +558,11 @@ func pluginLogOutboxStateFromCheckpoint(record pluginLogOutboxRecord) (pluginLog
 }
 
 func (f *Filesystem) appendPluginLogOutboxRecordLocked(record pluginLogOutboxRecord) error {
+	if f.pluginLogAppendFailure != nil {
+		if err := f.pluginLogAppendFailure(record.Operation); err != nil {
+			return err
+		}
+	}
 	sealed, err := sealPluginLogOutboxRecord(record)
 	if err != nil {
 		return err
@@ -437,7 +603,7 @@ func sealPluginLogOutboxRecord(record pluginLogOutboxRecord) ([]byte, error) {
 }
 
 func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
-	if record.Version != 1 || (record.Operation != "enqueue" && record.Operation != "ack" && record.Operation != "checkpoint" && record.Operation != "retire") ||
+	if record.Version != 1 || !validPluginLogOutboxOperation(record.Operation) ||
 		!validPluginLogOutboxID(record.BatchID) || !validPluginLogOutboxID(record.Digest) {
 		return errors.New("plugin log outbox record identity is invalid")
 	}
@@ -451,10 +617,12 @@ func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
 	if hex.EncodeToString(digest[:]) != want {
 		return errors.New("plugin log outbox record digest mismatch")
 	}
-	if (record.Operation == "enqueue" && (len(record.Reports) == 0 || len(record.Identities) != 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || record.Fence != nil)) ||
-		(record.Operation == "ack" && (len(record.Reports) != 0 || len(record.Identities) == 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || record.Fence != nil)) ||
-		(record.Operation == "retire" && (len(record.Reports) != 0 || len(record.Identities) != 0 || len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || record.Fence == nil)) ||
-		(record.Operation == "checkpoint" && (len(record.Identities) != 0 || record.Sequences == nil || len(record.SequenceOrder) != len(record.Sequences) || len(record.Retired) > len(record.Sequences) || len(record.Batches) > maxPluginLogReplayIdentities || len(record.Acks) > maxPluginLogReplayIdentities || record.Fence != nil)) {
+	if (record.Operation == "enqueue" && (len(record.Reports) == 0 || pluginLogOutboxRecordHasMetadata(record))) ||
+		(record.Operation == "ack" && (len(record.Reports) != 0 || len(record.Identities) == 0 || pluginLogOutboxRecordHasState(record) || record.Fence != nil || record.Intent != nil)) ||
+		(record.Operation == "retire" && (pluginLogOutboxRecordHasContent(record) || record.Fence == nil || record.Intent != nil)) ||
+		(record.Operation == "retire_intent" && (pluginLogOutboxRecordHasContent(record) || record.Fence != nil || record.Intent == nil || record.Intent.ID != record.BatchID)) ||
+		((record.Operation == "retire_intent_drained" || record.Operation == "retire_intent_complete" || record.Operation == "retire_intent_abort") && (pluginLogOutboxRecordHasContent(record) || record.Fence != nil || record.Intent != nil)) ||
+		(record.Operation == "checkpoint" && (len(record.Identities) != 0 || record.Sequences == nil || len(record.SequenceOrder) != len(record.Sequences) || len(record.Retired) > len(record.Sequences) || len(record.Batches) > maxPluginLogReplayIdentities || len(record.Acks) > maxPluginLogReplayIdentities || len(record.Intents) > maxPluginLogRetirementIntents || record.Fence != nil || record.Intent != nil)) {
 		return errors.New("plugin log outbox record payload is invalid")
 	}
 	if record.Operation == "retire" {
@@ -465,6 +633,19 @@ func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
 		digest := sha256.Sum256([]byte(fenceID))
 		if record.BatchID != hex.EncodeToString(digest[:]) {
 			return errors.New("plugin log retirement identity mismatch")
+		}
+	}
+	if record.Operation == "retire_intent" {
+		if record.Intent.Drained {
+			return errors.New("plugin log retirement intent cannot be staged as drained")
+		}
+		identities := make([]pluginprocess.RuntimeLogIdentity, 0, len(record.Intent.Fences))
+		for _, fence := range record.Intent.Fences {
+			identities = append(identities, fence.runtimeIdentity())
+		}
+		state := newPluginLogOutboxState()
+		if changed, err := state.stageRetirementIntent(record.Intent.ID, record.Intent.Revision, identities, record.Intent.SessionID); err != nil || !changed {
+			return errors.Join(errors.New("plugin log retirement intent payload is invalid"), err)
 		}
 	}
 	seen := make(map[string]struct{}, len(record.Identities))
@@ -480,18 +661,29 @@ func validatePluginLogOutboxRecord(record pluginLogOutboxRecord) error {
 	return nil
 }
 
-func pluginLogOutboxFenceFromIdentity(identity pluginprocess.RuntimeLogIdentity) *pluginLogOutboxFence {
-	return &pluginLogOutboxFence{
-		Revision: identity.Revision, ProviderGenerationID: identity.ProviderGenerationID, InstanceID: identity.InstanceID,
-		PluginID: identity.PluginID, AgentID: identity.AgentID, PackageDigest: identity.PackageDigest, ArtifactDigest: identity.ArtifactDigest,
+func validPluginLogOutboxOperation(operation string) bool {
+	switch operation {
+	case "enqueue", "ack", "checkpoint", "retire", "retire_intent", "retire_intent_drained", "retire_intent_complete", "retire_intent_abort":
+		return true
+	default:
+		return false
 	}
 }
 
-func (fence pluginLogOutboxFence) runtimeIdentity() pluginprocess.RuntimeLogIdentity {
-	return pluginprocess.RuntimeLogIdentity{
-		Revision: fence.Revision, ProviderGenerationID: fence.ProviderGenerationID, InstanceID: fence.InstanceID,
-		PluginID: fence.PluginID, AgentID: fence.AgentID, PackageDigest: fence.PackageDigest, ArtifactDigest: fence.ArtifactDigest,
-	}
+func pluginLogOutboxRecordHasContent(record pluginLogOutboxRecord) bool {
+	return len(record.Reports) != 0 || len(record.Identities) != 0 || pluginLogOutboxRecordHasState(record)
+}
+
+func pluginLogOutboxRecordHasState(record pluginLogOutboxRecord) bool {
+	return len(record.Sequences) != 0 || len(record.SequenceOrder) != 0 || len(record.Batches) != 0 || len(record.Acks) != 0 || len(record.Retired) != 0 || len(record.Intents) != 0
+}
+
+func pluginLogOutboxRecordHasMetadata(record pluginLogOutboxRecord) bool {
+	return len(record.Identities) != 0 || pluginLogOutboxRecordHasState(record) || record.Fence != nil || record.Intent != nil
+}
+
+func ptrPluginLogRetirementFence(fence pluginLogRetirementFence) *pluginLogRetirementFence {
+	return &fence
 }
 
 func writePluginLogOutboxAll(writer io.Writer, data []byte) error {

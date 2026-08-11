@@ -2,10 +2,13 @@ package rpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +30,9 @@ type GenerationModule struct {
 }
 
 type RuntimeLogFenceRetirer interface {
-	RetirePluginRuntimeLogFence(pluginprocess.RuntimeLogIdentity) error
+	StagePluginRuntimeLogRetirementIntent(string, int64, []pluginprocess.RuntimeLogIdentity) error
+	CompletePluginRuntimeLogRetirementIntent(string) error
+	AbortPluginRuntimeLogRetirementIntent(string) error
 }
 
 func NewGenerationModule(host *Host) *GenerationModule { return &GenerationModule{host: host} }
@@ -84,6 +89,7 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 	}
 	m.mu.RLock()
 	host := m.host
+	retirer := m.retirer
 	m.mu.RUnlock()
 	requiredInstances := make(map[string]struct{})
 	requiredIDs, err := model.RequiredPluginInstanceIDs(request.Next)
@@ -93,9 +99,14 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 	for _, instanceID := range requiredIDs {
 		requiredInstances[instanceID] = struct{}{}
 	}
-	transaction := &generationTransaction{
-		module: m, host: host, generationID: generationContext.ID(),
-		semanticRetirements: retiredRuntimeLogIdentities(request.Previous.PluginGenerations, request.Next.PluginGenerations),
+	retirements := retiredRuntimeLogIdentities(request.Previous.PluginGenerations, request.Next.PluginGenerations)
+	transaction := &generationTransaction{module: m, host: host, generationID: generationContext.ID()}
+	if len(retirements) > 0 && retirer != nil {
+		transaction.retirementIntentID = runtimeLogRetirementIntentID(generationContext.ID(), request.Next.Revision, retirements)
+		if err := retirer.StagePluginRuntimeLogRetirementIntent(transaction.retirementIntentID, request.Next.Revision, retirements); err != nil {
+			return nil, fmt.Errorf("stage RPC plugin runtime log retirement intent: %w", err)
+		}
+		transaction.retirementIntentStaged = true
 	}
 	for _, generation := range clonePluginGenerations(request.Next.PluginGenerations) {
 		_, required := requiredInstances[generation.InstanceID]
@@ -160,13 +171,14 @@ func (m *GenerationModule) Stop(ctx context.Context) error {
 }
 
 type generationTransaction struct {
-	module               *GenerationModule
-	host                 *Host
-	generationID         string
-	candidates           []generationCandidate
-	publication          *PreparedHostGeneration
-	semanticRetirements  []pluginprocess.RuntimeLogIdentity
-	committedRetirements []pluginprocess.RuntimeLogIdentity
+	module                     *GenerationModule
+	host                       *Host
+	generationID               string
+	candidates                 []generationCandidate
+	publication                *PreparedHostGeneration
+	retirementIntentID         string
+	retirementIntentStaged     bool
+	committedRetirementIntents []string
 
 	mu        sync.Mutex
 	published bool
@@ -262,8 +274,8 @@ func (t *generationTransaction) FinalizeGenerationPublication() {
 	t.publication.Publish()
 	t.publication = nil
 	t.published = true
-	retirements := append([]pluginprocess.RuntimeLogIdentity(nil), t.semanticRetirements...)
-	t.semanticRetirements = nil
+	intentID := t.retirementIntentID
+	t.retirementIntentStaged = false
 	var previous *generationTransaction
 	if t.module != nil {
 		t.module.mu.Lock()
@@ -272,19 +284,19 @@ func (t *generationTransaction) FinalizeGenerationPublication() {
 		t.module.mu.Unlock()
 	}
 	t.mu.Unlock()
-	if len(retirements) == 0 {
+	if intentID == "" {
 		return
 	}
 	if previous != nil && previous != t {
-		previous.addCommittedRetirements(retirements)
+		previous.addCommittedRetirementIntent(intentID)
 		return
 	}
 	// With no prior in-memory RPC transaction (for example after an Agent
 	// restart), the previous process lifecycle is already absent. Publication
 	// is therefore the final drain barrier for the signed semantic removal.
-	if err := t.retireRuntimeLogFences(retirements); err != nil {
+	if err := t.completeRuntimeLogRetirementIntent(intentID); err != nil {
 		t.mu.Lock()
-		t.committedRetirements = append(t.committedRetirements, retirements...)
+		t.committedRetirementIntents = append(t.committedRetirementIntents, intentID)
 		t.mu.Unlock()
 	}
 }
@@ -305,13 +317,13 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 	}
 	t.mu.Lock()
 	if t.closed {
-		retirements := append([]pluginprocess.RuntimeLogIdentity(nil), t.committedRetirements...)
+		intentIDs := append([]string(nil), t.committedRetirementIntents...)
 		t.mu.Unlock()
-		if err := t.retireRuntimeLogFences(retirements); err != nil {
+		if err := t.completeRuntimeLogRetirementIntents(intentIDs); err != nil {
 			return err
 		}
 		t.mu.Lock()
-		t.committedRetirements = nil
+		t.committedRetirementIntents = nil
 		t.mu.Unlock()
 		return nil
 	}
@@ -330,7 +342,11 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 		candidate.spec.Config = nil
 		candidate.spec.SecretHandles = nil
 	}
-	retirements := append([]pluginprocess.RuntimeLogIdentity(nil), t.committedRetirements...)
+	intentIDs := append([]string(nil), t.committedRetirementIntents...)
+	abortIntentID := ""
+	if !t.published && t.retirementIntentStaged {
+		abortIntentID = t.retirementIntentID
+	}
 	t.candidates = nil
 	t.mu.Unlock()
 	var destroyErr error
@@ -339,29 +355,40 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 			destroyErr = errors.Join(destroyErr, t.host.DestroyCandidate(instance))
 		}
 	}
+	if abortIntentID != "" {
+		destroyErr = errors.Join(destroyErr, t.abortRuntimeLogRetirementIntent(abortIntentID))
+	}
 	if destroyErr != nil {
 		return destroyErr
 	}
-	if err := t.retireRuntimeLogFences(retirements); err != nil {
+	if err := t.completeRuntimeLogRetirementIntents(intentIDs); err != nil {
 		return err
 	}
 	t.mu.Lock()
-	t.committedRetirements = nil
+	t.committedRetirementIntents = nil
 	t.mu.Unlock()
 	return nil
 }
 
-func (t *generationTransaction) addCommittedRetirements(identities []pluginprocess.RuntimeLogIdentity) {
-	if t == nil || len(identities) == 0 {
+func (t *generationTransaction) addCommittedRetirementIntent(id string) {
+	if t == nil || id == "" {
 		return
 	}
 	t.mu.Lock()
-	t.committedRetirements = append(t.committedRetirements, identities...)
+	t.committedRetirementIntents = append(t.committedRetirementIntents, id)
 	t.mu.Unlock()
 }
 
-func (t *generationTransaction) retireRuntimeLogFences(identities []pluginprocess.RuntimeLogIdentity) error {
-	if t == nil || len(identities) == 0 || t.module == nil {
+func (t *generationTransaction) completeRuntimeLogRetirementIntents(ids []string) error {
+	var err error
+	for _, id := range ids {
+		err = errors.Join(err, t.completeRuntimeLogRetirementIntent(id))
+	}
+	return err
+}
+
+func (t *generationTransaction) completeRuntimeLogRetirementIntent(id string) error {
+	if t == nil || id == "" || t.module == nil {
 		return nil
 	}
 	t.module.mu.RLock()
@@ -370,11 +397,20 @@ func (t *generationTransaction) retireRuntimeLogFences(identities []pluginproces
 	if retirer == nil {
 		return nil
 	}
-	var err error
-	for _, identity := range identities {
-		err = errors.Join(err, retirer.RetirePluginRuntimeLogFence(identity))
+	return retirer.CompletePluginRuntimeLogRetirementIntent(id)
+}
+
+func (t *generationTransaction) abortRuntimeLogRetirementIntent(id string) error {
+	if t == nil || id == "" || t.module == nil {
+		return nil
 	}
-	return err
+	t.module.mu.RLock()
+	retirer := t.module.retirer
+	t.module.mu.RUnlock()
+	if retirer == nil {
+		return nil
+	}
+	return retirer.AbortPluginRuntimeLogRetirementIntent(id)
 }
 
 func (t *generationTransaction) PluginRuntimeStatuses() []model.PluginRuntimeStatus {
@@ -550,6 +586,23 @@ func retiredRuntimeLogIdentities(previous, next []model.PluginGeneration) []plug
 		retired = append(retired, identity)
 	}
 	return retired
+}
+
+func runtimeLogRetirementIntentID(generationID string, revision int64, identities []pluginprocess.RuntimeLogIdentity) string {
+	canonical := append([]pluginprocess.RuntimeLogIdentity(nil), identities...)
+	sort.Slice(canonical, func(left, right int) bool {
+		leftJSON, _ := json.Marshal(canonical[left])
+		rightJSON, _ := json.Marshal(canonical[right])
+		return string(leftJSON) < string(rightJSON)
+	})
+	payload, _ := json.Marshal(struct {
+		Domain       string                             `json:"domain"`
+		GenerationID string                             `json:"generation_id"`
+		Revision     int64                              `json:"revision"`
+		Fences       []pluginprocess.RuntimeLogIdentity `json:"fences"`
+	}{"nre.plugin-log-retirement.v1", generationID, revision, canonical})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
 
 func generationEndpointNetwork() string {

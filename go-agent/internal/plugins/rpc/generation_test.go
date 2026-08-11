@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,18 +40,58 @@ type generationControlledRunner struct {
 }
 
 type generationLogFenceRetirer struct {
-	identities []pluginprocess.RuntimeLogIdentity
-	store      agentcore.PluginLogFenceRetirementStore
-	err        error
+	identities     []pluginprocess.RuntimeLogIdentity
+	intents        map[string][]pluginprocess.RuntimeLogIdentity
+	staged         []string
+	aborted        []string
+	store          agentcore.PluginLogRetirementIntentStore
+	err            error
+	completeErrors []error
 }
 
-func (retirer *generationLogFenceRetirer) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLogIdentity) error {
-	retirer.identities = append(retirer.identities, identity)
+func (retirer *generationLogFenceRetirer) StagePluginRuntimeLogRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity) error {
+	if retirer.intents == nil {
+		retirer.intents = make(map[string][]pluginprocess.RuntimeLogIdentity)
+	}
+	retirer.intents[id] = append([]pluginprocess.RuntimeLogIdentity(nil), identities...)
+	retirer.staged = append(retirer.staged, id)
 	if retirer.store != nil {
-		if err := retirer.store.RetirePluginRuntimeLogFence(identity); err != nil {
+		if err := retirer.store.StagePluginRuntimeLogRetirementIntent(id, revision, identities); err != nil {
 			return err
 		}
 	}
+	return retirer.err
+}
+
+func (retirer *generationLogFenceRetirer) CompletePluginRuntimeLogRetirementIntent(id string) error {
+	if len(retirer.completeErrors) > 0 {
+		err := retirer.completeErrors[0]
+		retirer.completeErrors = retirer.completeErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
+	if retirer.err != nil {
+		return retirer.err
+	}
+	if retirer.store != nil {
+		if err := retirer.store.CompletePluginRuntimeLogRetirementIntent(id); err != nil {
+			return err
+		}
+	}
+	retirer.identities = append(retirer.identities, retirer.intents[id]...)
+	delete(retirer.intents, id)
+	return nil
+}
+
+func (retirer *generationLogFenceRetirer) AbortPluginRuntimeLogRetirementIntent(id string) error {
+	retirer.aborted = append(retirer.aborted, id)
+	if retirer.store != nil {
+		if err := retirer.store.AbortPluginRuntimeLogRetirementIntent(id); err != nil {
+			return err
+		}
+	}
+	delete(retirer.intents, id)
 	return retirer.err
 }
 
@@ -375,6 +416,68 @@ func TestRPCGenerationReplacementAndRemovalRetireOldOnlyAfterDrain(t *testing.T)
 				t.Fatalf("active/new fence was retired: %+v", retirer.identities)
 			}
 		})
+	}
+}
+
+func TestRPCGenerationRetirementCompletionRetriesAfterTransientCleanupFailure(t *testing.T) {
+	root := t.TempDir()
+	oldGeneration := rpcPluginGenerationForTest(t, root, 17, "operation-17")
+	client := &generationLifecycleClient{}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	retirer := &generationLogFenceRetirer{completeErrors: []error{errors.New("injected durable completion failure")}}
+	moduleUnderTest := NewGenerationModule(host)
+	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
+	oldSnapshot := model.Snapshot{Revision: 17, PluginGenerations: []model.PluginGeneration{oldGeneration}}
+	old := preparePublishRPCGeneration(t, moduleUnderTest, model.Snapshot{}, oldSnapshot)
+	next := preparePublishRPCGeneration(t, moduleUnderTest, oldSnapshot, model.Snapshot{Revision: 18, PluginGenerations: []model.PluginGeneration{}})
+	if err := old.Destroy(t.Context()); err == nil {
+		t.Fatal("transient retirement completion failure was hidden")
+	}
+	if len(retirer.identities) != 0 {
+		t.Fatalf("failed completion retired fence: %+v", retirer.identities)
+	}
+	if err := old.Destroy(t.Context()); err != nil {
+		t.Fatalf("cleanup retry failed: %v", err)
+	}
+	if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(oldGeneration) {
+		t.Fatalf("cleanup retry retirement = %+v", retirer.identities)
+	}
+	if err := next.Destroy(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRPCGenerationFailedRequiredCandidateAbortsStagedRetirement(t *testing.T) {
+	root := t.TempDir()
+	oldGeneration := rpcPluginGenerationForTest(t, root, 19, "operation-19")
+	newGeneration := rpcPluginGenerationForTest(t, root, 20, "operation-20")
+	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+	retirer := &generationLogFenceRetirer{}
+	moduleUnderTest := NewGenerationModule(host)
+	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
+	previous := model.Snapshot{Revision: 19, PluginGenerations: []model.PluginGeneration{oldGeneration}}
+	next := rpcSnapshotWithRequiredInstance(t, 20, []model.PluginGeneration{newGeneration}, newGeneration.InstanceID)
+	if _, err := moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Previous: previous, Next: next}); err == nil {
+		t.Fatal("required replacement failure was accepted")
+	}
+	if len(retirer.staged) != 1 || len(retirer.aborted) != 1 || retirer.staged[0] != retirer.aborted[0] {
+		t.Fatalf("failed candidate retirement intent lifecycle: staged=%v aborted=%v", retirer.staged, retirer.aborted)
+	}
+	if len(retirer.identities) != 0 || len(retirer.intents) != 0 {
+		t.Fatalf("failed candidate retired old fence: identities=%+v intents=%+v", retirer.identities, retirer.intents)
 	}
 }
 

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -20,10 +22,12 @@ const (
 )
 
 type Filesystem struct {
-	root          string
-	mu            sync.Mutex
-	syncDirectory func(string) error
-	logCapacity   pluginLogCapacitySignal
+	root                   string
+	mu                     sync.Mutex
+	syncDirectory          func(string) error
+	pluginLogAppendFailure func(string) error
+	pluginLogSessionID     string
+	logCapacity            pluginLogCapacitySignal
 }
 
 func NewFilesystem(root string) (*Filesystem, error) {
@@ -33,7 +37,11 @@ func NewFilesystem(root string) (*Filesystem, error) {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, err
 	}
-	return &Filesystem{root: root, syncDirectory: syncFilesystemDirectory}, nil
+	sessionBytes := make([]byte, 32)
+	if _, err := rand.Read(sessionBytes); err != nil {
+		return nil, err
+	}
+	return &Filesystem{root: root, syncDirectory: syncFilesystemDirectory, pluginLogSessionID: hex.EncodeToString(sessionBytes)}, nil
 }
 
 func (f *Filesystem) SaveDesiredSnapshot(snapshot Snapshot) error {

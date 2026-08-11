@@ -369,6 +369,30 @@ func (s *persistentBridgeStore) RetirePluginRuntimeLogFence(identity pluginproce
 	return retirement.RetirePluginRuntimeLogFence(identity)
 }
 
+func (s *persistentBridgeStore) StagePluginRuntimeLogRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.StagePluginRuntimeLogRetirementIntent(id, revision, identities)
+}
+
+func (s *persistentBridgeStore) CompletePluginRuntimeLogRetirementIntent(id string) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.CompletePluginRuntimeLogRetirementIntent(id)
+}
+
+func (s *persistentBridgeStore) AbortPluginRuntimeLogRetirementIntent(id string) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.AbortPluginRuntimeLogRetirementIntent(id)
+}
+
 func (s *persistentBridgeStore) SaveDesiredSnapshot(snapshot Snapshot) error {
 	return s.delegate.SaveDesiredSnapshot(sanitizeSnapshot(snapshot))
 }

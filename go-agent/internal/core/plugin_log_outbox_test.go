@@ -383,6 +383,110 @@ func TestFilesystemPluginLogOutboxRetirementRetainsPendingAndLiveResumeAcrossChe
 	}
 }
 
+func TestFilesystemPluginLogRetirementIntentRetriesTransientFinalWrite(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pluginLogTestDraft("retirement-intent")
+	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
+		t.Fatal(err)
+	}
+	intentID := strings.Repeat("c", 64)
+	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAppliedSnapshot(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	store.pluginLogAppendFailure = func(operation string) error {
+		if operation == "retire_intent_complete" && !failed {
+			failed = true
+			return errors.New("injected final retirement write failure")
+		}
+		return nil
+	}
+	if err := store.CompletePluginRuntimeLogRetirementIntent(intentID); err == nil {
+		t.Fatal("final retirement write failure was hidden")
+	}
+	if _, err := store.PendingPluginLogReports(); err != nil {
+		t.Fatalf("same-process cleanup retry failed: %v", err)
+	}
+	store.mu.Lock()
+	state, err := store.loadPluginLogOutboxLocked()
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fenceID := pluginRuntimeLogFenceIdentity(draft)
+	if len(state.retireIntents) != 0 {
+		t.Fatalf("completed retirement intents = %+v", state.retireIntents)
+	}
+	if _, retired := state.retired[fenceID]; !retired {
+		t.Fatalf("fence %q was not durably retired", fenceID)
+	}
+}
+
+func TestFilesystemPluginLogRetirementIntentRecoversOnlyAfterRestart(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pluginLogTestDraft("restart-retirement-intent")
+	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
+		t.Fatal(err)
+	}
+	intentID := strings.Repeat("d", 64)
+	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAppliedSnapshot(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PendingPluginLogReports(); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	beforeRestart, err := store.loadPluginLogOutboxLocked()
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeRestart.retireIntents) != 1 {
+		t.Fatalf("same-session undrained intent retired early: %+v", beforeRestart.retireIntents)
+	}
+	restarted, err := NewFilesystem(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.PendingPluginLogReports(); err != nil {
+		t.Fatalf("restart retirement recovery failed: %v", err)
+	}
+	restarted.mu.Lock()
+	afterRestart, err := restarted.loadPluginLogOutboxLocked()
+	restarted.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterRestart.retireIntents) != 0 {
+		t.Fatalf("restart left retirement intents = %+v", afterRestart.retireIntents)
+	}
+	if _, retired := afterRestart.retired[pluginRuntimeLogFenceIdentity(draft)]; !retired {
+		t.Fatal("restart did not retire the removed fence")
+	}
+}
+
 func pluginLogTestDraft(message string) model.PluginRuntimeLogReport {
 	return model.PluginRuntimeLogReport{
 		Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",

@@ -96,8 +96,13 @@ func (s *InMemory) EnqueuePluginLogReports(batchID string, drafts []model.Plugin
 }
 
 func (s *InMemory) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range s.pluginLogs.recoverableRetirementIntents(s.applied, "") {
+		if _, err := s.pluginLogs.completeRetirementIntent(id); err != nil {
+			return nil, err
+		}
+	}
 	return model.ClonePluginRuntimeLogReports(s.pluginLogs.pending), nil
 }
 
@@ -123,5 +128,29 @@ func (s *InMemory) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLog
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, _, err := s.pluginLogs.retire(identity)
+	return err
+}
+
+func (s *InMemory) StagePluginRuntimeLogRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.pluginLogs.stageRetirementIntent(id, revision, identities, "")
+	return err
+}
+
+func (s *InMemory) CompletePluginRuntimeLogRetirementIntent(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.pluginLogs.markRetirementIntentDrained(id); err != nil {
+		return err
+	}
+	_, err := s.pluginLogs.completeRetirementIntent(id)
+	return err
+}
+
+func (s *InMemory) AbortPluginRuntimeLogRetirementIntent(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.pluginLogs.abortRetirementIntent(id)
 	return err
 }

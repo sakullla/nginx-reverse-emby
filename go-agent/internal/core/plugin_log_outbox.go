@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -28,7 +29,16 @@ type PluginLogFenceRetirementStore interface {
 	RetirePluginRuntimeLogFence(pluginprocess.RuntimeLogIdentity) error
 }
 
+type PluginLogRetirementIntentStore interface {
+	PluginLogFenceRetirementStore
+	StagePluginRuntimeLogRetirementIntent(string, int64, []pluginprocess.RuntimeLogIdentity) error
+	CompletePluginRuntimeLogRetirementIntent(string) error
+	AbortPluginRuntimeLogRetirementIntent(string) error
+}
+
 var ErrPluginLogOutboxFull = errors.New("plugin runtime log outbox is full")
+
+const maxPluginLogRetirementIntents = 512
 
 type pluginLogOutboxState struct {
 	pending       []model.PluginRuntimeLogReport
@@ -39,16 +49,36 @@ type pluginLogOutboxState struct {
 	acks          map[string]struct{}
 	ackOrder      []string
 	retired       map[string]struct{}
+	retireIntents map[string]pluginLogRetirementIntent
 	records       int
 }
 
 func newPluginLogOutboxState() pluginLogOutboxState {
 	return pluginLogOutboxState{
-		sequence: make(map[string]uint64),
-		batches:  make(map[string][]model.PluginRuntimeLogReport),
-		acks:     make(map[string]struct{}),
-		retired:  make(map[string]struct{}),
+		sequence:      make(map[string]uint64),
+		batches:       make(map[string][]model.PluginRuntimeLogReport),
+		acks:          make(map[string]struct{}),
+		retired:       make(map[string]struct{}),
+		retireIntents: make(map[string]pluginLogRetirementIntent),
 	}
+}
+
+type pluginLogRetirementFence struct {
+	Revision             int64  `json:"revision"`
+	ProviderGenerationID string `json:"generation_id"`
+	InstanceID           string `json:"instance_id"`
+	PluginID             string `json:"plugin_id"`
+	AgentID              string `json:"agent_id"`
+	PackageDigest        string `json:"package_digest"`
+	ArtifactDigest       string `json:"artifact_digest"`
+}
+
+type pluginLogRetirementIntent struct {
+	ID        string                     `json:"id"`
+	Revision  int64                      `json:"revision"`
+	SessionID string                     `json:"session_id,omitempty"`
+	Drained   bool                       `json:"drained"`
+	Fences    []pluginLogRetirementFence `json:"fences"`
 }
 
 func (state *pluginLogOutboxState) enqueue(batchID string, drafts []model.PluginRuntimeLogReport) ([]model.PluginRuntimeLogReport, bool, error) {
@@ -246,6 +276,123 @@ func (state *pluginLogOutboxState) retire(identity pluginprocess.RuntimeLogIdent
 	return fence, true, nil
 }
 
+func (state *pluginLogOutboxState) stageRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity, sessionID string) (bool, error) {
+	if state == nil || !validPluginLogOutboxID(id) || revision <= 0 || len(identities) == 0 {
+		return false, errors.New("plugin runtime log retirement intent is invalid")
+	}
+	if sessionID != "" && !validPluginLogOutboxID(sessionID) {
+		return false, errors.New("plugin runtime log retirement intent session is invalid")
+	}
+	intent := pluginLogRetirementIntent{ID: id, Revision: revision, SessionID: sessionID, Fences: make([]pluginLogRetirementFence, 0, len(identities))}
+	seen := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		fenceID, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(identity)
+		if err != nil {
+			return false, err
+		}
+		if _, duplicate := seen[fenceID]; duplicate {
+			return false, errors.New("plugin runtime log retirement intent duplicates a fence")
+		}
+		seen[fenceID] = struct{}{}
+		intent.Fences = append(intent.Fences, pluginLogRetirementFenceFromIdentity(identity))
+	}
+	if existing, ok := state.retireIntents[id]; ok {
+		if !pluginLogRetirementIntentsEqual(existing, intent) {
+			return false, errors.New("plugin runtime log retirement intent identity collision")
+		}
+		return false, nil
+	}
+	if len(state.retireIntents) >= maxPluginLogRetirementIntents {
+		return false, errors.New("plugin runtime log retirement intents exceed Agent bounds")
+	}
+	state.retireIntents[id] = clonePluginLogRetirementIntent(intent)
+	return true, nil
+}
+
+func (state *pluginLogOutboxState) markRetirementIntentDrained(id string) (bool, error) {
+	if state == nil || !validPluginLogOutboxID(id) {
+		return false, errors.New("plugin runtime log retirement intent identity is invalid")
+	}
+	intent, ok := state.retireIntents[id]
+	if !ok || intent.Drained {
+		return false, nil
+	}
+	intent.Drained = true
+	state.retireIntents[id] = intent
+	return true, nil
+}
+
+func (state *pluginLogOutboxState) completeRetirementIntent(id string) (bool, error) {
+	if state == nil || !validPluginLogOutboxID(id) {
+		return false, errors.New("plugin runtime log retirement intent identity is invalid")
+	}
+	intent, ok := state.retireIntents[id]
+	if !ok {
+		return false, nil
+	}
+	for _, fence := range intent.Fences {
+		if _, _, err := state.retire(fence.runtimeIdentity()); err != nil {
+			return false, err
+		}
+	}
+	delete(state.retireIntents, id)
+	return true, nil
+}
+
+func (state *pluginLogOutboxState) abortRetirementIntent(id string) (bool, error) {
+	if state == nil || !validPluginLogOutboxID(id) {
+		return false, errors.New("plugin runtime log retirement intent identity is invalid")
+	}
+	if _, ok := state.retireIntents[id]; !ok {
+		return false, nil
+	}
+	delete(state.retireIntents, id)
+	return true, nil
+}
+
+func (state *pluginLogOutboxState) recoverableRetirementIntents(applied model.Snapshot, sessionID string) []string {
+	if state == nil || applied.Revision <= 0 {
+		return nil
+	}
+	active := make(map[string]struct{}, len(applied.PluginGenerations))
+	for _, generation := range applied.PluginGenerations {
+		identity := pluginprocess.RuntimeLogIdentity{
+			Revision: generation.Revision, ProviderGenerationID: generation.ID, InstanceID: generation.InstanceID,
+			PluginID: generation.PluginID, AgentID: generation.Target.ID, PackageDigest: generation.PackageDigest,
+			ArtifactDigest: generation.Artifact.SHA256,
+		}
+		if fence, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(identity); err == nil {
+			active[fence] = struct{}{}
+		}
+	}
+	var result []string
+	for id, intent := range state.retireIntents {
+		if applied.Revision < intent.Revision {
+			continue
+		}
+		if !intent.Drained && (sessionID == "" || intent.SessionID == "" || intent.SessionID == sessionID) {
+			continue
+		}
+		removed := true
+		for _, fence := range intent.Fences {
+			identity, err := pluginRuntimeLogFenceIdentityFromRuntimeIdentity(fence.runtimeIdentity())
+			if err != nil {
+				removed = false
+				break
+			}
+			if _, stillActive := active[identity]; stillActive {
+				removed = false
+				break
+			}
+		}
+		if removed {
+			result = append(result, id)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
 func pluginLogBatchDigest(reports []model.PluginRuntimeLogReport) (string, error) {
 	encoded, err := json.Marshal(reports)
 	if err != nil {
@@ -277,4 +424,36 @@ func pluginRuntimeLogFenceIdentityFromRuntimeIdentity(identity pluginprocess.Run
 
 func pluginRuntimeLogReportIdentity(report model.PluginRuntimeLogReport) string {
 	return pluginRuntimeLogFenceIdentity(report) + "\x00" + fmt.Sprintf("%d", report.Sequence)
+}
+
+func pluginLogRetirementFenceFromIdentity(identity pluginprocess.RuntimeLogIdentity) pluginLogRetirementFence {
+	return pluginLogRetirementFence{
+		Revision: identity.Revision, ProviderGenerationID: identity.ProviderGenerationID, InstanceID: identity.InstanceID,
+		PluginID: identity.PluginID, AgentID: identity.AgentID, PackageDigest: identity.PackageDigest, ArtifactDigest: identity.ArtifactDigest,
+	}
+}
+
+func (fence pluginLogRetirementFence) runtimeIdentity() pluginprocess.RuntimeLogIdentity {
+	return pluginprocess.RuntimeLogIdentity{
+		Revision: fence.Revision, ProviderGenerationID: fence.ProviderGenerationID, InstanceID: fence.InstanceID,
+		PluginID: fence.PluginID, AgentID: fence.AgentID, PackageDigest: fence.PackageDigest, ArtifactDigest: fence.ArtifactDigest,
+	}
+}
+
+func clonePluginLogRetirementIntent(intent pluginLogRetirementIntent) pluginLogRetirementIntent {
+	intent.Fences = append([]pluginLogRetirementFence(nil), intent.Fences...)
+	return intent
+}
+
+func pluginLogRetirementIntentsEqual(left, right pluginLogRetirementIntent) bool {
+	immutable := func(intent pluginLogRetirementIntent) interface{} {
+		return struct {
+			ID       string
+			Revision int64
+			Fences   []pluginLogRetirementFence
+		}{intent.ID, intent.Revision, intent.Fences}
+	}
+	encodedLeft, _ := json.Marshal(immutable(left))
+	encodedRight, _ := json.Marshal(immutable(right))
+	return string(encodedLeft) == string(encodedRight)
 }
