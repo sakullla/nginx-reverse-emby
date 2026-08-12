@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,27 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestControlPlaneRuntimeArtifactMatchesLogicalRPCEntry(t *testing.T) {
+	manifest := plugins.Manifest{Runtime: plugins.Runtime{
+		Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "control-plane", Entry: "accelerator-sources",
+	}}
+	artifact := storage.PluginArtifactRow{
+		Path:        "artifacts/" + runtime.GOOS + "-" + runtime.GOARCH + "/accelerator-sources",
+		RuntimeKind: manifest.Runtime.Kind,
+		RuntimeABI:  manifest.Runtime.ABI,
+		HostScope:   manifest.Runtime.HostScope,
+		GOOS:        runtime.GOOS,
+		GOARCH:      runtime.GOARCH,
+	}
+	if !controlPlaneRuntimeArtifactMatches(artifact, manifest) {
+		t.Fatalf("logical RPC entry %q did not match platform artifact %q", manifest.Runtime.Entry, artifact.Path)
+	}
+	artifact.Path = "artifacts/" + runtime.GOOS + "-" + runtime.GOARCH + "/another-plugin"
+	if controlPlaneRuntimeArtifactMatches(artifact, manifest) {
+		t.Fatalf("unrelated platform artifact %q matched logical RPC entry %q", artifact.Path, manifest.Runtime.Entry)
+	}
+}
 
 func TestPluginRuntimePackageDTOUsesDurableArtifactProjection(t *testing.T) {
 	manifest := plugins.Manifest{

@@ -36,6 +36,30 @@ func TestOfficialMarketV1ValidatesNineCanonicalPackages(t *testing.T) {
 	}
 }
 
+func TestOfficialMarketV1PackagesSupportStandaloneRevalidation(t *testing.T) {
+	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
+	validator := officialFixtureValidator(publicKey)
+	validated, err := validator.ValidateMarket(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for index, candidate := range validated.Packages {
+		entry := validated.Manifest.Entries[index]
+		revalidated, err := validator.ValidatePackage(candidate.Root, PackageExpectation{
+			ID:      entry.ID,
+			Version: entry.Version,
+			SHA256:  entry.PackageSHA256,
+		})
+		if err != nil {
+			t.Fatalf("ValidatePackage(%s@%s) error = %v", entry.ID, entry.Version, err)
+		}
+		if revalidated.Digest != candidate.Digest {
+			t.Fatalf("ValidatePackage(%s@%s) digest = %s, want %s", entry.ID, entry.Version, revalidated.Digest, candidate.Digest)
+		}
+	}
+}
+
 func TestOfficialMarketV1AllowsKnownRootMetadataOnly(t *testing.T) {
 	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
 	writeFixture(t, root, OfficialMarketAgentsFile, "# Official release projection\n")

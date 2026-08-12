@@ -316,6 +316,13 @@ func (v *Validator) runSnapshotHook(stage, sourceRoot, snapshotRoot string) {
 }
 
 func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected PackageExpectation) (ValidatedPackage, error) {
+	official, err := hasOfficialPackageEnvelopeV1(root)
+	if err != nil {
+		return ValidatedPackage{}, err
+	}
+	if official {
+		return v.validateOfficialPackageV1Snapshot(root, sourceRoot, expected)
+	}
 	stats, err := inspectPackageTree(root, v.options)
 	if err != nil {
 		return ValidatedPackage{}, err

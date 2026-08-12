@@ -4,7 +4,8 @@ const get = vi.fn()
 const post = vi.fn()
 const patch = vi.fn()
 const del = vi.fn()
-vi.mock('./client', () => ({ api: { get, post, patch, delete: del } }))
+const longRunningRequest = { timeout: 0 }
+vi.mock('./client', () => ({ api: { get, post, patch, delete: del }, longRunningRequest }))
 
 const {
   fetchRepositorySources,
@@ -49,7 +50,7 @@ describe('plugin repository source API', () => {
     expect(get).toHaveBeenNthCalledWith(2, '/marketplace/sources/plugins')
     expect(post).toHaveBeenNthCalledWith(1, '/marketplace/sources', source)
     expect(patch).toHaveBeenCalledWith('/marketplace/sources/plugins', { ref_name: 'v1', config_revision: 3 })
-    expect(post).toHaveBeenNthCalledWith(2, '/marketplace/sources/plugins/refresh')
+    expect(post).toHaveBeenNthCalledWith(2, '/marketplace/sources/plugins/refresh', undefined, longRunningRequest)
     expect(get).toHaveBeenNthCalledWith(3, '/marketplace/sources/plugins/entries')
     expect(get).toHaveBeenNthCalledWith(4, '/marketplace/sources/plugins/entries')
     expect(del).toHaveBeenCalledWith('/marketplace/sources/plugins')

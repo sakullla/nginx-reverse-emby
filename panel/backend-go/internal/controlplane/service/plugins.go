@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -991,7 +992,7 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 	}
 	var runtimeArtifact storage.PluginArtifactRow
 	for _, artifact := range artifacts {
-		if artifact.Path == manifest.Runtime.Entry && artifact.RuntimeKind == manifest.Runtime.Kind && artifact.RuntimeABI == manifest.Runtime.ABI && artifact.HostScope == manifest.Runtime.HostScope && artifact.GOOS == runtime.GOOS && artifact.GOARCH == runtime.GOARCH {
+		if controlPlaneRuntimeArtifactMatches(artifact, manifest) {
 			runtimeArtifact = artifact
 			break
 		}
@@ -1070,6 +1071,14 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		})
 	}
 	return plan, nil
+}
+
+func controlPlaneRuntimeArtifactMatches(artifact storage.PluginArtifactRow, manifest plugins.Manifest) bool {
+	if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope || artifact.GOOS != runtime.GOOS || artifact.GOARCH != runtime.GOARCH {
+		return false
+	}
+	logicalEntry := strings.TrimSuffix(path.Base(filepath.ToSlash(artifact.Path)), ".exe")
+	return logicalEntry == manifest.Runtime.Entry
 }
 
 func (s *PluginService) controlPlaneGenerationGrants(ctx context.Context, installed storage.InstalledPluginRow, packageRow storage.PluginPackageRow) ([]storage.PluginGenerationGrant, error) {
@@ -2067,10 +2076,6 @@ func (s *PluginService) validatePackageCandidate(candidate PluginPackageCandidat
 	if candidate.requireAcquisition && (candidate.SignatureTrust.SourceID != candidate.sourceID || candidate.SignatureTrust.SourceKind != candidate.sourceKind) {
 		return errors.New("package candidate signer binding differs from its marketplace acquisition")
 	}
-	computed, err := plugins.ComputePackageDigest(candidate.CachePath)
-	if err != nil || !strings.EqualFold(computed, digest) {
-		return errors.New("verified cache contents do not match package digest")
-	}
 	if s.validator == nil {
 		return errors.New("plugin compatibility validator is unavailable")
 	}
@@ -2081,6 +2086,9 @@ func (s *PluginService) validatePackageCandidate(candidate PluginPackageCandidat
 	revalidated, err := validator.ValidatePackage(candidate.CachePath, plugins.PackageExpectation{ID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SHA256: digest, SignatureKeyID: candidate.Package.Manifest.Signature.KeyID})
 	if err != nil {
 		return fmt.Errorf("revalidate cached package: %w", err)
+	}
+	if !strings.EqualFold(revalidated.Digest, digest) {
+		return errors.New("verified cache contents do not match package digest")
 	}
 	if !reflect.DeepEqual(revalidated.Manifest, candidate.Package.Manifest) || !reflect.DeepEqual(revalidated.ConfigSchema, candidate.Package.ConfigSchema) {
 		return errors.New("package candidate projection differs from verified cache")

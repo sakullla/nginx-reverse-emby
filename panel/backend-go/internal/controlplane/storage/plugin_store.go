@@ -543,7 +543,17 @@ func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time, defaultTarget
 		}
 		for _, target := range targets {
 			var targetBinding ResourceBindingRow
-			if err := tx.Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&targetBinding).Error; err != nil || targetBinding.ResourceGroupID != groupID {
+			err := tx.Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&targetBinding).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) && groupID == "default" {
+				if target == defaultTargetID {
+					continue
+				}
+				var agent AgentRow
+				if tx.Where("id = ?", target).First(&agent).Error == nil {
+					continue
+				}
+			}
+			if err != nil || targetBinding.ResourceGroupID != groupID {
 				return fmt.Errorf("plugin instance %s target %s is outside resource group %s", instance.ID, target, groupID)
 			}
 		}
@@ -3803,7 +3813,17 @@ func (s *GormStore) validatePluginInstanceScopeTx(ctx context.Context, tx *gorm.
 	}
 	for _, target := range targets {
 		var binding ResourceBindingRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&binding).Error; err != nil || binding.ResourceGroupID != groupID {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&binding).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) && groupID == "default" {
+			if target == s.LocalAgentID() {
+				continue
+			}
+			var agent AgentRow
+			if tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", target).First(&agent).Error == nil {
+				continue
+			}
+		}
+		if err != nil || binding.ResourceGroupID != groupID {
 			return fmt.Errorf("%w: target is outside the selected resource group", ErrPluginInstanceScope)
 		}
 	}

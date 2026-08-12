@@ -1068,6 +1068,39 @@ func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets
 	}
 }
 
+func TestPluginConfigureTreatsUnboundEmbeddedLocalAgentAsDefaultResourceGroup(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test-unbound-local")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	if err := store.CreateResourceGroup(ctx, storage.ResourceGroupRow{ID: "default", Name: "Default", Builtin: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
+		t.Fatal(err)
+	}
+	svc := newPluginTestService(t, store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.unbound-local", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := svc.Configure(ctx, PluginConfigureRequest{
+		PluginID: installed.PluginID, InstanceID: "unbound-local", ResourceGroupID: "default",
+		Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.PendingTargetJSON != `["local"]` || instance.PendingResourceGroupID != "default" {
+		t.Fatalf("unbound local instance scope = %+v", instance)
+	}
+}
+
 func TestPluginPersistedSchemaKeepsExactLargeNumericEnum(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")

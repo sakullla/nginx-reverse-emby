@@ -1,4 +1,4 @@
-import { api } from './client'
+import { api, longRunningRequest } from './client'
 
 const sourcesPath = '/marketplace/sources'
 
@@ -34,7 +34,7 @@ export async function deleteRepositorySource(id) {
 }
 
 export async function refreshRepositorySource(id) {
-  const { data } = await api.post(sourcePath(id, '/refresh'))
+  const { data } = await api.post(sourcePath(id, '/refresh'), undefined, longRunningRequest)
   return data.snapshot
 }
 

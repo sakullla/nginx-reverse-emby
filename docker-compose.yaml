@@ -4,6 +4,11 @@ services:
     container_name: nginx-reverse-emby
     restart: unless-stopped
     network_mode: host
+    cgroup: host
+    security_opt:
+      # 外层 Docker seccomp 会阻止 bubblewrap 创建用户/进程命名空间；
+      # 插件进程仍由控制面注入的独立 seccomp 过滤器约束。
+      - seccomp=unconfined
 
     environment:
       # 面板 / Master 角色
@@ -58,5 +63,7 @@ services:
 
     volumes:
       - ./data:/opt/nginx-reverse-emby/panel/data
+      # control-plane RPC 插件用 bubblewrap + cgroup v2 实施进程/资源隔离。
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
       # 外部 PKI key 目录示例（宿主目录 0700、master.key 0600）：
       # - ./secrets/nre-pki:/run/nre-pki

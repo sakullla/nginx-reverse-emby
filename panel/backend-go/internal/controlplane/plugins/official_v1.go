@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -90,6 +91,56 @@ type officialPackageEnvelopeV1 struct {
 	digest  string
 	stats   packageStats
 	records []officialFileRecordV1
+}
+
+func hasOfficialPackageEnvelopeV1(root string) (bool, error) {
+	for _, name := range []string{OfficialPackageFilesFile, OfficialPackageSignatureFile} {
+		if _, err := os.Lstat(filepath.Join(root, name)); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, validationError("package_envelope", name, err)
+		}
+	}
+	return false, nil
+}
+
+func (v *Validator) validateOfficialPackageV1Snapshot(root, sourceRoot string, expected PackageExpectation) (ValidatedPackage, error) {
+	manifestData, err := readBoundedFile(filepath.Join(root, PackageManifestFile), v.options.MaxFileBytes)
+	if err != nil {
+		return ValidatedPackage{}, validationError("manifest", PackageManifestFile, err)
+	}
+	var manifest Manifest
+	if err := decodeStrictYAML(manifestData, &manifest); err != nil {
+		return ValidatedPackage{}, validationError("manifest_schema", PackageManifestFile, err)
+	}
+	if !hexDigestPattern.MatchString(strings.ToLower(strings.TrimSpace(expected.SHA256))) {
+		return ValidatedPackage{}, validationError("index_checksum_missing", OfficialPackageFilesFile, errors.New("official package validation requires its complete package digest"))
+	}
+	signerIdentity := expected.SignatureKeyID
+	if signerIdentity == "" {
+		signerIdentity = manifest.Signature.KeyID
+	}
+	envelope, err := v.verifyOfficialPackageEnvelopeV1(root, officialMarketPackageV1{
+		ID:             manifest.ID,
+		Version:        manifest.Version,
+		Runtime:        manifest.Runtime.Kind,
+		ABI:            manifest.Runtime.ABI,
+		PackageSHA256:  strings.ToLower(strings.TrimSpace(expected.SHA256)),
+		SignerIdentity: signerIdentity,
+	})
+	if err != nil {
+		return ValidatedPackage{}, err
+	}
+	validated, err := v.validatePackageContent(root, sourceRoot, expected, envelope.stats, func(string, PackageExpectation) (string, error) {
+		return envelope.digest, nil
+	}, v.verifyOfficialManifestSignatureV1)
+	if err != nil {
+		return ValidatedPackage{}, err
+	}
+	if err := validateOfficialManifestPayloadV1(validated.Manifest, envelope.records); err != nil {
+		return ValidatedPackage{}, err
+	}
+	return validated, nil
 }
 
 func (v *Validator) validateOfficialMarketV1Snapshot(root, sourceRoot string, marketData []byte) (ValidatedMarket, error) {
@@ -368,7 +419,7 @@ func digestOfficialFileRecordsV1(records []officialFileRecordV1) string {
 }
 
 func (v *Validator) verifyOfficialManifestSignatureV1(_ string, manifest Manifest, _ string, expectedKeyID string) error {
-	if manifest.Signature.Algorithm != "ed25519" || manifest.Signature.KeyID != expectedKeyID || manifest.Signature.File != OfficialPackageSignatureFile {
+	if manifest.Signature.Algorithm != "ed25519" || manifest.Signature.File != OfficialPackageSignatureFile || (expectedKeyID != "" && manifest.Signature.KeyID != expectedKeyID) {
 		return validationError("signature", PackageManifestFile, errors.New("official manifest must bind the verified signature.json signer"))
 	}
 	if _, ok := v.trustedSigners[manifest.Signature.KeyID]; !ok {
