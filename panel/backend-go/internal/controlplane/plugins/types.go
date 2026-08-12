@@ -29,6 +29,7 @@ const (
 	UIComponentToggle   = "toggle"
 	UIComponentSelect   = "select"
 	UIComponentNotice   = "notice"
+	UIComponentArray    = "array"
 
 	UIActionSubmit  = "submit"
 	UIActionReset   = "reset"

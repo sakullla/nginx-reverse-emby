@@ -29,6 +29,10 @@ const (
 var (
 	uiIDPattern           = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	uiBindingTokenPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	uiVisibleWhenOps      = map[string]struct{}{
+		"eq": {}, "neq": {}, "in": {}, "notIn": {}, "empty": {}, "notEmpty": {},
+		"gt": {}, "gte": {}, "lt": {}, "lte": {},
+	}
 )
 
 type declarativeUIDocument struct {
@@ -51,20 +55,21 @@ type DeclarativeUIDocument struct {
 }
 
 type DeclarativeUIComponent struct {
-	Type        string                   `json:"type"`
-	ID          string                   `json:"id"`
-	Label       string                   `json:"label"`
-	Description string                   `json:"description,omitempty"`
-	Binding     string                   `json:"binding,omitempty"`
-	Placeholder string                   `json:"placeholder,omitempty"`
-	Required    bool                     `json:"required,omitempty"`
-	ReadOnly    bool                     `json:"read_only,omitempty"`
-	Minimum     *json.Number             `json:"minimum,omitempty"`
-	Maximum     *json.Number             `json:"maximum,omitempty"`
-	Step        *json.Number             `json:"step,omitempty"`
-	Options     []DeclarativeUIOption    `json:"options,omitempty"`
-	Children    []DeclarativeUIComponent `json:"children,omitempty"`
-	Tone        string                   `json:"tone,omitempty"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding,omitempty"`
+	Placeholder string                    `json:"placeholder,omitempty"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	Minimum     *json.Number              `json:"minimum,omitempty"`
+	Maximum     *json.Number              `json:"maximum,omitempty"`
+	Step        *json.Number              `json:"step,omitempty"`
+	Options     []DeclarativeUIOption     `json:"options,omitempty"`
+	Children    []DeclarativeUIComponent  `json:"children,omitempty"`
+	Tone        string                    `json:"tone,omitempty"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type DeclarativeUIOption struct {
@@ -116,15 +121,17 @@ func projectDeclarativeUIComponent(raw json.RawMessage) (DeclarativeUIComponent,
 	if err := json.Unmarshal(raw, &component); err != nil {
 		return DeclarativeUIComponent{}, err
 	}
-	if component.Type != UIComponentSection {
+	if component.Type != UIComponentSection && component.Type != UIComponentArray {
 		return component, nil
 	}
-	var section declarativeUISection
-	if err := json.Unmarshal(raw, &section); err != nil {
+	var container struct {
+		Children []json.RawMessage `json:"children"`
+	}
+	if err := json.Unmarshal(raw, &container); err != nil {
 		return DeclarativeUIComponent{}, err
 	}
-	component.Children = make([]DeclarativeUIComponent, 0, len(section.Children))
-	for _, childRaw := range section.Children {
+	component.Children = make([]DeclarativeUIComponent, 0, len(container.Children))
+	for _, childRaw := range container.Children {
 		child, err := projectDeclarativeUIComponent(childRaw)
 		if err != nil {
 			return DeclarativeUIComponent{}, err
@@ -139,56 +146,61 @@ type declarativeUIComponentEnvelope struct {
 }
 
 type declarativeUISection struct {
-	Type        string            `json:"type"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label"`
-	Description string            `json:"description,omitempty"`
-	Children    []json.RawMessage `json:"children"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Children    []json.RawMessage         `json:"children"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type declarativeUITextInput struct {
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-	Binding     string `json:"binding"`
-	Placeholder string `json:"placeholder,omitempty"`
-	Required    bool   `json:"required,omitempty"`
-	ReadOnly    bool   `json:"read_only,omitempty"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding"`
+	Placeholder string                    `json:"placeholder,omitempty"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type declarativeUINumberInput struct {
-	Type        string       `json:"type"`
-	ID          string       `json:"id"`
-	Label       string       `json:"label"`
-	Description string       `json:"description,omitempty"`
-	Binding     string       `json:"binding"`
-	Required    bool         `json:"required,omitempty"`
-	ReadOnly    bool         `json:"read_only,omitempty"`
-	Minimum     *json.Number `json:"minimum,omitempty"`
-	Maximum     *json.Number `json:"maximum,omitempty"`
-	Step        *json.Number `json:"step,omitempty"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	Minimum     *json.Number              `json:"minimum,omitempty"`
+	Maximum     *json.Number              `json:"maximum,omitempty"`
+	Step        *json.Number              `json:"step,omitempty"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type declarativeUIToggle struct {
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-	Binding     string `json:"binding"`
-	Required    bool   `json:"required,omitempty"`
-	ReadOnly    bool   `json:"read_only,omitempty"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type declarativeUISelect struct {
-	Type        string            `json:"type"`
-	ID          string            `json:"id"`
-	Label       string            `json:"label"`
-	Description string            `json:"description,omitempty"`
-	Binding     string            `json:"binding"`
-	Required    bool              `json:"required,omitempty"`
-	ReadOnly    bool              `json:"read_only,omitempty"`
-	Options     []json.RawMessage `json:"options"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	Options     []json.RawMessage         `json:"options"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type declarativeUIOption struct {
@@ -198,11 +210,28 @@ type declarativeUIOption struct {
 }
 
 type declarativeUINotice struct {
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-	Tone        string `json:"tone"`
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Tone        string                    `json:"tone"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
+}
+
+type declarativeUIVisibleWhen struct {
+	Field string          `json:"field"`
+	Op    string          `json:"op"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+type declarativeUIArray struct {
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding"`
+	Children    []json.RawMessage         `json:"children,omitempty"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type declarativeUIActionEnvelope struct {
@@ -398,19 +427,25 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 	switch envelope.Type {
 	case UIComponentSection:
 		var component declarativeUISection
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "children"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "children", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
 			return err
 		}
 		return state.components(component.Children, depth+1)
 	case UIComponentText, UIComponentTextarea, UIComponentSecret:
 		var component declarativeUITextInput
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "placeholder", "required", "read_only"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "placeholder", "required", "read_only", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
 			return err
 		}
 		if err := state.text("placeholder", component.Placeholder, false, 256); err != nil {
@@ -423,10 +458,13 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, nil)
 	case UIComponentNumber:
 		var component declarativeUINumberInput
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "minimum", "maximum", "step"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "minimum", "maximum", "step", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
 			return err
 		}
 		binding, err := state.binding(component.Binding)
@@ -439,10 +477,13 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, component.Minimum, component.Maximum, component.Step, nil)
 	case UIComponentToggle:
 		var component declarativeUIToggle
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
 			return err
 		}
 		binding, err := state.binding(component.Binding)
@@ -452,10 +493,13 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, nil)
 	case UIComponentSelect:
 		var component declarativeUISelect
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "options"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "options", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
 			return err
 		}
 		binding, err := state.binding(component.Binding)
@@ -469,14 +513,51 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, options)
 	case UIComponentNotice:
 		var component declarativeUINotice
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "tone"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "tone", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
 			return err
 		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
+			return err
+		}
 		if component.Tone != "info" && component.Tone != "warning" && component.Tone != "error" {
 			return errors.New("notice tone must be info, warning, or error")
+		}
+		return nil
+	case UIComponentArray:
+		var component declarativeUIArray
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "children", "visible_when"); err != nil {
+			return err
+		}
+		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
+			return err
+		}
+		binding, err := state.binding(component.Binding)
+		if err != nil {
+			return err
+		}
+		arrayType, _ := binding.node["type"].(string)
+		if arrayType != "array" {
+			return fmt.Errorf("binding %q array component requires an array schema, got %q", binding.path, arrayType)
+		}
+		items, ok := binding.node["items"].(map[string]any)
+		if !ok {
+			return errors.New("array component binding requires config schema items")
+		}
+		itemsType, _ := items["type"].(string)
+		if itemsType == "object" {
+			if len(component.Children) == 0 || len(component.Children) > maxDeclarativeUIChildren {
+				return fmt.Errorf("array object items require 1 to %d child components", maxDeclarativeUIChildren)
+			}
+			return state.arrayItems(component.Children, items, depth+1)
+		}
+		if len(component.Children) != 0 {
+			return errors.New("array scalar items must not declare child components")
 		}
 		return nil
 	default:
@@ -606,7 +687,7 @@ func (state *declarativeUIValidation) id(value string) error {
 	return nil
 }
 
-func (state *declarativeUIValidation) binding(value string) (declarativeUIBinding, error) {
+func resolvePointerFrom(base map[string]any, value string) (declarativeUIBinding, error) {
 	if len(value) < 2 || len(value) > 512 || value[0] != '/' {
 		return declarativeUIBinding{}, errors.New("binding must be a bounded canonical config JSON pointer")
 	}
@@ -619,12 +700,7 @@ func (state *declarativeUIValidation) binding(value string) (declarativeUIBindin
 			return declarativeUIBinding{}, fmt.Errorf("binding token %q is unsafe or non-canonical", part)
 		}
 	}
-	if _, duplicate := state.bindings[value]; duplicate {
-		return declarativeUIBinding{}, fmt.Errorf("duplicate UI binding %q", value)
-	}
-	state.bindings[value] = struct{}{}
-
-	current := state.configSchema
+	current := base
 	for index, part := range parts {
 		if current["type"] != "object" {
 			return declarativeUIBinding{}, fmt.Errorf("binding %q traverses non-object schema at %q", value, strings.Join(parts[:index], "/"))
@@ -643,6 +719,117 @@ func (state *declarativeUIValidation) binding(value string) (declarativeUIBindin
 		current = child
 	}
 	return declarativeUIBinding{}, fmt.Errorf("binding %q does not resolve to a declared config property", value)
+}
+
+func (state *declarativeUIValidation) binding(value string) (declarativeUIBinding, error) {
+	if _, duplicate := state.bindings[value]; duplicate {
+		return declarativeUIBinding{}, fmt.Errorf("duplicate UI binding %q", value)
+	}
+	binding, err := resolvePointerFrom(state.configSchema, value)
+	if err != nil {
+		return declarativeUIBinding{}, err
+	}
+	state.bindings[value] = struct{}{}
+	return binding, nil
+}
+
+func (state *declarativeUIValidation) visibleWhen(predicate *declarativeUIVisibleWhen) error {
+	if predicate == nil {
+		return nil
+	}
+	if _, ok := uiVisibleWhenOps[predicate.Op]; !ok {
+		return fmt.Errorf("visible_when op %q is not in the host whitelist", predicate.Op)
+	}
+	field, err := resolvePointerFrom(state.configSchema, predicate.Field)
+	if err != nil {
+		return fmt.Errorf("visible_when field: %w", err)
+	}
+	fieldType, _ := field.node["type"].(string)
+	switch predicate.Op {
+	case "empty", "notEmpty":
+		if len(predicate.Value) > 0 {
+			return errors.New("visible_when empty/notEmpty must not carry a value")
+		}
+		return nil
+	case "gt", "gte", "lt", "lte":
+		if fieldType != "number" && fieldType != "integer" {
+			return fmt.Errorf("visible_when %s requires a number or integer field, got %q", predicate.Op, fieldType)
+		}
+		return validateUIVisibleWhenValue(predicate.Value, fieldType)
+	case "in", "notIn":
+		return validateUIVisibleWhenList(predicate.Value, fieldType)
+	default:
+		return validateUIVisibleWhenValue(predicate.Value, fieldType)
+	}
+}
+
+func (state *declarativeUIValidation) arrayItems(children []json.RawMessage, items map[string]any, depth int) error {
+	savedSchema := state.configSchema
+	savedBindings := state.bindings
+	state.configSchema = items
+	state.bindings = make(map[string]struct{})
+	err := state.components(children, depth)
+	state.configSchema = savedSchema
+	state.bindings = savedBindings
+	return err
+}
+
+func validateUIVisibleWhenValue(raw json.RawMessage, fieldType string) error {
+	value, err := decodeUIVisibleWhenJSON(raw)
+	if err != nil {
+		return err
+	}
+	return validateUIVisibleWhenScalar(value, fieldType)
+}
+
+func validateUIVisibleWhenList(raw json.RawMessage, fieldType string) error {
+	value, err := decodeUIVisibleWhenJSON(raw)
+	if err != nil {
+		return err
+	}
+	list, ok := value.([]any)
+	if !ok || len(list) == 0 {
+		return errors.New("visible_when in/notIn value must be a non-empty array")
+	}
+	for _, item := range list {
+		if err := validateUIVisibleWhenScalar(item, fieldType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeUIVisibleWhenJSON(raw json.RawMessage) (any, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("visible_when value is required")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errors.New("visible_when value is not valid JSON")
+	}
+	return value, nil
+}
+
+func validateUIVisibleWhenScalar(value any, fieldType string) error {
+	switch fieldType {
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("visible_when value must be a string for a string field")
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("visible_when value must be a boolean for a boolean field")
+		}
+	case "number", "integer":
+		if _, ok := value.(json.Number); !ok {
+			return fmt.Errorf("visible_when value must be a number for a number field")
+		}
+	default:
+		return fmt.Errorf("visible_when field has unsupported type %q", fieldType)
+	}
+	return nil
 }
 
 func schemaPropertyRequired(parent map[string]any, property string) bool {

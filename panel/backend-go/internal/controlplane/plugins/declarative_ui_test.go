@@ -185,6 +185,129 @@ func TestValidatorAcceptsMatchedWriteOnlySecretComponent(t *testing.T) {
 	}
 }
 
+func TestValidatorDeclarativeUIArrayComponent(t *testing.T) {
+	schema := validDeclarativeUIConfigSchemaWithArray(t)
+	if err := validateDeclarativeUI(validArrayDeclarativeUIJSON(t), schema); err != nil {
+		t.Fatalf("valid array UI rejected: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		mutateUI     func(map[string]any)
+		mutateSchema func(map[string]any)
+		marker       string
+	}{
+		{
+			name:     "array binding to non-array schema",
+			mutateUI: func(document map[string]any) { componentByID(document, "upstreams")["binding"] = "/region" },
+			marker:   "requires an array schema",
+		},
+		{
+			name:     "object items without children",
+			mutateUI: func(document map[string]any) { delete(componentByID(document, "upstreams"), "children") },
+			marker:   "require 1 to",
+		},
+		{
+			name: "scalar items with children",
+			mutateUI: func(document map[string]any) {
+				tags := componentByID(document, "tags")
+				tags["children"] = []any{map[string]any{"type": UIComponentText, "id": "host", "label": "Host", "binding": "/host"}}
+			},
+			marker: "must not declare child components",
+		},
+		{
+			name: "item child binding to undeclared property",
+			mutateUI: func(document map[string]any) {
+				children := componentByID(document, "upstreams")["children"].([]any)
+				children[0].(map[string]any)["binding"] = "/missing"
+			},
+			marker: "does not resolve",
+		},
+		{
+			name: "item child type mismatch",
+			mutateSchema: func(schema map[string]any) {
+				items := configProperty(schema, "upstreams")["items"].(map[string]any)
+				items["properties"].(map[string]any)["port"].(map[string]any)["type"] = "string"
+			},
+			marker: "requires a number or integer schema",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			uiMutator := test.mutateUI
+			if uiMutator == nil {
+				uiMutator = func(map[string]any) {}
+			}
+			uiData := mutateArrayDeclarativeUI(uiMutator)(t)
+			currentSchema := validDeclarativeUIConfigSchemaWithArray(t)
+			if test.mutateSchema != nil {
+				test.mutateSchema(currentSchema)
+			}
+			err := validateDeclarativeUI(uiData, currentSchema)
+			if err == nil || !strings.Contains(err.Error(), test.marker) {
+				t.Fatalf("array validation error = %v, want marker %q", err, test.marker)
+			}
+		})
+	}
+}
+
+func TestValidatorDeclarativeUIVisibleWhen(t *testing.T) {
+	valid := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "eq string", mutate: visibleWhen(documentBind, "/mode", "eq", "block")},
+		{name: "eq boolean", mutate: visibleWhen(documentBind, "/enabled", "eq", true)},
+		{name: "in string list", mutate: visibleWhen(documentBind, "/mode", "in", []any{"observe", "block"})},
+		{name: "gt number", mutate: visibleWhen(documentBind, "/threshold", "gt", float64(50))},
+		{name: "empty string", mutate: visibleWhen(documentBind, "/mode", "empty", nil)},
+		{name: "notEmpty string", mutate: visibleWhen(documentBind, "/mode", "notEmpty", nil)},
+	}
+	for _, test := range valid {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateDeclarativeUI(mutateDeclarativeUI(test.mutate)(t), validDeclarativeUIConfigSchema(t)); err != nil {
+				t.Fatalf("valid visible_when rejected: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		mutate func(map[string]any)
+		marker string
+	}{
+		{name: "unknown op", mutate: visibleWhen(documentBind, "/mode", "contains", "x"), marker: "whitelist"},
+		{name: "value type mismatch", mutate: visibleWhen(documentBind, "/threshold", "eq", "high"), marker: "must be a number"},
+		{name: "empty with value", mutate: visibleWhen(documentBind, "/mode", "empty", "x"), marker: "must not carry a value"},
+		{name: "gt on string field", mutate: visibleWhen(documentBind, "/mode", "gt", float64(5)), marker: "number or integer field"},
+		{name: "field unresolved", mutate: visibleWhen(documentBind, "/nope", "eq", "x"), marker: "does not resolve"},
+		{name: "in non-array value", mutate: visibleWhen(documentBind, "/mode", "in", "block"), marker: "non-empty array"},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateDeclarativeUI(mutateDeclarativeUI(test.mutate)(t), validDeclarativeUIConfigSchema(t))
+			if err == nil || !strings.Contains(err.Error(), test.marker) {
+				t.Fatalf("visible_when error = %v, want marker %q", err, test.marker)
+			}
+		})
+	}
+}
+
+func visibleWhen(target func(map[string]any) map[string]any, field, op string, value any) func(map[string]any) {
+	return func(document map[string]any) {
+		component := target(document)
+		predicate := map[string]any{"field": field, "op": op}
+		if value != nil {
+			predicate["value"] = value
+		}
+		component["visible_when"] = predicate
+	}
+}
+
+func documentBind(document map[string]any) map[string]any {
+	return componentByID(document, "name")
+}
+
 func TestValidatorDeclarativeUIRejectsUnsupportedAndExecutableConstructs(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -388,6 +511,77 @@ func validDeclarativeUIConfigSchema(t *testing.T) map[string]any {
 	}
 	if err := validateJSONSchema(schema); err != nil {
 		t.Fatalf("valid UI config schema rejected: %v", err)
+	}
+	return schema
+}
+
+func validArrayDeclarativeUIJSON(t *testing.T) []byte {
+	t.Helper()
+	document := map[string]any{
+		"schema_version": DeclarativeUISchemaVersion,
+		"title":          "Array settings",
+		"description":    "Host-rendered array configuration",
+		"components": []any{
+			map[string]any{"type": UIComponentText, "id": "name", "label": "Name", "binding": "/name", "required": true},
+			map[string]any{"type": UIComponentArray, "id": "upstreams", "label": "Upstreams", "binding": "/upstreams", "children": []any{
+				map[string]any{"type": UIComponentText, "id": "host", "label": "Host", "binding": "/host"},
+				map[string]any{"type": UIComponentNumber, "id": "port", "label": "Port", "binding": "/port"},
+				map[string]any{"type": UIComponentToggle, "id": "tls", "label": "TLS", "binding": "/tls"},
+			}},
+			map[string]any{"type": UIComponentArray, "id": "tags", "label": "Tags", "binding": "/tags"},
+		},
+		"actions": []any{
+			map[string]any{"type": UIActionSubmit, "id": "save", "label": "Save"},
+		},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mutateArrayDeclarativeUI(mutate func(map[string]any)) func(*testing.T) []byte {
+	return func(t *testing.T) []byte {
+		t.Helper()
+		var document map[string]any
+		if err := json.Unmarshal(validArrayDeclarativeUIJSON(t), &document); err != nil {
+			t.Fatal(err)
+		}
+		mutate(document)
+		data, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+}
+
+func validDeclarativeUIConfigSchemaWithArray(t *testing.T) map[string]any {
+	t.Helper()
+	data := []byte(`{
+		"type":"object",
+		"additionalProperties":false,
+		"required":["name"],
+		"properties":{
+			"name":{"type":"string"},
+			"region":{"type":"string"},
+			"upstreams":{"type":"array","items":{"type":"object","properties":{
+				"host":{"type":"string"},
+				"port":{"type":"number"},
+				"tls":{"type":"boolean"}
+			}}},
+			"tags":{"type":"array","items":{"type":"string"}}
+		}
+	}`)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var schema map[string]any
+	if err := decoder.Decode(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJSONSchema(schema); err != nil {
+		t.Fatalf("valid array config schema rejected: %v", err)
 	}
 	return schema
 }
