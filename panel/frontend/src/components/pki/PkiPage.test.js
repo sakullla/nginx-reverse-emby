@@ -172,13 +172,45 @@ describe('PkiPage behavior boundary', () => {
     pki.revoke.mockResolvedValue({ id: 'op-revoke', state: 'accepted', kind: 'revoke' })
   })
 
-  it('renders public/internal separation and the lifecycle identity fields', async () => {
+  it('renders the PKI boundary, lifecycle fields, and shared owner labels', async () => {
+    pki.identities.mockResolvedValue([
+      {
+        id: 'identity-1', kind: 'agent', agent_id: 'agent-1', state: 'active', current_certificate_id: 'cert-1', rotation_phase: 'idle'
+      },
+      {
+        id: 'identity-local', kind: 'agent', agent_id: 'local', state: 'active', current_certificate_id: 'cert-local', rotation_phase: 'idle'
+      }
+    ])
+    pki.certificates.mockResolvedValue([
+      {
+        id: 'cert-1', identity_id: 'identity-1', purpose: 'client_auth', ca_generation: 2,
+        serial_hex: '01ab', public_key_fingerprint_sha256: 'cert-fingerprint', status: 'active',
+        not_before: '2026-08-01T00:00:00Z', not_after: '2026-11-01T00:00:00Z', next_action: 'renew at one-third lifetime'
+      },
+      {
+        id: 'cert-local', identity_id: 'identity-local', purpose: 'client_auth', ca_generation: 2,
+        serial_hex: '0a0a', public_key_fingerprint_sha256: 'local-fingerprint', status: 'active',
+        not_before: '2026-08-01T00:00:00Z', not_after: '2026-11-01T00:00:00Z'
+      }
+    ])
+    pki.alerts.mockResolvedValue([{
+      id: 'alert-1', level: 'warning', kind: 'renewal_due', object_type: 'identity', object_id: 'identity-1',
+      reason: 'certificate nearing one-third lifetime', last_seen: '2026-08-03T01:00:00Z'
+    }])
+    pki.events.mockResolvedValue([{
+      id: 'event-1', type: 'rotate', object_type: 'identity', object_id: 'identity-1', result: 'success',
+      source: 'panel', occurred_at: '2026-08-03T01:05:00Z', reason: 'scheduled renew'
+    }])
+
     const wrapper = await mountPage()
     await flushPromises()
 
     expect(wrapper.text()).toContain('当前为内部 PKI 域')
     expect(wrapper.text()).toContain('内部 PKI')
     expect(wrapper.text()).toContain('香港边缘节点')
+    expect(wrapper.text()).toContain('节点 · 香港边缘节点 · agent-1')
+    expect(wrapper.text()).toContain('本机 Agent')
+    expect(wrapper.text()).toContain('local')
     expect(wrapper.find('[data-test="identity-row"]').text()).not.toContain('identity-1')
     expect(wrapper.find('[data-test="identity-row"]').text()).not.toContain('agent-1')
     expect(wrapper.text()).toContain('client_auth')
@@ -186,50 +218,6 @@ describe('PkiPage behavior boundary', () => {
     expect(wrapper.text()).toContain('01ab')
     expect(wrapper.text()).toContain('cert-fingerprint')
     expect(wrapper.text()).toContain('renew at one-third lifetime')
-  })
-
-  it('maps the stable local agent id to a human-readable owner title', async () => {
-    pki.identities.mockResolvedValue([{
-      id: 'identity-local', kind: 'agent', agent_id: 'local', state: 'active', current_certificate_id: 'cert-local', rotation_phase: 'idle'
-    }])
-    pki.certificates.mockResolvedValue([{
-      id: 'cert-local', identity_id: 'identity-local', purpose: 'client_auth', ca_generation: 2,
-      serial_hex: '0a0a', public_key_fingerprint_sha256: 'local-fingerprint', status: 'active',
-      not_before: '2026-08-01T00:00:00Z', not_after: '2026-11-01T00:00:00Z'
-    }])
-
-    const wrapper = await mountPage()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('本机 Agent')
-    expect(wrapper.text()).toContain('local')
-  })
-
-  it('resolves alert and audit object ids through the shared agent/identity labels', async () => {
-    pki.alerts.mockResolvedValue([{
-      id: 'alert-1',
-      level: 'warning',
-      kind: 'renewal_due',
-      object_type: 'identity',
-      object_id: 'identity-1',
-      reason: 'certificate nearing one-third lifetime',
-      last_seen: '2026-08-03T01:00:00Z'
-    }])
-    pki.events.mockResolvedValue([{
-      id: 'event-1',
-      type: 'rotate',
-      object_type: 'identity',
-      object_id: 'identity-1',
-      result: 'success',
-      source: 'panel',
-      occurred_at: '2026-08-03T01:05:00Z',
-      reason: 'scheduled renew'
-    }])
-
-    const wrapper = await mountPage()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('节点 · 香港边缘节点 · agent-1')
   })
 
   it('sorts status-sensitive resources and limits every non-CA list to five rows per page', async () => {
