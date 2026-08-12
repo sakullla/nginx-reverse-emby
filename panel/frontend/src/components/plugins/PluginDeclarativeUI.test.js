@@ -18,6 +18,23 @@ const document = {
   ]
 }
 
+const richDocument = {
+  schema_version: 1,
+  title: 'Rich',
+  components: [
+    { type: 'select', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'basic', label: 'Basic' }, { value: 'advanced', label: 'Advanced' }] },
+    { type: 'text', id: 'extra', label: 'Extra', binding: '/extra', visible_when: { field: '/mode', op: 'eq', value: 'advanced' } },
+    { type: 'number', id: 'port', label: 'Port', binding: '/port', required: true, minimum: 1, maximum: 65535 },
+    { type: 'array', id: 'upstreams', label: 'Upstreams', binding: '/upstreams', children: [
+      { type: 'text', id: 'host', label: 'Host', binding: '/host' },
+      { type: 'number', id: 'port', label: 'Port', binding: '/port', minimum: 1, maximum: 65535 }
+    ] }
+  ],
+  actions: [
+    { type: 'submit', id: 'save', label: 'Save' }
+  ]
+}
+
 describe('PluginDeclarativeUI', () => {
   it('renders only fixed host controls and never interprets package markup', async () => {
 		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, canConfigure: true, canAct: true } })
@@ -60,6 +77,43 @@ describe('PluginDeclarativeUI', () => {
 		await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
 		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
 		expect(wrapper.emitted('submit')[0][0].secret_replacements).toEqual({ '/token': null })
+	})
+
+	it('supports array add, remove and reorder for repeatable groups', async () => {
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { upstreams: [{ host: 'a' }, { host: 'b' }] }, canConfigure: true } })
+		await wrapper.findAll('button').find((button) => button.text() === '+ 添加').trigger('click')
+		let itemWrappers = wrapper.findAll('.declarative-array-item')
+		expect(itemWrappers).toHaveLength(3)
+		await itemWrappers[2].find('input[type="text"]').setValue('c')
+		await itemWrappers[2].findAll('button').find((button) => button.text() === '上移').trigger('click')
+		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+		expect(wrapper.emitted('submit').at(-1)[0].config.upstreams.map((item) => item.host)).toEqual(['a', 'c', 'b'])
+	})
+
+	it('removes a repeatable array item', async () => {
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { upstreams: [{ host: 'a' }, { host: 'b' }] }, canConfigure: true } })
+		await wrapper.findAll('.declarative-array-item')[0].findAll('button').find((button) => button.text() === '移除').trigger('click')
+		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+		expect(wrapper.emitted('submit')[0][0].config.upstreams.map((item) => item.host)).toEqual(['b'])
+	})
+
+	it('hides condition-false fields and prunes them from submit', async () => {
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { mode: 'basic', extra: 'stale' }, canConfigure: true } })
+		expect(wrapper.find('input[type="text"]').exists()).toBe(false)
+		await wrapper.get('select').setValue('advanced')
+		expect(wrapper.find('input[type="text"]').exists()).toBe(true)
+		await wrapper.get('select').setValue('basic')
+		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+		expect(wrapper.emitted('submit')[0][0].config).toEqual({ mode: 'basic' })
+	})
+
+	it('renders constraint hints and inline validation errors', async () => {
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: {}, canConfigure: true } })
+		expect(wrapper.text()).toContain('必填')
+		expect(wrapper.text()).toContain('范围 1–65535')
+		expect(wrapper.text()).not.toContain('此项为必填')
+		await wrapper.get('input[type="number"]').setValue('0')
+		expect(wrapper.text()).toContain('不能小于 1')
 	})
 
 	it('keeps configuration hidden for resource writers while allowing dynamic actions', async () => {

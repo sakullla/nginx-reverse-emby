@@ -1,6 +1,7 @@
 <script setup>
 import { reactive, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
+import { collectHiddenPointers, prunePointer } from '../../api/pluginCondition.js'
 
 const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, secretFields: { type: Array, default: () => [] }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
 const emit = defineEmits(['submit', 'dynamic'])
@@ -27,7 +28,14 @@ function setValue(pointer, value) {
 }
 function action(action) {
 	if (action.type === 'dynamic' ? !props.canAct : !props.canConfigure) return
-  if (action.type === 'submit') emit('submit', { config: clone(model), secret_replacements: clone(secretReplacements) })
+  if (action.type === 'submit') {
+    const config = clone(model)
+    const hidden = collectHiddenPointers(props.document.components || [], model)
+    for (const pointer of hidden) prunePointer(config, pointer)
+    const secret_replacements = clone(secretReplacements)
+    for (const pointer of hidden) delete secret_replacements[pointer]
+    emit('submit', { config, secret_replacements })
+  }
   else if (action.type === 'reset' && (!action.confirm || window.confirm(action.confirm))) reset()
   else if (action.type === 'dynamic' && (!action.confirm || window.confirm(action.confirm))) emit('dynamic', { action, target_id: targets[action.id] || '', confirmed: true })
 }
