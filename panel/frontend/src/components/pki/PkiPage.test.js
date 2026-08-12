@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { parse as parseSfc } from '@vue/compiler-sfc'
+import postcss from 'postcss'
 import PkiPage from '../../pages/PkiPage.vue'
+import baseModalSource from '../base/BaseModal.vue?raw'
+import indexDocumentSource from '../../../index.html?raw'
 
 const pki = vi.hoisted(() => ({
   overview: vi.fn(),
@@ -135,6 +139,17 @@ function setInputValue(selector, value) {
   el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+function declarationsFor(root, selector, property, mediaQuery) {
+  const values = []
+  root.walkRules((rule) => {
+    const selectors = rule.selector.split(',').map(value => value.trim())
+    if (!selectors.includes(selector)) return
+    if (mediaQuery && (rule.parent.type !== 'atrule' || rule.parent.params !== mediaQuery)) return
+    rule.walkDecls(property, declaration => values.push(declaration.value))
+  })
+  return values
+}
+
 describe('PkiPage behavior boundary', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -170,6 +185,34 @@ describe('PkiPage behavior boundary', () => {
     pki.enrollment.mockResolvedValue({ token: 'one-time-secret', scope: 'new_agent', expires_at: '2026-08-03T02:00:00Z' })
     pki.confirmation.mockResolvedValue({ nonce: 'nonce-1', action: 'revoke', target_id: 'identity-1' })
     pki.revoke.mockResolvedValue({ id: 'op-revoke', state: 'accepted', kind: 'revoke' })
+  })
+
+  it('keeps mounted dialogs inside the mobile viewport and safe area', async () => {
+    const wrapper = await mountPage()
+    await flushPromises()
+    await wrapper.find('[data-test="identity-revoke"]').trigger('click')
+    await flushPromises()
+
+    const dialog = findInPage('[data-test="action-dialog"] [role="dialog"]')
+    expect(dialog).toBeTruthy()
+    expect(dialog.classList.contains('modal')).toBe(true)
+
+    const viewport = new DOMParser()
+      .parseFromString(indexDocumentSource, 'text/html')
+      .querySelector('meta[name="viewport"]')
+    const viewportDirectives = viewport.content.split(',').map(value => value.trim())
+    expect(viewportDirectives).toContain('viewport-fit=cover')
+
+    const { descriptor } = parseSfc(baseModalSource, { filename: 'BaseModal.vue' })
+    const modalStyles = postcss.parse(descriptor.styles.map(style => style.content).join('\n'))
+    expect(declarationsFor(modalStyles, '.modal', 'max-height', '(max-width: 640px)')).toEqual([
+      'calc(100vh - var(--space-8))',
+      'calc(100dvh - var(--space-8))'
+    ])
+    expect(declarationsFor(modalStyles, '.modal-backdrop', 'padding-bottom', '(max-width: 640px)'))
+      .toEqual(['max(var(--space-4), env(safe-area-inset-bottom, 0px))'])
+    expect(declarationsFor(modalStyles, '.modal', 'max-height', '(max-width: 375px) and (max-height: 812px)'))
+      .toEqual(['100vh', '100dvh'])
   })
 
   it('renders the PKI boundary, lifecycle fields, and shared owner labels', async () => {
