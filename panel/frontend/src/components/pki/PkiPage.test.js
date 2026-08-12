@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
@@ -7,8 +9,14 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { parse as parseSfc } from '@vue/compiler-sfc'
 import postcss from 'postcss'
 import PkiPage from '../../pages/PkiPage.vue'
+import agentPickerSource from '../AgentPicker.vue?raw'
 import baseModalSource from '../base/BaseModal.vue?raw'
+import createAgentPickerSource from '../common/CreateAgentPicker.vue?raw'
+import globalSearchSource from '../GlobalSearch.vue?raw'
+import versionsPageSource from '../../pages/VersionsPage.vue?raw'
 import indexDocumentSource from '../../../index.html?raw'
+
+const modalUtilitiesSource = readFileSync(resolve('src/styles/utilities.css'), 'utf8')
 
 const pki = vi.hoisted(() => ({
   overview: vi.fn(),
@@ -139,6 +147,11 @@ function setInputValue(selector, value) {
   el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+function stylesFromSfc(source, filename) {
+  const { descriptor } = parseSfc(source, { filename })
+  return postcss.parse(descriptor.styles.map(style => style.content).join('\n'))
+}
+
 function declarationsFor(root, selector, property, mediaQuery) {
   const values = []
   root.walkRules((rule) => {
@@ -203,8 +216,7 @@ describe('PkiPage behavior boundary', () => {
     const viewportDirectives = viewport.content.split(',').map(value => value.trim())
     expect(viewportDirectives).toContain('viewport-fit=cover')
 
-    const { descriptor } = parseSfc(baseModalSource, { filename: 'BaseModal.vue' })
-    const modalStyles = postcss.parse(descriptor.styles.map(style => style.content).join('\n'))
+    const modalStyles = stylesFromSfc(baseModalSource, 'BaseModal.vue')
     expect(declarationsFor(modalStyles, '.modal', 'max-height', '(max-width: 640px)')).toEqual([
       'calc(100vh - var(--space-8))',
       'calc(100dvh - var(--space-8))'
@@ -213,6 +225,32 @@ describe('PkiPage behavior boundary', () => {
       .toEqual(['max(var(--space-4), env(safe-area-inset-bottom, 0px))'])
     expect(declarationsFor(modalStyles, '.modal', 'max-height', '(max-width: 375px) and (max-height: 812px)'))
       .toEqual(['100vh', '100dvh'])
+
+    const sharedModalStyles = postcss.parse(modalUtilitiesSource)
+    expect(declarationsFor(sharedModalStyles, '.modal', 'max-height')).toEqual([
+      'min(90vh, 920px)',
+      'min(90dvh, 920px)',
+      'calc(100dvh - 5.5rem - env(safe-area-inset-bottom, 0px))'
+    ])
+    expect(declarationsFor(sharedModalStyles, '.modal-overlay', 'padding-bottom'))
+      .toContain('max(clamp(0.75rem, 2vw, 1.5rem), env(safe-area-inset-bottom, 0px))')
+
+    const overlayContracts = [
+      [globalSearchSource, 'GlobalSearch.vue', '.global-search-panel', undefined, ['80vh', '80dvh']],
+      [agentPickerSource, 'AgentPicker.vue', '.agent-picker__dropdown', '(max-width: 640px)', ['70vh', '70dvh']],
+      [createAgentPickerSource, 'CreateAgentPicker.vue', '.create-agent-picker', undefined, [
+        'min(520px, calc(100vh - var(--space-8)))',
+        'min(520px, calc(100dvh - var(--space-8)))'
+      ]],
+      [versionsPageSource, 'VersionsPage.vue', '.modal', undefined, [
+        'calc(100vh - var(--space-8))',
+        'calc(100dvh - var(--space-8))'
+      ]]
+    ]
+    for (const [source, filename, selector, mediaQuery, expected] of overlayContracts) {
+      expect(declarationsFor(stylesFromSfc(source, filename), selector, 'max-height', mediaQuery), filename)
+        .toEqual(expected)
+    }
   })
 
   it('renders the PKI boundary, lifecycle fields, and shared owner labels', async () => {
