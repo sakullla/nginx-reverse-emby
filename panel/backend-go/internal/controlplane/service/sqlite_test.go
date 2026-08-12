@@ -7,10 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 type serviceSQLiteTemplate struct {
@@ -38,63 +35,18 @@ func serviceSQLiteTemplateData() ([]byte, error) {
 
 		dsn := filepath.Join(root, "panel.db") +
 			"?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)&_pragma=temp_store(MEMORY)"
-		db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+		store, err := storage.NewStore(storage.StoreConfig{
+			Driver:              "sqlite",
+			DSN:                 dsn,
+			DataRoot:            root,
+			LocalAgentID:        "local",
+			TrafficStatsEnabled: true,
+		})
 		if err != nil {
 			serviceSQLiteTemplateFixture.err = err
 			return
 		}
-		if err := db.AutoMigrate(
-			&storage.AgentRow{},
-			&storage.HTTPRuleRow{},
-			&storage.L4RuleRow{},
-			&storage.RelayListenerRow{},
-			&storage.EgressProfileRow{},
-			&storage.ManagedCertificateRow{},
-			&storage.ManagedCertificateGenerationRow{},
-			&storage.LocalAgentStateRow{},
-			&storage.VersionPolicyRow{},
-			&storage.MetaRow{},
-			&storage.OperationRow{},
-			&storage.AgentRevisionRow{},
-			&storage.AgentRevisionPointerRow{},
-			&storage.AgentRevisionAttemptRow{},
-			&storage.AgentGenerationRow{},
-			&storage.RevisionEventRow{},
-			&storage.IdempotencyRecordRow{},
-			&storage.GenerationArtifactRow{},
-			&storage.AgentRevisionArtifactRow{},
-			&storage.AgentTrafficPolicyRow{},
-			&storage.AgentTrafficBaselineRow{},
-			&storage.PluginPackageRow{},
-			&storage.PluginArtifactRow{},
-			&storage.InstalledPluginRow{},
-			&storage.PluginInstanceRow{},
-			&storage.PluginGrantRow{},
-			&storage.PluginOperationRow{},
-			&storage.PluginAgentRuntimeStatusRow{},
-			&storage.PluginRuntimeLogRow{},
-			&storage.PluginPolicyAgentRevisionRow{},
-			&storage.RoleBindingRow{},
-			&storage.ResourceBindingRow{},
-			&storage.QuotaPolicyRow{},
-			&storage.QuotaUsageRow{},
-			&storage.QuotaPolicyUsageRow{},
-			&storage.QuotaAllocationRow{},
-			&storage.AuditEventRow{},
-		); err != nil {
-			serviceSQLiteTemplateFixture.err = err
-			return
-		}
-		if err := db.Create(&storage.LocalAgentStateRow{ID: 1, LastApplyStatus: "success"}).Error; err != nil {
-			serviceSQLiteTemplateFixture.err = err
-			return
-		}
-		sqlDB, err := db.DB()
-		if err != nil {
-			serviceSQLiteTemplateFixture.err = err
-			return
-		}
-		if err := sqlDB.Close(); err != nil {
+		if err := store.Close(); err != nil {
 			serviceSQLiteTemplateFixture.err = err
 			return
 		}

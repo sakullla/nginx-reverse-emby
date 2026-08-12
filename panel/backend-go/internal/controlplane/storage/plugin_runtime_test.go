@@ -6,7 +6,7 @@ import (
 )
 
 func TestPluginRuntimeCandidateFailurePreservesActiveGeneration(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestPluginRuntimeCandidateFailurePreservesActiveGeneration(t *testing.T) {
 }
 
 func TestPluginRuntimeStagePreservesActiveHealthAndPID(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestPluginRuntimeStagePreservesActiveHealthAndPID(t *testing.T) {
 }
 
 func TestPluginRuntimeInitialStageKeepsActiveStateStopped(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPluginRuntimeInitialStageKeepsActiveStateStopped(t *testing.T) {
 }
 
 func TestPluginRuntimeStopUsesGenerationFence(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestPluginRuntimeStopUsesGenerationFence(t *testing.T) {
 }
 
 func TestPluginRuntimeHealthUpdateUsesActiveGenerationCAS(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestPluginRuntimeHealthUpdateUsesActiveGenerationCAS(t *testing.T) {
 }
 
 func TestPluginRuntimeBatchPromotionIsAtomic(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}

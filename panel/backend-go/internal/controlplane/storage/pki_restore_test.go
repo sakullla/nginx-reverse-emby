@@ -1,3 +1,5 @@
+//go:build integration
+
 package storage
 
 import (
@@ -11,7 +13,15 @@ import (
 	"time"
 )
 
-func TestPKIBackupRestoreTargetRollsBackSwapAndReopenFailure(t *testing.T) {
+func requirePKIRestoreFullTier(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite restore and process-lock scenarios run in the full test tier")
+	}
+}
+
+func TestIntegrationPKIBackupRestoreTargetRollsBackSwapAndReopenFailure(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -118,7 +128,8 @@ func TestPKIBackupRestoreTargetRollsBackSwapAndReopenFailure(t *testing.T) {
 	}
 }
 
-func TestPKIBackupRestoreTargetQuiescesReadersDuringSwap(t *testing.T) {
+func TestIntegrationPKIBackupRestoreTargetQuiescesReadersDuringSwap(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -181,7 +192,8 @@ func TestPKIBackupRestoreTargetQuiescesReadersDuringSwap(t *testing.T) {
 	}
 }
 
-func TestPKIBackupRestoreTargetReopensEverySamePathStoreAndBlocksNewOpen(t *testing.T) {
+func TestIntegrationPKIBackupRestoreTargetReopensEverySamePathStoreAndBlocksNewOpen(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -258,7 +270,8 @@ func TestPKIBackupRestoreTargetReopensEverySamePathStoreAndBlocksNewOpen(t *test
 	}
 }
 
-func TestPKIRestoreJournalRecoversPreCommitAndCommittedCrashes(t *testing.T) {
+func TestIntegrationPKIRestoreJournalRecoversPreCommitAndCommittedCrashes(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	t.Run("pre-commit rolls back", func(t *testing.T) {
 		root := t.TempDir()
@@ -342,7 +355,8 @@ func TestPKIRestoreJournalRecoversPreCommitAndCommittedCrashes(t *testing.T) {
 	})
 }
 
-func TestPKIRestoreProcessLockSerializesExclusiveActivation(t *testing.T) {
+func TestIntegrationPKIRestoreProcessLockSerializesExclusiveActivation(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	activeDatabase := filepath.Join(t.TempDir(), "panel.db")
 	shared, err := acquirePKIRestoreProcessLock(t.Context(), activeDatabase, false)
@@ -378,7 +392,8 @@ func TestPKIRestoreProcessLockSerializesExclusiveActivation(t *testing.T) {
 	_ = exclusive.Close()
 }
 
-func TestPKIBackupRestoreTargetRechecksLeaseAfterProcessLockWait(t *testing.T) {
+func TestIntegrationPKIBackupRestoreTargetRechecksLeaseAfterProcessLockWait(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -437,7 +452,8 @@ func TestPKIBackupRestoreTargetRechecksLeaseAfterProcessLockWait(t *testing.T) {
 	assertPKIRestoreAgent(t, store, "old-agent")
 }
 
-func TestPKIBackupRestoreTargetRechecksLeaseAfterCleanupRecovery(t *testing.T) {
+func TestIntegrationPKIBackupRestoreTargetRechecksLeaseAfterCleanupRecovery(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -470,7 +486,8 @@ func TestPKIBackupRestoreTargetRechecksLeaseAfterCleanupRecovery(t *testing.T) {
 	assertPKIRestoreAgent(t, store, "old-agent")
 }
 
-func TestPKIBackupRestoreTargetReportsCommittedCleanupAndRecoversIt(t *testing.T) {
+func TestIntegrationPKIBackupRestoreTargetReportsCommittedCleanupAndRecoversIt(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -525,7 +542,8 @@ func TestPKIBackupRestoreTargetReportsCommittedCleanupAndRecoversIt(t *testing.T
 	}
 }
 
-func TestPKIRestoreCleanupManifestRetriesDeletionTombstones(t *testing.T) {
+func TestIntegrationPKIRestoreCleanupManifestRetriesDeletionTombstones(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := createPKIRestoreAgentDatabase(t, root, "new-agent")
@@ -572,7 +590,8 @@ func TestPKIRestoreCleanupManifestRetriesDeletionTombstones(t *testing.T) {
 	}
 }
 
-func TestPKIRestoreStagingRegistrationRetriesSensitiveTombstoneDeletion(t *testing.T) {
+func TestIntegrationPKIRestoreStagingRegistrationRetriesSensitiveTombstoneDeletion(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -652,7 +671,8 @@ func TestPKIRestoreStagingRegistrationRetriesSensitiveTombstoneDeletion(t *testi
 	}
 }
 
-func TestPKIRestoreStagingRegistrationTracksResurrectedCrossVolumeTombstone(t *testing.T) {
+func TestIntegrationPKIRestoreStagingRegistrationTracksResurrectedCrossVolumeTombstone(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -724,7 +744,8 @@ func TestPKIRestoreStagingRegistrationTracksResurrectedCrossVolumeTombstone(t *t
 	}
 }
 
-func TestPKIRestoreStagingRegistrationRecoveryTreatsDatabasePathLiterally(t *testing.T) {
+func TestIntegrationPKIRestoreStagingRegistrationRecoveryTreatsDatabasePathLiterally(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := filepath.Join(t.TempDir(), "data[restore]")
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -765,7 +786,8 @@ func TestPKIRestoreStagingRegistrationRecoveryTreatsDatabasePathLiterally(t *tes
 	}
 }
 
-func TestPKIRestoreJournalRetainsCleanupOwnershipAcrossPartialRollback(t *testing.T) {
+func TestIntegrationPKIRestoreJournalRetainsCleanupOwnershipAcrossPartialRollback(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
@@ -849,7 +871,8 @@ func TestPKIRestoreJournalRetainsCleanupOwnershipAcrossPartialRollback(t *testin
 	}
 }
 
-func TestSQLiteRestoreLifecycleCanonicalizesSymlinksAndRejectsHardlinks(t *testing.T) {
+func TestIntegrationSQLiteRestoreLifecycleCanonicalizesSymlinksAndRejectsHardlinks(t *testing.T) {
+	requirePKIRestoreFullTier(t)
 	t.Parallel()
 	t.Run("symlink aliases share one lifecycle group", func(t *testing.T) {
 		root := t.TempDir()

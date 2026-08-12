@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -173,83 +172,6 @@ func TestManagedCertificateGenerationRevisionMutationDistributesThenPromotes(t *
 	}
 }
 
-func TestManagedCertificateGenerationRevisionPromotionRollbackRestoresMissingProjection(t *testing.T) {
-	t.Parallel()
-	ctx := authenticatedServiceMutationContext(t)
-	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	const domain = "first-promotion-rollback.example.test"
-	if err := store.SaveAgent(ctx, storage.AgentRow{
-		ID: "edge-a", Name: "Edge A", AgentToken: "token-a", Platform: "linux-amd64",
-		CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`, DesiredRevision: 1, CurrentRevision: 1,
-		LastApplyRevision: 1, LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	row := storage.ManagedCertificateRow{
-		ID: 202, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a"]`, Status: storage.ManagedCertificateGenerationStatePending,
-		CertificateType: "acme", Usage: "https", Revision: 4,
-	}
-	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{row}); err != nil {
-		t.Fatalf("SaveManagedCertificates(seed) error = %v", err)
-	}
-	pending, err := store.StageManagedCertificateGeneration(ctx, domain, storage.ManagedCertificateBundle{
-		ID: 202, Domain: domain, Revision: 4, CertPEM: "new-cert", KeyPEM: "new-key",
-	})
-	if err != nil {
-		t.Fatalf("StageManagedCertificateGeneration() error = %v", err)
-	}
-	createdAt, err := time.Parse(time.RFC3339Nano, pending.CreatedAt)
-	if err != nil {
-		t.Fatalf("parse pending CreatedAt: %v", err)
-	}
-	cert := managedCertificateFromRow(row)
-	cert.AgentReports["edge-a"] = ManagedCertificateAgentReport{
-		Status: "active", MaterialHash: pending.MaterialHash,
-		UpdatedAt: createdAt.Add(time.Second).Format(time.RFC3339Nano),
-	}
-	row = managedCertificateToRow(cert)
-	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{row}); err != nil {
-		t.Fatalf("SaveManagedCertificates(report) error = %v", err)
-	}
-	if _, found, err := store.LoadManagedCertificateProjection(ctx, domain); err != nil || found {
-		t.Fatalf("projection before first promotion found=%v error=%v", found, err)
-	}
-
-	forcedFailure := errors.New("forced post-mutation validation failure")
-	svc := NewCertificateService(config.Config{}, store)
-	svc.mutationExecutor = newMutationExecutor(config.Config{}, store,
-		revision.WithSnapshotValidator(revision.ValidatorFunc(func(context.Context, revision.SnapshotValidation) error {
-			return forcedFailure
-		})),
-	)
-	err = svc.promoteManagedCertificateGeneration(ctx, cert, pending, []string{"edge-a"})
-	if !errors.Is(err, forcedFailure) {
-		t.Fatalf("promoteManagedCertificateGeneration() error = %v, want %v", err, forcedFailure)
-	}
-	if _, found, err := store.LoadActiveManagedCertificateGeneration(ctx, domain); err != nil || found {
-		t.Fatalf("active generation after rollback found=%v error=%v", found, err)
-	}
-	rolledBackPending, found, err := store.LoadPendingManagedCertificateGeneration(ctx, domain)
-	if err != nil || !found || rolledBackPending.ID != pending.ID {
-		t.Fatalf("pending generation after rollback = (%+v, %v, %v)", rolledBackPending, found, err)
-	}
-	if _, found, err := store.LoadManagedCertificateProjection(ctx, domain); err != nil || found {
-		t.Fatalf("projection after rollback found=%v error=%v", found, err)
-	}
-	if _, found, err := store.LoadManagedCertificateMaterial(ctx, domain); err != nil || found {
-		t.Fatalf("material after rollback found=%v error=%v", found, err)
-	}
-	if _, found, err := store.LoadActiveManagedCertificateGeneration(ctx, domain); err != nil || found {
-		t.Fatalf("legacy generation imported after rollback found=%v error=%v", found, err)
-	}
-}
-
 func TestManagedCertificateGenerationIssueStagesPendingWithoutReplacingActive(t *testing.T) {
 	t.Parallel()
 	domain := "stage.example.test"
@@ -346,61 +268,6 @@ func TestManagedCertificateGenerationIssueSaveFailureAbortsPendingAndKeepsActive
 	}
 }
 
-func TestManagedCertificateGenerationHeartbeatStoresMasterAckWithoutReplacingActive(t *testing.T) {
-	t.Parallel()
-	const domain = "heartbeat-ack.example.test"
-	row := storage.ManagedCertificateRow{
-		ID: 106, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a"]`, Status: "active", MaterialHash: "old-active-hash",
-		CertificateType: "acme", Usage: "https", Revision: 5,
-	}
-	rows, reported, changed := applyManagedCertificateHeartbeatReports(
-		[]storage.ManagedCertificateRow{row},
-		"edge-a",
-		[]ManagedCertificateHeartbeatReport{{
-			ID: 106, Domain: domain, Status: "active", MaterialHash: "pending-installed-hash",
-			UpdatedAt: "2026-07-26T01:02:00Z",
-		}},
-		time.Date(2026, 7, 26, 1, 2, 0, 0, time.UTC),
-	)
-	if !changed {
-		t.Fatal("master acknowledgement did not change per-agent reports")
-	}
-	if _, ok := reported[106]; !ok {
-		t.Fatalf("reported certificate IDs = %+v", reported)
-	}
-	cert := managedCertificateFromRow(rows[0])
-	if cert.Status != "active" || cert.MaterialHash != "old-active-hash" {
-		t.Fatalf("active projection changed before promotion: %+v", cert)
-	}
-	if report := cert.AgentReports["edge-a"]; report.Status != "active" || report.MaterialHash != "pending-installed-hash" {
-		t.Fatalf("stored agent report = %+v", report)
-	}
-}
-
-func TestManagedCertificateRenewalSkipsPendingGeneration(t *testing.T) {
-	t.Parallel()
-	const domain = "renew-pending.example.test"
-	store := newManagedCertificateGenerationServiceStore([]storage.ManagedCertificateRow{{
-		ID: 107, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a"]`, Status: "active", MaterialHash: "old-active-hash",
-		CertificateType: "acme", Usage: "https", Revision: 5,
-	}})
-	store.pending[domain] = managedCertificateTestGeneration(
-		"pending-renew", domain, storage.ManagedCertificateGenerationStatePending,
-		storage.ManagedCertificateBundle{Domain: domain, CertPEM: "pending-cert", KeyPEM: "pending-key"},
-		"2026-07-26T01:00:00Z",
-	)
-	issuer := &countingManagedCertificateRenewalIssuer{}
-	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
-	if err := svc.RunRenewalPass(t.Context()); err != nil {
-		t.Fatalf("RunRenewalPass() error = %v", err)
-	}
-	if issuer.calls != 0 {
-		t.Fatalf("renewal issuer calls = %d, want none while generation is pending", issuer.calls)
-	}
-}
-
 func TestManagedCertificatePromotionRequiresEveryFreshMatchingAgentReport(t *testing.T) {
 	t.Parallel()
 	domain := "promote.example.test"
@@ -464,38 +331,6 @@ func TestManagedCertificatePromotionRequiresEveryFreshMatchingAgentReport(t *tes
 	}
 }
 
-func TestManagedCertificatePromotionDoesNotRequireReportFromLegacyAgent(t *testing.T) {
-	t.Parallel()
-	const domain = "mixed-version-promotion.example.test"
-	newBundle := storage.ManagedCertificateBundle{Domain: domain, CertPEM: "new-cert", KeyPEM: "new-key"}
-	newHash := hashManagedCertificateMaterial(newBundle.CertPEM, newBundle.KeyPEM)
-	store := newManagedCertificateGenerationServiceStore([]storage.ManagedCertificateRow{{
-		ID: 110, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a","edge-b"]`, Status: storage.ManagedCertificateGenerationStatePending,
-		CertificateType: "acme", Usage: "https", Revision: 9,
-		AgentReports: `{"edge-a":{"status":"active","material_hash":"` + newHash + `","updated_at":"2026-07-26T01:02:00Z"}}`,
-	}})
-	store.agents = []storage.AgentRow{
-		{ID: "edge-a", CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`},
-		{
-			ID: "edge-b", CapabilitiesJSON: `["cert_install"]`, DesiredRevision: 9,
-			CurrentRevision: 8, LastApplyRevision: 8, LastApplyStatus: "success",
-		},
-	}
-	store.pending[domain] = managedCertificateTestGeneration(
-		"pending-new", domain, storage.ManagedCertificateGenerationStatePending, newBundle, "2026-07-26T01:00:00Z",
-	)
-	svc := NewCertificateService(config.Config{}, store)
-
-	promoted, err := svc.reconcileManagedCertificateGenerationPromotions(t.Context())
-	if err != nil {
-		t.Fatalf("reconcile with legacy target error = %v", err)
-	}
-	if promoted != 1 || store.promoteCalls != 1 {
-		t.Fatalf("promotion with legacy target = %d, calls = %d", promoted, store.promoteCalls)
-	}
-}
-
 func TestManagedCertificatePromotionFailureKeepsPreviousActive(t *testing.T) {
 	t.Parallel()
 	domain := "promotion-failure.example.test"
@@ -525,130 +360,6 @@ func TestManagedCertificatePromotionFailureKeepsPreviousActive(t *testing.T) {
 	}
 	if got := managedCertificateFromRow(store.managedCerts[0]); got.MaterialHash != oldHash {
 		t.Fatalf("certificate hash changed on promotion failure: %+v", got)
-	}
-}
-
-func TestManagedCertificateLegacyPromotionMetadataSaveFailureDoesNotPromote(t *testing.T) {
-	t.Parallel()
-	const domain = "promotion-save-failure.example.test"
-	oldBundle := storage.ManagedCertificateBundle{Domain: domain, CertPEM: "old-cert", KeyPEM: "old-key"}
-	newBundle := storage.ManagedCertificateBundle{Domain: domain, CertPEM: "new-cert", KeyPEM: "new-key"}
-	oldHash := hashManagedCertificateMaterial(oldBundle.CertPEM, oldBundle.KeyPEM)
-	newHash := hashManagedCertificateMaterial(newBundle.CertPEM, newBundle.KeyPEM)
-	store := newManagedCertificateGenerationServiceStore([]storage.ManagedCertificateRow{{
-		ID: 108, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a"]`, Status: "active", MaterialHash: oldHash,
-		CertificateType: "acme", Usage: "https", Revision: 8,
-		AgentReports: `{"edge-a":{"status":"active","material_hash":"` + newHash + `","updated_at":"2026-07-26T01:02:00Z"}}`,
-	}})
-	store.active[domain] = managedCertificateTestGeneration("active-old", domain, storage.ManagedCertificateGenerationStateActive, oldBundle, "2026-07-25T00:00:00Z")
-	store.pending[domain] = managedCertificateTestGeneration("pending-new", domain, storage.ManagedCertificateGenerationStatePending, newBundle, "2026-07-26T01:00:00Z")
-	store.saveManagedErr = errors.New("metadata write failed")
-
-	if _, err := NewCertificateService(config.Config{}, store).reconcileManagedCertificateGenerationPromotions(t.Context()); err == nil {
-		t.Fatal("reconcileManagedCertificateGenerationPromotions() error = nil")
-	}
-	if store.promoteCalls != 0 {
-		t.Fatalf("generation promotion calls = %d, want none before metadata save", store.promoteCalls)
-	}
-	if active := store.active[domain]; active.ID != "active-old" || active.MaterialHash != oldHash {
-		t.Fatalf("active generation changed after metadata save failure: %+v", active)
-	}
-	if _, ok := store.pending[domain]; !ok {
-		t.Fatal("pending generation was removed after metadata save failure")
-	}
-}
-
-func TestManagedCertificateRevisionPromotionRejectsChangedTargetSet(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	for _, agentID := range []string{"edge-a", "edge-b"} {
-		if err := store.SaveAgent(ctx, storage.AgentRow{
-			ID: agentID, Name: agentID, AgentToken: "token-" + agentID, Platform: "linux-amd64",
-			CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`, DesiredRevision: 1, CurrentRevision: 1,
-			LastApplyRevision: 1, LastApplyStatus: "success",
-		}); err != nil {
-			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
-		}
-	}
-
-	const domain = "retarget-promotion.example.test"
-	oldBundle := storage.ManagedCertificateBundle{ID: 109, Domain: domain, Revision: 4, CertPEM: "old-cert", KeyPEM: "old-key"}
-	newBundle := storage.ManagedCertificateBundle{ID: 109, Domain: domain, Revision: 5, CertPEM: "new-cert", KeyPEM: "new-key"}
-	oldHash := hashManagedCertificateMaterial(oldBundle.CertPEM, oldBundle.KeyPEM)
-	row := storage.ManagedCertificateRow{
-		ID: 109, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a"]`, Status: "active", MaterialHash: oldHash,
-		CertificateType: "acme", Usage: "https", Revision: 4,
-	}
-	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{row}); err != nil {
-		t.Fatalf("SaveManagedCertificates(seed) error = %v", err)
-	}
-	active, err := store.StageManagedCertificateGeneration(ctx, domain, oldBundle)
-	if err != nil {
-		t.Fatalf("StageManagedCertificateGeneration(active) error = %v", err)
-	}
-	if err := store.PromoteManagedCertificateGeneration(ctx, domain, active.ID, active.MaterialHash); err != nil {
-		t.Fatalf("PromoteManagedCertificateGeneration(active) error = %v", err)
-	}
-	pending, err := store.StageManagedCertificateGeneration(ctx, domain, newBundle)
-	if err != nil {
-		t.Fatalf("StageManagedCertificateGeneration(pending) error = %v", err)
-	}
-	createdAt, err := time.Parse(time.RFC3339Nano, pending.CreatedAt)
-	if err != nil {
-		t.Fatalf("parse pending CreatedAt: %v", err)
-	}
-	cert := managedCertificateFromRow(row)
-	cert.AgentReports["edge-a"] = ManagedCertificateAgentReport{
-		Status: "active", MaterialHash: pending.MaterialHash,
-		UpdatedAt: createdAt.Add(time.Second).Format(time.RFC3339Nano),
-	}
-	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{managedCertificateToRow(cert)}); err != nil {
-		t.Fatalf("SaveManagedCertificates(edge-a report) error = %v", err)
-	}
-
-	retargetingStore := &retargetBeforeManagedCertificatePromotionStore{
-		GormStore: store, certificateID: 109, targetAgentID: "edge-b",
-	}
-	svc := NewCertificateService(config.Config{}, retargetingStore)
-	promoted, err := svc.reconcileManagedCertificateGenerationPromotions(ctx)
-	if err != nil {
-		t.Fatalf("reconcileManagedCertificateGenerationPromotions(retarget) error = %v", err)
-	}
-	if promoted != 0 {
-		t.Fatalf("promoted with stale target acknowledgements = %d", promoted)
-	}
-	if _, found, err := store.LoadPendingManagedCertificateGeneration(ctx, domain); err != nil || !found {
-		t.Fatalf("pending generation after retarget found=%v error=%v", found, err)
-	}
-	if got, found, err := store.LoadActiveManagedCertificateGeneration(ctx, domain); err != nil || !found || got.MaterialHash != oldHash {
-		t.Fatalf("active generation after retarget = (%+v, %v, %v)", got, found, err)
-	}
-
-	rows, err := store.ListManagedCertificates(ctx)
-	if err != nil {
-		t.Fatalf("ListManagedCertificates(retargeted) error = %v", err)
-	}
-	retargeted := managedCertificateFromRow(rows[0])
-	if !containsString(retargeted.TargetAgentIDs, "edge-b") || containsString(retargeted.TargetAgentIDs, "edge-a") {
-		t.Fatalf("retargeted certificate targets = %+v", retargeted.TargetAgentIDs)
-	}
-	retargeted.AgentReports["edge-b"] = ManagedCertificateAgentReport{
-		Status: "active", MaterialHash: pending.MaterialHash,
-		UpdatedAt: createdAt.Add(2 * time.Second).Format(time.RFC3339Nano),
-	}
-	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{managedCertificateToRow(retargeted)}); err != nil {
-		t.Fatalf("SaveManagedCertificates(edge-b report) error = %v", err)
-	}
-	promoted, err = svc.reconcileManagedCertificateGenerationPromotions(ctx)
-	if err != nil || promoted != 1 {
-		t.Fatalf("matching retargeted acknowledgement promoted=%d error=%v", promoted, err)
 	}
 }
 

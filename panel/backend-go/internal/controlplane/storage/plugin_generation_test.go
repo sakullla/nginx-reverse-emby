@@ -16,7 +16,7 @@ import (
 )
 
 func TestRevisionLedgerMaterializesAndAuthorizesPluginRuntimeArtifact(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestRevisionLedgerMaterializesAndAuthorizesPluginRuntimeArtifact(t *testing
 }
 
 func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 }
 
 func TestLoadAgentPluginGenerationsSkipsNonTargetBeforePackageResolution(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestLoadAgentPluginGenerationsSkipsNonTargetBeforePackageResolution(t *test
 }
 
 func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestPluginAgentRuntimeReportFencesReplayAndStaleIdentity(t *testing.T) {
 }
 
 func TestPluginAgentRuntimeReportLogsKeepImmutableRebindAuthority(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}

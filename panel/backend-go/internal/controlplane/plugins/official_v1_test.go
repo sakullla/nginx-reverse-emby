@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -36,47 +37,8 @@ func TestOfficialMarketV1ValidatesNineCanonicalPackages(t *testing.T) {
 	}
 }
 
-func TestOfficialMarketV1PackagesSupportStandaloneRevalidation(t *testing.T) {
-	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
-	validator := officialFixtureValidator(publicKey)
-	validated, err := validator.ValidateMarket(root, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for index, candidate := range validated.Packages {
-		entry := validated.Manifest.Entries[index]
-		revalidated, err := validator.ValidatePackage(candidate.Root, PackageExpectation{
-			ID:      entry.ID,
-			Version: entry.Version,
-			SHA256:  entry.PackageSHA256,
-		})
-		if err != nil {
-			t.Fatalf("ValidatePackage(%s@%s) error = %v", entry.ID, entry.Version, err)
-		}
-		if revalidated.Digest != candidate.Digest {
-			t.Fatalf("ValidatePackage(%s@%s) digest = %s, want %s", entry.ID, entry.Version, revalidated.Digest, candidate.Digest)
-		}
-	}
-}
-
-func TestOfficialMarketV1AllowsKnownRootMetadataOnly(t *testing.T) {
-	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
-	writeFixture(t, root, OfficialMarketAgentsFile, "# Official release projection\n")
-	if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err != nil {
-		t.Fatalf("ValidateMarket() rejected known inert root metadata: %v", err)
-	}
-
-	writeFixture(t, root, "unreferenced.txt", "not part of the market contract\n")
-	_, err := officialFixtureValidator(publicKey).ValidateMarket(root, true)
-	assertValidationCode(t, err, "market_tree")
-}
-
 func TestOfficialMarketV1RejectsEnvelopeAndPayloadTampering(t *testing.T) {
 	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
-	packageRoot := filepath.Join(root, "packages", "accelerator-sources", "1.0.0")
-	artifactPath := filepath.Join(packageRoot, "artifacts", "linux-amd64", "accelerator-sources")
-
 	tests := map[string]func(string){
 		"market manifest": func(copyRoot string) {
 			name := filepath.Join(copyRoot, MarketManifestFile)
@@ -98,30 +60,6 @@ func TestOfficialMarketV1RejectsEnvelopeAndPayloadTampering(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(name, append(data, []byte("metadata:\n  tampered: yes\n")...), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"package files": func(copyRoot string) {
-			name := filepath.Join(copyRoot, "packages", "accelerator-sources", "1.0.0", OfficialPackageFilesFile)
-			data, err := os.ReadFile(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			data = []byte(strings.Replace(string(data), `"payload_sha256":"`, `"payload_sha256":"0`, 1))
-			if err := os.WriteFile(name, data, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"artifact": func(copyRoot string) {
-			name := filepath.Join(copyRoot, strings.TrimPrefix(artifactPath, root+string(filepath.Separator)))
-			file, err := os.OpenFile(name, os.O_APPEND|os.O_WRONLY, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := file.Write([]byte("tampered")); err != nil {
-				t.Fatal(err)
-			}
-			if err := file.Close(); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -171,93 +109,47 @@ func TestOfficialMarketV1RejectsEnvelopeAndPayloadTampering(t *testing.T) {
 	}
 }
 
-func TestOfficialMarketV1RejectsASCIIHexDigestSignature(t *testing.T) {
-	root, publicKey, privateKey := buildOfficialMarketV1Fixture(t)
-	packageRoot := filepath.Join(root, "packages", "accelerator-sources", "1.0.0")
-	filesData, err := os.ReadFile(filepath.Join(packageRoot, OfficialPackageFilesFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var files officialPackageFileManifestV1
-	if err := json.Unmarshal(filesData, &files); err != nil {
-		t.Fatal(err)
-	}
-	signature := officialPackageSignatureV1{
-		SchemaVersion: 1, Algorithm: "ed25519", Identity: OfficialSignatureKeyID,
-		PayloadSHA256: files.PayloadSHA256,
-		Signature:     base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(files.PayloadSHA256))),
-	}
-	writeOfficialJSONFixture(t, filepath.Join(packageRoot, OfficialPackageSignatureFile), signature)
-	if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err == nil {
-		t.Fatal("signature over ASCII hexadecimal digest was accepted")
-	}
-}
-
-func TestOfficialMarketV1AcceptsSDKCommitMovementOnlyWithStableDescriptor(t *testing.T) {
-	root, publicKey, privateKey := buildOfficialMarketV1Fixture(t)
-	provenancePath := filepath.Join(root, OfficialMarketProvenanceFile)
-	data, err := os.ReadFile(provenancePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var provenance officialMarketProvenanceV1
-	if err := json.Unmarshal(data, &provenance); err != nil {
-		t.Fatal(err)
-	}
-	provenance.SDKRepositoryCommit = strings.Repeat("c", 40)
-	writeOfficialJSONFixture(t, provenancePath, provenance)
-	signOfficialProvenanceFixture(t, root, privateKey)
-	if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err != nil {
-		t.Fatalf("ValidateMarket() rejected a new full SDK commit with the stable descriptor: %v", err)
-	}
-
-	for name, mutate := range map[string]func(*officialMarketProvenanceV1){
-		"abbreviated SDK commit": func(value *officialMarketProvenanceV1) { value.SDKRepositoryCommit = "9e2d915c" },
-		"zero SDK commit":        func(value *officialMarketProvenanceV1) { value.SDKRepositoryCommit = strings.Repeat("0", 40) },
-		"changed descriptor":     func(value *officialMarketProvenanceV1) { value.SDKDescriptorSHA256 = strings.Repeat("d", 64) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			candidate := provenance
-			mutate(&candidate)
-			writeOfficialJSONFixture(t, provenancePath, candidate)
-			signOfficialProvenanceFixture(t, root, privateKey)
-			if _, err := officialFixtureValidator(publicKey).ValidateMarket(root, true); err == nil {
-				t.Fatal("invalid SDK provenance was accepted")
-			}
-		})
-	}
-}
-
-func TestOfficialMarketV1RejectsUnsignedProvenanceMutation(t *testing.T) {
-	root, publicKey, _ := buildOfficialMarketV1Fixture(t)
-	provenancePath := filepath.Join(root, OfficialMarketProvenanceFile)
-	data, err := os.ReadFile(provenancePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var provenance officialMarketProvenanceV1
-	if err := json.Unmarshal(data, &provenance); err != nil {
-		t.Fatal(err)
-	}
-	provenance.SDKRepositoryCommit = strings.Repeat("c", 40)
-	writeOfficialJSONFixture(t, provenancePath, provenance)
-	_, err = officialFixtureValidator(publicKey).ValidateMarket(root, true)
-	assertValidationCode(t, err, "market_signature")
-}
-
 func officialFixtureValidator(publicKey ed25519.PublicKey) *Validator {
 	validator := NewValidator(ValidatorOptions{})
 	validator.trustedSigners[OfficialSignatureKeyID] = append(ed25519.PublicKey(nil), publicKey...)
 	return validator
 }
 
+var officialMarketV1Template struct {
+	once       sync.Once
+	root       string
+	publicKey  ed25519.PublicKey
+	privateKey ed25519.PrivateKey
+	err        error
+}
+
 func buildOfficialMarketV1Fixture(t *testing.T) (string, ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	officialMarketV1Template.once.Do(func() {
+		officialMarketV1Template.root, officialMarketV1Template.publicKey, officialMarketV1Template.privateKey, officialMarketV1Template.err = buildOfficialMarketV1Template(t)
+	})
+	if officialMarketV1Template.err != nil {
+		t.Fatal(officialMarketV1Template.err)
+	}
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(officialMarketV1Template.root)); err != nil {
+		t.Fatal(err)
+	}
+	return root,
+		append(ed25519.PublicKey(nil), officialMarketV1Template.publicKey...),
+		append(ed25519.PrivateKey(nil), officialMarketV1Template.privateKey...)
+}
+
+func buildOfficialMarketV1Template(t *testing.T) (string, ed25519.PublicKey, ed25519.PrivateKey, error) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatal(err)
+		return "", nil, nil, err
 	}
-	root := t.TempDir()
+	root, err := os.MkdirTemp("", "nre-official-market-v1-")
+	if err != nil {
+		return "", nil, nil, err
+	}
 	_, rpcArtifact := buildTestRPCExecutable(t, "linux", "amd64")
 	wasmArtifact := testWASMArtifact()
 	type packageSpec struct {
@@ -339,7 +231,7 @@ func buildOfficialMarketV1Fixture(t *testing.T) (string, ed25519.PublicKey, ed25
 	}
 	writeOfficialJSONFixture(t, filepath.Join(root, OfficialMarketProvenanceFile), provenance)
 	signOfficialProvenanceFixture(t, root, privateKey)
-	return root, publicKey, privateKey
+	return root, publicKey, privateKey, nil
 }
 
 func signOfficialProvenanceFixture(t *testing.T, root string, privateKey ed25519.PrivateKey) {

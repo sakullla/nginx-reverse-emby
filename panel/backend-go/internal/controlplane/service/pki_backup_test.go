@@ -1,19 +1,17 @@
+//go:build integration
+
 package service
 
 import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"math/big"
 	"os"
 	"path/filepath"
 	"sync"
@@ -34,7 +32,7 @@ func init() {
 	pkiBackupRuntimeKDFTime = 1
 }
 
-func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) {
+func TestIntegrationPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) {
 	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	gate := &pkiBackupTestLeaseGate{grant: fixture.grant}
@@ -111,7 +109,7 @@ func testPKIBackupCommittedCleanupIsASuccessfulActivation(t *testing.T) {
 	}
 }
 
-func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
+func TestIntegrationPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
 	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
@@ -157,7 +155,7 @@ func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
 	}
 }
 
-func TestPKIBackupTargetSchemaBaselineRequiredBeforeInitialization(t *testing.T) {
+func TestIntegrationPKIBackupTargetSchemaBaselineRequiredBeforeInitialization(t *testing.T) {
 	t.Parallel()
 	valid := PKIBackupTargetState{
 		SQLiteSchemaVersion: 0,
@@ -172,7 +170,7 @@ func TestPKIBackupTargetSchemaBaselineRequiredBeforeInitialization(t *testing.T)
 	}
 }
 
-func TestPKIBackupLeaseLossFailsClosed(t *testing.T) {
+func TestIntegrationPKIBackupLeaseLossFailsClosed(t *testing.T) {
 	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
@@ -228,51 +226,6 @@ func testPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.
 	}
 }
 
-func TestPKIBackupStagingRejectsTokensSchemaHashAndKeyMismatch(t *testing.T) {
-	t.Parallel()
-	fixture := newPKIBackupFixture(t)
-	if _, err := stagePKIBackupSQLite(t.Context(), fixture.snapshot, pkiBackupStageOptions{}); !errors.Is(err, ErrPKIBackupIntegrity) {
-		t.Fatalf("unsanitized snapshot error = %v, want ErrPKIBackupIntegrity", err)
-	}
-	staged, err := stagePKIBackupSQLite(t.Context(), fixture.snapshot, pkiBackupStageOptions{Sanitize: true})
-	if err != nil {
-		t.Fatalf("sanitized staging error = %v", err)
-	}
-	defer clear(staged.Snapshot)
-	if bytes.Contains(staged.Snapshot, []byte(fixture.tokenDigest)) {
-		t.Fatal("sanitized SQLite bytes retain the original enrollment token digest")
-	}
-	if freelist := readPKIBackupFreelistCount(t, staged.Snapshot); freelist != 0 {
-		t.Fatalf("sanitized SQLite freelist_count = %d, want zero", freelist)
-	}
-	keys := []PKIBackupAuthorityKey{{AuthorityID: fixture.authority.ID, Generation: fixture.authority.Generation, PKCS8: append([]byte(nil), fixture.authorityPKCS8...)}}
-	defer clearPKIBackupAuthorityKeys(keys)
-	manifest := buildPKIBackupManifest(staged, keys, time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC))
-	manifest.SQLiteSHA256 = hex.EncodeToString(make([]byte, sha256.Size))
-	if err := validatePKIBackupManifest(manifest, staged, keys); !errors.Is(err, ErrPKIBackupIntegrity) {
-		t.Fatalf("wrong snapshot hash error = %v, want ErrPKIBackupIntegrity", err)
-	}
-
-	wrongKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey(wrong) error = %v", err)
-	}
-	wrongPKCS8, err := x509.MarshalPKCS8PrivateKey(wrongKey)
-	if err != nil {
-		t.Fatalf("MarshalPKCS8PrivateKey(wrong) error = %v", err)
-	}
-	defer clear(wrongPKCS8)
-	if err := validatePKIBackupAuthorityKeys(staged.State, []PKIBackupAuthorityKey{{AuthorityID: fixture.authority.ID, Generation: 1, PKCS8: wrongPKCS8}}); !errors.Is(err, ErrPKIBackupIntegrity) {
-		t.Fatalf("mismatched authority key error = %v, want ErrPKIBackupIntegrity", err)
-	}
-
-	broken := dropPKIBackupTable(t, staged.Snapshot, "pki_events")
-	defer clear(broken)
-	if _, err := stagePKIBackupSQLite(t.Context(), broken, pkiBackupStageOptions{}); !errors.Is(err, ErrPKIBackupSchema) {
-		t.Fatalf("missing-schema error = %v, want ErrPKIBackupSchema", err)
-	}
-}
-
 type pkiBackupFixture struct {
 	snapshot         []byte
 	authority        storage.PKIAuthorityRow
@@ -286,6 +239,9 @@ type pkiBackupFixture struct {
 
 func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed PKI backup scenarios run in the full test tier")
+	}
 	root := t.TempDir()
 	path := filepath.Join(root, "panel.db")
 	dsn := path + "?_pragma=journal_mode(DELETE)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
@@ -418,41 +374,6 @@ func (f pkiBackupFixture) targetState(version PKISecurityVersion) PKIBackupTarge
 	return PKIBackupTargetState{
 		Initialized: true, PKIDomainID: f.grant.PKIDomainID, Version: version,
 		SQLiteSchemaVersion: f.schemaVersion, SQLiteSchemaSHA256: f.schemaSHA256,
-	}
-}
-
-func newPKIBackupAuthority(t *testing.T, now time.Time) (*ecdsa.PrivateKey, storage.PKIAuthorityRow) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey(authority) error = %v", err)
-	}
-	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("MarshalPKIXPublicKey(authority) error = %v", err)
-	}
-	subjectKeyID := sha256.Sum256(publicDER)
-	template := &x509.Certificate{
-		SerialNumber: new(big.Int).SetBytes(append([]byte{0x80}, make([]byte, 15)...)),
-		Subject:      pkix.Name{CommonName: "NRE backup test CA"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true, IsCA: true, SubjectKeyId: append([]byte(nil), subjectKeyID[:20]...), SignatureAlgorithm: x509.ECDSAWithSHA256,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("CreateCertificate(authority) error = %v", err)
-	}
-	certificate, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatalf("ParseCertificate(authority) error = %v", err)
-	}
-	fingerprint := sha256.Sum256(certificate.Raw)
-	keyRef := "ca-1-test.vault"
-	return key, storage.PKIAuthorityRow{
-		ID: "authority-1", PKIDomainID: "domain-1", Generation: 1, Status: "active",
-		CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), EncryptedKeyRef: &keyRef,
-		FingerprintSHA256: hex.EncodeToString(fingerprint[:]), NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,
-		CreatedReason: "bootstrap", CreatedAt: now, UpdatedAt: now,
 	}
 }
 

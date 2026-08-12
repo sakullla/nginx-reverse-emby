@@ -10,7 +10,7 @@ import (
 )
 
 func TestPluginConsumerOwnershipFenceIsStableAndReverseIntegrated(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestPluginConsumerOwnershipFenceIsStableAndReverseIntegrated(t *testing.T) 
 }
 
 func TestResolvePluginConsumerOwnershipRejectsCrossGroup(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestResolvePluginConsumerOwnershipRejectsCrossGroup(t *testing.T) {
 }
 
 func TestAgentGroupMoveRejectsParentlessRequiredPluginConsumer(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestAgentGroupMoveRejectsParentlessRequiredPluginConsumer(t *testing.T) {
 func TestAgentGroupMoveChecksEveryPluginBindingLifecycleFence(t *testing.T) {
 	for _, field := range []string{"active", "pending", "rollback"} {
 		t.Run(field, func(t *testing.T) {
-			store, err := NewSQLiteStore(t.TempDir(), "local")
+			store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 			if err != nil {
 				t.Fatal(err)
 			}

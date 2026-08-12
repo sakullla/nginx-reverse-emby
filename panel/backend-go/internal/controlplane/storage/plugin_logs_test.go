@@ -7,7 +7,7 @@ import (
 )
 
 func TestPluginRuntimeLogsAreRedactedBoundedAndCursorPaginated(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestPluginRuntimeLogsAreRedactedBoundedAndCursorPaginated(t *testing.T) {
 }
 
 func TestPluginRuntimeLogReportFencesOwnershipSequenceAndReplay(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}

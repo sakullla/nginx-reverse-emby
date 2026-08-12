@@ -57,7 +57,11 @@ func newStorageTestSQLiteStore(t *testing.T, dataRoot, localAgentID string, traf
 	if testing.Short() {
 		t.Skip("SQLite-backed storage scenarios run in the full test tier")
 	}
+	return newStorageTestSQLiteStoreForAllTiers(t, dataRoot, localAgentID, trafficStatsEnabled)
+}
 
+func newStorageTestSQLiteStoreForAllTiers(t *testing.T, dataRoot, localAgentID string, trafficStatsEnabled bool) (*SQLiteStore, error) {
+	t.Helper()
 	template, err := storageSQLiteTemplateData(storageSQLiteTemplateKey{
 		trafficStatsEnabled: trafficStatsEnabled,
 	})

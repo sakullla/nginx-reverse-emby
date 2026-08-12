@@ -47,7 +47,7 @@ func TestPluginWriteOnlyConfigProjectionAndPreservation(t *testing.T) {
 }
 
 func TestLegacyPluginSecretSlotMigrationScrubsRecursivePlaintext(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}

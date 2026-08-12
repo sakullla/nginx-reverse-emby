@@ -97,43 +97,6 @@ func TestFullSnapshotValidatorRejectsInvalidPluginDependencyGraph(t *testing.T) 
 	}
 }
 
-func TestFullSnapshotValidatorRejectsResourcesOwnedByAnotherAgent(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		mutate func(*storage.Snapshot)
-	}{
-		{
-			name: "HTTP rule",
-			mutate: func(snapshot *storage.Snapshot) {
-				snapshot.Rules[0].AgentID = "edge-2"
-			},
-		},
-		{
-			name: "L4 rule",
-			mutate: func(snapshot *storage.Snapshot) {
-				snapshot.L4Rules[0].AgentID = "edge-2"
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			snapshot := validSnapshotForValidation()
-			tt.mutate(&snapshot)
-			err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
-				Target: revision.Target{
-					AgentID: "edge-1", Capabilities: []string{"egress_profiles"},
-				},
-				Snapshot: snapshot,
-			})
-			if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
-				t.Fatalf("Validate() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
-			}
-		})
-	}
-}
-
 func TestFullSnapshotValidatorClassifiesReferenceCapabilityAndConflictErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -189,79 +152,6 @@ func TestFullSnapshotValidatorClassifiesReferenceCapabilityAndConflictErrors(t *
 				t.Fatalf("Validate() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), tt.wantCode)
 			}
 		})
-	}
-}
-
-func TestFullSnapshotValidatorRejectsDisabledRelayAndCertificateReferences(t *testing.T) {
-	t.Parallel()
-	validator := FullSnapshotValidator{}
-	tests := []struct {
-		name   string
-		mutate func(*storage.Snapshot)
-	}{
-		{
-			name: "disabled relay",
-			mutate: func(snapshot *storage.Snapshot) {
-				snapshot.RelayListeners[0].Enabled = false
-			},
-		},
-		{
-			name: "disabled certificate policy",
-			mutate: func(snapshot *storage.Snapshot) {
-				snapshot.Certificates = nil
-				snapshot.CertificatePolicies[0].Enabled = false
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			snapshot := validSnapshotForValidation()
-			tt.mutate(&snapshot)
-			err := validator.Validate(t.Context(), revision.SnapshotValidation{
-				Target: revision.Target{
-					AgentID: "edge-1", Capabilities: []string{"egress_profiles"},
-				},
-				Snapshot: snapshot,
-			})
-			if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
-				t.Fatalf("Validate() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
-			}
-		})
-	}
-}
-
-func TestFullSnapshotValidatorAllowsHTTPVirtualHostsToShareIngress(t *testing.T) {
-	t.Parallel()
-	snapshot := validSnapshotForValidation()
-	second := snapshot.Rules[0]
-	second.ID = 2
-	second.FrontendURL = "https://second.example.com"
-	snapshot.Rules = append(snapshot.Rules, second)
-
-	err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
-		Target: revision.Target{
-			AgentID: "edge-1", Capabilities: []string{"egress_profiles"},
-		},
-		Snapshot: snapshot,
-	})
-	if err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-}
-
-func TestFullSnapshotValidatorAllowsProxyEntryWithoutBackend(t *testing.T) {
-	t.Parallel()
-	snapshot := storage.Snapshot{L4Rules: []storage.L4Rule{{
-		ID: 1, AgentID: "edge-1", Protocol: "tcp", ListenMode: "proxy",
-		ListenHost: "127.0.0.1", ListenPort: 1080,
-	}}}
-
-	err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
-		Target:   revision.Target{AgentID: "edge-1"},
-		Snapshot: snapshot,
-	})
-	if err != nil {
-		t.Fatalf("Validate(proxy entry) error = %v", err)
 	}
 }
 

@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
@@ -140,13 +142,48 @@ func TestPluginHostSandboxRequirementAcceptsSignedCanonicalHostCapabilities(t *t
 	}
 }
 
+var sandboxArtifactFixture struct {
+	once sync.Once
+	data []byte
+	err  error
+}
+
+func sandboxArtifact(t *testing.T) []byte {
+	t.Helper()
+	sandboxArtifactFixture.once.Do(func() {
+		root, err := os.MkdirTemp("", "nre-sandbox-artifact-")
+		if err != nil {
+			sandboxArtifactFixture.err = err
+			return
+		}
+		defer os.RemoveAll(root)
+		source := filepath.Join(root, "main.go")
+		if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+			sandboxArtifactFixture.err = err
+			return
+		}
+		output := filepath.Join(root, "plugin")
+		if runtime.GOOS == "windows" {
+			output += ".exe"
+		}
+		command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", output, source)
+		command.Env = append(os.Environ(), "CGO_ENABLED=0")
+		if buildOutput, err := command.CombinedOutput(); err != nil {
+			sandboxArtifactFixture.err = fmt.Errorf("build sandbox artifact: %w: %s", err, buildOutput)
+			return
+		}
+		sandboxArtifactFixture.data, sandboxArtifactFixture.err = os.ReadFile(output)
+	})
+	if sandboxArtifactFixture.err != nil {
+		t.Fatal(sandboxArtifactFixture.err)
+	}
+	return sandboxArtifactFixture.data
+}
+
 func writeSignedSandboxPackage(t *testing.T, permission, extension string) (string, ed25519.PrivateKey) {
 	t.Helper()
 	root := t.TempDir()
-	artifact, err := os.ReadFile(os.Args[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	artifact := sandboxArtifact(t)
 	artifactDigest := sha256.Sum256(artifact)
 	artifactName := "plugin"
 	if runtime.GOOS == "windows" {

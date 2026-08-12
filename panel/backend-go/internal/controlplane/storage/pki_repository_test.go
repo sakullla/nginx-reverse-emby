@@ -1330,6 +1330,9 @@ func newPKIFocusedTestStore(t *testing.T) *GormStore {
 
 func openPKIFocusedTestStore(t *testing.T, root string, skipBootstrap bool) *GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed PKI repository scenarios run in the full test tier")
+	}
 	store, err := NewStore(StoreConfig{
 		Driver: "sqlite", DataRoot: root, DSN: filepath.Join(root, "panel.db"), LocalAgentID: "local", SkipBootstrapSchema: skipBootstrap,
 	})

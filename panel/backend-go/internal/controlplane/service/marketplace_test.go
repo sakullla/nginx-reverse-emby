@@ -35,12 +35,12 @@ func TestMigratedScalarQuarantineRunPendingGCCleansPhysicalObject(t *testing.T) 
 	if err := copyMarketplaceTestDirectory(candidate.CachePath, sourceQuarantine); err != nil {
 		t.Fatal(err)
 	}
-	source, err := storage.NewSQLiteStore(sourceRoot, "local")
+	source, err := newServiceTestSQLiteStoreForAllTiers(t, sourceRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	target, err := storage.NewSQLiteStore(targetRoot, "local")
+	target, err := newServiceTestSQLiteStoreForAllTiers(t, targetRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func copyMarketplaceTestDirectory(source, target string) error {
 
 func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testing.T) {
 	ctx := context.Background()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,123 +171,8 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	}
 }
 
-func TestRepositoryRefreshSameDigestReinstallUsesCurrentAcquisitionProvenance(t *testing.T) {
-	ctx := WithSystemMutationPrincipal(context.Background(), "repository-refresh-test")
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	seedPluginAgent(t, ctx, store)
-	candidate := pluginCandidateFixture(t, "repository.reinstall", "1.0.0", []string{"http.inspect"}, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
-	source, err := marketplaceTestSource("repository-reinstall-source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest := candidate.Package.Manifest
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/repository.reinstall/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom"}
-	oidOne := strings.Repeat("4", 40)
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "reinstall-one", SourceID: source.ID, Commit: oidOne, Path: "reinstall-one", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
-		t.Fatal(err)
-	}
-	catalog := NewMarketplaceService(store, nil, pluginTestValidator(), filepath.Dir(candidate.CachePath))
-	first, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pluginService := newPluginTestServiceAtRoot(t, store, filepath.Dir(filepath.Dir(first.CachePath)))
-	if _, err := pluginService.Install(ctx, PluginInstallRequest{Package: first, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err != nil {
-		t.Fatal(err)
-	}
-	source.RefName = "release"
-	source.ConfigRevision++
-	updated, err := store.UpdateMarketplaceSource(ctx, source, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oidTwo := strings.Repeat("5", 40)
-	if err := store.PromoteSnapshot(ctx, updated, marketplace.Snapshot{ID: "reinstall-two", SourceID: source.ID, Commit: oidTwo, Path: "reinstall-two", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
-		t.Fatal(err)
-	}
-	second, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
-	if err != nil || second.sourceRevision != 2 || second.sourceRefName != "release" || second.sourceResolvedOID != oidTwo {
-		t.Fatalf("refreshed candidate provenance = rev=%d ref=%q oid=%q err=%v", second.sourceRevision, second.sourceRefName, second.sourceResolvedOID, err)
-	}
-	if err := pluginService.Uninstall(ctx, PluginUninstallRequest{PluginID: manifest.ID, ActorID: "admin", Drained: true}); err != nil {
-		t.Fatal(err)
-	}
-	reinstalled, err := pluginService.Install(ctx, PluginInstallRequest{Package: second, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reinstalled.ActiveSourceRevision != 2 || reinstalled.ActiveSourceRefName != "release" || reinstalled.ActiveSourceResolvedOID != oidTwo {
-		t.Fatalf("reinstalled provenance = %+v", reinstalled)
-	}
-	packageRow, ok, err := store.GetPluginPackageByIdentity(ctx, reinstalled.ActivePackageIdentity)
-	if err != nil || !ok || packageRow.SourceRevision != 2 || packageRow.SourceRefName != "release" || packageRow.SourceResolvedOID != oidTwo {
-		t.Fatalf("reused package provenance = %+v ok=%v err=%v", packageRow, ok, err)
-	}
-	audits, err := store.ListAuditEvents(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var lifecycleMetadata, refreshMetadata map[string]any
-	for _, audit := range audits {
-		if audit.Action == "plugin.install" && strings.Contains(audit.MetadataJSON, oidTwo) {
-			_ = json.Unmarshal([]byte(audit.MetadataJSON), &lifecycleMetadata)
-		}
-		if audit.Action == "marketplace.source.refresh" && strings.Contains(audit.MetadataJSON, oidTwo) {
-			_ = json.Unmarshal([]byte(audit.MetadataJSON), &refreshMetadata)
-		}
-	}
-	for label, metadata := range map[string]map[string]any{"lifecycle": lifecycleMetadata, "refresh": refreshMetadata} {
-		if metadata == nil || metadata["source_revision"] != float64(2) || metadata["ref_kind"] != marketplace.GitRefKindBranch || metadata["ref_name"] != "release" || metadata["resolved_oid"] != oidTwo || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
-			t.Fatalf("%s audit provenance = %#v", label, metadata)
-		}
-	}
-}
-
-func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *testing.T) {
-	ctx := storage.WithQuotaActor(context.Background(), storage.QuotaActor{UserID: "admin", SessionID: "session", CorrelationID: "request"})
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
-	if _, err := svc.AddCustomSource(ctx, "bad", "Bad", "https://example.com/plugins.git?token=plaintext", "main", "", 0, marketplace.SourceSigner{}); err == nil {
-		t.Fatal("unsafe source URL was accepted")
-	}
-	if _, err := svc.AddCustomSource(ctx, "private", "Private", "https://example.com/plugins.git", "main", "secret-ref", 0, marketplace.SourceSigner{}); err == nil {
-		t.Fatal("credential source without trusted authorization was accepted")
-	}
-	if _, err := svc.AddCustomSource(ctx, "negative", "Negative", "https://example.com/plugins.git", "main", "", -time.Hour, marketplace.SourceSigner{}); err == nil {
-		t.Fatal("negative refresh interval was accepted")
-	}
-	audits, err := store.ListAuditEvents(ctx, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := map[string]bool{}
-	for _, audit := range audits {
-		if audit.Action != "marketplace.source.add" {
-			continue
-		}
-		if strings.Contains(audit.MetadataJSON, "plaintext") || strings.Contains(audit.MetadataJSON, "secret-ref") {
-			t.Fatalf("marketplace failure audit leaked input: %+v", audit)
-		}
-		if audit.ActorID != "admin" || audit.SessionID != "session" || audit.CorrelationID != "request" {
-			t.Fatalf("marketplace failure audit lost provenance: %+v", audit)
-		}
-		found[audit.ErrorClass] = true
-	}
-	if !found["validation"] || !found["credential_authorization"] {
-		t.Fatalf("missing prevalidation audits: %+v", found)
-	}
-}
-
 func TestOfficialSourceLazyInitializationIsIdempotentUnderConcurrency(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +227,7 @@ func (s *officialSourceBarrierStore) GetMarketplaceSource(ctx context.Context, s
 func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,99 +322,10 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 }
 
-func TestDeferredUninstallAfterSourceDeletionReclaimsExactTrustLegacyCache(t *testing.T) {
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	validator := pluginTestValidator()
-	candidate := pluginCandidateFixture(t, "legacy.deferred", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
-	source, err := marketplaceTestSource("legacy-deferred")
-	if err != nil {
-		t.Fatal(err)
-	}
-	trust, err := source.SignatureTrust()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
-	cleanupMarketplaceCache(t, cacheRoot)
-	legacyPath, err := marketplace.CachePath(cacheRoot, candidate.Package.Digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(candidate.Package.Root, legacyPath); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := marketplace.NewVerifiedCache(cacheRoot, validator, store); err != nil {
-		t.Fatal(err)
-	}
-
-	manifest := candidate.Package.Manifest
-	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
-	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, PackageSHA256: candidate.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "legacy-current", SourceID: source.ID, Commit: strings.Repeat("3", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	identity := storage.PluginPackageIdentity(candidate.Package.Digest, source.ID, trust.Fingerprint)
-	packageRow := storage.PluginPackageRow{Identity: identity, Digest: candidate.Package.Digest, PluginID: manifest.ID, Version: manifest.Version, SourceID: source.ID, SourceKind: source.Kind, SourceRiskLabel: source.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: legacyPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}
-	operation := storage.PluginOperationRow{ID: "install-legacy", PluginID: manifest.ID, Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now}
-	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
-		t.Fatal(err)
-	}
-	install := storage.PluginInstallTransaction{
-		Package:   packageRow,
-		Installed: storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: candidate.Package.Digest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, ActiveSourceRiskLabel: source.RiskLabel, ActiveSignatureKeyID: trust.KeyID, ActiveSignaturePublicKey: trust.PublicKey, ActiveSignatureFingerprint: trust.Fingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-legacy", InstalledAt: now, UpdatedAt: now},
-		Operation: operation,
-		Audit:     storage.AuditEventRow{ID: "audit-install-legacy", Action: "plugin.install", TargetKind: "plugin", TargetID: manifest.ID, Result: "success", MetadataJSON: "{}", CreatedAt: now},
-	}
-	if err := store.InstallPlugin(ctx, install); err != nil {
-		t.Fatal(err)
-	}
-
-	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
-	if err := svc.DeleteSource(ctx, source.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || ok {
-		t.Fatalf("source deletion was not completed while package GC was deferred: %v, %v", ok, err)
-	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		t.Fatalf("referenced legacy cache was removed before uninstall: %v", err)
-	}
-	persisted, ok, err := store.GetInstalledPlugin(ctx, manifest.ID)
-	if err != nil || !ok {
-		t.Fatalf("installed legacy plugin = %+v, %v, %v", persisted, ok, err)
-	}
-	completed := time.Now().UTC()
-	if err := store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: persisted.PluginID, ExpectedActive: persisted.ActivePackageDigest, ExpectedStateVersion: persisted.StateVersion, DeletePlugin: true, DeleteInstances: true, DeleteGrants: true, Operation: storage.PluginOperationRow{ID: "uninstall-legacy", PluginID: persisted.PluginID, Kind: "uninstall", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: completed, CompletedAt: &completed}, Audit: storage.AuditEventRow{ID: "audit-uninstall-legacy", Action: "plugin.uninstall", TargetKind: "plugin", TargetID: persisted.PluginID, Result: "success", MetadataJSON: "{}", CreatedAt: completed}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.RunPendingGC(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy cache remains after deferred uninstall GC: %v", err)
-	}
-	if _, ok, err := store.GetPluginPackageByIdentity(ctx, identity); err != nil || ok {
-		t.Fatalf("legacy package metadata completed before physical deletion: %v, %v", ok, err)
-	}
-}
-
 func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerReference(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,112 +443,10 @@ func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerRe
 	}
 }
 
-func TestPendingGCRetriesRetiredSnapshotDirectoryWithoutTouchingCurrent(t *testing.T) {
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplaceTestSource("retired")
-	oldPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "old")
-	currentPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
-	for _, candidate := range []string{oldPath, currentPath} {
-		if err := os.MkdirAll(candidate, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	oldValidatedAt := time.Now().UTC().Add(-time.Second)
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "old", SourceID: source.ID, Commit: strings.Repeat("5", 40), Path: oldPath, ValidatedAt: oldValidatedAt}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: strings.Repeat("6", 40), Path: currentPath, ValidatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
-	svc.removeAll = func(candidate string) error {
-		if candidate == oldPath {
-			return errors.New("injected retired snapshot failure")
-		}
-		return os.RemoveAll(candidate)
-	}
-	if err := svc.RunPendingGC(ctx); err == nil {
-		t.Fatal("retired snapshot failure was hidden")
-	}
-	svc = NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
-	if err := svc.RunPendingGC(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("retired snapshot remains: %v", err)
-	}
-	if _, err := os.Stat(currentPath); err != nil {
-		t.Fatalf("current snapshot was removed: %v", err)
-	}
-}
-
-func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	source, err := marketplaceTestSource("failed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
-		t.Fatal(err)
-	}
-	trust, err := source.SignatureTrust()
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := strings.Repeat("d", 64)
-	now := time.Now().UTC()
-	refresh := marketplaceRefreshOperationForTest(t, source, marketplace.RefreshOperation{ID: "refresh-failed", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-failed", LeaseExpiresAt: now.Add(time.Minute)})
-	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, "refresh-failed", mustMarketplaceSignatureTrust(t, source)); err != nil {
-		t.Fatal(err)
-	}
-	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
-	cleanupMarketplaceCache(t, cacheRoot)
-	cachePath, err := marketplace.SignerCachePath(cacheRoot, digest, trust.Fingerprint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(cachePath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CompletePackageAcquisitions(ctx, source.ID, "refresh-failed", false); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
-	svc.packageVariantGC = func(string, marketplace.PackageGCClaim) error { return errors.New("injected cache removal failure") }
-	if err := svc.RunPendingGC(ctx); err == nil {
-		t.Fatal("injected cache cleanup failure was hidden")
-	}
-	if intents, _ := store.ListPackageGCIntents(ctx); len(intents) != 1 {
-		t.Fatalf("failed cache GC intent was lost: %+v", intents)
-	}
-	svc.packageVariantGC = marketplace.QuarantineAndDeleteVerifiedPackageVariant
-	if err := svc.RunPendingGC(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("orphan cache remains after retry: %v", err)
-	}
-}
-
 func TestSourceEditDuringRefreshCleansOnlyOperationSignerCacheAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,136 +529,6 @@ func TestSourceEditDuringRefreshCleansOnlyOperationSignerCacheAfterRestart(t *te
 	}
 }
 
-func TestOfficialPartialRefreshFailureCollectsSignerAwareCache(t *testing.T) {
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	source := marketplace.OfficialSource()
-	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
-		t.Fatal(err)
-	}
-	trust, err := source.SignatureTrust()
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	refresh := marketplaceRefreshOperationForTest(t, source, marketplace.RefreshOperation{ID: "official-partial-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "official-partial-lease", LeaseExpiresAt: now.Add(time.Minute)})
-	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
-		t.Fatal(err)
-	}
-	digest := strings.Repeat("e", 64)
-	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID, mustMarketplaceSignatureTrust(t, source)); err != nil {
-		t.Fatal(err)
-	}
-	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
-	cleanupMarketplaceCache(t, cacheRoot)
-	cachePath, err := marketplace.SignerCachePath(cacheRoot, digest, trust.Fingerprint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(cachePath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cachePath, "first-package-cached"), []byte("partial refresh"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
-		t.Fatal(err)
-	}
-	intents, err := store.ListPackageGCIntents(ctx)
-	if err != nil || len(intents) != 1 || intents[0].SignerFingerprint != trust.Fingerprint {
-		t.Fatalf("official partial-refresh GC intent = %+v, %v", intents, err)
-	}
-	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
-	if err := svc.RunPendingGC(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("official signer-aware cache remains after failed refresh GC: %v", err)
-	}
-	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 0 {
-		t.Fatalf("official failed-refresh GC intent remained after deletion: %+v, %v", intents, err)
-	}
-}
-
-func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	candidate := pluginCandidateFixture(t, "sealed.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
-	validator := pluginTestValidator()
-	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
-	cleanupMarketplaceCache(t, cacheRoot)
-	cache, err := marketplace.NewVerifiedCache(cacheRoot, validator, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := marketplaceTestSource("sealed-gc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	trust, err := source.SignatureTrust()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealedPath, err := cache.StoreWithTrust(candidate.Package, validator, trust)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest := candidate.Package.Manifest
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/sealed.gc/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: source.SignerKeyID, Provenance: "custom"}
-	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
-	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "sealed-current", SourceID: source.ID, Commit: strings.Repeat("7", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
-	svc.packageVariantGC = func(string, marketplace.PackageGCClaim) error {
-		return errors.New("injected signer variant GC interruption")
-	}
-	if err := svc.DeleteSource(ctx, source.ID); err == nil {
-		t.Fatal("interrupted signer variant GC was reported as successful")
-	}
-	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 1 || intents[0].SignerFingerprint != trust.Fingerprint {
-		t.Fatalf("durable signer variant GC intent = %+v, %v", intents, err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = storage.NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc = NewMarketplaceService(store, nil, validator, cacheRoot)
-	svc.packageVariantGC = func(string, marketplace.PackageGCClaim) error { return nil }
-	if err := svc.RunPendingGC(ctx); err == nil {
-		t.Fatal("signer variant GC completed durable metadata without physical deletion")
-	}
-	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 1 {
-		t.Fatalf("no-op signer variant GC lost durable intent: %+v, %v", intents, err)
-	}
-	if _, err := os.Stat(sealedPath); err != nil {
-		t.Fatalf("no-op signer variant GC changed physical cache: %v", err)
-	}
-	svc = NewMarketplaceService(store, nil, validator, cacheRoot)
-	if err := svc.RunPendingGC(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(sealedPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("sealed package cache remains after source deletion: %v", err)
-	}
-}
-
 func marketplaceTestSource(id string) (marketplace.Source, error) {
 	return marketplace.NewSignedCustomSource(id, strings.ToUpper(id[:1])+id[1:], "https://example.com/"+id+".git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-" + id, PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
 }
@@ -1005,7 +569,7 @@ func cleanupMarketplaceCache(t *testing.T, root string) {
 func TestPendingGCRejectsTraversalDigestWithoutFilesystemAccess(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}

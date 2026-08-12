@@ -9,7 +9,7 @@ import (
 )
 
 func TestPluginSecretReferenceGraphRetiresOnlyUnreferencedVersions(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func assertPluginSecretRetired(t *testing.T, store *GormStore, id string, retire
 }
 
 func TestPluginOperationScopesPreserveMultiGroupOwnership(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestPluginOperationScopesPreserveMultiGroupOwnership(t *testing.T) {
 }
 
 func TestLegacyPluginSecretMigrationPersistsActiveAndStagedOwnership(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}

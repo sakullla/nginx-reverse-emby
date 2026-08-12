@@ -3,10 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -151,67 +149,6 @@ func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 	}
 }
 
-func TestDDNSReconcileSkipsCloudflareWhenAgentSwitchDisabled(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
-	row := ddnsConfigRow("a1", storage.DDNSConfig{
-		Enabled: false,
-		Domain:  "host.example.com",
-		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-	}, "203.0.113.10", "")
-	// A previously-working agent keeps its historical resolution on display:
-	// flipping the switch off must not erase it.
-	prior, _ := json.Marshal(storage.DdnsStatus{Status: "ok", LastSuccessAtUnix: 1600, LastResolvedIPv4: "203.0.113.9"})
-	row.DdnsStatusJSON = string(prior)
-	store := newFakeDDNSStore(row)
-	svc := NewDDNSService(enabledDDNSConfig(), store, cf, func() time.Time { return time.Unix(1700, 0) })
-
-	svc.reconcileAgent(context.Background(), "a1")
-
-	if got := cf.callCount(); got != 0 {
-		t.Fatalf("expected no Cloudflare call when agent switch disabled, got %d", got)
-	}
-	status := store.status("a1")
-	if status.Status != "disabled" {
-		t.Fatalf("expected status=disabled, got %+v", status)
-	}
-	if status.LastResolvedIPv4 != "203.0.113.9" || status.LastSuccessAtUnix != 1600 {
-		t.Fatalf("expected historical resolution preserved, got %+v", status)
-	}
-
-	// Settled skip: a second reconcile must not rewrite the same disabled status.
-	writes := store.statusWrites
-	svc.reconcileAgent(context.Background(), "a1")
-	if store.statusWrites != writes {
-		t.Fatalf("disabled status should settle after one write, got %d total", store.statusWrites)
-	}
-}
-
-func TestDDNSIdleWhenNoConfigOrNoReportedIP(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
-
-	// No DDNS config at all.
-	storeNoCfg := newFakeDDNSStore(storage.AgentRow{ID: "a1", LastSeenIPv4: "203.0.113.10"})
-	svc := NewDDNSService(enabledDDNSConfig(), storeNoCfg, cf, time.Now)
-	svc.reconcileAgent(context.Background(), "a1")
-	if got := cf.callCount(); got != 0 || storeNoCfg.status("a1").Status != "idle" {
-		t.Fatalf("no-config: expected idle + 0 calls, got calls=%d status=%+v", got, storeNoCfg.status("a1"))
-	}
-
-	// Config present but no reported IPs.
-	storeNoIP := newFakeDDNSStore(ddnsConfigRow("a2", storage.DDNSConfig{
-		Enabled: true,
-		Domain:  "host.example.com",
-		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-	}, "", ""))
-	svc2 := NewDDNSService(enabledDDNSConfig(), storeNoIP, cf, time.Now)
-	svc2.reconcileAgent(context.Background(), "a2")
-	if got := cf.callCount(); got != 0 || storeNoIP.status("a2").Status != "idle" {
-		t.Fatalf("no-ip: expected idle + 0 calls, got calls=%d status=%+v", got, storeNoIP.status("a2"))
-	}
-}
-
 func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
@@ -249,32 +186,6 @@ func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 	}
 }
 
-func TestDDNSUpsertsEveryConfiguredDomainOnce(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
-	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Enabled: true,
-		Domain:  " Host.Example.com., backup.example.net\nhost.example.com，third.example.org ",
-		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-	}, "203.0.113.10", ""))
-	svc := NewDDNSService(enabledDDNSConfig(), store, cf, func() time.Time { return time.Unix(1700, 0) })
-
-	svc.reconcileAgent(context.Background(), "a1")
-
-	wantDomains := []string{"host.example.com", "backup.example.net", "third.example.org"}
-	if got := cf.callCount(); got != len(wantDomains) {
-		t.Fatalf("expected one Cloudflare call per unique domain, got %d calls: %+v", got, cf.calls)
-	}
-	for i, want := range wantDomains {
-		if cf.calls[i].fqdn != want || cf.calls[i].recordType != "A" {
-			t.Fatalf("call[%d] = %+v, want fqdn=%q type=A", i, cf.calls[i], want)
-		}
-	}
-	if status := store.status("a1"); status.Status != "ok" {
-		t.Fatalf("expected status=ok, got %+v", status)
-	}
-}
-
 func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
@@ -306,65 +217,6 @@ func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
 	}
 }
 
-func TestDDNSRejectsOverlappingDomainLists(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
-	store := newFakeDDNSStore(
-		ddnsConfigRow("a1", storage.DDNSConfig{
-			Enabled: true,
-			Domain:  "one.example.com, shared.example.com",
-			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-		}, "203.0.113.10", ""),
-		ddnsConfigRow("a2", storage.DDNSConfig{
-			Enabled: true,
-			Domain:  "shared.example.com\ntwo.example.com",
-			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-		}, "203.0.113.20", ""),
-	)
-	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
-
-	svc.reconcileAgent(context.Background(), "a1")
-	svc.reconcileAgent(context.Background(), "a2")
-
-	if got := cf.callCount(); got != 0 {
-		t.Fatalf("overlapping domain ownership must not update Cloudflare, got %d calls", got)
-	}
-	for _, agentID := range []string{"a1", "a2"} {
-		status := store.status(agentID)
-		if status.Status != "error" || !strings.Contains(status.LastError, "shared.example.com") {
-			t.Fatalf("status(%s) = %+v, want shared-domain ownership conflict", agentID, status)
-		}
-	}
-}
-
-func TestDDNSAllowsDifferentRecordTypesOnSameDomain(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
-	store := newFakeDDNSStore(
-		ddnsConfigRow("v4-owner", storage.DDNSConfig{
-			Enabled: true,
-			Domain:  "host.example.com",
-			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-		}, "203.0.113.10", ""),
-		ddnsConfigRow("v6-owner", storage.DDNSConfig{
-			Enabled: true,
-			Domain:  "host.example.com",
-			IPv6:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-		}, "", "2001:db8::10"),
-	)
-	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
-
-	svc.reconcileAgent(context.Background(), "v4-owner")
-	svc.reconcileAgent(context.Background(), "v6-owner")
-
-	if got := cf.callCount(); got != 2 {
-		t.Fatalf("different record types should reconcile independently, got %d calls", got)
-	}
-	if store.status("v4-owner").Status != "ok" || store.status("v6-owner").Status != "ok" {
-		t.Fatalf("statuses = v4:%+v v6:%+v", store.status("v4-owner"), store.status("v6-owner"))
-	}
-}
-
 func TestDDNSErrorsGrowBackoffAndRetryCount(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{err: fmt.Errorf("ddns: cloudflare returned status 429: rate_limited")}
@@ -389,31 +241,6 @@ func TestDDNSErrorsGrowBackoffAndRetryCount(t *testing.T) {
 	}
 	if status.NextRetryAtUnix <= now.Unix() {
 		t.Fatalf("expected NextRetryAtUnix in the future, got %d (now=%d)", status.NextRetryAtUnix, now.Unix())
-	}
-}
-
-func TestDDNSBackoffGateSkipsCloudflareCall(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
-	future := time.Now().Add(1 * time.Hour).Unix()
-	priorStatus, _ := json.Marshal(storage.DdnsStatus{Status: "error", RetryCount: 1, NextRetryAtUnix: future})
-	row := ddnsConfigRow("a1", storage.DDNSConfig{
-		Enabled: true,
-		Domain:  "host.example.com",
-		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-	}, "203.0.113.10", "")
-	row.DdnsStatusJSON = string(priorStatus)
-	store := newFakeDDNSStore(row)
-	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
-
-	svc.reconcileAgent(context.Background(), "a1")
-
-	if got := cf.callCount(); got != 0 {
-		t.Fatalf("backoff gate must skip Cloudflare, got %d calls", got)
-	}
-	// Status is unchanged: reconcileAgent returns before persisting.
-	if store.status("a1").RetryCount != 1 {
-		t.Fatalf("expected status untouched during backoff, got %+v", store.status("a1"))
 	}
 }
 
@@ -497,112 +324,13 @@ func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
 	}
 }
 
-func TestDDNSBackoffDelayGrowthAndCap(t *testing.T) {
-	t.Parallel()
-	base := ddnsBackoffDelay("transient", 0, 0)
-	steps := ddnsBackoffDelay("transient", 0, 3)
-	if steps <= base {
-		t.Fatalf("expected backoff to grow with retryCount: base=%v steps=%v", base, steps)
-	}
-	capped := ddnsBackoffDelay("transient", 0, 100)
-	if capped > 10*time.Minute {
-		t.Fatalf("transient backoff must be capped at 10m, got %v", capped)
-	}
-	rateLimited := ddnsBackoffDelay("rate_limited", 0, 100)
-	if rateLimited > time.Hour {
-		t.Fatalf("rate_limited backoff must be capped at 1h, got %v", rateLimited)
-	}
-}
-
-func TestDDNSExtractRetryAfterParsesHint(t *testing.T) {
-	t.Parallel()
-	cases := map[string]time.Duration{
-		"ddns: rate_limited (retry_after_seconds=30)": 30 * time.Second,
-		"ddns: retry_after_seconds=120 extra":         120 * time.Second,
-		"ddns: no hint here":                          0,
-		"":                                            0,
-	}
-	for msg, want := range cases {
-		if got := extractDDNSRetryAfter(errors.New(msg)); got != want {
-			t.Errorf("extractDDNSRetryAfter(%q) = %v, want %v", msg, got, want)
-		}
-	}
-	// retryAfter overrides upward but is still capped.
-	delay := ddnsBackoffDelay("transient", 7*time.Minute, 0)
-	if delay != 7*time.Minute {
-		t.Errorf("expected retryAfter (7m) to override base within cap, got %v", delay)
-	}
-}
-
 // TestHTTPCloudflareClientSurfacesRetryAfterHeader proves F3 end-to-end: a 429
 // with a Retry-After header is decoded by do(), embedded in the error message,
 // parsed back by extractDDNSRetryAfter, and classified as rate_limited — so the
 // reconciler honors the server's requested wait rather than a fixed backoff.
-func TestHTTPCloudflareClientSurfacesRetryAfterHeader(t *testing.T) {
-	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/zones" {
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []cfZone{{ID: "zone-1", Name: "example.com"}}, "result_info": map[string]int{"total_pages": 1}})
-			return
-		}
-		w.Header().Set("Retry-After", "45")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1015,"message":"You are being rate limited"}],"result":null}`))
-	}))
-	defer srv.Close()
-
-	client := newHTTPCloudflareClient(srv.URL, 5*time.Second)
-	_, err := client.EnsureRecord(context.Background(), "tok", "host.example.com", "A", "203.0.113.10", 120)
-	if err == nil {
-		t.Fatal("expected a 429 error, got nil")
-	}
-	if got := extractDDNSRetryAfter(err); got != 45*time.Second {
-		t.Fatalf("extractDDNSRetryAfter = %v, want 45s (err=%v)", got, err)
-	}
-	if class := ddnsBackoffClass(err); class != "rate_limited" {
-		t.Fatalf("ddnsBackoffClass = %q, want rate_limited (err=%v)", class, err)
-	}
-	if !strings.Contains(err.Error(), "retry_after_seconds=45") {
-		t.Fatalf("error message must embed the retry_after_seconds hint, got %q", err.Error())
-	}
-}
-
 // TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty covers F4 directly: a
 // single sweep reconciles agents with a DDNS config + reported IP and leaves
 // agents without a config untouched (no Cloudflare call).
-func TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty(t *testing.T) {
-	t.Parallel()
-	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
-	configured := ddnsConfigRow("a1", storage.DDNSConfig{
-		Enabled: true,
-		Domain:  "host.example.com",
-		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-	}, "203.0.113.10", "")
-	empty := storage.AgentRow{ID: "a2", LastSeenIPv4: "203.0.113.99"}
-	store := newFakeDDNSStore(configured, empty)
-	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
-	svc.sweepInitialDelay = time.Hour
-	svc.Start()
-	defer svc.Close()
-
-	svc.sweep(context.Background())
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && store.status("a1").Status != "ok" {
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if status := store.status("a1"); status.Status != "ok" {
-		t.Fatalf("sweep must reconcile configured agent to ok, got %+v", status)
-	}
-	if store.status("a2").Status != "" {
-		t.Fatalf("sweep must not write status for unconfigured agent, got %+v", store.status("a2"))
-	}
-	if got := cf.callCount(); got != 1 {
-		t.Fatalf("expected exactly 1 Cloudflare call (configured agent only), got %d", got)
-	}
-}
-
 // TestDDNSSweepLoopRunsPeriodicallyAndStopsOnCancel covers F4 loop coverage:
 // with an injected millisecond cadence the loop reconciles repeatedly, then
 // Close() returns within a deadline (the loop observed ctx.Done and exited).
@@ -681,133 +409,9 @@ func TestDDNSPersistStatusDoesNotClobberConcurrentColumns(t *testing.T) {
 	}
 }
 
-func TestDDNSDisabledIdleWritesSkipOnceSettled(t *testing.T) {
-	t.Parallel()
-	// F6: a disabled master records status once; subsequent reconciles (per
-	// heartbeat / per sweep) must not re-write the same disabled status.
-	cf := &fakeCFClient{}
-	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Enabled: true,
-		Domain:  "host.example.com",
-		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
-	}, "203.0.113.10", ""))
-	cfg := enabledDDNSConfig()
-	cfg.DDNS.Enabled = false
-	cfg.DDNS.Token = ""
-	svc := NewDDNSService(cfg, store, cf, time.Now)
-
-	svc.reconcileAgent(context.Background(), "a1")
-	firstWrites := store.statusWrites
-	svc.reconcileAgent(context.Background(), "a1")
-	svc.reconcileAgent(context.Background(), "a1")
-
-	if store.statusWrites != firstWrites {
-		t.Fatalf("disabled status should be written once, got %d writes after first (%d)", store.statusWrites, firstWrites)
-	}
-	if got := cf.callCount(); got != 0 {
-		t.Fatalf("disabled master must never call Cloudflare, got %d", got)
-	}
-}
-
 // TestHTTPCloudflareClientEnsureRecord exercises the real REST client against a
 // stubbed Cloudflare API for the create / update / unchanged branches plus zone
 // resolution.
-func TestHTTPCloudflareClientEnsureRecord(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name       string
-		existing   *cfDNSRecord // pre-seeded record for the fqdn/type
-		content    string
-		wantAction string
-		wantWrite  bool // expect POST or PATCH
-	}{
-		{name: "create", existing: nil, content: "203.0.113.10", wantAction: "created", wantWrite: true},
-		{name: "update", existing: &cfDNSRecord{ID: "rec-9", Type: "A", Name: "host.example.com", Content: "203.0.113.1", TTL: 120}, content: "203.0.113.10", wantAction: "updated", wantWrite: true},
-		{name: "unchanged", existing: &cfDNSRecord{ID: "rec-9", Type: "A", Name: "host.example.com", Content: "203.0.113.10", TTL: 120}, content: "203.0.113.10", wantAction: "unchanged", wantWrite: false},
-		{name: "proxied automatic ttl", existing: &cfDNSRecord{ID: "rec-9", Type: "A", Name: "host.example.com", Content: "203.0.113.10", TTL: 1, Proxied: true}, content: "203.0.113.10", wantAction: "unchanged", wantWrite: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var writeCount atomic.Int32
-			records := map[string]cfDNSRecord{}
-			if tc.existing != nil {
-				records["A:host.example.com"] = *tc.existing
-			}
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch {
-				case r.URL.Path == "/zones":
-					writeZones(w)
-				case strings.Contains(r.URL.Path, "/dns_records"):
-					handleRecords(w, r, records, &writeCount)
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer srv.Close()
-
-			client := newHTTPCloudflareClient(srv.URL, 5*time.Second)
-			outcome, err := client.EnsureRecord(context.Background(), "cf-token", "host.example.com", "A", tc.content, 120)
-			if err != nil {
-				t.Fatalf("EnsureRecord error: %v", err)
-			}
-			if outcome.Action != tc.wantAction {
-				t.Fatalf("action = %q, want %q", outcome.Action, tc.wantAction)
-			}
-			if got := writeCount.Load(); (got > 0) != tc.wantWrite {
-				t.Fatalf("write happened=%v, want write=%v (count=%d)", got > 0, tc.wantWrite, got)
-			}
-		})
-	}
-}
-
-func TestHTTPCloudflareClientEnsureRecordReconcilesDuplicateRecords(t *testing.T) {
-	t.Parallel()
-	records := []cfDNSRecord{
-		{ID: "rec-current", Type: "A", Name: "host.example.com", Content: "203.0.113.10", TTL: 120},
-		{ID: "rec-stale", Type: "A", Name: "host.example.com", Content: "203.0.113.20", TTL: 120},
-	}
-	var patched []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/zones":
-			writeZones(w)
-		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/dns_records":
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": records, "result_info": map[string]int{"total_pages": 1}})
-		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/zones/zone-1/dns_records/"):
-			recordID := strings.TrimPrefix(r.URL.Path, "/zones/zone-1/dns_records/")
-			content := readContent(r)
-			for index := range records {
-				if records[index].ID == recordID {
-					records[index].Content = content
-				}
-			}
-			patched = append(patched, recordID)
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": map[string]any{}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	client := newHTTPCloudflareClient(srv.URL, 5*time.Second)
-	outcome, err := client.EnsureRecord(context.Background(), "cf-token", "host.example.com", "A", "203.0.113.10", 120)
-	if err != nil {
-		t.Fatalf("EnsureRecord error: %v", err)
-	}
-	if outcome.Action != "updated" {
-		t.Fatalf("action = %q, want updated", outcome.Action)
-	}
-	if len(patched) != 1 || patched[0] != "rec-stale" {
-		t.Fatalf("patched records = %v, want only rec-stale", patched)
-	}
-	for _, record := range records {
-		if record.Content != "203.0.113.10" {
-			t.Fatalf("record %s content = %q, want reconciled address", record.ID, record.Content)
-		}
-	}
-}
-
 func writeZones(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

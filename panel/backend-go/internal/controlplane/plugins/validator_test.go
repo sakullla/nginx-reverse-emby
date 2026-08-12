@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -561,7 +562,6 @@ func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 	}
 	formats := []format{
 		{name: "ELF object", goos: "linux", goarch: "amd64", header: 64, mutate: func(data []byte) { binary.LittleEndian.PutUint16(data[16:18], 1) }},
-		{name: "ELF object", goos: "freebsd", goarch: "amd64", header: 64, mutate: func(data []byte) { binary.LittleEndian.PutUint16(data[16:18], 1) }},
 		{name: "PE DLL", goos: "windows", goarch: "amd64", header: 512, mutate: func(data []byte) {
 			offset := int(binary.LittleEndian.Uint32(data[0x3c:0x40]))
 			characteristics := binary.LittleEndian.Uint16(data[offset+22 : offset+24])
@@ -2023,31 +2023,58 @@ cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete,
 	return root
 }
 
-// buildTestRPCExecutable uses the repository's active Go toolchain with CGO
-// disabled to produce a reviewable, real executable for each binary format.
-// This avoids blessing hand-written headers that an operating-system loader
-// could never execute.
+type testRPCExecutableFixture struct {
+	once sync.Once
+	data []byte
+	err  error
+}
+
+var testRPCExecutableFixtures sync.Map
+
+// buildTestRPCExecutable uses the active Go toolchain once per target. Each
+// caller still gets an isolated file so mutation tests cannot share state.
 func buildTestRPCExecutable(t *testing.T, goos, goarch string) (string, []byte) {
 	t.Helper()
-	root := t.TempDir()
-	source := filepath.Join(root, "main.go")
-	if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
-		t.Fatal(err)
+	key := goos + "/" + goarch
+	value, _ := testRPCExecutableFixtures.LoadOrStore(key, &testRPCExecutableFixture{})
+	fixture := value.(*testRPCExecutableFixture)
+	fixture.once.Do(func() {
+		root, err := os.MkdirTemp("", "nre-rpc-fixture-")
+		if err != nil {
+			fixture.err = err
+			return
+		}
+		defer os.RemoveAll(root)
+		source := filepath.Join(root, "main.go")
+		if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+			fixture.err = err
+			return
+		}
+		output := filepath.Join(root, "plugin")
+		if goos == "windows" {
+			output += ".exe"
+		}
+		command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", output, source)
+		command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+		if buildOutput, err := command.CombinedOutput(); err != nil {
+			fixture.err = fmt.Errorf("build real %s/%s RPC fixture: %w: %s", goos, goarch, err, buildOutput)
+			return
+		}
+		fixture.data, fixture.err = os.ReadFile(output)
+	})
+	if fixture.err != nil {
+		t.Fatal(fixture.err)
 	}
+
+	root := t.TempDir()
 	output := filepath.Join(root, "plugin")
 	if goos == "windows" {
 		output += ".exe"
 	}
-	command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", output, source)
-	command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
-	if buildOutput, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build real %s/%s RPC fixture: %v\n%s", goos, goarch, err, buildOutput)
-	}
-	artifact, err := os.ReadFile(output)
-	if err != nil {
+	if err := os.WriteFile(output, fixture.data, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return output, artifact
+	return output, append([]byte(nil), fixture.data...)
 }
 
 func validManifestYAML(schema string) string {

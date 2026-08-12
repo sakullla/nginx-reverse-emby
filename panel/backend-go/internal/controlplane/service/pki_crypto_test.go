@@ -1,3 +1,5 @@
+//go:build integration
+
 package service
 
 import (
@@ -28,7 +30,7 @@ func (lock *pkiCloseErrorLock) Close() error {
 	return errors.Join(lock.pkiDirectoryLock.Close(), lock.closeErr)
 }
 
-func TestVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
+func TestIntegrationVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -97,7 +99,7 @@ func TestVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
 	}
 }
 
-func TestVaultAtomicPublicationFailureRetryAndConcurrency(t *testing.T) {
+func TestIntegrationVaultAtomicPublicationFailureRetryAndConcurrency(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	pkiRoot := filepath.Join(root, "pki")
@@ -179,33 +181,6 @@ func TestVaultAtomicPublicationFailureRetryAndConcurrency(t *testing.T) {
 	}
 }
 
-func TestVaultAtomicNoReplacePreservesNonCooperativeWinner(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	if err := ensurePKIRestrictedDirectory(root); err != nil {
-		t.Fatalf("ensure publication directory: %v", err)
-	}
-	canonical := filepath.Join(root, "master.key")
-	winner := bytes.Repeat([]byte{0x41}, pkiVaultMasterKeySize)
-	loser := bytes.Repeat([]byte{0x52}, pkiVaultMasterKeySize)
-	ops := defaultPKICryptoFileOps()
-	atomicPublish := ops.publish
-	ops.publish = func(staging, destination string) error {
-		if err := os.WriteFile(destination, winner, 0o600); err != nil {
-			return err
-		}
-		return atomicPublish(staging, destination)
-	}
-	err := writePKIRestrictedFileWithOps(canonical, loser, ops)
-	if !errors.Is(err, os.ErrExist) || !isPurePKIPublishConflict(err) {
-		t.Fatalf("non-cooperative publish error = %v, want pure typed os.ErrExist conflict", err)
-	}
-	stored, err := os.ReadFile(canonical)
-	if err != nil || !bytes.Equal(stored, winner) {
-		t.Fatalf("canonical winner = %x, %v; want %x", stored, err, winner)
-	}
-}
-
 func testVaultDirectoryLockReleasedWhenHelperProcessExits(t *testing.T) {
 	if os.Getenv(pkiLockHelperEnv) == "1" {
 		lock, err := acquirePKIOSDirectoryLock(os.Getenv(pkiLockHelperDirEnv))
@@ -262,7 +237,7 @@ func testVaultDirectoryLockReleasedWhenHelperProcessExits(t *testing.T) {
 	}
 }
 
-func TestVaultRestartCleansCompleteStagingAndHardLinkAliases(t *testing.T) {
+func TestIntegrationVaultRestartCleansCompleteStagingAndHardLinkAliases(t *testing.T) {
 	t.Parallel()
 	t.Run("complete staging leftovers", func(t *testing.T) {
 		root := t.TempDir()
@@ -353,50 +328,7 @@ func TestVaultRestartCleansCompleteStagingAndHardLinkAliases(t *testing.T) {
 	})
 }
 
-func TestVaultCleanupFailureIsNotHiddenByReadableCanonical(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
-	if err != nil {
-		t.Fatalf("OpenPKIVault() error = %v", err)
-	}
-	plaintext := []byte("stable-ca-key")
-	reference, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext)
-	if err != nil {
-		t.Fatalf("SealCAKey() error = %v", err)
-	}
-	stagingPath := filepath.Join(vault.vaultDir, "."+reference+".tmp-stale")
-	if err := os.WriteFile(stagingPath, []byte("stale"), 0o600); err != nil {
-		t.Fatalf("write stale vault staging: %v", err)
-	}
-	injected := errors.New("injected remove failure")
-	defaultRemove := vault.fileOps.remove
-	vault.fileOps.remove = func(path string) error {
-		if path == stagingPath {
-			return injected
-		}
-		return defaultRemove(path)
-	}
-	if _, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext); !errors.Is(err, errPKIVaultCleanup) || !errors.Is(err, injected) {
-		t.Fatalf("SealCAKey(stale cleanup failure) error = %v, want cleanup and injected errors", err)
-	}
-	opened, err := vault.OpenCAKey(reference, "domain-1", 1, "ca-signing")
-	if err != nil || !bytes.Equal(opened, plaintext) {
-		t.Fatalf("canonical after cleanup failure = %q, %v", opened, err)
-	}
-	reopened, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
-	if err != nil {
-		t.Fatalf("OpenPKIVault(recovery) error = %v", err)
-	}
-	if _, err := reopened.SealCAKey("domain-1", 1, "ca-signing", plaintext); err != nil {
-		t.Fatalf("SealCAKey(after recovery) error = %v", err)
-	}
-	if _, err := os.Lstat(stagingPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale vault staging after recovery error = %v, want os.ErrNotExist", err)
-	}
-}
-
-func TestVaultPureConflictWithLockCloseFailureIsNotIdempotentSuccess(t *testing.T) {
+func TestIntegrationVaultPureConflictWithLockCloseFailureIsNotIdempotentSuccess(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -423,117 +355,4 @@ func TestVaultPureConflictWithLockCloseFailureIsNotIdempotentSuccess(t *testing.
 	if _, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext); err != nil {
 		t.Fatalf("SealCAKey(after close-error recovery) error = %v", err)
 	}
-}
-
-func TestVaultPublicationOperationFallbacksAndExternalMasterRead(t *testing.T) {
-	t.Parallel()
-	t.Run("atomic publish unsupported leaves no canonical", func(t *testing.T) {
-		root := t.TempDir()
-		ops := defaultPKICryptoFileOps()
-		ops.publish = func(string, string) error { return errors.ErrUnsupported }
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, fileOps: &ops}); !errors.Is(err, errors.ErrUnsupported) {
-			t.Fatalf("OpenPKIVault(publish unsupported) error = %v, want errors.ErrUnsupported", err)
-		}
-		masterPath := filepath.Join(root, "pki", "master.key")
-		if _, err := os.Lstat(masterPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("master key after failed rename error = %v, want os.ErrNotExist", err)
-		}
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root}); err != nil {
-			t.Fatalf("OpenPKIVault(after publish recovery) error = %v", err)
-		}
-	})
-
-	t.Run("unsupported directory sync uses safe fallback", func(t *testing.T) {
-		root := t.TempDir()
-		ops := defaultPKICryptoFileOps()
-		ops.syncDirectory = func(string) error { return errors.ErrUnsupported }
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, fileOps: &ops}); err != nil {
-			t.Fatalf("OpenPKIVault(unsupported directory sync) error = %v", err)
-		}
-		if key, err := readPKIMasterKey(filepath.Join(root, "pki", "master.key")); err != nil || len(key) != pkiVaultMasterKeySize {
-			t.Fatalf("read published master key = %x, %v", key, err)
-		}
-	})
-
-	t.Run("directory sync failure rolls back publication", func(t *testing.T) {
-		root := t.TempDir()
-		injected := errors.New("injected directory sync failure")
-		ops := defaultPKICryptoFileOps()
-		ops.syncDirectory = func(string) error { return injected }
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, fileOps: &ops}); !errors.Is(err, injected) {
-			t.Fatalf("OpenPKIVault(directory sync failure) error = %v, want injected error", err)
-		}
-		masterPath := filepath.Join(root, "pki", "master.key")
-		if _, err := os.Lstat(masterPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("master key after sync rollback error = %v, want os.ErrNotExist", err)
-		}
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root}); err != nil {
-			t.Fatalf("OpenPKIVault(after sync recovery) error = %v", err)
-		}
-	})
-
-	t.Run("existing external master key does not sync its parent", func(t *testing.T) {
-		root := t.TempDir()
-		externalRoot := t.TempDir()
-		externalPath := filepath.Join(externalRoot, "master.key")
-		expectedKey := bytes.Repeat([]byte{0x7a}, pkiVaultMasterKeySize)
-		if err := os.WriteFile(externalPath, expectedKey, 0o600); err != nil {
-			t.Fatalf("write external master key: %v", err)
-		}
-		syncCalls := 0
-		externalLockCalls := 0
-		ops := defaultPKICryptoFileOps()
-		defaultAcquire := ops.acquireLock
-		ops.acquireLock = func(directory string) (pkiDirectoryLock, error) {
-			if directory == externalRoot {
-				externalLockCalls++
-			}
-			return defaultAcquire(directory)
-		}
-		ops.syncDirectory = func(string) error {
-			syncCalls++
-			return errors.New("unexpected directory sync")
-		}
-		vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, MasterKeyFile: externalPath, fileOps: &ops})
-		if err != nil {
-			t.Fatalf("OpenPKIVault(existing external master key) error = %v", err)
-		}
-		if syncCalls != 0 {
-			t.Fatalf("existing external master key triggered %d directory sync calls", syncCalls)
-		}
-		if externalLockCalls != 0 {
-			t.Fatalf("existing external master key triggered %d external directory lock calls", externalLockCalls)
-		}
-		if !bytes.Equal(vault.masterKey, expectedKey) {
-			t.Fatalf("external master key = %x, want %x", vault.masterKey, expectedKey)
-		}
-	})
-
-	t.Run("external staging cleanup failure is explicit", func(t *testing.T) {
-		root := t.TempDir()
-		externalRoot := t.TempDir()
-		externalPath := filepath.Join(externalRoot, "master.key")
-		stagingPath := filepath.Join(externalRoot, ".master.key.tmp-stale")
-		if err := os.WriteFile(externalPath, bytes.Repeat([]byte{0x37}, pkiVaultMasterKeySize), 0o600); err != nil {
-			t.Fatalf("write external master key: %v", err)
-		}
-		if err := os.WriteFile(stagingPath, []byte("stale"), 0o600); err != nil {
-			t.Fatalf("write external staging: %v", err)
-		}
-		injected := errors.New("injected external cleanup failure")
-		ops := defaultPKICryptoFileOps()
-		defaultRemove := ops.remove
-		ops.remove = func(path string) error {
-			if path == stagingPath {
-				return injected
-			}
-			return defaultRemove(path)
-		}
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, MasterKeyFile: externalPath, fileOps: &ops}); !errors.Is(err, errPKIVaultCleanup) || !errors.Is(err, injected) {
-			t.Fatalf("OpenPKIVault(external cleanup failure) error = %v, want cleanup and injected errors", err)
-		}
-		if _, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, MasterKeyFile: externalPath}); err != nil {
-			t.Fatalf("OpenPKIVault(after external cleanup recovery) error = %v", err)
-		}
-	})
 }

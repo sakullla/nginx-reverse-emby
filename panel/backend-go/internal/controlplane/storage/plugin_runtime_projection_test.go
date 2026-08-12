@@ -18,7 +18,7 @@ import (
 
 func TestPluginRuntimeProjectionPersistsArtifactsAndRejectsDigestMetadataConflict(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestPluginRuntimeProjectionPersistsArtifactsAndRejectsDigestMetadataConflic
 
 func TestPluginArtifactInstallFailureRollsBackPackageAndRuntimeProjection(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestPluginArtifactInstallFailureRollsBackPackageAndRuntimeProjection(t *tes
 }
 
 func TestMarketplaceRuntimeProjectionPersistsCurrentIndexFields(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestMarketplaceRuntimeProjectionPersistsCurrentIndexFields(t *testing.T) {
 
 func TestPluginRuntimeMigrationBackfillsCurrentContractAndRebuildsLegacyDataOnlyState(t *testing.T) {
 	t.Run("backfill installed identity from verified projection", func(t *testing.T) {
-		store, err := NewSQLiteStore(t.TempDir(), "local")
+		store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -166,7 +166,7 @@ func TestPluginRuntimeMigrationBackfillsCurrentContractAndRebuildsLegacyDataOnly
 	})
 
 	t.Run("controlled rebuild legacy data-only records", func(t *testing.T) {
-		store, err := NewSQLiteStore(t.TempDir(), "local")
+		store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 		if err != nil {
 			t.Fatal(err)
 		}

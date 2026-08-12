@@ -9,12 +9,12 @@ import (
 )
 
 func TestPluginMigrationRejectsDigestNamedPackageOutsideSourceCacheRoot(t *testing.T) {
-	source, err := NewSQLiteStore(t.TempDir(), "local")
+	source, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	target, err := NewSQLiteStore(t.TempDir(), "local")
+	target, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}

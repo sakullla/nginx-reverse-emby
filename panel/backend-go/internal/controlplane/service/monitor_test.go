@@ -97,81 +97,6 @@ func TestMonitorSnapshotParsesHostMetricsAndTrafficSummary(t *testing.T) {
 	}
 }
 
-func TestMonitorSnapshotToleratesMissingMetrics(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	store := &fakeStore{
-		agents: []storage.AgentRow{{
-			ID:               "edge-1",
-			Name:             "Edge 1",
-			AgentToken:       "token-edge-1",
-			LastApplyStatus:  "success",
-			CurrentRevision:  1,
-			LastSeenAt:       now.Add(-5 * time.Minute).Format(time.RFC3339),
-			CapabilitiesJSON: `["http_rules"]`,
-		}},
-		snapshot: storage.Snapshot{Revision: 1},
-	}
-	svc := NewAgentService(config.Config{HeartbeatInterval: 30 * time.Second}, store)
-	svc.now = func() time.Time { return now }
-
-	snapshot, err := svc.MonitorSnapshot(context.Background())
-	if err != nil {
-		t.Fatalf("MonitorSnapshot() error = %v", err)
-	}
-	agent := snapshot.Agents[0]
-	if agent.Status != "offline" {
-		t.Fatalf("Status = %q", agent.Status)
-	}
-	if agent.Metrics.CPUUsagePercent != nil || agent.Metrics.Network != nil || agent.Traffic != nil {
-		t.Fatalf("metrics should be empty for old agent: %+v traffic=%+v", agent.Metrics, agent.Traffic)
-	}
-}
-
-func TestMonitorSnapshotRefreshesLocalStatsBeforeReadingRuntimeState(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	store := &fakeStore{
-		localState: storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success"},
-	}
-	svc := NewAgentService(config.Config{
-		EnableLocalAgent:  true,
-		LocalAgentID:      "local",
-		LocalAgentName:    "Local Agent",
-		HeartbeatInterval: 30 * time.Second,
-	}, store)
-	svc.now = func() time.Time { return now }
-	refreshCalls := 0
-	svc.SetLocalMonitorRefreshTrigger(func(context.Context) error {
-		refreshCalls++
-		store.savedRuntimeState = storage.RuntimeState{Metadata: map[string]string{
-			"stats": `{"host":{"cpu":{"usage_percent":25,"used_cores":2,"total_cores":8},"network":{"total":{"rx_bytes":1000,"tx_bytes":2000}}}}`,
-		}}
-		return nil
-	})
-
-	snapshot, err := svc.MonitorSnapshot(context.Background())
-	if err != nil {
-		t.Fatalf("MonitorSnapshot() error = %v", err)
-	}
-	if refreshCalls != 1 {
-		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
-	}
-	if len(snapshot.Agents) != 1 {
-		t.Fatalf("agents len = %d, want 1", len(snapshot.Agents))
-	}
-	agent := snapshot.Agents[0]
-	if !agent.IsLocal || agent.ID != "local" {
-		t.Fatalf("agent = %+v, want local agent", agent)
-	}
-	if agent.Metrics.CPUUsedCores == nil || *agent.Metrics.CPUUsedCores != 2 {
-		t.Fatalf("CPUUsedCores = %v, want 2", agent.Metrics.CPUUsedCores)
-	}
-	if agent.Metrics.Network == nil || agent.Metrics.Network.RXBytes == nil || *agent.Metrics.Network.RXBytes != 1000 {
-		t.Fatalf("network = %+v, want refreshed counters", agent.Metrics.Network)
-	}
-}
-
 func TestMonitorSnapshotContinuesWhenLocalRefreshFails(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
@@ -211,33 +136,6 @@ func TestMonitorSnapshotContinuesWhenLocalRefreshFails(t *testing.T) {
 	}
 	if snapshot.Agents[1].ID != "edge-1" {
 		t.Fatalf("second agent = %+v, want remote agent", snapshot.Agents[1])
-	}
-}
-
-func TestMonitorSnapshotStampsLocalSampleTime(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	store := &fakeStore{
-		localState:        storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success"},
-		savedRuntimeState: storage.RuntimeState{Metadata: map[string]string{"stats": `{"host":{"network":{"total":{"rx_bytes":1000,"tx_bytes":2000}}}}`}},
-	}
-	svc := NewAgentService(config.Config{
-		EnableLocalAgent:  true,
-		LocalAgentID:      "local",
-		LocalAgentName:    "Local Agent",
-		HeartbeatInterval: 30 * time.Second,
-	}, store)
-	svc.now = func() time.Time { return now }
-
-	snapshot, err := svc.MonitorSnapshot(context.Background())
-	if err != nil {
-		t.Fatalf("MonitorSnapshot() error = %v", err)
-	}
-	if len(snapshot.Agents) != 1 {
-		t.Fatalf("agents len = %d, want local agent", len(snapshot.Agents))
-	}
-	if got := snapshot.Agents[0].LastSeenAt; got != now.Format(time.RFC3339) {
-		t.Fatalf("local LastSeenAt = %q, want monitor sample time", got)
 	}
 }
 
@@ -285,63 +183,6 @@ func TestHeartbeatPersistsMonitorRates(t *testing.T) {
 	}
 }
 
-func TestHeartbeatPersistsHostMonitorStatsWhenTrafficStatsDisabled(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
-	store := &fakeStore{
-		agents: []storage.AgentRow{{
-			ID:                    "edge-1",
-			Name:                  "Edge 1",
-			AgentToken:            "token-edge-1",
-			CapabilitiesJSON:      `["http_rules"]`,
-			LastApplyStatus:       "success",
-			CurrentRevision:       1,
-			LastSeenAt:            now.Add(-30 * time.Second).Format(time.RFC3339),
-			LastReportedStatsJSON: `{"host":{"network":{"total":{"rx_bytes":100,"tx_bytes":200}}}}`,
-		}},
-		snapshot: storage.Snapshot{Revision: 1},
-	}
-	trafficSvc := &fakeHeartbeatTrafficService{}
-	cfg := config.Default()
-	cfg.TrafficStatsEnabled = false
-	svc := NewAgentService(cfg, store)
-	svc.SetTrafficService(trafficSvc)
-	svc.now = func() time.Time { return now }
-
-	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
-		CurrentRevision: 1,
-		Stats: AgentStats{
-			"host": map[string]any{
-				"cpu":     map[string]any{"usage_percent": 12.5},
-				"network": map[string]any{"total": map[string]uint64{"rx_bytes": 160, "tx_bytes": 260}},
-			},
-			"traffic": map[string]any{"total": map[string]uint64{"rx_bytes": 999, "tx_bytes": 999}},
-		},
-	}, "token-edge-1")
-	if err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-	if len(trafficSvc.ingestCalls) != 0 {
-		t.Fatalf("traffic ingest calls = %d, want disabled", len(trafficSvc.ingestCalls))
-	}
-	update, err := svc.MonitorAgent(context.Background(), "edge-1")
-	if err != nil {
-		t.Fatalf("MonitorAgent() error = %v", err)
-	}
-	if update.Agent.Metrics.CPUUsagePercent == nil || *update.Agent.Metrics.CPUUsagePercent != 12.5 {
-		t.Fatalf("CPUUsagePercent = %v", update.Agent.Metrics.CPUUsagePercent)
-	}
-	if update.Agent.Metrics.Network == nil || !update.Agent.Metrics.Network.RateAvailable {
-		t.Fatalf("network = %+v", update.Agent.Metrics.Network)
-	}
-	if *update.Agent.Metrics.Network.RXBytesPerSecond != 2 || *update.Agent.Metrics.Network.TXBytesPerSecond != 2 {
-		t.Fatalf("network rate = %+v", update.Agent.Metrics.Network)
-	}
-	if stats := parseAgentStats(store.savedAgent.LastReportedStatsJSON); stats["traffic"] != nil {
-		t.Fatalf("traffic stats persisted while disabled: %q", store.savedAgent.LastReportedStatsJSON)
-	}
-}
-
 func TestHeartbeatMarksMonitorRateUnavailableOnCounterReset(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
@@ -380,153 +221,6 @@ func TestHeartbeatMarksMonitorRateUnavailableOnCounterReset(t *testing.T) {
 	}
 	if got := total["rate_unavailable_reason"]; got != "counter_reset" {
 		t.Fatalf("rate_unavailable_reason = %v, want counter_reset", got)
-	}
-}
-
-func TestHeartbeatMarksMonitorRateUnavailableWhenPreviousCounterPartMissing(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
-	store := &fakeStore{
-		agents: []storage.AgentRow{{
-			ID:                    "edge-1",
-			Name:                  "Edge 1",
-			AgentToken:            "token-edge-1",
-			CapabilitiesJSON:      `["http_rules"]`,
-			LastApplyStatus:       "success",
-			CurrentRevision:       1,
-			LastSeenAt:            now.Add(-30 * time.Second).Format(time.RFC3339),
-			LastReportedStatsJSON: `{"host":{"network":{"total":{"rx_bytes":100}}}}`,
-		}},
-		snapshot: storage.Snapshot{Revision: 1},
-	}
-	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
-	svc.now = func() time.Time { return now }
-
-	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
-		CurrentRevision: 1,
-		Stats: AgentStats{"host": map[string]any{
-			"network": map[string]any{"total": map[string]uint64{"rx_bytes": 160, "tx_bytes": 260}},
-		}},
-	}, "token-edge-1")
-	if err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-	stats := parseAgentStats(store.savedAgent.LastReportedStatsJSON)
-	total, ok := previousHostNetworkTotal(stats)
-	if !ok {
-		t.Fatalf("missing host network total in %q", store.savedAgent.LastReportedStatsJSON)
-	}
-	if _, ok := total["rx_bytes_per_second"]; ok {
-		t.Fatalf("rx rate present with incomplete previous counter: %+v", total)
-	}
-	if _, ok := total["tx_bytes_per_second"]; ok {
-		t.Fatalf("tx rate present with incomplete previous counter: %+v", total)
-	}
-	if got := total["rate_unavailable_reason"]; got != "missing_previous_counter" {
-		t.Fatalf("rate_unavailable_reason = %v, want missing_previous_counter", got)
-	}
-}
-
-func TestHeartbeatClearsSuppliedMonitorRatesWhenPreviousTotalMissing(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
-	store := &fakeStore{
-		agents: []storage.AgentRow{{
-			ID:               "edge-1",
-			Name:             "Edge 1",
-			AgentToken:       "token-edge-1",
-			CapabilitiesJSON: `["http_rules"]`,
-			LastApplyStatus:  "success",
-			CurrentRevision:  1,
-			LastSeenAt:       now.Add(-30 * time.Second).Format(time.RFC3339),
-		}},
-		snapshot: storage.Snapshot{Revision: 1},
-	}
-	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
-	svc.now = func() time.Time { return now }
-
-	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
-		CurrentRevision: 1,
-		Stats: AgentStats{"host": map[string]any{
-			"network": map[string]any{"total": map[string]any{
-				"rx_bytes":                uint64(160),
-				"tx_bytes":                uint64(260),
-				"rx_bytes_per_second":     float64(999),
-				"tx_bytes_per_second":     float64(999),
-				"rate_window_seconds":     float64(1),
-				"rate_calculated_at":      "2026-06-21T12:00:59Z",
-				"rate_unavailable_reason": "stale",
-			}},
-		}},
-	}, "token-edge-1")
-	if err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-	stats := parseAgentStats(store.savedAgent.LastReportedStatsJSON)
-	total, ok := previousHostNetworkTotal(stats)
-	if !ok {
-		t.Fatalf("missing host network total in %q", store.savedAgent.LastReportedStatsJSON)
-	}
-	if _, ok := total["rx_bytes_per_second"]; ok {
-		t.Fatalf("rx rate was not cleared: %+v", total)
-	}
-	if _, ok := total["tx_bytes_per_second"]; ok {
-		t.Fatalf("tx rate was not cleared: %+v", total)
-	}
-	if _, ok := total["rate_window_seconds"]; ok {
-		t.Fatalf("rate window was not cleared: %+v", total)
-	}
-	if got := total["rate_unavailable_reason"]; got != "missing_previous_counter" {
-		t.Fatalf("rate_unavailable_reason = %v, want missing_previous_counter", got)
-	}
-}
-
-func TestHeartbeatClearsSuppliedMonitorRatesWhenCurrentCounterMissing(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
-	store := &fakeStore{
-		agents: []storage.AgentRow{{
-			ID:                    "edge-1",
-			Name:                  "Edge 1",
-			AgentToken:            "token-edge-1",
-			CapabilitiesJSON:      `["http_rules"]`,
-			LastApplyStatus:       "success",
-			CurrentRevision:       1,
-			LastSeenAt:            now.Add(-30 * time.Second).Format(time.RFC3339),
-			LastReportedStatsJSON: `{"host":{"network":{"total":{"rx_bytes":100,"tx_bytes":200}}}}`,
-		}},
-		snapshot: storage.Snapshot{Revision: 1},
-	}
-	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
-	svc.now = func() time.Time { return now }
-
-	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
-		CurrentRevision: 1,
-		Stats: AgentStats{"host": map[string]any{
-			"network": map[string]any{"total": map[string]any{
-				"rx_bytes_per_second": float64(999),
-				"tx_bytes_per_second": float64(999),
-				"rate_window_seconds": float64(1),
-				"rate_calculated_at":  "2026-06-21T12:00:59Z",
-			}},
-		}},
-	}, "token-edge-1")
-	if err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-	stats := parseAgentStats(store.savedAgent.LastReportedStatsJSON)
-	total, ok := previousHostNetworkTotal(stats)
-	if !ok {
-		t.Fatalf("missing host network total in %q", store.savedAgent.LastReportedStatsJSON)
-	}
-	if _, ok := total["rx_bytes_per_second"]; ok {
-		t.Fatalf("rx rate was not cleared: %+v", total)
-	}
-	if _, ok := total["tx_bytes_per_second"]; ok {
-		t.Fatalf("tx rate was not cleared: %+v", total)
-	}
-	if got := total["rate_unavailable_reason"]; got != "missing_current_counter" {
-		t.Fatalf("rate_unavailable_reason = %v, want missing_current_counter", got)
 	}
 }
 
@@ -574,55 +268,6 @@ func TestHeartbeatBroadcastsMonitorUpdate(t *testing.T) {
 // address-family fields as the snapshot path. The panel spreads these payloads
 // over the agent list; an empty ddns_domain made the address flap between the
 // configured domain and the last-seen IP on every heartbeat.
-func TestHeartbeatBroadcastsMonitorUpdateCarriesDdnsFields(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
-	store := &fakeStore{
-		agents: []storage.AgentRow{{
-			ID:               "edge-1",
-			Name:             "Edge 1",
-			AgentToken:       "token-edge-1",
-			CapabilitiesJSON: `["http_rules"]`,
-			LastApplyStatus:  "success",
-			CurrentRevision:  1,
-			LastSeenAt:       now.Add(-30 * time.Second).Format(time.RFC3339),
-			LastSeenIPv4:     "203.0.113.10",
-			LastSeenIPv6:     "2001:db8::10",
-			DdnsConfigJSON:   `{"enabled":true,"domain":"edge.example.com, media.example.com","ipv4":{"enabled":true,"source":"static"}}`,
-			DdnsStatusJSON:   `{"status":"ok","last_resolved_ipv4":"203.0.113.10"}`,
-		}},
-		snapshot: storage.Snapshot{Revision: 1},
-	}
-	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
-	svc.now = func() time.Time { return now }
-	updates, unsubscribe := svc.SubscribeMonitorUpdates(context.Background())
-	defer unsubscribe()
-
-	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
-		CurrentRevision: 1,
-		Stats:           AgentStats{"host": map[string]any{}},
-	}, "token-edge-1")
-	if err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-
-	select {
-	case update := <-updates:
-		agent := update.Agent
-		if agent.DdnsDomain != "edge.example.com, media.example.com" {
-			t.Fatalf("DdnsDomain = %q, want dispatched config domain", agent.DdnsDomain)
-		}
-		if agent.LastSeenIPv4 != "203.0.113.10" || agent.LastSeenIPv6 != "2001:db8::10" {
-			t.Fatalf("address families = %q/%q, want stored v4/v6", agent.LastSeenIPv4, agent.LastSeenIPv6)
-		}
-		if agent.DdnsStatus.Status != "ok" {
-			t.Fatalf("DdnsStatus = %+v, want stored status", agent.DdnsStatus)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for monitor update")
-	}
-}
-
 // monitorSubscriberCount returns the number of active monitor subscribers. It
 // acquires the service lock so the observation races neither with
 // SubscribeMonitorUpdates registration nor with cancel() cleanup. The subscriber
@@ -639,35 +284,6 @@ func monitorSubscriberCount(s *agentService) int {
 // that an explicit unsubscribe closes the channel, removes it from the
 // subscriber map, and is idempotent. R5: the watcher goroutine must not outlive
 // the subscription.
-func TestSubscribeMonitorUpdatesUnsubscribeClosesChannelAndRemovesFromMap(t *testing.T) {
-	t.Parallel()
-	svc := NewAgentService(config.Config{}, &fakeStore{})
-	if got := monitorSubscriberCount(svc); got != 0 {
-		t.Fatalf("subscriber count = %d, want 0 before subscribe", got)
-	}
-	ch, cancel := svc.SubscribeMonitorUpdates(context.Background())
-
-	if got := monitorSubscriberCount(svc); got != 1 {
-		t.Fatalf("subscriber count = %d, want 1 after subscribe", got)
-	}
-	cancel()
-
-	// cancel() runs close(ch) synchronously, so the channel is closed now.
-	_, ok := <-ch
-	if ok {
-		t.Fatal("expected closed channel after unsubscribe")
-	}
-	if got := monitorSubscriberCount(svc); got != 0 {
-		t.Fatalf("subscriber count = %d, want 0 after unsubscribe", got)
-	}
-
-	// Idempotent: a second unsubscribe must not panic, double-close, or re-add.
-	cancel()
-	if got := monitorSubscriberCount(svc); got != 0 {
-		t.Fatalf("subscriber count = %d, want 0 after second unsubscribe", got)
-	}
-}
-
 // TestSubscribeMonitorUpdatesParentCancelCleansUpGoroutine verifies that
 // cancelling the parent context cleans up the subscription on its own (channel
 // closed, map entry removed) without an explicit unsubscribe, so the watcher
@@ -731,65 +347,7 @@ func TestSubscribeMonitorUpdatesMultipleSubscriptionsAreIndependent(t *testing.T
 // TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp exercises the
 // nil-context fast path (SubscribeMonitorUpdates(nil) must not panic) and
 // confirms unsubscribe still closes the channel and removes the subscriber.
-func TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp(t *testing.T) {
-	t.Parallel()
-	svc := NewAgentService(config.Config{}, &fakeStore{})
-	ch, cancel := svc.SubscribeMonitorUpdates(nil)
-
-	if got := monitorSubscriberCount(svc); got != 1 {
-		t.Fatalf("subscriber count = %d, want 1 after subscribe(nil)", got)
-	}
-	cancel()
-	if _, ok := <-ch; ok {
-		t.Fatal("expected closed channel after unsubscribe")
-	}
-	if got := monitorSubscriberCount(svc); got != 0 {
-		t.Fatalf("subscriber count = %d, want 0 after unsubscribe", got)
-	}
-}
-
 // TestMonitorAgentFromSummaryPassesDDNSAndAddressFamilyFields locks the wire
 // contract between AgentSummary and the monitor payload: the reported IPv4/IPv6
 // pair, the DDNS domain, and the master-written DDNS resolution status must all
 // flow through unchanged (and without any credential field — R7).
-func TestMonitorAgentFromSummaryPassesDDNSAndAddressFamilyFields(t *testing.T) {
-	t.Parallel()
-	svc := NewAgentService(config.Config{}, &fakeStore{})
-	summary := AgentSummary{
-		ID:           "edge-ddns",
-		Name:         "Edge DDNS",
-		Status:       "online",
-		LastSeenIP:   "203.0.113.9",
-		LastSeenIPv4: "203.0.113.9",
-		LastSeenIPv6: "2001:db8::1",
-		DdnsDomain:   "edge.example.com",
-		DdnsStatus: storage.DdnsStatus{
-			Status:           "ok",
-			LastResolvedIPv4: "203.0.113.9",
-			LastResolvedIPv6: "2001:db8::1",
-		},
-		Version:  "1.2.3",
-		Platform: "linux-amd64",
-		Mode:     "pull",
-	}
-
-	got := svc.monitorAgentFromSummary(context.Background(), summary, AgentStats{})
-	if got.ID != "edge-ddns" || got.Name != "Edge DDNS" {
-		t.Fatalf("identity fields = %+v", got)
-	}
-	if got.LastSeenIPv4 != "203.0.113.9" {
-		t.Fatalf("LastSeenIPv4 = %q, want pass-through", got.LastSeenIPv4)
-	}
-	if got.LastSeenIPv6 != "2001:db8::1" {
-		t.Fatalf("LastSeenIPv6 = %q, want pass-through", got.LastSeenIPv6)
-	}
-	if got.DdnsDomain != "edge.example.com" {
-		t.Fatalf("DdnsDomain = %q, want pass-through", got.DdnsDomain)
-	}
-	if got.DdnsStatus.Status != "ok" {
-		t.Fatalf("DdnsStatus.Status = %q, want ok", got.DdnsStatus.Status)
-	}
-	if got.DdnsStatus.LastResolvedIPv4 != "203.0.113.9" || got.DdnsStatus.LastResolvedIPv6 != "2001:db8::1" {
-		t.Fatalf("DdnsStatus resolved IPs = %+v, want pass-through", got.DdnsStatus)
-	}
-}

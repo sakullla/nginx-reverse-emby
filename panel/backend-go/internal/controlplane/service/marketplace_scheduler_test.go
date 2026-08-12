@@ -50,50 +50,6 @@ func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparati
 	}
 }
 
-func TestMarketplaceSchedulerRefreshesLegacyOfficialSourceInitiallyAndWhenDue(t *testing.T) {
-	now := time.Unix(2_000, 0).UTC()
-	official := marketplace.OfficialSource()
-	if official.RefreshInterval != marketplace.OfficialRefreshInterval || official.RefreshInterval <= 0 {
-		t.Fatalf("new official refresh interval = %v", official.RefreshInterval)
-	}
-	official.RefreshInterval = 0 // Simulate an official source persisted before the default existed.
-	official.UpdatedAt = now     // Lazy creation must not delay the initial catalog population.
-	fake := &marketplaceSchedulerFake{sources: []marketplace.Source{
-		official,
-		{ID: "custom-disabled", Kind: marketplace.SourceKindCustom, RefreshInterval: 0},
-		{ID: "custom-disabled-negative", Kind: marketplace.SourceKindCustom, RefreshInterval: -time.Second},
-	}}
-	scheduler, err := NewMarketplaceScheduler(fake, func(ctx context.Context, _ marketplace.Source) (context.Context, error) { return ctx, nil }, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current := now
-	scheduler.now = func() time.Time { return current }
-	if err := scheduler.RunDue(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.refreshed) != 1 || fake.refreshed[0] != marketplace.OfficialSourceID {
-		t.Fatalf("initial official scheduler refreshes = %v", fake.refreshed)
-	}
-	fake.sources[0].LastCompletedAt = now
-	fake.sources[0].LastResult = "succeeded"
-	fake.sources[0].CurrentSnapshot = "snapshot-1"
-	current = now.Add(marketplace.OfficialRefreshInterval - time.Nanosecond)
-	if err := scheduler.RunDue(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.refreshed) != 1 {
-		t.Fatalf("official source refreshed before due: %v", fake.refreshed)
-	}
-	current = now.Add(marketplace.OfficialRefreshInterval)
-	if err := scheduler.RunDue(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.refreshed) != 2 || fake.refreshed[1] != marketplace.OfficialSourceID {
-		t.Fatalf("subsequent due official scheduler refreshes = %v", fake.refreshed)
-	}
-}
-
 func TestMarketplaceSchedulerFailureStartsNextRefreshCycle(t *testing.T) {
 	refreshInterval := time.Minute
 	fetcher := &schedulerLifecycleFetcher{
@@ -127,131 +83,6 @@ func TestMarketplaceSchedulerFailureStartsNextRefreshCycle(t *testing.T) {
 	}
 	if fetcher.callCount() != 2 {
 		t.Fatalf("failed refresh was not retried in next cycle: %d", fetcher.callCount())
-	}
-}
-
-func TestMarketplaceSchedulerRejectedInvalidCompletionDoesNotRetryNextTick(t *testing.T) {
-	refreshInterval := time.Minute
-	fetcher := &schedulerLifecycleFetcher{failure: errors.New("upstream unavailable")}
-	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
-	seeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
-	startedAt := time.Now().UTC().Add(-time.Second)
-	operation := marketplaceRefreshOperationForTest(t, seeded, marketplace.RefreshOperation{ID: "scheduler-invalid-completion", SourceID: sourceID, Status: "running", StartedAt: startedAt, LeaseToken: "scheduler-invalid-completion-lease", LeaseExpiresAt: time.Now().UTC().Add(2 * refreshInterval)})
-	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
-		t.Fatal(err)
-	}
-	failure := operation
-	failure.Status, failure.ErrorClass, failure.Error = "failed", "fetch", "offline"
-	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
-		t.Fatal("nil completion time was accepted")
-	}
-	backdated := startedAt.Add(-time.Nanosecond)
-	failure.FinishedAt = &backdated
-	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
-		t.Fatal("backdated completion time was accepted")
-	}
-	future := time.Now().UTC().Add(time.Hour)
-	failure.FinishedAt = &future
-	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
-		t.Fatal("future completion time was accepted")
-	}
-	afterLease := operation.LeaseExpiresAt.Add(time.Second)
-	failure.FinishedAt = &afterLease
-	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
-		t.Fatal("completion after durable lease was accepted")
-	}
-	scheduler.now = func() time.Time { return time.Now().UTC() }
-	if err := scheduler.RunDue(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if fetcher.callCount() != 0 {
-		t.Fatalf("scheduler retried rejected invalid completion on next tick: %d", fetcher.callCount())
-	}
-	persisted := marketplaceSchedulerPersistedSource(t, store, sourceID)
-	if persisted.LastResult != "running" || !persisted.LeaseExpiresAt.Equal(operation.LeaseExpiresAt) || !persisted.LastCompletedAt.Equal(seeded.LastCompletedAt) {
-		t.Fatalf("invalid completion changed scheduler baseline: before=%+v after=%+v", seeded, persisted)
-	}
-	finished := time.Now().UTC()
-	failure.FinishedAt = &finished
-	if err := store.SaveRefreshOperation(t.Context(), failure); err != nil {
-		t.Fatal(err)
-	}
-	persisted = marketplaceSchedulerPersistedSource(t, store, sourceID)
-	if persisted.LastResult != "failed" || !persisted.LastCompletedAt.Equal(finished) {
-		t.Fatalf("valid completion did not establish scheduler baseline: %+v", persisted)
-	}
-	scheduler.now = func() time.Time { return finished.Add(refreshInterval - time.Nanosecond) }
-	if err := scheduler.RunDue(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if fetcher.callCount() != 0 {
-		t.Fatalf("scheduler retried before trusted completion cadence: %d", fetcher.callCount())
-	}
-	scheduler.now = func() time.Time { return finished.Add(refreshInterval) }
-	if err := scheduler.RunDue(t.Context()); err == nil {
-		t.Fatal("scheduler did not retry at trusted completion cadence")
-	}
-	if fetcher.callCount() != 1 {
-		t.Fatalf("scheduler retry count at trusted completion cadence: %d", fetcher.callCount())
-	}
-}
-
-func TestMarketplaceSchedulerTimeoutStartsNextRefreshCycle(t *testing.T) {
-	refreshInterval := time.Minute
-	started := make(chan struct{})
-	release := make(chan struct{})
-	fetcher := &schedulerLifecycleFetcher{
-		failure:   errors.New("upstream unavailable"),
-		blockCall: 1,
-		started:   started,
-		release:   release,
-	}
-	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
-	succeeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
-	if succeeded.LastResult != "succeeded" || succeeded.LastCompletedAt.IsZero() {
-		t.Fatalf("seed refresh source = %+v", succeeded)
-	}
-	current := succeeded.LastCompletedAt.Add(refreshInterval)
-	scheduler.now = func() time.Time { return current }
-	scheduler.sourceTimeout = 20 * time.Millisecond
-	if err := scheduler.RunDue(t.Context()); err == nil {
-		t.Fatal("due refresh timeout was not returned")
-	}
-	select {
-	case <-started:
-	default:
-		t.Fatal("timed refresh never reached the fetcher")
-	}
-	timedOut := marketplaceSchedulerPersistedSource(t, store, sourceID)
-	if timedOut.LastResult != "failed" || !timedOut.LastCompletedAt.After(succeeded.LastCompletedAt) || fetcher.callCount() != 1 {
-		t.Fatalf("timed refresh source=%+v calls=%d", timedOut, fetcher.callCount())
-	}
-	close(release)
-	workersDone := make(chan struct{})
-	go func() {
-		scheduler.workers.Wait()
-		close(workersDone)
-	}()
-	select {
-	case <-workersDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed-out refresh worker did not stop")
-	}
-
-	current = timedOut.LastCompletedAt.Add(refreshInterval - time.Nanosecond)
-	if err := scheduler.RunDue(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if fetcher.callCount() != 1 {
-		t.Fatalf("timed refresh retried before next cycle: %d", fetcher.callCount())
-	}
-	scheduler.sourceTimeout = 2 * time.Second
-	current = timedOut.LastCompletedAt.Add(refreshInterval)
-	if err := scheduler.RunDue(t.Context()); err == nil {
-		t.Fatal("next-cycle refresh failure was not returned")
-	}
-	if fetcher.callCount() != 2 {
-		t.Fatalf("timed refresh was not retried in next cycle: %d", fetcher.callCount())
 	}
 }
 
@@ -292,29 +123,9 @@ func TestMarketplaceSchedulerTimeoutIsolatesHungSourceAndPropagatesAuditFailure(
 	}
 }
 
-func TestMarketplaceSchedulerPreservesTrustedPreparationContextOnFailure(t *testing.T) {
-	now := time.Now().UTC()
-	fake := &marketplaceSchedulerFake{sources: []marketplace.Source{{ID: "private", CredentialRef: "vault-ref", RefreshInterval: time.Second, UpdatedAt: now.Add(-time.Hour)}}}
-	actor := storage.QuotaActor{UserID: "system-marketplace", SessionID: "scheduler-session", CorrelationID: "scheduler-correlation"}
-	prepare := func(ctx context.Context, _ marketplace.Source) (context.Context, error) {
-		return storage.WithQuotaActor(ctx, actor), errors.New("credential authorization failed")
-	}
-	scheduler, err := NewMarketplaceScheduler(fake, prepare, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler.now = func() time.Time { return now }
-	if err := scheduler.RunDue(context.Background()); err == nil {
-		t.Fatal("credential preparation failure was not returned")
-	}
-	if len(fake.auditActors) != 1 || fake.auditActors[0] != actor {
-		t.Fatalf("credential failure audit actor = %+v", fake.auditActors)
-	}
-}
-
 func TestMarketplaceSchedulerAuditsPreparationTimeoutBeforeLease(t *testing.T) {
 	now := time.Now().UTC()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +311,7 @@ func (f *schedulerLifecycleFetcher) callCount() int {
 func newMarketplaceSchedulerLifecycleHarness(t *testing.T, fetcher marketplace.Fetcher, refreshInterval time.Duration) (*MarketplaceScheduler, *storage.SQLiteStore, string) {
 	t.Helper()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}

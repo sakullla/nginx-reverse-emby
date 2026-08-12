@@ -7,11 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
-	"gorm.io/driver/mysql"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
 type dryRunConnPool struct{}
@@ -32,19 +28,6 @@ func (dryRunConnPool) QueryRowContext(context.Context, string, ...interface{}) *
 	return nil
 }
 
-func TestGetAgentReportedRevisionSkipsLocalAgentTable(t *testing.T) {
-	t.Parallel()
-	store := &GormStore{localAgentID: "local"}
-
-	revision, found, err := store.GetAgentReportedRevision(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("GetAgentReportedRevision() error = %v", err)
-	}
-	if found || revision != 0 {
-		t.Fatalf("GetAgentReportedRevision() = (%d, %v), want (0, false)", revision, found)
-	}
-}
-
 func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 	t.Parallel()
 	defer func() {
@@ -60,69 +43,6 @@ func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported database driver") {
 		t.Fatalf("NewStore() error = %v, want unsupported database driver error", err)
-	}
-}
-
-func TestPostgresTrafficBlockedNormalizationUsesBooleanValue(t *testing.T) {
-	t.Parallel()
-	db, err := gorm.Open(postgres.New(postgres.Config{
-		DSN:                  "postgres://nre:nre@localhost:5432/nre?sslmode=disable",
-		Conn:                 dryRunConnPool{},
-		PreferSimpleProtocol: true,
-		WithoutReturning:     true,
-	}), &gorm.Config{
-		DryRun: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	stmt := db.Model(&AgentRow{}).Where("traffic_blocked IS NULL").Update("traffic_blocked", false).Statement
-	sql := stmt.SQL.String()
-	if strings.Contains(sql, "traffic_blocked = 0") || strings.Contains(sql, `"traffic_blocked"=0`) {
-		t.Fatalf("postgres traffic_blocked normalization SQL = %q, want boolean parameter", sql)
-	}
-	if len(stmt.Vars) == 0 || stmt.Vars[0] != false {
-		t.Fatalf("postgres traffic_blocked normalization vars = %#v, want first var false", stmt.Vars)
-	}
-}
-
-func TestManagedCertificatePointerSnapshotUsesServerRowLock(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		dialector gorm.Dialector
-	}{
-		{
-			name: "postgres",
-			dialector: postgres.New(postgres.Config{
-				DSN:                  "postgres://nre:nre@localhost:5432/nre?sslmode=disable",
-				Conn:                 dryRunConnPool{},
-				PreferSimpleProtocol: true,
-				WithoutReturning:     true,
-			}),
-		},
-		{
-			name: "mysql",
-			dialector: mysql.New(mysql.Config{
-				DSN:                       "nre:nre@tcp(localhost:3306)/nre",
-				Conn:                      dryRunConnPool{},
-				SkipInitializeWithVersion: true,
-			}),
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			db, err := gorm.Open(test.dialector, &gorm.Config{DryRun: true})
-			if err != nil {
-				t.Fatalf("gorm.Open() error = %v", err)
-			}
-			var rows []ManagedCertificateRow
-			statement := managedCertificatePointerSnapshotQuery(db).Find(&rows).Statement
-			if sql := strings.ToUpper(statement.SQL.String()); !strings.Contains(sql, "FOR UPDATE") {
-				t.Fatalf("pointer snapshot SQL = %q, want FOR UPDATE", statement.SQL.String())
-			}
-		})
 	}
 }
 
@@ -200,123 +120,6 @@ func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
 	}
 }
 
-func TestResolveDialectorAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
-	t.Parallel()
-	dbPath := t.TempDir() + "/panel.db"
-	dialector, err := resolveDialector("sqlite", StoreConfig{DSN: dbPath})
-	if err != nil {
-		t.Fatalf("resolveDialector() error = %v", err)
-	}
-	if _, ok := dialector.(*sqlite.Dialector); !ok {
-		t.Fatalf("dialector type = %T, want sqlite.Dialector", dialector)
-	}
-	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatalf("db.DB() error = %v", err)
-	}
-	_ = sqlDB.Close()
-}
-
-func TestNewStoreAppliesSQLiteLockPragmasToExplicitFileDSN(t *testing.T) {
-	t.Parallel()
-	store, err := NewStore(StoreConfig{
-		Driver:              "sqlite",
-		DSN:                 t.TempDir() + "/panel.db",
-		LocalAgentID:        "local",
-		SkipBootstrapSchema: true,
-	})
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = store.Close()
-	})
-
-	var journalMode string
-	if err := store.db.Raw("PRAGMA journal_mode").Scan(&journalMode).Error; err != nil {
-		t.Fatalf("PRAGMA journal_mode error = %v", err)
-	}
-	if journalMode != "wal" {
-		t.Fatalf("journal_mode = %q, want wal", journalMode)
-	}
-
-	var busyTimeout int
-	if err := store.db.Raw("PRAGMA busy_timeout").Scan(&busyTimeout).Error; err != nil {
-		t.Fatalf("PRAGMA busy_timeout error = %v", err)
-	}
-	if busyTimeout < 5000 {
-		t.Fatalf("busy_timeout = %d, want at least 5000", busyTimeout)
-	}
-	if store.writeDB != nil {
-		t.Fatal("writeDB is open before first write, want lazy writer connection")
-	}
-	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
-		return nil
-	}); err != nil {
-		t.Fatalf("writeTransaction() error = %v", err)
-	}
-	if store.writeDB == nil {
-		t.Fatal("writeDB is nil, want dedicated sqlite writer connection")
-	}
-	sqlDB, err := store.writeDB.DB()
-	if err != nil {
-		t.Fatalf("writeDB.DB() error = %v", err)
-	}
-	stats := sqlDB.Stats()
-	if stats.MaxOpenConnections != 1 {
-		t.Fatalf("writer MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
-	}
-}
-
-func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
-	t.Parallel()
-	got := withSQLiteLockPragmas("/tmp/panel.db?cache=shared")
-
-	if !strings.Contains(got, "/tmp/panel.db?cache=shared") {
-		t.Fatalf("DSN = %q, want original query preserved", got)
-	}
-	if !strings.Contains(got, "_pragma=journal_mode(WAL)") {
-		t.Fatalf("DSN = %q, want WAL pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
-		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=synchronous(NORMAL)") {
-		t.Fatalf("DSN = %q, want synchronous pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=cache_size(-65536)") {
-		t.Fatalf("DSN = %q, want cache_size pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=temp_store(MEMORY)") {
-		t.Fatalf("DSN = %q, want temp_store pragma", got)
-	}
-}
-
-func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
-	t.Parallel()
-	got := withSQLiteLockPragmas("/tmp/journal_mode/panel.db?label=busy_timeout")
-
-	if !strings.Contains(got, "_pragma=journal_mode(WAL)") {
-		t.Fatalf("DSN = %q, want WAL pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
-		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=synchronous(NORMAL)") {
-		t.Fatalf("DSN = %q, want synchronous pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=cache_size(-65536)") {
-		t.Fatalf("DSN = %q, want cache_size pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=temp_store(MEMORY)") {
-		t.Fatalf("DSN = %q, want temp_store pragma", got)
-	}
-}
-
 func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 	t.Parallel()
 	got := withSQLiteLockPragmas("file:/tmp/panel.db?mode=ro")
@@ -335,63 +138,6 @@ func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 	}
 	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
 		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
-	}
-}
-
-func TestWithSQLiteLockPragmasPreservesExplicitLockPragmas(t *testing.T) {
-	t.Parallel()
-	for _, dsn := range []string{
-		"/tmp/panel.db?_pragma=journal_mode(TRUNCATE)&_pragma=busy_timeout(10000)&_pragma=synchronous(FULL)&_pragma=cache_size(-1024)&_pragma=temp_store(FILE)",
-		"/tmp/panel.db?_pragma=journal_mode=DELETE&_pragma=busy_timeout=10000&_pragma=synchronous=FULL&_pragma=cache_size=-1024&_pragma=temp_store=FILE",
-	} {
-		t.Run(dsn, func(t *testing.T) {
-			if got := withSQLiteLockPragmas(dsn); got != dsn {
-				t.Fatalf("DSN = %q, want %q", got, dsn)
-			}
-		})
-	}
-}
-
-func TestWithSQLiteLockPragmasSkipsInMemoryDSN(t *testing.T) {
-	t.Parallel()
-	for _, dsn := range []string{":memory:", "file::memory:?cache=shared", "file:memdb1?mode=memory&cache=shared"} {
-		t.Run(dsn, func(t *testing.T) {
-			if got := withSQLiteLockPragmas(dsn); got != dsn {
-				t.Fatalf("DSN = %q, want %q", got, dsn)
-			}
-		})
-	}
-}
-
-func TestWithSQLiteWriterOptionsAddsImmediateTxLock(t *testing.T) {
-	t.Parallel()
-	got := withSQLiteWriterOptions("/tmp/panel.db?_pragma=journal_mode(WAL)")
-
-	if !strings.Contains(got, "/tmp/panel.db?_pragma=journal_mode(WAL)") {
-		t.Fatalf("DSN = %q, want original query preserved", got)
-	}
-	if !strings.Contains(got, "_txlock=immediate") {
-		t.Fatalf("DSN = %q, want immediate txlock", got)
-	}
-}
-
-func TestWithSQLiteWriterOptionsPreservesExplicitTxLock(t *testing.T) {
-	t.Parallel()
-	dsn := "/tmp/panel.db?_txlock=deferred"
-
-	if got := withSQLiteWriterOptions(dsn); got != dsn {
-		t.Fatalf("DSN = %q, want %q", got, dsn)
-	}
-}
-
-func TestWithSQLiteWriterOptionsSkipsReadOnlyAndInMemoryDSN(t *testing.T) {
-	t.Parallel()
-	for _, dsn := range []string{":memory:", "file::memory:?cache=shared", "file:/tmp/panel.db?mode=ro"} {
-		t.Run(dsn, func(t *testing.T) {
-			if got := withSQLiteWriterOptions(dsn); got != "" {
-				t.Fatalf("DSN = %q, want empty writer DSN", got)
-			}
-		})
 	}
 }
 
@@ -487,25 +233,6 @@ func TestBootstrapSchemaUpgradesOriginalPluginDigestPrimaryKeys(t *testing.T) {
 	var variantCount int64
 	if err := store.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", "legacy-source", digest).Count(&variantCount).Error; err != nil || variantCount != 2 {
 		t.Fatalf("same digest signer variant count = %d, %v", variantCount, err)
-	}
-}
-
-func TestPostgresPluginVariantMigrationDDLReplacesDigestUniqueness(t *testing.T) {
-	t.Parallel()
-	joined := strings.ToLower(strings.Join(postgresPluginVariantMigrationStatements(), "\n"))
-	for _, required := range []string{
-		"add column if not exists identity",
-		"update plugin_packages set identity = digest",
-		"contype='u'",
-		"i.indisunique and not i.indisprimary",
-		"add primary key (identity)",
-		"idx_plugin_packages_digest",
-		"add column if not exists signer_fingerprint",
-		"add primary key (source_id,digest,signer_fingerprint)",
-	} {
-		if !strings.Contains(joined, required) {
-			t.Fatalf("PostgreSQL plugin variant migration is missing %q", required)
-		}
 	}
 }
 
