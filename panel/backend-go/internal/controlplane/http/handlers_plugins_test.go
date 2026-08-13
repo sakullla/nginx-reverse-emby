@@ -165,6 +165,12 @@ func TestPluginReadHandlersUseAuthenticatedResourceScopedProjection(t *testing.T
 	if permission := requestPermission(httptest.NewRequest(http.MethodPost, "/panel-api/plugins/p/instances/i/actions/a", nil)); permission != authz.PermissionResourceWrite {
 		t.Fatalf("dynamic action permission=%q", permission)
 	}
+	if permission := requestPermission(httptest.NewRequest(http.MethodPost, "/panel-api/plugins/p/configure", nil)); permission != authz.PermissionResourceWrite {
+		t.Fatalf("configure permission=%q", permission)
+	}
+	if permission := requestPermission(httptest.NewRequest(http.MethodPost, "/panel-api/plugins/p/enable", nil)); permission != authz.PermissionSystemAdmin {
+		t.Fatalf("enable permission=%q", permission)
+	}
 	logRequest := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/visible.plugin/instances/visible/logs?agent_id=edge-a&limit=25", nil)
 	logRequest.SetPathValue("id", "visible.plugin")
 	logRequest.SetPathValue("instance", "visible")

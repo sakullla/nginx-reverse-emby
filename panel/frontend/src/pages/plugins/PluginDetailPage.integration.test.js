@@ -2,14 +2,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginDetailPage from './PluginDetailPage.vue'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), fetchAgents: vi.fn(), refreshActor: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
+  post: vi.fn(),
+  fetchAgents: vi.fn(),
+  refreshActor: vi.fn(),
+  actor: { permissions: ['*'], visible_resource_groups: [] }
+}))
 vi.mock('../../api/client', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'rpc.plugin' } }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
 vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
-  return { ...actual, useAccessControl: () => ({ actor: { value: { permissions: ['*'], visible_resource_groups: [] } }, can: () => true, refreshActor: mocks.refreshActor }) }
+  return {
+    ...actual,
+    useAccessControl: () => ({
+      actor: { value: mocks.actor },
+      can: (permission) => mocks.actor.permissions.includes('*') || mocks.actor.permissions.includes(permission),
+      refreshActor: mocks.refreshActor
+    })
+  }
 })
 vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
   default: {
@@ -26,6 +39,7 @@ describe('PluginDetailPage production API projection', () => {
     mocks.post.mockReset()
     mocks.fetchAgents.mockReset()
     mocks.refreshActor.mockReset()
+    mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
   })
 
   it('keeps schema and handle metadata through the real API adapter', async () => {
@@ -133,6 +147,39 @@ describe('PluginDetailPage production API projection', () => {
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { region: 'eu', sources: [{ host: 'edge.example' }] }
+    }))
+  })
+
+  it('lets a resource writer persist an existing instance through the real configure adapter', async () => {
+    mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['group-a'] }
+    mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', name: 'Edge A', status: 'online' }])
+    mocks.get.mockImplementation(async (path) => {
+      if (path.endsWith('/operations')) return { data: { operations: [] } }
+      if (path.includes('/access/resource-groups')) return { data: { resource_groups: [{ id: 'group-a', name: '组 A' }] } }
+      return { data: {
+        plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+        package: {
+          manifest: { id: 'rpc.plugin', name: 'RPC Plugin' }, runtime: { kind: 'rpc-service' }, artifacts: [], permissions: [], permission_diff: { added: [], removed: [] },
+          config_schema: { type: 'object', required: ['mode'], properties: { mode: { type: 'string', title: '模式' } } }
+        },
+        instances: [{
+          id: 'instance-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [],
+          config: { mode: 'observe' }, config_version: 1, current_state: 'active'
+        }],
+        agent_statuses: []
+      } }
+    })
+    mocks.post.mockResolvedValue({ data: { result: {} } })
+    const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    await wrapper.get('.declarative-field input[type="text"]').setValue('block')
+    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
+      instance_id: 'instance-a',
+      resource_group_id: 'group-a',
+      config: { mode: 'block' }
     }))
   })
 })
