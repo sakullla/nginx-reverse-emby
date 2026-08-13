@@ -48,3 +48,10 @@ func TestAuthorizePluginConfigureScopeAllowsAdminCreate(t *testing.T) {
 		t.Fatalf("admin create = %v", err)
 	}
 }
+
+func TestAuthorizePluginConfigureScopeLeavesActorIDOnlyOnLegacyContract(t *testing.T) {
+	request := PluginConfigureRequest{ResourceGroupID: "group-b", ActorID: "admin"}
+	if err := authorizePluginConfigureScope(request, false, storage.PluginInstanceRow{}); err != nil {
+		t.Fatalf("ActorID-only create = %v", err)
+	}
+}

@@ -73,6 +73,20 @@ func TestPluginWriteOnlySecretInstallConfigureDetailAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writer := authz.Actor{ID: "operator", Permissions: []string{authz.PermissionResourceWrite}, VisibleResourceGroups: []string{"default"}}
+	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Targets: []string{"local", "edge-peer"}, Config: json.RawMessage(`{"mode":"block"}`), ActorID: writer.ID, Actor: writer}); err != nil {
+		t.Fatalf("in-group writer save = %v", err)
+	}
+	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"edge-peer": "active", "local": "active"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "writer-created", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: writer.ID, Actor: writer}); err == nil {
+		t.Fatal("writer create was allowed")
+	}
+	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "other", Targets: []string{"edge-other"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: writer.ID, Actor: writer}); err == nil {
+		t.Fatal("writer cross-group retarget was allowed")
+	}
 	detail, err := service.Detail(ctx, installed.PluginID)
 	if err != nil || len(detail.Instances) != 1 || strings.Contains(string(detail.Instances[0].Config), "install-plaintext") || len(detail.Instances[0].SecretFields) != 1 || !detail.Instances[0].SecretFields[0].Present {
 		t.Fatalf("detail=%+v error=%v", detail, err)

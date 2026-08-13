@@ -2861,7 +2861,7 @@ func lifecycleID(prefix string) string {
 
 func authorizePluginConfigureScope(request PluginConfigureRequest, exists bool, instance storage.PluginInstanceRow) error {
 	actor := request.Actor
-	if actor.ID == "" && request.ActorID == "" {
+	if actor.ID == "" {
 		return nil
 	}
 	if actor.Bootstrap || actor.Has(authz.PermissionSystemAdmin) || actor.Has(authz.PermissionAll) {
