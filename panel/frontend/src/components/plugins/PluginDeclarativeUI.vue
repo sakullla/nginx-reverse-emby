@@ -1,7 +1,7 @@
 <script setup>
 import { reactive, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
-import { collectHiddenPointers, prunePointer } from '../../api/pluginCondition.js'
+import { collectHiddenPointers, prunePointer, resolvePointer } from '../../api/pluginCondition.js'
 
 const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, secretFields: { type: Array, default: () => [] }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
 const emit = defineEmits(['submit', 'dynamic'])
@@ -14,6 +14,34 @@ function reset() {
   for (const key of Object.keys(model)) delete model[key]
   for (const key of Object.keys(secretReplacements)) delete secretReplacements[key]
   Object.assign(model, clone(props.config))
+  seedDefaults()
+}
+
+// Fill missing leaf pointers with their synthesized schema defaults so a fresh
+// config still shows (and can save) declared defaults and boolean false.
+function seedDefaults() {
+  const walk = (components, basePointer) => {
+    for (const component of components || []) {
+      if (!component || typeof component !== 'object') continue
+      const full = basePointer + (component.binding || '')
+      if (component.type === 'section') {
+        walk(component.children || [], basePointer)
+      } else if (component.type === 'array') {
+        const items = resolvePointer(model, full)
+        if (Array.isArray(items) && Array.isArray(component.children) && component.children.length) {
+          items.forEach((item, index) => walk(component.children, `${full}/${index}`))
+        }
+      } else if (component.binding && component.type !== 'secret') {
+        const current = resolvePointer(model, full)
+        if (component.type === 'toggle') {
+          if (current === undefined) setValue(full, component.default === undefined ? false : component.default)
+        } else if (component.default !== undefined && current === undefined) {
+          setValue(full, component.default)
+        }
+      }
+    }
+  }
+  walk(props.document.components || [], '')
 }
 function secretPresent(pointer) { return props.secretFields.some((field) => field.pointer === pointer && field.present) }
 function setSecret(pointer, value) {

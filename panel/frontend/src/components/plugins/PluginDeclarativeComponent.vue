@@ -24,6 +24,12 @@ const touched = ref(false)
 function value() { return resolvePointer(props.model, fullPointer.value) }
 function change(next) { touched.value = true; emit('change', fullPointer.value, next) }
 function changeSecret(next) { emit('secret', fullPointer.value, next) }
+// Preserve the typed option value (number vs string) instead of the DOM's
+// always-string `select` value, so numeric enums round-trip unchanged.
+function selectValue(raw) {
+  const option = (props.component.options || []).find((item) => String(item.value) === raw)
+  return option ? option.value : raw
+}
 
 const items = computed(() => Array.isArray(value()) ? value() : [])
 function addItem() { change([...items.value, isObjectItems.value ? {} : '']) }
@@ -82,7 +88,7 @@ const error = computed(() => touched.value ? constraintError(props.component, va
 
     <label v-else-if="component.type === 'toggle'" class="declarative-toggle"><input type="checkbox" :checked="value() === true" :disabled="component.read_only" @change="change($event.target.checked)"><span>{{ component.label }}</span></label>
 
-    <label v-else-if="component.type === 'select'" class="declarative-field"><span>{{ component.label }}</span><select :value="value()" :required="component.required" :disabled="component.read_only" @change="change($event.target.value)"><option v-for="option in component.options || []" :key="option.value" :value="option.value">{{ option.label }}</option></select><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small><small v-if="error" class="declarative-error">{{ error }}</small></label>
+    <label v-else-if="component.type === 'select'" class="declarative-field"><span>{{ component.label }}</span><select :value="value()" :required="component.required" :disabled="component.read_only" @change="change(selectValue($event.target.value))"><option v-for="option in component.options || []" :key="option.value" :value="option.value">{{ option.label }}</option></select><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small><small v-if="error" class="declarative-error">{{ error }}</small></label>
 
     <label v-else-if="component.type === 'number'" class="declarative-field"><span>{{ component.label }}</span><input type="number" :value="value()" :min="component.minimum" :max="component.maximum" :step="component.step || 'any'" :required="component.required" :readonly="component.read_only" @input="change($event.target.value === '' ? null : Number($event.target.value))"><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small><small v-if="error" class="declarative-error">{{ error }}</small></label>
 

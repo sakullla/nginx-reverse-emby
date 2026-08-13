@@ -11,7 +11,7 @@ import {
   rollbackPlugin,
   uninstallPlugin
 } from '../../api/plugins'
-import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
+import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripReadOnlyConfigValues, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
 import { filterPluginDetailForActor, useAccessControl } from '../../context/useAccessControl'
 import BaseTabs from '../../components/base/BaseTabs.vue'
@@ -178,7 +178,7 @@ async function saveConfig(payload) {
         consumer: { kind: binding.consumer.kind, id: binding.consumer.id },
         target_agent_id: binding.target_agent_id
       })),
-      config: payload.config,
+      config: stripReadOnlyConfigValues(detail.value.package?.config_schema, payload.config),
       secret_replacements: payload.secret_replacements || {}
     })
     await load()

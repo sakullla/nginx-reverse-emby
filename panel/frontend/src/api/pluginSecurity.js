@@ -118,7 +118,10 @@ function schemaProperties(schema) {
 
 function schemaEnumOptions(field) {
   if (!Array.isArray(field.enum)) return []
-  return field.enum.filter((item) => typeof item === 'string').slice(0, 100).map((item) => ({ value: item, label: item }))
+  return field.enum
+    .filter((item) => typeof item === 'string' || typeof item === 'number')
+    .slice(0, 100)
+    .map((item) => ({ value: item, label: String(item) }))
 }
 
 function synthesizeComponent(name, field, pointerPrefix, required) {
@@ -132,37 +135,56 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
   }
   const annotation = {}
   if (field.readOnly === true) annotation.read_only = true
-  switch (field.type) {
+  // A JSON Schema node may omit `type` yet still carry object/array keywords.
+  const type = field.type || (field.properties ? 'object' : field.items ? 'array' : undefined)
+  switch (type) {
     case 'object':
       return [{ type: 'section', ...identity, ...annotation, children: synthesizeObjectProperties(field, pointer) }]
     case 'array': {
       const items = field.items
-      if (items && typeof items === 'object' && !Array.isArray(items) && items.type === 'object') {
+      if (items && typeof items === 'object' && !Array.isArray(items) && (items.type === 'object' || items.properties)) {
         return [{ type: 'array', ...identity, ...annotation, binding: pointer, required, children: synthesizeObjectProperties(items, '') }]
       }
       return [{ type: 'array', ...identity, ...annotation, binding: pointer, required }]
     }
-    case 'boolean':
-      return [{ type: 'toggle', ...identity, ...annotation, binding: pointer, required }]
+    case 'boolean': {
+      const component = { type: 'toggle', ...identity, ...annotation, binding: pointer, required }
+      component.default = field.default === undefined ? false : field.default
+      return [component]
+    }
     case 'number':
     case 'integer': {
+      if (Array.isArray(field.enum) && field.enum.length) {
+        const component = { type: 'select', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }
+        if (field.default !== undefined) component.default = field.default
+        return [component]
+      }
       const component = { type: 'number', ...identity, ...annotation, binding: pointer, required }
       if (Number.isFinite(field.minimum)) component.minimum = field.minimum
       if (Number.isFinite(field.maximum)) component.maximum = field.maximum
       if (Number.isFinite(field.multipleOf)) component.step = field.multipleOf
+      if (field.default !== undefined) component.default = field.default
       return [component]
     }
     case 'string': {
       if (field.writeOnly === true) return [{ type: 'secret', ...identity, ...annotation, binding: pointer, required }]
-      if (Array.isArray(field.enum) && field.enum.length) return [{ type: 'select', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }]
+      if (Array.isArray(field.enum) && field.enum.length) {
+        const component = { type: 'select', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }
+        if (field.default !== undefined) component.default = field.default
+        return [component]
+      }
       const component = { type: 'text', ...identity, ...annotation, binding: pointer, required }
       if (Number.isFinite(field.minLength)) component.min_length = field.minLength
       if (Number.isFinite(field.maxLength)) component.max_length = field.maxLength
       if (typeof field.pattern === 'string') component.pattern = field.pattern
+      if (field.default !== undefined) component.default = field.default
       return [component]
     }
     default:
-      return []
+      // `null` and absent `type` are both accepted by the backend vocabulary.
+      // Render them read-only so the field stays visible and its broker-owned
+      // value round-trips without being editable or silently dropped.
+      return [{ type: 'text', ...identity, ...annotation, read_only: true, binding: pointer, required }]
   }
 }
 
@@ -182,15 +204,15 @@ export function schemaToUIComponents(schema) {
   return synthesizeObjectProperties(schema, '')
 }
 
-const WRITE_ONLY_STRIPPED = Symbol('write-only stripped')
+const ANNOTATION_STRIPPED = Symbol('annotation-stripped')
 
-function stripWriteOnlyConfigValue(schema, value) {
-  if (schema && typeof schema === 'object' && !Array.isArray(schema) && schema.writeOnly === true) return WRITE_ONLY_STRIPPED
+function stripAnnotationConfigValue(schema, value, annotation) {
+  if (schema && typeof schema === 'object' && !Array.isArray(schema) && schema[annotation] === true) return ANNOTATION_STRIPPED
   if (Array.isArray(value)) {
     const itemsSchema = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema.items : undefined
     return value.map((item) => {
-      const cleaned = stripWriteOnlyConfigValue(itemsSchema, item)
-      return cleaned === WRITE_ONLY_STRIPPED ? null : cleaned
+      const cleaned = stripAnnotationConfigValue(itemsSchema, item, annotation)
+      return cleaned === ANNOTATION_STRIPPED ? null : cleaned
     })
   }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -198,8 +220,8 @@ function stripWriteOnlyConfigValue(schema, value) {
     const out = {}
     for (const [key, child] of Object.entries(value)) {
       const childSchema = properties && typeof properties === 'object' && !Array.isArray(properties) ? properties[key] : undefined
-      const cleaned = stripWriteOnlyConfigValue(childSchema, child)
-      if (cleaned !== WRITE_ONLY_STRIPPED) out[key] = cleaned
+      const cleaned = stripAnnotationConfigValue(childSchema, child, annotation)
+      if (cleaned !== ANNOTATION_STRIPPED) out[key] = cleaned
     }
     return out
   }
@@ -210,7 +232,14 @@ function stripWriteOnlyConfigValue(schema, value) {
 // declarative renderer, so secret plaintext can never be echoed back in the
 // submit payload. Secrets travel exclusively via secret_replacements.
 export function stripWriteOnlyConfigValues(schema, config) {
-  return stripWriteOnlyConfigValue(schema, config)
+  return stripAnnotationConfigValue(schema, config, 'writeOnly')
+}
+
+// Remove readOnly (broker-owned, display-only) values from a config value
+// before it is persisted through a configure operation, so the server's
+// readOnly rejection never fires for values the client merely echoed back.
+export function stripReadOnlyConfigValues(schema, config) {
+  return stripAnnotationConfigValue(schema, config, 'readOnly')
 }
 
 export function safePluginExport(detail, operations) {

@@ -6,6 +6,7 @@ import {
   safePluginExport,
   sanitizePluginText,
   schemaToUIComponents,
+  stripReadOnlyConfigValues,
   stripWriteOnlyConfigValues
 } from './pluginSecurity'
 
@@ -90,6 +91,66 @@ describe('plugin UI security boundary', () => {
       credentials: { region: 'us' },
       endpoints: [{ host: 'a' }, { host: 'b' }]
     })
+  })
+
+  it('strips readOnly values from config while keeping client-owned values', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        mode: { type: 'string' },
+        status: { type: 'string', readOnly: true },
+        metadata: { type: 'object', properties: { status: { type: 'string', readOnly: true }, note: { type: 'string' } } },
+        endpoints: { type: 'array', items: { type: 'object', properties: { host: { type: 'string' }, state: { type: 'string', readOnly: true } } } }
+      }
+    }
+    const config = {
+      mode: 'observe',
+      status: 'broker-owned',
+      metadata: { status: 'broker', note: 'mine' },
+      endpoints: [{ host: 'a', state: 'up' }, { host: 'b', state: 'down' }]
+    }
+    expect(stripReadOnlyConfigValues(schema, config)).toEqual({
+      mode: 'observe',
+      metadata: { note: 'mine' },
+      endpoints: [{ host: 'a' }, { host: 'b' }]
+    })
+  })
+
+  it('synthesizes numeric enums as a select and keeps defaults', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        level: { type: 'integer', title: '级别', enum: [1, 2, 3], default: 2 },
+        priority: { type: 'number', enum: [0.5, 1, 1.5] }
+      }
+    })
+    expect(components[0]).toMatchObject({ type: 'select', binding: '/level', default: 2, options: [{ value: 1, label: '1' }, { value: 2, label: '2' }, { value: 3, label: '3' }] })
+    expect(components[1]).toMatchObject({ type: 'select', binding: '/priority', options: [{ value: 0.5, label: '0.5' }, { value: 1, label: '1' }, { value: 1.5, label: '1.5' }] })
+  })
+
+  it('renders null and unknown-type fields as read-only text instead of dropping them', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        note: { type: 'null', title: 'Null note' },
+        untyped: { title: 'No type' }
+      }
+    })
+    expect(components.map((component) => component.id)).toEqual(['note', 'untyped'])
+    expect(components[0]).toMatchObject({ type: 'text', binding: '/note', read_only: true })
+    expect(components[1]).toMatchObject({ type: 'text', binding: '/untyped', read_only: true })
+  })
+
+  it('seeds boolean defaults to false and preserves explicit defaults', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean' },
+        debug: { type: 'boolean', default: true }
+      }
+    })
+    expect(components[0]).toMatchObject({ type: 'toggle', binding: '/enabled', default: false })
+    expect(components[1]).toMatchObject({ type: 'toggle', binding: '/debug', default: true })
   })
 
   it('preserves structured DTO metadata while pruning only broker-owned values', () => {

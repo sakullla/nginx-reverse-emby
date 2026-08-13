@@ -127,4 +127,38 @@ describe('PluginDeclarativeUI', () => {
 		expect(wrapper.emitted('submit')).toBeUndefined()
 		expect(wrapper.emitted('dynamic')[0][0].target_id).toBe('relay-1')
 	})
+
+	it('seeds schema defaults into a fresh config before submit', async () => {
+		const defaultsDocument = {
+			schema_version: 1,
+			title: 'Defaults',
+			components: [
+				{ type: 'toggle', id: 'enabled', label: 'Enabled', binding: '/enabled', default: false },
+				{ type: 'text', id: 'name', label: 'Name', binding: '/name', default: 'default-name' },
+				{ type: 'select', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'basic', label: 'Basic' }], default: 'basic' }
+			],
+			actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+		}
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: defaultsDocument, config: {}, canConfigure: true } })
+		expect(wrapper.get('input[type="checkbox"]').element.checked).toBe(false)
+		expect(wrapper.get('input[type="text"]').element.value).toBe('default-name')
+		expect(wrapper.get('select').element.value).toBe('basic')
+		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+		expect(wrapper.emitted('submit')[0][0].config).toEqual({ enabled: false, name: 'default-name', mode: 'basic' })
+	})
+
+	it('round-trips numeric enum values through a select', async () => {
+		const numericDocument = {
+			schema_version: 1,
+			title: 'Numeric',
+			components: [
+				{ type: 'select', id: 'level', label: 'Level', binding: '/level', options: [{ value: 1, label: '1' }, { value: 2, label: '2' }] }
+			],
+			actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+		}
+		const wrapper = mount(PluginDeclarativeUI, { props: { document: numericDocument, config: { level: 1 }, canConfigure: true } })
+		await wrapper.get('select').setValue('2')
+		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+		expect(wrapper.emitted('submit')[0][0].config).toEqual({ level: 2 })
+	})
 })
