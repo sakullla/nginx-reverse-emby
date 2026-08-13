@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchCurrentActor } from '../api/access'
 import { clearCredentials, setSessionToken } from '../api/authState'
-import { filterPluginDetailForActor, useAccessControl } from './useAccessControl'
+import { filterPluginDetailForActor, pickDefaultResourceGroupID, useAccessControl, visibleResourceGroupsForActor } from './useAccessControl'
 
 vi.mock('../api/access', () => ({
   fetchCurrentActor: vi.fn()
@@ -46,8 +46,32 @@ describe('plugin resource-group projection', () => {
     expect(visible.agent_statuses.map((item) => item.agent_id)).toEqual(['edge-a'])
   })
 
-  it('hides plugins with no visible instances and preserves wildcard administration', () => {
-    expect(filterPluginDetailForActor(detail, { permissions: ['resource.read'], visible_resource_groups: [] })).toBeNull()
+  it('keeps installed plugins without exposing instances outside visible groups', () => {
+    const hidden = filterPluginDetailForActor(detail, { permissions: ['resource.read'], visible_resource_groups: [] })
+    expect(hidden.instances).toEqual([])
+    expect(hidden.agent_statuses).toEqual([])
     expect(filterPluginDetailForActor(detail, { permissions: ['*'], visible_resource_groups: [] })).toBe(detail)
+  })
+
+  it('keeps an installed plugin that has no instances yet', () => {
+    const installed = { plugin: { plugin_id: 'official.waf' }, instances: [], agent_statuses: [] }
+    const visible = filterPluginDetailForActor(installed, { permissions: ['resource.read'], visible_resource_groups: ['default'] })
+    expect(visible.plugin.plugin_id).toBe('official.waf')
+    expect(visible.instances).toEqual([])
+    expect(visible.agent_statuses).toEqual([])
+  })
+})
+
+describe('visible resource group selection', () => {
+  it('lists only groups the actor can see and prefers default when visible', () => {
+    const groups = [
+      { id: 'team', name: '团队' },
+      { id: 'default', name: '默认组' },
+      { id: 'hidden', name: '隐藏组' }
+    ]
+    expect(visibleResourceGroupsForActor(groups, { permissions: ['resource.read'], visible_resource_groups: ['team', 'default'] }).map((group) => group.id)).toEqual(['team', 'default'])
+    expect(pickDefaultResourceGroupID(groups)).toBe('default')
+    expect(pickDefaultResourceGroupID([{ id: 'team', name: '团队' }])).toBe('team')
+    expect(pickDefaultResourceGroupID([])).toBe('')
   })
 })

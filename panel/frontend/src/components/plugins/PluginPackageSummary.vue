@@ -18,19 +18,20 @@ function bytes(value) {
     <div class="package-summary__identity">
       <div>
         <span :class="['package-summary__source', { official: source.kind === 'official' }]">
-          {{ source.kind === 'official' ? '官方来源' : '非官方来源' }} · {{ source.risk_label || '风险未标注' }}
+          {{ source.kind === 'official' ? '官方来源' : '非官方来源' }}
         </span>
         <h2>{{ detail.manifest?.name || detail.manifest?.id || '插件包' }}</h2>
-        <p>{{ detail.manifest?.id }} · {{ detail.version }}</p>
+        <p>{{ detail.version }}</p>
       </div>
-      <dl>
-        <div><dt>Runtime</dt><dd>{{ detail.runtime?.kind || '—' }}</dd></div>
-        <div><dt>ABI</dt><dd>{{ detail.runtime?.abi || '—' }}</dd></div>
-        <div><dt>宿主范围</dt><dd>{{ detail.runtime?.host_scope || '—' }}</dd></div>
-      </dl>
     </div>
+    <details class="package-summary__technical">
+      <summary>技术详情</summary>
     <div class="package-summary__digest"><span>Package SHA-256</span><code>{{ detail.digest || '—' }}</code></div>
     <dl class="package-summary__facts">
+      <div><dt>Runtime</dt><dd>{{ detail.runtime?.kind || '—' }}</dd></div>
+      <div><dt>ABI</dt><dd>{{ detail.runtime?.abi || '—' }}</dd></div>
+      <div><dt>宿主范围</dt><dd>{{ detail.runtime?.host_scope || '—' }}</dd></div>
+      <div><dt>来源风险</dt><dd>{{ source.risk_label || '风险未标注' }}</dd></div>
       <div><dt>签名算法</dt><dd>{{ detail.signature?.algorithm || '—' }}</dd></div>
       <div><dt>签名 Key ID</dt><dd>{{ detail.signature?.key_id || '—' }}</dd></div>
       <div><dt>签名指纹</dt><dd>{{ source.signer_fingerprint || '由控制面验证' }}</dd></div>
@@ -54,11 +55,14 @@ function bytes(value) {
       <p v-for="permission in detail.permission_diff?.added || []" :key="`add-${permission}`" class="permission-added">+ {{ permission }}</p>
       <p v-for="permission in detail.permission_diff?.removed || []" :key="`remove-${permission}`" class="permission-removed">− {{ permission }}</p>
     </div>
+    </details>
   </section>
 </template>
 
 <style scoped>
 .package-summary { display: grid; gap: var(--space-5); }
+.package-summary__technical { display: grid; gap: var(--space-4); }
+.package-summary__technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .package-summary__identity { display: flex; justify-content: space-between; gap: var(--space-5); }
 h2 { margin: var(--space-2) 0 var(--space-1); }
 p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }

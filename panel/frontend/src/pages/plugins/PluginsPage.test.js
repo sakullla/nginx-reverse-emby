@@ -55,19 +55,38 @@ beforeEach(() => {
 })
 
 describe('PluginsPage', () => {
-  it('shows only plugins with instances in the actor visible resource groups', async () => {
+  it('keeps installed plugins without visible instances and hides foreign instance facts', async () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.text()).toContain('visible')
-    expect(wrapper.text()).not.toContain('foreign')
-    expect(wrapper.text()).toContain('可见实例')
+    expect(wrapper.text()).toContain('foreign')
+    expect(wrapper.text()).toContain('已部署 1 个实例')
+    expect(wrapper.text()).toContain('尚未部署')
+    expect(wrapper.text()).toContain('官方来源')
+    expect(wrapper.text()).not.toContain('nre:rpc/v1')
+    expect(wrapper.text()).not.toContain('可见实例')
+  })
+
+  it('shows an installed plugin with no instances so the actor can open detail', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'fresh' }])
+    mocks.fetchPluginDetail.mockResolvedValue({
+      plugin: { plugin_id: 'fresh', current_lifecycle: 'disabled', active_source_kind: 'official' },
+      package: { version: '1.0.0', manifest: { name: 'Fresh Plugin' } },
+      instances: [],
+      agent_statuses: []
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Fresh Plugin')
+    expect(wrapper.text()).toContain('尚未部署')
+    expect(wrapper.find('a.plugin-card-link').attributes('href')).toBe('/plugins/fresh')
   })
 
   it('renders the shared page header title and subtitle', async () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('.page-title').text()).toBe('已安装插件')
-    expect(wrapper.find('.page-subtitle').text()).toContain('资源组')
+    expect(wrapper.find('.page-subtitle').text()).toContain('尚未部署')
     expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/marketplace')
   })
 

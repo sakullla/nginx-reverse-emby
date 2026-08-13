@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchRepositoryContents, fetchRepositorySources } from '../../api/pluginRepositories'
 import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
@@ -7,6 +8,8 @@ import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
+
+const router = useRouter()
 
 const loading = ref(true)
 const actionBusy = ref(false)
@@ -74,6 +77,13 @@ function installSelection() {
   }
 }
 
+function installedStatus(item) {
+  const current = installed.value.find((plugin) => plugin.plugin_id === item?.plugin.id)
+  if (!current) return '未安装'
+  if (current.active_package_digest && current.active_package_digest !== item?.plugin.sha256) return '可升级'
+  return '已安装'
+}
+
 function openConfirm() {
   if (alreadyInstalled.value) return
   confirmVisible.value = true
@@ -89,10 +99,11 @@ async function applyPackage() {
   actionBusy.value = true
   error.value = ''
   try {
-    if (isUpgrade.value) await upgradePlugin(selected.value.plugin.id, installSelection())
+    const pluginID = selected.value.plugin.id
+    if (isUpgrade.value) await upgradePlugin(pluginID, installSelection())
     else await installPlugin(installSelection())
-    installed.value = await fetchPlugins()
     confirmVisible.value = false
+    await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || '提交插件包失败')
   } finally {
@@ -107,7 +118,7 @@ async function applyPackage() {
       <div class="page-header__left">
         <RouterLink to="/plugins" class="back-link">← 已安装插件</RouterLink>
         <h1 class="page-title">插件市场</h1>
-        <p class="page-subtitle">只读取控制面验证后的签名包投影；市场内容不能向面板注入 HTML 或 JavaScript。</p>
+        <p class="page-subtitle">浏览已验证的插件，安装或升级后会进入详情继续部署。</p>
       </div>
       <div class="page-header__right">
         <RouterLink class="btn btn-secondary" to="/plugins/repositories">管理仓库源</RouterLink>
@@ -132,29 +143,39 @@ async function applyPackage() {
         <aside class="plugin-marketplace-list" aria-label="可安装插件">
           <button v-for="item in packages" :key="`${item.source.id}:${item.plugin.id}:${item.plugin.version}`" type="button" :class="{ active: item === selected }" @click="selectPackage(item)">
             <strong>{{ item.plugin.name || item.plugin.id }}</strong>
-            <small>{{ item.plugin.version }} · {{ item.plugin.runtime?.kind || 'runtime 未声明' }}</small>
-            <span>{{ item.source.kind === 'official' ? '官方' : '非官方' }} · {{ item.source.risk_label || '风险未标注' }}</span>
+            <small>{{ item.plugin.version }} · {{ item.source.kind === 'official' ? '官方来源' : '非官方来源' }}</small>
+            <span>{{ installedStatus(item) }}</span>
           </button>
         </aside>
 
         <div class="plugin-marketplace-detail">
           <template v-if="detail">
-            <PluginPackageSummary :detail="detail" :source="source" />
-            <PluginRiskNotices :package-detail="detail" :source="source" />
-            <section class="permission-review">
-              <h3>精确权限确认</h3>
-              <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
-              <ul v-else class="permission-list">
-                <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
-              </ul>
-              <p v-if="alreadyInstalled">当前 digest 已安装。</p>
-              <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选 generation；失败时保留当前 active 版本。</p>
+            <section class="marketplace-primary">
+              <div>
+                <p class="marketplace-primary__source">{{ source.kind === 'official' ? '官方来源' : '非官方来源' }}</p>
+                <h2>{{ detail.manifest?.name || selected?.plugin.name || selected?.plugin.id }}</h2>
+                <p>{{ selected?.plugin.version }} · {{ installedStatus(selected) }}</p>
+              </div>
               <div class="permission-review__actions">
                 <button class="btn btn-primary" type="button" :disabled="alreadyInstalled" @click="openConfirm">
                   {{ isUpgrade ? '升级插件' : '安装插件' }}
                 </button>
               </div>
+              <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
+              <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
             </section>
+            <details class="marketplace-technical">
+              <summary>技术详情</summary>
+              <PluginPackageSummary :detail="detail" :source="source" />
+              <PluginRiskNotices :package-detail="detail" :source="source" />
+              <section class="permission-review">
+                <h3>精确权限确认</h3>
+                <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
+                <ul v-else class="permission-list">
+                  <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
+                </ul>
+              </section>
+            </details>
           </template>
           <EmptyState v-else icon="🧩" title="选择插件查看详情" description="从左侧列表选择一个插件查看宿主验证详情。" />
         </div>
@@ -252,6 +273,12 @@ async function applyPackage() {
   padding: var(--space-6);
 }
 
+.marketplace-primary { display: grid; gap: var(--space-3); }
+.marketplace-primary h2 { margin: var(--space-1) 0 0; }
+.marketplace-primary p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
+.marketplace-primary__source { color: var(--color-text-secondary); font-size: var(--text-xs); }
+.marketplace-technical { display: grid; gap: var(--space-4); }
+.marketplace-technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .permission-review {
   display: grid;
   gap: var(--space-3);

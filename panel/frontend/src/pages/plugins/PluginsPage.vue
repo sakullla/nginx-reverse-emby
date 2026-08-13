@@ -57,6 +57,21 @@ function abnormalAgentCount(detail) {
   ).length
 }
 
+function sourceLabel(detail) {
+  return detail.plugin?.active_source_kind === 'official' ? '官方来源' : '非官方来源'
+}
+
+function deploymentLabel(detail) {
+  const count = (detail.instances || []).length
+  return count ? `已部署 ${count} 个实例` : '尚未部署'
+}
+
+function nodeStatusLabel(detail) {
+  if (!(detail.instances || []).length) return '等待部署'
+  const abnormal = abnormalAgentCount(detail)
+  return abnormal ? `${abnormal} 个节点异常` : '节点正常'
+}
+
 const filteredPlugins = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   const lifecycle = lifecycleFilter.value
@@ -92,7 +107,7 @@ async function load() {
     <header class="page-header">
       <div class="page-header__left">
         <h1 class="page-title">已安装插件</h1>
-        <p class="page-subtitle">实例按当前身份可见的资源组过滤；成员只能进入其授权资源组。</p>
+        <p class="page-subtitle">查看已安装插件，并进入详情部署或打开配置。尚未部署的插件也会出现在这里。</p>
       </div>
       <div class="page-header__right">
         <RouterLink class="btn btn-primary" to="/plugins/marketplace">打开插件市场</RouterLink>
@@ -104,7 +119,7 @@ async function load() {
       :agent-baseline="''"
       :agents="[]"
       :q="searchQuery"
-      search-placeholder="搜索插件名称 / ID"
+      search-placeholder="搜索插件名称"
       :filter-fields="filterFields"
       :filter-values="filterValues"
       @update:q="searchQuery = $event"
@@ -120,7 +135,7 @@ async function load() {
       <EmptyState title="读取失败" :description="error" />
     </div>
 
-    <EmptyState v-else-if="!plugins.length" title="暂无插件" description="当前身份没有可见的插件实例。" />
+    <EmptyState v-else-if="!plugins.length" title="暂无插件" description="当前还没有已安装的插件。可先到市场安装官方插件。" />
 
     <EmptyState v-else-if="!filteredPlugins.length" title="没有匹配的插件" description="尝试调整搜索或筛选条件。" />
 
@@ -141,12 +156,10 @@ async function load() {
           <template #header-right>
             <span class="plugin-card__version">{{ detail.package.version }}</span>
           </template>
-          <p class="plugin-card__id">{{ detail.plugin.plugin_id }} · {{ detail.package.version }}</p>
+          <p class="plugin-card__meta">{{ sourceLabel(detail) }} · {{ detail.package.version }}</p>
           <dl class="plugin-card__facts">
-            <div><dt>Runtime</dt><dd>{{ detail.plugin.runtime_kind }} / {{ detail.plugin.runtime_abi }}</dd></div>
-            <div><dt>可见实例</dt><dd>{{ detail.instances.length }}</dd></div>
-            <div><dt>异常 Agent</dt><dd>{{ abnormalAgentCount(detail) }}</dd></div>
-            <div><dt>来源风险</dt><dd>{{ detail.plugin.active_source_kind || 'unknown' }} · {{ detail.plugin.active_source_risk_label || '未标注' }}</dd></div>
+            <div><dt>部署</dt><dd>{{ deploymentLabel(detail) }}</dd></div>
+            <div><dt>节点</dt><dd>{{ nodeStatusLabel(detail) }}</dd></div>
           </dl>
         </BaseListCard>
       </RouterLink>
@@ -211,11 +224,10 @@ async function load() {
   color: var(--color-text-muted);
 }
 
-.plugin-card__id {
+.plugin-card__meta {
   margin: 0;
   color: var(--color-text-muted);
   font-size: 0.8125rem;
-  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 

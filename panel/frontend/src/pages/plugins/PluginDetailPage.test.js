@@ -5,10 +5,12 @@ import PluginDetailPage from './PluginDetailPage.vue'
 const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(),
-  invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(), push: vi.fn(), refreshActor: vi.fn()
+  invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(),
+  fetchResourceGroups: vi.fn(), push: vi.fn(), refreshActor: vi.fn()
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' } }), useRouter: () => ({ push: mocks.push }) }))
 vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
+vi.mock('../../api/access', () => ({ fetchResourceGroups: mocks.fetchResourceGroups }))
 vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
   enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin,
@@ -39,7 +41,7 @@ function makeDetail(overrides = {}) {
 }
 
 function submitButton(wrapper) {
-  return wrapper.findAll('button').find((button) => button.text() === '保存配置并生成 revision')
+  return wrapper.findAll('button').find((button) => button.text() === '保存配置')
 }
 
 function buttonByText(wrapper, text) {
@@ -59,6 +61,10 @@ beforeEach(() => {
   mocks.fetchAgents.mockReset().mockResolvedValue([
     { id: 'edge-a', name: 'Edge A', status: 'online', desired_revision: 1, current_revision: 1, last_apply_status: 'success' },
     { id: 'edge-b', name: 'Edge B', status: 'online', desired_revision: 2, current_revision: 2, last_apply_status: 'success' }
+  ])
+  mocks.fetchResourceGroups.mockReset().mockResolvedValue([
+    { id: 'default', name: '默认组' },
+    { id: 'team', name: '团队组' }
   ])
   mocks.push.mockReset()
   mocks.refreshActor.mockReset()
@@ -116,12 +122,16 @@ describe('PluginDetailPage', () => {
     mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
     const wrapper = await mountPage(detail)
 
-    expect(wrapper.find('[aria-label="部署并配置插件实例"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="部署插件实例"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="deployment-instance-id"]').exists()).toBe(false)
+    expect(wrapper.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="deployment-resource-group"]').element.value).toBe('default')
+    expect(wrapper.get('[data-test="deployment-resource-group"]').element.tagName).toBe('SELECT')
     const targetInputs = wrapper.findAll('.plugin-deployment__agent input[type="checkbox"]')
     await targetInputs[0].setValue(true)
     await targetInputs[1].setValue(true)
     await wrapper.get('.plugin-deployment .declarative-field input[type="text"]').setValue('block')
-    await buttonByText(wrapper, '部署并配置').trigger('click')
+    await buttonByText(wrapper, '部署').trigger('click')
     await flushPromises()
 
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
@@ -175,5 +185,44 @@ describe('PluginDetailPage', () => {
     await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
     expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', [])
+  })
+
+  it('submits the selected visible resource group and does not require an instance id field', async () => {
+    const detail = makeDetail({
+      plugin: { ...makeDetail().plugin, current_lifecycle: 'disabled', desired_lifecycle: 'disabled' },
+      instances: []
+    })
+    mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
+    const wrapper = await mountPage(detail)
+    await wrapper.get('[data-test="deployment-resource-group"]').setValue('team')
+    const targetInputs = wrapper.findAll('.plugin-deployment__agent input[type="checkbox"]')
+    await targetInputs[0].setValue(true)
+    await wrapper.get('.plugin-deployment .declarative-field input[type="text"]').setValue('block')
+    await buttonByText(wrapper, '部署').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      instance_id: 'official.waf-default',
+      resource_group_id: 'team',
+      targets: ['edge-a'],
+      policy_chains: [],
+      bindings: []
+    }))
+  })
+
+  it('keeps an installed plugin with no visible instances and opens the deploy form', async () => {
+    const wrapper = await mountPage(makeDetail({ instances: [], agent_statuses: [] }))
+    expect(wrapper.find('[aria-label="部署插件实例"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('尚未部署')
+    expect(wrapper.find('.plugin-technical').exists()).toBe(true)
+    expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
+  })
+
+  it('blocks deploy when no visible resource group or agent is selected', async () => {
+    mocks.fetchResourceGroups.mockResolvedValue([])
+    mocks.fetchAgents.mockResolvedValue([])
+    const wrapper = await mountPage(makeDetail({ instances: [] }))
+    expect(wrapper.text()).toContain('当前身份没有可见的资源组，无法部署。')
+    expect(buttonByText(wrapper, '部署').attributes('disabled')).toBeDefined()
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
   })
 })

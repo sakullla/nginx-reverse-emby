@@ -25,6 +25,7 @@ describe('PluginDetailPage production API projection', () => {
     mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', name: 'Edge A', status: 'online' }])
     mocks.get.mockImplementation(async (path) => {
       if (path.endsWith('/operations')) return { data: { operations: [] } }
+      if (path.includes('/access/resource-groups')) return { data: { resource_groups: [{ id: 'default', name: '默认组' }, { id: 'group-a', name: '组 A' }] } }
       return { data: {
         plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
         package: {
@@ -63,7 +64,7 @@ describe('PluginDetailPage production API projection', () => {
     expect(wrapper.text()).toContain('已有凭据')
     expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(0)
 
-    await wrapper.findAll('button').find((button) => button.text() === '保存配置并生成 revision').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { token: 'ordinary-value' }, secret_replacements: {}

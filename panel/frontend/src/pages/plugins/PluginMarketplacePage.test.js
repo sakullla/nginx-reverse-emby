@@ -4,8 +4,9 @@ import PluginMarketplacePage from './PluginMarketplacePage.vue'
 
 const mocks = vi.hoisted(() => ({
   fetchRepositorySources: vi.fn(), fetchRepositoryContents: vi.fn(), fetchPlugins: vi.fn(),
-  fetchPluginPackageDetail: vi.fn(), installPlugin: vi.fn(), upgradePlugin: vi.fn()
+  fetchPluginPackageDetail: vi.fn(), installPlugin: vi.fn(), upgradePlugin: vi.fn(), push: vi.fn()
 }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }))
 vi.mock('../../api/pluginRepositories', () => ({ fetchRepositorySources: mocks.fetchRepositorySources, fetchRepositoryContents: mocks.fetchRepositoryContents }))
 vi.mock('../../api/plugins', () => ({
   fetchPlugins: mocks.fetchPlugins,
@@ -61,6 +62,7 @@ beforeEach(() => {
   mocks.fetchPluginPackageDetail.mockReset().mockResolvedValue(packageDetail)
   mocks.installPlugin.mockReset().mockResolvedValue({ plugin_id: entry.id })
   mocks.upgradePlugin.mockReset().mockResolvedValue({})
+  mocks.push.mockReset()
 })
 
 describe('PluginMarketplacePage', () => {
@@ -68,7 +70,7 @@ describe('PluginMarketplacePage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('.page-title').text()).toBe('插件市场')
-    expect(wrapper.find('.page-subtitle').text()).toContain('签名包投影')
+    expect(wrapper.find('.page-subtitle').text()).toContain('部署')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins')
     expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/repositories')
   })
@@ -99,6 +101,10 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('非官方来源')
+    expect(wrapper.text()).toContain('未安装')
+    expect(buttonByText(wrapper, '安装插件')).toBeTruthy()
+    expect(wrapper.find('.marketplace-technical').exists()).toBe(true)
+    expect(wrapper.find('.marketplace-technical').element.open).toBeFalsy()
     expect(wrapper.text()).toContain('wasm-policy')
     expect(wrapper.text()).toContain('nre:policy/v1')
     expect(wrapper.text()).toContain('Package SHA-256')
@@ -127,6 +133,7 @@ describe('PluginMarketplacePage', () => {
       source_id: 'community', plugin_id: entry.id, digest: entry.sha256,
       confirmed_permissions: ['http.inspect'], risk_accepted: true
     }))
+    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
     expect(wrapper.find('.modal-stub').exists()).toBe(false)
   })
 
@@ -148,6 +155,7 @@ describe('PluginMarketplacePage', () => {
       source_id: 'community', plugin_id: entry.id, digest: entry.sha256,
       confirmed_permissions: ['http.inspect'], risk_accepted: true
     }))
+    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
   })
 
   it('disables install and shows the installed notice when the current digest is already present', async () => {
@@ -155,10 +163,22 @@ describe('PluginMarketplacePage', () => {
     const wrapper = mountPage()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('当前 digest 已安装')
+    expect(wrapper.text()).toContain('当前版本已安装')
     const install = buttonByText(wrapper, '安装插件')
     expect(install.attributes('disabled')).toBeDefined()
     await install.trigger('click')
     expect(wrapper.find('.modal-stub').exists()).toBe(false)
+    expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('stays on the market and does not navigate when install fails', async () => {
+    mocks.installPlugin.mockRejectedValue(new Error('source rejected'))
+    const wrapper = mountPage()
+    await flushPromises()
+    await buttonByText(wrapper, '安装插件').trigger('click')
+    await buttonByText(wrapper, '确认安装').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('source rejected')
+    expect(mocks.push).not.toHaveBeenCalled()
   })
 })

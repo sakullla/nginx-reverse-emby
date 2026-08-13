@@ -29,13 +29,26 @@ export function filterPluginDetailForActor(detail, currentActor) {
   if (permissions.has('*')) return detail
   const visibleGroups = new Set(currentActor?.visible_resource_groups || [])
   const instances = (detail.instances || []).filter((instance) => visibleGroups.has(instance.resource_group_id))
-  if (!instances.length) return null
   const instanceIDs = new Set(instances.map((instance) => instance.id))
   return {
     ...detail,
     instances,
     agent_statuses: (detail.agent_statuses || []).filter((status) => instanceIDs.has(status.instance_id))
   }
+}
+
+export function visibleResourceGroupsForActor(groups, currentActor) {
+  const list = Array.isArray(groups) ? groups.filter((group) => group && typeof group === 'object' && group.id) : []
+  const permissions = new Set(currentActor?.permissions || [])
+  if (permissions.has('*')) return list
+  const visibleGroups = new Set(currentActor?.visible_resource_groups || [])
+  return list.filter((group) => visibleGroups.has(group.id))
+}
+
+export function pickDefaultResourceGroupID(groups) {
+  const list = Array.isArray(groups) ? groups.filter((group) => group && group.id) : []
+  if (list.some((group) => group.id === 'default')) return 'default'
+  return list[0]?.id || ''
 }
 
 export function useAccessControl() {

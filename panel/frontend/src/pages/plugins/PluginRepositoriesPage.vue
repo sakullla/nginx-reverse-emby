@@ -4,7 +4,7 @@
       <div class="page-header__left">
         <RouterLink to="/plugins/marketplace" class="back-link">← 插件市场</RouterLink>
         <h1 class="page-title">插件仓库</h1>
-        <p class="page-subtitle">管理市场索引与插件包的 Git 来源，并查看每次刷新实际解析到的提交。</p>
+        <p class="page-subtitle">管理插件市场和插件包的来源，查看最近刷新是否成功。</p>
       </div>
       <div class="page-header__right">
         <button class="btn btn-primary" type="button" @click="openCreate">新增仓库源</button>
@@ -44,7 +44,7 @@
           >
             <span class="repository-list__item-main">
               <strong>{{ source.name }}</strong>
-              <small>{{ purposeLabel(source.purpose) }} · {{ source.ref_kind }}/{{ source.ref_name }}</small>
+              <small>{{ purposeLabel(source.purpose) }} · {{ statusOf(source).label }}</small>
             </span>
             <span :class="['repository-status-dot', `repository-status-dot--${statusOf(source).tone}`]" :title="statusOf(source).label" />
           </button>
@@ -81,42 +81,52 @@
               <dd><span :class="['repository-state', `repository-state--${statusOf(selectedSource).tone}`]">{{ statusOf(selectedSource).label }}</span></dd>
             </div>
             <div>
-              <dt>配置引用</dt>
-              <dd>{{ selectedSource.ref_kind === 'tag' ? '标签' : '分支' }} / {{ selectedSource.ref_name }}</dd>
-            </div>
-            <div class="repository-detail__fact-wide">
-              <dt>解析提交 OID</dt>
-              <dd><code>{{ selectedSource.current_resolved_oid || '尚未解析' }}</code></dd>
+              <dt>最近完成</dt>
+              <dd>{{ formatDate(selectedSource.last_completed_at) }}</dd>
             </div>
             <div>
-              <dt>配置修订</dt>
-              <dd>{{ selectedSource.config_revision || 0 }}</dd>
-            </div>
-            <div>
-              <dt>当前快照</dt>
-              <dd>{{ selectedSource.current_snapshot || '—' }}</dd>
+              <dt>用途</dt>
+              <dd>{{ purposeLabel(selectedSource.purpose) }}</dd>
             </div>
             <div>
               <dt>Git 凭据</dt>
               <dd>{{ selectedSource.credential_configured ? '已配置' : '未配置' }}</dd>
             </div>
-            <div>
-              <dt>签名身份</dt>
-              <dd>{{ selectedSource.signer_key_id || '未配置' }}</dd>
-            </div>
-            <div class="repository-detail__fact-wide">
-              <dt>签名指纹</dt>
-              <dd><code>{{ selectedSource.signer_fingerprint || '—' }}</code></dd>
-            </div>
-            <div>
-              <dt>刷新间隔</dt>
-              <dd>{{ formatInterval(selectedSource.refresh_interval_ns) }}</dd>
-            </div>
-            <div>
-              <dt>最近完成</dt>
-              <dd>{{ formatDate(selectedSource.last_completed_at) }}</dd>
-            </div>
           </dl>
+
+          <details class="repository-technical">
+            <summary>技术详情</summary>
+            <dl class="repository-detail__facts">
+              <div>
+                <dt>配置引用</dt>
+                <dd>{{ selectedSource.ref_kind === 'tag' ? '标签' : '分支' }} / {{ selectedSource.ref_name }}</dd>
+              </div>
+              <div>
+                <dt>配置修订</dt>
+                <dd>{{ selectedSource.config_revision || 0 }}</dd>
+              </div>
+              <div class="repository-detail__fact-wide">
+                <dt>解析提交 OID</dt>
+                <dd><code>{{ selectedSource.current_resolved_oid || '尚未解析' }}</code></dd>
+              </div>
+              <div>
+                <dt>当前快照</dt>
+                <dd>{{ selectedSource.current_snapshot || '—' }}</dd>
+              </div>
+              <div>
+                <dt>签名身份</dt>
+                <dd>{{ selectedSource.signer_key_id || '未配置' }}</dd>
+              </div>
+              <div class="repository-detail__fact-wide">
+                <dt>签名指纹</dt>
+                <dd><code>{{ selectedSource.signer_fingerprint || '—' }}</code></dd>
+              </div>
+              <div>
+                <dt>刷新间隔</dt>
+                <dd>{{ formatInterval(selectedSource.refresh_interval_ns) }}</dd>
+              </div>
+            </dl>
+          </details>
 
           <section class="repository-packages" aria-labelledby="repository-packages-title">
             <div class="repository-packages__heading">
@@ -432,6 +442,8 @@ function formatDate(value) {
 .repository-state--current { color: var(--color-success); }
 .repository-state--error { color: var(--color-danger); }
 .repository-state--pending { color: var(--color-warning); }
+.repository-technical { margin-top: var(--space-4); }
+.repository-technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .repository-packages { margin-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-4); }
 .repository-packages__heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .repository-packages__heading h3 { margin: 0; font-size: var(--text-sm); }

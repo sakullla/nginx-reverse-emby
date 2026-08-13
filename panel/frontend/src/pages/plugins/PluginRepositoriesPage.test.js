@@ -102,7 +102,7 @@ describe('PluginRepositoriesPage', () => {
   it('renders the shared page header with a back link and primary action', async () => {
     await mountPage()
     expect(wrapper.find('.page-title').text()).toBe('插件仓库')
-    expect(wrapper.find('.page-subtitle').text()).toContain('Git 来源')
+    expect(wrapper.find('.page-subtitle').text()).toContain('最近刷新')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins/marketplace')
     expect(buttonByText('新增仓库源').classes()).toContain('btn-primary')
   })
@@ -111,10 +111,12 @@ describe('PluginRepositoriesPage', () => {
     await mountPage()
 
     expect(wrapper.text()).toContain('插件包')
+    expect(wrapper.text()).toContain('当前可用')
+    expect(wrapper.find('.repository-technical').exists()).toBe(true)
+    expect(wrapper.find('.repository-technical').element.open).toBeFalsy()
     expect(wrapper.text()).toContain('标签 / v1.2.3')
     expect(wrapper.text()).toContain(customSource.current_resolved_oid)
     expect(wrapper.text()).toContain('自定义来源 · custom-review-required')
-    expect(wrapper.text()).toContain('当前可用')
     expect(wrapper.text()).toContain('Git 凭据')
     expect(wrapper.text()).toContain('已配置')
     expect(wrapper.text()).toContain('team.waf')
