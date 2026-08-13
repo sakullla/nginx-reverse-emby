@@ -76,8 +76,20 @@ const canRenderForm = computed(() => {
 })
 const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.components?.length))
 
-const confirmDialog = ref({ visible: false, loading: false })
+const confirmDialog = ref({ visible: false, loading: false, action: '' })
 const pluginName = computed(() => detail.value?.package?.manifest?.name || detail.value?.plugin?.plugin_id || '')
+
+const confirmCopy = computed(() => {
+  switch (confirmDialog.value.action) {
+    case 'disable':
+      return { title: '确认停用插件', message: '停用后该插件将停止处理流量，依赖其防护的流量可能中断；可随时重新启用。', confirmText: '确认停用' }
+    case 'rollback':
+      return { title: '确认回滚插件', message: '回滚将把插件恢复到上一版本，并可能变更其权限。', confirmText: '确认回滚' }
+    case 'uninstall':
+    default:
+      return { title: '确认卸载插件', message: '卸载将移除插件及其配置，此操作不可撤销。', confirmText: '确认卸载' }
+  }
+})
 
 onMounted(load)
 
@@ -117,22 +129,37 @@ async function lifecycle(action) {
   }
 }
 
-function openUninstallConfirm() {
+function handleLifecycleAction(action) {
   if (!admin.value || busy.value) return
-  confirmDialog.value = { visible: true, loading: false }
+  if (action === 'enable') {
+    lifecycle('enable')
+    return
+  }
+  confirmDialog.value = { visible: true, loading: false, action }
 }
 
-async function confirmUninstall() {
+function cancelConfirm() {
+  confirmDialog.value = { visible: false, loading: false, action: '' }
+}
+
+async function confirmAction() {
   if (!admin.value) return
+  const action = confirmDialog.value.action
   confirmDialog.value.loading = true
   error.value = ''
   try {
-    await uninstallPlugin(detail.value.plugin.plugin_id)
-    await router.push('/plugins')
+    if (action === 'uninstall') {
+      await uninstallPlugin(detail.value.plugin.plugin_id)
+      await router.push('/plugins')
+    } else {
+      await lifecycle(action)
+    }
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '卸载插件失败')
+    if (action === 'uninstall') {
+      error.value = sanitizePluginText(cause?.message || '卸载插件失败')
+    }
   } finally {
-    confirmDialog.value = { visible: false, loading: false }
+    confirmDialog.value = { visible: false, loading: false, action: '' }
   }
 }
 
@@ -224,10 +251,10 @@ async function retryAgent(status) {
         <div class="page-header__right plugin-detail-actions">
           <button class="btn btn-secondary" type="button" @click="exportSafeDiagnostics">导出脱敏诊断</button>
           <template v-if="admin">
-            <button class="btn btn-primary" type="button" :disabled="!!busy" @click="lifecycle('enable')">启用</button>
-            <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="lifecycle('disable')">停用</button>
-            <button class="btn btn-secondary" type="button" :disabled="!!busy || !detail.plugin.rollback_package_digest" @click="lifecycle('rollback')">回滚</button>
-            <button class="btn btn-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="openUninstallConfirm">卸载</button>
+            <button class="btn btn-primary" type="button" :disabled="!!busy" @click="handleLifecycleAction('enable')">启用</button>
+            <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('disable')">停用</button>
+            <button class="btn btn-secondary" type="button" :disabled="!!busy || !detail.plugin.rollback_package_digest" @click="handleLifecycleAction('rollback')">回滚</button>
+            <button class="btn btn-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="handleLifecycleAction('uninstall')">卸载</button>
           </template>
         </div>
       </header>
@@ -273,13 +300,13 @@ async function retryAgent(status) {
 
       <DeleteConfirmDialog
         :show="confirmDialog.visible"
-        title="确认卸载插件"
-        message="卸载将移除插件及其配置，此操作不可撤销。"
+        :title="confirmCopy.title"
+        :message="confirmCopy.message"
         :name="pluginName"
-        confirm-text="确认卸载"
+        :confirm-text="confirmCopy.confirmText"
         :loading="confirmDialog.loading"
-        @confirm="confirmUninstall"
-        @cancel="confirmDialog.visible = false"
+        @confirm="confirmAction"
+        @cancel="cancelConfirm"
       />
     </template>
   </main>

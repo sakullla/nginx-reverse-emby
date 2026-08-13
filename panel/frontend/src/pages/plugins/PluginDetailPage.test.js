@@ -114,4 +114,33 @@ describe('PluginDetailPage', () => {
     expect(mocks.uninstallPlugin).toHaveBeenCalledWith('official.waf')
     expect(mocks.push).toHaveBeenCalledWith('/plugins')
   })
+
+  it('enables immediately but gates disable behind DeleteConfirmDialog', async () => {
+    const wrapper = await mountPage()
+
+    await buttonByText(wrapper, '启用').trigger('click')
+    await flushPromises()
+    expect(mocks.enablePlugin).toHaveBeenCalledWith('official.waf')
+
+    await buttonByText(wrapper, '停用').trigger('click')
+    expect(mocks.disablePlugin).not.toHaveBeenCalled()
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认停用插件')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.disablePlugin).toHaveBeenCalledWith('official.waf')
+  })
+
+  it('requires confirmation before rolling back', async () => {
+    const detail = makeDetail()
+    detail.plugin.rollback_package_digest = 'sha256:rollback-digest'
+    const wrapper = await mountPage(detail)
+
+    await buttonByText(wrapper, '回滚').trigger('click')
+    expect(mocks.rollbackPlugin).not.toHaveBeenCalled()
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认回滚插件')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', [])
+  })
 })
