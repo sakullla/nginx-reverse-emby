@@ -226,6 +226,19 @@ describe('PluginDetailPage', () => {
     expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
   })
 
+  it('shows only instances from groups the current actor can see', async () => {
+    mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
+    const detail = makeDetail()
+    detail.instances = [
+      { id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [], config: { mode: 'observe' }, config_version: 1, current_state: 'active' },
+      { id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], policy_chains: [], bindings: [], config: { mode: 'block' }, config_version: 2, current_state: 'active' }
+    ]
+    const wrapper = await mountPage(detail)
+    expect(wrapper.text()).toContain('waf-a · group-a')
+    expect(wrapper.text()).not.toContain('waf-b · group-b')
+    expect(wrapper.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
+  })
+
   it('blocks deploy when no visible resource group or agent is selected', async () => {
     mocks.fetchResourceGroups.mockResolvedValue([])
     mocks.fetchAgents.mockResolvedValue([])

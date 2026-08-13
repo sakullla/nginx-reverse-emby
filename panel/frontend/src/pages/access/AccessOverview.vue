@@ -60,7 +60,8 @@ onMounted(async () => {
     <section v-else aria-label="访问与安全概览">
       <article v-for="card in cards" :key="card.id" class="access-card">
         <div class="access-card-heading">
-          <strong>{{ card.label }}</strong>
+          <RouterLink v-if="card.path" :to="card.path" class="access-card-link">{{ card.label }}</RouterLink>
+          <strong v-else>{{ card.label }}</strong>
           <span v-if="card.count !== undefined">{{ card.count }}</span>
         </div>
         <QuotaUsage
@@ -98,5 +99,15 @@ section {
 .access-card-heading {
   display: flex;
   justify-content: space-between;
+}
+
+.access-card-link {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.access-card-link:hover {
+  color: var(--color-primary, #2563eb);
 }
 </style>

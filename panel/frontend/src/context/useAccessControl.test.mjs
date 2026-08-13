@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchCurrentActor } from '../api/access'
 import { clearCredentials, setSessionToken } from '../api/authState'
-import { filterPluginDetailForActor, pickDefaultResourceGroupID, useAccessControl, visibleResourceGroupsForActor } from './useAccessControl'
+import { filterPluginDetailForActor, pickDefaultResourceGroupID, resourceGroupDisplayName, useAccessControl, visibleResourceGroupsForActor } from './useAccessControl'
 
 vi.mock('../api/access', () => ({
   fetchCurrentActor: vi.fn()
@@ -73,5 +73,7 @@ describe('visible resource group selection', () => {
     expect(pickDefaultResourceGroupID(groups)).toBe('default')
     expect(pickDefaultResourceGroupID([{ id: 'team', name: '团队' }])).toBe('team')
     expect(pickDefaultResourceGroupID([])).toBe('')
+    expect(resourceGroupDisplayName({ id: 'default', name: 'default' })).toBe('默认组')
+    expect(resourceGroupDisplayName({ id: 'team', name: '团队' })).toBe('团队')
   })
 })

@@ -17,7 +17,7 @@ onCredentialIdentityChange(() => {
 export const accessNavigation = Object.freeze([
   { id: 'users', label: '用户', permission: 'access.manage' },
   { id: 'roles', label: '角色', permission: 'access.manage' },
-  { id: 'resource-groups', label: '资源组', permission: 'resource.read' },
+  { id: 'resource-groups', label: '资源组', permission: 'resource.read', path: '/access/resource-groups' },
   { id: 'quotas', label: '配额', permission: 'resource.read' },
   { id: 'secrets', label: '凭据', permission: 'secret.metadata.read' },
   { id: 'audit', label: '审计', permission: 'audit.read' }
@@ -49,6 +49,12 @@ export function pickDefaultResourceGroupID(groups) {
   const list = Array.isArray(groups) ? groups.filter((group) => group && group.id) : []
   if (list.some((group) => group.id === 'default')) return 'default'
   return list[0]?.id || ''
+}
+
+export function resourceGroupDisplayName(group) {
+  if (!group || typeof group !== 'object') return ''
+  if (group.id === 'default' && (!group.name || group.name === 'default')) return '默认组'
+  return group.name || group.id
 }
 
 export function useAccessControl() {

@@ -97,18 +97,24 @@ const routes = [
         component: () => import('../pages/plugins/PluginDetailPage.vue'),
         meta: { title: '插件详情' }
       },
-	  {
-		path: 'settings',
+      {
+        path: 'settings',
         name: 'settings',
         component: () => import('../pages/SettingsPage.vue'),
-		meta: { title: '设置' }
-	  },
-	  {
-		path: 'access',
-		name: 'access',
-		component: AccessOverview,
-		meta: { title: '访问与安全' }
-	  }
+        meta: { title: '设置' }
+      },
+      {
+        path: 'access',
+        name: 'access',
+        component: AccessOverview,
+        meta: { title: '访问与安全' }
+      },
+      {
+        path: 'access/resource-groups',
+        name: 'access-resource-groups',
+        component: () => import('../pages/access/ResourceGroupsPage.vue'),
+        meta: { title: '资源组' }
+      }
     ]
   }
 ]

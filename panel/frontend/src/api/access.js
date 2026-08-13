@@ -31,6 +31,7 @@ export const updateRolePermissions = (id, permissions) => api.put(`/access/roles
 export const fetchPermissions = () => api.get('/access/permissions').then(body).then((data) => data.permissions)
 export const fetchResourceGroups = () => api.get('/access/resource-groups').then(body).then((data) => data.resource_groups)
 export const createResourceGroup = (input) => api.post('/access/resource-groups', input).then(body).then((data) => data.resource_group)
+export const fetchResourceGroupGrants = () => api.get('/access/resource-group-grants').then(body).then((data) => data.resource_group_grants)
 export const grantResourceGroup = (input) => api.post('/access/resource-group-grants', input).then(body)
 export const bindResource = (input) => api.post('/access/resource-bindings', input).then(body)
 export const fetchQuotaPolicies = () => api.get('/access/quota-policies').then(body).then((data) => data.quota_policies)

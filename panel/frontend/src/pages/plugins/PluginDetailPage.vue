@@ -15,7 +15,7 @@ import {
 } from '../../api/plugins'
 import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripReadOnlyConfigValues, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
-import { filterPluginDetailForActor, pickDefaultResourceGroupID, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
+import { filterPluginDetailForActor, pickDefaultResourceGroupID, resourceGroupDisplayName, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
 import BaseTabs from '../../components/base/BaseTabs.vue'
 import DeleteConfirmDialog from '../../components/DeleteConfirmDialog.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
@@ -385,7 +385,7 @@ async function retryAgent(status) {
               <span>资源组</span>
               <select v-model="deployment.resourceGroupID" data-test="deployment-resource-group" :disabled="!visibleResourceGroups.length">
                 <option v-if="!visibleResourceGroups.length" value="">暂无可见资源组</option>
-                <option v-for="group in visibleResourceGroups" :key="group.id" :value="group.id">{{ group.name || group.id }}</option>
+                <option v-for="group in visibleResourceGroups" :key="group.id" :value="group.id">{{ resourceGroupDisplayName(group) }}</option>
               </select>
             </label>
           </div>

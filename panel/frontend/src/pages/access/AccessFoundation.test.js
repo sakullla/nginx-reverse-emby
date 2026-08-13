@@ -22,8 +22,13 @@ describe('access security foundation', () => {
 
     expect(wrapper.get('input').attributes('type')).toBe('password')
     expect(wrapper.get('input').attributes('placeholder')).toContain('不可取回')
-    expect(accessNavigation.every((item) => item.permission && !item.path)).toBe(true)
+    expect(accessNavigation.filter((item) => item.id !== 'resource-groups').every((item) => item.permission && !item.path)).toBe(true)
+    expect(accessNavigation.find((item) => item.id === 'resource-groups')).toMatchObject({
+      permission: 'resource.read',
+      path: '/access/resource-groups'
+    })
     expect(router.resolve('/access').name).toBe('access')
+    expect(router.resolve('/access/resource-groups').name).toBe('access-resource-groups')
     expect(router.getRoutes().some((route) => route.path === '/access/users')).toBe(false)
   })
 })
