@@ -27,6 +27,15 @@ vi.mock('../../api/pluginRepositories', () => ({
   fetchRepositoryContents
 }))
 
+vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
+  default: {
+    name: 'DeleteConfirmDialog',
+    props: ['show', 'title', 'message', 'name', 'confirmText', 'loading'],
+    emits: ['confirm', 'cancel'],
+    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><div class="delete-dialog-message">{{ message }}</div><div class="delete-dialog-name">{{ name }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
+  }
+}))
+
 const customSource = {
   id: 'team-plugins',
   kind: 'custom',
@@ -82,12 +91,22 @@ afterEach(() => {
 })
 
 async function mountPage() {
-  wrapper = mount(PluginRepositoriesPage)
+  wrapper = mount(PluginRepositoriesPage, {
+    global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
+  })
   await flushPromises()
   return wrapper
 }
 
 describe('PluginRepositoriesPage', () => {
+  it('renders the shared page header with a back link and primary action', async () => {
+    await mountPage()
+    expect(wrapper.find('.page-title').text()).toBe('插件仓库')
+    expect(wrapper.find('.page-subtitle').text()).toContain('Git 来源')
+    expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins/marketplace')
+    expect(buttonByText('新增仓库源').classes()).toContain('btn-primary')
+  })
+
   it('shows purpose, configured ref, full resolved OID, provenance risk and current state', async () => {
     await mountPage()
 
@@ -116,6 +135,24 @@ describe('PluginRepositoriesPage', () => {
     expect(wrapper.text()).toContain('最近刷新失败：credential rejected')
   })
 
+  it('shows a unified error empty state when sources fail to load', async () => {
+    fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
+    await mountPage()
+
+    expect(wrapper.text()).toContain('读取失败')
+    expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+  })
+
+  it('routes action errors through the unified alert channel', async () => {
+    refreshRepositorySource.mockRejectedValue(new Error('credential rejected'))
+    await mountPage()
+    await buttonByText('立即刷新').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('credential rejected')
+  })
+
   it('keeps official sources immutable in the UI while allowing refresh', async () => {
     await mountPage()
     await buttonByText('Official Market').trigger('click')
@@ -131,12 +168,13 @@ describe('PluginRepositoriesPage', () => {
     expect(refreshRepositorySource).toHaveBeenCalledWith('official-market')
   })
 
-  it('states that deleting a source does not uninstall plugins', async () => {
+  it('confirms deletion through DeleteConfirmDialog without uninstalling plugins', async () => {
     await mountPage()
     await buttonByText('删除源').trigger('click')
 
-    expect(wrapper.get('[role="alertdialog"]').text()).toContain('不会卸载已经安装的插件')
-    await buttonByText('确认删除源').trigger('click')
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
+    expect(wrapper.find('.delete-dialog-message').text()).toContain('不会卸载已经安装的插件')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
 
     expect(deleteRepositorySource).toHaveBeenCalledWith('team-plugins')
