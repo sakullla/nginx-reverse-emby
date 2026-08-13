@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import PluginConfigForm from './PluginConfigForm.vue'
 
+function submitButton(wrapper) {
+  return wrapper.findAll('button').find((button) => button.text() === '保存配置并生成 revision')
+}
+
 describe('PluginConfigForm', () => {
   it('uses writeOnly schema plus handle presence for preserve and rotation', async () => {
     const wrapper = mount(PluginConfigForm, {
@@ -38,18 +42,64 @@ describe('PluginConfigForm', () => {
     expect(secretInputs[0].attributes('required')).toBeUndefined()
     expect(secretInputs[1].attributes('required')).toBeDefined()
     expect(secretInputs[3].attributes('required')).toBeUndefined()
-    expect(wrapper.findAll('button.secret-field__clear')).toHaveLength(1)
+    expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(1)
 
-    await wrapper.get('form').trigger('submit')
+    await submitButton(wrapper).trigger('click')
     expect(wrapper.emitted('submit')[0][0]).toEqual({ config: { mode: 'observe', token: 'ordinary-config-value' }, secret_replacements: {} })
 
     await wrapper.get('select').setValue('block')
     await secretInputs[0].setValue('new-write-only-value')
-    await wrapper.get('form').trigger('submit')
+    await submitButton(wrapper).trigger('click')
     expect(wrapper.emitted('submit')[1][0]).toEqual({ config: { mode: 'block', token: 'ordinary-config-value' }, secret_replacements: { '/api_credential': 'new-write-only-value' } })
 
-    await wrapper.get('button.secret-field__clear').trigger('click')
-    await wrapper.get('form').trigger('submit')
+    await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
+    await submitButton(wrapper).trigger('click')
     expect(wrapper.emitted('submit')[2][0]).toEqual({ config: { mode: 'block', token: 'ordinary-config-value' }, secret_replacements: { '/api_credential': 'new-write-only-value', '/optional_secret': null } })
+  })
+
+  it('synthesizes nested object secrets and round-trips nested config', async () => {
+    const wrapper = mount(PluginConfigForm, {
+      props: {
+        schema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', title: '名称' },
+            credentials: { type: 'object', properties: { token: { type: 'string', title: 'Token', writeOnly: true } } }
+          }
+        },
+        config: { name: 'edge', credentials: { token: 'nested-secret' } },
+        secretFields: [{ pointer: '/credentials/token', present: true }]
+      }
+    })
+
+    expect(wrapper.html()).not.toContain('nested-secret')
+    expect(wrapper.findAll('input[type="password"]')).toHaveLength(1)
+
+    await wrapper.get('input[type="password"]').setValue('rotated')
+    await submitButton(wrapper).trigger('click')
+    expect(wrapper.emitted('submit')[0][0]).toEqual({
+      config: { name: 'edge', credentials: {} },
+      secret_replacements: { '/credentials/token': 'rotated' }
+    })
+  })
+
+  it('round-trips an array of objects through edit and submit', async () => {
+    const wrapper = mount(PluginConfigForm, {
+      props: {
+        schema: {
+          type: 'object',
+          properties: {
+            upstreams: { type: 'array', items: { type: 'object', properties: { host: { type: 'string', title: 'Host' } } } }
+          }
+        },
+        config: { upstreams: [{ host: 'a' }, { host: 'b' }] }
+      }
+    })
+
+    const hostInputs = wrapper.findAll('.declarative-array-item input[type="text"]')
+    expect(hostInputs).toHaveLength(2)
+    await hostInputs[0].setValue('a-edited')
+    await submitButton(wrapper).trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.upstreams.map((item) => item.host)).toEqual(['a-edited', 'b'])
   })
 })

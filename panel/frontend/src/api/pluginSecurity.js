@@ -1,6 +1,5 @@
 const REDACTED = '[REDACTED]'
 const sensitiveKey = /(?:^|[_-])(authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key|value)(?:$|[_-])/i
-const allowedSchemaTypes = new Set(['string', 'number', 'integer', 'boolean'])
 
 export function sanitizePluginText(value) {
   return String(value ?? '')
@@ -102,41 +101,116 @@ export function safePluginJSON(value) {
   return JSON.stringify(redactPluginData(value), null, 2)
 }
 
-function safeDefault(field) {
-  if (!Object.hasOwn(field, 'default')) return undefined
-  const value = field.default
-  if (field.type === 'string' && typeof value === 'string') return value
-  if (field.type === 'boolean' && typeof value === 'boolean') return value
-  if (field.type === 'number' && typeof value === 'number' && Number.isFinite(value)) return value
-  if (field.type === 'integer' && Number.isInteger(value)) return value
-  return undefined
+function escapePointerToken(token) {
+  return String(token).replaceAll('~', '~0').replaceAll('/', '~1')
 }
 
-export function normalizePluginConfigSchema(schema) {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object') return []
-  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((name) => typeof name === 'string') : [])
-  const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+function schemaRequiredNames(schema) {
+  return new Set(Array.isArray(schema.required) ? schema.required.filter((name) => typeof name === 'string') : [])
+}
+
+function schemaProperties(schema) {
+  return schema && typeof schema === 'object' && !Array.isArray(schema)
+    && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? schema.properties
     : {}
-  return Object.entries(properties).flatMap(([name, field]) => {
-    if (!field || typeof field !== 'object' || Array.isArray(field)) return []
-    if (!allowedSchemaTypes.has(field.type) || field.$ref || field.contentMediaType === 'text/html') return []
-    const secret = field.writeOnly === true
-    const normalized = {
-      name,
-      type: field.type,
-      title: sanitizePluginText(field.title || name),
-      description: sanitizePluginText(field.description || ''),
-      required: required.has(name),
-      secret,
-      enum: Array.isArray(field.enum) ? field.enum.filter((item) => ['string', 'number', 'boolean'].includes(typeof item)).slice(0, 100) : [],
-      minimum: Number.isFinite(field.minimum) ? field.minimum : undefined,
-      maximum: Number.isFinite(field.maximum) ? field.maximum : undefined
+}
+
+function schemaEnumOptions(field) {
+  if (!Array.isArray(field.enum)) return []
+  return field.enum.filter((item) => typeof item === 'string').slice(0, 100).map((item) => ({ value: item, label: item }))
+}
+
+function synthesizeComponent(name, field, pointerPrefix, required) {
+  if (!field || typeof field !== 'object' || Array.isArray(field)) return []
+  if (field.$ref || field.contentMediaType === 'text/html') return []
+  const pointer = `${pointerPrefix}/${escapePointerToken(name)}`
+  const identity = {
+    id: name,
+    label: sanitizePluginText(field.title || name),
+    description: sanitizePluginText(field.description || '')
+  }
+  const annotation = {}
+  if (field.readOnly === true) annotation.read_only = true
+  switch (field.type) {
+    case 'object':
+      return [{ type: 'section', ...identity, ...annotation, children: synthesizeObjectProperties(field, pointer) }]
+    case 'array': {
+      const items = field.items
+      if (items && typeof items === 'object' && !Array.isArray(items) && items.type === 'object') {
+        return [{ type: 'array', ...identity, ...annotation, binding: pointer, required, children: synthesizeObjectProperties(items, '') }]
+      }
+      return [{ type: 'array', ...identity, ...annotation, binding: pointer, required }]
     }
-    const defaultValue = secret ? undefined : safeDefault(field)
-    if (defaultValue !== undefined) normalized.default = defaultValue
-    return [normalized]
-  })
+    case 'boolean':
+      return [{ type: 'toggle', ...identity, ...annotation, binding: pointer, required }]
+    case 'number':
+    case 'integer': {
+      const component = { type: 'number', ...identity, ...annotation, binding: pointer, required }
+      if (Number.isFinite(field.minimum)) component.minimum = field.minimum
+      if (Number.isFinite(field.maximum)) component.maximum = field.maximum
+      if (Number.isFinite(field.multipleOf)) component.step = field.multipleOf
+      return [component]
+    }
+    case 'string': {
+      if (field.writeOnly === true) return [{ type: 'secret', ...identity, ...annotation, binding: pointer, required }]
+      if (Array.isArray(field.enum) && field.enum.length) return [{ type: 'select', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }]
+      const component = { type: 'text', ...identity, ...annotation, binding: pointer, required }
+      if (Number.isFinite(field.minLength)) component.min_length = field.minLength
+      if (Number.isFinite(field.maxLength)) component.max_length = field.maxLength
+      if (typeof field.pattern === 'string') component.pattern = field.pattern
+      return [component]
+    }
+    default:
+      return []
+  }
+}
+
+function synthesizeObjectProperties(schema, pointerPrefix) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return []
+  const required = schemaRequiredNames(schema)
+  const properties = schemaProperties(schema)
+  return Object.entries(properties).flatMap(([name, field]) => synthesizeComponent(name, field, pointerPrefix, required.has(name)))
+}
+
+// Recursively synthesize a host-renderable declarative component tree from a
+// validated config_schema when a plugin ships no ui_schema. The result reuses
+// the same fixed component vocabulary as the declarative renderer, so nested
+// objects and arrays round-trip through the same edit/submit path.
+export function schemaToUIComponents(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object') return []
+  return synthesizeObjectProperties(schema, '')
+}
+
+const WRITE_ONLY_STRIPPED = Symbol('write-only stripped')
+
+function stripWriteOnlyConfigValue(schema, value) {
+  if (schema && typeof schema === 'object' && !Array.isArray(schema) && schema.writeOnly === true) return WRITE_ONLY_STRIPPED
+  if (Array.isArray(value)) {
+    const itemsSchema = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema.items : undefined
+    return value.map((item) => {
+      const cleaned = stripWriteOnlyConfigValue(itemsSchema, item)
+      return cleaned === WRITE_ONLY_STRIPPED ? null : cleaned
+    })
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const properties = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema.properties : undefined
+    const out = {}
+    for (const [key, child] of Object.entries(value)) {
+      const childSchema = properties && typeof properties === 'object' && !Array.isArray(properties) ? properties[key] : undefined
+      const cleaned = stripWriteOnlyConfigValue(childSchema, child)
+      if (cleaned !== WRITE_ONLY_STRIPPED) out[key] = cleaned
+    }
+    return out
+  }
+  return value
+}
+
+// Remove writeOnly plaintext from a config value before it reaches the
+// declarative renderer, so secret plaintext can never be echoed back in the
+// submit payload. Secrets travel exclusively via secret_replacements.
+export function stripWriteOnlyConfigValues(schema, config) {
+  return stripWriteOnlyConfigValue(schema, config)
 }
 
 export function safePluginExport(detail, operations) {

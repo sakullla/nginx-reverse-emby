@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  normalizePluginConfigSchema,
   pluginRiskNotices,
   redactPluginData,
   redactPluginProjection,
   safePluginExport,
-  sanitizePluginText
+  sanitizePluginText,
+  schemaToUIComponents,
+  stripWriteOnlyConfigValues
 } from './pluginSecurity'
 
 describe('plugin UI security boundary', () => {
@@ -25,21 +26,70 @@ describe('plugin UI security boundary', () => {
     vi.useRealTimers()
   })
 
-  it('allows only host declarative scalar fields and marks secrets write-only', () => {
-    const fields = normalizePluginConfigSchema({
+  it('synthesizes scalar fields, constraints and secret markers into components', () => {
+    const components = schemaToUIComponents({
       type: 'object',
       required: ['mode', 'api_token'],
       properties: {
-        mode: { type: 'string', enum: ['observe', 'block'], default: 'observe' },
+        mode: { type: 'string', title: '模式', enum: ['observe', 'block'] },
         api_token: { type: 'string', writeOnly: true, default: 'must-not-render' },
         injected: { type: 'string', contentMediaType: 'text/html', default: '<script>bad()</script>' },
-        remote: { $ref: 'https://plugins.example/schema.json' }
-      },
-      ui: '<script>bad()</script>'
+        remote: { $ref: 'https://plugins.example/schema.json' },
+        threshold: { type: 'number', minimum: 1, maximum: 100, multipleOf: 1 },
+        note: { type: 'string', minLength: 2, maxLength: 20, pattern: '^[a-z]+$' }
+      }
     })
-    expect(fields.map((field) => field.name)).toEqual(['mode', 'api_token'])
-    expect(fields[1]).toMatchObject({ secret: true, required: true })
-    expect(fields[1]).not.toHaveProperty('default')
+    expect(components.map((component) => component.id)).toEqual(['mode', 'api_token', 'threshold', 'note'])
+    expect(components[0]).toMatchObject({ type: 'select', binding: '/mode', required: true, options: [{ value: 'observe', label: 'observe' }, { value: 'block', label: 'block' }] })
+    expect(components[1]).toMatchObject({ type: 'secret', binding: '/api_token', required: true })
+    expect(components[2]).toMatchObject({ type: 'number', binding: '/threshold', minimum: 1, maximum: 100, step: 1 })
+    expect(components[3]).toMatchObject({ type: 'text', binding: '/note', min_length: 2, max_length: 20, pattern: '^[a-z]+$' })
+  })
+
+  it('recursively synthesizes nested objects and arrays', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        credentials: { type: 'object', properties: { token: { type: 'string', writeOnly: true } } },
+        upstreams: { type: 'array', items: { type: 'object', properties: { host: { type: 'string' }, port: { type: 'number' } } } },
+        tags: { type: 'array', items: { type: 'string' } }
+      }
+    })
+    expect(components).toEqual([
+      {
+        type: 'section', id: 'credentials', label: 'credentials', description: '',
+        children: [{ type: 'secret', id: 'token', label: 'token', description: '', binding: '/credentials/token', required: false }]
+      },
+      {
+        type: 'array', id: 'upstreams', label: 'upstreams', description: '', binding: '/upstreams', required: false,
+        children: [
+          { type: 'text', id: 'host', label: 'host', description: '', binding: '/host', required: false },
+          { type: 'number', id: 'port', label: 'port', description: '', binding: '/port', required: false }
+        ]
+      },
+      { type: 'array', id: 'tags', label: 'tags', description: '', binding: '/tags', required: false }
+    ])
+  })
+
+  it('strips writeOnly plaintext from config while keeping public values', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        mode: { type: 'string' },
+        credentials: { type: 'object', properties: { token: { type: 'string', writeOnly: true }, region: { type: 'string' } } },
+        endpoints: { type: 'array', items: { type: 'object', properties: { host: { type: 'string' }, secret: { type: 'string', writeOnly: true } } } }
+      }
+    }
+    const config = {
+      mode: 'observe',
+      credentials: { token: 'plaintext-token', region: 'us' },
+      endpoints: [{ host: 'a', secret: 'plaintext-a' }, { host: 'b', secret: 'plaintext-b' }]
+    }
+    expect(stripWriteOnlyConfigValues(schema, config)).toEqual({
+      mode: 'observe',
+      credentials: { region: 'us' },
+      endpoints: [{ host: 'a' }, { host: 'b' }]
+    })
   })
 
   it('preserves structured DTO metadata while pruning only broker-owned values', () => {
