@@ -516,7 +516,11 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 				err = fmt.Errorf("%w: policy_chains is required", service.ErrInvalidArgument)
 				break
 			}
-			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, PolicyChains: input.PolicyChains, Bindings: input.Bindings, Config: input.Config, SecretReplacements: input.SecretReplacements, ActorID: actorID})
+			var actor authz.Actor
+			if current, ok := actorFromRequest(r); ok {
+				actor = current
+			}
+			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, PolicyChains: input.PolicyChains, Bindings: input.Bindings, Config: input.Config, SecretReplacements: input.SecretReplacements, ActorID: actorID, Actor: actor})
 		}
 	case "upgrade":
 		var input pluginPackageSelection

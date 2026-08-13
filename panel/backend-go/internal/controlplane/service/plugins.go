@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
@@ -70,6 +71,7 @@ type PluginConfigureRequest struct {
 	Config             json.RawMessage
 	SecretReplacements map[string]json.RawMessage
 	ActorID            string
+	Actor              authz.Actor
 }
 
 type PluginUpgradeRequest struct {
@@ -1189,6 +1191,9 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 		if exists && instance.PluginID != request.PluginID {
 			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance identity mismatch", ErrInvalidArgument))
 		}
+	}
+	if err := authorizePluginConfigureScope(request, exists, instance); err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
@@ -2852,4 +2857,29 @@ func lifecycleID(prefix string) string {
 		panic(err)
 	}
 	return prefix + "_" + hex.EncodeToString(value)
+}
+
+func authorizePluginConfigureScope(request PluginConfigureRequest, exists bool, instance storage.PluginInstanceRow) error {
+	actor := request.Actor
+	if actor.ID == "" && request.ActorID == "" {
+		return nil
+	}
+	if actor.Bootstrap || actor.Has(authz.PermissionSystemAdmin) || actor.Has(authz.PermissionAll) {
+		return nil
+	}
+	if !actor.Has(authz.PermissionResourceWrite) {
+		return authz.ErrForbidden
+	}
+	if !exists {
+		return authz.ErrForbidden
+	}
+	requestedGroup := strings.TrimSpace(request.ResourceGroupID)
+	currentGroup := strings.TrimSpace(instance.ResourceGroupID)
+	if requestedGroup == "" || requestedGroup != currentGroup {
+		return authz.ErrForbidden
+	}
+	if !actor.CanAccessGroup(currentGroup) {
+		return authz.ErrForbidden
+	}
+	return nil
 }
