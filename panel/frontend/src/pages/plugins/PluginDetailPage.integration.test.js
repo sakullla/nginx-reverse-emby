@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginDetailPage from './PluginDetailPage.vue'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), refreshActor: vi.fn() }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), fetchAgents: vi.fn(), refreshActor: vi.fn() }))
 vi.mock('../../api/client', () => ({ api: { get: mocks.get, post: mocks.post } }))
+vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'rpc.plugin' } }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
 vi.mock('../../context/useAccessControl', async (original) => {
@@ -21,6 +22,7 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
 
 describe('PluginDetailPage production API projection', () => {
   it('keeps schema and handle metadata through the real API adapter', async () => {
+    mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', name: 'Edge A', status: 'online' }])
     mocks.get.mockImplementation(async (path) => {
       if (path.endsWith('/operations')) return { data: { operations: [] } }
       return { data: {

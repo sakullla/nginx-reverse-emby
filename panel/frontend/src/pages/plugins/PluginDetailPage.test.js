@@ -5,9 +5,10 @@ import PluginDetailPage from './PluginDetailPage.vue'
 const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(),
-  invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), push: vi.fn(), refreshActor: vi.fn()
+  invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(), push: vi.fn(), refreshActor: vi.fn()
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' } }), useRouter: () => ({ push: mocks.push }) }))
+vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
 vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
   enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin,
@@ -55,6 +56,10 @@ beforeEach(() => {
   mocks.uninstallPlugin.mockReset().mockResolvedValue({})
   mocks.invokePluginDynamicAction.mockReset()
   mocks.fetchPluginLogs.mockReset().mockResolvedValue({ entries: [], next_cursor: '' })
+  mocks.fetchAgents.mockReset().mockResolvedValue([
+    { id: 'edge-a', name: 'Edge A', status: 'online', desired_revision: 1, current_revision: 1, last_apply_status: 'success' },
+    { id: 'edge-b', name: 'Edge B', status: 'online', desired_revision: 2, current_revision: 2, last_apply_status: 'success' }
+  ])
   mocks.push.mockReset()
   mocks.refreshActor.mockReset()
 })
@@ -101,6 +106,34 @@ describe('PluginDetailPage', () => {
       instance_id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [],
       bindings: [{ consumer: { kind: 'http_rule', id: '1' }, target_agent_id: 'edge-a' }], config: { mode: 'block' }, secret_replacements: {}
     })
+  })
+
+  it('creates, configures, and enables a new instance for multiple selected agents', async () => {
+    const detail = makeDetail({
+      plugin: { ...makeDetail().plugin, current_lifecycle: 'disabled', desired_lifecycle: 'disabled' },
+      instances: []
+    })
+    mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
+    const wrapper = await mountPage(detail)
+
+    expect(wrapper.find('[aria-label="部署并配置插件实例"]').exists()).toBe(true)
+    const targetInputs = wrapper.findAll('.plugin-deployment__agent input[type="checkbox"]')
+    await targetInputs[0].setValue(true)
+    await targetInputs[1].setValue(true)
+    await wrapper.get('.plugin-deployment .declarative-field input[type="text"]').setValue('block')
+    await buttonByText(wrapper, '部署并配置').trigger('click')
+    await flushPromises()
+
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
+      instance_id: 'official.waf-default',
+      resource_group_id: 'default',
+      targets: ['edge-a', 'edge-b'],
+      policy_chains: [],
+      bindings: [],
+      config: { mode: 'block' },
+      secret_replacements: {}
+    })
+    expect(mocks.enablePlugin).toHaveBeenCalledWith('official.waf')
   })
 
   it('confirms uninstall through DeleteConfirmDialog and navigates away', async () => {

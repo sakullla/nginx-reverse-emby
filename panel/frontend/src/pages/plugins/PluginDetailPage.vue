@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { fetchAgents } from '../../api'
 import {
   configurePlugin,
   disablePlugin,
@@ -23,6 +24,7 @@ import PluginLogViewer from '../../components/plugins/PluginLogViewer.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 import PluginOperationTimeline from '../../components/operations/PluginOperationTimeline.vue'
+import { getAgentStatus, getAgentStatusLabel } from '../../utils/agentHelpers'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,9 +34,13 @@ const busy = ref('')
 const error = ref('')
 const detail = ref(null)
 const operations = ref([])
+const agents = ref([])
 const selectedInstanceID = ref('')
 const retryingAgent = ref('')
 const actionBusy = ref('')
+const deploymentOpen = ref(false)
+const deploymentError = ref('')
+const deployment = reactive({ instanceID: '', resourceGroupID: 'default', targets: [] })
 
 const admin = computed(() => can('*'))
 const canWrite = computed(() => admin.value || can('resource.write'))
@@ -44,6 +50,8 @@ const selectedSecretFields = computed(() => selectedInstance.value?.pending_oper
   ? (selectedInstance.value.pending_secret_fields || [])
   : (selectedInstance.value?.secret_fields || []))
 const source = computed(() => ({ kind: detail.value?.plugin.active_source_kind, risk_label: detail.value?.plugin.active_source_risk_label }))
+const sortedAgents = computed(() => [...agents.value].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
+const allDeploymentAgentsSelected = computed(() => sortedAgents.value.length > 0 && sortedAgents.value.every((agent) => deployment.targets.includes(agent.id)))
 
 const instanceTabs = computed(() => (detail.value?.instances || []).map((instance) => ({
   id: instance.id,
@@ -63,6 +71,11 @@ const uiDocument = computed(() => {
     actions: [{ type: 'submit', id: 'save', label: busy.value === 'configure' ? '保存中…' : '保存配置并生成 revision' }]
   }
 })
+const deploymentDocument = computed(() => ({
+  ...(uiDocument.value || {}),
+  title: uiDocument.value?.title || '插件配置',
+  actions: [{ type: 'submit', id: 'deploy', label: busy.value === 'deploy' ? '部署中…' : '部署并配置' }]
+}))
 const formConfig = computed(() => {
   const pkg = detail.value?.package
   if (!pkg) return {}
@@ -99,16 +112,97 @@ async function load() {
   try {
     if (!actor.value) await refreshActor()
     const pluginID = String(route.params.id || '')
-    const [nextDetail, nextOperations] = await Promise.all([fetchPluginDetail(pluginID), fetchPluginOperations(pluginID)])
+    const [nextDetail, nextOperations, nextAgents] = await Promise.all([fetchPluginDetail(pluginID), fetchPluginOperations(pluginID), fetchAgents()])
     const visibleDetail = filterPluginDetailForActor(nextDetail, actor.value)
     if (!visibleDetail) throw new Error('当前身份无权查看此插件的资源组实例')
+    const previousInstanceID = selectedInstanceID.value
     detail.value = visibleDetail
     operations.value = nextOperations
-    selectedInstanceID.value = visibleDetail.instances[0]?.id || ''
+    agents.value = (Array.isArray(nextAgents) ? nextAgents : []).filter((agent) => String(agent?.id || '').trim())
+    selectedInstanceID.value = visibleDetail.instances.some((instance) => instance.id === previousInstanceID)
+      ? previousInstanceID
+      : visibleDetail.instances[0]?.id || ''
+    if (!deployment.instanceID || visibleDetail.instances.some((instance) => instance.id === deployment.instanceID)) {
+      deployment.instanceID = defaultDeploymentInstanceID(pluginID, visibleDetail.instances)
+    }
+    if (!deployment.targets.length && agents.value.length === 1) deployment.targets = [agents.value[0].id]
+    if (!visibleDetail.instances.length) deploymentOpen.value = true
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || '读取插件详情失败')
   } finally {
     loading.value = false
+  }
+}
+
+function defaultDeploymentInstanceID(pluginID, instances = []) {
+  const normalized = String(pluginID || 'plugin').toLowerCase().replace(/[^a-z0-9._:/-]+/g, '-').replace(/^[^a-z0-9]+/, '') || 'plugin'
+  const used = new Set(instances.map((instance) => instance.id))
+  const first = `${normalized}-default`.slice(0, 128)
+  if (!used.has(first)) return first
+  for (let index = 2; index < 10000; index += 1) {
+    const suffix = `-${index}`
+    const candidate = `${normalized.slice(0, 128 - suffix.length)}${suffix}`
+    if (!used.has(candidate)) return candidate
+  }
+  return first
+}
+
+function toggleDeployment() {
+  if (!admin.value || busy.value) return
+  deploymentError.value = ''
+  deploymentOpen.value = !deploymentOpen.value
+}
+
+function toggleAllDeploymentAgents() {
+  deployment.targets = allDeploymentAgentsSelected.value ? [] : sortedAgents.value.map((agent) => agent.id)
+}
+
+async function deployPlugin(payload) {
+  if (!admin.value || busy.value) return
+  deploymentError.value = ''
+  const instanceID = deployment.instanceID.trim()
+  const resourceGroupID = deployment.resourceGroupID.trim()
+  const targets = [...new Set(deployment.targets.map((target) => String(target).trim()).filter(Boolean))]
+  if (!/^[a-z0-9][a-z0-9._:/-]{0,127}$/.test(instanceID)) {
+    deploymentError.value = '实例 ID 需以小写字母或数字开头，并且只能包含小写字母、数字、点、下划线、冒号、斜杠或连字符。'
+    return
+  }
+  if (detail.value.instances.some((instance) => instance.id === instanceID)) {
+    deploymentError.value = '实例 ID 已存在；如需修改已有实例，请使用下方实例配置表单。'
+    return
+  }
+  if (!resourceGroupID) {
+    deploymentError.value = '资源组 ID 不能为空。'
+    return
+  }
+  if (!targets.length) {
+    deploymentError.value = '请至少选择一个部署 Agent。'
+    return
+  }
+  busy.value = 'deploy'
+  let configured = false
+  try {
+    const pluginID = detail.value.plugin.plugin_id
+    const created = await configurePlugin(pluginID, {
+      instance_id: instanceID,
+      resource_group_id: resourceGroupID,
+      targets,
+      policy_chains: [],
+      bindings: [],
+      config: stripReadOnlyConfigValues(detail.value.package?.config_schema, payload.config),
+      secret_replacements: payload.secret_replacements || {}
+    })
+    configured = true
+    const lifecycle = detail.value.plugin
+    if (lifecycle.desired_lifecycle !== 'enabled' && lifecycle.current_lifecycle !== 'active') await enablePlugin(pluginID)
+    await load()
+    selectedInstanceID.value = created?.id || instanceID
+    deploymentOpen.value = false
+  } catch (cause) {
+    const message = sanitizePluginText(cause?.message || '部署插件实例失败')
+    deploymentError.value = configured ? `配置已提交，但启用失败：${message}` : message
+  } finally {
+    busy.value = ''
   }
 }
 
@@ -264,7 +358,65 @@ async function retryAgent(status) {
       <PluginRiskNotices :package-detail="detail.package" :source="source" />
 
       <section class="plugin-section">
-        <h2>实例配置</h2>
+        <div class="plugin-section-heading">
+          <div>
+            <h2>部署与实例配置</h2>
+            <p>创建一个插件实例，并将同一份配置通过 revision 一次部署到一个或多个 Agent。</p>
+          </div>
+          <button v-if="admin" class="btn btn-primary" type="button" :disabled="!!busy" @click="toggleDeployment">
+            {{ deploymentOpen ? '收起部署表单' : '部署新实例' }}
+          </button>
+        </div>
+
+        <section v-if="deploymentOpen && admin" class="plugin-deployment" aria-label="部署并配置插件实例">
+          <div class="plugin-deployment__metadata">
+            <label>
+              <span>实例 ID</span>
+              <input v-model.trim="deployment.instanceID" data-test="deployment-instance-id" type="text" autocomplete="off" maxlength="128">
+            </label>
+            <label>
+              <span>资源组 ID</span>
+              <input v-model.trim="deployment.resourceGroupID" data-test="deployment-resource-group" type="text" autocomplete="off">
+            </label>
+          </div>
+          <fieldset class="plugin-deployment__agents">
+            <legend>部署 Agent</legend>
+            <div class="plugin-deployment__agent-actions">
+              <span>已选择 {{ deployment.targets.length }} / {{ sortedAgents.length }}</span>
+              <button class="btn btn-secondary" type="button" :disabled="!sortedAgents.length" @click="toggleAllDeploymentAgents">
+                {{ allDeploymentAgentsSelected ? '清空选择' : '选择全部' }}
+              </button>
+            </div>
+            <div v-if="sortedAgents.length" class="plugin-deployment__agent-grid">
+              <label v-for="agent in sortedAgents" :key="agent.id" class="plugin-deployment__agent">
+                <input v-model="deployment.targets" type="checkbox" :value="agent.id">
+                <span>
+                  <strong>{{ agent.name || agent.id }}</strong>
+                  <small>{{ agent.id }} · {{ getAgentStatusLabel(getAgentStatus(agent)) }}</small>
+                </span>
+              </label>
+            </div>
+            <p v-else class="plugin-deployment__empty">当前没有可选择的 Agent。</p>
+          </fieldset>
+          <p v-if="deploymentError" class="plugin-alert" role="alert">{{ deploymentError }}</p>
+          <div v-if="formEmpty" class="plugin-deployment__empty-config">
+            <p class="plugin-config-empty">此插件没有宿主允许的可配置字段，可直接部署。</p>
+            <button class="btn btn-primary" type="button" :disabled="busy === 'deploy'" @click="deployPlugin({ config: {}, secret_replacements: {} })">
+              {{ busy === 'deploy' ? '部署中…' : '部署并配置' }}
+            </button>
+          </div>
+          <PluginDeclarativeUI
+            v-else
+            :document="deploymentDocument"
+            :config="{}"
+            :secret-fields="[]"
+            :saving="busy === 'deploy'"
+            :can-configure="admin"
+            :can-act="false"
+            @submit="deployPlugin"
+          />
+        </section>
+
         <BaseTabs
           v-if="instanceTabs.length"
           :tabs="instanceTabs"
@@ -292,6 +444,7 @@ async function retryAgent(status) {
           />
         </template>
         <p v-else-if="selectedInstance">当前身份只有只读权限。</p>
+        <p v-else-if="!deploymentOpen" class="plugin-config-empty">尚未部署实例。点击“部署新实例”选择 Agent 并填写配置。</p>
       </section>
 
       <section class="plugin-section"><h2>逐 Agent 状态、预算与故障</h2><PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" /></section>
@@ -339,5 +492,31 @@ async function retryAgent(status) {
 
 .plugin-section { display: grid; gap: var(--space-4); padding-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); }
 .plugin-section h2 { margin: 0; font-size: var(--text-lg); }
+.plugin-section-heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-4); }
+.plugin-section-heading > div { display: grid; gap: var(--space-1); }
+.plugin-section-heading p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
+.plugin-deployment { display: grid; gap: var(--space-5); padding: var(--space-5); border: 1px solid var(--color-border-default); border-radius: var(--radius-xl); background: var(--color-bg-subtle); }
+.plugin-deployment__metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.plugin-deployment__metadata label { display: grid; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
+.plugin-deployment__metadata input { min-width: 0; padding: .65rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }
+.plugin-deployment__agents { display: grid; gap: var(--space-3); min-width: 0; margin: 0; padding: 0; border: 0; }
+.plugin-deployment__agents legend { margin-bottom: var(--space-2); color: var(--color-text-primary); font-weight: 600; }
+.plugin-deployment__agent-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.plugin-deployment__agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: var(--space-3); }
+.plugin-deployment__agent { display: flex; align-items: start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); background: var(--color-bg-surface); cursor: pointer; }
+.plugin-deployment__agent input { margin-top: .2rem; accent-color: var(--color-primary); }
+.plugin-deployment__agent span { min-width: 0; display: grid; gap: 2px; }
+.plugin-deployment__agent strong, .plugin-deployment__agent small { overflow-wrap: anywhere; }
+.plugin-deployment__agent small, .plugin-deployment__empty { color: var(--color-text-muted); }
+.plugin-deployment__empty { margin: 0; font-size: var(--text-sm); }
+.plugin-deployment__empty-config { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.plugin-deployment__empty-config p { margin: 0; }
 .instance-facts { display: flex; flex-wrap: wrap; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+
+@media (max-width: 700px) {
+  .plugin-section-heading { align-items: stretch; flex-direction: column; }
+  .plugin-section-heading .btn { width: 100%; }
+  .plugin-deployment__metadata { grid-template-columns: 1fr; }
+  .plugin-deployment__empty-config { align-items: stretch; flex-direction: column; }
+}
 </style>
