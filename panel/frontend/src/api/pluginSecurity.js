@@ -1,3 +1,5 @@
+import { evaluateCondition, isEmptyValue, resolvePointer } from './pluginCondition'
+
 const REDACTED = '[REDACTED]'
 const sensitiveKey = /(?:^|[_-])(authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key|value)(?:$|[_-])/i
 
@@ -202,6 +204,77 @@ function synthesizeObjectProperties(schema, pointerPrefix) {
 export function schemaToUIComponents(schema) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object') return []
   return synthesizeObjectProperties(schema, '')
+}
+
+export function fieldConstraintError(component, current) {
+  if (!component || typeof component !== 'object' || component.read_only) return ''
+  if (isEmptyValue(current)) return component.required ? '此项为必填' : ''
+  if (component.type === 'number') {
+    if (component.minimum != null && current < component.minimum) return `不能小于 ${component.minimum}`
+    if (component.maximum != null && current > component.maximum) return `不能大于 ${component.maximum}`
+  }
+  if ((component.type === 'text' || component.type === 'textarea') && typeof current === 'string') {
+    if (component.min_length != null && current.length < component.min_length) return `至少 ${component.min_length} 个字符`
+    if (component.max_length != null && current.length > component.max_length) return `最多 ${component.max_length} 个字符`
+    if (component.pattern) {
+      try {
+        if (!new RegExp(component.pattern).test(current)) return '格式不匹配'
+      } catch { /* ignore invalid pattern */ }
+    }
+  }
+  return ''
+}
+
+export function secretConstraintError(component, pointer, secretFields = [], secretReplacements = {}) {
+  if (!component || typeof component !== 'object' || !component.required) return ''
+  const replacement = secretReplacements[pointer]
+  if (typeof replacement === 'string' && replacement !== '') return ''
+  if (replacement === null) return '此项为必填'
+  const present = (Array.isArray(secretFields) ? secretFields : []).some((field) => field.pointer === pointer && field.present)
+  return present ? '' : '此项为必填'
+}
+
+// Walk a host-renderable component tree and collect visible constraint failures.
+// Hidden fields (visible_when) are skipped so stale values never block submit.
+export function collectDeclarativeConstraintErrors(components, model, options = {}) {
+  const errors = []
+  const secretFields = Array.isArray(options.secretFields) ? options.secretFields : []
+  const secretReplacements = options.secretReplacements && typeof options.secretReplacements === 'object' && !Array.isArray(options.secretReplacements)
+    ? options.secretReplacements
+    : {}
+
+  const walk = (list, basePointer, scope) => {
+    for (const component of list || []) {
+      if (!component || typeof component !== 'object' || Array.isArray(component)) continue
+      if (!evaluateCondition(component.visible_when, scope)) continue
+      const full = basePointer + (component.binding || '')
+      if (component.type === 'section') {
+        walk(component.children || [], basePointer, scope)
+        continue
+      }
+      if (component.type === 'notice') continue
+      if (component.type === 'array') {
+        const current = resolvePointer(model, full)
+        const message = fieldConstraintError(component, current)
+        if (message) errors.push({ pointer: full, message })
+        if (Array.isArray(current) && Array.isArray(component.children) && component.children.length) {
+          current.forEach((item, index) => walk(component.children, `${full}/${index}`, item))
+        }
+        continue
+      }
+      if (!component.binding) continue
+      if (component.type === 'secret') {
+        const message = secretConstraintError(component, full, secretFields, secretReplacements)
+        if (message) errors.push({ pointer: full, message })
+        continue
+      }
+      const message = fieldConstraintError(component, resolvePointer(model, full))
+      if (message) errors.push({ pointer: full, message })
+    }
+  }
+
+  walk(components, '', model)
+  return errors
 }
 
 const ANNOTATION_STRIPPED = Symbol('annotation-stripped')

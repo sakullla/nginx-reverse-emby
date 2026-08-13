@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { evaluateCondition, resolvePointer, isEmptyValue } from '../../api/pluginCondition.js'
+import { evaluateCondition, resolvePointer } from '../../api/pluginCondition.js'
+import { fieldConstraintError, secretConstraintError } from '../../api/pluginSecurity.js'
 
 defineOptions({ name: 'PluginDeclarativeComponent' })
 
@@ -10,7 +11,8 @@ const props = defineProps({
   secretReplacements: { type: Object, default: () => ({}) },
   secretPresent: { type: Function, default: () => false },
   basePointer: { type: String, default: '' },
-  conditionScope: { type: Object, default: null }
+  conditionScope: { type: Object, default: null },
+  forceValidate: { type: Boolean, default: false }
 })
 const emit = defineEmits(['change', 'secret'])
 
@@ -58,22 +60,14 @@ function constraintHint(component) {
   return parts.join(' · ')
 }
 
-function constraintError(component, current) {
-  if (component.required && isEmptyValue(current)) return '此项为必填'
-  if (component.type === 'number' && current != null && current !== '') {
-    if (component.minimum != null && current < component.minimum) return `不能小于 ${component.minimum}`
-    if (component.maximum != null && current > component.maximum) return `不能大于 ${component.maximum}`
-  }
-  if ((component.type === 'text' || component.type === 'textarea') && typeof current === 'string') {
-    if (component.min_length != null && current.length < component.min_length) return `至少 ${component.min_length} 个字符`
-    if (component.max_length != null && current.length > component.max_length) return `最多 ${component.max_length} 个字符`
-    if (component.pattern) { try { if (!new RegExp(component.pattern).test(current)) return '格式不匹配' } catch { /* ignore invalid pattern */ } }
-  }
-  return ''
-}
-
 const hintText = computed(() => constraintHint(props.component))
-const error = computed(() => touched.value ? constraintError(props.component, value()) : '')
+const error = computed(() => {
+  if (!touched.value && !props.forceValidate) return ''
+  if (props.component.type === 'secret') {
+    return secretConstraintError(props.component, fullPointer.value, [{ pointer: fullPointer.value, present: props.secretPresent(fullPointer.value) }], props.secretReplacements)
+  }
+  return fieldConstraintError(props.component, value())
+})
 </script>
 
 <template>
@@ -81,7 +75,7 @@ const error = computed(() => touched.value ? constraintError(props.component, va
     <fieldset v-if="component.type === 'section'" class="declarative-section">
       <legend>{{ component.label }}</legend>
       <p v-if="component.description">{{ component.description }}</p>
-      <PluginDeclarativeComponent v-for="child in component.children || []" :key="child.id" :component="child" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :base-pointer="basePointer" :condition-scope="scope" @change="(...args) => emit('change', ...args)" @secret="(...args) => emit('secret', ...args)" />
+      <PluginDeclarativeComponent v-for="child in component.children || []" :key="child.id" :component="child" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :base-pointer="basePointer" :condition-scope="scope" :force-validate="forceValidate" @change="(...args) => emit('change', ...args)" @secret="(...args) => emit('secret', ...args)" />
     </fieldset>
 
     <aside v-else-if="component.type === 'notice'" class="declarative-notice" :data-tone="component.tone"><strong>{{ component.label }}</strong><p v-if="component.description">{{ component.description }}</p></aside>
@@ -92,16 +86,16 @@ const error = computed(() => touched.value ? constraintError(props.component, va
 
     <label v-else-if="component.type === 'number'" class="declarative-field"><span>{{ component.label }}</span><input type="number" :value="value()" :min="component.minimum" :max="component.maximum" :step="component.step || 'any'" :required="component.required" :readonly="component.read_only" @input="change($event.target.value === '' ? null : Number($event.target.value))"><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small><small v-if="error" class="declarative-error">{{ error }}</small></label>
 
-    <label v-else-if="component.type === 'secret'" class="declarative-field declarative-secret"><span>{{ component.label }}</span><input type="password" autocomplete="new-password" :value="secretReplacements[fullPointer] ?? ''" :required="component.required && !secretPresent(fullPointer)" :readonly="component.read_only" placeholder="留空以保留现有凭据" @input="changeSecret($event.target.value)"><small>{{ secretPresent(fullPointer) ? '已有凭据；留空保留，输入新值轮换。' : '尚未配置；明文仅随本次提交发送。' }}</small><button v-if="secretPresent(fullPointer) && !component.required && !component.read_only" class="btn btn-secondary" type="button" @click="changeSecret(null)">清除凭据</button></label>
+    <label v-else-if="component.type === 'secret'" class="declarative-field declarative-secret"><span>{{ component.label }}</span><input type="password" autocomplete="new-password" :value="secretReplacements[fullPointer] ?? ''" :required="component.required && !secretPresent(fullPointer)" :readonly="component.read_only" placeholder="留空以保留现有凭据" @input="changeSecret($event.target.value)"><small>{{ secretPresent(fullPointer) ? '已有凭据；留空保留，输入新值轮换。' : '尚未配置；明文仅随本次提交发送。' }}</small><small v-if="error" class="declarative-error">{{ error }}</small><button v-if="secretPresent(fullPointer) && !component.required && !component.read_only" class="btn btn-secondary" type="button" @click="changeSecret(null)">清除凭据</button></label>
 
     <label v-else-if="component.type === 'text' || component.type === 'textarea'" class="declarative-field"><span>{{ component.label }}</span><textarea v-if="component.type === 'textarea'" :value="value()" :placeholder="component.placeholder" :required="component.required" :readonly="component.read_only" @input="change($event.target.value)" /><input v-else type="text" :value="value()" :placeholder="component.placeholder" :required="component.required" :readonly="component.read_only" @input="change($event.target.value)"><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small><small v-if="error" class="declarative-error">{{ error }}</small></label>
 
     <div v-else-if="component.type === 'array'" class="declarative-array">
-      <div class="declarative-array-head"><span>{{ component.label }}</span><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small></div>
+      <div class="declarative-array-head"><span>{{ component.label }}</span><small v-if="component.description || hintText" class="declarative-hint">{{ [component.description, hintText].filter(Boolean).join(' · ') }}</small><small v-if="error" class="declarative-error">{{ error }}</small></div>
       <template v-if="isObjectItems">
         <fieldset v-for="(item, index) in items" :key="index" class="declarative-array-item">
           <legend>#{{ index + 1 }}</legend>
-          <PluginDeclarativeComponent v-for="child in component.children" :key="child.id" :component="child" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :base-pointer="`${fullPointer}/${index}`" :condition-scope="item" @change="(...args) => emit('change', ...args)" @secret="(...args) => emit('secret', ...args)" />
+          <PluginDeclarativeComponent v-for="child in component.children" :key="child.id" :component="child" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :base-pointer="`${fullPointer}/${index}`" :condition-scope="item" :force-validate="forceValidate" @change="(...args) => emit('change', ...args)" @secret="(...args) => emit('secret', ...args)" />
           <div class="declarative-array-actions">
             <button class="btn btn-secondary" type="button" :disabled="component.read_only" @click="removeItem(index)">移除</button>
             <button class="btn btn-secondary" type="button" :disabled="component.read_only || index === 0" @click="moveItem(index, -1)">上移</button>

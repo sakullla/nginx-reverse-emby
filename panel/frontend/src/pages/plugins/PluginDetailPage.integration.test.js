@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginDetailPage from './PluginDetailPage.vue'
 
@@ -21,6 +21,13 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
 }))
 
 describe('PluginDetailPage production API projection', () => {
+  beforeEach(() => {
+    mocks.get.mockReset()
+    mocks.post.mockReset()
+    mocks.fetchAgents.mockReset()
+    mocks.refreshActor.mockReset()
+  })
+
   it('keeps schema and handle metadata through the real API adapter', async () => {
     mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', name: 'Edge A', status: 'online' }])
     mocks.get.mockImplementation(async (path) => {
@@ -78,5 +85,54 @@ describe('PluginDetailPage production API projection', () => {
     expect(wrapper.html()).not.toContain('optional-plaintext')
     expect(activeSecretInputs[0].attributes('required')).toBeDefined()
     expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(1)
+  })
+
+  it('saves a nested schema fallback form and blocks invalid configure posts', async () => {
+    mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', name: 'Edge A', status: 'online' }])
+    mocks.get.mockImplementation(async (path) => {
+      if (path.endsWith('/operations')) return { data: { operations: [] } }
+      if (path.includes('/access/resource-groups')) return { data: { resource_groups: [{ id: 'default', name: '默认组' }] } }
+      return { data: {
+        plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+        package: {
+          manifest: { id: 'rpc.plugin', name: 'RPC Plugin' }, runtime: { kind: 'rpc-service' }, artifacts: [], permissions: [], permission_diff: { added: [], removed: [] },
+          config_schema: {
+            type: 'object',
+            required: ['region'],
+            properties: {
+              region: { type: 'string', title: '区域', minLength: 2 },
+              sources: {
+                type: 'array',
+                title: '源',
+                items: { type: 'object', required: ['host'], properties: { host: { type: 'string', title: '主机', minLength: 2 } } }
+              }
+            }
+          }
+        },
+        instances: [{
+          id: 'instance-a', resource_group_id: 'default', targets: ['edge-a'], policy_chains: [], bindings: [],
+          config: { region: 'X', sources: [{ host: 'a' }] },
+          config_version: 1, current_state: 'active'
+        }],
+        agent_statuses: []
+      } }
+    })
+    mocks.post.mockResolvedValue({ data: { result: {} } })
+    const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.post).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('至少 2 个字符')
+
+    const inputs = wrapper.findAll('.declarative-field input[type="text"]')
+    await inputs[0].setValue('eu')
+    await inputs[1].setValue('edge.example')
+    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
+      config: { region: 'eu', sources: [{ host: 'edge.example' }] }
+    }))
   })
 })

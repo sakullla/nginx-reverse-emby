@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(),
-  fetchResourceGroups: vi.fn(), push: vi.fn(), refreshActor: vi.fn()
+  fetchResourceGroups: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
+  actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' } }), useRouter: () => ({ push: mocks.push }) }))
 vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
@@ -19,7 +20,14 @@ vi.mock('../../api/plugins', () => ({
 vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
 vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
-  return { ...actual, useAccessControl: () => ({ actor: { value: { permissions: ['*'], visible_resource_groups: [] } }, can: () => true, refreshActor: mocks.refreshActor }) }
+  return {
+    ...actual,
+    useAccessControl: () => ({
+      actor: { value: mocks.actor },
+      can: (permission) => (mocks.actor.permissions || []).includes('*') || (mocks.actor.permissions || []).includes(permission),
+      refreshActor: mocks.refreshActor
+    })
+  }
 })
 vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
   default: {
@@ -68,6 +76,7 @@ beforeEach(() => {
   ])
   mocks.push.mockReset()
   mocks.refreshActor.mockReset()
+  mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
 })
 
 async function mountPage(detail = makeDetail()) {
@@ -224,5 +233,116 @@ describe('PluginDetailPage', () => {
     expect(wrapper.text()).toContain('当前身份没有可见的资源组，无法部署。')
     expect(buttonByText(wrapper, '部署').attributes('disabled')).toBeDefined()
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
+  })
+
+  it('lets a resource writer save a schema fallback form without declarative UI', async () => {
+    mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['group-a'] }
+    const wrapper = await mountPage()
+    expect(wrapper.text()).not.toContain('当前身份只有只读权限')
+    expect(submitButton(wrapper).exists()).toBe(true)
+    await wrapper.get('.declarative-field input[type="text"]').setValue('block')
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      instance_id: 'waf-a',
+      config: { mode: 'block' }
+    }))
+  })
+
+  it('lets a resource writer save a plugin that already has declarative UI', async () => {
+    mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['group-a'] }
+    const detail = makeDetail({
+      package: {
+        ...makeDetail().package,
+        declarative_ui: {
+          schema_version: 1,
+          title: 'WAF',
+          components: [{ type: 'text', id: 'mode', label: '模式', binding: '/mode' }],
+          actions: [{ type: 'submit', id: 'save', label: '保存配置' }]
+        }
+      }
+    })
+    const wrapper = await mountPage(detail)
+    await wrapper.get('.declarative-field input[type="text"]').setValue('block')
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      config: { mode: 'block' }
+    }))
+  })
+
+  it('keeps the form closed for members without write permission', async () => {
+    mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
+    const wrapper = await mountPage()
+    expect(wrapper.text()).toContain('当前身份只有只读权限')
+    expect(submitButton(wrapper)).toBeUndefined()
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+  })
+
+  it('does not call configurePlugin when visible schema validation fails', async () => {
+    const detail = makeDetail({
+      package: {
+        ...makeDetail().package,
+        config_schema: {
+          type: 'object',
+          required: ['mode', 'port'],
+          properties: {
+            mode: { type: 'string', title: '模式', minLength: 2, pattern: '^[a-z]+$' },
+            port: { type: 'number', title: '端口', minimum: 1, maximum: 65535 },
+            sources: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['host'],
+                properties: { host: { type: 'string', title: '主机', minLength: 2 } }
+              }
+            }
+          }
+        }
+      },
+      instances: [{
+        ...makeDetail().instances[0],
+        config: { mode: 'X', port: 0, sources: [{ host: 'a' }] }
+      }]
+    })
+    const wrapper = await mountPage(detail)
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(wrapper.text()).toMatch(/至少 2 个字符|格式不匹配/)
+    expect(wrapper.text()).toContain('不能小于 1')
+  })
+
+  it('saves nested objects and arrays from the schema fallback form', async () => {
+    const detail = makeDetail({
+      package: {
+        ...makeDetail().package,
+        config_schema: {
+          type: 'object',
+          properties: {
+            credentials: { type: 'object', title: '凭据', properties: { region: { type: 'string', title: '区域' } } },
+            sources: {
+              type: 'array',
+              title: '源',
+              items: { type: 'object', properties: { host: { type: 'string', title: '主机' } } }
+            }
+          }
+        }
+      },
+      instances: [{
+        ...makeDetail().instances[0],
+        config: { credentials: { region: 'us' }, sources: [{ host: 'a.example' }] }
+      }]
+    })
+    const wrapper = await mountPage(detail)
+    await wrapper.get('.declarative-section input[type="text"]').setValue('eu')
+    await wrapper.findAll('button').find((button) => button.text() === '+ 添加').trigger('click')
+    const itemInputs = wrapper.findAll('.declarative-array-item input[type="text"]')
+    await itemInputs[1].setValue('b.example')
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      config: { credentials: { region: 'eu' }, sources: [{ host: 'a.example' }, { host: 'b.example' }] }
+    }))
   })
 })

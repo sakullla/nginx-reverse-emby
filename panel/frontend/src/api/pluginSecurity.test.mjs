@@ -6,6 +6,7 @@ import {
   safePluginExport,
   sanitizePluginText,
   schemaToUIComponents,
+  collectDeclarativeConstraintErrors,
   stripReadOnlyConfigValues,
   stripWriteOnlyConfigValues
 } from './pluginSecurity'
@@ -182,6 +183,44 @@ describe('plugin UI security boundary', () => {
       { pointer: '/credential', present: true },
       { pointer: '/absent', present: false }
     ])
+  })
+
+  it('collects visible required, range, length and pattern errors', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      required: ['name', 'port', 'note', 'upstreams'],
+      properties: {
+        name: { type: 'string', title: '名称', minLength: 2 },
+        port: { type: 'number', minimum: 1, maximum: 65535 },
+        note: { type: 'string', pattern: '^[a-z]+$' },
+        extra: { type: 'string', minLength: 3 },
+        upstreams: { type: 'array', items: { type: 'object', required: ['host'], properties: { host: { type: 'string' } } } }
+      }
+    })
+    const extra = components.find((component) => component.id === 'extra')
+    extra.visible_when = { field: '/mode', op: 'eq', value: 'advanced' }
+    expect(collectDeclarativeConstraintErrors(components, {
+      name: 'a',
+      port: 0,
+      note: 'NOPE',
+      extra: 'x',
+      upstreams: [{}]
+    }).map((item) => `${item.pointer}:${item.message}`)).toEqual([
+      '/name:至少 2 个字符',
+      '/port:不能小于 1',
+      '/note:格式不匹配',
+      '/upstreams/0/host:此项为必填'
+    ])
+  })
+
+  it('treats a present required secret as valid until it is cleared', () => {
+    const components = [{ type: 'secret', id: 'token', label: 'Token', binding: '/token', required: true }]
+    expect(collectDeclarativeConstraintErrors(components, {}, { secretFields: [{ pointer: '/token', present: true }] })).toEqual([])
+    expect(collectDeclarativeConstraintErrors(components, {}, {
+      secretFields: [{ pointer: '/token', present: true }],
+      secretReplacements: { '/token': null }
+    })).toEqual([{ pointer: '/token', message: '此项为必填' }])
+    expect(collectDeclarativeConstraintErrors(components, {}, { secretFields: [] })).toEqual([{ pointer: '/token', message: '此项为必填' }])
   })
 
   it('states relevant runtime risks and the no-package-frontend boundary', () => {

@@ -1,16 +1,19 @@
 <script setup>
-import { reactive, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
 import { collectHiddenPointers, prunePointer, resolvePointer } from '../../api/pluginCondition.js'
+import { collectDeclarativeConstraintErrors } from '../../api/pluginSecurity.js'
 
 const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, secretFields: { type: Array, default: () => [] }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
 const emit = defineEmits(['submit', 'dynamic'])
 const model = reactive({})
 const targets = reactive({})
 const secretReplacements = reactive({})
+const forceValidate = ref(false)
 watch(() => props.config, reset, { immediate: true, deep: true })
 function clone(value) { return JSON.parse(JSON.stringify(value || {})) }
 function reset() {
+  forceValidate.value = false
   for (const key of Object.keys(model)) delete model[key]
   for (const key of Object.keys(secretReplacements)) delete secretReplacements[key]
   Object.assign(model, clone(props.config))
@@ -57,8 +60,16 @@ function setValue(pointer, value) {
 function action(action) {
 	if (action.type === 'dynamic' ? !props.canAct : !props.canConfigure) return
   if (action.type === 'submit') {
-    const config = clone(model)
     const hidden = collectHiddenPointers(props.document.components || [], model)
+    const errors = collectDeclarativeConstraintErrors(props.document.components || [], model, {
+      secretFields: props.secretFields,
+      secretReplacements
+    }).filter((item) => !hidden.includes(item.pointer))
+    if (errors.length) {
+      forceValidate.value = true
+      return
+    }
+    const config = clone(model)
     for (const pointer of hidden) prunePointer(config, pointer)
     const secret_replacements = clone(secretReplacements)
     for (const pointer of hidden) delete secret_replacements[pointer]
@@ -72,7 +83,7 @@ function action(action) {
 <template>
   <section class="declarative-ui">
     <header><h3>{{ document.title }}</h3><p v-if="document.description">{{ document.description }}</p></header>
-		<template v-if="canConfigure"><PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" @change="setValue" @secret="setSecret" /></template>
+		<template v-if="canConfigure"><PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :force-validate="forceValidate" @change="setValue" @secret="setSecret" /></template>
     <div class="declarative-actions">
 			<template v-for="item in (document.actions || []).filter((action) => action.type === 'dynamic' ? canAct : canConfigure)" :key="item.id">
         <label v-if="item.type === 'dynamic'" class="declarative-target"><span>{{ item.target_kind }} ID</span><input v-model="targets[item.id]" type="text" autocomplete="off"></label>

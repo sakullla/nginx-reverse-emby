@@ -37,7 +37,7 @@ const richDocument = {
 
 describe('PluginDeclarativeUI', () => {
   it('renders only fixed host controls and never interprets package markup', async () => {
-		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, canConfigure: true, canAct: true } })
+    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true, canAct: true } })
     expect(wrapper.findAll('script')).toHaveLength(0)
     expect(wrapper.findAll('img')).toHaveLength(0)
     expect(wrapper.text()).toContain('<script>guest()</script>')
@@ -48,15 +48,15 @@ describe('PluginDeclarativeUI', () => {
 
   it('requires host confirmation and emits only the typed action target', async () => {
     vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
-		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: {}, canConfigure: true, canAct: true } })
+    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: {}, canConfigure: true, canAct: true } })
     await wrapper.get('.declarative-target input').setValue('relay-1')
     await wrapper.findAll('button')[1].trigger('click')
     expect(wrapper.emitted('dynamic')).toBeUndefined()
     await wrapper.findAll('button')[1].trigger('click')
     expect(wrapper.emitted('dynamic')[0][0]).toEqual({ action: document.actions[1], target_id: 'relay-1', confirmed: true })
-	})
+  })
 
-	it('keeps required declarative secrets write-only and allows only preserve or rotate', async () => {
+  it('keeps required declarative secrets write-only and allows only preserve or rotate', async () => {
     const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
     const password = wrapper.get('input[type="password"]')
     expect(password.element.value).toBe('')
@@ -67,98 +67,134 @@ describe('PluginDeclarativeUI', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
     expect(wrapper.emitted('submit')[1][0].secret_replacements).toEqual({ '/token': 'rotated-secret' })
     expect(wrapper.emitted('submit')[1][0].config).not.toHaveProperty('token')
-		expect(wrapper.findAll('button').some((button) => button.text() === '清除凭据')).toBe(false)
-	})
+    expect(wrapper.findAll('button').some((button) => button.text() === '清除凭据')).toBe(false)
+  })
 
-	it('allows an existing optional secret to be explicitly cleared', async () => {
-		const optionalDocument = structuredClone(document)
-		optionalDocument.components[0].children[1].required = false
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: optionalDocument, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
-		await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
-		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-		expect(wrapper.emitted('submit')[0][0].secret_replacements).toEqual({ '/token': null })
-	})
+  it('allows an existing optional secret to be explicitly cleared', async () => {
+    const optionalDocument = structuredClone(document)
+    optionalDocument.components[0].children[1].required = false
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: optionalDocument, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].secret_replacements).toEqual({ '/token': null })
+  })
 
-	it('supports array add, remove and reorder for repeatable groups', async () => {
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { upstreams: [{ host: 'a' }, { host: 'b' }] }, canConfigure: true } })
-		await wrapper.findAll('button').find((button) => button.text() === '+ 添加').trigger('click')
-		let itemWrappers = wrapper.findAll('.declarative-array-item')
-		expect(itemWrappers).toHaveLength(3)
-		await itemWrappers[2].find('input[type="text"]').setValue('c')
-		await itemWrappers[2].findAll('button').find((button) => button.text() === '上移').trigger('click')
-		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-		expect(wrapper.emitted('submit').at(-1)[0].config.upstreams.map((item) => item.host)).toEqual(['a', 'c', 'b'])
-	})
+  it('supports array add, remove and reorder for repeatable groups', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { port: 80, upstreams: [{ host: 'a' }, { host: 'b' }] }, canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === '+ 添加').trigger('click')
+    let itemWrappers = wrapper.findAll('.declarative-array-item')
+    expect(itemWrappers).toHaveLength(3)
+    await itemWrappers[2].find('input[type="text"]').setValue('c')
+    await itemWrappers[2].findAll('button').find((button) => button.text() === '上移').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit').at(-1)[0].config.upstreams.map((item) => item.host)).toEqual(['a', 'c', 'b'])
+  })
 
-	it('removes a repeatable array item', async () => {
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { upstreams: [{ host: 'a' }, { host: 'b' }] }, canConfigure: true } })
-		await wrapper.findAll('.declarative-array-item')[0].findAll('button').find((button) => button.text() === '移除').trigger('click')
-		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-		expect(wrapper.emitted('submit')[0][0].config.upstreams.map((item) => item.host)).toEqual(['b'])
-	})
+  it('removes a repeatable array item', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { port: 80, upstreams: [{ host: 'a' }, { host: 'b' }] }, canConfigure: true } })
+    await wrapper.findAll('.declarative-array-item')[0].findAll('button').find((button) => button.text() === '移除').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.upstreams.map((item) => item.host)).toEqual(['b'])
+  })
 
-	it('hides condition-false fields and prunes them from submit', async () => {
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { mode: 'basic', extra: 'stale' }, canConfigure: true } })
-		expect(wrapper.find('input[type="text"]').exists()).toBe(false)
-		await wrapper.get('select').setValue('advanced')
-		expect(wrapper.find('input[type="text"]').exists()).toBe(true)
-		await wrapper.get('select').setValue('basic')
-		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-		expect(wrapper.emitted('submit')[0][0].config).toEqual({ mode: 'basic' })
-	})
+  it('hides condition-false fields and prunes them from submit', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: { mode: 'basic', extra: 'stale', port: 80 }, canConfigure: true } })
+    expect(wrapper.find('input[type="text"]').exists()).toBe(false)
+    await wrapper.get('select').setValue('advanced')
+    expect(wrapper.find('input[type="text"]').exists()).toBe(true)
+    await wrapper.get('select').setValue('basic')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ mode: 'basic', port: 80 })
+  })
 
-	it('renders constraint hints and inline validation errors', async () => {
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: {}, canConfigure: true } })
-		expect(wrapper.text()).toContain('必填')
-		expect(wrapper.text()).toContain('范围 1–65535')
-		expect(wrapper.text()).not.toContain('此项为必填')
-		await wrapper.get('input[type="number"]').setValue('0')
-		expect(wrapper.text()).toContain('不能小于 1')
-	})
+  it('renders constraint hints and inline validation errors', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: {}, canConfigure: true } })
+    expect(wrapper.text()).toContain('必填')
+    expect(wrapper.text()).toContain('范围 1–65535')
+    expect(wrapper.text()).not.toContain('此项为必填')
+    await wrapper.get('input[type="number"]').setValue('0')
+    expect(wrapper.text()).toContain('不能小于 1')
+  })
 
-	it('keeps configuration hidden for resource writers while allowing dynamic actions', async () => {
-		vi.spyOn(window, 'confirm').mockReturnValue(true)
-		const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'private-config' }, canConfigure: false, canAct: true } })
-		expect(wrapper.find('.declarative-section').exists()).toBe(false)
-		expect(wrapper.text()).not.toContain('Save')
-		expect(wrapper.text()).not.toContain('private-config')
-		await wrapper.get('.declarative-target input').setValue('relay-1')
-		await wrapper.get('button').trigger('click')
-		expect(wrapper.emitted('submit')).toBeUndefined()
-		expect(wrapper.emitted('dynamic')[0][0].target_id).toBe('relay-1')
-	})
+  it('blocks submit and reveals required or range errors', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: richDocument, config: {}, canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.text()).toContain('此项为必填')
+    await wrapper.get('input[type="number"]').setValue('0')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.text()).toContain('不能小于 1')
+    await wrapper.get('input[type="number"]').setValue('443')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.port).toBe(443)
+  })
 
-	it('seeds schema defaults into a fresh config before submit', async () => {
-		const defaultsDocument = {
-			schema_version: 1,
-			title: 'Defaults',
-			components: [
-				{ type: 'toggle', id: 'enabled', label: 'Enabled', binding: '/enabled', default: false },
-				{ type: 'text', id: 'name', label: 'Name', binding: '/name', default: 'default-name' },
-				{ type: 'select', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'basic', label: 'Basic' }], default: 'basic' }
-			],
-			actions: [{ type: 'submit', id: 'save', label: 'Save' }]
-		}
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: defaultsDocument, config: {}, canConfigure: true } })
-		expect(wrapper.get('input[type="checkbox"]').element.checked).toBe(false)
-		expect(wrapper.get('input[type="text"]').element.value).toBe('default-name')
-		expect(wrapper.get('select').element.value).toBe('basic')
-		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-		expect(wrapper.emitted('submit')[0][0].config).toEqual({ enabled: false, name: 'default-name', mode: 'basic' })
-	})
+  it('blocks submit for minLength and pattern failures', async () => {
+    const constrainedDocument = {
+      schema_version: 1,
+      title: 'Constrained',
+      components: [
+        { type: 'text', id: 'name', label: 'Name', binding: '/name', required: true, min_length: 3, pattern: '^[a-z]+$' }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: constrainedDocument, config: { name: 'A' }, canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.text()).toContain('至少 3 个字符')
+    await wrapper.get('input[type="text"]').setValue('ABC')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.text()).toContain('格式不匹配')
+    await wrapper.get('input[type="text"]').setValue('abc')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ name: 'abc' })
+  })
 
-	it('round-trips numeric enum values through a select', async () => {
-		const numericDocument = {
-			schema_version: 1,
-			title: 'Numeric',
-			components: [
-				{ type: 'select', id: 'level', label: 'Level', binding: '/level', options: [{ value: 1, label: '1' }, { value: 2, label: '2' }] }
-			],
-			actions: [{ type: 'submit', id: 'save', label: 'Save' }]
-		}
-		const wrapper = mount(PluginDeclarativeUI, { props: { document: numericDocument, config: { level: 1 }, canConfigure: true } })
-		await wrapper.get('select').setValue('2')
-		await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
-		expect(wrapper.emitted('submit')[0][0].config).toEqual({ level: 2 })
-	})
+  it('keeps configuration hidden for resource writers while allowing dynamic actions', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'private-config' }, canConfigure: false, canAct: true } })
+    expect(wrapper.find('.declarative-section').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Save')
+    expect(wrapper.text()).not.toContain('private-config')
+    await wrapper.get('.declarative-target input').setValue('relay-1')
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.emitted('dynamic')[0][0].target_id).toBe('relay-1')
+  })
+
+  it('seeds schema defaults into a fresh config before submit', async () => {
+    const defaultsDocument = {
+      schema_version: 1,
+      title: 'Defaults',
+      components: [
+        { type: 'toggle', id: 'enabled', label: 'Enabled', binding: '/enabled', default: false },
+        { type: 'text', id: 'name', label: 'Name', binding: '/name', default: 'default-name' },
+        { type: 'select', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'basic', label: 'Basic' }], default: 'basic' }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: defaultsDocument, config: {}, canConfigure: true } })
+    expect(wrapper.get('input[type="checkbox"]').element.checked).toBe(false)
+    expect(wrapper.get('input[type="text"]').element.value).toBe('default-name')
+    expect(wrapper.get('select').element.value).toBe('basic')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ enabled: false, name: 'default-name', mode: 'basic' })
+  })
+
+  it('round-trips numeric enum values through a select', async () => {
+    const numericDocument = {
+      schema_version: 1,
+      title: 'Numeric',
+      components: [
+        { type: 'select', id: 'level', label: 'Level', binding: '/level', options: [{ value: 1, label: '1' }, { value: 2, label: '2' }] }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: numericDocument, config: { level: 1 }, canConfigure: true } })
+    await wrapper.get('select').setValue('2')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ level: 2 })
+  })
 })

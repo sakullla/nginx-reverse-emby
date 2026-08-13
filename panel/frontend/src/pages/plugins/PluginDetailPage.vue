@@ -97,11 +97,7 @@ const formConfig = computed(() => {
   if (pkg.declarative_ui) return selectedConfig.value
   return stripWriteOnlyConfigValues(pkg.config_schema, selectedConfig.value)
 })
-const canRenderForm = computed(() => {
-  if (!selectedInstance.value) return false
-  if (isDeclarativeUI.value) return admin.value || canWrite.value
-  return admin.value
-})
+const canRenderForm = computed(() => !!selectedInstance.value && canWrite.value)
 const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.components?.length))
 
 const confirmDialog = ref({ visible: false, loading: false, action: '' })
@@ -275,7 +271,7 @@ async function confirmAction() {
 }
 
 async function saveConfig(payload) {
-  if (!admin.value || !selectedInstance.value) return
+  if (!canWrite.value || !selectedInstance.value) return
   busy.value = 'configure'
   error.value = ''
   try {
@@ -451,7 +447,7 @@ async function retryAgent(status) {
             :secret-fields="selectedSecretFields"
             :saving="busy === 'configure'"
             :action-busy="!!actionBusy"
-            :can-configure="admin"
+            :can-configure="canWrite"
             :can-act="canWrite"
             @submit="saveConfig"
             @dynamic="runDynamicAction"
