@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { fetchRepositoryContents, fetchRepositorySources } from '../../api/pluginRepositories'
 import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
+import BaseModal from '../../components/base/BaseModal.vue'
+import EmptyState from '../../components/base/EmptyState.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 
@@ -13,14 +15,13 @@ const packages = ref([])
 const installed = ref([])
 const selected = ref(null)
 const detail = ref(null)
-const confirmed = ref(new Set())
-const riskAccepted = ref(false)
+const confirmVisible = ref(false)
 
 const source = computed(() => selected.value?.source || {})
 const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
 const isUpgrade = computed(() => installedPlugin.value && installedPlugin.value.active_package_digest !== selected.value?.plugin.sha256)
 const requiredPermissions = computed(() => detail.value?.permissions || [])
-const ready = computed(() => requiredPermissions.value.every((permission) => confirmed.value.has(permission)) && (source.value.kind === 'official' || riskAccepted.value))
+const alreadyInstalled = computed(() => !!installedPlugin.value && !isUpgrade.value)
 
 onMounted(load)
 
@@ -47,43 +48,51 @@ async function load() {
 async function selectPackage(item) {
   selected.value = item
   detail.value = null
-  confirmed.value = new Set()
-  riskAccepted.value = false
+  confirmVisible.value = false
   error.value = ''
   try {
-    detail.value = await fetchPluginPackageDetail(selection(false))
+    detail.value = await fetchPluginPackageDetail(packageSelection())
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || '读取签名包详情失败')
   }
 }
 
-function selection(includeConfirmation = true) {
-  const payload = {
+function packageSelection() {
+  return {
     source_id: source.value.id,
     plugin_id: selected.value?.plugin.id,
     version: selected.value?.plugin.version,
-    digest: selected.value?.plugin.sha256,
-    confirmed_permissions: includeConfirmation ? [...confirmed.value].sort() : [],
-    risk_accepted: includeConfirmation ? riskAccepted.value : false
+    digest: selected.value?.plugin.sha256
   }
-  return payload
 }
 
-function togglePermission(permission, checked) {
-  const next = new Set(confirmed.value)
-  if (checked) next.add(permission)
-  else next.delete(permission)
-  confirmed.value = next
+function installSelection() {
+  return {
+    ...packageSelection(),
+    confirmed_permissions: [...requiredPermissions.value].sort(),
+    risk_accepted: source.value.kind !== 'official'
+  }
+}
+
+function openConfirm() {
+  if (alreadyInstalled.value) return
+  confirmVisible.value = true
+}
+
+function cancelConfirm() {
+  if (actionBusy.value) return
+  confirmVisible.value = false
 }
 
 async function applyPackage() {
-  if (!ready.value || !selected.value) return
+  if (!selected.value || actionBusy.value) return
   actionBusy.value = true
   error.value = ''
   try {
-    if (isUpgrade.value) await upgradePlugin(selected.value.plugin.id, selection())
-    else await installPlugin(selection())
+    if (isUpgrade.value) await upgradePlugin(selected.value.plugin.id, installSelection())
+    else await installPlugin(installSelection())
     installed.value = await fetchPlugins()
+    confirmVisible.value = false
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || '提交插件包失败')
   } finally {
@@ -95,61 +104,191 @@ async function applyPackage() {
 <template>
   <main class="plugin-marketplace-page">
     <header class="page-header">
-      <div><h1>插件市场</h1><p>只读取控制面验证后的签名包投影；市场内容不能向面板注入 HTML 或 JavaScript。</p></div>
-      <RouterLink class="btn btn-secondary" to="/plugins/repositories">管理仓库源</RouterLink>
-    </header>
-    <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
-    <p v-if="loading">正在读取已验证市场快照…</p>
-    <section v-else class="plugin-marketplace-workspace">
-      <aside class="plugin-marketplace-list" aria-label="可安装插件">
-        <button v-for="item in packages" :key="`${item.source.id}:${item.plugin.id}:${item.plugin.version}`" type="button" :class="{ active: item === selected }" @click="selectPackage(item)">
-          <strong>{{ item.plugin.name || item.plugin.id }}</strong>
-          <small>{{ item.plugin.version }} · {{ item.plugin.runtime?.kind || 'runtime 未声明' }}</small>
-          <span>{{ item.source.kind === 'official' ? '官方' : '非官方' }} · {{ item.source.risk_label || '风险未标注' }}</span>
-        </button>
-        <p v-if="!packages.length">当前市场快照没有可用插件。</p>
-      </aside>
-      <div class="plugin-marketplace-detail">
-        <template v-if="detail">
-          <PluginPackageSummary :detail="detail" :source="source" />
-          <PluginRiskNotices :package-detail="detail" :source="source" />
-          <section class="permission-review">
-            <h3>精确权限确认</h3>
-            <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
-            <label v-for="permission in requiredPermissions" :key="permission">
-              <input type="checkbox" :checked="confirmed.has(permission)" @change="togglePermission(permission, $event.target.checked)">
-              <code>{{ permission }}</code>
-            </label>
-            <label v-if="source.kind !== 'official'" class="risk-confirmation">
-              <input v-model="riskAccepted" type="checkbox">
-              我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。
-            </label>
-            <p v-if="installedPlugin && !isUpgrade">当前 digest 已安装。</p>
-            <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选 generation；失败时保留当前 active 版本。</p>
-            <button class="btn btn-primary" type="button" :disabled="!ready || actionBusy || (installedPlugin && !isUpgrade)" @click="applyPackage">
-              {{ actionBusy ? '提交中…' : isUpgrade ? '确认权限并升级' : '确认权限并安装' }}
-            </button>
-          </section>
-        </template>
-        <p v-else>选择一个插件查看宿主验证详情。</p>
+      <div class="page-header__left">
+        <RouterLink to="/plugins" class="back-link">← 已安装插件</RouterLink>
+        <h1 class="page-title">插件市场</h1>
+        <p class="page-subtitle">只读取控制面验证后的签名包投影；市场内容不能向面板注入 HTML 或 JavaScript。</p>
       </div>
-    </section>
+      <div class="page-header__right">
+        <RouterLink class="btn btn-secondary" to="/plugins/repositories">管理仓库源</RouterLink>
+      </div>
+    </header>
+
+    <div v-if="loading" class="plugin-marketplace-page__loading">
+      <div class="spinner"></div>
+      <p>正在读取已验证市场快照…</p>
+    </div>
+
+    <div v-else-if="!packages.length && error" role="alert">
+      <EmptyState title="读取失败" :description="error" />
+    </div>
+
+    <EmptyState v-else-if="!packages.length" icon="🧩" title="暂无插件" description="当前市场快照没有可用插件。" />
+
+    <template v-else>
+      <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
+
+      <section class="plugin-marketplace-workspace">
+        <aside class="plugin-marketplace-list" aria-label="可安装插件">
+          <button v-for="item in packages" :key="`${item.source.id}:${item.plugin.id}:${item.plugin.version}`" type="button" :class="{ active: item === selected }" @click="selectPackage(item)">
+            <strong>{{ item.plugin.name || item.plugin.id }}</strong>
+            <small>{{ item.plugin.version }} · {{ item.plugin.runtime?.kind || 'runtime 未声明' }}</small>
+            <span>{{ item.source.kind === 'official' ? '官方' : '非官方' }} · {{ item.source.risk_label || '风险未标注' }}</span>
+          </button>
+        </aside>
+
+        <div class="plugin-marketplace-detail">
+          <template v-if="detail">
+            <PluginPackageSummary :detail="detail" :source="source" />
+            <PluginRiskNotices :package-detail="detail" :source="source" />
+            <section class="permission-review">
+              <h3>精确权限确认</h3>
+              <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
+              <ul v-else class="permission-list">
+                <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
+              </ul>
+              <p v-if="alreadyInstalled">当前 digest 已安装。</p>
+              <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选 generation；失败时保留当前 active 版本。</p>
+              <div class="permission-review__actions">
+                <button class="btn btn-primary" type="button" :disabled="alreadyInstalled" @click="openConfirm">
+                  {{ isUpgrade ? '升级插件' : '安装插件' }}
+                </button>
+              </div>
+            </section>
+          </template>
+          <EmptyState v-else icon="🧩" title="选择插件查看详情" description="从左侧列表选择一个插件查看宿主验证详情。" />
+        </div>
+      </section>
+
+      <BaseModal
+        v-model="confirmVisible"
+        :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
+        :subtitle="selected?.plugin.name || selected?.plugin.id"
+        :close-on-click-modal="!actionBusy"
+        show-footer
+      >
+        <div class="confirm-permissions">
+          <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
+          <p v-else>此包未请求宿主能力。</p>
+          <ul v-if="requiredPermissions.length" class="permission-list">
+            <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
+          </ul>
+          <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
+        </div>
+        <template #footer>
+          <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="cancelConfirm">取消</button>
+          <button class="btn btn-primary" type="button" :disabled="actionBusy" @click="applyPackage">
+            {{ actionBusy ? '提交中…' : isUpgrade ? '确认升级' : '确认安装' }}
+          </button>
+        </template>
+      </BaseModal>
+    </template>
   </main>
 </template>
 
 <style scoped>
 .plugin-marketplace-page { max-width: 1280px; margin: 0 auto; }
-.page-header { display: flex; justify-content: space-between; gap: var(--space-4); align-items: flex-start; }
-h1 { margin: 0; } .page-header p { margin: var(--space-1) 0 0; color: var(--color-text-muted); }
+
+.plugin-marketplace-page__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: 4rem 2rem;
+  color: var(--color-text-muted);
+}
+
+.back-link {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.back-link:hover { color: var(--color-primary); }
+
 .plugin-alert { color: var(--color-danger); }
-.plugin-marketplace-workspace { display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); min-height: 560px; border: 1px solid var(--color-border-default); border-radius: var(--radius-xl); overflow: hidden; background: var(--color-bg-surface); }
-.plugin-marketplace-list { border-right: 1px solid var(--color-border-subtle); background: var(--color-bg-subtle); }
-.plugin-marketplace-list button { width: 100%; display: grid; gap: 3px; padding: var(--space-4); border: 0; border-bottom: 1px solid var(--color-border-subtle); background: transparent; color: var(--color-text-primary); text-align: left; cursor: pointer; }
-.plugin-marketplace-list button.active { background: var(--color-bg-surface); box-shadow: inset 3px 0 var(--color-primary); }
-.plugin-marketplace-list small, .plugin-marketplace-list span { color: var(--color-text-muted); font-size: var(--text-xs); }
-.plugin-marketplace-detail { min-width: 0; display: grid; align-content: start; gap: var(--space-5); padding: var(--space-6); }
-.permission-review { display: grid; gap: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--color-border-subtle); }
-.permission-review h3, .permission-review p { margin: 0; }.permission-review label { display: flex; gap: var(--space-2); align-items: flex-start; font-size: var(--text-sm); }
+
+.plugin-marketplace-workspace {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  min-height: 560px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+}
+
+.plugin-marketplace-list {
+  border-right: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+}
+.plugin-marketplace-list button {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  padding: var(--space-4);
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.plugin-marketplace-list button.active {
+  background: var(--color-bg-surface);
+  box-shadow: inset 3px 0 var(--color-primary);
+}
+.plugin-marketplace-list small,
+.plugin-marketplace-list span {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.plugin-marketplace-detail {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: var(--space-5);
+  padding: var(--space-6);
+}
+
+.permission-review {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border-subtle);
+}
+.permission-review h3,
+.permission-review p {
+  margin: 0;
+}
+.permission-review__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.permission-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.permission-list code {
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
 .upgrade-notice { color: var(--color-warning); }
-@media (max-width: 800px) { .plugin-marketplace-workspace { grid-template-columns: 1fr; }.plugin-marketplace-list { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); } }
+
+.confirm-permissions { display: grid; gap: var(--space-3); }
+.confirm-permissions p { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
+.confirm-risk { color: var(--color-warning); }
+
+@media (max-width: 800px) {
+  .plugin-marketplace-workspace { grid-template-columns: 1fr; }
+  .plugin-marketplace-list { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); }
+  .permission-review__actions { flex-direction: column; }
+  .permission-review__actions > .btn { width: 100%; }
+}
 </style>
