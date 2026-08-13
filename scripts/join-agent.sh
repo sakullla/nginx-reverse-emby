@@ -1050,6 +1050,13 @@ prepare_tunnel_enrollment() {
         exit 1
     fi
 
+    if { [ -n "$AGENT_ID" ] && [ -z "$PKI_DOMAIN_ID" ]; } || \
+       { [ -z "$AGENT_ID" ] && [ -n "$PKI_DOMAIN_ID" ]; }; then
+        echo "[JOIN] Ignoring incomplete stable PKI identity; starting fresh enrollment" >&2
+        AGENT_ID=""
+        PKI_DOMAIN_ID=""
+    fi
+
     pending_suffix="$(openssl rand -hex 8)" || {
         echo "Failed to generate tunnel enrollment staging identifier" >&2
         exit 1
@@ -1072,11 +1079,7 @@ prepare_tunnel_enrollment() {
 
     openssl ecparam -name prime256v1 -genkey -noout -out "$pending_tmp/private-key.pem"
     restrict_private_path "$pending_tmp/private-key.pem" file
-    if [ -n "$AGENT_ID" ] || [ -n "$PKI_DOMAIN_ID" ]; then
-        [ -n "$AGENT_ID" ] && [ -n "$PKI_DOMAIN_ID" ] || {
-            echo "Stable agent ID and PKI domain must both be available for re-enrollment" >&2
-            exit 1
-        }
+    if [ -n "$AGENT_ID" ] && [ -n "$PKI_DOMAIN_ID" ]; then
         identity_uri="spiffe://$PKI_DOMAIN_ID/agent/$AGENT_ID"
         cat > "$pending_tmp/openssl.cnf" <<EOF
 [req]

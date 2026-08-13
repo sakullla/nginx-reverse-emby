@@ -39,25 +39,31 @@ type ManagedCertificateACMEInfo struct {
 }
 
 type ManagedCertificateAgentReport struct {
-	Status       string                     `json:"status"`
-	LastIssueAt  string                     `json:"last_issue_at"`
-	LastError    string                     `json:"last_error"`
-	MaterialHash string                     `json:"material_hash"`
-	NotAfter     string                     `json:"not_after,omitempty"`
-	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
-	UpdatedAt    string                     `json:"updated_at"`
+	Status          string                     `json:"status"`
+	LastIssueAt     string                     `json:"last_issue_at"`
+	LastError       string                     `json:"last_error"`
+	MaterialHash    string                     `json:"material_hash"`
+	NotAfter        string                     `json:"not_after,omitempty"`
+	NextRetryAtUnix int64                      `json:"next_retry_at_unix,omitempty"`
+	RetryCount      int                        `json:"retry_count,omitempty"`
+	BackoffClass    string                     `json:"backoff_class,omitempty"`
+	ACMEInfo        ManagedCertificateACMEInfo `json:"acme_info"`
+	UpdatedAt       string                     `json:"updated_at"`
 }
 
 type ManagedCertificateHeartbeatReport struct {
-	ID           int                        `json:"id"`
-	Domain       string                     `json:"domain"`
-	Status       string                     `json:"status"`
-	LastIssueAt  string                     `json:"last_issue_at"`
-	LastError    string                     `json:"last_error"`
-	MaterialHash string                     `json:"material_hash"`
-	NotAfter     string                     `json:"not_after,omitempty"`
-	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
-	UpdatedAt    string                     `json:"updated_at"`
+	ID              int                        `json:"id"`
+	Domain          string                     `json:"domain"`
+	Status          string                     `json:"status"`
+	LastIssueAt     string                     `json:"last_issue_at"`
+	LastError       string                     `json:"last_error"`
+	MaterialHash    string                     `json:"material_hash"`
+	NotAfter        string                     `json:"not_after,omitempty"`
+	NextRetryAtUnix int64                      `json:"next_retry_at_unix,omitempty"`
+	RetryCount      int                        `json:"retry_count,omitempty"`
+	BackoffClass    string                     `json:"backoff_class,omitempty"`
+	ACMEInfo        ManagedCertificateACMEInfo `json:"acme_info"`
+	UpdatedAt       string                     `json:"updated_at"`
 }
 
 type ManagedCertificate struct {
@@ -2847,6 +2853,11 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 	cert.LastError = report.LastError
 	cert.MaterialHash = report.MaterialHash
 	cert.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
+	if cert.IssuerMode == "local_http01" {
+		cert.NextRetryAtUnix = report.NextRetryAtUnix
+		cert.RetryCount = report.RetryCount
+		cert.BackoffClass = report.BackoffClass
+	}
 	cert.ACMEInfo = report.ACMEInfo
 	return cert
 }
@@ -2855,14 +2866,17 @@ func normalizeManagedCertificateHeartbeatReports(reports []ManagedCertificateHea
 	normalized := make([]ManagedCertificateHeartbeatReport, 0, len(reports))
 	for _, report := range reports {
 		next := ManagedCertificateHeartbeatReport{
-			Domain:       normalizeCertificateReportHost(report.Domain),
-			Status:       normalizeManagedCertificateReportStatus(report.Status),
-			LastIssueAt:  normalizeOptionalTimestamp(report.LastIssueAt),
-			LastError:    report.LastError,
-			MaterialHash: strings.TrimSpace(report.MaterialHash),
-			NotAfter:     normalizeOptionalTimestamp(report.NotAfter),
-			ACMEInfo:     report.ACMEInfo,
-			UpdatedAt:    normalizeOptionalTimestamp(report.UpdatedAt),
+			Domain:          normalizeCertificateReportHost(report.Domain),
+			Status:          normalizeManagedCertificateReportStatus(report.Status),
+			LastIssueAt:     normalizeOptionalTimestamp(report.LastIssueAt),
+			LastError:       report.LastError,
+			MaterialHash:    strings.TrimSpace(report.MaterialHash),
+			NotAfter:        normalizeOptionalTimestamp(report.NotAfter),
+			NextRetryAtUnix: max(report.NextRetryAtUnix, 0),
+			RetryCount:      max(report.RetryCount, 0),
+			BackoffClass:    normalizeManagedCertificateBackoffClass(report.BackoffClass),
+			ACMEInfo:        report.ACMEInfo,
+			UpdatedAt:       normalizeOptionalTimestamp(report.UpdatedAt),
 		}
 		if report.ID > 0 {
 			next.ID = report.ID
@@ -2913,6 +2927,9 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 			next.LastError = report.LastError
 			next.MaterialHash = report.MaterialHash
 			next.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
+			next.NextRetryAtUnix = report.NextRetryAtUnix
+			next.RetryCount = report.RetryCount
+			next.BackoffClass = report.BackoffClass
 			next.ACMEInfo = report.ACMEInfo
 		}
 		if !managedCertificateEqual(cert, next) {
@@ -3014,15 +3031,31 @@ func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string
 	}
 	existingReport := reports[strings.TrimSpace(agentID)]
 	cert.AgentReports[strings.TrimSpace(agentID)] = ManagedCertificateAgentReport{
-		Status:       report.Status,
-		LastIssueAt:  coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
-		LastError:    report.LastError,
-		MaterialHash: report.MaterialHash,
-		NotAfter:     coalesceString(report.NotAfter, existingReport.NotAfter),
-		ACMEInfo:     report.ACMEInfo,
-		UpdatedAt:    updatedAt,
+		Status:          report.Status,
+		LastIssueAt:     coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
+		LastError:       report.LastError,
+		MaterialHash:    report.MaterialHash,
+		NotAfter:        coalesceString(report.NotAfter, existingReport.NotAfter),
+		NextRetryAtUnix: report.NextRetryAtUnix,
+		RetryCount:      report.RetryCount,
+		BackoffClass:    report.BackoffClass,
+		ACMEInfo:        report.ACMEInfo,
+		UpdatedAt:       updatedAt,
 	}
 	return cert
+}
+
+func normalizeManagedCertificateBackoffClass(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case managedCertificateBackoffClassTransient:
+		return managedCertificateBackoffClassTransient
+	case managedCertificateBackoffClassPersistent:
+		return managedCertificateBackoffClassPersistent
+	case managedCertificateBackoffClassRateLimited:
+		return managedCertificateBackoffClassRateLimited
+	default:
+		return ""
+	}
 }
 
 func hasMatchingHTTPSRuleForCertificateInRows(rows []storage.HTTPRuleRow, cert ManagedCertificate) bool {
@@ -3111,7 +3144,7 @@ func assertManagedCertificateTargetingAllowed(cfg config.Config, cert ManagedCer
 		return nil
 	}
 	if len(cert.TargetAgentIDs) != 1 || strings.TrimSpace(cert.TargetAgentIDs[0]) != localAgentID {
-		return fmt.Errorf("%w: master_cf_dns certificates must target only the local master agent", ErrInvalidArgument)
+		return fmt.Errorf("%w: master_cf_dns certificates can only target the local master agent; use local_http01 for remote agents", ErrInvalidArgument)
 	}
 	return nil
 }

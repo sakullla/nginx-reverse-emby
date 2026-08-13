@@ -96,6 +96,17 @@ func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
+	if err := manager.saveManagedCertificateState(21, managedCertificateState{
+		ACME: &model.ManagedCertificateACMEState{Renewal: model.ManagedCertificateACMERenewalState{
+			LastAttemptStatus: "error",
+			LastAttemptError:  "acme wait_authorization: identifier authorization failed (challenge connection failed)",
+			BackoffClass:      backoffClassPersistent,
+			BackoffRetryNext:  1786254268,
+			BackoffRetryNum:   2,
+		}},
+	}); err != nil {
+		t.Fatalf("saveManagedCertificateState() error = %v", err)
+	}
 
 	reports, err := manager.ManagedCertificateReports(context.Background())
 	if err != nil {
@@ -104,7 +115,7 @@ func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
 	if len(reports) != 1 {
 		t.Fatalf("len(reports) = %d", len(reports))
 	}
-	if reports[0].ID != 21 || reports[0].Status != "active" {
+	if reports[0].ID != 21 || reports[0].Status != "error" {
 		t.Fatalf("unexpected report metadata: %+v", reports[0])
 	}
 	if reports[0].MaterialHash != hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM) {
@@ -118,6 +129,16 @@ func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
 	}
 	if reports[0].ACMEInfo.MainDomain != "sync.example.com" {
 		t.Fatalf("unexpected ACME info: %+v", reports[0].ACMEInfo)
+	}
+	if reports[0].NextRetryAtUnix != 1786254268 || reports[0].RetryCount != 2 || reports[0].BackoffClass != backoffClassPersistent {
+		t.Fatalf("unexpected renewal backoff report: %+v", reports[0])
+	}
+	preparedReports, err := manager.managedCertificateReports(context.Background(), manager.activeState())
+	if err != nil || len(preparedReports) != 1 {
+		t.Fatalf("prepared ManagedCertificateReports() = %+v, %v", preparedReports, err)
+	}
+	if preparedReports[0].NextRetryAtUnix != 1786254268 || preparedReports[0].RetryCount != 2 || preparedReports[0].BackoffClass != backoffClassPersistent {
+		t.Fatalf("unexpected prepared renewal backoff report: %+v", preparedReports[0])
 	}
 }
 

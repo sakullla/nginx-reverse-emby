@@ -169,6 +169,44 @@ if ln -s "$tmp/symlink-probe-target" "$tmp/symlink-probe-link" 2>/dev/null && \
 fi
 rm -rf "$symlink_data_root" "$symlink_external_root" "$tmp/symlink-probe-link" "$tmp/symlink-probe-target"
 
+# A legacy or interrupted install may retain only one half of the stable PKI
+# identity. Treat either partial pair as a fresh anonymous enrollment instead
+# of building an invalid SPIFFE URI or refusing to join forever.
+for partial_identity_case in agent_id pki_domain; do
+    DATA_DIR="$tmp/partial-identity-$partial_identity_case"
+    partial_identity_output="$tmp/partial-identity-$partial_identity_case.out"
+    case "$partial_identity_case" in
+        agent_id)
+            AGENT_ID="legacy-agent"
+            PKI_DOMAIN_ID=""
+            ;;
+        pki_domain)
+            AGENT_ID=""
+            PKI_DOMAIN_ID="legacy-domain"
+            ;;
+    esac
+    PKI_SECURITY_ACK_JSON=""
+    prepare_tunnel_enrollment >"$partial_identity_output" 2>&1
+    assert_eq "$partial_identity_case clears agent id" "$AGENT_ID" ""
+    assert_eq "$partial_identity_case clears PKI domain" "$PKI_DOMAIN_ID" ""
+    if ! grep -Fq '[JOIN] Ignoring incomplete stable PKI identity; starting fresh enrollment' "$partial_identity_output"; then
+        printf '%s did not report partial identity fallback\n' "$partial_identity_case" >&2
+        exit 1
+    fi
+    partial_request_json="$(tr -d '\r\n' < "$DATA_DIR/pki/identities/agent/pending/request.json")"
+    if ! printf '%s' "$partial_request_json" | grep -Fq '"pki_domain_id":"","agent_id":""'; then
+        printf '%s enrollment journal retained a partial identity\n' "$partial_identity_case" >&2
+        exit 1
+    fi
+    partial_csr_text="$(openssl req -in "$DATA_DIR/pki/identities/agent/pending/request.csr.pem" -noout -text)"
+    if printf '%s\n' "$partial_csr_text" | grep -Eq 'URI:'; then
+        printf '%s fallback CSR unexpectedly retained a stable identity\n' "$partial_identity_case" >&2
+        exit 1
+    fi
+    rm -rf "$DATA_DIR"
+    rm -f "$partial_identity_output"
+done
+
 DATA_DIR="$tmp/pki-data"
 AGENT_ID=""
 PKI_DOMAIN_ID=""

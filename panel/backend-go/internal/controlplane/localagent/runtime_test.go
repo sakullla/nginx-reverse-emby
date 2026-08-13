@@ -239,6 +239,9 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 					"last_issue_at": "2026-04-11T12:00:00Z",
 					"material_hash": "hash-21",
 					"not_after": "2026-07-10T12:00:00Z",
+					"next_retry_at_unix": 1786254268,
+					"retry_count": 2,
+					"backoff_class": "persistent",
 					"acme_info": {"Main_Domain":"sync.example.com"}
 				}
 			]
@@ -298,6 +301,10 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	}
 	if got := store.savedState.ManagedCertificateReports[0].NotAfter; got != "2026-07-10T12:00:00Z" {
 		t.Fatalf("SaveLocalRuntimeState() managed report NotAfter = %q", got)
+	}
+	report := store.savedState.ManagedCertificateReports[0]
+	if report.NextRetryAtUnix != 1786254268 || report.RetryCount != 2 || report.BackoffClass != "persistent" {
+		t.Fatalf("SaveLocalRuntimeState() managed report backoff = %+v", report)
 	}
 }
 

@@ -343,11 +343,14 @@ func TestHeartbeatSync(t *testing.T) {
 			},
 		},
 		ManagedCertificateReports: []model.ManagedCertificateReport{{
-			ID:           21,
-			Domain:       "sync.example.com",
-			Status:       "active",
-			LastIssueAt:  "2026-04-11T00:00:00Z",
-			MaterialHash: "material-hash",
+			ID:              21,
+			Domain:          "sync.example.com",
+			Status:          "active",
+			LastIssueAt:     "2026-04-11T00:00:00Z",
+			MaterialHash:    "material-hash",
+			NextRetryAtUnix: 1786254268,
+			RetryCount:      2,
+			BackoffClass:    "persistent",
 			ACMEInfo: model.ManagedCertificateACMEInfo{
 				MainDomain: "sync.example.com",
 			},
@@ -511,6 +514,10 @@ func TestHeartbeatSync(t *testing.T) {
 		}
 		if !reflect.DeepEqual(payload.PluginLogs, []model.PluginRuntimeLogReport{pluginLog}) {
 			t.Fatalf("unexpected plugin_logs payload %+v", payload.PluginLogs)
+		}
+		report := payload.ManagedCertificateReports[0]
+		if report.NextRetryAtUnix != 1786254268 || report.RetryCount != 2 || report.BackoffClass != "persistent" {
+			t.Fatalf("unexpected managed certificate backoff payload %+v", report)
 		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")

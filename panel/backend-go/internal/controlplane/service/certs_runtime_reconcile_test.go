@@ -163,13 +163,16 @@ func TestReconcileManagedCertificatesFromLocalRuntimeStateKeepsExplicitReportsAu
 func TestManagedCertificateHeartbeatReportsFromRuntimeState(t *testing.T) {
 	t.Parallel()
 	converted := managedCertificateHeartbeatReportsFromRuntimeState([]storage.ManagedCertificateReport{{
-		ID:           99,
-		Domain:       "a.example.com",
-		Status:       "active",
-		LastIssueAt:  "2026-04-11T13:00:00Z",
-		LastError:    "",
-		MaterialHash: "hash-99",
-		NotAfter:     "2026-07-10T13:00:00Z",
+		ID:              99,
+		Domain:          "a.example.com",
+		Status:          "active",
+		LastIssueAt:     "2026-04-11T13:00:00Z",
+		LastError:       "",
+		MaterialHash:    "hash-99",
+		NotAfter:        "2026-07-10T13:00:00Z",
+		NextRetryAtUnix: 1786254268,
+		RetryCount:      2,
+		BackoffClass:    managedCertificateBackoffClassPersistent,
 		ACMEInfo: storage.ManagedCertificateACMEInfo{
 			MainDomain: "a.example.com",
 			KeyLength:  "ec256",
@@ -181,6 +184,9 @@ func TestManagedCertificateHeartbeatReportsFromRuntimeState(t *testing.T) {
 	}
 	if converted[0].NotAfter != "2026-07-10T13:00:00Z" {
 		t.Fatalf("converted NotAfter = %q", converted[0].NotAfter)
+	}
+	if converted[0].NextRetryAtUnix != 1786254268 || converted[0].RetryCount != 2 || converted[0].BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("converted backoff = %+v", converted[0])
 	}
 	raw, err := json.Marshal(converted[0].ACMEInfo)
 	if err != nil {

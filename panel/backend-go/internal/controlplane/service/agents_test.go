@@ -667,11 +667,147 @@ func TestHeartbeatPersistsPreparedPKISnapshotBeforeReply(t *testing.T) {
 		store.issuedSnapshot.AgentConfig.TrafficStatsEnabled != nil || durable.AgentConfig.TrafficStatsEnabled != nil {
 		t.Fatalf("dynamic traffic projection leaked into immutable snapshots: reply=%v issued=%+v durable=%+v", reply.TrafficStatsEnabled, store.issuedSnapshot.AgentConfig, durable.AgentConfig)
 	}
-	payloadSum := sha256.Sum256(store.issuedPayload)
-	if reply.SnapshotDigest != hex.EncodeToString(payloadSum[:]) || reply.SnapshotDigest != store.issuedDigest {
-		t.Fatalf("wire/durable snapshot digest = %q / %q", reply.SnapshotDigest, store.issuedDigest)
+		payloadSum := sha256.Sum256(store.issuedPayload)
+		if reply.SnapshotDigest != hex.EncodeToString(payloadSum[:]) || reply.SnapshotDigest != store.issuedDigest {
+			t.Fatalf("wire/durable snapshot digest = %q / %q", reply.SnapshotDigest, store.issuedDigest)
+		}
+	}
+
+func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "remote-c",
+			Name:             "remote-c",
+			AgentToken:       "token-remote-c",
+			DesiredVersion:   "3.1.0",
+			DesiredRevision:  7,
+			CurrentRevision:  7,
+			LastApplyStatus:  "success",
+			LastApplyMessage: "",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "3.1.0",
+			Revision:       7,
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
+			RelayListeners: []storage.RelayListener{{ID: 4, AgentID: "remote-c", Name: "relay-local", ListenHost: "0.0.0.0", ListenPort: 443}},
+			Certificates:   []storage.ManagedCertificateBundle{{ID: 8, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{{
+				ID:              8,
+				Domain:          "relay.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				Status:          "active",
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+			}},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision:   7,
+		LastApplyRevision: 7,
+		LastApplyStatus:   "error",
+		LastApplyMessage:  "relay listener 4: certificate 8 not found",
+		Platform:          "linux-amd64",
+	}, "token-remote-c")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if len(reply.Rules) != 1 || len(reply.L4Rules) != 1 || len(reply.RelayListeners) != 1 {
+		t.Fatalf("expected full rule payload on failed apply retry: %+v", reply)
+	}
+	if len(reply.Certificates) != 1 || len(reply.CertificatePolicies) != 1 {
+		t.Fatalf("expected full certificate payload on failed apply retry: %+v", reply)
+	}
+	if store.savedAgent.LastApplyStatus != "error" || store.savedAgent.LastApplyMessage == "" {
+		t.Fatalf("expected failed apply state to persist, got %+v", store.savedAgent)
 	}
 }
+
+func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "remote-cert",
+			Name:             "remote-cert",
+			AgentToken:       "token-remote-cert",
+			CapabilitiesJSON: `["cert_install","local_acme"]`,
+			DesiredVersion:   "3.0.0",
+			DesiredRevision:  4,
+			CurrentRevision:  3,
+			LastApplyStatus:  "success",
+		}},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["remote-cert"]`,
+			Status:          "pending",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{"Main_Domain":"sync.example.com"}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        4,
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 4},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	now := time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision:   3,
+		LastApplyRevision: 4,
+		LastApplyStatus:   "success",
+		ManagedCertificateReports: []ManagedCertificateHeartbeatReport{{
+			ID:              21,
+			Domain:          "SYNC.EXAMPLE.COM",
+			Status:          "active",
+			LastIssueAt:     "2026-04-11T12:00:00Z",
+			LastError:       "",
+			MaterialHash:    "hash-21",
+			NextRetryAtUnix: 1786254268,
+			RetryCount:      2,
+			BackoffClass:    managedCertificateBackoffClassPersistent,
+			ACMEInfo:        ManagedCertificateACMEInfo{MainDomain: "sync.example.com"},
+		}},
+	}, "token-remote-cert")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed cert rows = %+v", store.managedCerts)
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.Status != "active" || cert.MaterialHash != "hash-21" {
+		t.Fatalf("unexpected updated cert = %+v", cert)
+	}
+	report, ok := cert.AgentReports["remote-cert"]
+	if !ok {
+		t.Fatalf("missing agent report in %+v", cert.AgentReports)
+	}
+	if report.Status != "active" || report.MaterialHash != "hash-21" {
+		t.Fatalf("unexpected agent report = %+v", report)
+	}
+	if report.NextRetryAtUnix != 1786254268 || report.RetryCount != 2 || report.BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("unexpected agent report backoff = %+v", report)
+	}
+	if cert.NextRetryAtUnix != 1786254268 || cert.RetryCount != 2 || cert.BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("unexpected single-target certificate backoff = %+v", cert)
+	}
+}
+
 
 func TestAgentServiceConcurrentHeartbeatsMergeMasterCertificateReports(t *testing.T) {
 	t.Parallel()
