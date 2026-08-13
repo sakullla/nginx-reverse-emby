@@ -153,6 +153,41 @@ describe('PluginRepositoriesPage', () => {
     expect(wrapper.find('[role="alert"]').text()).toContain('credential rejected')
   })
 
+  it('keeps the create form visible when saving the first source fails', async () => {
+    fetchRepositorySources.mockResolvedValueOnce([])
+    createRepositorySource.mockRejectedValue(new Error('duplicate id'))
+    await mountPage()
+
+    await buttonByText('新增仓库源').trigger('click')
+    expect(wrapper.findComponent({ name: 'RepositorySourceForm' }).exists()).toBe(true)
+
+    wrapper.findComponent({ name: 'RepositorySourceForm' }).vm.$emit('save', {
+      id: 'market-two',
+      name: 'Market Two',
+      url: 'https://git.example.com/market-two.git',
+      purpose: 'market',
+      ref_kind: 'branch',
+      ref_name: 'main',
+      signer_key_id: '',
+      refresh_interval: ''
+    })
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'RepositorySourceForm' }).exists()).toBe(true)
+    expect(wrapper.text()).toContain('duplicate id')
+    expect(wrapper.text()).not.toContain('读取失败')
+    expect(createRepositorySource).toHaveBeenCalled()
+  })
+
+  it('shows a distinct placeholder when package contents fail to load', async () => {
+    fetchRepositoryContents.mockRejectedValue(new Error('snapshot unavailable'))
+    await mountPage()
+
+    expect(wrapper.text()).toContain('snapshot unavailable')
+    expect(wrapper.text()).toContain('读取包投影失败')
+    expect(wrapper.text()).not.toContain('当前快照没有可用包')
+  })
+
   it('keeps official sources immutable in the UI while allowing refresh', async () => {
     await mountPage()
     await buttonByText('Official Market').trigger('click')

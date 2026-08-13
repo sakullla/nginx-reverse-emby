@@ -16,8 +16,8 @@
       <p>正在读取仓库源…</p>
     </div>
 
-    <div v-else-if="error && !sources.length" role="alert">
-      <EmptyState title="读取失败" :description="error">
+    <div v-else-if="loadError && !sources.length" role="alert">
+      <EmptyState title="读取失败" :description="loadError">
         <template #action>
           <button class="btn btn-secondary" type="button" @click="loadSources">重试</button>
         </template>
@@ -124,6 +124,7 @@
               <span v-if="selectedSource.purpose === 'market'">{{ repositoryContents.entries.length }}</span>
             </div>
             <p v-if="contentsLoading" class="repository-packages__empty">正在读取包投影…</p>
+            <p v-else-if="contentsFailed" class="repository-packages__empty">读取包投影失败</p>
             <div v-else-if="repositoryContents.directPlugin" class="repository-package-row">
               <div>
                 <strong>{{ repositoryContents.directPlugin.id }}</strong>
@@ -197,11 +198,13 @@ const selectedId = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const refreshingId = ref('')
+const loadError = ref('')
 const error = ref('')
 const showForm = ref(false)
 const editingSource = ref(null)
 const confirmingDelete = ref(false)
 const contentsLoading = ref(false)
+const contentsFailed = ref(false)
 const repositoryContents = ref({ entries: [], directPlugin: null })
 
 const selectedSource = computed(() => sources.value.find((source) => source.id === selectedId.value) || null)
@@ -212,14 +215,14 @@ watch(selectedId, (id) => loadContents(id))
 
 async function loadSources(preferredId = selectedId.value) {
   loading.value = true
-  error.value = ''
+  loadError.value = ''
   try {
     sources.value = await fetchRepositorySources()
     selectedId.value = sources.value.some((source) => source.id === preferredId)
       ? preferredId
       : sources.value[0]?.id || ''
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '读取仓库源失败')
+    loadError.value = sanitizePluginText(cause?.message || '读取仓库源失败')
   } finally {
     loading.value = false
   }
@@ -227,6 +230,7 @@ async function loadSources(preferredId = selectedId.value) {
 
 async function loadContents(id) {
   repositoryContents.value = { entries: [], directPlugin: null }
+  contentsFailed.value = false
   if (!id) return
   error.value = ''
   contentsLoading.value = true
@@ -234,7 +238,10 @@ async function loadContents(id) {
     const contents = await fetchRepositoryContents(id)
     if (selectedId.value === id) repositoryContents.value = contents
   } catch (cause) {
-    if (selectedId.value === id) error.value = sanitizePluginText(cause?.message || '读取仓库包投影失败')
+    if (selectedId.value === id) {
+      error.value = sanitizePluginText(cause?.message || '读取仓库包投影失败')
+      contentsFailed.value = true
+    }
   } finally {
     if (selectedId.value === id) contentsLoading.value = false
   }
