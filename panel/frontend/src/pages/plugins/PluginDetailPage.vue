@@ -11,11 +11,13 @@ import {
   rollbackPlugin,
   uninstallPlugin
 } from '../../api/plugins'
-import { safePluginExport, sanitizePluginText } from '../../api/pluginSecurity'
+import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
 import { filterPluginDetailForActor, useAccessControl } from '../../context/useAccessControl'
+import BaseTabs from '../../components/base/BaseTabs.vue'
+import DeleteConfirmDialog from '../../components/DeleteConfirmDialog.vue'
+import EmptyState from '../../components/base/EmptyState.vue'
 import PluginAgentStatusTable from '../../components/plugins/PluginAgentStatusTable.vue'
-import PluginConfigForm from '../../components/plugins/PluginConfigForm.vue'
 import PluginDeclarativeUI from '../../components/plugins/PluginDeclarativeUI.vue'
 import PluginLogViewer from '../../components/plugins/PluginLogViewer.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
@@ -43,6 +45,40 @@ const selectedSecretFields = computed(() => selectedInstance.value?.pending_oper
   : (selectedInstance.value?.secret_fields || []))
 const source = computed(() => ({ kind: detail.value?.plugin.active_source_kind, risk_label: detail.value?.plugin.active_source_risk_label }))
 
+const instanceTabs = computed(() => (detail.value?.instances || []).map((instance) => ({
+  id: instance.id,
+  label: `${instance.id} · ${instance.resource_group_id}`
+})))
+
+const isDeclarativeUI = computed(() => !!detail.value?.package?.declarative_ui)
+const uiDocument = computed(() => {
+  const pkg = detail.value?.package
+  if (!pkg) return null
+  if (pkg.declarative_ui) return pkg.declarative_ui
+  const components = schemaToUIComponents(pkg.config_schema)
+  return {
+    schema_version: 1,
+    title: '',
+    components,
+    actions: [{ type: 'submit', id: 'save', label: busy.value === 'configure' ? '保存中…' : '保存配置并生成 revision' }]
+  }
+})
+const formConfig = computed(() => {
+  const pkg = detail.value?.package
+  if (!pkg) return {}
+  if (pkg.declarative_ui) return selectedConfig.value
+  return stripWriteOnlyConfigValues(pkg.config_schema, selectedConfig.value)
+})
+const canRenderForm = computed(() => {
+  if (!selectedInstance.value) return false
+  if (isDeclarativeUI.value) return admin.value || canWrite.value
+  return admin.value
+})
+const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.components?.length))
+
+const confirmDialog = ref({ visible: false, loading: false })
+const pluginName = computed(() => detail.value?.package?.manifest?.name || detail.value?.plugin?.plugin_id || '')
+
 onMounted(load)
 
 async function load() {
@@ -66,7 +102,6 @@ async function load() {
 
 async function lifecycle(action) {
   if (!admin.value || busy.value) return
-  if (!window.confirm(`确认执行插件 ${action} 操作？`)) return
   busy.value = action
   error.value = ''
   try {
@@ -74,16 +109,30 @@ async function lifecycle(action) {
     if (action === 'enable') await enablePlugin(pluginID)
     else if (action === 'disable') await disablePlugin(pluginID)
     else if (action === 'rollback') await rollbackPlugin(pluginID, detail.value.package.permissions || [])
-    else if (action === 'uninstall') {
-      await uninstallPlugin(pluginID)
-      await router.push('/plugins')
-      return
-    }
     await load()
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || `插件 ${action} 失败`)
   } finally {
     busy.value = ''
+  }
+}
+
+function openUninstallConfirm() {
+  if (!admin.value || busy.value) return
+  confirmDialog.value = { visible: true, loading: false }
+}
+
+async function confirmUninstall() {
+  if (!admin.value) return
+  confirmDialog.value.loading = true
+  error.value = ''
+  try {
+    await uninstallPlugin(detail.value.plugin.plugin_id)
+    await router.push('/plugins')
+  } catch (cause) {
+    error.value = sanitizePluginText(cause?.message || '卸载插件失败')
+  } finally {
+    confirmDialog.value = { visible: false, loading: false }
   }
 }
 
@@ -156,46 +205,112 @@ async function retryAgent(status) {
 
 <template>
   <main class="plugin-detail-page">
-    <p v-if="loading">正在读取插件详情…</p>
-    <p v-else-if="error && !detail" role="alert">{{ error }}</p>
+    <div v-if="loading" class="plugin-detail-page__loading">
+      <div class="spinner"></div>
+      <p>正在读取插件详情…</p>
+    </div>
+
+    <div v-else-if="error && !detail" role="alert">
+      <EmptyState title="读取失败" :description="error" />
+    </div>
+
     <template v-else-if="detail">
       <header class="page-header">
-        <div><RouterLink to="/plugins">← 已安装插件</RouterLink><h1>{{ detail.package.manifest?.name || detail.plugin.plugin_id }}</h1><p>{{ detail.plugin.current_lifecycle }} · state v{{ detail.plugin.state_version }}</p></div>
-        <div class="page-actions">
+        <div class="page-header__left">
+          <RouterLink to="/plugins" class="back-link">← 已安装插件</RouterLink>
+          <h1 class="page-title">{{ detail.package.manifest?.name || detail.plugin.plugin_id }}</h1>
+          <p class="page-subtitle">{{ detail.plugin.current_lifecycle }} · state v{{ detail.plugin.state_version }}</p>
+        </div>
+        <div class="page-header__right plugin-detail-actions">
           <button class="btn btn-secondary" type="button" @click="exportSafeDiagnostics">导出脱敏诊断</button>
           <template v-if="admin">
-            <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="lifecycle('enable')">启用</button>
+            <button class="btn btn-primary" type="button" :disabled="!!busy" @click="lifecycle('enable')">启用</button>
             <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="lifecycle('disable')">停用</button>
             <button class="btn btn-secondary" type="button" :disabled="!!busy || !detail.plugin.rollback_package_digest" @click="lifecycle('rollback')">回滚</button>
-            <button class="btn plugin-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="lifecycle('uninstall')">卸载</button>
+            <button class="btn btn-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="openUninstallConfirm">卸载</button>
           </template>
         </div>
       </header>
+
       <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
       <PluginPackageSummary :detail="detail.package" :source="source" />
       <PluginRiskNotices :package-detail="detail.package" :source="source" />
+
       <section class="plugin-section">
         <h2>实例配置</h2>
-        <select v-if="detail.instances.length" v-model="selectedInstanceID">
-          <option v-for="instance in detail.instances" :key="instance.id" :value="instance.id">{{ instance.id }} · {{ instance.resource_group_id }}</option>
-        </select>
+        <BaseTabs
+          v-if="instanceTabs.length"
+          :tabs="instanceTabs"
+          :model-value="selectedInstanceID"
+          @update:model-value="selectedInstanceID = $event"
+        />
         <div v-if="selectedInstance" class="instance-facts">
           <span>目标：{{ selectedInstance.targets.join(', ') || '—' }}</span>
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
         </div>
-		<PluginDeclarativeUI v-if="selectedInstance && (admin || canWrite) && detail.package.declarative_ui" :document="detail.package.declarative_ui" :config="selectedConfig" :secret-fields="selectedSecretFields" :saving="busy === 'configure'" :action-busy="!!actionBusy" :can-configure="admin" :can-act="canWrite" @submit="saveConfig" @dynamic="runDynamicAction" />
-        <PluginConfigForm v-else-if="selectedInstance && admin" :schema="detail.package.config_schema" :config="selectedConfig" :secret-fields="selectedSecretFields" :saving="busy === 'configure'" @submit="saveConfig" />
+        <template v-if="canRenderForm">
+          <p v-if="formEmpty" class="plugin-config-empty">此插件没有宿主允许的可配置字段。</p>
+          <PluginDeclarativeUI
+            v-else
+            :document="uiDocument"
+            :config="formConfig"
+            :secret-fields="selectedSecretFields"
+            :saving="busy === 'configure'"
+            :action-busy="!!actionBusy"
+            :can-configure="admin"
+            :can-act="canWrite"
+            @submit="saveConfig"
+            @dynamic="runDynamicAction"
+          />
+        </template>
         <p v-else-if="selectedInstance">当前身份只有只读权限。</p>
       </section>
+
       <section class="plugin-section"><h2>逐 Agent 状态、预算与故障</h2><PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" /></section>
       <section v-if="selectedInstance" class="plugin-section"><h2>实例 / Agent 运行日志</h2><PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="selectedInstance.targets || []" /></section>
       <section class="plugin-section"><h2>生命周期操作与审计</h2><PluginOperationTimeline :operations="operations" /></section>
+
+      <DeleteConfirmDialog
+        :show="confirmDialog.visible"
+        title="确认卸载插件"
+        message="卸载将移除插件及其配置，此操作不可撤销。"
+        :name="pluginName"
+        confirm-text="确认卸载"
+        :loading="confirmDialog.loading"
+        @confirm="confirmUninstall"
+        @cancel="confirmDialog.visible = false"
+      />
     </template>
   </main>
 </template>
 
 <style scoped>
-.plugin-detail-page { max-width: 1180px; display: grid; gap: var(--space-6); margin: 0 auto; }.page-header { display: flex; justify-content: space-between; gap: var(--space-4); }.page-header h1 { margin: var(--space-2) 0 0; }.page-header p { margin: var(--space-1) 0 0; color: var(--color-text-muted); }.page-actions { display: flex; flex-wrap: wrap; align-content: flex-start; justify-content: flex-end; gap: var(--space-2); }
-.plugin-alert, .plugin-danger { color: var(--color-danger); }.plugin-section { display: grid; gap: var(--space-4); padding-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); }.plugin-section h2 { margin: 0; font-size: var(--text-lg); }.plugin-section select { max-width: 30rem; padding: .6rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }.instance-facts { display: flex; flex-wrap: wrap; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.plugin-detail-page { max-width: 1180px; display: grid; gap: var(--space-6); margin: 0 auto; }
+
+.plugin-detail-page__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: 4rem 2rem;
+  color: var(--color-text-muted);
+}
+
+.back-link {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.back-link:hover { color: var(--color-primary); }
+
+.plugin-detail-actions { flex-wrap: wrap; }
+
+.plugin-alert { color: var(--color-danger); }
+.plugin-config-empty { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); }
+
+.plugin-section { display: grid; gap: var(--space-4); padding-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); }
+.plugin-section h2 { margin: 0; font-size: var(--text-lg); }
+.instance-facts { display: flex; flex-wrap: wrap; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
 </style>

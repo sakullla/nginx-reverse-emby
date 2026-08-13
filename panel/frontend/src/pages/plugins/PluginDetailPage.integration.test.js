@@ -10,6 +10,14 @@ vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
   return { ...actual, useAccessControl: () => ({ actor: { value: { permissions: ['*'], visible_resource_groups: [] } }, can: () => true, refreshActor: mocks.refreshActor }) }
 })
+vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
+  default: {
+    name: 'DeleteConfirmDialog',
+    props: ['show', 'title', 'message', 'name', 'confirmText', 'loading'],
+    emits: ['confirm', 'cancel'],
+    template: '<div v-if="show" class="delete-dialog-stub"><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button></div>'
+  }
+}))
 
 describe('PluginDetailPage production API projection', () => {
   it('keeps schema and handle metadata through the real API adapter', async () => {
@@ -48,24 +56,24 @@ describe('PluginDetailPage production API projection', () => {
     expect(wrapper.html()).not.toContain('server-plaintext')
     expect(wrapper.html()).not.toContain('other-plaintext')
     expect(wrapper.html()).not.toContain('package-secret')
-    expect(wrapper.get('.plugin-config-form input[type="text"]').element.value).toBe('ordinary-value')
-    expect(wrapper.get('.plugin-config-form input[type="password"]').attributes('required')).toBeUndefined()
-    expect(wrapper.text()).toContain('已有安全句柄')
-    expect(wrapper.findAll('button.secret-field__clear')).toHaveLength(0)
+    expect(wrapper.get('.declarative-field input[type="text"]').element.value).toBe('ordinary-value')
+    expect(wrapper.get('.declarative-field input[type="password"]').attributes('required')).toBeUndefined()
+    expect(wrapper.text()).toContain('已有凭据')
+    expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(0)
 
-    await wrapper.get('form.plugin-config-form').trigger('submit')
+    await wrapper.findAll('button').find((button) => button.text() === '保存配置并生成 revision').trigger('click')
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { token: 'ordinary-value' }, secret_replacements: {}
     }))
 
-    await wrapper.findAll('select')[0].setValue('instance-b')
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('instance-b')).trigger('click')
     await flushPromises()
-    const activeSecretInputs = wrapper.findAll('.plugin-config-form input[type="password"]')
-    expect(wrapper.get('.plugin-config-form input[type="text"]').element.value).toBe('active-ordinary')
+    const activeSecretInputs = wrapper.findAll('.declarative-field input[type="password"]')
+    expect(wrapper.get('.declarative-field input[type="text"]').element.value).toBe('active-ordinary')
     expect(wrapper.html()).not.toContain('active-plaintext')
     expect(wrapper.html()).not.toContain('optional-plaintext')
     expect(activeSecretInputs[0].attributes('required')).toBeDefined()
-    expect(wrapper.findAll('button.secret-field__clear')).toHaveLength(1)
+    expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(1)
   })
 })
