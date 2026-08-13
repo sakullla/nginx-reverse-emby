@@ -1,13 +1,73 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { fetchPluginDetail, fetchPlugins } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 import { filterPluginDetailForActor, useAccessControl } from '../../context/useAccessControl'
+import ResourceListFilterBar from '../../components/common/ResourceListFilterBar.vue'
+import BaseListCard from '../../components/base/BaseListCard.vue'
+import BaseBadge from '../../components/base/BaseBadge.vue'
+import EmptyState from '../../components/base/EmptyState.vue'
 
 const { actor, refreshActor } = useAccessControl()
 const loading = ref(true)
 const error = ref('')
 const plugins = ref([])
+const searchQuery = ref('')
+const lifecycleFilter = ref('')
+
+const lifecycleOptions = [
+  { value: '', label: '全部' },
+  { value: 'active', label: '生效中' },
+  { value: 'degraded', label: '已降级' },
+  { value: 'disabled', label: '已停用' },
+  { value: 'upgrading', label: '升级中' },
+  { value: 'applying', label: '应用中' },
+  { value: 'rolling_back', label: '回滚中' }
+]
+
+const filterFields = [
+  { key: 'lifecycle', label: '生命周期', type: 'chip', options: lifecycleOptions }
+]
+
+const filterValues = computed(() => ({ lifecycle: lifecycleFilter.value }))
+
+function onFilterUpdate({ key, value }) {
+  if (key === 'lifecycle') lifecycleFilter.value = String(value ?? '')
+}
+
+function pluginName(detail) {
+  return String(detail.package?.manifest?.name || detail.plugin?.plugin_id || '')
+}
+
+function lifecycleTone(lifecycle) {
+  if (lifecycle === 'active') return 'success'
+  if (lifecycle === 'degraded') return 'danger'
+  if (lifecycle === 'disabled') return 'neutral'
+  return 'warning'
+}
+
+function lifecycleLabel(lifecycle) {
+  const hit = lifecycleOptions.find((option) => option.value === lifecycle)
+  return hit ? hit.label : (lifecycle || '未知')
+}
+
+function abnormalAgentCount(detail) {
+  return (detail.agent_statuses || []).filter((status) =>
+    ['failed', 'degraded', 'crashed'].includes(status.runtime_state || status.current_state)
+  ).length
+}
+
+const filteredPlugins = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  const lifecycle = lifecycleFilter.value
+  return plugins.value.filter((detail) => {
+    const name = pluginName(detail).toLowerCase()
+    const id = String(detail.plugin?.plugin_id || '').toLowerCase()
+    if (q && !name.includes(q) && !id.includes(q)) return false
+    if (lifecycle && detail.plugin?.current_lifecycle !== lifecycle) return false
+    return true
+  })
+})
 
 onMounted(load)
 
@@ -30,34 +90,156 @@ async function load() {
 <template>
   <main class="plugins-page">
     <header class="page-header">
-      <div><h1>已安装插件</h1><p>实例按当前身份可见的资源组过滤；成员只能进入其授权资源组。</p></div>
-      <RouterLink class="btn btn-primary" to="/plugins/marketplace">打开插件市场</RouterLink>
+      <div class="page-header__left">
+        <h1 class="page-title">已安装插件</h1>
+        <p class="page-subtitle">实例按当前身份可见的资源组过滤；成员只能进入其授权资源组。</p>
+      </div>
+      <div class="page-header__right">
+        <RouterLink class="btn btn-primary" to="/plugins/marketplace">打开插件市场</RouterLink>
+      </div>
     </header>
-    <p v-if="loading">正在读取插件状态…</p>
-    <p v-else-if="error" role="alert">{{ error }}</p>
+
+    <ResourceListFilterBar
+      :agent-id="''"
+      :agent-baseline="''"
+      :agents="[]"
+      :q="searchQuery"
+      search-placeholder="搜索插件名称 / ID"
+      :filter-fields="filterFields"
+      :filter-values="filterValues"
+      @update:q="searchQuery = $event"
+      @update:filter="onFilterUpdate"
+    />
+
+    <div v-if="loading" class="plugins-page__loading">
+      <div class="spinner"></div>
+      <p>正在读取插件状态…</p>
+    </div>
+
+    <div v-else-if="error" role="alert">
+      <EmptyState title="读取失败" :description="error" />
+    </div>
+
+    <EmptyState v-else-if="!plugins.length" title="暂无插件" description="当前身份没有可见的插件实例。" />
+
+    <EmptyState v-else-if="!filteredPlugins.length" title="没有匹配的插件" description="尝试调整搜索或筛选条件。" />
+
     <section v-else class="plugin-grid" aria-label="已安装插件">
-      <RouterLink v-for="detail in plugins" :key="detail.plugin.plugin_id" :to="`/plugins/${encodeURIComponent(detail.plugin.plugin_id)}`" class="plugin-card">
-        <div class="plugin-card__heading">
-          <strong>{{ detail.package.manifest?.name || detail.plugin.plugin_id }}</strong>
-          <span>{{ detail.plugin.current_lifecycle }}</span>
-        </div>
-        <p>{{ detail.plugin.plugin_id }} · {{ detail.package.version }}</p>
-        <dl>
-          <div><dt>Runtime</dt><dd>{{ detail.plugin.runtime_kind }} / {{ detail.plugin.runtime_abi }}</dd></div>
-          <div><dt>可见实例</dt><dd>{{ detail.instances.length }}</dd></div>
-          <div><dt>异常 Agent</dt><dd>{{ detail.agent_statuses.filter((status) => ['failed', 'degraded', 'crashed'].includes(status.runtime_state || status.current_state)).length }}</dd></div>
-          <div><dt>来源风险</dt><dd>{{ detail.plugin.active_source_kind || 'unknown' }} · {{ detail.plugin.active_source_risk_label || '未标注' }}</dd></div>
-        </dl>
+      <RouterLink
+        v-for="detail in filteredPlugins"
+        :key="detail.plugin.plugin_id"
+        :to="`/plugins/${encodeURIComponent(detail.plugin.plugin_id)}`"
+        class="plugin-card-link"
+      >
+        <BaseListCard :status="lifecycleTone(detail.plugin.current_lifecycle)" :clickable="false">
+          <template #header-left>
+            <strong class="plugin-card__name">{{ pluginName(detail) }}</strong>
+            <BaseBadge :tone="lifecycleTone(detail.plugin.current_lifecycle)" dot>
+              {{ lifecycleLabel(detail.plugin.current_lifecycle) }}
+            </BaseBadge>
+          </template>
+          <template #header-right>
+            <span class="plugin-card__version">{{ detail.package.version }}</span>
+          </template>
+          <p class="plugin-card__id">{{ detail.plugin.plugin_id }} · {{ detail.package.version }}</p>
+          <dl class="plugin-card__facts">
+            <div><dt>Runtime</dt><dd>{{ detail.plugin.runtime_kind }} / {{ detail.plugin.runtime_abi }}</dd></div>
+            <div><dt>可见实例</dt><dd>{{ detail.instances.length }}</dd></div>
+            <div><dt>异常 Agent</dt><dd>{{ abnormalAgentCount(detail) }}</dd></div>
+            <div><dt>来源风险</dt><dd>{{ detail.plugin.active_source_kind || 'unknown' }} · {{ detail.plugin.active_source_risk_label || '未标注' }}</dd></div>
+          </dl>
+        </BaseListCard>
       </RouterLink>
-      <p v-if="!plugins.length">当前身份没有可见的插件实例。</p>
     </section>
   </main>
 </template>
 
 <style scoped>
-.plugins-page { max-width: 1180px; margin: 0 auto; }.page-header { display: flex; justify-content: space-between; gap: var(--space-4); }.page-header h1 { margin: 0; }.page-header p { color: var(--color-text-muted); }
-.plugin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: var(--space-4); }
-.plugin-card { display: grid; gap: var(--space-3); padding: var(--space-5); border: 1px solid var(--color-border-default); border-radius: var(--radius-xl); background: var(--color-bg-surface); color: var(--color-text-primary); text-decoration: none; }
-.plugin-card:hover { border-color: var(--color-primary); }.plugin-card__heading { display: flex; justify-content: space-between; gap: var(--space-3); }.plugin-card__heading span { color: var(--color-primary); }
-.plugin-card p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }.plugin-card dl { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); margin: 0; }dt { color: var(--color-text-muted); font-size: var(--text-xs); }dd { margin: 2px 0 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
+.plugins-page { max-width: 1180px; margin: 0 auto; }
+
+.plugins-page__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+  color: var(--color-text-muted);
+}
+
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: var(--space-4);
+}
+
+.plugin-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-2xl);
+}
+
+.plugin-card-link:hover :deep(.base-list-card) {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+}
+
+.plugin-card-link:focus-visible :deep(.base-list-card) {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
+}
+
+.plugin-card__name {
+  min-width: 0;
+  max-width: min(16rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+}
+
+.plugin-card__version {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.plugin-card__id {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.plugin-card__facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 0.75rem;
+  margin: 0;
+}
+
+.plugin-card__facts dt {
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+}
+
+.plugin-card__facts dd {
+  margin: 2px 0 0;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .plugin-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
