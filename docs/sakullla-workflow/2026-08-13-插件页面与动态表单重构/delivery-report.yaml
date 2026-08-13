@@ -1,0 +1,87 @@
+format: delivery_report
+status: completed
+workflow_id: 2026-08-13-插件页面与动态表单重构
+candidate_ref: a369ffcaa83cf3c124c7b21bef5828229643e0a0
+environment:
+  python: 3.14.6
+  platform: Windows-11-10.0.26200-SP0
+  processor: Intel64 Family 6 Model 158 Stepping 13, GenuineIntel
+  network: not_required
+  logical_cpu_count: 8
+verification:
+  status: passed
+  command_set_digest: sha256:02fa39f4c2a018a9c9cecab0f826b025b41a09a86998511212ad02ad8ac0499c
+  commands:
+    - id: backend-go-test
+      command: cd panel/backend-go; go test ./...
+      owner: delivery
+      protocol: pass
+      sla_seconds: 0
+      status: passed
+      attempt_count: 1
+      runs:
+        - phase: check
+          ordinal: 1
+          wall_clock_seconds: 22.310054800000216
+          exit_code: 0
+          timed_out: false
+          metrics:
+            jobs: null
+            modules: null
+            skipped: null
+            tests: null
+          stdout: "ok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/cmd/nre-control-plane\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/cmd/nre-plugin-validator\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/app\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config\t(cached)\n?   \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator\t[no test files]\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/http\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/localagent\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/observability\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/sanitize\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service\t(cached)\nok  \tgithub.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage\t(cached)\n"
+          stderr: ""
+          evidence_ref: evidence/verification/sha256-8844f97ec587b2eacca1d1177b3900e711a16dd3be504e6f62d880c711bb8646.json
+    - id: frontend-vitest
+      command: cd panel/frontend; npx vitest run
+      owner: delivery
+      protocol: pass
+      sla_seconds: 0
+      status: passed
+      attempt_count: 1
+      runs:
+        - phase: check
+          ordinal: 1
+          wall_clock_seconds: 8.604049900000973
+          exit_code: 0
+          timed_out: false
+          metrics:
+            jobs: null
+            modules: null
+            skipped: null
+            tests: null
+          stdout: "\n RUN  v4.1.10 C:/Users/12976/IdeaProjects/nginx-reverse-emby/panel/frontend\n\n\n Test Files  75 passed (75)\n      Tests  535 passed (535)\n   Start at  11:30:24\n   Duration  6.43s (transform 7.10s, setup 966ms, import 14.87s, tests 12.22s, environment 9.39s)\n\n"
+          stderr: ""
+          evidence_ref: evidence/verification/sha256-607fe3642386102e3de53740c233364be5afc41d45b482816d02940ccb27f123.json
+    - id: frontend-build
+      command: cd panel/frontend; npm run build -- --logLevel error
+      owner: delivery
+      protocol: pass
+      sla_seconds: 0
+      status: passed
+      attempt_count: 1
+      runs:
+        - phase: check
+          ordinal: 1
+          wall_clock_seconds: 3.627755800000159
+          exit_code: 0
+          timed_out: false
+          metrics:
+            jobs: null
+            modules: null
+            skipped: null
+            tests: null
+          stdout: "\n> nginx-reverse-emby-panel@1.0.0 build\n> vite build --logLevel error\n\n"
+          stderr: ""
+          evidence_ref: evidence/verification/sha256-28fe746ab9e5e999352400d95776d724cb07693ffeb98590ce8d6f456477ba7e.json
+  pending_ids: []
+review_result:
+  decision: passed
+  summary: "Candidate a369ffca completes the 4-page plugin UI redesign and declarative-form upgrade across 7 tasks. Verification green: go test ./..., npx vitest run (535 tests), npm run build. 20 changed paths match the dependency closure; R5/R6 satisfied by exclusion. No P0/P1/blocking findings; 5 advisory/P3 gaps remain live."
+  findings:
+    - "P2[advisory]: panel/frontend/src/api/pluginSecurity.js:212 | root cause: stripWriteOnlyConfigValues strips only writeOnly (secret) plaintext, never readOnly values; the renderer clones the full model and emits readOnly values in the submit config | refs: PluginDeclarativeUI.vue:32 action() `clone(model)`; validator.go:1505 rejectReadOnlyConfigValue rejects any submitted readOnly value; service configure path | impact: a legal config_schema containing an optional readOnly display field (e.g. `status`) cannot be saved at all - configure is always rejected because the broker-owned value is echoed back. Pre-existing on the ui_schema declarative path and in the old flat form, but now also reachable through the new synthesis path used by official config_schema-only packages | minimal fix: strip readOnly values from the submit config (mirror the writeOnly strip in stripWriteOnlyConfigValues), or omit read_only-bound pointers before emitting submit"
+    - "P2[advisory]: panel/frontend/src/components/plugins/PluginDeclarativeUI.vue:13 | root cause: reset() seeds the renderer model only from `config` (`Object.assign(model, clone(props.config))`), dropping the old `safeDefault`/boolean-false prefill; neither the synthesis path nor the backend applies config_schema `default` | refs: removed safeDefault/allowedSchemaTypes in pluginSecurity.js; PluginConfigForm.vue:21 config computed strips only writeOnly | impact: a fresh config with declared `default` values (and boolean fields) renders empty; a `required` field that only has a `default` now demands manual entry before a save can succeed, a behavior regression vs. the prior flat form | minimal fix: seed missing model fields from schema `default` (and boolean `false`) before render, or apply defaults server-side during config preparation"
+    - "P2[advisory]: panel/frontend/src/api/pluginSecurity.js:164 | root cause: synthesizeComponent's `default` branch returns `[]` for unhandled/unknown types (notably `null`, which validateSchemaNode accepts, and nodes without a `type`), silently dropping them | refs: 02-technical-solution.md #关键失败行为 未知类型只读文本展示而非静默丢弃; schemaToUIComponents default branch | impact: a legal config_schema with a null/unknown-typed field renders no control for it, so the field is invisible and cannot be edited (its value still round-trips because the model is seeded from config), under-delivering R2 | minimal fix: synthesize an unhandled type into a read_only notice/text component bound to its pointer instead of returning []"
+    - "P3: panel/frontend/src/api/pluginSecurity.js:147 | root cause: the number/integer synthesis branch ignores `enum`, and schemaEnumOptions (pluginSecurity.js:119) filters values to `typeof item === 'string'`, so number/integer enum constraints are dropped | refs: validator.go allows enum on any type; old normalizePluginConfigSchema rendered numeric enum as a select | impact: number/integer enum allowed-values are neither displayed nor constrained client-side; the user can enter an out-of-range value that only the backend rejects | minimal fix: synthesize number/integer enum as a select with numeric options, or at minimum surface the enum as a constraint hint"
+    - "P3: panel/frontend/src/components/plugins/PluginConfigForm.vue:1 | root cause: the single-renderer switch left PluginConfigForm orphaned - it is only referenced by its own test (PluginConfigForm.test.js), and PluginDetailPage.vue now renders PluginDeclarativeUI directly from schemaToUIComponents | refs: PluginDetailPage.vue:54-65 uiDocument, :281 PluginDeclarativeUI | impact: dead production code retained (still tested, no user-facing effect), increasing maintenance surface | minimal fix: remove PluginConfigForm.vue and its test, or re-wire a production caller"

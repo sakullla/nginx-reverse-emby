@@ -1,0 +1,202 @@
+workflow_id: 2026-08-13-插件页面与动态表单重构
+requirement_ref: C:\Users\12976\IdeaProjects\nginx-reverse-emby\docs\requirements\2026-08-13-插件页面与动态表单重构.md
+requirement_version: sha256:f865f176af08dbe06072e012c587230198398e61a652240bba9faa5fc3c646ac
+requirement_ids: [R1, R2, R3, R4, R5, R6]
+status: closed
+stages:
+  exploration: completed
+  solution: completed
+  plan: completed
+  execution: completed
+  delivery: completed
+gates:
+  solution: confirmed
+  execution: confirmed
+execution_preference: balanced
+implementation_base_ref: d89979f740a1d2e395d78697f8d01dfb2d0d2e47
+tasks:
+  - id: backend-vocab
+    status: completed
+    task_run_ref: task-runs/backend-vocab-run.md
+    recipe_digest: sha256:8cb983c033ba049d8465886b2639f33870612bf09a114a5a9f306552456fe466
+    review_base_ref: d89979f740a1d2e395d78697f8d01dfb2d0d2e47
+    attempts:
+      - attempt_id: backend-vocab-A1-c11fe55600354dd8
+        message_id: backend-vocab-A1-c11fe55600354dd8-M1
+        recipe_digest: sha256:8cb983c033ba049d8465886b2639f33870612bf09a114a5a9f306552456fe466
+        owner_mode: local
+        baseline_ref: d89979f740a1d2e395d78697f8d01dfb2d0d2e47
+        checkpoint_ref: 22f88dfebe7f932e40e219bb52619d662e14ffbf
+        execution_outcome: completed
+        review_decision: passed
+        finding_count: 0
+        path_count: 3
+        review_evidence_refs:
+          - evidence/reviews/sha256-8e7b7ff0986a05dc197a6f0060994b967940698a15da3c68a1a79184f16bf1ad.json
+        scope_ref: evidence/history/sha256-dd5c971350afe07cc1c2977bc539e526355f4b57494061c13ae7d673a5052ebd.json#Attempt-History/backend-vocab-A1-c11fe55600354dd8/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-dd5c971350afe07cc1c2977bc539e526355f4b57494061c13ae7d673a5052ebd.json#Attempt-History/backend-vocab-A1-c11fe55600354dd8/execution
+        execution_digest: sha256:f91d9590967347053266d966c171edcd2316b4db186c3a5af152f21dbcc4eeb8
+        review_ref: evidence/history/sha256-dd5c971350afe07cc1c2977bc539e526355f4b57494061c13ae7d673a5052ebd.json#Attempt-History/backend-vocab-A1-c11fe55600354dd8/review
+        review_digest: sha256:a9290d1c309b6ef1a9d91e72eea687a80082520b211c2077cbe8c35374225ad9
+    history_head_ref: evidence/history/sha256-dd5c971350afe07cc1c2977bc539e526355f4b57494061c13ae7d673a5052ebd.json
+    history_count: 1
+  - id: frontend-renderer
+    status: completed
+    task_run_ref: task-runs/frontend-renderer-run.md
+    recipe_digest: sha256:98342ebc785c31ed28f4fd59f0634662123d7522cdae93662502e50ee37ac82a
+    review_base_ref: 22f88dfebe7f932e40e219bb52619d662e14ffbf
+    attempts:
+      - attempt_id: frontend-renderer-A1-a9dec3e05cf3db07
+        message_id: frontend-renderer-A1-a9dec3e05cf3db07-M1
+        recipe_digest: sha256:98342ebc785c31ed28f4fd59f0634662123d7522cdae93662502e50ee37ac82a
+        owner_mode: local
+        baseline_ref: 22f88dfebe7f932e40e219bb52619d662e14ffbf
+        checkpoint_ref: 167fedce4fcf246d2625e6455f2de2db57f832cc
+        execution_outcome: completed
+        review_decision: passed
+        finding_count: 0
+        path_count: 4
+        review_evidence_refs:
+          - evidence/reviews/sha256-343e051f3144b76afeaf30acc1b7442ca9cb287dcbfc8fb730cb8d0a698a8af2.json
+        scope_ref: evidence/history/sha256-06083ec92827133e6b77520867975cb3d3aa197a7563c4692edce04fe86c4cda.json#Attempt-History/frontend-renderer-A1-a9dec3e05cf3db07/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-06083ec92827133e6b77520867975cb3d3aa197a7563c4692edce04fe86c4cda.json#Attempt-History/frontend-renderer-A1-a9dec3e05cf3db07/execution
+        execution_digest: sha256:0e63a798498f52169abb5b50e744a86a261653c06f9ab93e41ab22b360a9c724
+        review_ref: evidence/history/sha256-06083ec92827133e6b77520867975cb3d3aa197a7563c4692edce04fe86c4cda.json#Attempt-History/frontend-renderer-A1-a9dec3e05cf3db07/review
+        review_digest: sha256:5a4048bdf8634cd3177b72092e7ef8484e931d5f8e8ee55744c9687fb4c29099
+    history_head_ref: evidence/history/sha256-06083ec92827133e6b77520867975cb3d3aa197a7563c4692edce04fe86c4cda.json
+    history_count: 1
+  - id: frontend-synthesis
+    status: completed
+    task_run_ref: task-runs/frontend-synthesis-run.md
+    recipe_digest: sha256:94bd14123a8bfedeabf14faeb8da7f4bcc2928ab479eda5fb7a69273c96c3a76
+    review_base_ref: 167fedce4fcf246d2625e6455f2de2db57f832cc
+    attempts:
+      - attempt_id: frontend-synthesis-A1-d56fbfd33f38fb2c
+        message_id: frontend-synthesis-A1-d56fbfd33f38fb2c-M1
+        recipe_digest: sha256:94bd14123a8bfedeabf14faeb8da7f4bcc2928ab479eda5fb7a69273c96c3a76
+        owner_mode: local
+        baseline_ref: 167fedce4fcf246d2625e6455f2de2db57f832cc
+        checkpoint_ref: 17c53a95fb33deb49223898a480f6c717438076e
+        execution_outcome: completed_with_concerns
+        review_decision: passed
+        finding_count: 7
+        path_count: 4
+        review_evidence_refs:
+          - evidence/reviews/sha256-06f07b48521e6764ce010499c24b80c760399f7b2cb2bb913a94ea536176eebf.json
+        scope_ref: evidence/history/sha256-16a757fd63fccd544b620d2780f01d289ed75c3d87fd9197ebb7fc9c79cccc29.json#Attempt-History/frontend-synthesis-A1-d56fbfd33f38fb2c/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-16a757fd63fccd544b620d2780f01d289ed75c3d87fd9197ebb7fc9c79cccc29.json#Attempt-History/frontend-synthesis-A1-d56fbfd33f38fb2c/execution
+        execution_digest: sha256:d47868919c8ebdaf4fa1ca0b81861bd4de81342395331e9f42c371eda47079fc
+        review_ref: evidence/history/sha256-16a757fd63fccd544b620d2780f01d289ed75c3d87fd9197ebb7fc9c79cccc29.json#Attempt-History/frontend-synthesis-A1-d56fbfd33f38fb2c/review
+        review_digest: sha256:13e63954231fac9b96a9804fb1736f64ea85f6318ce49d38464e0e8881afc0a8
+    history_head_ref: evidence/history/sha256-16a757fd63fccd544b620d2780f01d289ed75c3d87fd9197ebb7fc9c79cccc29.json
+    history_count: 1
+  - id: page-installed
+    status: completed
+    task_run_ref: task-runs/page-installed-run.md
+    recipe_digest: sha256:c54034c7fb21e2f33d1bd83b860925bf1ee09e79eadda15015c6f333c0ed438d
+    review_base_ref: 17c53a95fb33deb49223898a480f6c717438076e
+    attempts:
+      - attempt_id: page-installed-A1-bcf1bfad3ddfc6b6
+        message_id: page-installed-A1-bcf1bfad3ddfc6b6-M1
+        recipe_digest: sha256:c54034c7fb21e2f33d1bd83b860925bf1ee09e79eadda15015c6f333c0ed438d
+        owner_mode: local
+        baseline_ref: 17c53a95fb33deb49223898a480f6c717438076e
+        checkpoint_ref: 2aafac2a3a689b2fd384215b50804717d6d33476
+        execution_outcome: completed_with_concerns
+        review_decision: passed
+        finding_count: 4
+        path_count: 2
+        review_evidence_refs:
+          - evidence/reviews/sha256-a9f59a05bdc536ce6113d6bbe163618286193a3a94a9cfc120348679441858eb.json
+        scope_ref: evidence/history/sha256-6368f4fc412186fd7601bc6cd968a12dae0fce0c8ae654238d942ab68ec9dd50.json#Attempt-History/page-installed-A1-bcf1bfad3ddfc6b6/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-6368f4fc412186fd7601bc6cd968a12dae0fce0c8ae654238d942ab68ec9dd50.json#Attempt-History/page-installed-A1-bcf1bfad3ddfc6b6/execution
+        execution_digest: sha256:af358c6ef0d687200d3c054f0962ed563ec23f6f64f311f7c2fff41c7e71a669
+        review_ref: evidence/history/sha256-6368f4fc412186fd7601bc6cd968a12dae0fce0c8ae654238d942ab68ec9dd50.json#Attempt-History/page-installed-A1-bcf1bfad3ddfc6b6/review
+        review_digest: sha256:465a91171bdc18af6456315d5263269eaa9cf8d621e5e49cfc3fba72db38a26c
+    history_head_ref: evidence/history/sha256-6368f4fc412186fd7601bc6cd968a12dae0fce0c8ae654238d942ab68ec9dd50.json
+    history_count: 1
+  - id: page-detail
+    status: completed
+    task_run_ref: task-runs/page-detail-run.md
+    recipe_digest: sha256:2ca199e690221120570380beafd7427219146addab2586e8000bb9e9d4dbe352
+    review_base_ref: 2aafac2a3a689b2fd384215b50804717d6d33476
+    attempts:
+      - attempt_id: page-detail-A2-411ff1d1a2daaac6
+        message_id: page-detail-A2-411ff1d1a2daaac6-M1
+        recipe_digest: sha256:2ca199e690221120570380beafd7427219146addab2586e8000bb9e9d4dbe352
+        owner_mode: local
+        baseline_ref: 57c7ac5e8e3b4d4ea4121963d726195a158fb329
+        checkpoint_ref: 12073949a4b9e571501df9deddd878d6f6cc91f8
+        execution_outcome: completed_with_concerns
+        review_decision: passed
+        finding_count: 3
+        path_count: 2
+        review_evidence_refs:
+          - evidence/reviews/sha256-72cd88fe5cc95f0d0dd93127a6d6fa8bcf141cbaf148f545ec31dd701f780630.json
+        scope_ref: evidence/history/sha256-2eb6f855eb2998f89e39d830da309a332695b693021c09a9e704692a8b6f9566.json#Attempt-History/page-detail-A2-411ff1d1a2daaac6/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-2eb6f855eb2998f89e39d830da309a332695b693021c09a9e704692a8b6f9566.json#Attempt-History/page-detail-A2-411ff1d1a2daaac6/execution
+        execution_digest: sha256:1814073de3ba59ee9e8d93a8ed71c8f9e8d46df588684c9174d850d7d8090de7
+        review_ref: evidence/history/sha256-2eb6f855eb2998f89e39d830da309a332695b693021c09a9e704692a8b6f9566.json#Attempt-History/page-detail-A2-411ff1d1a2daaac6/review
+        review_digest: sha256:ab878b8eba073c4cf3bf67ea4c5eda052f31e14cb081e2d46e993ae7d7e6d4aa
+    history_head_ref: evidence/history/sha256-2eb6f855eb2998f89e39d830da309a332695b693021c09a9e704692a8b6f9566.json
+    history_count: 2
+  - id: page-market
+    status: completed
+    task_run_ref: task-runs/page-market-run.md
+    recipe_digest: sha256:860501e6f9757d4a9d4fb05c78511380141811344e27f60abb3c7039073736ae
+    review_base_ref: 12073949a4b9e571501df9deddd878d6f6cc91f8
+    attempts:
+      - attempt_id: page-market-A1-25e2a031004946ee
+        message_id: page-market-A1-25e2a031004946ee-M1
+        recipe_digest: sha256:860501e6f9757d4a9d4fb05c78511380141811344e27f60abb3c7039073736ae
+        owner_mode: local
+        baseline_ref: 12073949a4b9e571501df9deddd878d6f6cc91f8
+        checkpoint_ref: b108cdb22cb89d83af1bdc5510791b3b5c428d2b
+        execution_outcome: completed
+        review_decision: passed
+        finding_count: 2
+        path_count: 2
+        review_evidence_refs:
+          - evidence/reviews/sha256-224a795ea47634931fce3a7f0030d0fa74a428639568f80e2e1c7ba364c1ce19.json
+        scope_ref: evidence/history/sha256-e69edca9b8b6e55d9d9b34ddd370ed98cc00ee10f8bd334bceba725cad6d9de5.json#Attempt-History/page-market-A1-25e2a031004946ee/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-e69edca9b8b6e55d9d9b34ddd370ed98cc00ee10f8bd334bceba725cad6d9de5.json#Attempt-History/page-market-A1-25e2a031004946ee/execution
+        execution_digest: sha256:d6fcaf9e6ea2593a17d984568d9f72c33e9c75d39aedb1dd635ad080f785000c
+        review_ref: evidence/history/sha256-e69edca9b8b6e55d9d9b34ddd370ed98cc00ee10f8bd334bceba725cad6d9de5.json#Attempt-History/page-market-A1-25e2a031004946ee/review
+        review_digest: sha256:ed67fb5cad252608468e4ecf41f3ada03724e09522df1e8c15a53d9a1c0cdfec
+    history_head_ref: evidence/history/sha256-e69edca9b8b6e55d9d9b34ddd370ed98cc00ee10f8bd334bceba725cad6d9de5.json
+    history_count: 1
+  - id: page-repositories
+    status: completed
+    task_run_ref: task-runs/page-repositories-run.md
+    recipe_digest: sha256:f87b2ef5d8be6afcb84994449bef7a1189630769fe28eabc81e6296cc6f00f05
+    review_base_ref: b108cdb22cb89d83af1bdc5510791b3b5c428d2b
+    attempts:
+      - attempt_id: page-repositories-A2-507b543e33398e4e
+        message_id: page-repositories-A2-507b543e33398e4e-M1
+        recipe_digest: sha256:f87b2ef5d8be6afcb84994449bef7a1189630769fe28eabc81e6296cc6f00f05
+        owner_mode: local
+        baseline_ref: 94d9cc71c75ac60d45465350b9cdcc5813b1e97d
+        checkpoint_ref: a369ffcaa83cf3c124c7b21bef5828229643e0a0
+        execution_outcome: completed
+        review_decision: passed
+        finding_count: 3
+        path_count: 2
+        review_evidence_refs:
+          - evidence/reviews/sha256-a2d37f52b8873e95f0cbe220f4cde1c22055fb5d7bc8ae29f09107c8eb1d5287.json
+        scope_ref: evidence/history/sha256-e2daea92f80de6f8d5f48c0c8e3aa2827eb5629f4ac540bbcf85bf8db7fd2f6a.json#Attempt-History/page-repositories-A2-507b543e33398e4e/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/sha256-e2daea92f80de6f8d5f48c0c8e3aa2827eb5629f4ac540bbcf85bf8db7fd2f6a.json#Attempt-History/page-repositories-A2-507b543e33398e4e/execution
+        execution_digest: sha256:2327729d70d459724183a887607235e6201ed2fa7ccab253cbf28763dfe19f1e
+        review_ref: evidence/history/sha256-e2daea92f80de6f8d5f48c0c8e3aa2827eb5629f4ac540bbcf85bf8db7fd2f6a.json#Attempt-History/page-repositories-A2-507b543e33398e4e/review
+        review_digest: sha256:e25a2ff9f17dd0a881522fc3d837c02cca71a363c30e078da4d93470aac9233b
+    history_head_ref: evidence/history/sha256-e2daea92f80de6f8d5f48c0c8e3aa2827eb5629f4ac540bbcf85bf8db7fd2f6a.json
+    history_count: 2
+blocker: null
+delivery:
+  status: completed
