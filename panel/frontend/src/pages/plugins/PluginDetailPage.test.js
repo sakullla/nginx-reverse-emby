@@ -37,6 +37,14 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
     template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
   }
 }))
+vi.mock('../../components/base/BaseModal.vue', () => ({
+  default: {
+    name: 'BaseModal',
+    props: ['modelValue', 'title', 'subtitle', 'size', 'showFooter', 'closeOnClickModal', 'dataTest'],
+    emits: ['update:modelValue', 'confirm'],
+    template: '<div v-if="modelValue" class="base-modal-stub" :data-test="dataTest"><slot /><slot name="footer" /></div>'
+  }
+}))
 
 function makeDetail(overrides = {}) {
   return {
@@ -48,12 +56,30 @@ function makeDetail(overrides = {}) {
   }
 }
 
-function submitButton(wrapper) {
-  return wrapper.findAll('button').find((button) => button.text() === '保存配置')
-}
-
 function buttonByText(wrapper, text) {
   return wrapper.findAll('button').find((button) => button.text() === text)
+}
+
+function deployModal(wrapper) {
+  return wrapper.find('[data-test="plugin-deploy-modal"]')
+}
+
+function configModal(wrapper) {
+  return wrapper.find('[data-test="plugin-instance-config-modal"]')
+}
+
+function modalButton(modal, text) {
+  return modal.findAll('button').find((button) => button.text() === text)
+}
+
+async function openDeployModal(wrapper) {
+  await buttonByText(wrapper, '部署').trigger('click')
+  return wrapper.get('[data-test="plugin-deploy-modal"]')
+}
+
+async function openConfigModal(wrapper) {
+  await buttonByText(wrapper, '编辑配置').trigger('click')
+  return wrapper.get('[data-test="plugin-instance-config-modal"]')
 }
 
 beforeEach(() => {
@@ -113,9 +139,10 @@ describe('PluginDetailPage', () => {
   it('submits host-schema config with caller-owned binding fields and redacts errors', async () => {
     const wrapper = await mountPage()
     expect(wrapper.text()).not.toContain('raw-token')
-    const input = wrapper.get('.declarative-field input[type="text"]')
-    await input.setValue('block')
-    await submitButton(wrapper).trigger('click')
+    expect(configModal(wrapper).exists()).toBe(false)
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
       instance_id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [],
@@ -131,16 +158,18 @@ describe('PluginDetailPage', () => {
     mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
     const wrapper = await mountPage(detail)
 
-    expect(wrapper.find('[aria-label="部署插件实例"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="deployment-instance-id"]').exists()).toBe(false)
-    expect(wrapper.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
-    expect(wrapper.get('[data-test="deployment-resource-group"]').element.value).toBe('default')
-    expect(wrapper.get('[data-test="deployment-resource-group"]').element.tagName).toBe('SELECT')
-    const targetInputs = wrapper.findAll('.plugin-deployment__agent input[type="checkbox"]')
+    expect(deployModal(wrapper).exists()).toBe(false)
+    const modal = await openDeployModal(wrapper)
+    expect(modal.find('[aria-label="部署插件实例"]').exists()).toBe(true)
+    expect(modal.find('[data-test="deployment-instance-id"]').exists()).toBe(false)
+    const groupSelect = modal.get('[data-test="deployment-resource-group"]')
+    expect(groupSelect.element.tagName).toBe('SELECT')
+    expect(groupSelect.element.value).toBe('default')
+    const targetInputs = modal.findAll('.plugin-deployment__agent input[type="checkbox"]')
     await targetInputs[0].setValue(true)
     await targetInputs[1].setValue(true)
-    await wrapper.get('.plugin-deployment .declarative-field input[type="text"]').setValue('block')
-    await buttonByText(wrapper, '部署').trigger('click')
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '部署').trigger('click')
     await flushPromises()
 
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
@@ -153,6 +182,7 @@ describe('PluginDetailPage', () => {
       secret_replacements: {}
     })
     expect(mocks.enablePlugin).toHaveBeenCalledWith('official.waf')
+    expect(deployModal(wrapper).exists()).toBe(false)
   })
 
   it('confirms uninstall through DeleteConfirmDialog and navigates away', async () => {
@@ -203,11 +233,12 @@ describe('PluginDetailPage', () => {
     })
     mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
     const wrapper = await mountPage(detail)
-    await wrapper.get('[data-test="deployment-resource-group"]').setValue('team')
-    const targetInputs = wrapper.findAll('.plugin-deployment__agent input[type="checkbox"]')
+    const modal = await openDeployModal(wrapper)
+    await modal.get('[data-test="deployment-resource-group"]').setValue('team')
+    const targetInputs = modal.findAll('.plugin-deployment__agent input[type="checkbox"]')
     await targetInputs[0].setValue(true)
-    await wrapper.get('.plugin-deployment .declarative-field input[type="text"]').setValue('block')
-    await buttonByText(wrapper, '部署').trigger('click')
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '部署').trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       instance_id: 'official.waf-default',
@@ -218,12 +249,14 @@ describe('PluginDetailPage', () => {
     }))
   })
 
-  it('keeps an installed plugin with no visible instances and opens the deploy form', async () => {
+  it('keeps an installed plugin with no visible instances and opens the deploy modal on demand', async () => {
     const wrapper = await mountPage(makeDetail({ instances: [], agent_statuses: [] }))
-    expect(wrapper.find('[aria-label="部署插件实例"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('尚未部署')
+    expect(deployModal(wrapper).exists()).toBe(false)
     expect(wrapper.find('.plugin-technical').exists()).toBe(true)
     expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
+    const modal = await openDeployModal(wrapper)
+    expect(modal.find('[aria-label="部署插件实例"]').exists()).toBe(true)
   })
 
   it('shows only instances from groups the current actor can see', async () => {
@@ -243,8 +276,9 @@ describe('PluginDetailPage', () => {
     mocks.fetchResourceGroups.mockResolvedValue([])
     mocks.fetchAgents.mockResolvedValue([])
     const wrapper = await mountPage(makeDetail({ instances: [] }))
-    expect(wrapper.text()).toContain('当前身份没有可见的资源组，无法部署。')
-    expect(buttonByText(wrapper, '部署').attributes('disabled')).toBeDefined()
+    const modal = await openDeployModal(wrapper)
+    expect(modal.text()).toContain('当前身份没有可见的资源组，无法部署。')
+    expect(modalButton(modal, '部署').attributes('disabled')).toBeDefined()
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
   })
 
@@ -252,9 +286,9 @@ describe('PluginDetailPage', () => {
     mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['group-a'] }
     const wrapper = await mountPage()
     expect(wrapper.text()).not.toContain('当前身份只有只读权限')
-    expect(submitButton(wrapper).exists()).toBe(true)
-    await wrapper.get('.declarative-field input[type="text"]').setValue('block')
-    await submitButton(wrapper).trigger('click')
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       instance_id: 'waf-a',
@@ -276,19 +310,21 @@ describe('PluginDetailPage', () => {
       }
     })
     const wrapper = await mountPage(detail)
-    await wrapper.get('.declarative-field input[type="text"]').setValue('block')
-    await submitButton(wrapper).trigger('click')
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       config: { mode: 'block' }
     }))
   })
 
-  it('keeps the form closed for members without write permission', async () => {
+  it('keeps configuration closed for members without write permission', async () => {
     mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
     const wrapper = await mountPage()
     expect(wrapper.text()).toContain('当前身份只有只读权限')
-    expect(submitButton(wrapper)).toBeUndefined()
+    expect(buttonByText(wrapper, '编辑配置')).toBeUndefined()
+    expect(configModal(wrapper).exists()).toBe(false)
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
   })
 
@@ -319,11 +355,12 @@ describe('PluginDetailPage', () => {
       }]
     })
     const wrapper = await mountPage(detail)
-    await submitButton(wrapper).trigger('click')
+    const modal = await openConfigModal(wrapper)
+    await modalButton(modal, '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
-    expect(wrapper.text()).toMatch(/至少 2 个字符|格式不匹配/)
-    expect(wrapper.text()).toContain('不能小于 1')
+    expect(modal.text()).toMatch(/至少 2 个字符|格式不匹配/)
+    expect(modal.text()).toContain('不能小于 1')
   })
 
   it('saves nested objects and arrays from the schema fallback form', async () => {
@@ -348,11 +385,12 @@ describe('PluginDetailPage', () => {
       }]
     })
     const wrapper = await mountPage(detail)
-    await wrapper.get('.declarative-section input[type="text"]').setValue('eu')
-    await wrapper.findAll('button').find((button) => button.text() === '+ 添加').trigger('click')
-    const itemInputs = wrapper.findAll('.declarative-array-item input[type="text"]')
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-section input[type="text"]').setValue('eu')
+    await modal.findAll('button').find((button) => button.text() === '+ 添加').trigger('click')
+    const itemInputs = modal.findAll('.declarative-array-item input[type="text"]')
     await itemInputs[1].setValue('b.example')
-    await submitButton(wrapper).trigger('click')
+    await modalButton(modal, '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       config: { credentials: { region: 'eu' }, sources: [{ host: 'a.example' }, { host: 'b.example' }] }

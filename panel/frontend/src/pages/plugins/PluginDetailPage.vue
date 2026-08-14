@@ -1,31 +1,29 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchAgents } from '../../api'
 import { fetchResourceGroups } from '../../api/access'
 import {
-  configurePlugin,
   disablePlugin,
   enablePlugin,
   fetchPluginDetail,
   fetchPluginOperations,
-  invokePluginDynamicAction,
   rollbackPlugin,
   uninstallPlugin
 } from '../../api/plugins'
-import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripReadOnlyConfigValues, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
+import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
-import { filterPluginDetailForActor, pickDefaultResourceGroupID, resourceGroupDisplayName, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
+import { filterPluginDetailForActor, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
 import BaseTabs from '../../components/base/BaseTabs.vue'
 import DeleteConfirmDialog from '../../components/DeleteConfirmDialog.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
 import PluginAgentStatusTable from '../../components/plugins/PluginAgentStatusTable.vue'
-import PluginDeclarativeUI from '../../components/plugins/PluginDeclarativeUI.vue'
+import PluginDeployModal from '../../components/plugins/PluginDeployModal.vue'
+import PluginInstanceConfigModal from '../../components/plugins/PluginInstanceConfigModal.vue'
 import PluginLogViewer from '../../components/plugins/PluginLogViewer.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 import PluginOperationTimeline from '../../components/operations/PluginOperationTimeline.vue'
-import { getAgentStatus, getAgentStatusLabel } from '../../utils/agentHelpers'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,10 +37,8 @@ const agents = ref([])
 const resourceGroups = ref([])
 const selectedInstanceID = ref('')
 const retryingAgent = ref('')
-const actionBusy = ref('')
-const deploymentOpen = ref(false)
-const deploymentError = ref('')
-const deployment = reactive({ instanceID: '', resourceGroupID: '', targets: [] })
+const deployModalOpen = ref(false)
+const configModalOpen = ref(false)
 
 const admin = computed(() => can('*'))
 const canWrite = computed(() => admin.value || can('resource.write'))
@@ -52,15 +48,7 @@ const selectedSecretFields = computed(() => selectedInstance.value?.pending_oper
   ? (selectedInstance.value.pending_secret_fields || [])
   : (selectedInstance.value?.secret_fields || []))
 const source = computed(() => ({ kind: detail.value?.plugin.active_source_kind, risk_label: detail.value?.plugin.active_source_risk_label }))
-const sortedAgents = computed(() => [...agents.value].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
-const allDeploymentAgentsSelected = computed(() => sortedAgents.value.length > 0 && sortedAgents.value.every((agent) => deployment.targets.includes(agent.id)))
 const visibleResourceGroups = computed(() => visibleResourceGroupsForActor(resourceGroups.value, actor.value))
-const deploymentBlocker = computed(() => {
-  if (!visibleResourceGroups.value.length) return '当前身份没有可见的资源组，无法部署。'
-  if (!sortedAgents.value.length) return '当前没有可选择的节点。'
-  if (!deployment.targets.length) return '请至少选择一个节点后再部署。'
-  return ''
-})
 const sourceLabel = computed(() => source.value.kind === 'official' ? '官方来源' : '非官方来源')
 const lifecycleLabel = computed(() => {
   const labels = { active: '生效中', degraded: '已降级', disabled: '已停用', upgrading: '升级中', applying: '应用中', rolling_back: '回滚中' }
@@ -97,7 +85,6 @@ const formConfig = computed(() => {
   if (pkg.declarative_ui) return selectedConfig.value
   return stripWriteOnlyConfigValues(pkg.config_schema, selectedConfig.value)
 })
-const canRenderForm = computed(() => !!selectedInstance.value && canWrite.value)
 const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.components?.length))
 
 const confirmDialog = ref({ visible: false, loading: false, action: '' })
@@ -139,14 +126,6 @@ async function load() {
     selectedInstanceID.value = visibleDetail.instances.some((instance) => instance.id === previousInstanceID)
       ? previousInstanceID
       : visibleDetail.instances[0]?.id || ''
-    if (!deployment.instanceID || visibleDetail.instances.some((instance) => instance.id === deployment.instanceID)) {
-      deployment.instanceID = defaultDeploymentInstanceID(pluginID, visibleDetail.instances)
-    }
-    if (!visibleResourceGroups.value.some((group) => group.id === deployment.resourceGroupID)) {
-      deployment.resourceGroupID = pickDefaultResourceGroupID(visibleResourceGroups.value)
-    }
-    if (!deployment.targets.length && agents.value.length === 1) deployment.targets = [agents.value[0].id]
-    if (!visibleDetail.instances.length) deploymentOpen.value = true
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || '读取插件详情失败')
   } finally {
@@ -154,69 +133,10 @@ async function load() {
   }
 }
 
-function defaultDeploymentInstanceID(pluginID, instances = []) {
-  const normalized = String(pluginID || 'plugin').toLowerCase().replace(/[^a-z0-9._:/-]+/g, '-').replace(/^[^a-z0-9]+/, '') || 'plugin'
-  const used = new Set(instances.map((instance) => instance.id))
-  const first = `${normalized}-default`.slice(0, 128)
-  if (!used.has(first)) return first
-  for (let index = 2; index < 10000; index += 1) {
-    const suffix = `-${index}`
-    const candidate = `${normalized.slice(0, 128 - suffix.length)}${suffix}`
-    if (!used.has(candidate)) return candidate
-  }
-  return first
-}
-
-function toggleDeployment() {
-  if (!admin.value || busy.value) return
-  deploymentError.value = ''
-  deploymentOpen.value = !deploymentOpen.value
-}
-
-function toggleAllDeploymentAgents() {
-  deployment.targets = allDeploymentAgentsSelected.value ? [] : sortedAgents.value.map((agent) => agent.id)
-}
-
-async function deployPlugin(payload) {
-  if (!admin.value || busy.value) return
-  deploymentError.value = ''
-  const instanceID = defaultDeploymentInstanceID(detail.value.plugin.plugin_id, detail.value.instances)
-  deployment.instanceID = instanceID
-  const resourceGroupID = String(deployment.resourceGroupID || '').trim()
-  const targets = [...new Set(deployment.targets.map((target) => String(target).trim()).filter(Boolean))]
-  if (!visibleResourceGroups.value.some((group) => group.id === resourceGroupID)) {
-    deploymentError.value = visibleResourceGroups.value.length ? '请选择一个可见的资源组。' : '当前身份没有可见的资源组，无法部署。'
-    return
-  }
-  if (!targets.length) {
-    deploymentError.value = '请至少选择一个节点后再部署。'
-    return
-  }
-  busy.value = 'deploy'
-  let configured = false
-  try {
-    const pluginID = detail.value.plugin.plugin_id
-    const created = await configurePlugin(pluginID, {
-      instance_id: instanceID,
-      resource_group_id: resourceGroupID,
-      targets,
-      policy_chains: [],
-      bindings: [],
-      config: stripReadOnlyConfigValues(detail.value.package?.config_schema, payload.config),
-      secret_replacements: payload.secret_replacements || {}
-    })
-    configured = true
-    const lifecycle = detail.value.plugin
-    if (lifecycle.desired_lifecycle !== 'enabled' && lifecycle.current_lifecycle !== 'active') await enablePlugin(pluginID)
-    await load()
-    selectedInstanceID.value = created?.id || instanceID
-    deploymentOpen.value = false
-  } catch (cause) {
-    const message = sanitizePluginText(cause?.message || '部署插件实例失败')
-    deploymentError.value = configured ? `配置已提交，但启用失败：${message}` : message
-  } finally {
-    busy.value = ''
-  }
+async function handleDeployed(instanceID) {
+  await load()
+  selectedInstanceID.value = instanceID
+  deployModalOpen.value = false
 }
 
 async function lifecycle(action) {
@@ -270,44 +190,13 @@ async function confirmAction() {
   }
 }
 
-async function saveConfig(payload) {
-  if (!canWrite.value || !selectedInstance.value) return
-  busy.value = 'configure'
-  error.value = ''
-  try {
-    const instance = selectedInstance.value
-    await configurePlugin(detail.value.plugin.plugin_id, {
-      instance_id: instance.id,
-      resource_group_id: instance.resource_group_id,
-      targets: instance.targets,
-      policy_chains: instance.policy_chains || [],
-      bindings: (instance.bindings || []).map((binding) => ({
-        consumer: { kind: binding.consumer.kind, id: binding.consumer.id },
-        target_agent_id: binding.target_agent_id
-      })),
-      config: stripReadOnlyConfigValues(detail.value.package?.config_schema, payload.config),
-      secret_replacements: payload.secret_replacements || {}
-    })
-    await load()
-  } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '保存插件配置失败')
-  } finally {
-    busy.value = ''
-  }
+async function handleConfigSaved() {
+  await load()
+  configModalOpen.value = false
 }
 
-async function runDynamicAction({ action, target_id, confirmed }) {
-  if (!canWrite.value || !selectedInstance.value || actionBusy.value) return
-  actionBusy.value = action.id
-  error.value = ''
-  try {
-    await invokePluginDynamicAction(detail.value.plugin.plugin_id, selectedInstance.value.id, action.id, target_id, confirmed)
-    await load()
-  } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || `动态操作 ${action.label} 失败`)
-  } finally {
-    actionBusy.value = ''
-  }
+async function handleConfigRefreshed() {
+  await load()
 }
 
 function exportSafeDiagnostics() {
@@ -371,61 +260,13 @@ async function retryAgent(status) {
       <section class="plugin-section">
         <div class="plugin-section-heading">
           <div>
-            <h2>部署</h2>
-            <p>选择资源组和节点，把插件部署到当前身份可见的范围。</p>
+            <h2>实例</h2>
+            <p>查看实例状态；部署与配置编辑在弹窗中完成。</p>
           </div>
-          <button v-if="admin" class="btn btn-primary" type="button" :disabled="!!busy" @click="toggleDeployment">
-            {{ deploymentOpen ? '收起部署表单' : '部署' }}
+          <button v-if="admin" class="btn btn-primary" type="button" :disabled="!!busy" @click="deployModalOpen = true">
+            部署
           </button>
         </div>
-
-        <section v-if="deploymentOpen && admin" class="plugin-deployment" aria-label="部署插件实例">
-          <div class="plugin-deployment__metadata">
-            <label>
-              <span>资源组</span>
-              <select v-model="deployment.resourceGroupID" data-test="deployment-resource-group" :disabled="!visibleResourceGroups.length">
-                <option v-if="!visibleResourceGroups.length" value="">暂无可见资源组</option>
-                <option v-for="group in visibleResourceGroups" :key="group.id" :value="group.id">{{ resourceGroupDisplayName(group) }}</option>
-              </select>
-            </label>
-          </div>
-          <fieldset class="plugin-deployment__agents">
-            <legend>部署节点</legend>
-            <div class="plugin-deployment__agent-actions">
-              <span>已选择 {{ deployment.targets.length }} / {{ sortedAgents.length }}</span>
-              <button class="btn btn-secondary" type="button" :disabled="!sortedAgents.length" @click="toggleAllDeploymentAgents">
-                {{ allDeploymentAgentsSelected ? '清空选择' : '选择全部' }}
-              </button>
-            </div>
-            <div v-if="sortedAgents.length" class="plugin-deployment__agent-grid">
-              <label v-for="agent in sortedAgents" :key="agent.id" class="plugin-deployment__agent">
-                <input v-model="deployment.targets" type="checkbox" :value="agent.id">
-                <span>
-                  <strong>{{ agent.name || agent.id }}</strong>
-                  <small>{{ getAgentStatusLabel(getAgentStatus(agent)) }}</small>
-                </span>
-              </label>
-            </div>
-            <p v-else class="plugin-deployment__empty">当前没有可选择的节点。</p>
-          </fieldset>
-          <p v-if="deploymentError || deploymentBlocker" class="plugin-alert" role="alert">{{ deploymentError || deploymentBlocker }}</p>
-          <div v-if="formEmpty" class="plugin-deployment__empty-config">
-            <p class="plugin-config-empty">此插件没有需要先填写的配置，可直接部署。</p>
-            <button class="btn btn-primary" type="button" :disabled="busy === 'deploy' || !!deploymentBlocker" @click="deployPlugin({ config: {}, secret_replacements: {} })">
-              {{ busy === 'deploy' ? '部署中…' : '部署' }}
-            </button>
-          </div>
-          <PluginDeclarativeUI
-            v-else
-            :document="deploymentDocument"
-            :config="{}"
-            :secret-fields="[]"
-            :saving="busy === 'deploy' || !!deploymentBlocker"
-            :can-configure="admin"
-            :can-act="false"
-            @submit="deployPlugin"
-          />
-        </section>
 
         <BaseTabs
           v-if="instanceTabs.length"
@@ -437,24 +278,11 @@ async function retryAgent(status) {
           <span>目标：{{ selectedInstance.targets.join(', ') || '—' }}</span>
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
+          <button v-if="canWrite && !formEmpty" class="btn btn-secondary btn-sm" type="button" @click="configModalOpen = true">编辑配置</button>
         </div>
-        <template v-if="canRenderForm">
-          <p v-if="formEmpty" class="plugin-config-empty">此插件没有宿主允许的可配置字段。</p>
-          <PluginDeclarativeUI
-            v-else
-            :document="uiDocument"
-            :config="formConfig"
-            :secret-fields="selectedSecretFields"
-            :saving="busy === 'configure'"
-            :action-busy="!!actionBusy"
-            :can-configure="canWrite"
-            :can-act="canWrite"
-            @submit="saveConfig"
-            @dynamic="runDynamicAction"
-          />
-        </template>
-        <p v-else-if="selectedInstance">当前身份只有只读权限。</p>
         <p v-else class="plugin-config-empty">尚未部署。</p>
+        <p v-if="selectedInstance && canWrite && formEmpty" class="plugin-config-empty">此插件没有宿主允许的可配置字段。</p>
+        <p v-if="selectedInstance && !canWrite" class="plugin-config-empty">当前身份只有只读权限。</p>
       </section>
 
       <details class="plugin-technical">
@@ -466,6 +294,34 @@ async function retryAgent(status) {
       <section class="plugin-section"><h2>逐 Agent 状态、预算与故障</h2><PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" /></section>
       <section v-if="selectedInstance" class="plugin-section"><h2>实例 / Agent 运行日志</h2><PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="selectedInstance.targets || []" /></section>
       <section class="plugin-section"><h2>生命周期操作与审计</h2><PluginOperationTimeline :operations="operations" /></section>
+
+      <PluginDeployModal
+        v-if="admin"
+        v-model="deployModalOpen"
+        :plugin-id="detail.plugin.plugin_id"
+        :instances="detail.instances"
+        :agents="agents"
+        :resource-groups="visibleResourceGroups"
+        :config-schema="detail.package?.config_schema || null"
+        :document="deploymentDocument"
+        :form-empty="formEmpty"
+        :desired-lifecycle="detail.plugin.desired_lifecycle"
+        :current-lifecycle="detail.plugin.current_lifecycle"
+        @deployed="handleDeployed"
+      />
+
+      <PluginInstanceConfigModal
+        v-model="configModalOpen"
+        :plugin-id="detail.plugin.plugin_id"
+        :instance="selectedInstance"
+        :document="uiDocument"
+        :config="formConfig"
+        :secret-fields="selectedSecretFields"
+        :config-schema="detail.package?.config_schema || null"
+        :can-write="canWrite"
+        @saved="handleConfigSaved"
+        @refreshed="handleConfigRefreshed"
+      />
 
       <DeleteConfirmDialog
         :show="confirmDialog.visible"
@@ -513,29 +369,12 @@ async function retryAgent(status) {
 .plugin-section-heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-4); }
 .plugin-section-heading > div { display: grid; gap: var(--space-1); }
 .plugin-section-heading p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
-.plugin-deployment { display: grid; gap: var(--space-5); padding: var(--space-5); border: 1px solid var(--color-border-default); border-radius: var(--radius-xl); background: var(--color-bg-subtle); }
-.plugin-deployment__metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
-.plugin-deployment__metadata label { display: grid; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
-.plugin-deployment__metadata input,
-.plugin-deployment__metadata select { min-width: 0; padding: .65rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }
-.plugin-deployment__agents { display: grid; gap: var(--space-3); min-width: 0; margin: 0; padding: 0; border: 0; }
-.plugin-deployment__agents legend { margin-bottom: var(--space-2); color: var(--color-text-primary); font-weight: 600; }
-.plugin-deployment__agent-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
-.plugin-deployment__agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: var(--space-3); }
-.plugin-deployment__agent { display: flex; align-items: start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); background: var(--color-bg-surface); cursor: pointer; }
-.plugin-deployment__agent input { margin-top: .2rem; accent-color: var(--color-primary); }
-.plugin-deployment__agent span { min-width: 0; display: grid; gap: 2px; }
-.plugin-deployment__agent strong, .plugin-deployment__agent small { overflow-wrap: anywhere; }
-.plugin-deployment__agent small, .plugin-deployment__empty { color: var(--color-text-muted); }
-.plugin-deployment__empty { margin: 0; font-size: var(--text-sm); }
-.plugin-deployment__empty-config { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.plugin-deployment__empty-config p { margin: 0; }
-.instance-facts { display: flex; flex-wrap: wrap; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.instance-facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.instance-facts .btn { margin-left: auto; }
 
-@media (max-width: 700px) {
+@media (max-width: 640px) {
   .plugin-section-heading { align-items: stretch; flex-direction: column; }
   .plugin-section-heading .btn { width: 100%; }
-  .plugin-deployment__metadata { grid-template-columns: 1fr; }
-  .plugin-deployment__empty-config { align-items: stretch; flex-direction: column; }
+  .instance-facts .btn { margin-left: 0; }
 }
 </style>

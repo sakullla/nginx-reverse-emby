@@ -32,6 +32,23 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
     template: '<div v-if="show" class="delete-dialog-stub"><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button></div>'
   }
 }))
+vi.mock('../../components/base/BaseModal.vue', () => ({
+  default: {
+    name: 'BaseModal',
+    props: ['modelValue', 'title', 'subtitle', 'size', 'showFooter', 'closeOnClickModal', 'dataTest'],
+    emits: ['update:modelValue', 'confirm'],
+    template: '<div v-if="modelValue" class="base-modal-stub" :data-test="dataTest"><slot /><slot name="footer" /></div>'
+  }
+}))
+
+function configModal(wrapper) {
+  return wrapper.find('[data-test="plugin-instance-config-modal"]')
+}
+
+async function openConfigModal(wrapper) {
+  await wrapper.findAll('button').find((button) => button.text() === '编辑配置').trigger('click')
+  return wrapper.get('[data-test="plugin-instance-config-modal"]')
+}
 
 describe('PluginDetailPage production API projection', () => {
   beforeEach(() => {
@@ -76,29 +93,33 @@ describe('PluginDetailPage production API projection', () => {
     const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('普通 Token')
+    expect(wrapper.text()).not.toContain('普通 Token')
     expect(wrapper.html()).not.toContain('server-plaintext')
     expect(wrapper.html()).not.toContain('other-plaintext')
     expect(wrapper.html()).not.toContain('package-secret')
-    expect(wrapper.get('.declarative-field input[type="text"]').element.value).toBe('ordinary-value')
-    expect(wrapper.get('.declarative-field input[type="password"]').attributes('required')).toBeUndefined()
-    expect(wrapper.text()).toContain('已有凭据')
-    expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(0)
+    const pendingModal = await openConfigModal(wrapper)
+    expect(pendingModal.text()).toContain('普通 Token')
+    expect(pendingModal.get('.declarative-field input[type="text"]').element.value).toBe('ordinary-value')
+    expect(pendingModal.get('.declarative-field input[type="password"]').attributes('required')).toBeUndefined()
+    expect(pendingModal.text()).toContain('已有凭据')
+    expect(pendingModal.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(0)
 
-    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await pendingModal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { token: 'ordinary-value' }, secret_replacements: {}
     }))
+    expect(configModal(wrapper).exists()).toBe(false)
 
     await wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('instance-b')).trigger('click')
     await flushPromises()
-    const activeSecretInputs = wrapper.findAll('.declarative-field input[type="password"]')
-    expect(wrapper.get('.declarative-field input[type="text"]').element.value).toBe('active-ordinary')
-    expect(wrapper.html()).not.toContain('active-plaintext')
-    expect(wrapper.html()).not.toContain('optional-plaintext')
+    const activeModal = await openConfigModal(wrapper)
+    const activeSecretInputs = activeModal.findAll('.declarative-field input[type="password"]')
+    expect(activeModal.get('.declarative-field input[type="text"]').element.value).toBe('active-ordinary')
+    expect(activeModal.html()).not.toContain('active-plaintext')
+    expect(activeModal.html()).not.toContain('optional-plaintext')
     expect(activeSecretInputs[0].attributes('required')).toBeDefined()
-    expect(wrapper.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(1)
+    expect(activeModal.findAll('button').filter((button) => button.text() === '清除凭据')).toHaveLength(1)
   })
 
   it('saves a nested schema fallback form and blocks invalid configure posts', async () => {
@@ -135,15 +156,16 @@ describe('PluginDetailPage production API projection', () => {
     const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
     await flushPromises()
 
-    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    const modal = await openConfigModal(wrapper)
+    await modal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.post).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('至少 2 个字符')
+    expect(modal.text()).toContain('至少 2 个字符')
 
-    const inputs = wrapper.findAll('.declarative-field input[type="text"]')
+    const inputs = modal.findAll('.declarative-field input[type="text"]')
     await inputs[0].setValue('eu')
     await inputs[1].setValue('edge.example')
-    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await modal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { region: 'eu', sources: [{ host: 'edge.example' }] }
@@ -173,8 +195,9 @@ describe('PluginDetailPage production API projection', () => {
     const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
     await flushPromises()
 
-    await wrapper.get('.declarative-field input[type="text"]').setValue('block')
-    await wrapper.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       instance_id: 'instance-a',
