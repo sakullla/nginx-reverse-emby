@@ -55,21 +55,24 @@ type DeclarativeUIDocument struct {
 }
 
 type DeclarativeUIComponent struct {
-	Type        string                    `json:"type"`
-	ID          string                    `json:"id"`
-	Label       string                    `json:"label"`
-	Description string                    `json:"description,omitempty"`
-	Binding     string                    `json:"binding,omitempty"`
-	Placeholder string                    `json:"placeholder,omitempty"`
-	Required    bool                      `json:"required,omitempty"`
-	ReadOnly    bool                      `json:"read_only,omitempty"`
-	Minimum     *json.Number              `json:"minimum,omitempty"`
-	Maximum     *json.Number              `json:"maximum,omitempty"`
-	Step        *json.Number              `json:"step,omitempty"`
-	Options     []DeclarativeUIOption     `json:"options,omitempty"`
-	Children    []DeclarativeUIComponent  `json:"children,omitempty"`
-	Tone        string                    `json:"tone,omitempty"`
-	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
+	Type             string                    `json:"type"`
+	ID               string                    `json:"id"`
+	Label            string                    `json:"label"`
+	Description      string                    `json:"description,omitempty"`
+	Binding          string                    `json:"binding,omitempty"`
+	Placeholder      string                    `json:"placeholder,omitempty"`
+	Required         bool                      `json:"required,omitempty"`
+	ReadOnly         bool                      `json:"read_only,omitempty"`
+	Minimum          *json.Number              `json:"minimum,omitempty"`
+	Maximum          *json.Number              `json:"maximum,omitempty"`
+	Step             *json.Number              `json:"step,omitempty"`
+	Options          []DeclarativeUIOption     `json:"options,omitempty"`
+	Children         []DeclarativeUIComponent  `json:"children,omitempty"`
+	Tone             string                    `json:"tone,omitempty"`
+	Columns          *int                      `json:"columns,omitempty"`
+	Collapsible      bool                      `json:"collapsible,omitempty"`
+	DefaultCollapsed bool                      `json:"default_collapsed,omitempty"`
+	VisibleWhen      *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
 type DeclarativeUIOption struct {
@@ -121,7 +124,7 @@ func projectDeclarativeUIComponent(raw json.RawMessage) (DeclarativeUIComponent,
 	if err := json.Unmarshal(raw, &component); err != nil {
 		return DeclarativeUIComponent{}, err
 	}
-	if component.Type != UIComponentSection && component.Type != UIComponentArray {
+	if component.Type != UIComponentSection && component.Type != UIComponentArray && component.Type != UIComponentGrid {
 		return component, nil
 	}
 	var container struct {
@@ -146,11 +149,46 @@ type declarativeUIComponentEnvelope struct {
 }
 
 type declarativeUISection struct {
+	Type             string                    `json:"type"`
+	ID               string                    `json:"id"`
+	Label            string                    `json:"label"`
+	Description      string                    `json:"description,omitempty"`
+	Children         []json.RawMessage         `json:"children"`
+	Collapsible      bool                      `json:"collapsible,omitempty"`
+	DefaultCollapsed bool                      `json:"default_collapsed,omitempty"`
+	VisibleWhen      *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
+}
+
+type declarativeUIGrid struct {
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label,omitempty"`
+	Description string                    `json:"description,omitempty"`
+	Columns     *int                      `json:"columns,omitempty"`
+	Children    []json.RawMessage         `json:"children"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
+}
+
+type declarativeUIChoiceInput struct {
 	Type        string                    `json:"type"`
 	ID          string                    `json:"id"`
 	Label       string                    `json:"label"`
 	Description string                    `json:"description,omitempty"`
-	Children    []json.RawMessage         `json:"children"`
+	Binding     string                    `json:"binding"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	Options     []json.RawMessage         `json:"options"`
+	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
+}
+
+type declarativeUIKeyValue struct {
+	Type        string                    `json:"type"`
+	ID          string                    `json:"id"`
+	Label       string                    `json:"label"`
+	Description string                    `json:"description,omitempty"`
+	Binding     string                    `json:"binding"`
+	Required    bool                      `json:"required,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
 	VisibleWhen *declarativeUIVisibleWhen `json:"visible_when,omitempty"`
 }
 
@@ -427,11 +465,35 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 	switch envelope.Type {
 	case UIComponentSection:
 		var component declarativeUISection
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "children", "visible_when"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "children", "collapsible", "default_collapsed", "visible_when"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
 			return err
+		}
+		if component.DefaultCollapsed && !component.Collapsible {
+			return errors.New("section default_collapsed requires collapsible")
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
+			return err
+		}
+		return state.components(component.Children, depth+1)
+	case UIComponentGrid:
+		var component declarativeUIGrid
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "columns", "children", "visible_when"); err != nil {
+			return err
+		}
+		if err := state.id(component.ID); err != nil {
+			return err
+		}
+		if err := state.text("label", component.Label, false, 128); err != nil {
+			return err
+		}
+		if err := state.text("description", component.Description, false, 1024); err != nil {
+			return err
+		}
+		if component.Columns != nil && *component.Columns != 2 && *component.Columns != 3 {
+			return fmt.Errorf("grid columns must be 2 or 3, got %d", *component.Columns)
 		}
 		if err := state.visibleWhen(component.VisibleWhen); err != nil {
 			return err
@@ -511,6 +573,42 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 			return err
 		}
 		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, options)
+	case UIComponentRadio, UIComponentMultiselect:
+		var component declarativeUIChoiceInput
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "options", "visible_when"); err != nil {
+			return err
+		}
+		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
+			return err
+		}
+		binding, err := state.binding(component.Binding)
+		if err != nil {
+			return err
+		}
+		options, err := state.options(component.Options)
+		if err != nil {
+			return err
+		}
+		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, options)
+	case UIComponentKeyValue:
+		var component declarativeUIKeyValue
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "visible_when"); err != nil {
+			return err
+		}
+		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
+			return err
+		}
+		if err := state.visibleWhen(component.VisibleWhen); err != nil {
+			return err
+		}
+		binding, err := state.binding(component.Binding)
+		if err != nil {
+			return err
+		}
+		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, nil)
 	case UIComponentNotice:
 		var component declarativeUINotice
 		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "tone", "visible_when"); err != nil {
@@ -845,6 +943,7 @@ func schemaPropertyRequired(parent map[string]any, property string) bool {
 func validateUIBindingContract(binding declarativeUIBinding, componentType string, required, readOnly bool, minimum, maximum, step *json.Number, options []string) error {
 	schemaType, _ := binding.node["type"].(string)
 	wantType := "string"
+	structured := false
 	switch componentType {
 	case UIComponentNumber:
 		if schemaType != "number" && schemaType != "integer" {
@@ -852,11 +951,21 @@ func validateUIBindingContract(binding declarativeUIBinding, componentType strin
 		}
 	case UIComponentToggle:
 		wantType = "boolean"
-	case UIComponentText, UIComponentTextarea, UIComponentSecret, UIComponentSelect:
+	case UIComponentText, UIComponentTextarea, UIComponentSecret, UIComponentSelect, UIComponentRadio:
+	case UIComponentMultiselect:
+		structured = true
+		if schemaType != "array" {
+			return fmt.Errorf("binding %q component %s requires an array schema, got %q", binding.path, componentType, schemaType)
+		}
+	case UIComponentKeyValue:
+		structured = true
+		if schemaType != "object" {
+			return fmt.Errorf("binding %q component %s requires an object schema, got %q", binding.path, componentType, schemaType)
+		}
 	default:
 		return fmt.Errorf("binding %q has unsupported component type %q", binding.path, componentType)
 	}
-	if componentType != UIComponentNumber && schemaType != wantType {
+	if !structured && componentType != UIComponentNumber && schemaType != wantType {
 		return fmt.Errorf("binding %q component %s requires a %s schema, got %q", binding.path, componentType, wantType, schemaType)
 	}
 	if binding.required != required {
@@ -872,15 +981,50 @@ func validateUIBindingContract(binding declarativeUIBinding, componentType strin
 	}
 
 	_, hasEnum := binding.node["enum"]
-	if componentType == UIComponentSelect {
+	switch componentType {
+	case UIComponentSelect, UIComponentRadio:
 		if !hasEnum {
-			return fmt.Errorf("binding %q select requires a config schema enum", binding.path)
+			return fmt.Errorf("binding %q %s requires a config schema enum", binding.path, componentType)
 		}
 		if err := validateUIEnum(binding.path, binding.node["enum"], options); err != nil {
 			return err
 		}
-	} else if hasEnum {
-		return fmt.Errorf("binding %q config schema enum requires a select component", binding.path)
+	case UIComponentMultiselect:
+		if hasEnum {
+			return fmt.Errorf("binding %q multiselect enum must be declared on the array items schema", binding.path)
+		}
+		items, ok := binding.node["items"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("binding %q multiselect requires config schema items", binding.path)
+		}
+		itemsType, _ := items["type"].(string)
+		if itemsType != "string" {
+			return fmt.Errorf("binding %q multiselect requires string items schema, got %q", binding.path, itemsType)
+		}
+		itemsEnum, hasItemsEnum := items["enum"]
+		if !hasItemsEnum {
+			return fmt.Errorf("binding %q multiselect requires a string enum on the array items schema", binding.path)
+		}
+		if err := validateUIEnum(binding.path, itemsEnum, options); err != nil {
+			return err
+		}
+	case UIComponentKeyValue:
+		if hasEnum {
+			return fmt.Errorf("binding %q keyvalue does not support config schema enum", binding.path)
+		}
+		if properties, ok := binding.node["properties"].(map[string]any); ok && len(properties) > 0 {
+			return fmt.Errorf("binding %q keyvalue requires a schema without fixed properties", binding.path)
+		}
+		if additional, present := binding.node["additionalProperties"]; present {
+			allowed, ok := additional.(bool)
+			if !ok || !allowed {
+				return fmt.Errorf("binding %q keyvalue requires additionalProperties to be absent or true", binding.path)
+			}
+		}
+	default:
+		if hasEnum {
+			return fmt.Errorf("binding %q config schema enum requires a select or radio component", binding.path)
+		}
 	}
 	if componentType == UIComponentNumber {
 		for _, constraint := range []struct {

@@ -36,6 +36,15 @@ const (
 	UIActionDynamic = "dynamic"
 )
 
+// The SDK owns the extended schema_version 1 vocabulary. Aliases keep the
+// control-plane enforcement on the same canonical constants.
+const (
+	UIComponentGrid        = pluginsdk.UIComponentGrid
+	UIComponentRadio       = pluginsdk.UIComponentRadio
+	UIComponentMultiselect = pluginsdk.UIComponentMultiselect
+	UIComponentKeyValue    = pluginsdk.UIComponentKeyValue
+)
+
 // The SDK owns the one plugin.yaml v1 contract. Aliases keep the existing
 // control-plane API stable while preventing a second field/tag definition.
 type Manifest = pluginsdk.Manifest

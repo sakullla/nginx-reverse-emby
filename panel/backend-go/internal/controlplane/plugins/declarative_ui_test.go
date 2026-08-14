@@ -668,3 +668,234 @@ func configProperty(schema map[string]any, name string) map[string]any {
 func noticeComponent(index int) map[string]any {
 	return map[string]any{"type": UIComponentNotice, "id": fmt.Sprintf("notice_%d", index), "label": "Notice", "tone": "info"}
 }
+
+func TestValidatorDeclarativeUIGridComponent(t *testing.T) {
+	if err := validateDeclarativeUI(validExtendedDeclarativeUIJSON(t), validExtendedDeclarativeUIConfigSchema(t)); err != nil {
+		t.Fatalf("valid extended UI rejected: %v", err)
+	}
+	document, err := ProjectDeclarativeUI(validExtendedDeclarativeUIJSON(t), validExtendedDeclarativeUIConfigSchema(t), nil)
+	if err != nil {
+		t.Fatalf("extended UI projection failed: %v", err)
+	}
+	var grid *DeclarativeUIComponent
+	for index := range document.Components {
+		if document.Components[index].Type == UIComponentGrid {
+			grid = &document.Components[index]
+		}
+	}
+	if grid == nil || grid.Columns == nil || *grid.Columns != 2 || len(grid.Children) != 2 {
+		t.Fatalf("grid projection = %+v", grid)
+	}
+	var section *DeclarativeUIComponent
+	for index := range document.Components {
+		if document.Components[index].Type == UIComponentSection {
+			section = &document.Components[index]
+		}
+	}
+	if section == nil || !section.Collapsible || !section.DefaultCollapsed {
+		t.Fatalf("section projection = %+v", section)
+	}
+
+	tests := []struct {
+		name         string
+		mutateUI     func(map[string]any)
+		mutateSchema func(map[string]any)
+		marker       string
+	}{
+		{
+			name:     "grid columns below range",
+			mutateUI: func(document map[string]any) { componentByID(document, "pair")["columns"] = 1 },
+			marker:   "columns must be 2 or 3",
+		},
+		{
+			name:     "grid columns above range",
+			mutateUI: func(document map[string]any) { componentByID(document, "pair")["columns"] = 4 },
+			marker:   "columns must be 2 or 3",
+		},
+		{
+			name: "grid unknown field",
+			mutateUI: func(document map[string]any) {
+				componentByID(document, "pair")["gap"] = 2
+			},
+			marker: "unknown field",
+		},
+		{
+			name: "grid empty children",
+			mutateUI: func(document map[string]any) {
+				componentByID(document, "pair")["children"] = []any{}
+			},
+			marker: "1 to",
+		},
+		{
+			name: "default_collapsed without collapsible",
+			mutateUI: func(document map[string]any) {
+				delete(componentByID(document, "advanced"), "collapsible")
+			},
+			marker: "default_collapsed requires collapsible",
+		},
+		{
+			name: "radio options mismatch enum",
+			mutateUI: func(document map[string]any) {
+				componentByID(document, "level")["options"] = []any{map[string]any{"value": "low", "label": "Low"}}
+			},
+			marker: "contradict config schema enum",
+		},
+		{
+			name: "radio binding without enum",
+			mutateSchema: func(schema map[string]any) {
+				delete(configProperty(schema, "level"), "enum")
+			},
+			marker: "requires a config schema enum",
+		},
+		{
+			name: "radio binding type mismatch",
+			mutateSchema: func(schema map[string]any) {
+				configProperty(schema, "level")["type"] = "boolean"
+			},
+			marker: "requires a string schema",
+		},
+		{
+			name: "multiselect binding to non-array",
+			mutateSchema: func(schema map[string]any) {
+				flags := configProperty(schema, "flags")
+				flags["type"] = "string"
+				delete(flags, "items")
+				delete(flags, "maxItems")
+			},
+			marker: "requires an array schema",
+		},
+		{
+			name: "multiselect items without enum",
+			mutateSchema: func(schema map[string]any) {
+				delete(configProperty(schema, "flags")["items"].(map[string]any), "enum")
+			},
+			marker: "string enum on the array items",
+		},
+		{
+			name: "multiselect items non-string",
+			mutateSchema: func(schema map[string]any) {
+				configProperty(schema, "flags")["items"].(map[string]any)["type"] = "number"
+			},
+			marker: "requires string items schema",
+		},
+		{
+			name: "multiselect options mismatch items enum",
+			mutateUI: func(document map[string]any) {
+				componentByID(document, "flags")["options"] = []any{map[string]any{"value": "x", "label": "X"}}
+			},
+			marker: "contradict config schema enum",
+		},
+		{
+			name: "multiselect node-level enum",
+			mutateSchema: func(schema map[string]any) {
+				configProperty(schema, "flags")["enum"] = []any{"a"}
+			},
+			marker: "enum must be declared on the array items",
+		},
+		{
+			name: "keyvalue binding to non-object",
+			mutateSchema: func(schema map[string]any) {
+				labels := configProperty(schema, "labels")
+				labels["type"] = "string"
+				delete(labels, "additionalProperties")
+			},
+			marker: "requires an object schema",
+		},
+		{
+			name: "keyvalue additionalProperties false",
+			mutateSchema: func(schema map[string]any) {
+				configProperty(schema, "labels")["additionalProperties"] = false
+			},
+			marker: "additionalProperties to be absent or true",
+		},
+		{
+			name: "keyvalue with fixed properties",
+			mutateSchema: func(schema map[string]any) {
+				configProperty(schema, "labels")["properties"] = map[string]any{"fixed": map[string]any{"type": "string"}}
+			},
+			marker: "without fixed properties",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			uiMutator := test.mutateUI
+			if uiMutator == nil {
+				uiMutator = func(map[string]any) {}
+			}
+			uiData := mutateExtendedDeclarativeUI(uiMutator)(t)
+			currentSchema := validExtendedDeclarativeUIConfigSchema(t)
+			if test.mutateSchema != nil {
+				test.mutateSchema(currentSchema)
+			}
+			err := validateDeclarativeUI(uiData, currentSchema)
+			if err == nil || !strings.Contains(err.Error(), test.marker) {
+				t.Fatalf("extended validation error = %v, want marker %q", err, test.marker)
+			}
+		})
+	}
+}
+
+func validExtendedDeclarativeUIJSON(t *testing.T) []byte {
+	t.Helper()
+	document := map[string]any{
+		"schema_version": DeclarativeUISchemaVersion,
+		"title":          "Extended settings",
+		"components": []any{
+			map[string]any{"type": UIComponentSection, "id": "advanced", "label": "Advanced", "collapsible": true, "default_collapsed": true, "children": []any{
+				map[string]any{"type": UIComponentText, "id": "name", "label": "Name", "binding": "/name", "required": true},
+			}},
+			map[string]any{"type": UIComponentGrid, "id": "pair", "columns": 2, "children": []any{
+				map[string]any{"type": UIComponentRadio, "id": "level", "label": "Level", "binding": "/level", "options": []any{
+					map[string]any{"value": "low", "label": "Low"},
+					map[string]any{"value": "high", "label": "High"},
+				}},
+				map[string]any{"type": UIComponentMultiselect, "id": "flags", "label": "Flags", "binding": "/flags", "options": []any{
+					map[string]any{"value": "fast", "label": "Fast"},
+					map[string]any{"value": "safe", "label": "Safe"},
+				}},
+			}},
+			map[string]any{"type": UIComponentKeyValue, "id": "labels", "label": "Labels", "binding": "/labels"},
+		},
+		"actions": []any{
+			map[string]any{"type": UIActionSubmit, "id": "save", "label": "Save"},
+		},
+	}
+	return mustMarshalJSON(t, document)
+}
+
+func mutateExtendedDeclarativeUI(mutate func(map[string]any)) func(*testing.T) []byte {
+	return func(t *testing.T) []byte {
+		t.Helper()
+		var document map[string]any
+		if err := json.Unmarshal(validExtendedDeclarativeUIJSON(t), &document); err != nil {
+			t.Fatal(err)
+		}
+		mutate(document)
+		return mustMarshalJSON(t, document)
+	}
+}
+
+func validExtendedDeclarativeUIConfigSchema(t *testing.T) map[string]any {
+	t.Helper()
+	data := []byte(`{
+		"type":"object",
+		"additionalProperties":false,
+		"required":["name"],
+		"properties":{
+			"name":{"type":"string"},
+			"level":{"type":"string","enum":["low","high"]},
+			"flags":{"type":"array","items":{"type":"string","enum":["fast","safe"]},"maxItems":8},
+			"labels":{"type":"object","additionalProperties":true}
+		}
+	}`)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var schema map[string]any
+	if err := decoder.Decode(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJSONSchema(schema); err != nil {
+		t.Fatalf("valid extended UI config schema rejected: %v", err)
+	}
+	return schema
+}
