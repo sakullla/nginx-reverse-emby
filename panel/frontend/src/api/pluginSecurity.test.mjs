@@ -82,6 +82,7 @@ describe('plugin UI security boundary', () => {
         numeric_enum: { type: 'string', enum: [1, 2] },
         flags: { type: 'array', items: { type: 'string', enum: ['fast', 'safe'] }, default: ['fast'] },
         labels: { type: 'object', additionalProperties: true },
+        closed_map: { type: 'object', additionalProperties: false },
         fixed: { type: 'object', properties: { name: { type: 'string' } } }
       }
     })
@@ -90,7 +91,8 @@ describe('plugin UI security boundary', () => {
     expect(components[2]).toMatchObject({ type: 'select', binding: '/numeric_enum' })
     expect(components[3]).toMatchObject({ type: 'multiselect', binding: '/flags', default: ['fast'], options: [{ value: 'fast', label: 'fast' }, { value: 'safe', label: 'safe' }] })
     expect(components[4]).toMatchObject({ type: 'keyvalue', binding: '/labels' })
-    expect(components[5]).toMatchObject({ type: 'section', id: 'fixed' })
+    expect(components[5]).toMatchObject({ type: 'section', id: 'closed_map', children: [] })
+    expect(components[6]).toMatchObject({ type: 'section', id: 'fixed' })
   })
 
   it('collects constraint errors through grid containers and new component types', () => {

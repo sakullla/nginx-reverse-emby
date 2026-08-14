@@ -143,7 +143,12 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
     case 'object': {
       const children = synthesizeObjectProperties(field, pointer)
       if (children.length) return [{ type: 'section', ...identity, ...annotation, children }]
-      // A map-like object without fixed properties edits as key/value pairs.
+      // A map-like object edits as key/value pairs only when arbitrary string
+      // values are legal; a closed object (additionalProperties: false) keeps
+      // the previous non-editable section shape.
+      if (field.additionalProperties !== undefined && field.additionalProperties !== true) {
+        return [{ type: 'section', ...identity, ...annotation, children: [] }]
+      }
       const component = { type: 'keyvalue', ...identity, ...annotation, binding: pointer, required }
       if (field.default !== undefined) component.default = field.default
       return [component]

@@ -1,3 +1,9 @@
+<script>
+// Module-level sequence giving each component instance a unique radio group
+// suffix (see radioGroupName below).
+let declarativeComponentSeq = 0
+</script>
+
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { evaluateCondition, resolvePointer } from '../../api/pluginCondition.js'
@@ -15,6 +21,13 @@ const props = defineProps({
   forceValidate: { type: Boolean, default: false }
 })
 const emit = defineEmits(['change', 'secret'])
+
+// Radio groups must not leak across sibling forms: the page may mount several
+// declarative UIs for the same document (e.g. deploy + instance config), and a
+// bare pointer-based name would make their same-binding radios mutually
+// exclusive at the DOM level while each model keeps its own value.
+const instanceSeq = ++declarativeComponentSeq
+const radioGroupName = computed(() => `${fullPointer.value}#${instanceSeq}`)
 
 const scope = computed(() => props.conditionScope || props.model)
 const fullPointer = computed(() => props.basePointer + (props.component.binding || ''))
@@ -164,7 +177,7 @@ const error = computed(() => {
       <p v-if="component.description" class="declarative-field__description">{{ component.description }}</p>
       <div class="declarative-radio-group" role="radiogroup" :aria-label="component.label">
         <label v-for="option in component.options || []" :key="option.value" class="declarative-choice" :class="{ 'declarative-choice--selected': value() === option.value }">
-          <input type="radio" :name="fullPointer" :checked="value() === option.value" :disabled="component.read_only" @change="change(option.value)">
+          <input type="radio" :name="radioGroupName" :checked="value() === option.value" :disabled="component.read_only" @change="change(option.value)">
           <span class="declarative-choice__control" aria-hidden="true"></span>
           <span class="declarative-choice__text">{{ option.label }}<small v-if="option.description" class="declarative-hint">{{ option.description }}</small></span>
         </label>

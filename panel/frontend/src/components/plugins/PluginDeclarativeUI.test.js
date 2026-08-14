@@ -225,6 +225,27 @@ describe('PluginDeclarativeUI', () => {
     expect(wrapper.emitted('submit')[0][0].config.mode).toBe('block')
   })
 
+  it('keeps radio groups isolated across sibling forms of the same document', async () => {
+    const radioDocument = {
+      schema_version: 1,
+      title: 'Shared',
+      components: [
+        { type: 'radio', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'observe', label: 'Observe' }, { value: 'block', label: 'Block' }] }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const first = mount(PluginDeclarativeUI, { props: { document: radioDocument, config: { mode: 'observe' }, canConfigure: true } })
+    const second = mount(PluginDeclarativeUI, { props: { document: radioDocument, config: { mode: 'observe' }, canConfigure: true } })
+    const firstNames = first.findAll('input[type="radio"]').map((input) => input.attributes('name'))
+    const secondNames = second.findAll('input[type="radio"]').map((input) => input.attributes('name'))
+    expect(firstNames[0]).not.toBe(secondNames[0])
+    await second.findAll('input[type="radio"]')[1].setValue(true)
+    // Selecting in the second form must not clear the visual selection in the first.
+    expect(first.findAll('input[type="radio"]')[0].element.checked).toBe(true)
+    await first.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(first.emitted('submit')[0][0].config).toEqual({ mode: 'observe' })
+  })
+
   it('toggles multiselect options and keeps declared option order', async () => {
     const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { flags: ['safe'] }, canConfigure: true } })
     const boxes = wrapper.findAll('.declarative-multiselect-group input[type="checkbox"]')
