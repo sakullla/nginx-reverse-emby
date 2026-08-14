@@ -261,6 +261,39 @@ describe('PluginDeclarativeUI', () => {
     expect(wrapper.emitted('submit')[0][0].config.labels).toEqual({ env: 'prod' })
   })
 
+  it('flags duplicate keyvalue keys and submits only the first occurrence', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { labels: { env: 'prod' } }, canConfigure: true } })
+    await wrapper.findAll('.declarative-keyvalue .btn').find((button) => button.text() === '+ 添加').trigger('click')
+    const rows = wrapper.findAll('.declarative-keyvalue__row')
+    await rows[1].findAll('input')[0].setValue('env')
+    await rows[1].findAll('input')[1].setValue('staging')
+    // The later duplicate row stays visible with a hint; payload keeps the first.
+    expect(wrapper.findAll('.declarative-keyvalue__row')).toHaveLength(2)
+    expect(wrapper.text()).toContain('键重复，此行不会保存')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.labels).toEqual({ env: 'prod' })
+  })
+
+  it('expands a default-collapsed section when a failed submit forces validation', async () => {
+    const requiredDocument = {
+      schema_version: 1,
+      title: 'Collapsed required',
+      components: [
+        { type: 'section', id: 'advanced', label: 'Advanced', collapsible: true, default_collapsed: true, children: [
+          { type: 'text', id: 'note', label: 'Note', binding: '/note', required: true }
+        ] }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: requiredDocument, config: {}, canConfigure: true } })
+    expect(wrapper.get('.declarative-section__body').attributes('style')).toContain('display: none')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.get('.declarative-section__body').attributes('style') || '').not.toContain('display: none')
+    expect(wrapper.text()).toContain('此项为必填')
+  })
+
   it('collapses sections only when collapsible and keeps values mounted', async () => {
     const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { note: 'kept' }, canConfigure: true } })
     // jsdom caches computed visibility; assert the v-show inline style instead.

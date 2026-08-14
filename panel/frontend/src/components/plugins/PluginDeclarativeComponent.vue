@@ -25,6 +25,9 @@ const touched = ref(false)
 // Collapsible sections start collapsed only when the document asks for it;
 // collapsing never unmounts children, so bound values and conditions survive.
 const collapsed = ref(props.component.type === 'section' && props.component.default_collapsed === true)
+// A forced validation pass (failed submit) must surface nested errors: expand
+// the section so the offending field and its message become visible.
+watch(() => props.forceValidate, (forced) => { if (forced) collapsed.value = false })
 
 function value() { return resolvePointer(props.model, fullPointer.value) }
 function change(next) { touched.value = true; emit('change', fullPointer.value, next) }
@@ -56,11 +59,25 @@ watch(keyValueModel, (next) => {
   keyValueLastEmitted = signature
   keyValueRows.value = Object.entries(next || {}).map(([key, item]) => ({ key, value: typeof item === 'string' ? item : String(item ?? '') }))
 }, { immediate: true, deep: true })
+// Duplicate trimmed keys are flagged on the later rows and only the first
+// occurrence is emitted, so the UI and the submitted config never diverge.
+const keyValueDuplicateIndexes = computed(() => {
+  const seen = new Set()
+  const duplicates = new Set()
+  keyValueRows.value.forEach((row, index) => {
+    const key = String(row.key || '').trim()
+    if (!key) return
+    if (seen.has(key)) duplicates.add(index)
+    else seen.add(key)
+  })
+  return duplicates
+})
 function emitKeyValue() {
   const next = {}
   for (const row of keyValueRows.value) {
     const key = String(row.key || '').trim()
-    if (key) next[key] = String(row.value ?? '')
+    if (!key || Object.hasOwn(next, key)) continue
+    next[key] = String(row.value ?? '')
   }
   keyValueLastEmitted = JSON.stringify(next)
   change(next)
@@ -172,10 +189,11 @@ const error = computed(() => {
       <span class="declarative-field__label">{{ component.label }}<small v-if="hintText" class="declarative-hint">{{ hintText }}</small></span>
       <p v-if="component.description" class="declarative-field__description">{{ component.description }}</p>
       <div class="declarative-keyvalue__rows">
-        <div v-for="(row, index) in keyValueRows" :key="index" class="declarative-keyvalue__row">
+        <div v-for="(row, index) in keyValueRows" :key="index" class="declarative-keyvalue__row" :class="{ 'declarative-keyvalue__row--duplicate': keyValueDuplicateIndexes.has(index) }">
           <input type="text" :value="row.key" placeholder="键" :disabled="component.read_only" @input="changeKeyValueKey(index, $event.target.value)">
           <input type="text" :value="row.value" placeholder="值" :disabled="component.read_only" @input="changeKeyValueValue(index, $event.target.value)">
           <button class="btn btn-secondary btn-sm" type="button" :disabled="component.read_only" @click="removeKeyValueRow(index)">移除</button>
+          <small v-if="keyValueDuplicateIndexes.has(index)" class="declarative-error declarative-keyvalue__duplicate-hint">键重复，此行不会保存</small>
         </div>
         <p v-if="!keyValueRows.length" class="declarative-keyvalue__empty">暂无条目。</p>
       </div>
@@ -327,6 +345,8 @@ const error = computed(() => {
 .declarative-keyvalue__rows { display: grid; gap: var(--space-2); }
 .declarative-keyvalue__row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: var(--space-2); align-items: center; }
 .declarative-keyvalue__empty { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); }
+.declarative-keyvalue__row--duplicate input:first-child { border-color: var(--color-danger); }
+.declarative-keyvalue__duplicate-hint { grid-column: 1 / -1; }
 .declarative-keyvalue > .btn { justify-self: start; }
 @media (max-width: 640px) {
   .declarative-keyvalue__row { grid-template-columns: 1fr; }
