@@ -27,7 +27,7 @@ function seedDefaults() {
     for (const component of components || []) {
       if (!component || typeof component !== 'object') continue
       const full = basePointer + (component.binding || '')
-      if (component.type === 'section') {
+      if (component.type === 'section' || component.type === 'grid') {
         walk(component.children || [], basePointer)
       } else if (component.type === 'array') {
         const items = resolvePointer(model, full)
@@ -82,10 +82,15 @@ function action(action) {
 
 <template>
   <section class="declarative-ui">
-    <header><h3>{{ document.title }}</h3><p v-if="document.description">{{ document.description }}</p></header>
-		<template v-if="canConfigure"><PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :force-validate="forceValidate" @change="setValue" @secret="setSecret" /></template>
+    <header class="declarative-ui__header">
+      <h3>{{ document.title }}</h3>
+      <p v-if="document.description">{{ document.description }}</p>
+    </header>
+    <div v-if="canConfigure" class="declarative-ui__body">
+      <PluginDeclarativeComponent v-for="component in document.components || []" :key="component.id" :component="component" :model="model" :secret-replacements="secretReplacements" :secret-present="secretPresent" :force-validate="forceValidate" @change="setValue" @secret="setSecret" />
+    </div>
     <div class="declarative-actions">
-			<template v-for="item in (document.actions || []).filter((action) => action.type === 'dynamic' ? canAct : canConfigure)" :key="item.id">
+      <template v-for="item in (document.actions || []).filter((action) => action.type === 'dynamic' ? canAct : canConfigure)" :key="item.id">
         <label v-if="item.type === 'dynamic'" class="declarative-target"><span>{{ item.target_kind }} ID</span><input v-model="targets[item.id]" type="text" autocomplete="off"></label>
         <button class="btn" :class="item.type === 'submit' ? 'btn-primary' : 'btn-secondary'" type="button" :disabled="saving || actionBusy || (item.type === 'dynamic' && !targets[item.id])" @click="action(item)">{{ item.label }}</button>
       </template>
@@ -95,5 +100,18 @@ function action(action) {
 </template>
 
 <style scoped>
-.declarative-ui { display: grid; gap: var(--space-4); }.declarative-ui h3, .declarative-ui p { margin: 0; }.declarative-ui header p, .declarative-boundary { color: var(--color-text-muted); }.declarative-actions { display: flex; align-items: end; flex-wrap: wrap; gap: var(--space-3); }.declarative-target { min-width: 12rem; display: grid; gap: var(--space-1); }.declarative-target input { padding: .6rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.declarative-ui { display: grid; gap: var(--space-5); min-width: 0; }
+.declarative-ui__header { display: grid; gap: var(--space-1); }
+.declarative-ui__header h3, .declarative-ui__header p { margin: 0; }
+.declarative-ui__header h3 { font-size: var(--text-lg); }
+.declarative-ui__header p, .declarative-boundary { color: var(--color-text-muted); }
+.declarative-ui__header p, .declarative-boundary { font-size: var(--text-sm); }
+.declarative-ui__body { display: grid; gap: var(--space-4); min-width: 0; }
+.declarative-boundary { margin: 0; font-size: var(--text-xs); }
+.declarative-actions {
+  display: flex; align-items: end; flex-wrap: wrap; gap: var(--space-3);
+  padding-top: var(--space-4); border-top: 1px solid var(--color-border-subtle);
+}
+.declarative-target { min-width: 12rem; display: grid; gap: var(--space-1); color: var(--color-text-secondary); font-size: var(--text-sm); }
+.declarative-target input { padding: .6rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }
 </style>

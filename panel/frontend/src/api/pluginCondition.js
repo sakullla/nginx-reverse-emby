@@ -79,7 +79,7 @@ export function collectHiddenPointers(components, model) {
       if (!component || typeof component !== 'object') continue
       const full = basePointer + (component.binding || '')
       const isHidden = ancestorHidden || !evaluateCondition(component.visible_when, scope)
-      if (component.type === 'section') {
+      if (component.type === 'section' || component.type === 'grid') {
         walk(component.children || [], basePointer, scope, isHidden)
       } else if (component.type === 'array') {
         if (isHidden) {

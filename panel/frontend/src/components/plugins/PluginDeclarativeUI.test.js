@@ -197,4 +197,98 @@ describe('PluginDeclarativeUI', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
     expect(wrapper.emitted('submit')[0][0].config).toEqual({ level: 2 })
   })
+
+  const extendedDocument = {
+    schema_version: 1,
+    title: 'Extended',
+    components: [
+      { type: 'section', id: 'advanced', label: 'Advanced', collapsible: true, default_collapsed: true, children: [
+        { type: 'text', id: 'note', label: 'Note', binding: '/note' }
+      ] },
+      { type: 'grid', id: 'pair', columns: 2, children: [
+        { type: 'radio', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'observe', label: 'Observe' }, { value: 'block', label: 'Block' }] },
+        { type: 'multiselect', id: 'flags', label: 'Flags', binding: '/flags', options: [{ value: 'fast', label: 'Fast' }, { value: 'safe', label: 'Safe' }] }
+      ] },
+      { type: 'keyvalue', id: 'labels', label: 'Labels', binding: '/labels' }
+    ],
+    actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+  }
+
+  it('renders grid children and submits radio selections', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { mode: 'observe' }, canConfigure: true } })
+    expect(wrapper.get('.declarative-grid').exists()).toBe(true)
+    const radios = wrapper.findAll('input[type="radio"]')
+    expect(radios).toHaveLength(2)
+    expect(radios[0].element.checked).toBe(true)
+    await radios[1].setValue(true)
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.mode).toBe('block')
+  })
+
+  it('toggles multiselect options and keeps declared option order', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { flags: ['safe'] }, canConfigure: true } })
+    const boxes = wrapper.findAll('.declarative-multiselect-group input[type="checkbox"]')
+    expect(boxes).toHaveLength(2)
+    expect(boxes[0].element.checked).toBe(false)
+    expect(boxes[1].element.checked).toBe(true)
+    await boxes[0].setValue(true)
+    await boxes[1].setValue(false)
+    await boxes[0].setValue(false)
+    await boxes[1].setValue(true)
+    await boxes[0].setValue(true)
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.flags).toEqual(['fast', 'safe'])
+  })
+
+  it('edits keyvalue rows with add, rename, value change and remove', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { labels: { env: 'prod' } }, canConfigure: true } })
+    expect(wrapper.findAll('.declarative-keyvalue__row')).toHaveLength(1)
+    const addButton = wrapper.findAll('.declarative-keyvalue .btn').find((button) => button.text() === '+ 添加')
+    await addButton.trigger('click')
+    const rows = wrapper.findAll('.declarative-keyvalue__row')
+    expect(rows).toHaveLength(2)
+    await rows[1].findAll('input')[0].setValue('region')
+    await rows[1].findAll('input')[1].setValue('cn')
+    await rows[0].findAll('button').find((button) => button.text() === '移除').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.labels).toEqual({ region: 'cn' })
+  })
+
+  it('drops empty keyvalue keys from the submit payload', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { labels: { env: 'prod' } }, canConfigure: true } })
+    await wrapper.findAll('.declarative-keyvalue .btn').find((button) => button.text() === '+ 添加').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.labels).toEqual({ env: 'prod' })
+  })
+
+  it('collapses sections only when collapsible and keeps values mounted', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { note: 'kept' }, canConfigure: true } })
+    // jsdom caches computed visibility; assert the v-show inline style instead.
+    expect(wrapper.get('.declarative-section__body').attributes('style')).toContain('display: none')
+    expect(wrapper.get('.declarative-section__toggle').attributes('aria-expanded')).toBe('false')
+    await wrapper.get('.declarative-section__toggle').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.declarative-section__body').attributes('style') || '').not.toContain('display: none')
+    expect(wrapper.get('.declarative-section__toggle').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('input[type="text"]').element.value).toBe('kept')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.note).toBe('kept')
+  })
+
+  it('seeds defaults for synthesized extended components', async () => {
+    const defaultsDocument = {
+      schema_version: 1,
+      title: 'Extended defaults',
+      components: [
+        { type: 'radio', id: 'mode', label: 'Mode', binding: '/mode', options: [{ value: 'a', label: 'A' }], default: 'a' },
+        { type: 'multiselect', id: 'flags', label: 'Flags', binding: '/flags', options: [{ value: 'x', label: 'X' }], default: ['x'] },
+        { type: 'keyvalue', id: 'labels', label: 'Labels', binding: '/labels', default: { env: 'prod' } }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: defaultsDocument, config: {}, canConfigure: true } })
+    expect(wrapper.get('input[type="radio"]').element.checked).toBe(true)
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ mode: 'a', flags: ['x'], labels: { env: 'prod' } })
+  })
 })

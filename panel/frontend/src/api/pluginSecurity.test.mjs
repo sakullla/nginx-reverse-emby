@@ -42,7 +42,7 @@ describe('plugin UI security boundary', () => {
       }
     })
     expect(components.map((component) => component.id)).toEqual(['mode', 'api_token', 'threshold', 'note'])
-    expect(components[0]).toMatchObject({ type: 'select', binding: '/mode', required: true, options: [{ value: 'observe', label: 'observe' }, { value: 'block', label: 'block' }] })
+    expect(components[0]).toMatchObject({ type: 'radio', binding: '/mode', required: true, options: [{ value: 'observe', label: 'observe' }, { value: 'block', label: 'block' }] })
     expect(components[1]).toMatchObject({ type: 'secret', binding: '/api_token', required: true })
     expect(components[2]).toMatchObject({ type: 'number', binding: '/threshold', minimum: 1, maximum: 100, step: 1 })
     expect(components[3]).toMatchObject({ type: 'text', binding: '/note', min_length: 2, max_length: 20, pattern: '^[a-z]+$' })
@@ -71,6 +71,43 @@ describe('plugin UI security boundary', () => {
       },
       { type: 'array', id: 'tags', label: 'tags', description: '', binding: '/tags', required: false }
     ])
+  })
+
+  it('synthesizes extended vocabulary: long enums stay select, enum arrays become multiselect, map objects become keyvalue', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        short_enum: { type: 'string', enum: ['a', 'b', 'c'] },
+        long_enum: { type: 'string', enum: ['a', 'b', 'c', 'd', 'e'] },
+        numeric_enum: { type: 'string', enum: [1, 2] },
+        flags: { type: 'array', items: { type: 'string', enum: ['fast', 'safe'] }, default: ['fast'] },
+        labels: { type: 'object', additionalProperties: true },
+        fixed: { type: 'object', properties: { name: { type: 'string' } } }
+      }
+    })
+    expect(components[0]).toMatchObject({ type: 'radio', binding: '/short_enum' })
+    expect(components[1]).toMatchObject({ type: 'select', binding: '/long_enum' })
+    expect(components[2]).toMatchObject({ type: 'select', binding: '/numeric_enum' })
+    expect(components[3]).toMatchObject({ type: 'multiselect', binding: '/flags', default: ['fast'], options: [{ value: 'fast', label: 'fast' }, { value: 'safe', label: 'safe' }] })
+    expect(components[4]).toMatchObject({ type: 'keyvalue', binding: '/labels' })
+    expect(components[5]).toMatchObject({ type: 'section', id: 'fixed' })
+  })
+
+  it('collects constraint errors through grid containers and new component types', () => {
+    const components = [
+      { type: 'grid', id: 'pair', columns: 2, children: [
+        { type: 'radio', id: 'mode', label: 'Mode', binding: '/mode', required: true, options: [{ value: 'a', label: 'A' }] },
+        { type: 'multiselect', id: 'flags', label: 'Flags', binding: '/flags', required: true, options: [{ value: 'x', label: 'X' }] }
+      ] },
+      { type: 'keyvalue', id: 'labels', label: 'Labels', binding: '/labels', required: true }
+    ]
+    const errors = collectDeclarativeConstraintErrors(components, {})
+    expect(errors).toEqual([
+      { pointer: '/mode', message: '此项为必填' },
+      { pointer: '/flags', message: '此项为必填' },
+      { pointer: '/labels', message: '此项为必填' }
+    ])
+    expect(collectDeclarativeConstraintErrors(components, { mode: 'a', flags: ['x'], labels: { k: 'v' } })).toEqual([])
   })
 
   it('strips writeOnly plaintext from config while keeping public values', () => {

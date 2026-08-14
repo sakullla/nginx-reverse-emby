@@ -140,12 +140,23 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
   // A JSON Schema node may omit `type` yet still carry object/array keywords.
   const type = field.type || (field.properties ? 'object' : field.items ? 'array' : undefined)
   switch (type) {
-    case 'object':
-      return [{ type: 'section', ...identity, ...annotation, children: synthesizeObjectProperties(field, pointer) }]
+    case 'object': {
+      const children = synthesizeObjectProperties(field, pointer)
+      if (children.length) return [{ type: 'section', ...identity, ...annotation, children }]
+      // A map-like object without fixed properties edits as key/value pairs.
+      const component = { type: 'keyvalue', ...identity, ...annotation, binding: pointer, required }
+      if (field.default !== undefined) component.default = field.default
+      return [component]
+    }
     case 'array': {
       const items = field.items
       if (items && typeof items === 'object' && !Array.isArray(items) && (items.type === 'object' || items.properties)) {
         return [{ type: 'array', ...identity, ...annotation, binding: pointer, required, children: synthesizeObjectProperties(items, '') }]
+      }
+      if (items && typeof items === 'object' && !Array.isArray(items) && items.type === 'string' && Array.isArray(items.enum) && items.enum.length && items.enum.every((item) => typeof item === 'string')) {
+        const component = { type: 'multiselect', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(items) }
+        if (field.default !== undefined) component.default = field.default
+        return [component]
       }
       return [{ type: 'array', ...identity, ...annotation, binding: pointer, required }]
     }
@@ -171,7 +182,10 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
     case 'string': {
       if (field.writeOnly === true) return [{ type: 'secret', ...identity, ...annotation, binding: pointer, required }]
       if (Array.isArray(field.enum) && field.enum.length) {
-        const component = { type: 'select', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }
+        // Short string enums read better as a radio group; long ones stay a select.
+        const allStrings = field.enum.every((item) => typeof item === 'string')
+        const kind = allStrings && field.enum.length <= 4 ? 'radio' : 'select'
+        const component = { type: kind, ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }
         if (field.default !== undefined) component.default = field.default
         return [component]
       }
@@ -248,7 +262,7 @@ export function collectDeclarativeConstraintErrors(components, model, options = 
       if (!component || typeof component !== 'object' || Array.isArray(component)) continue
       if (!evaluateCondition(component.visible_when, scope)) continue
       const full = basePointer + (component.binding || '')
-      if (component.type === 'section') {
+      if (component.type === 'section' || component.type === 'grid') {
         walk(component.children || [], basePointer, scope)
         continue
       }
