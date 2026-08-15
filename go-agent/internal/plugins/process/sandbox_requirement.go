@@ -18,6 +18,7 @@ const (
 	PermissionEventEmit                      SandboxPermission = "event.emit"
 	PermissionHTTPInspect                    SandboxPermission = "http.inspect"
 	PermissionHTTPRespond                    SandboxPermission = "http.respond"
+	PermissionHTTPOutbound                   SandboxPermission = SandboxPermission(pluginsdk.PermissionHTTPOutbound)
 	PermissionL4Inspect                      SandboxPermission = "l4.inspect"
 	PermissionL4Respond                      SandboxPermission = "l4.respond"
 	PermissionPolicyRead                     SandboxPermission = "policy.read"
@@ -34,14 +35,15 @@ const (
 	PermissionServiceRevocableResourceHandle SandboxPermission = SandboxPermission(pluginsdk.CapabilityServiceRevocableResourceHandle)
 	PermissionUIDynamicActions               SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamicActions)
 
-	ExtensionHTTPRequest       SandboxExtensionPoint = "http.request"
-	ExtensionHTTPResponse      SandboxExtensionPoint = "http.response"
-	ExtensionL4Accept          SandboxExtensionPoint = "l4.accept"
-	ExtensionPolicyProvider    SandboxExtensionPoint = "policy.provider"
-	ExtensionDNSProvider       SandboxExtensionPoint = "dns.provider"
-	ExtensionContainerProvider SandboxExtensionPoint = "container.provider"
-	ExtensionTunnelProvider    SandboxExtensionPoint = "tunnel.provider"
-	ExtensionUIRoute           SandboxExtensionPoint = "ui.route"
+	ExtensionHTTPRequest         SandboxExtensionPoint = "http.request"
+	ExtensionHTTPResponse        SandboxExtensionPoint = "http.response"
+	ExtensionHTTPBackendProvider SandboxExtensionPoint = SandboxExtensionPoint(pluginsdk.ExtensionHTTPBackendProvider)
+	ExtensionL4Accept            SandboxExtensionPoint = "l4.accept"
+	ExtensionPolicyProvider      SandboxExtensionPoint = "policy.provider"
+	ExtensionDNSProvider         SandboxExtensionPoint = "dns.provider"
+	ExtensionContainerProvider   SandboxExtensionPoint = "container.provider"
+	ExtensionTunnelProvider      SandboxExtensionPoint = "tunnel.provider"
+	ExtensionUIRoute             SandboxExtensionPoint = "ui.route"
 )
 
 type ManifestResourceBudget struct {
@@ -117,6 +119,9 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 	if _, ok := seenPermissions[PermissionDNSManage]; ok {
 		network = true
 	}
+	if _, ok := seenPermissions[PermissionHTTPOutbound]; ok {
+		network = true
+	}
 	requirement.networkBound = network
 	processes := budget.Concurrency + 4
 	if processes < 8 {
@@ -156,7 +161,7 @@ func validSandboxPackageDigest(value string) bool {
 
 func knownSandboxPermission(value SandboxPermission) bool {
 	switch value {
-	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond,
+	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
 		PermissionStorageRead, PermissionStorageWrite, PermissionContainerRead, PermissionContainerManage, PermissionDNSManage,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
@@ -169,7 +174,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 
 func knownSandboxExtension(value SandboxExtensionPoint) bool {
 	switch value {
-	case ExtensionHTTPRequest, ExtensionHTTPResponse, ExtensionL4Accept, ExtensionPolicyProvider,
+	case ExtensionHTTPRequest, ExtensionHTTPResponse, ExtensionHTTPBackendProvider, ExtensionL4Accept, ExtensionPolicyProvider,
 		ExtensionDNSProvider, ExtensionContainerProvider, ExtensionTunnelProvider, ExtensionUIRoute:
 		return true
 	default:

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const (
@@ -32,6 +35,7 @@ type attemptSecurity struct {
 	guestEndpoint       string
 	environment         []string
 	sandboxUID          int
+	providers           map[string]httpBackendProviderSecurity
 	cleanup             func() error
 }
 
@@ -121,6 +125,45 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT=unix:"+dial.Address)
 	} else {
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+dial.Network+":"+dial.Address)
+	}
+	if len(dial.HTTPBackendProviders) > 0 {
+		if runtime.GOOS != "linux" {
+			return security, errors.New("HTTP backend provider private Unix endpoints are unavailable on this platform")
+		}
+		if endpointHandle == nil {
+			endpointHandle, err = os.Open(endpointDirectory)
+			if err != nil {
+				return security, err
+			}
+		}
+		providerConfig := pluginsdk.HTTPBackendProviderEndpointConfig{Version: pluginsdk.HTTPBackendProviderEndpointConfigVersion}
+		security.providers = make(map[string]httpBackendProviderSecurity, len(dial.HTTPBackendProviders))
+		for index, identity := range dial.HTTPBackendProviders {
+			credentialBytes := make([]byte, 32)
+			if _, err := rand.Read(credentialBytes); err != nil {
+				return security, err
+			}
+			credential := hex.EncodeToString(credentialBytes)
+			socketName := fmt.Sprintf("h-%02d-%s.sock", index, credential[:12])
+			hostEndpoint := fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+			providerConfig.Providers = append(providerConfig.Providers, pluginsdk.HTTPBackendProviderEndpoint{
+				InstanceID: identity.InstanceID, ProviderID: identity.ProviderID, Generation: identity.Generation,
+				Endpoint: socketName, Credential: credential,
+			})
+			security.providers[identity.ProviderID] = httpBackendProviderSecurity{
+				identity: identity, endpoint: hostEndpoint, credential: credential,
+			}
+		}
+		payload, err := json.Marshal(providerConfig)
+		if err != nil {
+			return security, err
+		}
+		configFile := filepath.Join(credentialDirectory, "http-backend-providers.json")
+		if err := os.WriteFile(configFile, payload, 0o600); err != nil {
+			return security, err
+		}
+		environment = append(environment, pluginsdk.EnvHTTPBackendProviderConfigFile+"="+configFile)
+		environment = append(environment, pluginsdk.EnvHTTPBackendProviderEndpointDirectory+"="+endpointDirectory)
 	}
 	if strings.EqualFold(dial.Network, "tcp") {
 		writeTLS := ops.writeTLS

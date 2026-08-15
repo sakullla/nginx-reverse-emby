@@ -739,6 +739,7 @@ func prepareGenerationRuntime(
 		ingress:  ingressManager,
 		handlers: make(map[string]*generationHTTPHandler, len(specs)),
 	}
+	providers.providerTracker = runtime.tracker
 	for _, spec := range specs {
 		proxy, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
 		if err != nil {
@@ -966,17 +967,19 @@ type httpSessionTracker struct {
 
 type httpRequestSession struct {
 	tracker   *httpSessionTracker
+	module    string
 	entity    string
 	cancel    context.CancelFunc
 	external  *generation.SessionHandle
 	sessionID string
 
-	mu              sync.Mutex
-	hijacked        bool
-	connection      net.Conn
-	registrationErr error
-	finished        bool
-	once            sync.Once
+	mu               sync.Mutex
+	hijacked         bool
+	connection       net.Conn
+	registrationErr  error
+	finished         bool
+	once             sync.Once
+	registrationOnce sync.Once
 }
 
 type trackedHijackedConn struct {
@@ -999,10 +1002,17 @@ func newHTTPSessionTracker(generationID string, registrar HTTPSessionRegistrar, 
 }
 
 func (t *httpSessionTracker) start(entity string, cancel context.CancelFunc) *httpRequestSession {
+	return t.startModule("http", entity, cancel)
+}
+
+func (t *httpSessionTracker) startModule(moduleName, entity string, cancel context.CancelFunc) *httpRequestSession {
 	if t == nil {
 		return nil
 	}
-	session := &httpRequestSession{tracker: t, entity: entity, cancel: cancel}
+	if cancel == nil {
+		cancel = func() {}
+	}
+	session := &httpRequestSession{tracker: t, module: moduleName, entity: entity, cancel: cancel}
 	t.mu.Lock()
 	if t.active == 0 {
 		t.idle = make(chan struct{})
@@ -1050,24 +1060,26 @@ func (t *httpSessionTracker) register(session *httpRequestSession) {
 	if t == nil || t.registrar == nil || session == nil {
 		return
 	}
-	handle, err := t.registrar.RegisterSession(
-		t.generation,
-		generation.EntityKey{Module: "http", ID: session.entity},
-		session.sessionID,
-		session,
-	)
-	session.mu.Lock()
-	session.registrationErr = err
-	finished := session.finished
-	if err == nil && !finished {
-		session.external = handle
-	}
-	session.mu.Unlock()
-	if err != nil {
-		log.Printf("[proxy] register HTTP session %s/%s: %v", t.generation, session.sessionID, err)
-	} else if finished && handle != nil {
-		handle.Finish()
-	}
+	session.registrationOnce.Do(func() {
+		handle, err := t.registrar.RegisterSession(
+			t.generation,
+			generation.EntityKey{Module: session.module, ID: session.entity},
+			session.sessionID,
+			session,
+		)
+		session.mu.Lock()
+		session.registrationErr = err
+		finished := session.finished
+		if err == nil && !finished {
+			session.external = handle
+		}
+		session.mu.Unlock()
+		if err != nil {
+			log.Printf("[proxy] register HTTP session %s/%s: %v", t.generation, session.sessionID, err)
+		} else if finished && handle != nil {
+			handle.Finish()
+		}
+	})
 }
 
 func (t *httpSessionTracker) requestDone(session *httpRequestSession) {

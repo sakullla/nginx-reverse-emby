@@ -11,6 +11,21 @@ func testSandboxRequirement(budget Budget, privileged, networkBound bool) Sandbo
 	return SandboxRequirement{packageDigest: "test-package", budget: budget, privileged: privileged, networkBound: networkBound}
 }
 
+func TestHTTPBackendProviderRequirementEnablesBoundedOutboundNetwork(t *testing.T) {
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest:   strings.Repeat("a", 64),
+		Permissions:     []SandboxPermission{PermissionHTTPOutbound},
+		ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPBackendProvider},
+		ResourceBudget:  ManifestResourceBudget{TimeoutMS: 1000, MemoryBytes: 64 << 20, Concurrency: 8, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requirement.Budget().Network {
+		t.Fatal("HTTP backend provider outbound permission did not enable the signed network budget")
+	}
+}
+
 func canonicalNonprivilegedRequirement(t *testing.T, digest string) SandboxRequirement {
 	t.Helper()
 	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{

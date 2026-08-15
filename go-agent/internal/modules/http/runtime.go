@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -376,6 +378,13 @@ func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
 	}
 	validBackends := 0
 	for _, entry := range rule.Backends {
+		if entry.Kind == pluginsdk.HTTPBackendKindPluginProvider {
+			if err := entry.Validate(); err != nil {
+				return runtimeRuleBinding{}, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
+			}
+			validBackends++
+			continue
+		}
 		rawURL := strings.TrimSpace(entry.URL)
 		if rawURL == "" {
 			continue

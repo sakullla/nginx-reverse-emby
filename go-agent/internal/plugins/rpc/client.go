@@ -31,12 +31,13 @@ const (
 )
 
 type DialConfig struct {
-	Network     string
-	Address     string
-	Cookie      string
-	TLSConfig   *tls.Config
-	Deadline    time.Duration
-	RuntimeRoot string
+	Network              string
+	Address              string
+	Cookie               string
+	TLSConfig            *tls.Config
+	Deadline             time.Duration
+	RuntimeRoot          string
+	HTTPBackendProviders []HTTPBackendProviderIdentity
 }
 
 type Client struct {

@@ -41,6 +41,43 @@ func TestDrainControllerAppliesImmediatelyAndNaturallyDrainsPrevious(t *testing.
 	}
 }
 
+func TestDrainControllerProgressiveReplacementHasNoFixedForceTimer(t *testing.T) {
+	clock := newFakeClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
+	first := &recordingResource{}
+	if err := controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: first}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := controller.RegisterSession("g1", EntityKey{Module: "http-provider", ID: "rule-1:instance:default"}, "stream", &recordingSession{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinary := &recordingSession{}
+	ordinaryHandle, err := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "rule-2"}, "hung", ordinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, -time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Minute)
+	if first.destroyed != 0 || stateOf(t, controller.Snapshot(), "g1") != model.GenerationDrainStateDraining {
+		t.Fatal("progressive provider stream was forced by elapsed replacement time")
+	}
+	if ordinary.closed != 1 {
+		t.Fatalf("ordinary hung session closes = %d, want 1", ordinary.closed)
+	}
+	ordinaryHandle.Finish()
+	handle.Finish()
+	deadline := time.Now().Add(time.Second)
+	for first.destroyed == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if first.destroyed != 1 {
+		t.Fatal("progressive provider generation did not clean up after its final lease")
+	}
+}
+
 func TestNaturalDrainCleanupDoesNotBlockLastSessionFinish(t *testing.T) {
 	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
 	resource := &blockingDestroyResource{entered: make(chan struct{}), release: make(chan struct{})}

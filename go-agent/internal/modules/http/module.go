@@ -13,6 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
 
 type Config struct {
@@ -105,6 +106,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 			module.ProviderEgressResolver,
 			module.ProviderPolicyEvaluator,
 			module.ProviderTrafficSink,
+			rpc.ProviderHTTPBackendProviders,
 		},
 	}
 }
@@ -151,6 +153,8 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if err != nil {
 		return nil, err
 	}
+	providers.providerGeneration = generationContext.ID()
+	providers.providerSessions = m.sessions
 
 	m.mu.Lock()
 	previousRuntime := m.runtime

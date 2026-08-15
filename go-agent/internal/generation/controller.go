@@ -130,7 +130,11 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		previous.status.State = model.GenerationDrainStateDraining
 		previous.status.DrainStartedAt = now
 		previous.revoked = revokedEntities(changes)
-		if timeout <= 0 {
+		progressiveProviderDrain := timeout < 0
+		if progressiveProviderDrain {
+			timeout = -timeout
+		}
+		if timeout == 0 {
 			timeout = time.Minute
 		}
 		previous.cleanupTimeout = timeout
@@ -140,7 +144,13 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 			forceCtx = context.Background()
 		}
 		forceCtx = context.WithoutCancel(forceCtx)
-		previous.timer = c.clock.AfterFunc(timeout, func() { _ = c.force(forceCtx, id, model.GenerationForceReasonTimeout) })
+		previous.timer = c.clock.AfterFunc(timeout, func() {
+			if progressiveProviderDrain {
+				_ = c.forceNonProviderSessions(forceCtx, id)
+				return
+			}
+			_ = c.force(forceCtx, id, model.GenerationForceReasonTimeout)
+		})
 	}
 	c.mu.Unlock()
 	var drainErr error
@@ -151,6 +161,24 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		c.onEmpty(previous.generation.ID)
 	}
 	return errors.Join(drainErr, c.enforceLimit(ctx))
+}
+
+func (c *DrainController) forceNonProviderSessions(ctx context.Context, id string) error {
+	c.mu.Lock()
+	entry := c.entries[id]
+	if entry == nil || entry.released || entry.status.State != model.GenerationDrainStateDraining {
+		c.mu.Unlock()
+		return nil
+	}
+	entry.timer = nil
+	c.mu.Unlock()
+	count, err := c.registry.ForceGenerationExceptModule(ctx, id, "http-provider", model.GenerationForceReasonTimeout)
+	c.mu.Lock()
+	entry.status.ForcedSessionCount += count
+	entry.status.SessionCount = c.registry.GenerationCount(id)
+	c.mu.Unlock()
+	c.onEmpty(id)
+	return err
 }
 
 func (c *DrainController) retireActive(ctx context.Context, id string, timeout time.Duration) error {

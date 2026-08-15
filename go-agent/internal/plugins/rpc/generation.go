@@ -16,6 +16,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const GenerationCapability = "plugin_generation_v1"
@@ -67,10 +68,12 @@ func (m *GenerationModule) RuntimeLogFenceRetirementReady() bool {
 func (*GenerationModule) Name() string { return "plugin-rpc" }
 
 func (*GenerationModule) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{Name: "plugin-rpc"}
+	return module.ModuleDescriptor{Name: "plugin-rpc", Provides: []module.ProviderRef{ProviderHTTPBackendProviders}}
 }
 
-func (*GenerationModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+func (*GenerationModule) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(ProviderHTTPBackendProviders, NewHTTPBackendProviderSet(nil))
+}
 
 func (*GenerationModule) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: GenerationCapability, Enabled: true, Metadata: map[string]string{"abi": model.PluginRPCABIV1}}}
@@ -179,6 +182,7 @@ type generationTransaction struct {
 	retirementIntentID         string
 	retirementIntentStaged     bool
 	committedRetirementIntents []string
+	providerHandles            []*HTTPBackendProviderHandle
 
 	mu        sync.Mutex
 	published bool
@@ -218,6 +222,24 @@ func (t *generationTransaction) Ready(_ context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (t *generationTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	if t == nil {
+		return reg.Provide(ProviderHTTPBackendProviders, NewHTTPBackendProviderSet(nil))
+	}
+	handles := make([]*HTTPBackendProviderHandle, 0)
+	for index := range t.candidates {
+		candidate := &t.candidates[index]
+		if candidate.instance == nil {
+			continue
+		}
+		for _, descriptor := range candidate.spec.HTTPBackendProviders {
+			handles = append(handles, newHTTPBackendProviderHandle(candidate.instance, descriptor.ID))
+		}
+	}
+	t.providerHandles = handles
+	return reg.Provide(ProviderHTTPBackendProviders, NewHTTPBackendProviderSet(handles))
 }
 
 func (t *generationTransaction) PrepareGenerationPublication(ctx context.Context) error {
@@ -349,8 +371,13 @@ func (t *generationTransaction) Destroy(ctx context.Context) error {
 		abortIntentID = t.retirementIntentID
 	}
 	t.candidates = nil
+	handles := append([]*HTTPBackendProviderHandle(nil), t.providerHandles...)
+	t.providerHandles = nil
 	t.mu.Unlock()
 	var destroyErr error
+	for _, handle := range handles {
+		destroyErr = errors.Join(destroyErr, handle.drain(ctx))
+	}
 	for _, instance := range instances {
 		if t.host != nil {
 			destroyErr = errors.Join(destroyErr, t.host.DestroyCandidate(instance))
@@ -549,8 +576,10 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 			GOOS: generation.Artifact.GOOS, GOARCH: generation.Artifact.GOARCH},
 		Requirement: requirement, Scopes: scopes, SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
 		Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
-		Process: pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute},
-		Dial:    DialConfig{Network: generationEndpointNetwork(), Deadline: deadline},
+		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), generation.HTTPBackendProviders...),
+		Process:              pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute},
+		Dial: DialConfig{Network: generationEndpointNetwork(), Deadline: deadline,
+			HTTPBackendProviders: httpBackendProviderIdentities(generation.InstanceID, generationID, generation.HTTPBackendProviders)},
 	}, nil
 }
 

@@ -105,6 +105,18 @@ func linuxChildEnvironmentForIsolation(environment []string, endpointFD, credent
 			if namespaces {
 				result[index] = key + "=/run/nre-plugin-credentials/server.key"
 			}
+		case "NRE_PLUGIN_HTTP_BACKEND_PROVIDER_CONFIG_FILE":
+			if namespaces {
+				result[index] = key + "=/run/nre-plugin-credentials/http-backend-providers.json"
+			} else {
+				result[index] = key + "=/proc/self/fd/" + strconv.Itoa(credentialFD) + "/http-backend-providers.json"
+			}
+		case "NRE_PLUGIN_HTTP_BACKEND_PROVIDER_ENDPOINT_DIRECTORY":
+			if namespaces {
+				result[index] = key + "=/run/nre-plugin"
+			} else {
+				result[index] = key + "=/proc/self/fd/" + strconv.Itoa(endpointFD)
+			}
 		}
 	}
 	if !tempSet {

@@ -153,10 +153,25 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 		if drainTimeout <= 0 {
 			drainTimeout = m.timeout
 		}
+		if generationUsesProgressiveDrain(cutover.Previous) {
+			drainTimeout = -drainTimeout
+		}
 		cutover.DrainErr = m.drain.Activate(ctx, cutover, generationEntityChanges(previous, next), drainTimeout)
 	}
 	m.endPublication(publicationDone)
 	return cutover, nil
+}
+
+func generationUsesProgressiveDrain(view *module.GenerationView) bool {
+	if view == nil {
+		return false
+	}
+	provider, found := view.Resolve(module.ProviderRef("plugins.http.backend-provider"))
+	if !found {
+		return false
+	}
+	progressive, ok := provider.(interface{ ProgressiveDrain() bool })
+	return ok && progressive.ProgressiveDrain()
 }
 
 func (m *GenerationManager) ReconcileTrafficRuntime(ctx context.Context, config model.AgentConfig) (bool, error) {

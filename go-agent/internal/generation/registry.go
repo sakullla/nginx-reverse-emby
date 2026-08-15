@@ -182,6 +182,12 @@ func (r *SessionRegistry) ForceEntities(ctx context.Context, generation string, 
 func (r *SessionRegistry) ForceGeneration(ctx context.Context, generation, reason string) (int, error) {
 	return r.force(ctx, generation, true, func(EntityKey) (string, bool) { return reason, true })
 }
+
+func (r *SessionRegistry) ForceGenerationExceptModule(ctx context.Context, generation, preservedModule, reason string) (int, error) {
+	return r.force(ctx, generation, true, func(entity EntityKey) (string, bool) {
+		return reason, entity.Module != preservedModule
+	})
+}
 func (r *SessionRegistry) force(ctx context.Context, generation string, terminal bool, selectReason func(EntityKey) (string, bool)) (int, error) {
 	if r == nil {
 		return 0, nil

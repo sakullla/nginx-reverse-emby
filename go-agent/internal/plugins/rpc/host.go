@@ -92,6 +92,7 @@ type HostCandidate struct {
 	Config                                                                      []byte
 	Process                                                                     pluginprocess.InstanceSpec
 	Dial                                                                        DialConfig
+	HTTPBackendProviders                                                        []pluginsdk.HTTPBackendProviderDescriptor
 }
 
 type RuntimeStatus struct {
@@ -121,6 +122,7 @@ type hostAttempt struct {
 	cleanupMu   sync.Mutex
 	cleanupDone bool
 	cleanupErr  error
+	providers   map[string]*httpBackendProviderAttempt
 }
 
 type HostedInstance struct {
@@ -474,6 +476,9 @@ func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedIn
 	if err := processAttemptError(attempt.handle); err != nil {
 		return err
 	}
+	if err := attempt.readyHTTPBackendProviders(ctx); err != nil {
+		return err
+	}
 	instance.mu.Lock()
 	instance.activated = true
 	instance.status.State = "ready"
@@ -623,6 +628,11 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		h.afterStartOnce()
 	}
 	attempt.handle = handle
+	processStatus := handle.Status()
+	attempt.providers = make(map[string]*httpBackendProviderAttempt, len(security.providers))
+	for providerID, providerSecurity := range security.providers {
+		attempt.providers[providerID] = newHTTPBackendProviderAttempt(providerSecurity, processStatus.PID, security.sandboxUID)
+	}
 	if err := processAttemptError(handle); err != nil {
 		return attempt, err
 	}
@@ -673,6 +683,9 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		}
 		if err := activated.Validate(); err != nil {
 			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+		}
+		if err := attempt.readyHTTPBackendProviders(ctx); err != nil {
+			return attempt, err
 		}
 	}
 	if err := processAttemptError(handle); err != nil {
@@ -1365,6 +1378,7 @@ func (i *HostedInstance) stopAttempt(ctx context.Context, attempt *hostAttempt, 
 	}
 	processErr := i.supervisor.Stop(ctx, i.candidate.Process.ID)
 	if attemptProcessDone(attempt) {
+		closeProviderAttempts(attempt)
 		attempt.closeTransport()
 		attempt.cleanupMu.Lock()
 		if !attempt.cleanupDone {

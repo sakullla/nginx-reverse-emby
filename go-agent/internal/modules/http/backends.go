@@ -13,6 +13,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
@@ -122,6 +125,8 @@ type httpCandidate struct {
 	backendHost           string
 	backendObservationKey string
 	relayChain            []int
+	provider              HTTPBackendProvider
+	providerKey           string
 }
 
 func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
@@ -132,7 +137,10 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	placeholders := make([]model.Candidate, 0, len(e.backends))
 	indexesByID := make(map[string][]int, len(e.backends))
 	for i := range e.backends {
-		backendID := model.StableBackendID(e.backends[i].target.String())
+		backendID := e.backends[i].providerKey
+		if backendID == "" {
+			backendID = model.StableBackendID(e.backends[i].target.String())
+		}
 		placeholders = append(placeholders, model.Candidate{Address: backendID})
 		indexesByID[backendID] = append(indexesByID[backendID], i)
 	}
@@ -148,6 +156,11 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		backendIndex := indexes[0]
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := e.backends[backendIndex]
+		if backend.provider != nil {
+			out = append(out, httpCandidate{target: cloneURL(backend.target), backendHost: backend.backendHost,
+				backendObservationKey: backend.providerKey, provider: backend.provider, providerKey: backend.providerKey})
+			continue
+		}
 		backendObservationKey := model.BackendObservationKey(e.selectionScope, model.StableBackendID(backend.target.String()))
 		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
@@ -281,10 +294,23 @@ func httpRuleEgressProfile(rule model.HTTPRule, dialer moduleegress.Dialer) (mod
 	return profile, nil
 }
 
-func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
+func parseHTTPBackends(rule model.HTTPRule, providers HTTPBackendProviderResolver) ([]httpBackend, error) {
 	rawBackends := rule.Backends
 	backendsOut := make([]httpBackend, 0, len(rawBackends))
 	for _, entry := range rawBackends {
+		if entry.Kind == pluginsdk.HTTPBackendKindPluginProvider {
+			if entry.PluginProvider == nil || providers == nil {
+				return nil, errors.New("HTTP backend provider generation is unavailable")
+			}
+			handle, found := providers.Resolve(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			if !found || handle.Generation() == "" {
+				return nil, errors.New("HTTP backend provider handle is unavailable")
+			}
+			key := pluginrpc.ProviderObservationKey(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			backendsOut = append(backendsOut, httpBackend{target: pluginrpc.ProviderSyntheticURL(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID),
+				backendHost: "", provider: handle, providerKey: key})
+			continue
+		}
 		rawURL := strings.TrimSpace(entry.URL)
 		if rawURL == "" {
 			continue
