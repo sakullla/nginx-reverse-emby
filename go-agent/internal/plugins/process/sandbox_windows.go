@@ -26,12 +26,15 @@ const (
 )
 
 func newPlatformSandbox() Sandbox         { return windowsJobSandbox{} }
-func (windowsJobSandbox) Available() bool { return true }
+func (windowsJobSandbox) Available() bool { return false }
 func (windowsJobSandbox) Provider() string {
 	return "windows-restricted-token-job-object"
 }
 func (windowsJobSandbox) Validate(security Security) error {
-	return validateWindowsDefenseBudget(security)
+	if err := validateWindowsDefenseBudget(security); err != nil {
+		return err
+	}
+	return errors.New("windows plugin filesystem and network isolation is unavailable")
 }
 func validateWindowsDefenseBudget(security Security) error {
 	budget := security.Requirement.Budget()
@@ -61,6 +64,13 @@ func effectiveWindowsBudget(security Security) Budget {
 	return budget
 }
 func (windowsJobSandbox) Configure(cmd *exec.Cmd, security Security) (func() error, func() error, func(int) error, error) {
+	if err := (windowsJobSandbox{}).Validate(security); err != nil {
+		return nil, nil, nil, err
+	}
+	return configureWindowsDefenseInDepth(cmd, security)
+}
+
+func configureWindowsDefenseInDepth(cmd *exec.Cmd, security Security) (func() error, func() error, func(int) error, error) {
 	if cmd == nil {
 		return nil, nil, nil, errors.New("plugin process command is required")
 	}

@@ -21,6 +21,16 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
+func newTestPluginHost(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer) (*Host, error) {
+	host, err := New(runtimeRoot, launcher, dialer, logs)
+	if host != nil {
+		host.authorize = func(candidate Candidate) error {
+			return candidate.Requirement.validatePackageDigest(candidate.Identity.PackageDigest)
+		}
+	}
+	return host, err
+}
+
 type testProcess struct {
 	done chan error
 	once sync.Once
@@ -253,7 +263,7 @@ func TestPluginHostRedeemsConfigOnlyAtLifecycleBoundary(t *testing.T) {
 	}
 	var configs [][]byte
 	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, configs: &configs}}}
-	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +348,7 @@ func TestPluginHostHandshakeFailurePreservesActiveInstance(t *testing.T) {
 	}
 	digest := sha256.Sum256(payload)
 	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}, testRPC{abi: "nre:rpc/v2"}}}
-	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +381,7 @@ func TestPluginHostRejectsOldActionGuestBeforeActivation(t *testing.T) {
 	candidate := newBackendHostCandidate(t, root)
 	candidate.Identity.Scopes = []string{string(pluginsdk.CapabilityUIDynamicActions), string(pluginsdk.CapabilityServiceRevocableResourceHandle)}
 	dialer := &testDialer{clients: []RPCClient{oldActionRPC{testRPC{abi: pluginsdk.RPCABIV1}}}}
-	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +403,7 @@ func TestPluginHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.
 	}
 	digest := sha256.Sum256(payload)
 	process := &retryBackendKillProcess{done: make(chan error, 1), failures: 1}
-	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, failingDialer{err: errors.New("dial failed")}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, failingDialer{err: errors.New("dial failed")}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +447,7 @@ func TestPluginHostProvisionFailureRetainsCredentialOwnerUntilCloseRetry(t *test
 	root := t.TempDir()
 	candidate := newBackendHostCandidate(t, root)
 	candidate.Endpoint = Endpoint{Network: "tcp", Address: "127.0.0.1:12345"}
-	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, &testDialer{}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), testLauncher{}, &testDialer{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +501,7 @@ func TestPluginHostPrestartFailureRetainsCleanupOwnerUntilCloseRetry(t *testing.
 	root := t.TempDir()
 	candidate := newBackendHostCandidate(t, root)
 	launcher := &retryPrestartCleanupLauncher{}
-	host, err := New(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +534,7 @@ func TestPluginHostCredentialCleanupFailureRetainsOwnerUntilCloseRetry(t *testin
 	}
 	digest := sha256.Sum256(payload)
 	encoded := hex.EncodeToString(digest[:])
-	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), testLauncher{}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +580,7 @@ func TestPluginHostSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T
 	digest := sha256.Sum256(payload)
 	encoded := hex.EncodeToString(digest[:])
 	process := &cleanupRetryBackendProcess{testProcess: &testProcess{done: make(chan error, 1)}}
-	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +617,7 @@ func TestPluginHostNaturalExitSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t
 	digest := sha256.Sum256(payload)
 	encoded := hex.EncodeToString(digest[:])
 	process := &cleanupRetryBackendProcess{testProcess: &testProcess{done: make(chan error, 1)}}
-	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +676,7 @@ func TestPluginHostPrestartCleanupFailureIsRetriedByClose(t *testing.T) {
 	digest := sha256.Sum256(payload)
 	encoded := hex.EncodeToString(digest[:])
 	launcher := &prestartCleanupLauncher{}
-	host, err := New(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -751,7 +761,7 @@ func TestPluginHostCrashRestartsThroughHandshakeAndOpensCircuit(t *testing.T) {
 	var handshakes atomic.Int32
 	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, handshakes: &handshakes}, testRPC{abi: pluginsdk.RPCABIV1, handshakes: &handshakes}}}
 	launcher := &queuedLauncher{}
-	host, err := New(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,7 +822,7 @@ func TestPluginHostStopAndCloseJoinRestartWork(t *testing.T) {
 				launcher := &blockedRestartLauncher{blocked: make(chan struct{})}
 				var activations, observations atomic.Int32
 				dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, activations: &activations}}}
-				host, err := New(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
+				host, err := newTestPluginHost(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -881,7 +891,7 @@ func TestPluginHostCloseCancelsAndJoinsBlockedInitialLaunch(t *testing.T) {
 	digest := sha256.Sum256(payload)
 	encoded := hex.EncodeToString(digest[:])
 	launcher := &blockedInitialLauncher{started: make(chan struct{}), returned: make(chan struct{})}
-	host, err := New(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), launcher, &testDialer{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -926,7 +936,7 @@ func TestPluginHostPublishKeepsNewGenerationWhenOldCleanupFails(t *testing.T) {
 	digest := sha256.Sum256(payload)
 	stopBlock := make(chan struct{})
 	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1, stopBlock: stopBlock, stopErr: errors.New("old stop failed")}, testRPC{abi: pluginsdk.RPCABIV1}}, closers: []io.Closer{&unblockCloser{closed: stopBlock}, testCloser{}}}
-	host, err := New(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), testLauncher{}, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -970,7 +980,7 @@ func TestPluginHostDrainingGenerationKillFailureIsRetriedByClose(t *testing.T) {
 	newProcess := &testProcess{done: make(chan error, 1)}
 	launcher := &processQueueLauncher{processes: []Process{oldProcess, newProcess}}
 	dialer := &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}, testRPC{abi: pluginsdk.RPCABIV1}}}
-	host, err := New(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), launcher, dialer, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1152,7 +1162,7 @@ func TestPluginHostStopResultFencesObserverAckToExactInstance(t *testing.T) {
 	root := t.TempDir()
 	candidate := newBackendHostCandidate(t, root)
 	process := &testProcess{done: make(chan error, 1)}
-	host, err := New(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
+	host, err := newTestPluginHost(filepath.Join(root, "runtime"), singleProcessLauncher{process: process}, &testDialer{clients: []RPCClient{testRPC{abi: pluginsdk.RPCABIV1}}}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

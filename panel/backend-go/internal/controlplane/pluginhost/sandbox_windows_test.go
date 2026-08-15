@@ -19,10 +19,7 @@ func TestPluginHostWindowsSandboxStartsSuspended(t *testing.T) {
 	}
 }
 
-func TestPluginHostWindowsSandboxLiveProcess(t *testing.T) {
-	if os.Getenv("NRE_TEST_WINDOWS_SANDBOX") != "1" {
-		t.Skip("set NRE_TEST_WINDOWS_SANDBOX=1 to exercise the restricted process")
-	}
+func TestPluginHostWindowsSandboxLiveProcessFailsClosed(t *testing.T) {
 	deniedPath := filepath.Join(t.TempDir(), "must-not-write")
 	validated := validatedSignedSandboxPackage(t, "agent.read", "http.request")
 	requirement, err := SandboxRequirementFromValidatedPackage(validated)
@@ -30,15 +27,9 @@ func TestPluginHostWindowsSandboxLiveProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := Candidate{Identity: Identity{PackageDigest: validated.Digest}, Requirement: requirement, attemptEnvironment: []string{"NRE_PLUGIN_TEST=1"}}
-	process, err := (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostWindowsSandboxGuest$"}, []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath}, io.Discard, candidate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(deniedPath); !os.IsNotExist(err) {
-		t.Fatal("restricted guest wrote host-private file")
+	_, err = (ExecLauncher{}).Start(context.Background(), os.Args[0], []string{"-test.run=^TestPluginHostWindowsSandboxGuest$"}, []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath}, io.Discard, candidate)
+	if err == nil {
+		t.Fatal("Windows incomplete filesystem/network isolation admitted a plugin")
 	}
 }
 
@@ -51,7 +42,7 @@ func TestPluginHostWindowsSandboxGuest(t *testing.T) {
 	}
 }
 
-func TestPluginHostWindowsSandboxAdmitsSignedRequirementsWithoutGrant(t *testing.T) {
+func TestPluginHostWindowsSandboxFailsClosedForSignedRequirements(t *testing.T) {
 	for name, permission := range map[string]string{"ordinary": "agent.read", "privileged": "secret.use"} {
 		t.Run(name, func(t *testing.T) {
 			validated := validatedSignedSandboxPackage(t, permission, "http.request")
@@ -60,12 +51,12 @@ func TestPluginHostWindowsSandboxAdmitsSignedRequirementsWithoutGrant(t *testing
 				t.Fatal(err)
 			}
 			candidate := Candidate{Identity: Identity{PackageDigest: validated.Digest}, Requirement: requirement}
-			if err := authorizeSandbox(candidate); err != nil {
-				t.Fatalf("signed requirement was rejected by Windows isolation: %v", err)
+			if err := authorizeSandbox(candidate); err == nil {
+				t.Fatal("incomplete Windows isolation admitted a signed requirement")
 			}
 			candidate.Grants = []string{UnsandboxedGrant}
-			if err := authorizeSandbox(candidate); err != nil {
-				t.Fatalf("legacy grant changed Windows isolation admission: %v", err)
+			if err := authorizeSandbox(candidate); err == nil {
+				t.Fatal("legacy grant bypassed Windows fail-closed admission")
 			}
 		})
 	}

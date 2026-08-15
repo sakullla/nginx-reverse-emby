@@ -16,7 +16,10 @@ var backendCreateRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewP
 type backendJobCPU struct{ Flags, Rate uint32 }
 
 func validatePlatformSandbox(c Candidate) error {
-	return validateWindowsDefenseBudget(c)
+	if err := validateWindowsDefenseBudget(c); err != nil {
+		return err
+	}
+	return errors.New("windows control-plane plugin filesystem and network isolation is unavailable")
 }
 func validateWindowsDefenseBudget(c Candidate) error {
 	budget := c.Requirement.Budget()
@@ -29,6 +32,13 @@ func validateWindowsDefenseBudget(c Candidate) error {
 	return nil
 }
 func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func() error, func(int) error, error) {
+	if err := validatePlatformSandbox(c); err != nil {
+		return nil, nil, nil, err
+	}
+	return configureWindowsDefenseInDepth(cmd, c)
+}
+
+func configureWindowsDefenseInDepth(cmd *exec.Cmd, c Candidate) (func() error, func() error, func(int) error, error) {
 	if err := validateWindowsDefenseBudget(c); err != nil {
 		return nil, nil, nil, err
 	}

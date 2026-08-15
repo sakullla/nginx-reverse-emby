@@ -21,6 +21,7 @@ type Security struct {
 	Grants                                                []string
 	EndpointDirectory, CredentialDirectory, GuestEndpoint string
 	ArtifactDigest, Generation, CookieDigest              string
+	SandboxUID                                            int
 }
 
 type SandboxDecision struct {

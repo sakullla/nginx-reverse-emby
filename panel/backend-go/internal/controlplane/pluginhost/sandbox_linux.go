@@ -25,15 +25,23 @@ import (
 )
 
 const (
-	backendCgroupRoot       = "/sys/fs/cgroup"
-	backendLauncherChildArg = "--nre-control-plugin-launcher-child-v1"
-	backendLauncherVersion  = 1
+	backendCgroupRoot        = "/sys/fs/cgroup"
+	backendLauncherChildArg  = "--nre-control-plugin-launcher-child-v1"
+	backendNamespaceProbeArg = "--nre-control-plugin-namespace-probe-v1"
+	backendLauncherVersion   = 2
 )
+
+type backendSandboxOps struct {
+	prepareCgroup   func(ProcessBudget) (string, *os.File, error)
+	openLauncher    func() (*os.File, error)
+	probeNamespaces func(*os.File, bool, int) bool
+}
 
 type backendFDIdentity struct {
 	Device uint64 `json:"device"`
 	Inode  uint64 `json:"inode"`
 	Mode   uint32 `json:"mode"`
+	Size   int64  `json:"size"`
 }
 
 var errBackendCgroupUnavailable = errors.New("control-plane plugin cgroup v2 controllers are unavailable")
@@ -42,12 +50,16 @@ type backendLaunchProtocol struct {
 	Version                int               `json:"version"`
 	Generation             string            `json:"generation"`
 	ArtifactDigest         string            `json:"artifact_digest"`
+	LauncherDigest         string            `json:"launcher_digest"`
 	CookieDigest           string            `json:"cookie_digest,omitempty"`
 	GenerationCookieDigest string            `json:"generation_cookie_digest,omitempty"`
 	Artifact               backendFDIdentity `json:"artifact"`
+	Launcher               backendFDIdentity `json:"launcher"`
 	Endpoint               backendFDIdentity `json:"endpoint,omitempty"`
 	Credential             backendFDIdentity `json:"credential,omitempty"`
 	ArtifactFD             int               `json:"artifact_fd"`
+	ArtifactPath           string            `json:"artifact_path,omitempty"`
+	LauncherFD             int               `json:"launcher_fd"`
 	EndpointFD             int               `json:"endpoint_fd,omitempty"`
 	CredentialFD           int               `json:"credential_fd,omitempty"`
 	Arguments              []string          `json:"arguments,omitempty"`
@@ -55,9 +67,19 @@ type backendLaunchProtocol struct {
 	Budget                 ProcessBudget     `json:"budget"`
 	EndpointRequired       bool              `json:"endpoint_required,omitempty"`
 	Namespaces             bool              `json:"namespaces"`
+	SandboxRoot            string            `json:"sandbox_root,omitempty"`
+	SandboxUID             int               `json:"sandbox_uid,omitempty"`
+	ParentNamespaces       map[string]string `json:"parent_namespaces,omitempty"`
+	HardRlimits            bool              `json:"hard_rlimits,omitempty"`
 }
 
 func init() {
+	if len(os.Args) == 2 && os.Args[1] == backendNamespaceProbeArg {
+		if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+			os.Exit(126)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) == 3 && os.Args[1] == backendLauncherChildArg {
 		protocolFD, err := strconv.Atoi(os.Args[2])
 		if err == nil {
@@ -85,10 +107,14 @@ func validatePlatformSandbox(candidate Candidate) error {
 }
 
 func configurePlatformSandbox(cmd *exec.Cmd, candidate Candidate) (func() error, func() error, func(int) error, error) {
-	return configurePlatformSandboxWithCgroup(cmd, candidate, prepareBackendCgroup)
+	return configurePlatformSandboxWithOps(cmd, candidate, backendSandboxOps{prepareCgroup: prepareBackendCgroup})
 }
 
 func configurePlatformSandboxWithCgroup(cmd *exec.Cmd, candidate Candidate, prepareCgroup func(ProcessBudget) (string, *os.File, error)) (func() error, func() error, func(int) error, error) {
+	return configurePlatformSandboxWithOps(cmd, candidate, backendSandboxOps{prepareCgroup: prepareCgroup})
+}
+
+func configurePlatformSandboxWithOps(cmd *exec.Cmd, candidate Candidate, ops backendSandboxOps) (func() error, func() error, func(int) error, error) {
 	if cmd == nil {
 		return nil, nil, nil, errors.New("control-plane plugin command is required")
 	}
@@ -98,9 +124,24 @@ func configurePlatformSandboxWithCgroup(cmd *exec.Cmd, candidate Candidate, prep
 	if len(cmd.ExtraFiles) != 0 {
 		return nil, nil, nil, errors.New("control-plane plugin inherited descriptors are reserved by the launcher")
 	}
-	artifact, err := os.Open(cmd.Path)
+	sourceArtifact, err := os.Open(cmd.Path)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open verified control-plane plugin artifact: %w", err)
+	}
+	sourceIdentity, err := backendFileIdentity(sourceArtifact)
+	if err != nil || sourceIdentity.Mode&unix.S_IFMT != unix.S_IFREG || sourceIdentity.Mode&0o222 != 0 {
+		_ = sourceArtifact.Close()
+		return nil, nil, nil, errors.New("verified control-plane plugin artifact must be a read-only regular file")
+	}
+	artifactDigest, err := backendDigestOpenFile(sourceArtifact)
+	if err != nil || artifactDigest != candidate.Artifact.SHA256 {
+		_ = sourceArtifact.Close()
+		return nil, nil, nil, errors.New("verified control-plane plugin artifact digest changed before launch")
+	}
+	artifact, artifactPath, err := createBackendArtifactImage(sourceArtifact)
+	_ = sourceArtifact.Close()
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	files := []*os.File{artifact}
 	closeFiles := func() error {
@@ -111,16 +152,12 @@ func configurePlatformSandboxWithCgroup(cmd *exec.Cmd, candidate Candidate, prep
 		return result
 	}
 	fail := func(err error) (func() error, func() error, func(int) error, error) {
-		return nil, nil, nil, errors.Join(err, closeFiles())
+		return nil, nil, nil, errors.Join(err, closeFiles(), os.Remove(artifactPath))
 	}
 
 	artifactIdentity, err := backendFileIdentity(artifact)
 	if err != nil || artifactIdentity.Mode&unix.S_IFMT != unix.S_IFREG || artifactIdentity.Mode&0o222 != 0 {
 		return fail(errors.New("verified control-plane plugin artifact must be a read-only regular file"))
-	}
-	artifactDigest, err := backendDigestOpenFile(artifact)
-	if err != nil || artifactDigest != candidate.Artifact.SHA256 {
-		return fail(errors.New("verified control-plane plugin artifact digest changed before launch"))
 	}
 	cookieHash := sha256.Sum256([]byte(candidate.Endpoint.Cookie))
 	protocol := backendLaunchProtocol{
@@ -130,9 +167,11 @@ func configurePlatformSandboxWithCgroup(cmd *exec.Cmd, candidate Candidate, prep
 		CookieDigest:   hex.EncodeToString(cookieHash[:]),
 		Artifact:       artifactIdentity,
 		ArtifactFD:     3,
+		ArtifactPath:   artifactPath,
 		Arguments:      append([]string(nil), cmd.Args[1:]...),
 		Environment:    append([]string(nil), cmd.Env...),
 		Budget:         candidate.Requirement.Budget(),
+		SandboxUID:     candidate.sandboxUID,
 	}
 	nextFD := 4
 	if candidate.endpointDirectory != "" {
@@ -170,28 +209,78 @@ func configurePlatformSandboxWithCgroup(cmd *exec.Cmd, candidate Candidate, prep
 			return fail(err)
 		}
 	}
-	protocol.Environment = backendChildEnvironment(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, candidate.guestEndpoint)
+	openLauncher := ops.openLauncher
+	if openLauncher == nil {
+		openLauncher = openBackendLauncher
+	}
+	launcher, err := openLauncher()
+	if err != nil {
+		return fail(fmt.Errorf("open control-plane launcher image: %w", err))
+	}
+	files = append(files, launcher)
+	protocol.LauncherFD = nextFD
+	nextFD++
+	protocol.Launcher, err = backendFileIdentity(launcher)
+	if err != nil || protocol.Launcher.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fail(errors.New("control-plane launcher image must be a regular file"))
+	}
+	protocol.LauncherDigest, err = backendDigestOpenFile(launcher)
+	if err != nil {
+		return fail(fmt.Errorf("digest control-plane launcher image: %w", err))
+	}
+	prepareCgroup := ops.prepareCgroup
+	if prepareCgroup == nil {
+		prepareCgroup = prepareBackendCgroup
+	}
 	dir, cgroup, cgroupErr := prepareCgroup(protocol.Budget)
 	if cgroupErr != nil && !backendCgroupUnavailable(cgroupErr) {
 		return fail(fmt.Errorf("prepare control-plane plugin cgroup: %w", cgroupErr))
 	}
-	protocol.Namespaces = cgroup != nil
+	probeNamespaces := ops.probeNamespaces
+	if probeNamespaces == nil {
+		probeNamespaces = probeBackendNamespaces
+	}
+	mappingUID := candidate.sandboxUID
+	if mappingUID == 0 {
+		mappingUID = os.Geteuid()
+	}
+	protocol.Namespaces = probeNamespaces(launcher, protocol.Budget.Network, mappingUID)
+	if protocol.Namespaces {
+		protocol.ParentNamespaces, err = captureBackendNamespaceIDs(protocol.Budget.Network)
+		if err != nil {
+			return fail(err)
+		}
+		protocol.SandboxRoot, err = os.MkdirTemp("", ".nre-control-plugin-root-")
+		if err != nil {
+			return fail(fmt.Errorf("create control-plane plugin mount root: %w", err))
+		}
+		if candidate.sandboxUID != 0 {
+			if err := os.Chown(protocol.SandboxRoot, candidate.sandboxUID, candidate.sandboxUID); err != nil {
+				_ = os.Remove(protocol.SandboxRoot)
+				return fail(fmt.Errorf("own control-plane plugin mount root: %w", err))
+			}
+		}
+	} else if err := requireBackendLandlock(candidate.sandboxUID); err != nil {
+		return fail(err)
+	}
+	if cgroup == nil && candidate.sandboxUID == 0 {
+		return fail(errors.New("control-plane plugin hard process limits require delegated cgroup v2 or an isolated uid"))
+	}
+	protocol.HardRlimits = cgroup == nil
+	protocol.Environment = backendChildEnvironmentForIsolation(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, candidate.guestEndpoint, protocol.Namespaces)
 	protocolFile, err := createBackendProtocolFile(protocol)
 	if err != nil {
 		return fail(err)
 	}
 	files = append(files, protocolFile)
 	protocolFD := nextFD
-	self, err := os.Executable()
-	if err != nil {
-		return fail(fmt.Errorf("resolve control-plane host executable: %w", err))
-	}
-	cmd.Path = self
-	cmd.Args = []string{self, backendLauncherChildArg, strconv.Itoa(protocolFD)}
+	launcherPath := "/proc/self/fd/" + strconv.Itoa(protocol.LauncherFD)
+	cmd.Path = launcherPath
+	cmd.Args = []string{launcherPath, backendLauncherChildArg, strconv.Itoa(protocolFD)}
 	cmd.ExtraFiles = files
 	cmd.Dir = "/"
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp"}
-	cmd.SysProcAttr = backendLinuxSandboxSysProcAttr(cgroup, protocol.Budget.Network, protocol.Namespaces)
+	cmd.SysProcAttr = backendLinuxSandboxSysProcAttrForUID(cgroup, protocol.Budget.Network, protocol.Namespaces, mappingUID)
 	governor := newBackendResourceGovernor(protocol.Budget)
 	startCleanup := func() error {
 		if cgroup != nil {
@@ -200,11 +289,22 @@ func configurePlatformSandboxWithCgroup(cmd *exec.Cmd, candidate Candidate, prep
 		return closeFiles()
 	}
 	processCleanup := func() error {
-		governor.Stop()
-		if dir == "" {
-			return nil
+		governorErr := governor.TerminateAndStop()
+		artifactErr := os.Remove(artifactPath)
+		if errors.Is(artifactErr, os.ErrNotExist) {
+			artifactErr = nil
 		}
-		return removeBackendCgroup(dir)
+		rootErr := error(nil)
+		if protocol.SandboxRoot != "" {
+			rootErr = os.Remove(protocol.SandboxRoot)
+			if errors.Is(rootErr, os.ErrNotExist) {
+				rootErr = nil
+			}
+		}
+		if dir == "" {
+			return errors.Join(governorErr, artifactErr, rootErr)
+		}
+		return errors.Join(governorErr, artifactErr, rootErr, removeBackendCgroup(dir))
 	}
 	afterStart := func(pid int) error {
 		if err := governor.Start(pid); err != nil {
@@ -245,11 +345,23 @@ func runBackendLauncherChild(protocolFD int) error {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return errors.New("control launcher protocol has trailing data")
 	}
-	if protocol.Version != backendLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !backendValidSHA256(protocol.ArtifactDigest) {
+	if protocol.Version != backendLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !backendValidSHA256(protocol.ArtifactDigest) || !backendValidSHA256(protocol.LauncherDigest) {
 		return errors.New("control launcher protocol identity is invalid")
 	}
-	if protocol.ArtifactFD != 3 || protocol.EndpointFD == protocol.ArtifactFD || protocol.CredentialFD == protocol.ArtifactFD {
+	if protocol.ArtifactFD != 3 || protocol.LauncherFD < 4 || !distinctBackendFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.LauncherFD, protocolFD) {
 		return errors.New("control launcher descriptor binding is invalid")
+	}
+	launcher := os.NewFile(uintptr(protocol.LauncherFD), "control-host-launcher")
+	if launcher == nil {
+		return errors.New("control launcher image descriptor is invalid")
+	}
+	launcherIdentity, err := backendFileIdentity(launcher)
+	if err != nil || launcherIdentity != protocol.Launcher || launcherIdentity.Mode&unix.S_IFMT != unix.S_IFREG {
+		return errors.New("control launcher image descriptor identity mismatch")
+	}
+	launcherDigest, err := backendDigestOpenFile(launcher)
+	if err != nil || launcherDigest != protocol.LauncherDigest {
+		return errors.New("control launcher image descriptor digest mismatch")
 	}
 	artifact := os.NewFile(uintptr(protocol.ArtifactFD), "control-plugin-artifact")
 	identity, err := backendFileIdentity(artifact)
@@ -287,25 +399,54 @@ func runBackendLauncherChild(protocolFD int) error {
 	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
 		return fmt.Errorf("bind control launcher child lifetime: %w", err)
 	}
-	if err := applyBackendNamespaces(protocol.Budget.Network, protocol.Namespaces); err != nil {
+	if err := applyBackendRlimits(protocol.Budget, protocol.HardRlimits); err != nil {
 		return err
 	}
-	if err := applyBackendRlimits(protocol.Budget); err != nil {
+	execPath := "/proc/self/fd/3"
+	if protocol.Namespaces {
+		if err := applyBackendMinimalRoot(protocol); err != nil {
+			return err
+		}
+		execPath = "/plugin/plugin"
+	} else {
+		if err := applyBackendLandlock(protocol); err != nil {
+			return err
+		}
+		if err := dropBackendSandboxIdentity(protocol.SandboxUID); err != nil {
+			return err
+		}
+	}
+	if err := installBackendSeccomp(protocol.Budget.Network); err != nil {
 		return err
 	}
-	if err := installBackendSeccomp(); err != nil {
-		return err
-	}
-	if protocol.EndpointFD != 0 {
+	if protocol.EndpointFD != 0 && !protocol.Namespaces {
 		if err := unix.Fchdir(protocol.EndpointFD); err != nil {
 			return fmt.Errorf("enter control-plane plugin runtime directory: %w", err)
 		}
 	}
-	argv := append([]string{"/proc/self/fd/3"}, protocol.Arguments...)
+	argv := append([]string{execPath}, protocol.Arguments...)
 	if err := protocolFile.Close(); err != nil {
 		return fmt.Errorf("close control launcher protocol before plugin exec: %w", err)
 	}
 	return syscall.Exec(argv[0], argv, protocol.Environment)
+}
+
+func openBackendLauncher() (*os.File, error) {
+	return os.Open("/proc/self/exe")
+}
+
+func distinctBackendFDs(values ...int) bool {
+	seen := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
 }
 
 func createBackendProtocolFile(protocol backendLaunchProtocol) (*os.File, error) {
@@ -332,6 +473,39 @@ func createBackendProtocolFile(protocol backendLaunchProtocol) (*os.File, error)
 	}
 	failed = false
 	return file, nil
+}
+
+func createBackendArtifactImage(source *os.File) (*os.File, string, error) {
+	file, err := os.CreateTemp("", ".nre-control-plugin-artifact-")
+	if err != nil {
+		return nil, "", fmt.Errorf("create private control-plane plugin artifact image: %w", err)
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		}
+	}()
+	if _, err := source.Seek(0, 0); err != nil {
+		return nil, "", err
+	}
+	if _, err := io.Copy(file, source); err != nil {
+		return nil, "", err
+	}
+	if err := file.Chmod(0o555); err != nil {
+		return nil, "", err
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		return nil, "", err
+	}
+	artifact, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	failed = false
+	return artifact, path, nil
 }
 
 func verifySealedBackendProtocol(fd int) error {
@@ -388,7 +562,7 @@ func backendFileIdentity(file *os.File) (backendFDIdentity, error) {
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
 		return backendFDIdentity{}, err
 	}
-	return backendFDIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Mode: stat.Mode}, nil
+	return backendFDIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Mode: stat.Mode, Size: stat.Size}, nil
 }
 
 func verifyBackendDirectoryFD(fd int, expected backendFDIdentity) error {
@@ -449,11 +623,24 @@ func backendValidateBudget(budget ProcessBudget) error {
 	return nil
 }
 
-func applyBackendRlimits(budget ProcessBudget) error {
-	for _, limit := range []struct {
+func applyBackendRlimits(budget ProcessBudget, hardResources bool) error {
+	limits := []struct {
 		resource int
 		value    uint64
-	}{{unix.RLIMIT_NOFILE, uint64(budget.Files)}, {unix.RLIMIT_CORE, 0}} {
+	}{{unix.RLIMIT_NOFILE, uint64(budget.Files)}, {unix.RLIMIT_CORE, 0}}
+	if hardResources {
+		limits = append(limits,
+			struct {
+				resource int
+				value    uint64
+			}{unix.RLIMIT_DATA, uint64(budget.MemoryBytes)},
+			struct {
+				resource int
+				value    uint64
+			}{unix.RLIMIT_NPROC, uint64(budget.Processes)},
+		)
+	}
+	for _, limit := range limits {
 		if err := unix.Setrlimit(limit.resource, &unix.Rlimit{Cur: limit.value, Max: limit.value}); err != nil {
 			return fmt.Errorf("apply control-plane plugin rlimit %d: %w", limit.resource, err)
 		}
@@ -461,38 +648,23 @@ func applyBackendRlimits(budget ProcessBudget) error {
 	return nil
 }
 
-func applyBackendNamespaces(network, required bool) error {
-	if !required {
-		return nil
-	}
-	namespaces := []string{"user", "mnt", "ipc", "uts", "cgroup"}
-	if !network {
-		namespaces = append(namespaces, "net")
-	}
-	for _, namespace := range namespaces {
-		child, err := os.Readlink("/proc/self/ns/" + namespace)
-		if err != nil {
-			return fmt.Errorf("read control launcher %s namespace: %w", namespace, err)
-		}
-		parent, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(os.Getppid()), "ns", namespace))
-		if err != nil {
-			return fmt.Errorf("read control launcher parent %s namespace: %w", namespace, err)
-		}
-		if child == parent {
-			return fmt.Errorf("control-plane plugin %s namespace was not isolated", namespace)
-		}
-	}
-	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("make control-plane plugin mount namespace private: %w", err)
-	}
-	return nil
-}
-
-func installBackendSeccomp() error {
-	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS}
+func installBackendSeccomp(network bool) error {
+	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID}
 	filters := []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
 	for _, number := range denied {
 		filters = append(filters, unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: number}, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)})
+	}
+	if !network {
+		for _, syscallNumber := range []uint32{unix.SYS_SOCKET, unix.SYS_SOCKETPAIR} {
+			filters = append(filters,
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: syscallNumber},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, Jf: 0, K: unix.AF_UNIX},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+			)
+		}
 	}
 	filters = append(filters, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
 	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
@@ -562,6 +734,37 @@ func (g *backendResourceGovernor) Stop() {
 	g.mu.Unlock()
 	_ = unix.Kill(-pid, unix.SIGCONT)
 	<-g.done
+}
+
+func (g *backendResourceGovernor) TerminateAndStop() error {
+	g.mu.Lock()
+	pid := g.pid
+	g.mu.Unlock()
+	if pid == 0 {
+		return nil
+	}
+	if err := unix.Kill(-pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
+		g.Stop()
+		return fmt.Errorf("kill control-plane plugin process group: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var remaining int
+	for {
+		sample, err := sampleBackendProcessGroup(pid)
+		if err == nil {
+			remaining = sample.processes
+			if remaining == 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			g.Stop()
+			return fmt.Errorf("control-plane plugin process group still has %d tasks after termination", remaining)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	g.Stop()
+	return nil
 }
 
 func (g *backendResourceGovernor) run(pid int, previous backendResourceSample) {
@@ -634,6 +837,9 @@ func sampleBackendProcessGroup(group int) (backendResourceSample, error) {
 		if len(fields) <= 21 {
 			continue
 		}
+		if fields[0] == "Z" {
+			continue
+		}
 		processGroup, err := strconv.Atoi(fields[2])
 		if err != nil || processGroup != group {
 			continue
@@ -644,7 +850,12 @@ func sampleBackendProcessGroup(group int) (backendResourceSample, error) {
 		if userErr != nil || systemErr != nil || rssErr != nil {
 			continue
 		}
-		sample.processes++
+		tasks, taskErr := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "task"))
+		if taskErr != nil || len(tasks) == 0 {
+			sample.processes++
+		} else {
+			sample.processes += len(tasks)
+		}
 		sample.cpuTicks += userTicks + systemTicks
 		sample.rssBytes += rssPages * int64(os.Getpagesize())
 	}
@@ -690,14 +901,18 @@ func removeBackendCgroup(dir string) error {
 }
 
 func backendLinuxSandboxSysProcAttr(cgroup *os.File, network, namespaces bool) *syscall.SysProcAttr {
+	return backendLinuxSandboxSysProcAttrForUID(cgroup, network, namespaces, os.Geteuid())
+}
+
+func backendLinuxSandboxSysProcAttrForUID(cgroup *os.File, network, namespaces bool, hostUID int) *syscall.SysProcAttr {
 	attributes := &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 	if namespaces {
-		attributes.Cloneflags = uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWIPC | unix.CLONE_NEWUTS | unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP)
+		attributes.Cloneflags = uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWUTS | unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP)
 		if !network {
 			attributes.Cloneflags |= unix.CLONE_NEWNET
 		}
-		attributes.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
-		attributes.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+		attributes.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
+		attributes.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
 		attributes.GidMappingsEnableSetgroups = false
 	}
 	if cgroup != nil {

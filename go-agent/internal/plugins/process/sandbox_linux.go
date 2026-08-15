@@ -24,13 +24,16 @@ import (
 )
 
 const (
-	linuxCgroupRoot       = "/sys/fs/cgroup"
-	linuxLauncherChildArg = "--nre-plugin-launcher-child-v1"
-	linuxLauncherVersion  = 1
+	linuxCgroupRoot        = "/sys/fs/cgroup"
+	linuxLauncherChildArg  = "--nre-plugin-launcher-child-v1"
+	linuxNamespaceProbeArg = "--nre-plugin-namespace-probe-v1"
+	linuxLauncherVersion   = 2
 )
 
 type linuxSandbox struct {
-	prepareCgroup func(Budget) (string, *os.File, error)
+	prepareCgroup   func(Budget) (string, *os.File, error)
+	openLauncher    func() (*os.File, error)
+	probeNamespaces func(*os.File, bool, int) bool
 }
 
 var errLinuxCgroupUnavailable = errors.New("plugin cgroup v2 controllers are unavailable")
@@ -39,28 +42,43 @@ type linuxFDIdentity struct {
 	Device uint64 `json:"device"`
 	Inode  uint64 `json:"inode"`
 	Mode   uint32 `json:"mode"`
+	Size   int64  `json:"size"`
 }
 
 type linuxLaunchProtocol struct {
-	Version                int             `json:"version"`
-	Generation             string          `json:"generation"`
-	ArtifactDigest         string          `json:"artifact_digest"`
-	CookieDigest           string          `json:"cookie_digest,omitempty"`
-	GenerationCookieDigest string          `json:"generation_cookie_digest,omitempty"`
-	Artifact               linuxFDIdentity `json:"artifact"`
-	Endpoint               linuxFDIdentity `json:"endpoint,omitempty"`
-	Credential             linuxFDIdentity `json:"credential,omitempty"`
-	ArtifactFD             int             `json:"artifact_fd"`
-	EndpointFD             int             `json:"endpoint_fd,omitempty"`
-	CredentialFD           int             `json:"credential_fd,omitempty"`
-	Arguments              []string        `json:"arguments,omitempty"`
-	Environment            []string        `json:"environment"`
-	Budget                 Budget          `json:"budget"`
-	EndpointRequired       bool            `json:"endpoint_required,omitempty"`
-	Namespaces             bool            `json:"namespaces"`
+	Version                int               `json:"version"`
+	Generation             string            `json:"generation"`
+	ArtifactDigest         string            `json:"artifact_digest"`
+	LauncherDigest         string            `json:"launcher_digest"`
+	CookieDigest           string            `json:"cookie_digest,omitempty"`
+	GenerationCookieDigest string            `json:"generation_cookie_digest,omitempty"`
+	Artifact               linuxFDIdentity   `json:"artifact"`
+	Launcher               linuxFDIdentity   `json:"launcher"`
+	Endpoint               linuxFDIdentity   `json:"endpoint,omitempty"`
+	Credential             linuxFDIdentity   `json:"credential,omitempty"`
+	ArtifactFD             int               `json:"artifact_fd"`
+	ArtifactPath           string            `json:"artifact_path,omitempty"`
+	LauncherFD             int               `json:"launcher_fd"`
+	EndpointFD             int               `json:"endpoint_fd,omitempty"`
+	CredentialFD           int               `json:"credential_fd,omitempty"`
+	Arguments              []string          `json:"arguments,omitempty"`
+	Environment            []string          `json:"environment"`
+	Budget                 Budget            `json:"budget"`
+	EndpointRequired       bool              `json:"endpoint_required,omitempty"`
+	Namespaces             bool              `json:"namespaces"`
+	SandboxRoot            string            `json:"sandbox_root,omitempty"`
+	SandboxUID             int               `json:"sandbox_uid,omitempty"`
+	ParentNamespaces       map[string]string `json:"parent_namespaces,omitempty"`
+	HardRlimits            bool              `json:"hard_rlimits,omitempty"`
 }
 
 func init() {
+	if len(os.Args) == 2 && os.Args[1] == linuxNamespaceProbeArg {
+		if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+			os.Exit(126)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) == 3 && os.Args[1] == linuxLauncherChildArg {
 		protocolFD, err := strconv.Atoi(os.Args[2])
 		if err == nil {
@@ -115,11 +133,29 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return nil, nil, nil, errors.New("plugin process inherited file descriptors are reserved by the launcher")
 	}
 
-	artifact, err := os.Open(cmd.Path)
+	sourceArtifact, err := os.Open(cmd.Path)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open verified plugin artifact: %w", err)
 	}
+	sourceIdentity, err := linuxFileIdentity(sourceArtifact)
+	if err != nil || sourceIdentity.Mode&unix.S_IFMT != unix.S_IFREG || sourceIdentity.Mode&0o222 != 0 {
+		_ = sourceArtifact.Close()
+		return nil, nil, nil, errors.New("verified plugin artifact must be a read-only regular file")
+	}
+	if digest, digestErr := digestOpenFile(sourceArtifact); digestErr != nil || digest != security.ArtifactDigest {
+		_ = sourceArtifact.Close()
+		if digestErr == nil {
+			digestErr = errors.New("verified plugin artifact digest changed before launch")
+		}
+		return nil, nil, nil, digestErr
+	}
+	artifact, artifactPath, err := createLinuxArtifactImage(sourceArtifact)
+	_ = sourceArtifact.Close()
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	files := []*os.File{artifact}
+	sandboxUID := security.SandboxUID
 	closeFiles := func() error {
 		var result error
 		for _, file := range files {
@@ -128,7 +164,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return result
 	}
 	fail := func(err error) (func() error, func() error, func(int) error, error) {
-		return nil, nil, nil, errors.Join(err, closeFiles())
+		return nil, nil, nil, errors.Join(err, closeFiles(), os.Remove(artifactPath))
 	}
 
 	artifactIdentity, err := linuxFileIdentity(artifact)
@@ -136,13 +172,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return fail(fmt.Errorf("identify verified plugin artifact: %w", err))
 	}
 	if artifactIdentity.Mode&unix.S_IFMT != unix.S_IFREG || artifactIdentity.Mode&0o222 != 0 {
-		return fail(errors.New("verified plugin artifact must be a read-only regular file"))
-	}
-	if digest, err := digestOpenFile(artifact); err != nil || digest != security.ArtifactDigest {
-		if err == nil {
-			err = errors.New("verified plugin artifact digest changed before launch")
-		}
-		return fail(err)
+		return fail(errors.New("private plugin artifact image must be a read-only regular file"))
 	}
 
 	protocol := linuxLaunchProtocol{
@@ -152,9 +182,11 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		CookieDigest:   security.CookieDigest,
 		Artifact:       artifactIdentity,
 		ArtifactFD:     3,
+		ArtifactPath:   artifactPath,
 		Arguments:      append([]string(nil), cmd.Args[1:]...),
 		Environment:    append([]string(nil), cmd.Env...),
 		Budget:         security.Requirement.Budget(),
+		SandboxUID:     sandboxUID,
 	}
 	nextFD := 4
 	if security.EndpointDirectory != "" {
@@ -195,7 +227,25 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 			return fail(err)
 		}
 	}
-	protocol.Environment = linuxChildEnvironment(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, security.GuestEndpoint)
+	openLauncher := s.openLauncher
+	if openLauncher == nil {
+		openLauncher = openLinuxLauncher
+	}
+	launcher, err := openLauncher()
+	if err != nil {
+		return fail(fmt.Errorf("open plugin host launcher image: %w", err))
+	}
+	files = append(files, launcher)
+	protocol.LauncherFD = nextFD
+	nextFD++
+	protocol.Launcher, err = linuxFileIdentity(launcher)
+	if err != nil || protocol.Launcher.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fail(errors.New("plugin host launcher image must be a regular file"))
+	}
+	protocol.LauncherDigest, err = digestOpenFile(launcher)
+	if err != nil {
+		return fail(fmt.Errorf("digest plugin host launcher image: %w", err))
+	}
 	prepareCgroup := s.prepareCgroup
 	if prepareCgroup == nil {
 		prepareCgroup = prepareLinuxCgroup
@@ -204,7 +254,38 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	if cgroupErr != nil && !linuxCgroupUnavailable(cgroupErr) {
 		return fail(fmt.Errorf("prepare plugin cgroup: %w", cgroupErr))
 	}
-	protocol.Namespaces = cgroupFile != nil
+	probeNamespaces := s.probeNamespaces
+	if probeNamespaces == nil {
+		probeNamespaces = probeLinuxNamespaces
+	}
+	mappingUID := sandboxUID
+	if mappingUID == 0 {
+		mappingUID = os.Geteuid()
+	}
+	protocol.Namespaces = probeNamespaces(launcher, protocol.Budget.Network, mappingUID)
+	if protocol.Namespaces {
+		protocol.ParentNamespaces, err = captureLinuxNamespaceIDs(protocol.Budget.Network)
+		if err != nil {
+			return fail(err)
+		}
+		protocol.SandboxRoot, err = os.MkdirTemp("", ".nre-plugin-root-")
+		if err != nil {
+			return fail(fmt.Errorf("create plugin mount root: %w", err))
+		}
+		if sandboxUID != 0 {
+			if err := os.Chown(protocol.SandboxRoot, sandboxUID, sandboxUID); err != nil {
+				_ = os.Remove(protocol.SandboxRoot)
+				return fail(fmt.Errorf("own plugin mount root: %w", err))
+			}
+		}
+	} else if err := requireLinuxLandlock(sandboxUID); err != nil {
+		return fail(err)
+	}
+	if cgroupFile == nil && sandboxUID == 0 {
+		return fail(errors.New("plugin hard process limits require delegated cgroup v2 or an isolated uid"))
+	}
+	protocol.HardRlimits = cgroupFile == nil
+	protocol.Environment = linuxChildEnvironmentForIsolation(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, security.GuestEndpoint, protocol.Namespaces)
 
 	protocolFile, err := createLinuxProtocolFile(protocol)
 	if err != nil {
@@ -213,17 +294,14 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	files = append(files, protocolFile)
 	protocolFD := nextFD
 
-	self, err := os.Executable()
-	if err != nil {
-		return fail(fmt.Errorf("resolve plugin host executable: %w", err))
-	}
-	cmd.Path = self
-	cmd.Args = []string{self, linuxLauncherChildArg, strconv.Itoa(protocolFD)}
+	launcherPath := "/proc/self/fd/" + strconv.Itoa(protocol.LauncherFD)
+	cmd.Path = launcherPath
+	cmd.Args = []string{launcherPath, linuxLauncherChildArg, strconv.Itoa(protocolFD)}
 	cmd.ExtraFiles = files
 	cmd.Dir = "/"
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp"}
 
-	cmd.SysProcAttr = linuxSandboxSysProcAttr(cgroupFile, protocol.Budget.Network, protocol.Namespaces)
+	cmd.SysProcAttr = linuxSandboxSysProcAttrForUID(cgroupFile, protocol.Budget.Network, protocol.Namespaces, mappingUID)
 	governor := newLinuxResourceGovernor(protocol.Budget)
 	startCleanup := func() error {
 		if cgroupFile != nil {
@@ -232,11 +310,22 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return closeFiles()
 	}
 	processCleanup := func() error {
-		governor.Stop()
-		if cgroupDir == "" {
-			return nil
+		governorErr := governor.TerminateAndStop()
+		artifactErr := os.Remove(artifactPath)
+		if errors.Is(artifactErr, os.ErrNotExist) {
+			artifactErr = nil
 		}
-		return removeLinuxCgroup(cgroupDir)
+		rootErr := error(nil)
+		if protocol.SandboxRoot != "" {
+			rootErr = os.Remove(protocol.SandboxRoot)
+			if errors.Is(rootErr, os.ErrNotExist) {
+				rootErr = nil
+			}
+		}
+		if cgroupDir == "" {
+			return errors.Join(governorErr, artifactErr, rootErr)
+		}
+		return errors.Join(governorErr, artifactErr, rootErr, removeLinuxCgroup(cgroupDir))
 	}
 	afterStart := func(pid int) error {
 		if err := governor.Start(pid); err != nil {
@@ -280,11 +369,23 @@ func runLinuxLauncherChild(protocolFD int) error {
 	if err := ensureJSONEOF(decoder); err != nil {
 		return err
 	}
-	if protocol.Version != linuxLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !validSHA256(protocol.ArtifactDigest) {
+	if protocol.Version != linuxLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !validSHA256(protocol.ArtifactDigest) || !validSHA256(protocol.LauncherDigest) {
 		return errors.New("launcher protocol identity is invalid")
 	}
-	if protocol.ArtifactFD != 3 || protocol.EndpointFD == protocol.ArtifactFD || protocol.CredentialFD == protocol.ArtifactFD {
+	if protocol.ArtifactFD != 3 || protocol.LauncherFD < 4 || !distinctLinuxFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.LauncherFD, protocolFD) {
 		return errors.New("launcher protocol descriptor binding is invalid")
+	}
+	launcher := os.NewFile(uintptr(protocol.LauncherFD), "plugin-host-launcher")
+	if launcher == nil {
+		return errors.New("launcher image descriptor is invalid")
+	}
+	launcherIdentity, err := linuxFileIdentity(launcher)
+	if err != nil || launcherIdentity != protocol.Launcher || launcherIdentity.Mode&unix.S_IFMT != unix.S_IFREG {
+		return errors.New("launcher image descriptor identity mismatch")
+	}
+	launcherDigest, err := digestOpenFile(launcher)
+	if err != nil || launcherDigest != protocol.LauncherDigest {
+		return errors.New("launcher image descriptor digest mismatch")
 	}
 	artifact := os.NewFile(uintptr(protocol.ArtifactFD), "plugin-artifact")
 	if artifact == nil {
@@ -325,25 +426,54 @@ func runLinuxLauncherChild(protocolFD int) error {
 	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
 		return fmt.Errorf("bind launcher child lifetime: %w", err)
 	}
-	if err := applyLinuxNamespaces(protocol.Budget.Network, protocol.Namespaces); err != nil {
+	if err := applyLinuxRlimits(protocol.Budget, protocol.HardRlimits); err != nil {
 		return err
 	}
-	if err := applyLinuxRlimits(protocol.Budget); err != nil {
-		return err
+	execPath := "/proc/self/fd/3"
+	if protocol.Namespaces {
+		if err := applyLinuxMinimalRoot(protocol); err != nil {
+			return err
+		}
+		execPath = "/plugin/plugin"
+	} else {
+		if err := applyLinuxLandlock(protocol); err != nil {
+			return err
+		}
+		if err := dropLinuxSandboxIdentity(protocol.SandboxUID); err != nil {
+			return err
+		}
 	}
 	if err := installLinuxSeccomp(protocol.Budget.Network); err != nil {
 		return err
 	}
-	if protocol.EndpointFD != 0 {
+	if protocol.EndpointFD != 0 && !protocol.Namespaces {
 		if err := unix.Fchdir(protocol.EndpointFD); err != nil {
 			return fmt.Errorf("enter plugin runtime directory: %w", err)
 		}
 	}
-	argv := append([]string{"/proc/self/fd/3"}, protocol.Arguments...)
+	argv := append([]string{execPath}, protocol.Arguments...)
 	if err := protocolFile.Close(); err != nil {
 		return fmt.Errorf("close launcher protocol before plugin exec: %w", err)
 	}
 	return syscall.Exec(argv[0], argv, protocol.Environment)
+}
+
+func openLinuxLauncher() (*os.File, error) {
+	return os.Open("/proc/self/exe")
+}
+
+func distinctLinuxFDs(values ...int) bool {
+	seen := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
 }
 
 func createLinuxProtocolFile(protocol linuxLaunchProtocol) (*os.File, error) {
@@ -370,6 +500,39 @@ func createLinuxProtocolFile(protocol linuxLaunchProtocol) (*os.File, error) {
 	}
 	failed = false
 	return file, nil
+}
+
+func createLinuxArtifactImage(source *os.File) (*os.File, string, error) {
+	file, err := os.CreateTemp("", ".nre-plugin-artifact-")
+	if err != nil {
+		return nil, "", fmt.Errorf("create private plugin artifact image: %w", err)
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		}
+	}()
+	if _, err := source.Seek(0, 0); err != nil {
+		return nil, "", err
+	}
+	if _, err := io.Copy(file, source); err != nil {
+		return nil, "", err
+	}
+	if err := file.Chmod(0o555); err != nil {
+		return nil, "", err
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		return nil, "", err
+	}
+	artifact, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	failed = false
+	return artifact, path, nil
 }
 
 func verifySealedLinuxProtocol(fd int) error {
@@ -439,7 +602,7 @@ func linuxFileIdentity(file *os.File) (linuxFDIdentity, error) {
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
 		return linuxFDIdentity{}, err
 	}
-	return linuxFDIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Mode: stat.Mode}, nil
+	return linuxFDIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Mode: stat.Mode, Size: stat.Size}, nil
 }
 
 func verifyLinuxDirectoryFD(fd int, expected linuxFDIdentity) error {
@@ -504,13 +667,25 @@ func validateLinuxBudget(budget Budget) error {
 	return nil
 }
 
-func applyLinuxRlimits(budget Budget) error {
+func applyLinuxRlimits(budget Budget, hardResources bool) error {
 	limits := []struct {
 		resource int
 		value    uint64
 	}{
 		{unix.RLIMIT_NOFILE, uint64(budget.Files)},
 		{unix.RLIMIT_CORE, 0},
+	}
+	if hardResources {
+		limits = append(limits,
+			struct {
+				resource int
+				value    uint64
+			}{unix.RLIMIT_DATA, uint64(budget.MemoryBytes)},
+			struct {
+				resource int
+				value    uint64
+			}{unix.RLIMIT_NPROC, uint64(budget.Processes)},
+		)
 	}
 	for _, limit := range limits {
 		if err := unix.Setrlimit(limit.resource, &unix.Rlimit{Cur: limit.value, Max: limit.value}); err != nil {
@@ -547,14 +722,26 @@ func applyLinuxNamespaces(network, required bool) error {
 	return nil
 }
 
-func installLinuxSeccomp(_ bool) error {
-	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS}
+func installLinuxSeccomp(network bool) error {
+	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID}
 	filters := []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
 	for _, number := range denied {
 		filters = append(filters,
 			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 1, K: number},
 			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
 		)
+	}
+	if !network {
+		for _, syscallNumber := range []uint32{unix.SYS_SOCKET, unix.SYS_SOCKETPAIR} {
+			filters = append(filters,
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: syscallNumber},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, Jf: 0, K: unix.AF_UNIX},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+			)
+		}
 	}
 	filters = append(filters, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
 	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
@@ -624,6 +811,37 @@ func (g *linuxResourceGovernor) Stop() {
 	g.mu.Unlock()
 	_ = unix.Kill(-pid, unix.SIGCONT)
 	<-g.done
+}
+
+func (g *linuxResourceGovernor) TerminateAndStop() error {
+	g.mu.Lock()
+	pid := g.pid
+	g.mu.Unlock()
+	if pid == 0 {
+		return nil
+	}
+	if err := unix.Kill(-pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
+		g.Stop()
+		return fmt.Errorf("kill plugin process group: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var remaining int
+	for {
+		sample, err := sampleLinuxProcessGroup(pid)
+		if err == nil {
+			remaining = sample.processes
+			if remaining == 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			g.Stop()
+			return fmt.Errorf("plugin process group still has %d tasks after termination", remaining)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	g.Stop()
+	return nil
 }
 
 func (g *linuxResourceGovernor) run(pid int, previous linuxResourceSample) {
@@ -696,6 +914,9 @@ func sampleLinuxProcessGroup(group int) (linuxResourceSample, error) {
 		if len(fields) <= 21 {
 			continue
 		}
+		if fields[0] == "Z" {
+			continue
+		}
 		processGroup, err := strconv.Atoi(fields[2])
 		if err != nil || processGroup != group {
 			continue
@@ -706,7 +927,12 @@ func sampleLinuxProcessGroup(group int) (linuxResourceSample, error) {
 		if userErr != nil || systemErr != nil || rssErr != nil {
 			continue
 		}
-		sample.processes++
+		tasks, taskErr := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "task"))
+		if taskErr != nil || len(tasks) == 0 {
+			sample.processes++
+		} else {
+			sample.processes += len(tasks)
+		}
 		sample.cpuTicks += userTicks + systemTicks
 		sample.rssBytes += rssPages * int64(os.Getpagesize())
 	}
@@ -752,24 +978,7 @@ func removeLinuxCgroup(dir string) error {
 }
 
 func linuxSandboxSysProcAttr(cgroup *os.File, network, namespaces bool) *syscall.SysProcAttr {
-	attributes := &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGKILL,
-		Setpgid:   true,
-	}
-	if namespaces {
-		attributes.Cloneflags = uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWIPC | unix.CLONE_NEWUTS | unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP)
-		if !network {
-			attributes.Cloneflags |= unix.CLONE_NEWNET
-		}
-		attributes.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
-		attributes.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
-		attributes.GidMappingsEnableSetgroups = false
-	}
-	if cgroup != nil {
-		attributes.UseCgroupFD = true
-		attributes.CgroupFD = int(cgroup.Fd())
-	}
-	return attributes
+	return linuxSandboxSysProcAttrForUID(cgroup, network, namespaces, os.Geteuid())
 }
 
 func linuxCgroupUnavailable(err error) bool {

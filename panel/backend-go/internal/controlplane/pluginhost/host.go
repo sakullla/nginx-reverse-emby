@@ -53,6 +53,7 @@ type Candidate struct {
 	InitialBackoff                                        time.Duration
 	MaximumBackoff                                        time.Duration
 	endpointDirectory, credentialDirectory, guestEndpoint string
+	sandboxUID                                            int
 	attemptEnvironment                                    []string
 }
 type ProcessBudget struct {
@@ -135,6 +136,7 @@ type Host struct {
 	runtimeRoot    string
 	launcher       Launcher
 	dialer         RPCDialer
+	authorize      func(Candidate) error
 	provision      func(string, Endpoint) (controlAttemptSecurity, error)
 	logs           io.Writer
 	active         map[string]*Instance
@@ -241,7 +243,7 @@ func New(runtimeRoot string, launcher Launcher, dialer RPCDialer, logs io.Writer
 		logs = io.Discard
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, provision: provisionControlAttemptSecurity, logs: logs, active: make(map[string]*Instance), prepared: make(map[*Instance]struct{}), observerErrors: make(map[string]error)}, nil
+	return &Host{ctx: ctx, cancel: cancel, runtimeRoot: runtimeRoot, launcher: launcher, dialer: dialer, authorize: authorizeSandbox, provision: provisionControlAttemptSecurity, logs: logs, active: make(map[string]*Instance), prepared: make(map[*Instance]struct{}), observerErrors: make(map[string]error)}, nil
 }
 
 func (h *Host) SetStatusObserver(observer func(RuntimeStatus) error) {
@@ -291,7 +293,11 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 			cancelAttempt()
 		}
 	}()
-	if err := authorizeSandbox(candidate); err != nil {
+	authorize := h.authorize
+	if authorize == nil {
+		authorize = authorizeSandbox
+	}
+	if err := authorize(candidate); err != nil {
 		return nil, err
 	}
 	executable, err := installArtifact(h.runtimeRoot, candidate.InstanceID+"-"+candidate.Identity.Generation, candidate.Artifact)
@@ -308,6 +314,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	}
 	candidate.Endpoint = security.endpoint
 	candidate.endpointDirectory, candidate.credentialDirectory, candidate.guestEndpoint = security.endpointDirectory, security.credentialDirectory, security.guestEndpoint
+	candidate.sandboxUID = security.sandboxUID
 	candidate.attemptEnvironment = security.environment
 	if security.cleanup != nil {
 		instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "starting", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt, setupDone: make(chan struct{})}

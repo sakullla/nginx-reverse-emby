@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -26,6 +27,15 @@ type hostProcess struct {
 	once    sync.Once
 	pid     int
 	stopped chan struct{}
+}
+
+type hostTestSandbox struct{}
+
+func (hostTestSandbox) Available() bool                       { return true }
+func (hostTestSandbox) Provider() string                      { return "test-kernel-boundary" }
+func (hostTestSandbox) Validate(pluginprocess.Security) error { return nil }
+func (hostTestSandbox) Configure(*exec.Cmd, pluginprocess.Security) (func() error, func() error, func(int) error, error) {
+	return func() error { return nil }, func() error { return nil }, func(int) error { return nil }, nil
 }
 
 func agentSandboxRequirement(t *testing.T, digest string) pluginprocess.SandboxRequirement {
@@ -329,7 +339,7 @@ func TestRPCHostPreservesOldInstanceUntilCandidateActivated(t *testing.T) {
 		clients = clients[1:]
 		return client, hostCloser{}, nil
 	}
-	supervisor := pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard)
+	supervisor := pluginprocess.NewSupervisor(hostRunner{}, hostTestSandbox{}, io.Discard)
 	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, supervisor, dial)
 	if err != nil {
 		t.Fatal(err)
@@ -377,7 +387,7 @@ func TestRPCHostBindsCapturedOutputToProviderGenerationFence(t *testing.T) {
 	candidate.AgentID = "edge-7"
 	candidate.Revision = 7
 	candidate.Process.SensitiveValues = []string{"candidate-secret"}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(loggingHostRunner{}, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(loggingHostRunner{}, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
 	if err != nil {
@@ -406,7 +416,7 @@ func TestRPCHostSetupFailureRetainsLaunchedProcessUntilCloseRetry(t *testing.T) 
 	candidate.Process.GracePeriod = time.Millisecond
 	process := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
 	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{process}}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return nil, nil, errors.New("dial failed")
 	})
 	if err != nil {
@@ -435,7 +445,7 @@ func TestRPCHostProvisionFailureRetainsCredentialOwnerUntilCloseRetry(t *testing
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)
 	candidate.Dial = DialConfig{Network: "tcp", Address: "127.0.0.1:12345"}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard), nil)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, hostTestSandbox{}, io.Discard), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +485,7 @@ func TestRPCHostStartOnceFailureRetainsCredentialOwnerUntilCloseRetry(t *testing
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)
 	startErr := errors.New("process setup failed")
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(failingStartHostRunner{err: startErr}, nil, io.Discard), nil)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(failingStartHostRunner{err: startErr}, hostTestSandbox{}, io.Discard), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +542,7 @@ func TestRPCHostCrashRestartAttemptIsOwnedByStopBeforeHandshake(t *testing.T) {
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +573,7 @@ func TestRPCHostStopJoinsRestartPublishedAfterStopSnapshotWindow(t *testing.T) {
 	first := &hostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
 	replacement := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
 	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{first, replacement}}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
 	if err != nil {
@@ -620,7 +630,7 @@ func TestRPCHostStopJoinsRestartPublishedAfterStopSnapshotWindow(t *testing.T) {
 func TestRPCHostCredentialCleanupFailureRetainsOwnerUntilCloseRetry(t *testing.T) {
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)
-	supervisor := pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard)
+	supervisor := pluginprocess.NewSupervisor(hostRunner{}, hostTestSandbox{}, io.Discard)
 	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, supervisor, func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
@@ -665,7 +675,7 @@ func TestRPCHostNaturalExitSandboxCleanupFailureRetainsOwnerUntilCloseRetry(t *t
 	candidate := newRestartHostCandidate(t, root)
 	process := &hostProcess{done: make(chan error, 1)}
 	runner := &cleanupRetryHostRunner{process: process}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
 	if err != nil {
@@ -699,7 +709,7 @@ func TestRPCHostPreviousDrainKillFailureCanBeRetried(t *testing.T) {
 	oldProcess := &retryDrainHostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
 	newProcess := &hostProcess{done: make(chan error, 1), stopped: make(chan struct{})}
 	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{oldProcess, newProcess}}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
 	if err != nil {
@@ -748,7 +758,7 @@ func TestRPCHostCutoverUsesOwnedDrainAfterPublicationContextCanceled(t *testing.
 		clients = clients[1:]
 		return client, hostCloser{}, nil
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +803,7 @@ func TestRPCHostCutoverFailureRetainsOldGenerationAndStopsCandidate(t *testing.T
 		clients = clients[1:]
 		return client, hostCloser{}, nil
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +835,7 @@ func TestRPCHostCloseBoundsBlockedLifecycleStopAndKillsProcess(t *testing.T) {
 	released := make(chan struct{})
 	process := &drainHostProcess{done: make(chan error, 1), killCalled: make(chan struct{})}
 	runner := &queuedHostRunner{processes: []pluginprocess.ManagedProcess{process}}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return blockingStopHostClient{hostClient: hostClient{abi: pluginsdk.RPCABIV1}, released: released}, &unblockHostCloser{closed: released}, nil
 	})
 	if err != nil {
@@ -864,7 +874,7 @@ func TestRPCHostCutoverBoundsBlockedLifecycleStopAndRejectsCandidate(t *testing.
 		clients, closers = clients[1:], closers[1:]
 		return client, closer, nil
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -905,7 +915,7 @@ func TestRPCHostFailedCandidateCleanupIsRetriedByClose(t *testing.T) {
 		clients, closers = clients[1:], closers[1:]
 		return client, closer, nil
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +960,7 @@ func TestRPCHostCrashStartsFreshProcessAndRepeatsLifecycle(t *testing.T) {
 		cookieMu.Unlock()
 		return countingHostClient{counts: counts}, hostCloser{}, nil
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,7 +1013,7 @@ func TestRPCHostRepeatedCrashesOpenCircuit(t *testing.T) {
 	dial := func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return countingHostClient{counts: counts}, hostCloser{}, nil
 	}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), dial)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1050,7 +1060,7 @@ func TestRPCHostRestartRedeemsSecretsForFreshProcessAttempt(t *testing.T) {
 	redeemer := &recordingSecretRedeemer{secrets: []model.PluginRedeemedSecret{{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose, Value: value}}}
 	runner := &restartHostRunner{started: make(chan *hostProcess, 4)}
 	counts := &hostLifecycleCounts{}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return countingHostClient{counts: counts}, hostCloser{}, nil
 	})
 	if err != nil {
@@ -1078,7 +1088,7 @@ func TestRPCHostRestartRedeemsSecretsForFreshProcessAttempt(t *testing.T) {
 func TestRPCHostCloseCancelsAndJoinsBlockedInstall(t *testing.T) {
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
 	if err != nil {
@@ -1121,7 +1131,7 @@ func TestRPCHostCloseCancelsAndJoinsBlockedProcessStart(t *testing.T) {
 	root := t.TempDir()
 	candidate := newRestartHostCandidate(t, root)
 	runner := &blockingHostRunner{started: make(chan struct{}), returned: make(chan struct{})}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, nil, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, hostTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
 		return hostClient{abi: pluginsdk.RPCABIV1}, hostCloser{}, nil
 	})
 	if err != nil {

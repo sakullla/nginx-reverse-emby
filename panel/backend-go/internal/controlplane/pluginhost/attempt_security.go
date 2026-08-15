@@ -31,6 +31,7 @@ type controlAttemptSecurity struct {
 	credentialDirectory string
 	guestEndpoint       string
 	environment         []string
+	sandboxUID          int
 	cleanup             func() error
 }
 
@@ -56,6 +57,11 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 	if cleanup == nil {
 		cleanup = cleanupControlAttemptDirectory
 	}
+	sandboxUID, releaseSandboxUID, err := allocateAttemptSandboxUID()
+	if err != nil {
+		_ = cleanup(runtimeDirectory, root)
+		return controlAttemptSecurity{}, err
+	}
 	var endpointHandle *os.File
 	var cleanupMu sync.Mutex
 	security := controlAttemptSecurity{endpoint: endpoint, cleanup: func() error {
@@ -66,8 +72,11 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 			closeErr = endpointHandle.Close()
 			endpointHandle = nil
 		}
-		return errors.Join(closeErr, cleanup(runtimeDirectory, root))
+		cleanupErr := cleanup(runtimeDirectory, root)
+		releaseSandboxUID()
+		return errors.Join(closeErr, cleanupErr)
 	}}
+	security.sandboxUID = sandboxUID
 	if err := os.Chmod(root, 0o700); err != nil {
 		return security, err
 	}
@@ -127,6 +136,9 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 	security.endpoint = endpoint
 	security.guestEndpoint = guestEndpoint
 	security.environment = environment
+	if err := ownAttemptSandboxPaths(root, sandboxUID); err != nil {
+		return security, err
+	}
 	return security, nil
 }
 

@@ -4,7 +4,6 @@ package process
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,10 +20,7 @@ func TestWindowsSandboxStartsSuspendedBeforeJobAssignment(t *testing.T) {
 	}
 }
 
-func TestWindowsSandboxLiveProcess(t *testing.T) {
-	if os.Getenv("NRE_TEST_WINDOWS_SANDBOX") != "1" {
-		t.Skip("set NRE_TEST_WINDOWS_SANDBOX=1 to exercise the restricted process")
-	}
+func TestWindowsSandboxLiveProcessFailsClosed(t *testing.T) {
 	sandbox := newPlatformSandbox()
 	deniedPath := filepath.Join(t.TempDir(), "must-not-write")
 	digest, err := fileDigest(os.Args[0])
@@ -32,21 +28,15 @@ func TestWindowsSandboxLiveProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirement := canonicalNonprivilegedRequirement(t, digest)
-	process, cleanup, err := (ExecRunner{}).Start(context.Background(), InstanceSpec{
+	_, _, err = (ExecRunner{}).Start(context.Background(), InstanceSpec{
 		ID:          "sandbox-live",
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestWindowsSandboxGuest$"},
 		Environment: []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath},
 		Security:    Security{Requirement: requirement},
 	}, sandbox, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := errors.Join(process.Wait(), cleanup()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(deniedPath); !os.IsNotExist(err) {
-		t.Fatal("restricted guest wrote host-private file")
+	if err == nil || !strings.Contains(err.Error(), "isolation is unavailable") {
+		t.Fatalf("Windows incomplete isolation admission = %v", err)
 	}
 }
 
@@ -59,7 +49,7 @@ func TestWindowsSandboxGuest(t *testing.T) {
 	}
 }
 
-func TestWindowsSandboxAdmitsCanonicalRequirementsWithoutGrant(t *testing.T) {
+func TestWindowsSandboxFailsClosedForCanonicalRequirements(t *testing.T) {
 	ordinary := canonicalNonprivilegedRequirement(t, strings.Repeat("a", 64))
 	privileged, err := NewSandboxRequirement(SandboxRequirementProjection{
 		PackageDigest: strings.Repeat("a", 64), Permissions: []SandboxPermission{PermissionSecretUse}, ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPRequest},
@@ -69,20 +59,20 @@ func TestWindowsSandboxAdmitsCanonicalRequirementsWithoutGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandbox := windowsJobSandbox{}
-	if !sandbox.Available() {
-		t.Fatal("Windows restricted-token launcher is unavailable")
+	if sandbox.Available() {
+		t.Fatal("Windows incomplete filesystem/network isolation was advertised as available")
 	}
 	for name, requirement := range map[string]SandboxRequirement{"ordinary": ordinary, "privileged": privileged} {
 		t.Run(name, func(t *testing.T) {
 			security := Security{Requirement: requirement}
 			decision, err := DecideSandbox(sandbox, security)
-			if err != nil || !decision.Sandboxed || decision.Provider != sandbox.Provider() {
-				t.Fatalf("Windows sandbox decision = %+v, %v", decision, err)
+			if err == nil || decision.Sandboxed {
+				t.Fatalf("Windows incomplete sandbox decision = %+v, %v", decision, err)
 			}
 			security.Grants = []string{UnsandboxedGrant}
 			decision, err = DecideSandbox(sandbox, security)
-			if err != nil || !decision.Sandboxed || decision.Provider != sandbox.Provider() {
-				t.Fatalf("legacy grant changed Windows sandbox decision = %+v, %v", decision, err)
+			if err == nil || decision.Sandboxed {
+				t.Fatalf("legacy grant bypassed Windows fail-closed decision = %+v, %v", decision, err)
 			}
 		})
 	}

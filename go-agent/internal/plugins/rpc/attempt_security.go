@@ -31,6 +31,7 @@ type attemptSecurity struct {
 	credentialDirectory string
 	guestEndpoint       string
 	environment         []string
+	sandboxUID          int
 	cleanup             func() error
 }
 
@@ -56,6 +57,11 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 	if cleanup == nil {
 		cleanup = cleanupAttemptDirectory
 	}
+	sandboxUID, releaseSandboxUID, err := allocateAttemptSandboxUID()
+	if err != nil {
+		_ = cleanup(runtimeDirectory, root)
+		return attemptSecurity{}, err
+	}
 	var endpointHandle *os.File
 	var cleanupMu sync.Mutex
 	security := attemptSecurity{dial: dial, cleanup: func() error {
@@ -66,8 +72,11 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 			closeErr = endpointHandle.Close()
 			endpointHandle = nil
 		}
-		return errors.Join(closeErr, cleanup(runtimeDirectory, root))
+		cleanupErr := cleanup(runtimeDirectory, root)
+		releaseSandboxUID()
+		return errors.Join(closeErr, cleanupErr)
 	}}
+	security.sandboxUID = sandboxUID
 	if err := os.Chmod(root, 0o700); err != nil {
 		return security, err
 	}
@@ -129,6 +138,9 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 	security.dial = dial
 	security.guestEndpoint = guestEndpoint
 	security.environment = environment
+	if err := ownAttemptSandboxPaths(root, sandboxUID); err != nil {
+		return security, err
+	}
 	return security, nil
 }
 

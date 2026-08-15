@@ -300,6 +300,7 @@ func (r *runtimeRepo) UpdatePluginRuntimeHealth(ctx context.Context, id, generat
 }
 
 func TestPluginRuntimeHostRetriesAndSurfacesHealthPersistence(t *testing.T) {
+	requirePluginRuntimePlatform(t)
 	root := t.TempDir()
 	cache := filepath.Join(root, "cache")
 	payload := []byte("runtime observer")
@@ -347,6 +348,7 @@ func TestPluginRuntimeHostRetriesAndSurfacesHealthPersistence(t *testing.T) {
 }
 
 func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
+	requirePluginRuntimePlatform(t)
 	root := t.TempDir()
 	cache := filepath.Join(root, "cache")
 	payload := []byte("runtime serialization")
@@ -395,6 +397,7 @@ func TestPluginRuntimeHostStopSerializesWithPrepareAndPromotion(t *testing.T) {
 }
 
 func TestPluginRuntimeHostCloseCancelsAndJoinsBlockedRepositoryActivation(t *testing.T) {
+	requirePluginRuntimePlatform(t)
 	root := t.TempDir()
 	launcher := &runtimeQueueLauncher{}
 	host, err := pluginhost.New(filepath.Join(root, "runtime"), launcher, runtimeDialer{}, io.Discard)
@@ -470,6 +473,7 @@ func (r *runtimeRepo) StopPluginRuntime(_ context.Context, id, generation string
 }
 
 func TestPluginRuntimeHostDurablePromotionFailurePreservesOldProcess(t *testing.T) {
+	requirePluginRuntimePlatform(t)
 	root := t.TempDir()
 	cache := filepath.Join(root, "cache")
 	payload := []byte("runtime")
@@ -505,6 +509,7 @@ func TestPluginRuntimeHostDurablePromotionFailurePreservesOldProcess(t *testing.
 }
 
 func TestPluginRuntimeHostPersistsRestartAndCircuitState(t *testing.T) {
+	requirePluginRuntimePlatform(t)
 	root := t.TempDir()
 	cache := filepath.Join(root, "cache")
 	payload := []byte("runtime restart")
@@ -574,5 +579,12 @@ func TestSafeRuntimeErrorRedactsCredentialsBeforePersistence(t *testing.T) {
 	value := safeRuntimeError(errors.New("guest failed token=plaintext-secret Authorization=raw-bearer https://user:url-password@example.test"))
 	if strings.Contains(value, "plaintext-secret") || strings.Contains(value, "raw-bearer") || strings.Contains(value, "url-password") || !strings.Contains(value, "[REDACTED]") {
 		t.Fatalf("unsafe runtime error %q", value)
+	}
+}
+
+func requirePluginRuntimePlatform(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows plugin admission fails closed until filesystem and network isolation is complete")
 	}
 }

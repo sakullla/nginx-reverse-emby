@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,15 @@ func (store *transientPluginLogStore) EnqueuePluginLogReports(batchID string, re
 }
 
 type livePluginLogProcess struct{ done chan error }
+
+type pluginLogTestSandbox struct{}
+
+func (pluginLogTestSandbox) Available() bool                       { return true }
+func (pluginLogTestSandbox) Provider() string                      { return "test-kernel-boundary" }
+func (pluginLogTestSandbox) Validate(pluginprocess.Security) error { return nil }
+func (pluginLogTestSandbox) Configure(*exec.Cmd, pluginprocess.Security) (func() error, func() error, func(int) error, error) {
+	return func() error { return nil }, func() error { return nil }, func(int) error { return nil }, nil
+}
 
 func (process *livePluginLogProcess) PID() int               { return 77 }
 func (process *livePluginLogProcess) Wait() error            { return <-process.done }
@@ -174,7 +184,7 @@ func TestLivePluginProcessSaturationRecoversAfterExactACKWithoutLineLoss(t *test
 	}
 	process := &livePluginLogProcess{done: make(chan error, 1)}
 	runner := saturatingPluginLogRunner{process: process, writeStarted: make(chan struct{}), writeDone: make(chan error, 1)}
-	supervisor := pluginprocess.NewSupervisor(runner, nil, io.Discard)
+	supervisor := pluginprocess.NewSupervisor(runner, pluginLogTestSandbox{}, io.Discard)
 	supervisor.SetRuntimeLogSink(sink)
 	t.Cleanup(func() { _ = supervisor.Close(t.Context()) })
 	handle, err := supervisor.StartOnce(t.Context(), pluginprocess.InstanceSpec{
