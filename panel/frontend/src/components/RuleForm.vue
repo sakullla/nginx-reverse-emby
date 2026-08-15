@@ -172,7 +172,7 @@
               name="http-backend-provider"
               class="input"
               :class="{ 'input--error': errors.backend }"
-              :disabled="providersLoading"
+              :disabled="!providerCatalogReady"
               @change="clearBackendError"
             >
               <option value="">{{ providersLoading ? '正在加载...' : '选择当前节点的插件' }}</option>
@@ -185,11 +185,17 @@
                 {{ providerLabel(provider) }}{{ provider.state === 'active' ? '' : '（当前不可用）' }}
               </option>
             </select>
-            <div v-if="selectedProvider" class="provider-picker__status" role="status">
+            <div v-if="selectedProvider && providerCatalogReady" class="provider-picker__status" role="status">
               <span class="provider-picker__dot" aria-hidden="true"></span>
               已就绪 · {{ selectedProvider.display_name || selectedProvider.provider_id }}
             </div>
-            <p v-else-if="!providersLoading && providerOptions.length === 0" class="field-hint">
+            <div v-else-if="providerCatalogError" class="provider-picker__error" role="alert">
+              <span :title="providerCatalogErrorTitle">插件列表加载失败</span>
+              <button type="button" class="btn btn--sm btn--secondary" :disabled="providersLoading" @click="retryProviderCatalog">
+                重试
+              </button>
+            </div>
+            <p v-else-if="providerCatalogReady && providerOptions.length === 0" class="field-hint">
               当前节点没有可用的插件提供商
             </p>
           </div>
@@ -602,15 +608,26 @@ const emit = defineEmits(['success'])
 
 const { systemInfo } = useAgent()
 
-const createRule = useCreateRule(props.agentId)
-const updateRule = useUpdateRule(props.agentId)
+const resolvedAgentId = computed(() => String(props.agentId?.value ?? props.agentId ?? '').trim())
+const createRule = useCreateRule(resolvedAgentId)
+const updateRule = useUpdateRule(resolvedAgentId)
 const { data: relayListenersData } = useAllRelayListeners()
 const { data: egressProfilesData } = useEgressProfiles()
-const resolvedAgentId = computed(() => String(props.agentId?.value ?? props.agentId ?? '').trim())
-const { data: providerCatalog, isLoading: providersLoading } = useQuery({
+const {
+  data: providerCatalogResult,
+  isLoading: providerQueryLoading,
+  isFetching: providerQueryFetching,
+  isError: providerQueryError,
+  isSuccess: providerQuerySuccess,
+  error: providerQueryFailure,
+  refetch: refetchProviderCatalog
+} = useQuery({
   queryKey: computed(() => ['http-backend-providers', resolvedAgentId.value]),
   enabled: computed(() => Boolean(resolvedAgentId.value)),
-  queryFn: () => fetchHTTPBackendProviders(resolvedAgentId.value)
+  queryFn: async () => {
+    const agentId = resolvedAgentId.value
+    return { agentId, providers: await fetchHTTPBackendProviders(agentId) }
+  }
 })
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
@@ -621,12 +638,28 @@ const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profil
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
 }))
-const selectedProvider = computed(() => {
-  const selected = providerOptions.value.find((provider) => providerKey(provider) === form.value.provider_key)
-  return selected?.state === 'active' ? selected : null
-})
+const providerCatalogCurrent = computed(() => (
+  providerQuerySuccess.value === true
+  && String(providerCatalogResult.value?.agentId || '') === resolvedAgentId.value
+))
+const providerCatalogReady = computed(() => (
+  providerCatalogCurrent.value
+  && providerQueryFetching.value !== true
+  && providerQueryError.value !== true
+))
+const providersLoading = computed(() => Boolean(resolvedAgentId.value) && (
+  providerQueryLoading.value === true
+  || providerQueryFetching.value === true
+  || (!providerCatalogCurrent.value && providerQueryError.value !== true)
+))
+const providerCatalogError = computed(() => (
+  providerQueryError.value === true
+  && !providersLoading.value
+))
+const providerCatalogErrorTitle = computed(() => String(providerQueryFailure.value?.message || '').trim())
 const providerOptions = computed(() => {
-  const providers = Array.isArray(providerCatalog.value) ? providerCatalog.value : []
+  if (!providerCatalogReady.value) return []
+  const providers = Array.isArray(providerCatalogResult.value?.providers) ? providerCatalogResult.value.providers : []
   const current = form.value.provider_ref
   if (!current || providers.some((provider) => providerKey(provider) === form.value.provider_key)) return providers
   return [...providers, {
@@ -635,6 +668,11 @@ const providerOptions = computed(() => {
     display_name: `${current.instance_id} / ${current.provider_id}`,
     state: 'unavailable'
   }]
+})
+const selectedProvider = computed(() => {
+  if (!providerCatalogReady.value) return null
+  const selected = providerOptions.value.find((provider) => providerKey(provider) === form.value.provider_key)
+  return selected?.state === 'active' ? selected : null
 })
 const selectedEgressProfileID = computed(() => {
   const id = Number(form.value.egress_profile_id)
@@ -908,6 +946,11 @@ function clearBackendError() {
   errors.value.submit = ''
 }
 
+async function retryProviderCatalog() {
+  clearBackendError()
+  await refetchProviderCatalog()
+}
+
 function normalizeCustomHeaders(value) {
   if (!Array.isArray(value)) return []
 
@@ -1103,7 +1146,11 @@ function validateBasicFields() {
   }
 
   if (form.value.backend_mode === 'provider') {
-    if (!selectedProvider.value) {
+    if (providerCatalogError.value) {
+      errors.value.backend = '插件列表加载失败，请重试'
+    } else if (!providerCatalogReady.value) {
+      errors.value.backend = '插件列表尚未加载完成'
+    } else if (!selectedProvider.value) {
       errors.value.backend = '请选择当前可用的插件提供商'
     }
   } else {
@@ -1884,6 +1931,16 @@ async function handleSubmit() {
   align-items: center;
   gap: 0.4rem;
   color: var(--color-success);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.provider-picker__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--color-danger);
   font-size: 0.75rem;
   font-weight: 600;
 }

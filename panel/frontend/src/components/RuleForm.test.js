@@ -5,12 +5,22 @@ import RuleForm from './RuleForm.vue'
 const mocks = vi.hoisted(() => ({
   createMutateAsync: vi.fn(),
   updateMutateAsync: vi.fn(),
-  providers: { __v_isRef: true, value: [] }
+  query: null
 }))
 
-vi.mock('@tanstack/vue-query', () => ({
-  useQuery: () => ({ data: mocks.providers, isLoading: { __v_isRef: true, value: false } })
-}))
+vi.mock('@tanstack/vue-query', async () => {
+  const { ref } = await import('vue')
+  mocks.query = {
+    data: ref(),
+    isLoading: ref(false),
+    isFetching: ref(false),
+    isError: ref(false),
+    isSuccess: ref(true),
+    error: ref(null),
+    refetch: vi.fn()
+  }
+  return { useQuery: () => mocks.query }
+})
 
 vi.mock('../api', () => ({ fetchHTTPBackendProviders: vi.fn() }))
 
@@ -31,9 +41,9 @@ vi.mock('../context/AgentContext', () => ({
   useAgent: () => ({ systemInfo: { value: {} } })
 }))
 
-function mountForm(initialData = null) {
+function mountForm(initialData = null, agentId = 'edge-a') {
   return mount(RuleForm, {
-    props: { agentId: 'edge-a', initialData },
+    props: { agentId, initialData },
     global: { stubs: { RelayChainInput: true, RouterLink: true } }
   })
 }
@@ -52,15 +62,13 @@ describe('RuleForm HTTP backend provider', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset().mockResolvedValue({})
     mocks.updateMutateAsync.mockReset().mockResolvedValue({})
-    mocks.providers.value = [{
-      instance_id: 'accelerator-installed',
-      plugin_id: 'accelerator-sources',
-      provider_id: 'default',
-      display_name: '加速源',
-      agent_id: 'edge-a',
-      ready_generation: 'generation-7',
-      state: 'active'
-    }]
+    mocks.query.data.value = { agentId: 'edge-a', providers: [providerFixture('edge-a')] }
+    mocks.query.isLoading.value = false
+    mocks.query.isFetching.value = false
+    mocks.query.isError.value = false
+    mocks.query.isSuccess.value = true
+    mocks.query.error.value = null
+    mocks.query.refetch.mockReset().mockResolvedValue({})
   })
 
   it('publishes one canonical provider reference without internal runtime fields', async () => {
@@ -116,7 +124,7 @@ describe('RuleForm HTTP backend provider', () => {
   })
 
   it('refuses to publish a provider that is no longer active', async () => {
-    mocks.providers.value = []
+    mocks.query.data.value = { agentId: 'edge-a', providers: [] }
     const wrapper = mountForm({
       id: 42,
       frontend_url: 'https://media.example.com',
@@ -132,4 +140,98 @@ describe('RuleForm HTTP backend provider', () => {
     expect(wrapper.text()).toContain('请选择当前可用的插件提供商')
     expect(mocks.updateMutateAsync).not.toHaveBeenCalled()
   })
+
+  it('distinguishes a rejected catalog from an empty catalog and recovers through retry', async () => {
+    mocks.query.data.value = undefined
+    mocks.query.isSuccess.value = false
+    mocks.query.isError.value = true
+    mocks.query.error.value = new Error('network unavailable')
+    mocks.query.refetch.mockImplementation(async () => {
+      mocks.query.isError.value = false
+      mocks.query.error.value = null
+      mocks.query.data.value = { agentId: 'edge-a', providers: [providerFixture('edge-a')] }
+      mocks.query.isSuccess.value = true
+    })
+    const wrapper = mountForm()
+    await fillFrontend(wrapper)
+    await switchToProvider(wrapper)
+
+    expect(wrapper.text()).toContain('插件列表加载失败')
+    expect(wrapper.text()).not.toContain('当前节点没有可用的插件提供商')
+    expect(wrapper.get('select[name="http-backend-provider"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('form').trigger('submit')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+
+    await wrapper.get('.provider-picker__error button').trigger('click')
+    await flushPromises()
+    expect(mocks.query.refetch).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('加速源')
+    expect(wrapper.get('select[name="http-backend-provider"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('renders a successful empty catalog without the failure retry state', async () => {
+    mocks.query.data.value = { agentId: 'edge-a', providers: [] }
+    const wrapper = mountForm()
+    await switchToProvider(wrapper)
+
+    expect(wrapper.text()).toContain('当前节点没有可用的插件提供商')
+    expect(wrapper.text()).not.toContain('插件列表加载失败')
+    expect(wrapper.find('.provider-picker__error').exists()).toBe(false)
+  })
+
+  it('rejects an old Agent catalog response until the current Agent succeeds', async () => {
+    const wrapper = mountForm()
+    await fillFrontend(wrapper)
+    await switchToProvider(wrapper)
+    mocks.query.isFetching.value = true
+    await wrapper.setProps({ agentId: 'edge-b' })
+    await flushPromises()
+
+    expect(wrapper.get('select[name="http-backend-provider"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('accelerator-installed')
+    await wrapper.get('form').trigger('submit')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+
+    mocks.query.data.value = { agentId: 'edge-b', providers: [providerFixture('edge-b')] }
+    mocks.query.isFetching.value = false
+    await flushPromises()
+    const select = wrapper.get('select[name="http-backend-provider"]')
+    expect(select.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('accelerator-edge-b')
+    await select.setValue('accelerator-edge-b:default')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mocks.createMutateAsync.mock.calls[0][0].backends[0].plugin_provider.instance_id).toBe('accelerator-edge-b')
+  })
+
+  it('copies a provider rule through the create path without changing its reference', async () => {
+    const wrapper = mountForm({
+      frontend_url: 'https://copy.example.com',
+      backends: [{
+        kind: 'plugin_provider',
+        plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' }
+      }]
+    })
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0].backends).toEqual([{
+      kind: 'plugin_provider',
+      plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' }
+    }])
+  })
 })
+
+function providerFixture(agentId) {
+  return {
+    instance_id: agentId === 'edge-a' ? 'accelerator-installed' : `accelerator-${agentId}`,
+    plugin_id: 'accelerator-sources',
+    provider_id: 'default',
+    display_name: '加速源',
+    agent_id: agentId,
+    ready_generation: `generation-${agentId}`,
+    state: 'active'
+  }
+}

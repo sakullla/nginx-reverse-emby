@@ -4,8 +4,6 @@ package rpc
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
@@ -19,26 +17,24 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-const acceleratorSourcesArtifactEnv = "NRE_ACCELERATOR_SOURCES_ARTIFACT"
+const (
+	acceleratorSourcesArtifactEnv       = "NRE_ACCELERATOR_SOURCES_ARTIFACT"
+	acceleratorSourcesArtifactDigestEnv = "NRE_ACCELERATOR_SOURCES_ARTIFACT_SHA256"
+)
 
 func TestRPCRealAcceleratorSourcesArtifactLifecycle(t *testing.T) {
 	artifactPath := strings.TrimSpace(os.Getenv(acceleratorSourcesArtifactEnv))
 	if artifactPath == "" {
 		t.Skip(acceleratorSourcesArtifactEnv + " is required for the cross-repository artifact test")
 	}
-	artifactFile, err := os.Open(artifactPath)
+	expectedDigest := strings.TrimSpace(os.Getenv(acceleratorSourcesArtifactDigestEnv))
+	if expectedDigest == "" {
+		t.Fatal(acceleratorSourcesArtifactDigestEnv + " is required from the trusted package candidate step")
+	}
+	digest, err := validateAcceleratorSourcesArtifact(artifactPath, expectedDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, artifactFile); err != nil {
-		_ = artifactFile.Close()
-		t.Fatal(err)
-	}
-	if err := artifactFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-	digest := hex.EncodeToString(hash.Sum(nil))
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: runtimeRoot}, pluginprocess.NewSupervisor(nil, nil, io.Discard), nil)
 	if err != nil {
