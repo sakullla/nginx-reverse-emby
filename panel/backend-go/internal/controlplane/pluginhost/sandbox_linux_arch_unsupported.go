@@ -7,3 +7,5 @@ const (
 	backendSeccompAuditArch          = uint32(0)
 	backendSeccompX32Bit             = uint32(0)
 )
+
+var backendSeccompProcessCreationSyscalls []uint32

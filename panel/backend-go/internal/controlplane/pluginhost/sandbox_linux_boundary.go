@@ -35,7 +35,7 @@ func validateBackendNamespaces(launcher, scratch *os.File, network bool, hostUID
 	if err := regular.Chmod(0o555); err != nil {
 		return fmt.Errorf("seal control regular descriptor probe: %w", err)
 	}
-	command := exec.Command("/proc/self/fd/3", backendNamespaceProbeArg, strconv.Itoa(hostUID))
+	command := exec.Command("/proc/self/fd/3", backendNamespaceProbeArg, strconv.Itoa(hostUID), strconv.FormatBool(network))
 	command.ExtraFiles = []*os.File{launcher, scratch, regular}
 	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
 	command.Stdout = io.Discard
@@ -218,9 +218,6 @@ func prepareBackendMinimalRoot(protocol backendLaunchProtocol) error {
 			return fmt.Errorf("bind control-plane plugin device %s: %w", device, err)
 		}
 	}
-	if err := unix.Mount("proc", filepath.Join(protocol.SandboxRoot, "proc"), "proc", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "hidepid=2"); err != nil {
-		return fmt.Errorf("mount control-plane plugin proc: %w", err)
-	}
 	if err := unix.Mount("", protocol.SandboxRoot, "", unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV, ""); err != nil {
 		return fmt.Errorf("seal control-plane plugin minimal root read-only: %w", err)
 	}
@@ -256,6 +253,13 @@ func enterBackendMinimalRoot(protocol backendLaunchProtocol) error {
 	if mounted, err := backendPathIdentity(filepath.Join(protocol.SandboxRoot, "tmp")); err != nil || mounted != protocol.Temp {
 		return errors.New("final mounted control-plane plugin temporary directory identity mismatch")
 	}
+	procRoot := filepath.Join(protocol.SandboxRoot, "proc")
+	if err := unix.Mount("proc", procRoot, "proc", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "hidepid=2"); err != nil {
+		return fmt.Errorf("mount final control-plane plugin proc: %w", err)
+	}
+	if err := validateBackendMinimalProc(procRoot); err != nil {
+		return err
+	}
 	if err := unix.Chroot(protocol.SandboxRoot); err != nil {
 		return fmt.Errorf("enter control-plane plugin minimal root: %w", err)
 	}
@@ -270,9 +274,34 @@ func enterBackendMinimalRoot(protocol backendLaunchProtocol) error {
 	return nil
 }
 
+func validateBackendMinimalProc(procRoot string) error {
+	if os.Getpid() != 1 {
+		return fmt.Errorf("final control-plane plugin namespace pid is %d, want 1", os.Getpid())
+	}
+	stat, err := os.ReadFile(filepath.Join(procRoot, "self/stat"))
+	if err != nil {
+		return fmt.Errorf("read final control-plane plugin proc self stat: %w", err)
+	}
+	fields := strings.Fields(string(stat))
+	if len(fields) == 0 || fields[0] != "1" {
+		return fmt.Errorf("final control-plane plugin proc self pid is %q, want 1", strings.TrimSpace(string(stat)))
+	}
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return fmt.Errorf("list final control-plane plugin proc: %w", err)
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err == nil && pid != 1 {
+			return fmt.Errorf("final control-plane plugin proc exposes ancestor pid %d", pid)
+		}
+	}
+	return nil
+}
+
 func probeBackendFinalUserNamespace(launcherFD, hostUID int, network bool) error {
 	launcher := os.NewFile(uintptr(launcherFD), "control-namespace-final-probe-launcher")
-	command := exec.Command("/proc/self/fd/3", backendNamespaceFinalArg, strconv.Itoa(hostUID))
+	command := exec.Command("/proc/self/fd/3", backendNamespaceFinalArg, strconv.Itoa(hostUID), strconv.FormatBool(network))
 	command.ExtraFiles = []*os.File{launcher}
 	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
 	command.Stdout = io.Discard
@@ -285,7 +314,8 @@ func probeBackendFinalUserNamespace(launcherFD, hostUID int, network bool) error
 	return nil
 }
 
-func validateBackendFinalUserNamespace(hostUID int) error {
+func validateBackendFinalUserNamespace(hostUID int, network bool) error {
+	_ = network
 	if os.Geteuid() != 0 || os.Getegid() != 0 {
 		return errors.New("final control namespace identity is not uid/gid 0")
 	}
@@ -298,6 +328,32 @@ func validateBackendFinalUserNamespace(hostUID int) error {
 		return fmt.Errorf("final control namespace uid mapping %q does not equal %q", strings.TrimSpace(string(body)), want)
 	}
 	return nil
+}
+
+func backendFinalNamespaceHostUID(protocol backendLaunchProtocol) (int, error) {
+	current, err := os.Readlink("/proc/self/ns/user")
+	if err != nil {
+		return 0, fmt.Errorf("read control-plane builder user namespace: %w", err)
+	}
+	parent := protocol.ParentNamespaces["user"]
+	if parent == "" {
+		return 0, errors.New("control-plane parent user namespace is missing")
+	}
+	if current != parent {
+		return 0, nil
+	}
+	return protocol.SandboxUID, nil
+}
+
+func backendProbeFinalHostUID(hostUID int) (int, error) {
+	body, err := os.ReadFile("/proc/self/uid_map")
+	if err != nil {
+		return 0, err
+	}
+	if strings.Join(strings.Fields(string(body)), " ") == fmt.Sprintf("0 %d 1", hostUID) {
+		return 0, nil
+	}
+	return hostUID, nil
 }
 
 func bindBackendSandboxPath(source, target string, directory, readOnly bool) error {

@@ -9,3 +9,5 @@ const (
 	linuxSeccompAuditArch     = uint32(unix.AUDIT_ARCH_AARCH64)
 	linuxSeccompX32Bit        = uint32(0)
 )
+
+var linuxSeccompProcessCreationSyscalls = []uint32{unix.SYS_CLONE3}

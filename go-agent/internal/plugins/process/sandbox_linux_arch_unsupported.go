@@ -7,3 +7,5 @@ const (
 	linuxSeccompAuditArch     = uint32(0)
 	linuxSeccompX32Bit        = uint32(0)
 )
+
+var linuxSeccompProcessCreationSyscalls []uint32

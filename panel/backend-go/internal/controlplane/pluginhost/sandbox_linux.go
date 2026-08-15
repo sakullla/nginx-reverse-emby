@@ -30,7 +30,7 @@ const (
 	backendLauncherFinalArg  = "--nre-control-plugin-launcher-final-v1"
 	backendNamespaceProbeArg = "--nre-control-plugin-namespace-probe-v1"
 	backendNamespaceFinalArg = "--nre-control-plugin-namespace-final-probe-v1"
-	backendLauncherVersion   = 2
+	backendLauncherVersion   = 3
 	backendLauncherTasks     = 8
 )
 
@@ -78,24 +78,31 @@ type backendLaunchProtocol struct {
 }
 
 func init() {
-	if len(os.Args) == 3 && os.Args[1] == backendNamespaceProbeArg {
+	if len(os.Args) == 4 && os.Args[1] == backendNamespaceProbeArg {
 		hostUID, err := strconv.Atoi(os.Args[2])
-		if err != nil {
+		network, networkErr := strconv.ParseBool(os.Args[3])
+		if err != nil || networkErr != nil {
 			os.Exit(126)
 		}
 		if err := probeBackendFDMounts(4, 5, 4); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "validate control namespace descriptor mounts: %v\n", err)
 			os.Exit(126)
 		}
-		if err := probeBackendFinalUserNamespace(3, hostUID, false); err != nil {
+		finalHostUID, err := backendProbeFinalHostUID(hostUID)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "resolve nested control namespace uid mapping: %v\n", err)
+			os.Exit(126)
+		}
+		if err := probeBackendFinalUserNamespace(3, finalHostUID, network); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "validate control namespace final uid mapping: %v\n", err)
 			os.Exit(126)
 		}
 		os.Exit(0)
 	}
-	if len(os.Args) == 3 && os.Args[1] == backendNamespaceFinalArg {
+	if len(os.Args) == 4 && os.Args[1] == backendNamespaceFinalArg {
 		hostUID, err := strconv.Atoi(os.Args[2])
-		if err != nil || validateBackendFinalUserNamespace(hostUID) != nil {
+		network, networkErr := strconv.ParseBool(os.Args[3])
+		if err != nil || networkErr != nil || validateBackendFinalUserNamespace(hostUID, network) != nil {
 			os.Exit(126)
 		}
 		os.Exit(0)
@@ -520,7 +527,11 @@ func runBackendLauncherFinal(protocol backendLaunchProtocol, protocolFD int) err
 	}
 	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp", "GOMAXPROCS=1"}
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	command.SysProcAttr = backendFinalUserNamespaceSysProcAttr(protocol.SandboxUID, protocol.Budget.Network)
+	hostUID, err := backendFinalNamespaceHostUID(protocol)
+	if err != nil {
+		return err
+	}
+	command.SysProcAttr = backendFinalUserNamespaceSysProcAttr(hostUID, protocol.Budget.Network)
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("run control plugin final namespace stage: %w", err)
 	}
@@ -772,7 +783,9 @@ func installBackendSeccomp(network bool) error {
 }
 
 func backendSeccompFilters(network bool) []unix.SockFilter {
-	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID}
+	// RPC guests are single-OS-process binaries. CLONE_THREAD remains available to the Go runtime.
+	denied := append([]uint32{}, backendSeccompProcessCreationSyscalls...)
+	denied = append(denied, unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID)
 	if !network {
 		denied = append(denied, unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER)
 	}
@@ -792,6 +805,14 @@ func backendSeccompFilters(network bool) []unix.SockFilter {
 	for _, number := range denied {
 		filters = append(filters, unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: number}, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny})
 	}
+	filters = append(filters,
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: unix.SYS_CLONE},
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, Jt: 1, Jf: 0, K: unix.CLONE_THREAD},
+		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+	)
 	if !network {
 		for _, syscallNumber := range []uint32{unix.SYS_SOCKET, unix.SYS_SOCKETPAIR} {
 			filters = append(filters,
@@ -1075,6 +1096,13 @@ func backendLinuxSandboxSysProcAttrForUID(cgroup *os.File, network, namespaces b
 	if cgroup != nil {
 		attributes.UseCgroupFD = true
 		attributes.CgroupFD = int(cgroup.Fd())
+	}
+	if namespaces && os.Geteuid() != 0 {
+		attributes.Cloneflags = unix.CLONE_NEWUSER | unix.CLONE_NEWNS
+		attributes.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
+		attributes.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
+		attributes.GidMappingsEnableSetgroups = false
+		attributes.Credential = &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true}
 	}
 	return attributes
 }

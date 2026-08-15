@@ -9,3 +9,5 @@ const (
 	linuxSeccompAuditArch     = uint32(unix.AUDIT_ARCH_X86_64)
 	linuxSeccompX32Bit        = uint32(0x40000000)
 )
+
+var linuxSeccompProcessCreationSyscalls = []uint32{unix.SYS_FORK, unix.SYS_VFORK, unix.SYS_CLONE3}

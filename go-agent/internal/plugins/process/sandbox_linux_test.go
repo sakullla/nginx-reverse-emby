@@ -51,6 +51,9 @@ func TestLinuxLauncherUsesInheritedBindingsAndNoHelperLookup(t *testing.T) {
 	if final.Credential == nil || final.Credential.Uid != 0 || final.Credential.Gid != 0 || !final.Credential.NoSetGroups {
 		t.Fatalf("final launcher namespace credential = %+v", final.Credential)
 	}
+	if connected := linuxFinalUserNamespaceSysProcAttr(2100000000, true); connected.Cloneflags&unix.CLONE_NEWNET != 0 {
+		t.Fatalf("network-enabled final launcher unexpectedly requested NEWNET: %+v", connected)
+	}
 }
 
 func TestLinuxSeccompFilterValidatesArchitectureAndNetworkEscapeSyscalls(t *testing.T) {
@@ -71,6 +74,17 @@ func TestLinuxSeccompFilterValidatesArchitectureAndNetworkEscapeSyscalls(t *test
 		if got := evaluateLinuxSeccomp(linuxSeccompFilters(true), linuxSeccompAuditArch, number, 0); got != unix.SECCOMP_RET_ALLOW {
 			t.Fatalf("network-enabled io_uring syscall %d decision = %#x", number, got)
 		}
+	}
+	for _, number := range linuxSeccompProcessCreationSyscalls {
+		if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, number, 0); got != deny {
+			t.Fatalf("subprocess syscall %d decision = %#x", number, got)
+		}
+	}
+	if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, uint32(unix.SYS_CLONE), uint32(unix.SIGCHLD)); got != deny {
+		t.Fatalf("process clone decision = %#x", got)
+	}
+	if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, uint32(unix.SYS_CLONE), unix.CLONE_THREAD); got != unix.SECCOMP_RET_ALLOW {
+		t.Fatalf("thread clone decision = %#x", got)
 	}
 	for _, number := range []uint32{unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR} {
 		if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, number, 0); got != deny {
@@ -335,6 +349,9 @@ func TestLinuxNamespaceMinimalRootLive(t *testing.T) {
 	if err := validateLinuxNamespaces(launcher, scratch, false, sandboxUID); err != nil {
 		t.Skipf("kernel blocks the complete user/PID/mount/network namespace profile: %v", err)
 	}
+	if err := validateLinuxNamespaces(launcher, scratch, true, sandboxUID); err != nil {
+		t.Fatalf("network-enabled namespace profile incorrectly required NEWNET: %v", err)
+	}
 	source, _, digest := copyLinuxTestArtifact(t)
 	artifact, artifactPath, err := createLinuxArtifactImage(source)
 	if err != nil {
@@ -399,6 +416,10 @@ func TestLinuxNamespaceProbeMapsCurrentNonRootUID(t *testing.T) {
 	if len(attributes.UidMappings) != 1 || attributes.UidMappings[0].HostID != os.Geteuid() {
 		t.Fatalf("final namespace uid mapping = %+v, want host euid %d", attributes.UidMappings, os.Geteuid())
 	}
+	builder := linuxSandboxSysProcAttrForUID(nil, false, true, os.Geteuid())
+	if builder.Cloneflags&(unix.CLONE_NEWUSER|unix.CLONE_NEWNS) != unix.CLONE_NEWUSER|unix.CLONE_NEWNS || len(builder.UidMappings) != 1 || builder.UidMappings[0].HostID != os.Geteuid() {
+		t.Fatalf("non-root builder namespace mapping = %+v", builder)
+	}
 	launcher, err := os.Open("/proc/self/exe")
 	if err != nil {
 		t.Fatal(err)
@@ -409,8 +430,11 @@ func TestLinuxNamespaceProbeMapsCurrentNonRootUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer scratch.Close()
-	if !probeLinuxNamespaces(launcher, scratch, false, os.Geteuid()) {
-		t.Skip("kernel blocks unprivileged user namespaces; production fails closed without cgroup and Landlock signal scope")
+	if err := validateLinuxNamespaces(launcher, scratch, false, os.Geteuid()); err != nil {
+		if probeLinuxNamespaces(launcher, scratch, false, os.Geteuid()) {
+			t.Fatalf("production probe admitted an incomplete current-euid namespace profile: %v", err)
+		}
+		return
 	}
 }
 
@@ -475,6 +499,15 @@ func TestLinuxLauncherGuest(t *testing.T) {
 	if _, _, errno := unix.RawSyscall(uintptr(unix.SYS_OPEN_TREE), 0, 0, 0); !errors.Is(errno, unix.EPERM) {
 		t.Fatalf("open_tree after sandbox setup = %v, want EPERM", errno)
 	}
+	if err := exec.Command("/proc/self/exe", "-test.run=^$").Run(); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("single-process RPC contract exec.Command result = %v, want EPERM", err)
+	}
+	threadReady := make(chan struct{})
+	go func() {
+		runtime.LockOSThread()
+		close(threadReady)
+	}()
+	<-threadReady
 	if fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0); !errors.Is(err, unix.EPERM) {
 		if err == nil {
 			_ = unix.Close(fd)
@@ -519,6 +552,22 @@ func TestLinuxLauncherGuest(t *testing.T) {
 	if os.Getenv("NRE_TEST_NAMESPACE_ROOT") == "1" {
 		if os.Getpid() != 1 {
 			t.Fatalf("namespace plugin pid = %d, want 1", os.Getpid())
+		}
+		stat, err := os.ReadFile("/proc/self/stat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fields := strings.Fields(string(stat)); len(fields) == 0 || fields[0] != "1" {
+			t.Fatalf("namespace proc self stat = %q, want pid 1", stat)
+		}
+		entries, err := os.ReadDir("/proc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if pid, err := strconv.Atoi(entry.Name()); err == nil && pid != 1 {
+				t.Fatalf("namespace proc exposed ancestor pid %d", pid)
+			}
 		}
 		if _, err := os.Stat("/etc/passwd"); err == nil {
 			t.Fatal("minimal root exposed /etc/passwd")
@@ -584,48 +633,37 @@ func TestLinuxProcessCPUDeltaIsMonotonicAcrossExitAndPIDReuse(t *testing.T) {
 	}
 }
 
-func TestLinuxFallbackCPUChildChurnDoesNotTriggerFalseMaximumThrottle(t *testing.T) {
+func TestLinuxFallbackRejectsShortCPUChildrenAndThrottlesGuest(t *testing.T) {
 	started := time.Now()
-	process, cleanup, output := startLinuxResourceGuest(t, "churn", Budget{CPUMillis: 1000, MemoryBytes: 1 << 30, Processes: 32, Files: 128})
+	process, cleanup, output := startLinuxResourceGuest(t, "churn", Budget{CPUMillis: 500, MemoryBytes: 1 << 30, Processes: 32, Files: 128})
 	if err := process.Wait(); err != nil {
 		_ = cleanup()
-		t.Fatalf("CPU churn guest: %v; output=%s", err, output.String())
+		t.Fatalf("single-process CPU guest: %v; output=%s", err, output.String())
 	}
-	if elapsed := time.Since(started); elapsed > 3200*time.Millisecond {
+	if elapsed := time.Since(started); elapsed < 1800*time.Millisecond {
 		_ = cleanup()
-		t.Fatalf("short-lived child churn incurred false 90ms throttles: %s; output=%s", elapsed, output.String())
+		t.Fatalf("denied child churn ran 1.2 CPU seconds without observable 500 milli-CPU throttling in %s; output=%s", elapsed, output.String())
 	}
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLinuxCleanupTerminatesDescendantsAfterLeaderExit(t *testing.T) {
+func TestLinuxFallbackRejectsDescendantsAndCleanupIsIdempotent(t *testing.T) {
 	process, cleanup, output := startLinuxResourceGuest(t, "tree", Budget{CPUMillis: 1000, MemoryBytes: 1 << 30, Processes: 32, Files: 64})
 	if err := process.Wait(); err != nil {
 		_ = cleanup()
 		t.Fatalf("tree leader: %v; output=%s", err, output.String())
 	}
-	marker := "child_pid="
-	index := strings.Index(output.String(), marker)
-	if index < 0 {
+	if !strings.Contains(output.String(), "child_denied") {
 		_ = cleanup()
-		t.Fatalf("tree leader did not report child pid; output=%s", output.String())
-	}
-	pidText := strings.Fields(output.String()[index+len(marker):])[0]
-	pid, err := strconv.Atoi(pidText)
-	if err != nil {
-		_ = cleanup()
-		t.Fatal(err)
+		t.Fatalf("fallback guest did not prove descendant rejection; output=%s", output.String())
 	}
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
 	}
 	if err := cleanup(); err != nil {
 		t.Fatalf("repeated cleanup: %v", err)
-	}
-	if liveLinuxProcess(pid) {
-		t.Fatalf("descendant pid %d survived process-group cleanup", pid)
 	}
 }
 
@@ -700,14 +738,28 @@ func TestLinuxResourceGuest(t *testing.T) {
 			}
 		}
 	case "churn":
+		var initial unix.Rusage
+		if err := unix.Getrusage(unix.RUSAGE_SELF, &initial); err != nil {
+			t.Fatal(err)
+		}
+		initialCPU := time.Duration(initial.Utime.Sec+initial.Stime.Sec)*time.Second + time.Duration(initial.Utime.Usec+initial.Stime.Usec)*time.Microsecond
 		for index := 0; index < 8; index++ {
-			child := exec.Command("/proc/self/exe", "-test.run=^TestLinuxCPUChurnChild$")
-			child.Env = append(os.Environ(), "NRE_TEST_LINUX_CPU_CHURN_CHILD=1")
+			child := exec.Command("/proc/self/exe", "-test.run=^$")
+			child.Env = os.Environ()
 			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-			if err := child.Run(); err != nil {
+			if err := child.Run(); !errors.Is(err, unix.EPERM) {
+				t.Fatalf("short CPU child %d result = %v, want EPERM", index, err)
+			}
+		}
+		var usage unix.Rusage
+		for {
+			if err := unix.Getrusage(unix.RUSAGE_SELF, &usage); err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(140 * time.Millisecond)
+			cpu := time.Duration(usage.Utime.Sec+usage.Stime.Sec)*time.Second + time.Duration(usage.Utime.Usec+usage.Stime.Usec)*time.Microsecond
+			if cpu-initialCPU >= 1200*time.Millisecond {
+				return
+			}
 		}
 	case "tree":
 		artifact, err := os.Open("/proc/self/fd/3")
@@ -719,37 +771,15 @@ func TestLinuxResourceGuest(t *testing.T) {
 		child.Env = append(os.Environ(), "NRE_TEST_LINUX_RESOURCE=sleeper")
 		child.ExtraFiles = []*os.File{artifact}
 		child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdin, os.Stdin
-		if err := child.Start(); err != nil {
-			t.Fatal(err)
+		if err := child.Start(); !errors.Is(err, unix.EPERM) {
+			t.Fatalf("descendant start result = %v, want EPERM", err)
 		}
-		_, _ = fmt.Printf("child_pid=%d\n", child.Process.Pid)
+		_, _ = fmt.Println("child_denied")
 	case "sleeper":
 		time.Sleep(time.Minute)
 	default:
 		t.Fatalf("unknown resource fixture %q", mode)
 	}
-}
-
-func TestLinuxCPUChurnChild(t *testing.T) {
-	if os.Getenv("NRE_TEST_LINUX_CPU_CHURN_CHILD") != "1" {
-		t.Skip("CPU churn child helper")
-	}
-	deadline := time.Now().Add(100 * time.Millisecond)
-	for time.Now().Before(deadline) {
-	}
-}
-
-func liveLinuxProcess(pid int) bool {
-	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return false
-	}
-	end := strings.LastIndexByte(string(body), ')')
-	if end < 0 {
-		return true
-	}
-	fields := strings.Fields(string(body[end+1:]))
-	return len(fields) == 0 || fields[0] != "Z"
 }
 
 func TestLinuxSandboxEnablesControllersBeforeCreatingInstance(t *testing.T) {
