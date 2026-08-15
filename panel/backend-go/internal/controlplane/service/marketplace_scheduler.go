@@ -34,14 +34,26 @@ type MarketplaceScheduler struct {
 	closeTimeout  time.Duration
 }
 
+// DefaultMarketplaceRefreshTimeout bounds one marketplace refresh operation.
+// Slow Git transfers (e.g. official market clones behind constrained links)
+// legitimately take minutes, so the cap is deliberately generous.
+const DefaultMarketplaceRefreshTimeout = 30 * time.Minute
+
 func NewMarketplaceScheduler(service marketplaceSchedulerService, prepare func(context.Context, marketplace.Source) (context.Context, error), interval time.Duration) (*MarketplaceScheduler, error) {
+	return NewMarketplaceSchedulerWithSourceTimeout(service, prepare, interval, DefaultMarketplaceRefreshTimeout)
+}
+
+func NewMarketplaceSchedulerWithSourceTimeout(service marketplaceSchedulerService, prepare func(context.Context, marketplace.Source) (context.Context, error), interval, sourceTimeout time.Duration) (*MarketplaceScheduler, error) {
 	if service == nil || prepare == nil {
 		return nil, errors.New("marketplace scheduler service and trusted context preparer are required")
 	}
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	return &MarketplaceScheduler{service: service, prepare: prepare, now: func() time.Time { return time.Now().UTC() }, interval: interval, sourceTimeout: 2 * time.Minute, done: make(chan struct{}), inflight: make(map[string]struct{}), workerSlots: make(chan struct{}, 4), closeTimeout: 5 * time.Second}, nil
+	if sourceTimeout <= 0 {
+		sourceTimeout = DefaultMarketplaceRefreshTimeout
+	}
+	return &MarketplaceScheduler{service: service, prepare: prepare, now: func() time.Time { return time.Now().UTC() }, interval: interval, sourceTimeout: sourceTimeout, done: make(chan struct{}), inflight: make(map[string]struct{}), workerSlots: make(chan struct{}, 4), closeTimeout: 5 * time.Second}, nil
 }
 
 func (s *MarketplaceScheduler) beginSource(sourceID string) bool {

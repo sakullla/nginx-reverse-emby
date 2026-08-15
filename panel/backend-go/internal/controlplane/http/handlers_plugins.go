@@ -257,7 +257,17 @@ func (d Dependencies) handleMarketplaceRefresh(w http.ResponseWriter, r *http.Re
 		writePluginError(w, err)
 		return
 	}
-	snapshot, err := d.MarketplaceService.Refresh(r.Context(), r.PathValue("id"))
+	// Refresh survives client disconnects: slow Git transfers can take many
+	// minutes, so the operation is bounded by the configured refresh timeout
+	// instead of the HTTP request lifecycle. Context values (actor, credential
+	// authorization) are preserved by WithoutCancel.
+	refreshTimeout := d.Config.MarketplaceRefreshTimeout
+	if refreshTimeout <= 0 {
+		refreshTimeout = service.DefaultMarketplaceRefreshTimeout
+	}
+	refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(r.Context()), refreshTimeout)
+	defer cancelRefresh()
+	snapshot, err := d.MarketplaceService.Refresh(refreshCtx, r.PathValue("id"))
 	if err != nil {
 		writePluginError(w, err)
 		return

@@ -38,6 +38,8 @@
 | `NRE_TIMEZONE` | `UTC` | 面板使用的时区（IANA 格式），用于每日/每月流量汇总和计费周期边界。 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 从控制面角度的心跳间隔。（Agent 默认是 `10s`；见下面的 Agent 部分。） |
 | `NRE_DDNS_IP_PROBE_INTERVAL` | `5m` | 内置 `local` Agent 探测 DDNS 公网 IP 的最小间隔；独立于心跳和 Cloudflare DNS 对账间隔。 |
+| `NRE_MARKETPLACE_REFRESH_TIMEOUT` | `30m` | 单次插件市场刷新（含 Git 拉取与验证）的容忍上限；同时约束手动刷新（手动刷新不受客户端断开影响）。 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 空 | 可选出站代理，供市场刷新拉取 Git 仓库等控制面出站请求使用。host 网络容器内可用 `http://192.168.65.254:<端口>`` 访问宿主机回环代理（Docker Desktop）。 |
 | `NRE_PROJECT_URL` | 空 | 项目主页 URL，显示在版本信息中。 |
 
 ---

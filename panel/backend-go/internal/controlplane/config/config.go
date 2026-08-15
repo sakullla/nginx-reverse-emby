@@ -13,20 +13,21 @@ import (
 )
 
 const (
-	defaultListenAddr        = "0.0.0.0:8080"
-	defaultDataDir           = "/opt/nginx-reverse-emby/panel/data"
-	defaultFrontendDistDir   = "/opt/nginx-reverse-emby/panel/frontend/dist"
-	defaultPublicAssetsDir   = "/opt/nginx-reverse-emby/panel/public/agent-assets"
-	defaultEnableLocalAgent  = true
-	defaultLocalAgentID      = "local"
-	defaultLocalAgentName    = "local"
-	defaultDatabaseDriver    = "sqlite"
-	defaultHeartbeatInterval = 30 * time.Second
-	defaultDDNSIPProbe       = 5 * time.Minute
-	defaultManagedCertRenew  = 24 * time.Hour
-	defaultTrafficCleanup    = 24 * time.Hour
-	defaultRevisionApply     = 60 * time.Second
-	defaultRevisionDrain     = 10 * time.Minute
+	defaultListenAddr         = "0.0.0.0:8080"
+	defaultDataDir            = "/opt/nginx-reverse-emby/panel/data"
+	defaultFrontendDistDir    = "/opt/nginx-reverse-emby/panel/frontend/dist"
+	defaultPublicAssetsDir    = "/opt/nginx-reverse-emby/panel/public/agent-assets"
+	defaultEnableLocalAgent   = true
+	defaultLocalAgentID       = "local"
+	defaultLocalAgentName     = "local"
+	defaultDatabaseDriver     = "sqlite"
+	defaultHeartbeatInterval  = 30 * time.Second
+	defaultDDNSIPProbe        = 5 * time.Minute
+	defaultManagedCertRenew   = 24 * time.Hour
+	defaultTrafficCleanup     = 24 * time.Hour
+	defaultMarketplaceRefresh = 30 * time.Minute
+	defaultRevisionApply      = 60 * time.Second
+	defaultRevisionDrain      = 10 * time.Minute
 )
 
 type Config struct {
@@ -59,6 +60,7 @@ type Config struct {
 	LocalAgentTrafficStatsExplicit    bool
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
+	MarketplaceRefreshTimeout         time.Duration
 	ManagedDNSCertificatesEnabled     bool
 	RevisionCoordinator               RevisionCoordinatorConfig
 	DDNS                              DDNSRuntimeConfig
@@ -162,6 +164,7 @@ func Default() Config {
 		LocalAgentTrafficStatsEnabled:   true,
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
+		MarketplaceRefreshTimeout:       defaultMarketplaceRefresh,
 		RevisionCoordinator: RevisionCoordinatorConfig{
 			ApplyTimeout:          defaultRevisionApply,
 			DrainTimeout:          defaultRevisionDrain,
@@ -307,6 +310,13 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, err
 		}
 		cfg.RevisionCoordinator.AgentTimeoutOverrides = overrides
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_MARKETPLACE_REFRESH_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_MARKETPLACE_REFRESH_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.MarketplaceRefreshTimeout = dur
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP3_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)

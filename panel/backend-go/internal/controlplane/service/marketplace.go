@@ -141,8 +141,15 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 		if err != nil {
 			return MarketplaceCatalog{}, err
 		}
-		if !found || source.Deleting {
-			return MarketplaceCatalog{}, ErrMarketplaceEntryNotFound
+		if source.ID == "" || source.Deleting {
+			return MarketplaceCatalog{}, ErrMarketplaceSourceNotFound
+		}
+		if !found {
+			// The source exists but no snapshot has been promoted yet (first
+			// refresh still pending or previously failed). Report an empty
+			// catalog so listing endpoints render a waiting state instead of
+			// a package-level 404.
+			return MarketplaceCatalog{Source: source}, nil
 		}
 		return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
 	}
@@ -154,8 +161,9 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 	if err != nil {
 		return MarketplaceCatalog{}, err
 	}
-	if !ok || source.Deleting {
-		return MarketplaceCatalog{}, ErrMarketplaceEntryNotFound
+	if !ok {
+		// Same waiting-state semantics as the coherent path above.
+		return MarketplaceCatalog{Source: source}, nil
 	}
 	latest, err := s.Source(ctx, sourceID)
 	if err != nil {

@@ -728,7 +728,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 		marketplaceService := service.NewMarketplaceServiceWithSourceValidators(store, manager, validator, cacheRoot, sourceValidators)
 		d.MarketplaceService = marketplaceService
-		scheduler, schedulerErr := service.NewMarketplaceScheduler(marketplaceService, trustedMarketplaceSchedulerContext(d.SecretVault), 30*time.Second)
+		scheduler, schedulerErr := service.NewMarketplaceSchedulerWithSourceTimeout(marketplaceService, trustedMarketplaceSchedulerContext(d.SecretVault), 30*time.Second, d.Config.MarketplaceRefreshTimeout)
 		if schedulerErr != nil {
 			return Dependencies{}, fmt.Errorf("initialize marketplace scheduler: %w", schedulerErr)
 		}

@@ -104,6 +104,34 @@ func TestDefaultUsesNormalizedControlPlaneDataDir(t *testing.T) {
 	if cfg.RevisionCoordinator.DrainTimeout != 10*time.Minute {
 		t.Fatalf("RevisionCoordinator.DrainTimeout = %v, want 10m", cfg.RevisionCoordinator.DrainTimeout)
 	}
+	if cfg.MarketplaceRefreshTimeout != 30*time.Minute {
+		t.Fatalf("MarketplaceRefreshTimeout = %v, want 30m", cfg.MarketplaceRefreshTimeout)
+	}
+}
+
+func TestLoadFromEnvParsesMarketplaceRefreshTimeout(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_MARKETPLACE_REFRESH_TIMEOUT", "45m")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.MarketplaceRefreshTimeout != 45*time.Minute {
+		t.Fatalf("MarketplaceRefreshTimeout = %v, want 45m", cfg.MarketplaceRefreshTimeout)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidMarketplaceRefreshTimeout(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_MARKETPLACE_REFRESH_TIMEOUT", "0s")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_MARKETPLACE_REFRESH_TIMEOUT") {
+		t.Fatalf("invalid marketplace refresh timeout error = %v", err)
+	}
 }
 
 func TestLoadFromEnvParsesRevisionCoordinatorSettings(t *testing.T) {

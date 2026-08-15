@@ -171,6 +171,40 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	}
 }
 
+func TestCurrentCatalogReportsEmptyCatalogBeforeFirstSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplaceTestSource("catalog-empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	catalog := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
+
+	current, err := catalog.CurrentCatalog(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("CurrentCatalog before first snapshot error = %v", err)
+	}
+	if current.Source.ID != source.ID || current.Snapshot.ID != "" || current.Snapshot.Entries != nil {
+		t.Fatalf("pre-refresh catalog = %+v, want source with empty snapshot", current)
+	}
+
+	if _, err := catalog.CurrentCatalog(ctx, "missing-source"); !errors.Is(err, ErrMarketplaceSourceNotFound) {
+		t.Fatalf("missing source catalog error = %v", err)
+	}
+	// Package resolution must still report a package-level miss before any
+	// snapshot exists; only catalog listing collapses to an empty catalog.
+	if _, err := catalog.ResolvePackage(ctx, source.ID, "any.plugin", "1.0.0", pluginTestOtherDigest()); !errors.Is(err, ErrMarketplaceEntryNotFound) {
+		t.Fatalf("pre-refresh package resolution error = %v", err)
+	}
+}
+
 func TestOfficialSourceLazyInitializationIsIdempotentUnderConcurrency(t *testing.T) {
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
