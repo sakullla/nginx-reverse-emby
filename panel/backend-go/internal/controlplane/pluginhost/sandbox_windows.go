@@ -16,7 +16,7 @@ var backendCreateRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewP
 type backendJobCPU struct{ Flags, Rate uint32 }
 
 func validatePlatformSandbox(c Candidate) error {
-	return errors.New("windows restricted token and Job Object do not provide a complete control-plane plugin sandbox boundary")
+	return validateWindowsDefenseBudget(c)
 }
 func validateWindowsDefenseBudget(c Candidate) error {
 	budget := c.Requirement.Budget()
@@ -29,9 +29,6 @@ func validateWindowsDefenseBudget(c Candidate) error {
 	return nil
 }
 func configurePlatformSandbox(cmd *exec.Cmd, c Candidate) (func() error, func() error, func(int) error, error) {
-	if !hasUnsandboxedGrant(c.Grants) {
-		return nil, nil, nil, validatePlatformSandbox(c)
-	}
 	if err := validateWindowsDefenseBudget(c); err != nil {
 		return nil, nil, nil, err
 	}

@@ -24,6 +24,7 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
+// UnsandboxedGrant is a legacy persisted grant name. Admission ignores it.
 const UnsandboxedGrant = "plugin.process.unsandboxed"
 
 type Artifact struct{ CachePath, SHA256, GOOS, GOARCH string }
@@ -364,13 +365,9 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		}
 		return nil, fmt.Errorf("start control-plane plugin process: %w", err)
 	}
-	provider := "platform"
-	if hasUnsandboxedGrant(candidate.Grants) {
-		provider = "unsandboxed"
-	}
 	instance.mu.Lock()
 	instance.PID = process.PID()
-	instance.SandboxProvider = provider
+	instance.SandboxProvider = "platform"
 	instance.process = process
 	instance.logCloser = logWriter
 	instance.done = make(chan struct{})
@@ -1473,18 +1470,7 @@ func authorizeSandbox(candidate Candidate) error {
 	if err := candidate.Requirement.validatePackageDigest(candidate.Identity.PackageDigest); err != nil {
 		return err
 	}
-	if hasUnsandboxedGrant(candidate.Grants) {
-		return nil
-	}
 	return validatePlatformSandbox(candidate)
-}
-func hasUnsandboxedGrant(grants []string) bool {
-	for _, grant := range grants {
-		if strings.TrimSpace(grant) == UnsandboxedGrant {
-			return true
-		}
-	}
-	return false
 }
 func validateHandshake(request pluginsdk.RPCHandshakeRequest, response pluginsdk.RPCHandshakeResponse) error {
 	if request.ABI != pluginsdk.RPCABIV1 || response.ABI != request.ABI {

@@ -3,9 +3,9 @@ package process
 import (
 	"errors"
 	"os/exec"
-	"strings"
 )
 
+// UnsandboxedGrant is a legacy persisted grant name. Admission ignores it.
 const UnsandboxedGrant = "plugin.process.unsandboxed"
 
 type Budget struct {
@@ -20,6 +20,7 @@ type Security struct {
 	Requirement                                           SandboxRequirement
 	Grants                                                []string
 	EndpointDirectory, CredentialDirectory, GuestEndpoint string
+	ArtifactDigest, Generation, CookieDigest              string
 }
 
 type SandboxDecision struct {
@@ -35,39 +36,15 @@ type Sandbox interface {
 	Configure(*exec.Cmd, Security) (startCleanup func() error, processCleanup func() error, afterStart func(int) error, err error)
 }
 
-type defenseInDepthSandbox interface {
-	DefenseInDepth() bool
-}
-
-func requiresDefenseInDepth(sandbox Sandbox, security Security) bool {
-	defense, ok := sandbox.(defenseInDepthSandbox)
-	return ok && defense.DefenseInDepth() && hasUnsandboxedGrant(security.Grants)
-}
-
 func DecideSandbox(sandbox Sandbox, security Security) (SandboxDecision, error) {
 	if sandbox != nil && sandbox.Available() {
 		if err := sandbox.Validate(security); err == nil {
 			return SandboxDecision{Sandboxed: true, Provider: sandbox.Provider()}, nil
-		} else if !hasUnsandboxedGrant(security.Grants) {
+		} else {
 			return SandboxDecision{}, err
 		}
 	}
-	if hasUnsandboxedGrant(security.Grants) {
-		return SandboxDecision{Sandboxed: false, Provider: "unsandboxed", Reason: "explicit unsandboxed grant"}, nil
-	}
-	if security.Requirement.HighRisk() {
-		return SandboxDecision{}, errors.New("high-risk plugin sandbox requirement requires a platform sandbox or explicit plugin.process.unsandboxed grant")
-	}
-	return SandboxDecision{Sandboxed: false, Provider: "unavailable", Reason: "sandbox unavailable for low-risk plugin"}, nil
-}
-
-func hasUnsandboxedGrant(grants []string) bool {
-	for _, grant := range grants {
-		if strings.TrimSpace(grant) == UnsandboxedGrant {
-			return true
-		}
-	}
-	return false
+	return SandboxDecision{}, errors.New("plugin process isolation is unavailable on this platform")
 }
 
 func defaultSandbox() Sandbox { return newPlatformSandbox() }

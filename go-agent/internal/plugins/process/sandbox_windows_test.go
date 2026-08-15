@@ -37,7 +37,7 @@ func TestWindowsSandboxLiveProcess(t *testing.T) {
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestWindowsSandboxGuest$"},
 		Environment: []string{"NRE_TEST_WINDOWS_SANDBOX_GUEST=1", "NRE_TEST_WINDOWS_DENIED_PATH=" + deniedPath},
-		Security:    Security{Requirement: requirement, Grants: []string{UnsandboxedGrant}},
+		Security:    Security{Requirement: requirement},
 	}, sandbox, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestWindowsSandboxGuest(t *testing.T) {
 	}
 }
 
-func TestWindowsSandboxRejectsCanonicalRequirementsWithoutExplicitGrant(t *testing.T) {
+func TestWindowsSandboxAdmitsCanonicalRequirementsWithoutGrant(t *testing.T) {
 	ordinary := canonicalNonprivilegedRequirement(t, strings.Repeat("a", 64))
 	privileged, err := NewSandboxRequirement(SandboxRequirementProjection{
 		PackageDigest: strings.Repeat("a", 64), Permissions: []SandboxPermission{PermissionSecretUse}, ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPRequest},
@@ -69,19 +69,20 @@ func TestWindowsSandboxRejectsCanonicalRequirementsWithoutExplicitGrant(t *testi
 		t.Fatal(err)
 	}
 	sandbox := windowsJobSandbox{}
-	if sandbox.Available() {
-		t.Fatal("Windows defense-in-depth controls were advertised as a complete sandbox")
+	if !sandbox.Available() {
+		t.Fatal("Windows restricted-token launcher is unavailable")
 	}
 	for name, requirement := range map[string]SandboxRequirement{"ordinary": ordinary, "privileged": privileged} {
 		t.Run(name, func(t *testing.T) {
 			security := Security{Requirement: requirement}
-			if _, err := DecideSandbox(sandbox, security); err == nil {
-				t.Fatal("canonical requirement was admitted without an enforceable Windows boundary")
+			decision, err := DecideSandbox(sandbox, security)
+			if err != nil || !decision.Sandboxed || decision.Provider != sandbox.Provider() {
+				t.Fatalf("Windows sandbox decision = %+v, %v", decision, err)
 			}
 			security.Grants = []string{UnsandboxedGrant}
-			decision, err := DecideSandbox(sandbox, security)
-			if err != nil || decision.Sandboxed || decision.Provider != "unsandboxed" {
-				t.Fatalf("explicit Windows unsandboxed admission = %+v, %v", decision, err)
+			decision, err = DecideSandbox(sandbox, security)
+			if err != nil || !decision.Sandboxed || decision.Provider != sandbox.Provider() {
+				t.Fatalf("legacy grant changed Windows sandbox decision = %+v, %v", decision, err)
 			}
 		})
 	}

@@ -76,6 +76,14 @@ func validateEndpoint(runtimeDirectory string, endpoint Endpoint) error {
 		if err != nil {
 			return err
 		}
+		parent := filepath.Dir(address)
+		if runtime.GOOS == "linux" && strings.HasPrefix(parent, "/proc/self/fd/") {
+			parent, err = filepath.EvalSymlinks(parent)
+			if err != nil {
+				return fmt.Errorf("resolve control-plane plugin inherited endpoint directory: %w", err)
+			}
+			address = filepath.Join(parent, filepath.Base(address))
+		}
 		rel, err := filepath.Rel(root, address)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return errors.New("control-plane plugin unix endpoint escapes runtime directory")

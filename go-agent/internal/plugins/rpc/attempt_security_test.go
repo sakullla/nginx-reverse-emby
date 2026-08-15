@@ -62,7 +62,7 @@ func TestRPCAttemptSecurityIsFreshPrivateAndDestroyed(t *testing.T) {
 		if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 			t.Fatalf("credential directory is not private: %v, %v", info, err)
 		}
-		if filepath.Dir(attempt.dial.Address) != attempt.endpointDirectory || attempt.guestEndpoint != guestEndpointDirectory+"/rpc.sock" {
+		if err := validateUnixEndpoint(attempt.endpointDirectory, attempt.dial.Address); err != nil || filepath.Base(attempt.guestEndpoint) != filepath.Base(attempt.dial.Address) {
 			t.Fatalf("unix endpoint is not host-managed: %+v", attempt)
 		}
 		if err := attempt.cleanup(); err != nil {

@@ -1288,6 +1288,10 @@ Type=simple
 EnvironmentFile=$ENV_FILE
 WorkingDirectory=$DATA_DIR
 ExecStart=$BIN_PATH
+# Delegate the Agent service's cgroup v2 subtree so the built-in launcher can
+# create per-plugin CPU, memory and process groups without a privileged helper.
+Delegate=yes
+TasksMax=infinity
 Restart=always
 RestartSec=5
 

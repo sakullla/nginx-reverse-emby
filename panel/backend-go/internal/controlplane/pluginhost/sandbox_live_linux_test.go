@@ -9,14 +9,12 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 )
 
@@ -26,15 +24,10 @@ func TestPluginHostRealLinuxSandboxGRPCHandshake(t *testing.T) {
 		return
 	}
 	if testing.Short() {
-		t.Skip("real bwrap/cgroup/seccomp gRPC belongs to the full tier")
+		t.Skip("real kernel-isolated gRPC belongs to the full tier")
 	}
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap unavailable")
-	}
-	if _, err := exec.LookPath("prlimit"); err != nil || unix.Access("/sys/fs/cgroup", unix.W_OK) != nil {
-		t.Skip("writable cgroup v2 or prlimit unavailable")
-	}
-	root, err := os.MkdirTemp("/tmp", "nre-sandbox-")
+	t.Setenv("PATH", t.TempDir())
+	root, err := os.MkdirTemp("", "nr-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +59,19 @@ func TestPluginHostRealLinuxSandboxGRPCHandshake(t *testing.T) {
 	if _, err := host.Activate(t.Context(), candidate); err != nil {
 		t.Fatal(err)
 	}
+	replacement := candidate
+	replacement.Identity.Generation = "g2"
+	if _, err := host.Activate(t.Context(), replacement); err != nil {
+		t.Fatal(err)
+	}
 	if err := host.Stop(context.Background(), candidate.InstanceID); err != nil {
 		t.Fatal(err)
 	}
+	assertNoControlAttemptDirectories(t, filepath.Join(root, "runtime"))
 }
 
 func runControlLinuxSandboxGuest(t *testing.T) {
+	time.Sleep(1200 * time.Millisecond)
 	endpoint := strings.TrimPrefix(os.Getenv("NRE_PLUGIN_ENDPOINT"), "unix:")
 	cookieBytes, err := os.ReadFile(os.Getenv("NRE_PLUGIN_COOKIE_FILE"))
 	if err != nil {
@@ -84,6 +84,22 @@ func runControlLinuxSandboxGuest(t *testing.T) {
 	server := grpc.NewServer()
 	server.RegisterService(controlAttemptServiceDesc(string(cookieBytes), server.GracefulStop), struct{}{})
 	if err := server.Serve(listener); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertNoControlAttemptDirectories(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".p-") {
+			t.Fatalf("control RPC attempt directory leaked after replacement/stop: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 }

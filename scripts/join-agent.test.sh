@@ -44,6 +44,14 @@ assert_eq() {
 
 assert_eq "canonical systemd service name" "$SYSTEMD_SERVICE_NAME" "nre-agent.service"
 assert_eq "legacy systemd service name" "$LEGACY_SYSTEMD_SERVICE_NAME" "nginx-reverse-emby-agent.service"
+grep -Fq 'Delegate=yes' "$script" || {
+    echo "systemd install must delegate the Agent cgroup subtree" >&2
+    exit 1
+}
+grep -Fq 'TasksMax=infinity' "$script" || {
+    echo "systemd install must leave per-plugin process limits to delegated cgroups" >&2
+    exit 1
+}
 
 run_go_shell_pki_contract() {
     go_data_dir="$DATA_DIR"

@@ -115,11 +115,19 @@ func validateUnixEndpoint(root, address string) error {
 	if err != nil {
 		return err
 	}
+	parent := filepath.Dir(absoluteAddress)
+	if runtime.GOOS == "linux" && strings.HasPrefix(parent, "/proc/self/fd/") {
+		parent, err = filepath.EvalSymlinks(parent)
+		if err != nil {
+			return fmt.Errorf("resolve RPC plugin inherited endpoint directory: %w", err)
+		}
+		absoluteAddress = filepath.Join(parent, filepath.Base(absoluteAddress))
+	}
 	rel, err := filepath.Rel(absoluteRoot, absoluteAddress)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return errors.New("RPC plugin unix endpoint escapes the managed runtime root")
 	}
-	parent := filepath.Dir(absoluteAddress)
+	parent = filepath.Dir(absoluteAddress)
 	info, err := os.Stat(parent)
 	if err != nil {
 		return fmt.Errorf("stat RPC plugin unix endpoint directory: %w", err)

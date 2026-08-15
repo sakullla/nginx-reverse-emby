@@ -3,7 +3,10 @@
 package process
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -11,90 +14,154 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
-func TestLinuxSandboxBindsCgroupBeforeExecAndUsesMinimalFilesystem(t *testing.T) {
-	security := Security{Requirement: testSandboxRequirement(Budget{Files: 32, Network: false}, false, true), EndpointDirectory: "/managed/attempt/endpoint", CredentialDirectory: "/managed/attempt/credentials", GuestEndpoint: "/run/nre-plugin/rpc.sock"}
-	args := linuxSandboxArguments("/usr/bin/bwrap", "/usr/bin/prlimit", "/managed/instance/plugin", []string{"--guest"}, []string{"PATH=/usr/bin:/bin"}, security, 3)
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--ro-bind / /") || strings.Contains(joined, "/home") || strings.Contains(joined, "/root") || strings.Contains(joined, "/panel") {
-		t.Fatalf("sandbox exposed host filesystem: %s", joined)
-	}
-	for _, required := range []string{"--ro-bind /managed/instance/plugin /plugin/plugin", "--bind /managed/attempt/endpoint /run/nre-plugin", "--ro-bind /managed/attempt/credentials /run/nre-plugin-credentials", "NRE_PLUGIN_ENDPOINT unix:/run/nre-plugin/rpc.sock", "--unshare-net", "--seccomp 3", "/runtime/prlimit --nofile=32:32 -- /plugin/plugin"} {
+func TestLinuxLauncherUsesInheritedBindingsAndNoHelperLookup(t *testing.T) {
+	environment := linuxChildEnvironment(
+		[]string{"PATH=/usr/bin:/bin", "NRE_PLUGIN_ENDPOINT=unix:/host/rpc.sock", "NRE_PLUGIN_COOKIE_FILE=/host/cookie"},
+		4,
+		5,
+		"/run/nre-plugin/rpc.sock",
+	)
+	joined := strings.Join(environment, " ")
+	for _, required := range []string{"NRE_PLUGIN_ENDPOINT=unix:/proc/self/fd/4/rpc.sock", "NRE_PLUGIN_COOKIE_FILE=/proc/self/fd/5/cookie"} {
 		if !strings.Contains(joined, required) {
-			t.Fatalf("sandbox argument %q missing from %s", required, joined)
+			t.Fatalf("child environment missing %q: %s", required, joined)
 		}
 	}
-	attributes := linuxSandboxSysProcAttr(19)
-	if !attributes.UseCgroupFD || attributes.CgroupFD != 19 {
-		t.Fatalf("cgroup is not bound before guest exec: %+v", attributes)
+	for _, forbidden := range []string{"bwrap", "prlimit", "/host/rpc.sock", "/host/cookie"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("child environment exposes external launcher dependency %q: %s", forbidden, joined)
+		}
+	}
+	attributes := linuxSandboxSysProcAttr(nil, false, true)
+	if !attributes.Setpgid || attributes.Pdeathsig != unix.SIGKILL || attributes.UseCgroupFD || attributes.Cloneflags&unix.CLONE_NEWNET == 0 || attributes.Cloneflags&unix.CLONE_NEWUSER == 0 {
+		t.Fatalf("launcher process attributes = %+v", attributes)
 	}
 }
 
-func TestLinuxSandboxLiveProcess(t *testing.T) {
-	if os.Getenv("NRE_TEST_LINUX_SANDBOX") != "1" {
-		t.Skip("set NRE_TEST_LINUX_SANDBOX=1 on a Linux cgroup v2 host")
+func TestLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testing.T) {
+	artifact, identity, digest := copyLinuxTestArtifact(t)
+	endpointPath := filepath.Join(t.TempDir(), "e")
+	credentialPath := filepath.Join(t.TempDir(), "c")
+	if err := os.Mkdir(endpointPath, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	sandbox := newPlatformSandbox()
-	if !sandbox.Available() {
-		t.Fatal("Linux sandbox prerequisites are unavailable")
+	if err := os.Mkdir(credentialPath, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(credentialPath, "cookie"), []byte("cookie"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := os.Open(endpointPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer endpoint.Close()
+	credential, err := os.Open(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer credential.Close()
+	endpointIdentity, _ := linuxFileIdentity(endpoint)
+	credentialIdentity, _ := linuxFileIdentity(credential)
+	cookieDigest, _ := digestAt(int(credential.Fd()), "cookie")
+	generationDigest, _ := digestGenerationCookieAt(int(credential.Fd()), "generation-1")
+	base := linuxLaunchProtocol{
+		Version:                linuxLauncherVersion,
+		Generation:             "generation-1",
+		ArtifactDigest:         digest,
+		CookieDigest:           cookieDigest,
+		GenerationCookieDigest: generationDigest,
+		Artifact:               identity,
+		Endpoint:               endpointIdentity,
+		Credential:             credentialIdentity,
+		ArtifactFD:             3,
+		EndpointFD:             4,
+		CredentialFD:           5,
+		EndpointRequired:       true,
+		Environment:            []string{"PATH=/usr/bin:/bin"},
+		Budget:                 Budget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64},
+	}
+	tests := map[string]struct {
+		mutate func(*linuxLaunchProtocol)
+		want   string
+	}{
+		"artifact":   {func(protocol *linuxLaunchProtocol) { protocol.ArtifactDigest = strings.Repeat("0", 64) }, "artifact descriptor digest mismatch"},
+		"fd":         {func(protocol *linuxLaunchProtocol) { protocol.Endpoint = credentialIdentity }, "endpoint descriptor: descriptor identity mismatch"},
+		"cookie":     {func(protocol *linuxLaunchProtocol) { protocol.CookieDigest = strings.Repeat("0", 64) }, "credential cookie digest mismatch"},
+		"generation": {func(protocol *linuxLaunchProtocol) { protocol.GenerationCookieDigest = strings.Repeat("0", 64) }, "credential generation binding mismatch"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			protocol := base
+			test.mutate(&protocol)
+			protocolFile, err := createLinuxProtocolFile(protocol)
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command(os.Args[0], linuxLauncherChildArg, "6")
+			command.ExtraFiles = []*os.File{artifact, endpoint, credential, protocolFile}
+			var output bytes.Buffer
+			command.Stderr = &output
+			err = command.Run()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 125 {
+				t.Fatalf("launcher mismatch exit = %v, output=%s", err, output.String())
+			}
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("launcher mismatch output = %q, want %q", output.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestLinuxLauncherCleanPathLiveProcess(t *testing.T) {
+	artifact, _, digest := copyLinuxTestArtifact(t)
+	t.Setenv("PATH", t.TempDir())
 	process, cleanup, err := (ExecRunner{}).Start(context.Background(), InstanceSpec{
-		ID:          "sandbox-live",
-		Executable:  os.Args[0],
-		Args:        []string{"-test.run=^TestLinuxSandboxGuest$"},
-		Environment: []string{"NRE_TEST_LINUX_SANDBOX_GUEST=1"},
-		Security: Security{Requirement: testSandboxRequirement(Budget{
-			CPUMillis:   1000,
-			MemoryBytes: 256 << 20,
-			Processes:   8,
-			Files:       64,
-		}, false, true)},
-	}, sandbox, io.Discard)
+		ID:          "launcher-live",
+		Executable:  artifact.Name(),
+		Args:        []string{"-test.run=^TestLinuxLauncherGuest$"},
+		Environment: []string{"NRE_TEST_LINUX_LAUNCHER_GUEST=1"},
+		Security: Security{
+			Requirement:    testSandboxRequirement(Budget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64}, false, true),
+			ArtifactDigest: digest,
+			Generation:     "generation-live",
+		},
+	}, linuxSandbox{prepareCgroup: func(Budget) (string, *os.File, error) {
+		return "", nil, unix.EROFS
+	}}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitErr := process.Wait()
-	cleanupErr := cleanup()
-	if err := errors.Join(waitErr, cleanupErr); err != nil {
+	if err := errors.Join(process.Wait(), cleanup()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLinuxSandboxCleanupKillsResidualProcess(t *testing.T) {
-	if os.Getenv("NRE_TEST_LINUX_SANDBOX") != "1" {
-		t.Skip("set NRE_TEST_LINUX_SANDBOX=1 on a Linux cgroup v2 host")
+func TestLinuxLauncherGuest(t *testing.T) {
+	if os.Getenv("NRE_TEST_LINUX_LAUNCHER_GUEST") != "1" {
+		t.Skip("launcher guest helper")
 	}
-	dir, cgroup, err := prepareLinuxCgroup(Budget{CPUMillis: 1000, MemoryBytes: 256 << 20, Processes: 8, Files: 64})
-	if err != nil {
+	var files unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &files); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sleep", "30")
-	cmd.SysProcAttr = linuxSandboxSysProcAttr(int(cgroup.Fd()))
-	if err := cmd.Start(); err != nil {
-		_ = cgroup.Close()
-		_ = removeLinuxCgroup(dir)
+	if files.Cur != 64 || files.Max != 64 {
+		t.Fatalf("RLIMIT_NOFILE = %+v", files)
+	}
+	var cpu unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_CPU, &cpu); err != nil {
 		t.Fatal(err)
 	}
-	if err := cgroup.Close(); err != nil {
-		t.Fatal(err)
+	if cpu.Cur <= 1 {
+		t.Fatalf("RLIMIT_CPU unexpectedly limits a long-lived plugin: %+v", cpu)
 	}
-	if err := removeLinuxCgroup(dir); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatal(err)
-	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("residual cgroup process exited without cgroup.kill")
-	}
-}
-
-func TestLinuxSandboxGuest(t *testing.T) {
-	if os.Getenv("NRE_TEST_LINUX_SANDBOX_GUEST") != "1" {
-		t.Skip("sandbox guest helper")
-	}
-	if _, err := os.Stat("/panel"); !os.IsNotExist(err) {
-		t.Fatalf("host panel path is visible: %v", err)
+	if err := unix.Mount("none", "/", "", 0, ""); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("seccomp mount result = %v, want EPERM", err)
 	}
 }
 
@@ -122,4 +189,35 @@ func TestLinuxSandboxEnablesControllersBeforeCreatingInstance(t *testing.T) {
 	if string(control) != "+cpu +memory +pids" {
 		t.Fatalf("subtree controllers = %q", control)
 	}
+}
+
+func copyLinuxTestArtifact(t *testing.T) (*os.File, linuxFDIdentity, string) {
+	t.Helper()
+	source, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	path := filepath.Join(t.TempDir(), "plugin")
+	target, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(target, hash), source); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = artifact.Close() })
+	identity, err := linuxFileIdentity(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return artifact, identity, hex.EncodeToString(hash.Sum(nil))
 }

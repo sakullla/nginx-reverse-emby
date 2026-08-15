@@ -90,24 +90,22 @@ func TestSandboxUnsupportedBudgetFailsClosed(t *testing.T) {
 		t.Fatal("unsupported budget accepted")
 	}
 	security.Grants = []string{UnsandboxedGrant}
-	decision, err := DecideSandbox(sandbox, security)
-	if err != nil || decision.Sandboxed {
-		t.Fatalf("explicit unsandboxed decision = %+v, %v", decision, err)
+	if _, err := DecideSandbox(sandbox, security); err == nil {
+		t.Fatal("legacy unsandboxed grant bypassed an unsupported resource budget")
 	}
 }
 func (fakeSandbox) Attach(int, Security) (func() error, error) {
 	return func() error { return nil }, nil
 }
 
-func TestSandboxRejectsHighRiskWithoutExplicitGrant(t *testing.T) {
+func TestSandboxRejectsHighRiskEvenWithLegacyGrant(t *testing.T) {
 	security := Security{Requirement: testSandboxRequirement(Budget{Processes: 1}, true, true)}
 	if _, err := DecideSandbox(fakeSandbox{}, security); err == nil {
 		t.Fatal("high-risk unsandboxed process was accepted")
 	}
 	security.Grants = []string{UnsandboxedGrant}
-	decision, err := DecideSandbox(fakeSandbox{}, security)
-	if err != nil || decision.Sandboxed {
-		t.Fatalf("explicit decision = %+v, %v", decision, err)
+	if _, err := DecideSandbox(fakeSandbox{}, security); err == nil {
+		t.Fatal("legacy unsandboxed grant bypassed unavailable process isolation")
 	}
 }
 

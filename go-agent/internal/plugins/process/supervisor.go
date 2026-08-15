@@ -101,7 +101,14 @@ func (ExecRunner) StartWithStreams(ctx context.Context, spec InstanceSpec, sandb
 	if err := validateProcessLocation(spec); err != nil {
 		return nil, nil, err
 	}
-	if _, err := DecideSandbox(sandbox, spec.Security); err != nil {
+	security := spec.Security
+	if security.ArtifactDigest == "" {
+		security.ArtifactDigest = spec.RuntimeLogIdentity.ArtifactDigest
+	}
+	if security.Generation == "" {
+		security.Generation = spec.RuntimeLogIdentity.ProviderGenerationID
+	}
+	if _, err := DecideSandbox(sandbox, security); err != nil {
 		return nil, nil, err
 	}
 	cmd := exec.CommandContext(ctx, spec.Executable, spec.Args...)
@@ -115,9 +122,9 @@ func (ExecRunner) StartWithStreams(ctx context.Context, spec InstanceSpec, sandb
 	prepareCleanup := func() error { return nil }
 	cleanup := func() error { return nil }
 	afterStart := func(int) error { return nil }
-	if sandbox != nil && ((sandbox.Available() && !hasUnsandboxedGrant(spec.Security.Grants)) || requiresDefenseInDepth(sandbox, spec.Security)) {
+	if sandbox != nil && sandbox.Available() {
 		var err error
-		prepareCleanup, cleanup, afterStart, err = sandbox.Configure(cmd, spec.Security)
+		prepareCleanup, cleanup, afterStart, err = sandbox.Configure(cmd, security)
 		if err != nil {
 			return nil, nil, err
 		}

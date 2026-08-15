@@ -9,12 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,7 +48,7 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 	if err != nil || strings.TrimSpace(runtimeDirectory) == "" {
 		return attemptSecurity{}, errors.New("RPC plugin attempt requires a managed runtime directory")
 	}
-	root, err := os.MkdirTemp(runtimeDirectory, ".rpc-attempt-")
+	root, err := os.MkdirTemp(runtimeDirectory, ".p-")
 	if err != nil {
 		return attemptSecurity{}, err
 	}
@@ -54,12 +56,23 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 	if cleanup == nil {
 		cleanup = cleanupAttemptDirectory
 	}
-	security := attemptSecurity{dial: dial, cleanup: func() error { return cleanup(runtimeDirectory, root) }}
+	var endpointHandle *os.File
+	var cleanupMu sync.Mutex
+	security := attemptSecurity{dial: dial, cleanup: func() error {
+		cleanupMu.Lock()
+		defer cleanupMu.Unlock()
+		var closeErr error
+		if endpointHandle != nil {
+			closeErr = endpointHandle.Close()
+			endpointHandle = nil
+		}
+		return errors.Join(closeErr, cleanup(runtimeDirectory, root))
+	}}
 	if err := os.Chmod(root, 0o700); err != nil {
 		return security, err
 	}
-	endpointDirectory := filepath.Join(root, "endpoint")
-	credentialDirectory := filepath.Join(root, "credentials")
+	endpointDirectory := filepath.Join(root, "e")
+	credentialDirectory := filepath.Join(root, "c")
 	security.endpointDirectory = endpointDirectory
 	security.credentialDirectory = credentialDirectory
 	if err := os.Mkdir(endpointDirectory, 0o700); err != nil {
@@ -81,14 +94,19 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 	environment := []string{"NRE_PLUGIN_COOKIE_FILE=" + cookieFile}
 	guestEndpoint := ""
 	if strings.EqualFold(dial.Network, "unix") {
-		dial.Address = filepath.Join(endpointDirectory, "rpc.sock")
-		if runtime.GOOS != "windows" && len(dial.Address) >= 104 {
-			security.dial = dial
-			security.environment = environment
+		socketName := "r-" + cookie[:16] + ".sock"
+		dial.Address = filepath.Join(endpointDirectory, socketName)
+		if runtime.GOOS == "linux" {
+			endpointHandle, err = os.Open(endpointDirectory)
+			if err != nil {
+				return security, err
+			}
+			dial.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+		} else if runtime.GOOS != "windows" && len(dial.Address) >= 104 {
 			return security, errors.New("RPC plugin managed unix endpoint path is too long")
 		}
 		dial.RuntimeRoot = endpointDirectory
-		guestEndpoint = guestEndpointDirectory + "/rpc.sock"
+		guestEndpoint = guestEndpointDirectory + "/" + socketName
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT=unix:"+dial.Address)
 	} else {
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+dial.Network+":"+dial.Address)
@@ -124,7 +142,7 @@ func cleanupAttemptDirectory(runtimeDirectory, root string) error {
 		return err
 	}
 	relative, err := filepath.Rel(runtimeDirectory, root)
-	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(filepath.Base(relative), ".rpc-attempt-") {
+	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(filepath.Base(relative), ".p-") {
 		return errors.New("refusing to clean RPC attempt outside managed runtime directory")
 	}
 	var removeErr error

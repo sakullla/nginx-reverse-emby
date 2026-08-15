@@ -599,6 +599,10 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
 	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
 	candidate.Process.Security.GuestEndpoint = security.guestEndpoint
+	candidate.Process.Security.ArtifactDigest = candidate.Artifact.SHA256
+	candidate.Process.Security.Generation = candidate.Generation
+	cookieDigest := sha256.Sum256([]byte(candidate.Dial.Cookie))
+	candidate.Process.Security.CookieDigest = hex.EncodeToString(cookieDigest[:])
 	candidate.Process.GeneratedEnvironment = replaceGeneratedEnvironment(candidate.Process.GeneratedEnvironment, security.environment)
 	candidate.Process.SensitiveValues = append(candidate.Process.SensitiveValues, candidate.Dial.Cookie)
 	candidate.Process.RuntimeLogIdentity = pluginprocess.RuntimeLogIdentity{

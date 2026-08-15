@@ -9,12 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,7 +48,7 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 	if err != nil || strings.TrimSpace(runtimeDirectory) == "" {
 		return controlAttemptSecurity{}, errors.New("control-plane plugin attempt requires a managed runtime directory")
 	}
-	root, err := os.MkdirTemp(runtimeDirectory, ".rpc-attempt-")
+	root, err := os.MkdirTemp(runtimeDirectory, ".p-")
 	if err != nil {
 		return controlAttemptSecurity{}, err
 	}
@@ -54,12 +56,23 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 	if cleanup == nil {
 		cleanup = cleanupControlAttemptDirectory
 	}
-	security := controlAttemptSecurity{endpoint: endpoint, cleanup: func() error { return cleanup(runtimeDirectory, root) }}
+	var endpointHandle *os.File
+	var cleanupMu sync.Mutex
+	security := controlAttemptSecurity{endpoint: endpoint, cleanup: func() error {
+		cleanupMu.Lock()
+		defer cleanupMu.Unlock()
+		var closeErr error
+		if endpointHandle != nil {
+			closeErr = endpointHandle.Close()
+			endpointHandle = nil
+		}
+		return errors.Join(closeErr, cleanup(runtimeDirectory, root))
+	}}
 	if err := os.Chmod(root, 0o700); err != nil {
 		return security, err
 	}
-	endpointDirectory := filepath.Join(root, "endpoint")
-	credentialDirectory := filepath.Join(root, "credentials")
+	endpointDirectory := filepath.Join(root, "e")
+	credentialDirectory := filepath.Join(root, "c")
 	security.endpointDirectory = endpointDirectory
 	security.credentialDirectory = credentialDirectory
 	if err := os.Mkdir(endpointDirectory, 0o700); err != nil {
@@ -80,13 +93,18 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 	environment := []string{"NRE_PLUGIN_COOKIE_FILE=" + cookieFile}
 	guestEndpoint := ""
 	if strings.EqualFold(endpoint.Network, "unix") {
-		endpoint.Address = filepath.Join(endpointDirectory, "rpc.sock")
-		if runtime.GOOS != "windows" && len(endpoint.Address) >= 104 {
-			security.endpoint = endpoint
-			security.environment = environment
+		socketName := "r-" + endpoint.Cookie[:16] + ".sock"
+		endpoint.Address = filepath.Join(endpointDirectory, socketName)
+		if runtime.GOOS == "linux" {
+			endpointHandle, err = os.Open(endpointDirectory)
+			if err != nil {
+				return security, err
+			}
+			endpoint.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+		} else if runtime.GOOS != "windows" && len(endpoint.Address) >= 104 {
 			return security, errors.New("control-plane plugin managed unix endpoint path is too long")
 		}
-		guestEndpoint = controlGuestEndpointDirectory + "/rpc.sock"
+		guestEndpoint = controlGuestEndpointDirectory + "/" + socketName
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT=unix:"+endpoint.Address)
 	} else {
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+endpoint.Network+":"+endpoint.Address)
@@ -122,7 +140,7 @@ func cleanupControlAttemptDirectory(runtimeDirectory, root string) error {
 		return err
 	}
 	relative, err := filepath.Rel(runtimeDirectory, root)
-	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(filepath.Base(relative), ".rpc-attempt-") {
+	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(filepath.Base(relative), ".p-") {
 		return errors.New("refusing to clean control-plane RPC attempt outside managed runtime directory")
 	}
 	return os.RemoveAll(root)

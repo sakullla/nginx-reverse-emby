@@ -40,11 +40,13 @@ func TestComposeDefaultTimezoneUsesRuntimeTzdata(t *testing.T) {
 	if nextStage := strings.Index(controlPlaneBody, "\nFROM "); nextStage >= 0 {
 		controlPlaneBody = controlPlaneBody[:nextStage]
 	}
-	if !strings.Contains(controlPlaneBody, "bubblewrap ca-certificates tzdata") {
+	if !strings.Contains(controlPlaneBody, "ca-certificates tzdata") {
 		t.Fatal("control-plane-runtime image must install tzdata before Compose defaults to an IANA timezone")
 	}
-	if !strings.Contains(controlPlaneBody, "bubblewrap") {
-		t.Fatal("control-plane-runtime image must install bubblewrap for sandboxed control-plane plugins")
+	for _, forbidden := range []string{"bubblewrap", "bwrap", "prlimit"} {
+		if strings.Contains(controlPlaneBody, forbidden) {
+			t.Fatalf("control-plane-runtime image must not install external plugin launcher helper %q", forbidden)
+		}
 	}
 
 	mainPath := filepath.Join("..", "..", "..", "cmd", "nre-control-plane", "main.go")
@@ -57,16 +59,16 @@ func TestComposeDefaultTimezoneUsesRuntimeTzdata(t *testing.T) {
 	}
 }
 
-func TestComposeProvidesControlPlanePluginCgroupSandbox(t *testing.T) {
+func TestComposeDoesNotRequirePrivilegedPluginLauncherSettings(t *testing.T) {
 	composePath := filepath.Join("..", "..", "..", "..", "..", "docker-compose.yaml")
 	body, err := os.ReadFile(composePath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) error = %v", composePath, err)
 	}
 	compose := string(body)
-	for _, required := range []string{"cgroup: host", "seccomp=unconfined", "/sys/fs/cgroup:/sys/fs/cgroup:rw"} {
-		if !strings.Contains(compose, required) {
-			t.Fatalf("docker-compose.yaml missing control-plane plugin sandbox setting %q", required)
+	for _, forbidden := range []string{"cgroup: host", "seccomp=unconfined", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "bubblewrap", "prlimit"} {
+		if strings.Contains(compose, forbidden) {
+			t.Fatalf("docker-compose.yaml must not require privileged/external launcher setting %q", forbidden)
 		}
 	}
 }

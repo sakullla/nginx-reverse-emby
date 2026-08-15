@@ -57,7 +57,7 @@ func TestPluginHostAttemptSecurityIsFreshAndDestroyed(t *testing.T) {
 		t.Fatal("attempt cookie or endpoint was reused")
 	}
 	for _, attempt := range []controlAttemptSecurity{first, second} {
-		if filepath.Dir(attempt.endpoint.Address) != attempt.endpointDirectory || attempt.guestEndpoint != controlGuestEndpointDirectory+"/rpc.sock" {
+		if err := validateEndpoint(filepath.Dir(attempt.endpointDirectory), attempt.endpoint); err != nil || filepath.Base(attempt.guestEndpoint) != filepath.Base(attempt.endpoint.Address) {
 			t.Fatalf("unix endpoint is not host-managed: %+v", attempt)
 		}
 		if err := attempt.cleanup(); err != nil {

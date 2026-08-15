@@ -68,7 +68,7 @@ ENV PANEL_BACKEND_HOST=0.0.0.0 \
 WORKDIR /opt/nginx-reverse-emby
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends bubblewrap ca-certificates tzdata; \
+    apt-get install -y --no-install-recommends ca-certificates tzdata; \
     rm -rf /var/lib/apt/lists/*
 COPY scripts/ ./scripts/
 COPY official-market.lock ./official-market.lock
