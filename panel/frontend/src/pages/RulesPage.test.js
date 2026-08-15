@@ -3,6 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import RulesPage from './RulesPage.vue'
+import { fetchHTTPBackendProviders } from '../api'
+import { describeHTTPBackends } from '../utils/httpBackend.js'
 
 let route
 let routerReplace
@@ -66,7 +68,8 @@ vi.mock('../api', () => ({
   fetchAllAgentsCertificates: vi.fn().mockResolvedValue([]),
   fetchRelayListeners: vi.fn().mockResolvedValue([{ id: 3, name: 'relay-a' }]),
   fetchAllAgentsRelayListeners: vi.fn().mockResolvedValue([]),
-  fetchEgressProfiles: vi.fn().mockResolvedValue({ profiles: [{ id: 2, name: 'direct' }] })
+  fetchEgressProfiles: vi.fn().mockResolvedValue({ profiles: [{ id: 2, name: 'direct' }] }),
+  fetchHTTPBackendProviders: vi.fn().mockResolvedValue([])
 }))
 
 function mountPage() {
@@ -81,8 +84,16 @@ function mountPage() {
         RouterLink: { props: ['to'], template: '<a><slot /></a>' },
         AgentSearchSelect: { props: ['modelValue', 'agents'], template: '<div />' },
         RuleForm: true,
-        RuleCard: true,
-        RuleTable: true,
+        RuleCard: {
+          name: 'RuleCard',
+          props: ['rule', 'agent', 'providerCatalog', 'providerCatalogStatus'],
+          template: '<div class="rule-card-stub" />'
+        },
+        RuleTable: {
+          name: 'RuleTable',
+          props: ['rules', 'agent', 'providerCatalog', 'providerCatalogStatus'],
+          template: '<div class="rule-table-stub" />'
+        },
         BaseModal: true,
         DeleteConfirmDialog: true,
         RuleDiagnosticModal: true,
@@ -123,6 +134,7 @@ describe('RulesPage filter integration', () => {
     agentsData = [{ id: 1, name: 'master' }]
     rulesData = [{ id: 1, agent_id: 1, enabled: true, tags: ['emby'] }]
     capturedListOptions = undefined
+    fetchHTTPBackendProviders.mockReset().mockResolvedValue([])
   })
 
   it('consumes filter state from the URL into the list query', () => {
@@ -240,5 +252,74 @@ describe('RulesPage filter integration', () => {
       query: { agentId: '1', tags: 'emby' }
     })
     expect(capturedListOptions.filters.value).toEqual({ tags: ['emby'] })
+  })
+
+  it('keeps provider status unknown after a single-Agent error and recovers on retry', async () => {
+    rulesData = [{
+      id: 7,
+      agent_id: '1',
+      enabled: true,
+      backends: [{ kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator', provider_id: 'default' } }]
+    }]
+    fetchHTTPBackendProviders
+      .mockRejectedValueOnce(new Error('catalog unavailable'))
+      .mockResolvedValueOnce([{
+        instance_id: 'accelerator',
+        provider_id: 'default',
+        display_name: '加速源',
+        state: 'active',
+        ready_generation: 'generation-8'
+      }])
+
+    const wrapper = mountPage()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('插件状态加载失败'))
+    let card = wrapper.findComponent({ name: 'RuleCard' })
+    expect(card.props('providerCatalogStatus')).toBe('error')
+    expect(card.props('providerCatalog')).toEqual([])
+    expect(describeHTTPBackends(rulesData[0], [], 'error')[0].state).toBe('unknown')
+
+    await wrapper.get('.provider-catalog-notice button').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent({ name: 'RuleCard' }).props('providerCatalogStatus')).toBe('ready')
+    })
+    card = wrapper.findComponent({ name: 'RuleCard' })
+    expect(card.props('providerCatalogStatus')).toBe('ready')
+    expect(card.props('providerCatalog')).toEqual([expect.objectContaining({
+      agent_id: '1',
+      instance_id: 'accelerator',
+      ready_generation: 'generation-8'
+    })])
+  })
+
+  it('aggregates all-Agent catalogs without cross-Agent provider collisions', async () => {
+    route.query = { agentId: '__all__' }
+    selectedAgentId = '__all__'
+    agentsData = [{ id: 'edge-a', name: 'A' }, { id: 'edge-b', name: 'B' }]
+    rulesData = ['edge-a', 'edge-b'].map((ruleAgentId, index) => ({
+      id: index + 1,
+      agent_id: ruleAgentId,
+      enabled: true,
+      backends: [{ kind: 'plugin_provider', plugin_provider: { instance_id: 'shared', provider_id: 'default' } }]
+    }))
+    fetchHTTPBackendProviders.mockImplementation(async (targetAgentId) => [{
+      instance_id: 'shared',
+      provider_id: 'default',
+      display_name: `Provider ${targetAgentId}`,
+      state: targetAgentId === 'edge-a' ? 'active' : 'inactive',
+      ready_generation: `generation-${targetAgentId}`
+    }])
+
+    const wrapper = mountPage()
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent({ name: 'RuleTable' }).props('providerCatalogStatus')).toBe('ready')
+    })
+    const catalog = wrapper.findComponent({ name: 'RuleTable' }).props('providerCatalog')
+    expect(catalog.map((provider) => provider.agent_id).sort()).toEqual(['edge-a', 'edge-b'])
+    expect(describeHTTPBackends(rulesData[0], catalog, 'ready')[0]).toMatchObject({
+      label: 'Provider edge-a', state: 'active', generation: 'generation-edge-a'
+    })
+    expect(describeHTTPBackends(rulesData[1], catalog, 'ready')[0]).toMatchObject({
+      label: 'Provider edge-b', state: 'inactive', generation: 'generation-edge-b'
+    })
   })
 })

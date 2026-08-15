@@ -31,4 +31,27 @@ describe('HTTP backend presentation', () => {
       kind: 'url', label: 'https://origin.example.net', detail: '', state: '', generation: ''
     }])
   })
+
+  it('matches providers by Agent as well as instance and provider identity', () => {
+    const catalog = [
+      { agent_id: 'edge-a', instance_id: 'shared', provider_id: 'default', display_name: 'A', state: 'active', ready_generation: 'g-a' },
+      { agent_id: 'edge-b', instance_id: 'shared', provider_id: 'default', display_name: 'B', state: 'inactive', ready_generation: 'g-b' }
+    ]
+
+    expect(describeHTTPBackends({
+      agent_id: 'edge-b',
+      backends: [{ kind: 'plugin_provider', plugin_provider: { instance_id: 'shared', provider_id: 'default' } }]
+    }, catalog, 'ready')[0]).toMatchObject({ label: 'B', state: 'inactive', generation: 'g-b' })
+  })
+
+  it('distinguishes an unknown catalog from a ready catalog with a missing provider', () => {
+    const rule = {
+      agent_id: 'edge-a',
+      backends: [{ kind: 'plugin_provider', plugin_provider: { instance_id: 'missing', provider_id: 'default' } }]
+    }
+
+    expect(describeHTTPBackends(rule, [], 'loading')[0].state).toBe('unknown')
+    expect(describeHTTPBackends(rule, [], 'error')[0].state).toBe('unknown')
+    expect(describeHTTPBackends(rule, [], 'ready')[0].state).toBe('unavailable')
+  })
 })

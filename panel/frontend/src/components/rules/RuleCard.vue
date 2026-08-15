@@ -54,7 +54,7 @@
         <code class="rule-card__backend" :title="backendsTooltip">{{ backendPrimary }}</code>
         <span v-if="backendExtraCount > 0" class="rule-card__backend-more">+{{ backendExtraCount }}</span>
       </div>
-      <div v-if="providerStatus" class="rule-card__provider-status">
+      <div v-if="providerStatus" class="rule-card__provider-status" :class="`rule-card__provider-status--${providerState}`">
         <span class="rule-card__provider-dot" aria-hidden="true"></span>
         {{ providerStatus }}
       </div>
@@ -93,6 +93,7 @@ const props = defineProps({
   traffic: { type: Object, default: null },
   agentNodeTotal: { type: Number, default: 0 },
   providerCatalog: { type: Array, default: () => [] },
+  providerCatalogStatus: { type: String, default: 'ready' },
 })
 
 defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click'])
@@ -103,7 +104,7 @@ const statusLabel = computed(() => syncStatusLabel(status.value))
 
 const isHttps = computed(() => String(props.rule.frontend_url || '').startsWith('https'))
 
-const backendDescriptions = computed(() => describeHTTPBackends(props.rule, props.providerCatalog))
+const backendDescriptions = computed(() => describeHTTPBackends(props.rule, props.providerCatalog, props.providerCatalogStatus))
 const backends = computed(() => {
   return backendDescriptions.value.map((backend) => (
     backend.kind === 'provider' ? `${backend.label} · ${backend.detail}` : backend.label
@@ -115,9 +116,13 @@ const backendExtraCount = computed(() => Math.max(0, backends.value.length - 1))
 const backendsTooltip = computed(() => backends.value.join('\n'))
 const providerStatus = computed(() => {
   const provider = backendDescriptions.value.find((backend) => backend.kind === 'provider')
-  if (!provider || provider.state !== 'active') return ''
-  return provider.generation ? `插件已就绪 · ${provider.generation}` : '插件已就绪'
+  if (!provider) return ''
+  if (provider.state === 'active') {
+    return provider.generation ? `插件已就绪 · ${provider.generation}` : '插件已就绪'
+  }
+  return provider.state === 'unknown' ? '插件状态待确认' : '插件当前不可用'
 })
+const providerState = computed(() => backendDescriptions.value.find((backend) => backend.kind === 'provider')?.state || '')
 // agent prop is the page-selected node; when set, every card would repeat the same badge.
 const showAgentBadge = computed(() => !props.agent)
 
@@ -181,6 +186,15 @@ const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags
   font-size: 0.6875rem;
   font-weight: 600;
   line-height: 1.3;
+}
+
+.rule-card__provider-status--unknown {
+  color: var(--color-text-muted);
+}
+
+.rule-card__provider-status--unavailable,
+.rule-card__provider-status--inactive {
+  color: var(--color-warning);
 }
 
 .rule-card__provider-dot {

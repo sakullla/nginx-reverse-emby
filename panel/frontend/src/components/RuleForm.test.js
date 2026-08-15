@@ -222,6 +222,95 @@ describe('RuleForm HTTP backend provider', () => {
       plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' }
     }])
   })
+
+  it.each([
+    {
+      action: 'edit',
+      id: 71,
+      backends: [
+        { url: 'https://origin.example.net' },
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } }
+      ]
+    },
+    {
+      action: 'copy',
+      backends: [
+        { url: 'https://origin.example.net' },
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } }
+      ]
+    },
+    {
+      action: 'edit',
+      id: 72,
+      backends: [
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } },
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-mirror', provider_id: 'mirror' } }
+      ]
+    },
+    {
+      action: 'copy',
+      backends: [
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } },
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-mirror', provider_id: 'mirror' } }
+      ]
+    }
+  ])('round-trips every canonical backend during $action', async ({ action, id, backends }) => {
+    mocks.query.data.value = {
+      agentId: 'edge-a',
+      providers: [
+        providerFixture('edge-a'),
+        {
+          ...providerFixture('edge-a'),
+          instance_id: 'accelerator-mirror',
+          provider_id: 'mirror',
+          display_name: '镜像加速源'
+        }
+      ]
+    }
+    const initialData = { frontend_url: 'https://roundtrip.example.com', backends }
+    if (id) initialData.id = id
+    const wrapper = mountForm(initialData)
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const mutation = action === 'edit' ? mocks.updateMutateAsync : mocks.createMutateAsync
+    expect(mutation).toHaveBeenCalledTimes(1)
+    const payload = mutation.mock.calls[0][0]
+    expect(payload.backends).toEqual(backends)
+  })
+
+  it('replaces the backend list only after an explicit provider selection change', async () => {
+    mocks.query.data.value = {
+      agentId: 'edge-a',
+      providers: [
+        providerFixture('edge-a'),
+        {
+          ...providerFixture('edge-a'),
+          instance_id: 'accelerator-mirror',
+          provider_id: 'mirror',
+          display_name: '镜像加速源'
+        }
+      ]
+    }
+    const wrapper = mountForm({
+      id: 73,
+      frontend_url: 'https://replace.example.com',
+      backends: [
+        { url: 'https://origin.example.net' },
+        { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } }
+      ]
+    })
+    await flushPromises()
+    await wrapper.get('select[name="http-backend-provider"]').setValue('accelerator-mirror:mirror')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync.mock.calls[0][0].backends).toEqual([{
+      kind: 'plugin_provider',
+      plugin_provider: { instance_id: 'accelerator-mirror', provider_id: 'mirror' }
+    }])
+  })
 })
 
 function providerFixture(agentId) {

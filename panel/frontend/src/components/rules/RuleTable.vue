@@ -97,7 +97,8 @@ import { describeHTTPBackends } from '../../utils/httpBackend.js'
 const props = defineProps({
   rules: { type: Array, default: () => [] },
   agent: { type: Object, default: null },
-  providerCatalog: { type: Array, default: () => [] }
+  providerCatalog: { type: Array, default: () => [] },
+  providerCatalogStatus: { type: String, default: 'ready' }
 })
 defineEmits(['toggle', 'edit', 'delete'])
 
@@ -113,7 +114,7 @@ function isHttps(rule) {
 }
 
 function httpBackends(rule) {
-  return describeHTTPBackends(rule, props.providerCatalog).map((backend) => (
+  return describeHTTPBackends(rule, props.providerCatalog, props.providerCatalogStatus).map((backend) => (
     backend.kind === 'provider' ? `${backend.label} · ${backend.detail}` : backend.label
   ))
 }
@@ -126,9 +127,11 @@ function formatBackend(rule) {
 }
 
 function backendTooltip(rule) {
-  return describeHTTPBackends(rule, props.providerCatalog).map((backend) => {
+  return describeHTTPBackends(rule, props.providerCatalog, props.providerCatalogStatus).map((backend) => {
     if (backend.kind !== 'provider') return backend.label
-    const status = backend.state === 'active' ? '插件已就绪' : '插件状态不可用'
+    const status = backend.state === 'active'
+      ? '插件已就绪'
+      : (backend.state === 'unknown' ? '插件状态待确认' : '插件状态不可用')
     return `${backend.label} · ${backend.detail}${backend.generation ? `\n${status} · ${backend.generation}` : `\n${status}`}`
   }).join('\n')
 }

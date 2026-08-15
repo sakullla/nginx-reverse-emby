@@ -173,7 +173,7 @@
               class="input"
               :class="{ 'input--error': errors.backend }"
               :disabled="!providerCatalogReady"
-              @change="clearBackendError"
+              @change="handleProviderSelectionChange"
             >
               <option value="">{{ providersLoading ? '正在加载...' : '选择当前节点的插件' }}</option>
               <option
@@ -848,6 +848,8 @@ function createDefaultForm() {
     backends: [createBackend()],
     provider_key: '',
     provider_ref: null,
+    initial_backends: [],
+    backend_selection_changed: false,
     load_balancing: { strategy: 'adaptive' },
     tags: [],
     enabled: true,
@@ -897,18 +899,38 @@ function normalizeProviderRef(initialData) {
   return instanceId && providerId ? { instance_id: instanceId, provider_id: providerId } : null
 }
 
+function normalizeCanonicalHTTPBackends(initialData) {
+  if (!Array.isArray(initialData?.backends)) return []
+  return initialData.backends.map((backend) => {
+    if (backend?.kind === 'plugin_provider') {
+      const instanceId = String(backend?.plugin_provider?.instance_id || '').trim()
+      const providerId = String(backend?.plugin_provider?.provider_id || '').trim()
+      if (!instanceId || !providerId) return null
+      return {
+        kind: 'plugin_provider',
+        plugin_provider: { instance_id: instanceId, provider_id: providerId }
+      }
+    }
+    const url = String(backend?.url || '').trim()
+    return url ? { url } : null
+  }).filter(Boolean)
+}
+
 function createFormState(initialData) {
   if (!initialData) {
     return createDefaultForm()
   }
 
   const providerRef = normalizeProviderRef(initialData)
+  const initialBackends = normalizeCanonicalHTTPBackends(initialData)
   return {
     frontend_url: initialData.frontend_url || '',
     backend_mode: providerRef ? 'provider' : 'url',
     backends: normalizeHttpBackends(initialData),
     provider_key: providerRef ? providerKey(providerRef) : '',
     provider_ref: providerRef,
+    initial_backends: initialBackends,
+    backend_selection_changed: false,
     load_balancing: {
       strategy: normalizeHttpStrategy(initialData.load_balancing?.strategy)
     },
@@ -937,7 +959,17 @@ function providerLabel(provider) {
 }
 
 function setBackendMode(mode) {
+  if (form.value.backend_mode !== mode) {
+    form.value.backend_selection_changed = true
+  }
   form.value.backend_mode = mode
+  clearBackendError()
+}
+
+function handleProviderSelectionChange() {
+  if (form.value.provider_key !== providerKey(form.value.provider_ref)) {
+    form.value.backend_selection_changed = true
+  }
   clearBackendError()
 }
 
@@ -1232,13 +1264,19 @@ async function handleSubmit() {
 
   try {
     const validBackends = form.value.backend_mode === 'provider'
-      ? [{
-          kind: 'plugin_provider',
-          plugin_provider: {
-            instance_id: selectedProvider.value.instance_id,
-            provider_id: selectedProvider.value.provider_id
-          }
-        }]
+      ? (!form.value.backend_selection_changed && form.value.initial_backends.length > 0
+          ? form.value.initial_backends.map((backend) => (
+              backend.kind === 'plugin_provider'
+                ? { kind: 'plugin_provider', plugin_provider: { ...backend.plugin_provider } }
+                : { url: backend.url }
+            ))
+          : [{
+              kind: 'plugin_provider',
+              plugin_provider: {
+                instance_id: selectedProvider.value.instance_id,
+                provider_id: selectedProvider.value.provider_id
+              }
+            }])
       : form.value.backends
           .map((backend) => ({ url: String(backend?.url || '').trim() }))
           .filter((backend) => backend.url)

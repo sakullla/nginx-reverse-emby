@@ -6,21 +6,26 @@ export function pluginProviderRef(backend) {
   return { instanceId, providerId }
 }
 
-export function providerCatalogKey(value) {
+export function providerCatalogKey(value, fallbackAgentId = '') {
+  const agentId = String(value?.agent_id ?? value?.agentId ?? fallbackAgentId).trim()
   const instanceId = String(value?.instance_id ?? value?.instanceId ?? '').trim()
   const providerId = String(value?.provider_id ?? value?.providerId ?? '').trim()
-  return `${instanceId}\u0000${providerId}`
+  return `${agentId}\u0000${instanceId}\u0000${providerId}`
 }
 
-export function describeHTTPBackend(backend, providerCatalog = []) {
+export function describeHTTPBackend(backend, providerCatalog = [], options = {}) {
   const provider = pluginProviderRef(backend)
   if (provider) {
-    const catalogEntry = providerCatalog.find((item) => providerCatalogKey(item) === providerCatalogKey(provider))
+    const agentId = String(options.agentId || '').trim()
+    const catalogStatus = options.catalogStatus == null || options.catalogStatus === 'ready' ? 'ready' : 'unknown'
+    const catalogEntry = providerCatalog.find((item) => (
+      providerCatalogKey(item, agentId) === providerCatalogKey(provider, agentId)
+    ))
     return {
       kind: 'provider',
       label: String(catalogEntry?.display_name || provider.providerId),
       detail: provider.instanceId,
-      state: String(catalogEntry?.state || ''),
+      state: catalogStatus === 'ready' ? String(catalogEntry?.state || 'unavailable') : 'unknown',
       generation: String(catalogEntry?.ready_generation || '')
     }
   }
@@ -28,7 +33,8 @@ export function describeHTTPBackend(backend, providerCatalog = []) {
   return url ? { kind: 'url', label: url, detail: '', state: '', generation: '' } : null
 }
 
-export function describeHTTPBackends(rule, providerCatalog = []) {
+export function describeHTTPBackends(rule, providerCatalog = [], catalogStatus = 'ready') {
   if (!Array.isArray(rule?.backends)) return []
-  return rule.backends.map((backend) => describeHTTPBackend(backend, providerCatalog)).filter(Boolean)
+  const options = { agentId: rule?.agent_id, catalogStatus }
+  return rule.backends.map((backend) => describeHTTPBackend(backend, providerCatalog, options)).filter(Boolean)
 }
