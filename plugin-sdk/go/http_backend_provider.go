@@ -16,6 +16,7 @@ const (
 
 	HTTPBackendKindURL            = "url"
 	HTTPBackendKindPluginProvider = "plugin_provider"
+	ProviderIDMaxBytes            = 64
 )
 
 var httpBackendProviderIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`)
@@ -29,8 +30,8 @@ type HTTPBackendProviderDescriptor struct {
 }
 
 func (descriptor HTTPBackendProviderDescriptor) Validate() error {
-	if descriptor.ID != strings.TrimSpace(descriptor.ID) || !httpBackendProviderIDPattern.MatchString(descriptor.ID) {
-		return fmt.Errorf("HTTP backend provider id %q is not canonical", descriptor.ID)
+	if err := validateHTTPBackendProviderID(descriptor.ID); err != nil {
+		return fmt.Errorf("HTTP backend provider id: %w", err)
 	}
 	if descriptor.DisplayName != strings.TrimSpace(descriptor.DisplayName) || descriptor.DisplayName == "" || len(descriptor.DisplayName) > 128 || strings.ContainsAny(descriptor.DisplayName, "\r\n\x00") {
 		return errors.New("HTTP backend provider display_name is invalid")
@@ -70,11 +71,21 @@ func (backend HTTPBackend) Validate() error {
 		if err := ValidatePolicyIdentity(backend.PluginProvider.InstanceID); err != nil {
 			return fmt.Errorf("plugin provider instance_id: %w", err)
 		}
-		if !httpBackendProviderIDPattern.MatchString(backend.PluginProvider.ProviderID) || backend.PluginProvider.ProviderID != strings.TrimSpace(backend.PluginProvider.ProviderID) {
-			return errors.New("plugin provider provider_id is not canonical")
+		if err := validateHTTPBackendProviderID(backend.PluginProvider.ProviderID); err != nil {
+			return fmt.Errorf("plugin provider provider_id: %w", err)
 		}
 	default:
 		return fmt.Errorf("unsupported HTTP backend kind %q", backend.Kind)
+	}
+	return nil
+}
+
+func validateHTTPBackendProviderID(id string) error {
+	if id != strings.TrimSpace(id) || !httpBackendProviderIDPattern.MatchString(id) {
+		return errors.New("is not canonical")
+	}
+	if len(id) > ProviderIDMaxBytes {
+		return fmt.Errorf("exceeds %d UTF-8 bytes", ProviderIDMaxBytes)
 	}
 	return nil
 }

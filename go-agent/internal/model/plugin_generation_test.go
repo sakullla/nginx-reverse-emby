@@ -55,6 +55,26 @@ func TestPluginGenerationMaterializedValidationRequiresLocalPath(t *testing.T) {
 	}
 }
 
+func TestPluginGenerationEnforcesProviderIDByteLimit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		id      string
+		wantErr bool
+	}{
+		{name: "64 bytes", id: "a" + strings.Repeat("b", pluginsdk.ProviderIDMaxBytes-1)},
+		{name: "65 bytes", id: "a" + strings.Repeat("b", pluginsdk.ProviderIDMaxBytes), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			generation := validPluginGenerationForTest()
+			generation.HTTPBackendProviders[0].ID = test.id
+			err := generation.Validate(7, false)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestPluginGenerationAcceptsCanonicalHostCapabilitiesAndResourceOnlySelectors(t *testing.T) {
 	generation := validPluginGenerationForTest()
 	generation.Grants = []PluginGrantProjection{

@@ -403,6 +403,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		normalized.AgentID = resolvedAgentID
+		if err := previewRuleSvc.validateHTTPBackendProviders(ctx, resolvedAgentID, normalized.Backends); err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
+			continue
+		}
 		result.addImported("http_rule", key)
 		existingHTTPKeys[conflictKey] = struct{}{}
 	}
@@ -571,6 +575,30 @@ func (s previewHTTPRuleNormalizationStore) ListRelayListeners(_ context.Context,
 	return rows, nil
 }
 
+func (s previewHTTPRuleNormalizationStore) LoadAgentPluginGenerations(ctx context.Context, agentID, platform string) ([]storage.PluginGeneration, error) {
+	providerStore, ok := s.ruleStore.(httpBackendProviderAdmissionStore)
+	if !ok {
+		return nil, fmt.Errorf("HTTP backend provider admission is unavailable")
+	}
+	return providerStore.LoadAgentPluginGenerations(ctx, agentID, platform)
+}
+
+func (s previewHTTPRuleNormalizationStore) GetPluginInstance(ctx context.Context, instanceID string) (storage.PluginInstanceRow, bool, error) {
+	providerStore, ok := s.ruleStore.(httpBackendProviderAdmissionStore)
+	if !ok {
+		return storage.PluginInstanceRow{}, false, fmt.Errorf("HTTP backend provider admission is unavailable")
+	}
+	return providerStore.GetPluginInstance(ctx, instanceID)
+}
+
+func (s previewHTTPRuleNormalizationStore) GetPluginAgentRuntimeStatusFence(ctx context.Context, operationID, agentID, instanceID string) (storage.PluginAgentRuntimeStatusRow, bool, error) {
+	providerStore, ok := s.ruleStore.(httpBackendProviderAdmissionStore)
+	if !ok {
+		return storage.PluginAgentRuntimeStatusRow{}, false, fmt.Errorf("HTTP backend provider admission is unavailable")
+	}
+	return providerStore.GetPluginAgentRuntimeStatusFence(ctx, operationID, agentID, instanceID)
+}
+
 func previewAgentRows(agents []BackupAgent, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config) map[string]storage.AgentRow {
 	rows := make(map[string]storage.AgentRow, len(existingAgentsByID)+len(agents)+1)
 	for id, row := range existingAgentsByID {
@@ -598,14 +626,17 @@ func previewAgentRows(agents []BackupAgent, agentIDMap map[string]string, existi
 		rows[resolvedID] = storage.AgentRow{
 			ID:               resolvedID,
 			Name:             strings.TrimSpace(item.Name),
+			Platform:         strings.TrimSpace(item.Platform),
 			CapabilitiesJSON: marshalJSON(normalizeCapabilities(item.Capabilities), "[]"),
 		}
 	}
 	if cfg.EnableLocalAgent && strings.TrimSpace(cfg.LocalAgentID) != "" {
-		rows[cfg.LocalAgentID] = storage.AgentRow{
-			ID:               cfg.LocalAgentID,
-			Name:             cfg.LocalAgentID,
-			CapabilitiesJSON: marshalJSON(defaultLocalCapabilities, "[]"),
+		if _, exists := rows[cfg.LocalAgentID]; !exists {
+			rows[cfg.LocalAgentID] = storage.AgentRow{
+				ID:               cfg.LocalAgentID,
+				Name:             cfg.LocalAgentID,
+				CapabilitiesJSON: marshalJSON(defaultLocalCapabilities, "[]"),
+			}
 		}
 	}
 	return rows
@@ -1987,6 +2018,10 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			continue
 		}
 		normalized.AgentID = resolvedAgentID
+		if err := ruleSvc.validateHTTPBackendProviders(ctx, resolvedAgentID, normalized.Backends); err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
+			continue
+		}
 		assignedID := allocator.AllocateRuleID(item.ID)
 		normalized.ID = assignedID
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])

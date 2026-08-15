@@ -572,6 +572,30 @@ func TestHTTPBackendProviderManifestAdmission(t *testing.T) {
 	if _, err := newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(providerManifest(t), PackageExpectation{}); err != nil {
 		t.Fatalf("complete HTTP backend provider manifest rejected: %v", err)
 	}
+	for _, test := range []struct {
+		name    string
+		id      string
+		wantErr bool
+	}{
+		{name: "64 byte provider id", id: "a" + strings.Repeat("b", pluginsdk.ProviderIDMaxBytes-1)},
+		{name: "65 byte provider id", id: "a" + strings.Repeat("b", pluginsdk.ProviderIDMaxBytes), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := providerManifest(t)
+			path := filepath.Join(root, PackageManifestFile)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest := strings.Replace(string(data), "id: default", "id: "+test.id, 1)
+			writeFixture(t, root, PackageManifestFile, manifest)
+			refreshFixtureDigest(t, root)
+			_, err = newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("ValidatePackage() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
 	t.Run("permission only", func(t *testing.T) {
 		root := newRPCPackageFixture(t)
 		path := filepath.Join(root, PackageManifestFile)

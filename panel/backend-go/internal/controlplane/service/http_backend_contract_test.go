@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -61,6 +62,27 @@ func TestNormalizeHTTPBackendsKeepsURLWireAndTagsProviders(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := normalizeHTTPBackends([]HTTPRuleBackend{backend}); err == nil {
 				t.Fatal("invalid provider backend was accepted")
+			}
+		})
+	}
+}
+
+func TestNormalizeHTTPBackendsEnforcesProviderIDByteLimit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		id      string
+		wantErr bool
+	}{
+		{name: "64 bytes", id: "a" + strings.Repeat("b", pluginsdk.ProviderIDMaxBytes-1)},
+		{name: "65 bytes", id: "a" + strings.Repeat("b", pluginsdk.ProviderIDMaxBytes), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := normalizeHTTPBackends([]HTTPRuleBackend{{
+				Kind:           pluginsdk.HTTPBackendKindPluginProvider,
+				PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: "provider-1", ProviderID: test.id},
+			}})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("normalizeHTTPBackends() error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
 	}

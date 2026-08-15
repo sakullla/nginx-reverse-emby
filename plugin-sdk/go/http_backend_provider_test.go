@@ -99,3 +99,31 @@ func TestValidateHTTPBackendProviderManifestRequiresIndivisibleContract(t *testi
 		})
 	}
 }
+
+func TestHTTPBackendProviderIDByteLimitAppliesToDescriptorsAndDurableRefs(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		id      string
+		wantErr bool
+	}{
+		{name: "64 bytes", id: "a" + strings.Repeat("b", ProviderIDMaxBytes-1)},
+		{name: "65 bytes", id: "a" + strings.Repeat("b", ProviderIDMaxBytes), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := len([]byte(test.id)); got != ProviderIDMaxBytes && !test.wantErr || got != ProviderIDMaxBytes+1 && test.wantErr {
+				t.Fatalf("fixture byte length = %d", got)
+			}
+			descriptorErr := (HTTPBackendProviderDescriptor{ID: test.id, DisplayName: "Provider"}).Validate()
+			backendErr := (HTTPBackend{
+				Kind:           HTTPBackendKindPluginProvider,
+				PluginProvider: &HTTPPluginProviderRef{InstanceID: "provider-1", ProviderID: test.id},
+			}).Validate()
+			if test.wantErr && (descriptorErr == nil || backendErr == nil) {
+				t.Fatalf("oversized provider id accepted: descriptor=%v backend=%v", descriptorErr, backendErr)
+			}
+			if !test.wantErr && (descriptorErr != nil || backendErr != nil) {
+				t.Fatalf("maximum provider id rejected: descriptor=%v backend=%v", descriptorErr, backendErr)
+			}
+		})
+	}
+}

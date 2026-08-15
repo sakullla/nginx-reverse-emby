@@ -18,6 +18,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 var backupRelayCAFixturesOnce sync.Once
@@ -1278,6 +1279,183 @@ func assertBackupRelayBindDuplicateResult(t *testing.T, result BackupImportResul
 		}
 	}
 	t.Fatalf("missing relay_listener conflict key %q in %+v", conflictKey, result.Report.SkippedConflict)
+}
+
+type backupProviderAdmissionStore struct {
+	backupStore
+	loadAgentID   string
+	loadPlatform  string
+	generations   []storage.PluginGeneration
+	instance      storage.PluginInstanceRow
+	instanceFound bool
+	status        storage.PluginAgentRuntimeStatusRow
+	statusFound   bool
+}
+
+func (s *backupProviderAdmissionStore) LoadAgentPluginGenerations(_ context.Context, agentID, platform string) ([]storage.PluginGeneration, error) {
+	if agentID != s.loadAgentID || platform != s.loadPlatform {
+		return nil, nil
+	}
+	return append([]storage.PluginGeneration(nil), s.generations...), nil
+}
+
+func (s *backupProviderAdmissionStore) GetPluginInstance(_ context.Context, instanceID string) (storage.PluginInstanceRow, bool, error) {
+	if !s.instanceFound || instanceID != s.instance.ID {
+		return storage.PluginInstanceRow{}, false, nil
+	}
+	return s.instance, true, nil
+}
+
+func (s *backupProviderAdmissionStore) GetPluginAgentRuntimeStatusFence(_ context.Context, operationID, agentID, instanceID string) (storage.PluginAgentRuntimeStatusRow, bool, error) {
+	if !s.statusFound || operationID != s.status.OperationID || agentID != s.status.AgentID || instanceID != s.status.InstanceID {
+		return storage.PluginAgentRuntimeStatusRow{}, false, nil
+	}
+	return s.status, true, nil
+}
+
+func TestIntegrationBackupHTTPProviderAdmissionMatchesPreviewAndImport(t *testing.T) {
+	const (
+		targetAgentID = "edge-target"
+		sourceAgentID = "edge-source"
+		instanceID    = "provider-1"
+		providerID    = "default"
+		frontendURL   = "https://provider.example.test"
+	)
+
+	for _, test := range []struct {
+		name         string
+		platform     string
+		mutate       func(*backupProviderAdmissionStore, *storage.PluginGeneration)
+		unauthorized bool
+		wantImported bool
+	}{
+		{name: "missing", platform: "linux-amd64", mutate: func(store *backupProviderAdmissionStore, _ *storage.PluginGeneration) {
+			store.instanceFound = false
+		}},
+		{name: "inactive", platform: "linux-amd64", mutate: func(store *backupProviderAdmissionStore, _ *storage.PluginGeneration) {
+			store.instance.CurrentState = "disabled"
+		}},
+		{name: "wrong agent", platform: "linux-amd64", mutate: func(_ *backupProviderAdmissionStore, generation *storage.PluginGeneration) {
+			generation.Target.ID = "edge-other"
+		}},
+		{name: "platform", platform: "windows-amd64", mutate: func(_ *backupProviderAdmissionStore, _ *storage.PluginGeneration) {}},
+		{name: "unauthorized", platform: "linux-amd64", unauthorized: true, mutate: func(_ *backupProviderAdmissionStore, _ *storage.PluginGeneration) {}},
+		{name: "success", platform: "linux-amd64", wantImported: true, mutate: func(_ *backupProviderAdmissionStore, _ *storage.PluginGeneration) {}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sqliteStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "provider-admission"), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sqliteStore.Close()
+			if err := sqliteStore.SaveAgent(t.Context(), storage.AgentRow{
+				ID: targetAgentID, Name: "Edge Target", AgentToken: "target-token", Platform: test.platform,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			generation := storage.PluginGeneration{
+				ID: "generation-1", InstanceID: instanceID, OperationID: "operation-1",
+				Runtime:              storage.PluginGenerationRuntime{Kind: pluginsdk.RuntimeRPCService, ABI: pluginsdk.RPCABIV1, HostScope: pluginsdk.HostScopeAgent},
+				ExtensionPoints:      []string{pluginsdk.ExtensionHTTPBackendProvider},
+				RequiredFeatures:     []string{pluginsdk.RPCFeatureHTTPBackendProviderV1},
+				HTTPBackendProviders: []pluginsdk.HTTPBackendProviderDescriptor{{ID: providerID, DisplayName: "Default"}},
+				Target:               storage.PluginGenerationTarget{ID: targetAgentID, ResourceGroupID: "group-a", Version: 1},
+			}
+			store := &backupProviderAdmissionStore{
+				backupStore:   sqliteStore,
+				loadAgentID:   targetAgentID,
+				loadPlatform:  "linux-amd64",
+				instance:      storage.PluginInstanceRow{ID: instanceID, ResourceGroupID: "group-a", DesiredEnabled: true, CurrentState: "active"},
+				instanceFound: true,
+				status:        storage.PluginAgentRuntimeStatusRow{OperationID: generation.OperationID, AgentID: targetAgentID, InstanceID: instanceID, GenerationID: generation.ID, State: "active"},
+				statusFound:   true,
+			}
+			test.mutate(store, &generation)
+			store.generations = []storage.PluginGeneration{generation}
+
+			bundle := BackupBundle{
+				Manifest: BackupManifest{PackageVersion: BackupPackageVersion, SourceArchitecture: BackupSourceArchitectureGo, ExportedAt: time.Now().UTC()},
+				Agents:   []BackupAgent{{ID: sourceAgentID, Name: "Edge Target", AgentToken: "source-token", Platform: test.platform}},
+				HTTPRules: []BackupHTTPRule{{
+					ID: 41, AgentID: sourceAgentID, FrontendURL: frontendURL, Enabled: true,
+					Backends: []HTTPRuleBackend{{Kind: pluginsdk.HTTPBackendKindPluginProvider, PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: instanceID, ProviderID: providerID}}},
+				}},
+			}
+			archive, err := encodeBackupBundle(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithSystemMutationPrincipal(t.Context(), "backup-test")
+			if test.unauthorized {
+				ctx = WithResourceAuthorizer(ctx, func(_ context.Context, kind, id string) error {
+					if kind == "plugin_instance" && id == instanceID {
+						return errors.New("provider access denied")
+					}
+					return nil
+				})
+			}
+			svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+			svc.mutationStore = nil
+
+			baselineRevisions, err := sqliteStore.ListAgentRevisions(ctx, targetAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preview, err := svc.Preview(ctx, archive)
+			if err != nil {
+				t.Fatalf("Preview() error = %v", err)
+			}
+			previewRules, err := sqliteStore.ListHTTPRules(ctx, targetAgentID)
+			if err != nil || len(previewRules) != 0 {
+				t.Fatalf("Preview() wrote rules: rows=%+v err=%v", previewRules, err)
+			}
+			previewRevisions, err := sqliteStore.ListAgentRevisions(ctx, targetAgentID)
+			if err != nil || len(previewRevisions) != len(baselineRevisions) {
+				t.Fatalf("Preview() changed revisions from %d to %d: %v", len(baselineRevisions), len(previewRevisions), err)
+			}
+
+			imported, err := svc.Import(ctx, archive)
+			if err != nil {
+				t.Fatalf("Import() error = %v", err)
+			}
+			rules, err := sqliteStore.ListHTTPRules(ctx, targetAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revisions, err := sqliteStore.ListAgentRevisions(ctx, targetAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if test.wantImported {
+				if preview.Summary.Imported.HTTPRules != 1 || imported.Summary.Imported.HTTPRules != 1 || len(rules) != 1 {
+					t.Fatalf("successful provider import mismatch: preview=%+v import=%+v rules=%+v", preview.Summary, imported.Summary, rules)
+				}
+				return
+			}
+			if preview.Summary.SkippedInvalid.HTTPRules != 1 || imported.Summary.SkippedInvalid.HTTPRules != 1 || len(rules) != 0 {
+				t.Fatalf("invalid provider result mismatch: preview=%+v import=%+v rules=%+v", preview.Summary, imported.Summary, rules)
+			}
+			if len(revisions) != len(baselineRevisions) {
+				t.Fatalf("invalid provider import changed revisions from %d to %d", len(baselineRevisions), len(revisions))
+			}
+			previewReason := backupSkippedInvalidReason(preview, "http_rule", frontendURL)
+			importReason := backupSkippedInvalidReason(imported, "http_rule", frontendURL)
+			if previewReason == "" || previewReason != importReason {
+				t.Fatalf("unstable skipped_invalid reason: preview=%q import=%q", previewReason, importReason)
+			}
+		})
+	}
+}
+
+func backupSkippedInvalidReason(result BackupImportResult, kind, key string) string {
+	for _, item := range result.Report.SkippedInvalid {
+		if item.Kind == kind && item.Key == key {
+			return item.Reason
+		}
+	}
+	return ""
 }
 
 type failingBackupStore struct {
