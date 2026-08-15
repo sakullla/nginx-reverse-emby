@@ -849,7 +849,8 @@ function createDefaultForm() {
     provider_key: '',
     provider_ref: null,
     initial_backends: [],
-    backend_selection_changed: false,
+    initial_backend_mode: 'url',
+    initial_provider_key: '',
     load_balancing: { strategy: 'adaptive' },
     tags: [],
     enabled: true,
@@ -930,7 +931,8 @@ function createFormState(initialData) {
     provider_key: providerRef ? providerKey(providerRef) : '',
     provider_ref: providerRef,
     initial_backends: initialBackends,
-    backend_selection_changed: false,
+    initial_backend_mode: providerRef ? 'provider' : 'url',
+    initial_provider_key: providerRef ? providerKey(providerRef) : '',
     load_balancing: {
       strategy: normalizeHttpStrategy(initialData.load_balancing?.strategy)
     },
@@ -959,18 +961,19 @@ function providerLabel(provider) {
 }
 
 function setBackendMode(mode) {
-  if (form.value.backend_mode !== mode) {
-    form.value.backend_selection_changed = true
-  }
   form.value.backend_mode = mode
   clearBackendError()
 }
 
 function handleProviderSelectionChange() {
-  if (form.value.provider_key !== providerKey(form.value.provider_ref)) {
-    form.value.backend_selection_changed = true
-  }
   clearBackendError()
+}
+
+function shouldPreserveInitialBackends() {
+  if (form.value.initial_backends.length === 0) return false
+  if (form.value.backend_mode !== form.value.initial_backend_mode) return false
+  return form.value.backend_mode !== 'provider'
+    || form.value.provider_key === form.value.initial_provider_key
 }
 
 function clearBackendError() {
@@ -1264,7 +1267,7 @@ async function handleSubmit() {
 
   try {
     const validBackends = form.value.backend_mode === 'provider'
-      ? (!form.value.backend_selection_changed && form.value.initial_backends.length > 0
+      ? (shouldPreserveInitialBackends()
           ? form.value.initial_backends.map((backend) => (
               backend.kind === 'plugin_provider'
                 ? { kind: 'plugin_provider', plugin_provider: { ...backend.plugin_provider } }

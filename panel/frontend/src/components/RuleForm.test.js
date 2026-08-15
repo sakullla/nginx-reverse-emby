@@ -311,6 +311,50 @@ describe('RuleForm HTTP backend provider', () => {
       plugin_provider: { instance_id: 'accelerator-mirror', provider_id: 'mirror' }
     }])
   })
+
+  it('preserves a mixed edit after changing provider and reverting to the initial selection', async () => {
+    mocks.query.data.value = {
+      agentId: 'edge-a',
+      providers: [
+        providerFixture('edge-a'),
+        {
+          ...providerFixture('edge-a'),
+          instance_id: 'accelerator-mirror',
+          provider_id: 'mirror',
+          display_name: '镜像加速源'
+        }
+      ]
+    }
+    const backends = [
+      { url: 'https://origin.example.net' },
+      { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } }
+    ]
+    const wrapper = mountForm({ id: 74, frontend_url: 'https://revert-edit.example.com', backends })
+    await flushPromises()
+    const select = wrapper.get('select[name="http-backend-provider"]')
+    await select.setValue('accelerator-mirror:mirror')
+    await select.setValue('accelerator-installed:default')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync.mock.calls[0][0].backends).toEqual(backends)
+  })
+
+  it('preserves a multi-provider copy after switching to URL mode and back', async () => {
+    const backends = [
+      { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-installed', provider_id: 'default' } },
+      { kind: 'plugin_provider', plugin_provider: { instance_id: 'accelerator-mirror', provider_id: 'mirror' } }
+    ]
+    const wrapper = mountForm({ frontend_url: 'https://revert-copy.example.com', backends })
+    await flushPromises()
+    const modeButtons = wrapper.findAll('.backend-mode__option')
+    await modeButtons.find((button) => button.text() === '后端地址').trigger('click')
+    await modeButtons.find((button) => button.text() === '插件提供商').trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync.mock.calls[0][0].backends).toEqual(backends)
+  })
 })
 
 function providerFixture(agentId) {
