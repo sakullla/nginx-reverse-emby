@@ -132,19 +132,30 @@ func (e *routeEntry) acquireProviderRequest(writer http.ResponseWriter, request 
 		_ = local.Close()
 		return nil, nil, nil, errors.New("HTTP backend provider outer session is unavailable")
 	}
+	scope, retained := newProviderRequestScope(outer, writer, e.providerIdleTimeout)
+	if !retained {
+		cancel()
+		_ = local.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider outer session is already forced")
+	}
 	entity := httpRuleEntityID(e.rule)
 	lease := &providerRequestLease{local: local, tracker: tracker}
 	lease.session = tracker.startModule("http", entity, cancel)
-	lease.releaseProgressive = lease.session.retainProgressiveDrain()
+	lease.releaseProgressive, retained = lease.session.tryRetainProgressiveDrain()
+	if !retained {
+		scope.Close()
+		_ = lease.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider session is already forced")
+	}
 	tracker.register(lease.session)
 	lease.session.mu.Lock()
 	registrationErr := lease.session.registrationErr
 	lease.session.mu.Unlock()
 	if registrationErr != nil {
+		scope.Close()
 		_ = lease.Close()
 		return nil, nil, nil, fmt.Errorf("register HTTP backend provider session: %w", registrationErr)
 	}
-	scope := newProviderRequestScope(outer, writer, e.providerIdleTimeout)
 	return scope.wrapRequest(request.WithContext(ctx)), lease, scope, nil
 }
 

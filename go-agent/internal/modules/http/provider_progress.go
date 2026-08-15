@@ -13,11 +13,15 @@ type providerRequestScope struct {
 	releaseProgressive func()
 }
 
-func newProviderRequestScope(session *httpRequestSession, writer http.ResponseWriter, timeout time.Duration) *providerRequestScope {
+func newProviderRequestScope(session *httpRequestSession, writer http.ResponseWriter, timeout time.Duration) (*providerRequestScope, bool) {
+	releaseProgressive, retained := session.tryRetainProgressiveDrain()
+	if !retained {
+		return nil, false
+	}
 	return &providerRequestScope{
 		watchdog:           newProviderProgressWatchdog(session, writer, timeout),
-		releaseProgressive: session.retainProgressiveDrain(),
-	}
+		releaseProgressive: releaseProgressive,
+	}, true
 }
 
 func (scope *providerRequestScope) wrapRequest(request *http.Request) *http.Request {
@@ -57,20 +61,36 @@ func (scope *providerRequestScope) Close() {
 }
 
 type providerProgressWatchdog struct {
-	mu      sync.Mutex
-	timeout time.Duration
-	timer   *time.Timer
-	stopped bool
-	expired bool
-	session *httpRequestSession
-	writer  http.ResponseWriter
-	closers []io.Closer
+	mu           sync.Mutex
+	timeout      time.Duration
+	now          func() time.Time
+	lastProgress time.Time
+	wake         chan struct{}
+	done         chan struct{}
+	exited       chan struct{}
+	stopOnce     sync.Once
+	stopped      bool
+	expired      bool
+	session      *httpRequestSession
+	writer       http.ResponseWriter
+	closers      []io.Closer
 }
 
 func newProviderProgressWatchdog(session *httpRequestSession, writer http.ResponseWriter, timeout time.Duration) *providerProgressWatchdog {
-	watchdog := &providerProgressWatchdog{timeout: timeout, session: session, writer: writer}
+	watchdog := &providerProgressWatchdog{
+		timeout: timeout,
+		now:     time.Now,
+		wake:    make(chan struct{}, 1),
+		done:    make(chan struct{}),
+		exited:  make(chan struct{}),
+		session: session,
+		writer:  writer,
+	}
 	if timeout > 0 {
-		watchdog.timer = time.AfterFunc(timeout, watchdog.expire)
+		watchdog.lastProgress = watchdog.now()
+		go watchdog.run()
+	} else {
+		close(watchdog.exited)
 	}
 	return watchdog
 }
@@ -80,11 +100,16 @@ func (watchdog *providerProgressWatchdog) progress() {
 		return
 	}
 	watchdog.mu.Lock()
-	defer watchdog.mu.Unlock()
-	if watchdog.stopped || watchdog.expired || watchdog.timer == nil {
+	if watchdog.stopped || watchdog.expired {
+		watchdog.mu.Unlock()
 		return
 	}
-	watchdog.timer.Reset(watchdog.timeout)
+	watchdog.lastProgress = watchdog.now()
+	watchdog.mu.Unlock()
+	select {
+	case watchdog.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (watchdog *providerProgressWatchdog) addCloser(closer io.Closer) {
@@ -101,11 +126,65 @@ func (watchdog *providerProgressWatchdog) addCloser(closer io.Closer) {
 	watchdog.mu.Unlock()
 }
 
-func (watchdog *providerProgressWatchdog) expire() {
+func (watchdog *providerProgressWatchdog) run() {
+	timer := time.NewTimer(watchdog.timeout)
+	defer func() {
+		timer.Stop()
+		close(watchdog.exited)
+	}()
+	for {
+		select {
+		case <-timer.C:
+			remaining, expired := watchdog.handleTimerEvent()
+			if expired {
+				return
+			}
+			timer.Reset(remaining)
+		case <-watchdog.wake:
+			remaining, active := watchdog.remaining()
+			if !active {
+				return
+			}
+			resetProviderWatchdogTimer(timer, remaining)
+		case <-watchdog.done:
+			return
+		}
+	}
+}
+
+func resetProviderWatchdogTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
+}
+
+func (watchdog *providerProgressWatchdog) remaining() (time.Duration, bool) {
+	watchdog.mu.Lock()
+	defer watchdog.mu.Unlock()
+	if watchdog.stopped || watchdog.expired {
+		return 0, false
+	}
+	remaining := watchdog.timeout - watchdog.now().Sub(watchdog.lastProgress)
+	if remaining <= 0 {
+		remaining = time.Nanosecond
+	}
+	return remaining, true
+}
+
+func (watchdog *providerProgressWatchdog) handleTimerEvent() (time.Duration, bool) {
 	watchdog.mu.Lock()
 	if watchdog.stopped || watchdog.expired {
 		watchdog.mu.Unlock()
-		return
+		return 0, true
+	}
+	remaining := watchdog.timeout - watchdog.now().Sub(watchdog.lastProgress)
+	if remaining > 0 {
+		watchdog.mu.Unlock()
+		return remaining, false
 	}
 	watchdog.expired = true
 	closers := append([]io.Closer(nil), watchdog.closers...)
@@ -113,15 +192,16 @@ func (watchdog *providerProgressWatchdog) expire() {
 	session := watchdog.session
 	watchdog.mu.Unlock()
 
+	if session != nil {
+		session.forceClose()
+	}
 	for _, closer := range closers {
 		_ = closer.Close()
 	}
 	if writer != nil {
 		_ = http.NewResponseController(writer).SetWriteDeadline(time.Now())
 	}
-	if session != nil {
-		session.forceClose()
-	}
+	return 0, true
 }
 
 func (watchdog *providerProgressWatchdog) stop() {
@@ -130,10 +210,11 @@ func (watchdog *providerProgressWatchdog) stop() {
 	}
 	watchdog.mu.Lock()
 	watchdog.stopped = true
-	if watchdog.timer != nil {
-		watchdog.timer.Stop()
-	}
 	watchdog.mu.Unlock()
+	watchdog.stopOnce.Do(func() { close(watchdog.done) })
+	if watchdog.exited != nil {
+		<-watchdog.exited
+	}
 }
 
 func (watchdog *providerProgressWatchdog) wrapReadCloser(closer io.ReadCloser) io.ReadCloser {

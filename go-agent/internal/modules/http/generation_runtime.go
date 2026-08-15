@@ -981,6 +981,7 @@ type httpRequestSession struct {
 	once             sync.Once
 	registrationOnce sync.Once
 	progressiveRefs  int
+	forceCommitted   bool
 }
 
 type httpRequestSessionContextKey struct{}
@@ -1000,14 +1001,16 @@ func httpRequestSessionFromContext(ctx context.Context) *httpRequestSession {
 	return session
 }
 
-func (s *httpRequestSession) retainProgressiveDrain() func() {
+func (s *httpRequestSession) tryRetainProgressiveDrain() (func(), bool) {
 	if s == nil {
-		return func() {}
+		return nil, false
 	}
 	s.mu.Lock()
-	if !s.finished {
-		s.progressiveRefs++
+	if s.finished || s.forceCommitted {
+		s.mu.Unlock()
+		return nil, false
 	}
+	s.progressiveRefs++
 	s.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -1018,7 +1021,7 @@ func (s *httpRequestSession) retainProgressiveDrain() func() {
 			}
 			s.mu.Unlock()
 		})
-	}
+	}, true
 }
 
 func (s *httpRequestSession) ProgressiveDrainActive() bool {
@@ -1028,6 +1031,19 @@ func (s *httpRequestSession) ProgressiveDrainActive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return !s.finished && s.progressiveRefs > 0
+}
+
+func (s *httpRequestSession) TryCommitSelectiveForce() bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished || s.forceCommitted || s.progressiveRefs > 0 {
+		return false
+	}
+	s.forceCommitted = true
+	return true
 }
 
 type trackedHijackedConn struct {
@@ -1232,10 +1248,11 @@ func (s *httpRequestSession) forceClose() {
 	if s == nil {
 		return
 	}
-	s.cancel()
 	s.mu.Lock()
+	s.forceCommitted = true
 	connection := s.connection
 	s.mu.Unlock()
+	s.cancel()
 	if connection != nil {
 		_ = connection.Close()
 	}

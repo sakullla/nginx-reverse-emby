@@ -768,7 +768,7 @@ type progressiveRecordingSession struct {
 	closed atomic.Int32
 }
 
-func (s *progressiveRecordingSession) ProgressiveDrainActive() bool { return s.active }
+func (s *progressiveRecordingSession) TryCommitSelectiveForce() bool { return !s.active }
 func (s *progressiveRecordingSession) ForceClose(context.Context, string) error {
 	s.closed.Add(1)
 	return nil

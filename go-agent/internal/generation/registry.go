@@ -14,8 +14,8 @@ type Session interface {
 	ForceClose(context.Context, string) error
 }
 
-type progressiveDrainSession interface {
-	ProgressiveDrainActive() bool
+type selectiveProgressiveForceSession interface {
+	TryCommitSelectiveForce() bool
 }
 
 type SessionHandle struct {
@@ -191,10 +191,45 @@ func (r *SessionRegistry) ForceGeneration(ctx context.Context, generation, reaso
 }
 
 func (r *SessionRegistry) ForceGenerationExceptProgressive(ctx context.Context, generation, reason string) (int, error) {
-	return r.force(ctx, generation, true, func(record *sessionRecord) (string, bool) {
-		progressive, ok := record.session.(progressiveDrainSession)
-		return reason, !ok || !progressive.ProgressiveDrainActive()
-	})
+	if r == nil {
+		return 0, nil
+	}
+	var records []*sessionRecord
+	r.mu.Lock()
+	for _, sessions := range r.generations[generation] {
+		for _, rec := range sessions {
+			records = append(records, rec)
+		}
+	}
+	r.mu.Unlock()
+	var closeErr error
+	forced := 0
+	var waits []<-chan struct{}
+	for _, rec := range records {
+		if session, ok := rec.session.(selectiveProgressiveForceSession); ok && !session.TryCommitSelectiveForce() {
+			continue
+		}
+		owned, wait, finished := rec.handle.claimForce(true)
+		if finished {
+			r.finish(rec)
+			continue
+		}
+		if !owned {
+			if wait != nil {
+				waits = append(waits, wait)
+				forced++
+			}
+			continue
+		}
+		err := rec.session.ForceClose(ctx, reason)
+		closeErr = errors.Join(closeErr, err)
+		rec.handle.completeForce(err == nil)
+		forced++
+	}
+	for _, wait := range waits {
+		<-wait
+	}
+	return forced, closeErr
 }
 func (r *SessionRegistry) force(ctx context.Context, generation string, terminal bool, selectReason func(*sessionRecord) (string, bool)) (int, error) {
 	if r == nil {
