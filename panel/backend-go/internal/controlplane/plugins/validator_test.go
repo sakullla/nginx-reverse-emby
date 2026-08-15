@@ -552,6 +552,75 @@ func TestRuntimeRPCArtifactPlatformMatrixValidator(t *testing.T) {
 	assertValidationCode(t, err, "artifact")
 }
 
+func TestHTTPBackendProviderManifestAdmission(t *testing.T) {
+	providerManifest := func(t *testing.T) string {
+		t.Helper()
+		root := newRPCPackageFixture(t)
+		path := filepath.Join(root, PackageManifestFile)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.Replace(string(data),
+			"extension_points: [dns.provider]\npermissions: [agent.read]",
+			"extension_points: [http.backend-provider]\nhttp_backend_providers: [{id: default, display_name: Default}]\npermissions: [http.outbound]", 1)
+		writeFixture(t, root, PackageManifestFile, manifest)
+		refreshFixtureDigest(t, root)
+		return root
+	}
+
+	if _, err := newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(providerManifest(t), PackageExpectation{}); err != nil {
+		t.Fatalf("complete HTTP backend provider manifest rejected: %v", err)
+	}
+
+	for name, rewrite := range map[string]func(string) string{
+		"missing descriptor": func(value string) string {
+			return strings.Replace(value, "http_backend_providers: [{id: default, display_name: Default}]\n", "", 1)
+		},
+		"missing outbound permission": func(value string) string {
+			return strings.Replace(value, "permissions: [http.outbound]", "permissions: [agent.read]", 1)
+		},
+		"wrong host scope": func(value string) string {
+			return strings.Replace(value, "host_scope: agent", "host_scope: control-plane", 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := providerManifest(t)
+			path := filepath.Join(root, PackageManifestFile)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFixture(t, root, PackageManifestFile, rewrite(string(data)))
+			refreshFixtureDigest(t, root)
+			_, err = newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "http_backend_provider")
+		})
+	}
+
+	for name, test := range map[string]struct {
+		from string
+		to   string
+		code string
+	}{
+		"unknown extension":  {from: "http.backend-provider", to: "unknown.provider", code: "extension_point"},
+		"unknown permission": {from: "http.outbound", to: "unknown.permission", code: "permission"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := providerManifest(t)
+			path := filepath.Join(root, PackageManifestFile)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFixture(t, root, PackageManifestFile, strings.Replace(string(data), test.from, test.to, 1))
+			refreshFixtureDigest(t, root)
+			_, err = newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, test.code)
+		})
+	}
+}
+
 func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 	type format struct {
 		name   string

@@ -163,6 +163,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 	if len(options.AllowedPermissions) == 0 {
 		options.AllowedPermissions = []string{
 			"agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond",
+			pluginsdk.PermissionHTTPOutbound,
 			"l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use",
 			"storage.read", "storage.write", "container.read", "container.manage", "dns.manage",
 			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
@@ -173,6 +174,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 	if len(options.AllowedExtensionPoints) == 0 {
 		options.AllowedExtensionPoints = []string{
 			"http.request", "http.response", "l4.accept", "policy.provider", "dns.provider",
+			pluginsdk.ExtensionHTTPBackendProvider,
 			"container.provider", "tunnel.provider", "ui.route",
 		}
 	}
@@ -798,6 +800,9 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 			return validationError("extension_point", PackageManifestFile, fmt.Errorf("duplicate extension point %q", point))
 		}
 		seenPoints[point] = struct{}{}
+	}
+	if err := pluginsdk.ValidateHTTPBackendProviderManifest(manifest); err != nil {
+		return validationError("http_backend_provider", PackageManifestFile, err)
 	}
 	if err := validateCleanup(manifest.Cleanup); err != nil {
 		return validationError("cleanup", PackageManifestFile, err)
