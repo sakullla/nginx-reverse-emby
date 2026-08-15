@@ -26,6 +26,7 @@ export const createEgressProfile = (...args) => loadImplementation().then((m) =>
 export const updateEgressProfile = (...args) => loadImplementation().then((m) => m.updateEgressProfile(...args))
 export const deleteEgressProfile = (...args) => loadImplementation().then((m) => m.deleteEgressProfile(...args))
 export const fetchRules = (...args) => loadImplementation().then((m) => m.fetchRules(...args))
+export const fetchHTTPBackendProviders = (...args) => loadImplementation().then((m) => m.fetchHTTPBackendProviders(...args))
 export const fetchHttpRulesPage = (...args) => loadImplementation().then((m) => m.fetchHttpRulesPage(...args))
 export const createRule = (...args) => loadImplementation().then((m) => m.createRule(...args))
 export const updateRule = (...args) => loadImplementation().then((m) => m.updateRule(...args))

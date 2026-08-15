@@ -44,15 +44,15 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 
 用脚本输出的地址打开面板，输入 Panel token 登录。
 
-进入 **流量管理 → HTTP 规则**，选择 `local` 节点，添加：
+进入 **流量管理 → HTTP 规则**，选择节点后添加规则。普通服务填写后端地址；已安装的加速源等插件可以直接选择“插件提供商”，不需要填写插件端口或额外参数。
 
 | 字段 | 示例 | 说明 |
 | --- | --- | --- |
-| 入口域名 | `http://app.example.com` | 你访问用的域名，DNS 需先指向 VPS |
-| 后端地址 | `https://origin.example.net` | 真实服务地址 |
-| 启用规则 | 开 | 关闭不会生效 |
+| 入口域名 | `https://app.example.com` | 你访问用的域名；HTTPS 沿用规则的证书流程 |
+| 后端 | `加速源` | 选择“插件提供商”后，从当前节点的可用插件中选择 |
+| 发布 | `发布规则` | 一次提交入口、证书和插件后端 |
 
-保存后，`local` Agent 会自动拉取并应用配置。更完整的图文步骤见 [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)。
+点击发布后，Agent 会自动应用完整配置；插件更新或重启时，已建立的请求会继续完成。更完整的图文步骤见 [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)。
 
 ## 手动部署
 

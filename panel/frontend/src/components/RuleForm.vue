@@ -80,12 +80,30 @@
 
         <div class="form-group form-group--block">
           <div class="backends-header">
-            <label class="form-label form-label--required">后端服务器</label>
-            <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
+            <label class="form-label form-label--required">后端</label>
+            <button v-if="form.backend_mode === 'url'" type="button" class="btn btn--sm btn--secondary" @click="addBackend">
               添加后端
             </button>
           </div>
-          <div class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
+          <div class="backend-mode" role="group" aria-label="后端类型">
+            <button
+              type="button"
+              class="backend-mode__option"
+              :class="{ 'backend-mode__option--active': form.backend_mode === 'url' }"
+              @click="setBackendMode('url')"
+            >
+              后端地址
+            </button>
+            <button
+              type="button"
+              class="backend-mode__option"
+              :class="{ 'backend-mode__option--active': form.backend_mode === 'provider' }"
+              @click="setBackendMode('provider')"
+            >
+              插件提供商
+            </button>
+          </div>
+          <div v-if="form.backend_mode === 'url'" class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
             <div
               v-for="(backend, index) in form.backends"
               :key="backend.id"
@@ -148,6 +166,33 @@
               </button>
             </div>
           </div>
+          <div v-else class="provider-picker">
+            <select
+              v-model="form.provider_key"
+              name="http-backend-provider"
+              class="input"
+              :class="{ 'input--error': errors.backend }"
+              :disabled="providersLoading"
+              @change="clearBackendError"
+            >
+              <option value="">{{ providersLoading ? '正在加载...' : '选择当前节点的插件' }}</option>
+              <option
+                v-for="provider in providerOptions"
+                :key="providerKey(provider)"
+                :value="providerKey(provider)"
+                :disabled="provider.state !== 'active'"
+              >
+                {{ providerLabel(provider) }}{{ provider.state === 'active' ? '' : '（当前不可用）' }}
+              </option>
+            </select>
+            <div v-if="selectedProvider" class="provider-picker__status" role="status">
+              <span class="provider-picker__dot" aria-hidden="true"></span>
+              已就绪 · {{ selectedProvider.display_name || selectedProvider.provider_id }}
+            </div>
+            <p v-else-if="!providersLoading && providerOptions.length === 0" class="field-hint">
+              当前节点没有可用的插件提供商
+            </p>
+          </div>
           <p v-if="errors.backend" class="form-error">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
@@ -156,7 +201,7 @@
             </svg>
             {{ errors.backend }}
           </p>
-          <p class="field-hint">可填多台后端，多后端时按负载策略分发</p>
+          <p v-if="form.backend_mode === 'url'" class="field-hint">可填多台后端，多后端时按负载策略分发</p>
         </div>
       </div>
 
@@ -522,7 +567,7 @@
         :disabled="isLoading"
       >
         <span v-if="isLoading" class="spinner spinner--sm"></span>
-        <span v-else>{{ isEdit ? '保存修改' : '创建规则' }}</span>
+        <span v-else>{{ isEdit ? '保存并发布' : '发布规则' }}</span>
       </button>
     </div>
   </form>
@@ -530,10 +575,12 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
 import { useCreateRule, useUpdateRule } from '../hooks/useRules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
+import { fetchHTTPBackendProviders } from '../api'
 import RelayChainInput from './RelayChainInput.vue'
 
 const UA_PRESETS = [
@@ -559,6 +606,12 @@ const createRule = useCreateRule(props.agentId)
 const updateRule = useUpdateRule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
 const { data: egressProfilesData } = useEgressProfiles()
+const resolvedAgentId = computed(() => String(props.agentId?.value ?? props.agentId ?? '').trim())
+const { data: providerCatalog, isLoading: providersLoading } = useQuery({
+  queryKey: computed(() => ['http-backend-providers', resolvedAgentId.value]),
+  enabled: computed(() => Boolean(resolvedAgentId.value)),
+  queryFn: () => fetchHTTPBackendProviders(resolvedAgentId.value)
+})
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)
@@ -568,6 +621,21 @@ const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profil
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
 }))
+const selectedProvider = computed(() => {
+  const selected = providerOptions.value.find((provider) => providerKey(provider) === form.value.provider_key)
+  return selected?.state === 'active' ? selected : null
+})
+const providerOptions = computed(() => {
+  const providers = Array.isArray(providerCatalog.value) ? providerCatalog.value : []
+  const current = form.value.provider_ref
+  if (!current || providers.some((provider) => providerKey(provider) === form.value.provider_key)) return providers
+  return [...providers, {
+    instance_id: current.instance_id,
+    provider_id: current.provider_id,
+    display_name: `${current.instance_id} / ${current.provider_id}`,
+    state: 'unavailable'
+  }]
+})
 const selectedEgressProfileID = computed(() => {
   const id = Number(form.value.egress_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
@@ -738,7 +806,10 @@ watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
 function createDefaultForm() {
   return {
     frontend_url: '',
+    backend_mode: 'url',
     backends: [createBackend()],
+    provider_key: '',
+    provider_ref: null,
     load_balancing: { strategy: 'adaptive' },
     tags: [],
     enabled: true,
@@ -779,14 +850,27 @@ function normalizeHttpBackends(initialData) {
   return [createBackend()]
 }
 
+function normalizeProviderRef(initialData) {
+  const backend = Array.isArray(initialData?.backends)
+    ? initialData.backends.find((item) => item?.kind === 'plugin_provider')
+    : null
+  const instanceId = String(backend?.plugin_provider?.instance_id || '').trim()
+  const providerId = String(backend?.plugin_provider?.provider_id || '').trim()
+  return instanceId && providerId ? { instance_id: instanceId, provider_id: providerId } : null
+}
+
 function createFormState(initialData) {
   if (!initialData) {
     return createDefaultForm()
   }
 
+  const providerRef = normalizeProviderRef(initialData)
   return {
     frontend_url: initialData.frontend_url || '',
+    backend_mode: providerRef ? 'provider' : 'url',
     backends: normalizeHttpBackends(initialData),
+    provider_key: providerRef ? providerKey(providerRef) : '',
+    provider_ref: providerRef,
     load_balancing: {
       strategy: normalizeHttpStrategy(initialData.load_balancing?.strategy)
     },
@@ -800,6 +884,28 @@ function createFormState(initialData) {
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData.relay_obfs === true
   }
+}
+
+function providerKey(provider) {
+  const instanceId = String(provider?.instance_id || '').trim()
+  const providerId = String(provider?.provider_id || '').trim()
+  return `${encodeURIComponent(instanceId)}:${encodeURIComponent(providerId)}`
+}
+
+function providerLabel(provider) {
+  const displayName = String(provider?.display_name || provider?.provider_id || '').trim()
+  const instanceId = String(provider?.instance_id || '').trim()
+  return instanceId ? `${displayName} · ${instanceId}` : displayName
+}
+
+function setBackendMode(mode) {
+  form.value.backend_mode = mode
+  clearBackendError()
+}
+
+function clearBackendError() {
+  errors.value.backend = ''
+  errors.value.submit = ''
 }
 
 function normalizeCustomHeaders(value) {
@@ -996,11 +1102,17 @@ function validateBasicFields() {
     errors.value.frontend_url = '请输入前端访问地址'
   }
 
-  const validBackends = form.value.backends
-    .map((backend) => ({ url: String(backend?.url || '').trim() }))
-    .filter((backend) => backend.url)
-  if (validBackends.length === 0) {
-    errors.value.backend = '至少需要一个后端服务器'
+  if (form.value.backend_mode === 'provider') {
+    if (!selectedProvider.value) {
+      errors.value.backend = '请选择当前可用的插件提供商'
+    }
+  } else {
+    const validBackends = form.value.backends
+      .map((backend) => ({ url: String(backend?.url || '').trim() }))
+      .filter((backend) => backend.url)
+    if (validBackends.length === 0) {
+      errors.value.backend = '至少需要一个后端服务器'
+    }
   }
 
   return !errors.value.frontend_url && !errors.value.backend
@@ -1072,9 +1184,17 @@ async function handleSubmit() {
   if (!validate()) return
 
   try {
-    const validBackends = form.value.backends
-      .map((backend) => ({ url: String(backend?.url || '').trim() }))
-      .filter((backend) => backend.url)
+    const validBackends = form.value.backend_mode === 'provider'
+      ? [{
+          kind: 'plugin_provider',
+          plugin_provider: {
+            instance_id: selectedProvider.value.instance_id,
+            provider_id: selectedProvider.value.provider_id
+          }
+        }]
+      : form.value.backends
+          .map((backend) => ({ url: String(backend?.url || '').trim() }))
+          .filter((backend) => backend.url)
     const payload = {
       frontend_url: form.value.frontend_url.trim(),
       backends: validBackends,
@@ -1722,6 +1842,57 @@ async function handleSubmit() {
   gap: 0.5rem;
   margin-bottom: 0.4rem;
   width: 100%;
+}
+
+.backend-mode {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(100%, 22rem);
+  padding: 3px;
+  margin-bottom: 0.65rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
+
+.backend-mode__option {
+  min-height: 34px;
+  padding: 0.35rem 0.75rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.backend-mode__option--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+.provider-picker {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.provider-picker__status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--color-success);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.provider-picker__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .backends-list {

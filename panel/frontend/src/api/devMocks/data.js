@@ -288,8 +288,20 @@ function generateMockRules(count) {
 function normalizeHttpBackends(rule = {}) {
   if (Array.isArray(rule.backends) && rule.backends.length > 0) {
     return rule.backends
-      .map((backend) => ({ url: String(backend?.url || '').trim() }))
-      .filter((backend) => backend.url)
+      .map((backend) => {
+        if (backend?.kind === 'plugin_provider') {
+          const instanceId = String(backend?.plugin_provider?.instance_id || '').trim()
+          const providerId = String(backend?.plugin_provider?.provider_id || '').trim()
+          if (!instanceId || !providerId) return null
+          return {
+            kind: 'plugin_provider',
+            plugin_provider: { instance_id: instanceId, provider_id: providerId }
+          }
+        }
+        const url = String(backend?.url || '').trim()
+        return url ? { url } : null
+      })
+      .filter(Boolean)
   }
   return []
 }
@@ -1152,6 +1164,25 @@ export async function fetchRules(agentId) {
   }
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/rules`)
   return (data.rules || []).map((rule) => normalizeHttpRule(rule))
+}
+
+export async function fetchHTTPBackendProviders(agentId) {
+  if (isDev) {
+    await sleep()
+    return agentId === 'local'
+      ? [{
+          instance_id: 'accelerator-sources',
+          plugin_id: 'accelerator-sources',
+          provider_id: 'default',
+          display_name: '加速源',
+          agent_id: 'local',
+          ready_generation: 'dev-generation',
+          state: 'active'
+        }]
+      : []
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/http-backend-providers`)
+  return data.providers || []
 }
 
 export async function createRule(agentId, payloadOrFrontend) {

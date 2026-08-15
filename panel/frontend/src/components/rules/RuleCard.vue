@@ -54,6 +54,10 @@
         <code class="rule-card__backend" :title="backendsTooltip">{{ backendPrimary }}</code>
         <span v-if="backendExtraCount > 0" class="rule-card__backend-more">+{{ backendExtraCount }}</span>
       </div>
+      <div v-if="providerStatus" class="rule-card__provider-status">
+        <span class="rule-card__provider-dot" aria-hidden="true"></span>
+        {{ providerStatus }}
+      </div>
     </div>
 
     <TrafficBar
@@ -81,12 +85,14 @@ import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { syncStatusLabel, syncStatusTone } from '../../utils/resourceCardStatus.js'
 import TrafficBar from '../traffic/TrafficBar.vue'
 import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { describeHTTPBackends } from '../../utils/httpBackend.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
   agent: { type: Object, default: null },
   traffic: { type: Object, default: null },
   agentNodeTotal: { type: Number, default: 0 },
+  providerCatalog: { type: Array, default: () => [] },
 })
 
 defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click'])
@@ -97,18 +103,21 @@ const statusLabel = computed(() => syncStatusLabel(status.value))
 
 const isHttps = computed(() => String(props.rule.frontend_url || '').startsWith('https'))
 
+const backendDescriptions = computed(() => describeHTTPBackends(props.rule, props.providerCatalog))
 const backends = computed(() => {
-  if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) {
-    return props.rule.backends
-      .map((b) => String(b?.url || '').trim())
-      .filter(Boolean)
-  }
-  return []
+  return backendDescriptions.value.map((backend) => (
+    backend.kind === 'provider' ? `${backend.label} · ${backend.detail}` : backend.label
+  ))
 })
 
 const backendPrimary = computed(() => backends.value[0] || '-')
 const backendExtraCount = computed(() => Math.max(0, backends.value.length - 1))
 const backendsTooltip = computed(() => backends.value.join('\n'))
+const providerStatus = computed(() => {
+  const provider = backendDescriptions.value.find((backend) => backend.kind === 'provider')
+  if (!provider || provider.state !== 'active') return ''
+  return provider.generation ? `插件已就绪 · ${provider.generation}` : '插件已就绪'
+})
 // agent prop is the page-selected node; when set, every card would repeat the same badge.
 const showAgentBadge = computed(() => !props.agent)
 
@@ -162,5 +171,22 @@ const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags
   font-size: 0.6875rem;
   font-weight: 650;
   line-height: 1.3;
+}
+
+.rule-card__provider-status {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--color-success);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.rule-card__provider-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 </style>

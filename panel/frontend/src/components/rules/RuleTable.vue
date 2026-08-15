@@ -92,10 +92,12 @@ import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
+import { describeHTTPBackends } from '../../utils/httpBackend.js'
 
 const props = defineProps({
   rules: { type: Array, default: () => [] },
-  agent: { type: Object, default: null }
+  agent: { type: Object, default: null },
+  providerCatalog: { type: Array, default: () => [] }
 })
 defineEmits(['toggle', 'edit', 'delete'])
 
@@ -111,12 +113,9 @@ function isHttps(rule) {
 }
 
 function httpBackends(rule) {
-  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
-    return rule.backends
-      .map((backend) => String(backend?.url || '').trim())
-      .filter(Boolean)
-  }
-  return []
+  return describeHTTPBackends(rule, props.providerCatalog).map((backend) => (
+    backend.kind === 'provider' ? `${backend.label} · ${backend.detail}` : backend.label
+  ))
 }
 
 function formatBackend(rule) {
@@ -127,7 +126,11 @@ function formatBackend(rule) {
 }
 
 function backendTooltip(rule) {
-  return httpBackends(rule).join('\n')
+  return describeHTTPBackends(rule, props.providerCatalog).map((backend) => {
+    if (backend.kind !== 'provider') return backend.label
+    const status = backend.state === 'active' ? '插件已就绪' : '插件状态不可用'
+    return `${backend.label} · ${backend.detail}${backend.generation ? `\n${status} · ${backend.generation}` : `\n${status}`}`
+  }).join('\n')
 }
 </script>
 

@@ -80,6 +80,7 @@
         :key="`${rule.agent_id || ''}:${rule.id}`"
         :rule="rule"
         :agent="selectedAgent"
+        :provider-catalog="httpBackendProviders"
         :traffic="trafficForRule(rule)"
         :agent-node-total="nodeTotalFor(rule)"
         @edit="startEdit"
@@ -96,6 +97,7 @@
       v-show="hasAgentFilter && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
+      :provider-catalog="httpBackendProviders"
       @edit="startEdit"
       @toggle="toggleRule"
       @delete="startDelete"
@@ -193,7 +195,7 @@ import { useAgent } from '../context/AgentContext'
 import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchRules, fetchAllAgentsRules, fetchCertificates, fetchRelayListeners, fetchEgressProfiles, fetchAllAgentsCertificates, fetchAllAgentsRelayListeners } from '../api'
+import { fetchRules, fetchAllAgentsRules, fetchCertificates, fetchRelayListeners, fetchEgressProfiles, fetchAllAgentsCertificates, fetchAllAgentsRelayListeners, fetchHTTPBackendProviders } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
@@ -215,6 +217,7 @@ import { messageStore } from '../stores/messages'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
+import { describeHTTPBackends } from '../utils/httpBackend.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -254,6 +257,12 @@ const canCreate = computed(() => (
 ))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
+const { data: httpBackendProvidersData } = useQuery({
+  queryKey: computed(() => ['http-backend-providers', agentId.value || '']),
+  enabled: computed(() => Boolean(agentId.value)),
+  queryFn: () => fetchHTTPBackendProviders(agentId.value)
+})
+const httpBackendProviders = computed(() => httpBackendProvidersData.value ?? [])
 const formAgent = computed(() => agentsData.value?.find((a) => String(a.id) === String(formAgentId.value)))
 const formModalSubtitle = computed(() => {
   const name = String(formAgent.value?.name || formAgentId.value || '').trim()
@@ -472,12 +481,9 @@ function handleAgentSelect(id) {
 }
 
 function httpBackends(rule) {
-  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
-    return rule.backends
-      .map((backend) => String(backend?.url || '').trim())
-      .filter(Boolean)
-  }
-  return []
+  return describeHTTPBackends(rule, httpBackendProviders.value).map((backend) => (
+    backend.kind === 'provider' ? `${backend.label} · ${backend.detail}` : backend.label
+  ))
 }
 
 function formatHttpBackend(rule) {

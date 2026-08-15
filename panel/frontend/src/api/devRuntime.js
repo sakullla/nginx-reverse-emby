@@ -23,6 +23,7 @@ export {
   updateEgressProfile,
   deleteEgressProfile,
   fetchRules,
+  fetchHTTPBackendProviders,
   fetchHttpRulesPage,
   createRule,
   updateRule,
