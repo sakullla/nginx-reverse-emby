@@ -18,7 +18,7 @@ func TestRuntimeRuleSpecPreservesLegacyURLBackendAcceptance(t *testing.T) {
 			if _, err := runtimeRuleSpec(rule); err != nil {
 				t.Fatalf("runtimeRuleSpec() broke legacy URL fixture: %v", err)
 			}
-			parsed, err := parseHTTPBackends(rule, nil)
+			parsed, err := parseHTTPBackends(rule, nil, "")
 			if err != nil || len(parsed) == 0 {
 				t.Fatalf("parseHTTPBackends() = %d, %v", len(parsed), err)
 			}

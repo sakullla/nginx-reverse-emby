@@ -46,6 +46,7 @@ type Providers struct {
 	providerSessions     HTTPSessionRegistrar
 	providerGeneration   string
 	providerTracker      *httpSessionTracker
+	providerIdleTimeout  time.Duration
 }
 
 type routeEntry struct {
@@ -64,6 +65,7 @@ type routeEntry struct {
 	providerSessions           HTTPSessionRegistrar
 	providerGeneration         string
 	providerTracker            *httpSessionTracker
+	providerIdleTimeout        time.Duration
 }
 
 type HTTPBackendProviderResolver interface {
@@ -79,10 +81,11 @@ type HTTPBackendProvider interface {
 }
 
 type providerRequestLease struct {
-	once    sync.Once
-	local   io.Closer
-	tracker *httpSessionTracker
-	session *httpRequestSession
+	once               sync.Once
+	local              io.Closer
+	tracker            *httpSessionTracker
+	session            *httpRequestSession
+	releaseProgressive func()
 }
 
 func (lease *providerRequestLease) Close() error {
@@ -91,6 +94,9 @@ func (lease *providerRequestLease) Close() error {
 	}
 	var err error
 	lease.once.Do(func() {
+		if lease.releaseProgressive != nil {
+			lease.releaseProgressive()
+		}
 		if lease.tracker != nil {
 			lease.tracker.finish(lease.session)
 		}
@@ -101,37 +107,45 @@ func (lease *providerRequestLease) Close() error {
 	return err
 }
 
-func (e *routeEntry) acquireProviderRequest(request *http.Request, candidate httpCandidate) (*http.Request, *providerRequestLease, error) {
+func (e *routeEntry) acquireProviderRequest(writer http.ResponseWriter, request *http.Request, candidate httpCandidate) (*http.Request, *providerRequestLease, *providerRequestScope, error) {
 	if candidate.provider == nil {
-		return request, nil, nil
+		return request, nil, nil, nil
 	}
 	local, err := candidate.provider.Acquire()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if e.providerSessions == nil || e.providerGeneration == "" {
 		_ = local.Close()
-		return nil, nil, errors.New("HTTP backend provider session registrar is unavailable")
+		return nil, nil, nil, errors.New("HTTP backend provider session registrar is unavailable")
 	}
 	ctx, cancel := context.WithCancel(request.Context())
 	tracker := e.providerTracker
 	if tracker == nil {
 		cancel()
 		_ = local.Close()
-		return nil, nil, errors.New("HTTP backend provider session tracker is unavailable")
+		return nil, nil, nil, errors.New("HTTP backend provider session tracker is unavailable")
 	}
-	entity := httpRuleEntityID(e.rule) + ":" + candidate.provider.InstanceID() + ":" + candidate.provider.ProviderID()
+	outer := httpRequestSessionFromContext(request.Context())
+	if outer == nil {
+		cancel()
+		_ = local.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider outer session is unavailable")
+	}
+	entity := httpRuleEntityID(e.rule)
 	lease := &providerRequestLease{local: local, tracker: tracker}
-	lease.session = tracker.startModule("http-provider", entity, cancel)
+	lease.session = tracker.startModule("http", entity, cancel)
+	lease.releaseProgressive = lease.session.retainProgressiveDrain()
 	tracker.register(lease.session)
 	lease.session.mu.Lock()
 	registrationErr := lease.session.registrationErr
 	lease.session.mu.Unlock()
 	if registrationErr != nil {
 		_ = lease.Close()
-		return nil, nil, fmt.Errorf("register HTTP backend provider session: %w", registrationErr)
+		return nil, nil, nil, fmt.Errorf("register HTTP backend provider session: %w", registrationErr)
 	}
-	return request.WithContext(ctx), lease, nil
+	scope := newProviderRequestScope(outer, writer, e.providerIdleTimeout)
+	return scope.wrapRequest(request.WithContext(ctx)), lease, scope, nil
 }
 
 type httpBackend struct {
@@ -177,8 +191,15 @@ func newServerWithResilience(
 		if hostKey == "" {
 			continue
 		}
-		targets, err := parseHTTPBackends(rule, providers.HTTPBackendProviders)
-		if err != nil || len(targets) == 0 {
+		targets, err := parseHTTPBackends(rule, providers.HTTPBackendProviders, providers.providerGeneration)
+		if err != nil {
+			var providerErr *httpBackendProviderResolutionError
+			if errors.As(err, &providerErr) {
+				return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, providerErr)
+			}
+			continue
+		}
+		if len(targets) == 0 {
 			continue
 		}
 		transport := sharedTransport
@@ -230,6 +251,7 @@ func newServerWithResilience(
 			providerSessions:           providers.providerSessions,
 			providerGeneration:         providers.providerGeneration,
 			providerTracker:            providers.providerTracker,
+			providerIdleTimeout:        providers.providerIdleTimeout,
 		})
 	}
 
@@ -365,9 +387,12 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
 			}
-			attemptReq, providerLease, err := e.acquireProviderRequest(attemptReq, candidate)
+			attemptReq, providerLease, providerScope, err := e.acquireProviderRequest(w, attemptReq, candidate)
 			if err != nil {
 				return err
+			}
+			if providerScope != nil {
+				defer providerScope.Close()
 			}
 			start := time.Now()
 			var resp *http.Response
@@ -379,6 +404,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				resp, err = e.transportForRequest(attemptReq).RoundTrip(attemptReq)
 			}
 			if err != nil {
+				if providerScope != nil {
+					providerScope.Close()
+				}
 				if providerLease != nil {
 					_ = providerLease.Close()
 				}
@@ -394,6 +422,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				}
 				e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 				break
+			}
+			if providerScope != nil {
+				providerScope.wrapResponse(resp)
 			}
 			if providerLease != nil {
 				rpc.WrapHTTPBackendProviderResponseLease(attemptReq.Context(), resp, providerLease)
@@ -416,7 +447,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				}
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
-				if err := handleUpgradeResponse(w, attemptReq, resp, recorder); err != nil {
+				responseWriter := w
+				if providerScope != nil {
+					responseWriter = providerScope.responseWriter(w)
+				}
+				if err := handleUpgradeResponse(responseWriter, attemptReq, resp, recorder); err != nil {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
@@ -442,7 +477,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					return nil
 				}
 			}
-			written, err := copyResponse(w, resp, recorder)
+			responseWriter := w
+			if providerScope != nil {
+				responseWriter = providerScope.responseWriter(w)
+			}
+			written, err := copyResponse(responseWriter, resp, recorder)
 			if err != nil {
 				if attemptReq.Context().Err() == nil {
 					if candidate.backendObservationKey != "" {

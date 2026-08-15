@@ -172,7 +172,7 @@ func (c *DrainController) forceNonProviderSessions(ctx context.Context, id strin
 	}
 	entry.timer = nil
 	c.mu.Unlock()
-	count, err := c.registry.ForceGenerationExceptModule(ctx, id, "http-provider", model.GenerationForceReasonTimeout)
+	count, err := c.registry.ForceGenerationExceptProgressive(ctx, id, model.GenerationForceReasonTimeout)
 	c.mu.Lock()
 	entry.status.ForcedSessionCount += count
 	entry.status.SessionCount = c.registry.GenerationCount(id)

@@ -980,6 +980,54 @@ type httpRequestSession struct {
 	finished         bool
 	once             sync.Once
 	registrationOnce sync.Once
+	progressiveRefs  int
+}
+
+type httpRequestSessionContextKey struct{}
+
+func withHTTPRequestSession(ctx context.Context, session *httpRequestSession) context.Context {
+	if ctx == nil || session == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, httpRequestSessionContextKey{}, session)
+}
+
+func httpRequestSessionFromContext(ctx context.Context) *httpRequestSession {
+	if ctx == nil {
+		return nil
+	}
+	session, _ := ctx.Value(httpRequestSessionContextKey{}).(*httpRequestSession)
+	return session
+}
+
+func (s *httpRequestSession) retainProgressiveDrain() func() {
+	if s == nil {
+		return func() {}
+	}
+	s.mu.Lock()
+	if !s.finished {
+		s.progressiveRefs++
+	}
+	s.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.progressiveRefs > 0 {
+				s.progressiveRefs--
+			}
+			s.mu.Unlock()
+		})
+	}
+}
+
+func (s *httpRequestSession) ProgressiveDrainActive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.finished && s.progressiveRefs > 0
 }
 
 type trackedHijackedConn struct {
@@ -1270,6 +1318,7 @@ func (h *generationHTTPHandler) serveActive(w stdhttp.ResponseWriter, req *stdht
 	defer h.tracker.requestDone(session)
 	if session != nil {
 		ctx = withHTTPPolicyRequestID(ctx, session.sessionID)
+		ctx = withHTTPRequestSession(ctx, session)
 	}
 	h.server.ServeHTTP(&generationResponseWriter{ResponseWriter: w, session: session}, req.WithContext(ctx))
 }

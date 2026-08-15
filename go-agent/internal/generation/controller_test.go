@@ -48,7 +48,13 @@ func TestDrainControllerProgressiveReplacementHasNoFixedForceTimer(t *testing.T)
 	if err := controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: first}, nil, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	handle, err := controller.RegisterSession("g1", EntityKey{Module: "http-provider", ID: "rule-1:instance:default"}, "stream", &recordingSession{})
+	outer := &progressiveRecordingSession{active: true}
+	outerHandle, err := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "rule-1"}, "outer", outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := &progressiveRecordingSession{active: true}
+	nestedHandle, err := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "rule-1"}, "nested", nested)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,13 +74,34 @@ func TestDrainControllerProgressiveReplacementHasNoFixedForceTimer(t *testing.T)
 		t.Fatalf("ordinary hung session closes = %d, want 1", ordinary.closed)
 	}
 	ordinaryHandle.Finish()
-	handle.Finish()
+	outerHandle.Finish()
+	nestedHandle.Finish()
 	deadline := time.Now().Add(time.Second)
 	for first.destroyed == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if first.destroyed != 1 {
 		t.Fatal("progressive provider generation did not clean up after its final lease")
+	}
+}
+
+func TestDrainControllerEntityRevokeForcesProgressiveSessions(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	if err := controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	outer := &progressiveRecordingSession{active: true}
+	nested := &progressiveRecordingSession{active: true}
+	for id, session := range map[string]*progressiveRecordingSession{"outer": outer, "nested": nested} {
+		if _, err := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "rule-1"}, id, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, []EntityChange{{Entity: EntityKey{Module: "http", ID: "rule-1"}, Action: EntityDeleted}}, -time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if outer.closed.Load() != 1 || nested.closed.Load() != 1 {
+		t.Fatalf("revoked progressive closes = outer:%d nested:%d, want 1 each", outer.closed.Load(), nested.closed.Load())
 	}
 }
 
@@ -735,6 +762,17 @@ func (r *blockingDestroyResource) Destroy(context.Context) error {
 type recordingSession struct{ closed int }
 
 func (s *recordingSession) ForceClose(context.Context, string) error { s.closed++; return nil }
+
+type progressiveRecordingSession struct {
+	active bool
+	closed atomic.Int32
+}
+
+func (s *progressiveRecordingSession) ProgressiveDrainActive() bool { return s.active }
+func (s *progressiveRecordingSession) ForceClose(context.Context, string) error {
+	s.closed.Add(1)
+	return nil
+}
 
 type reasonRecordingSession struct {
 	reason string

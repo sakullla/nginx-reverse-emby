@@ -19,6 +19,8 @@ import (
 
 const ProviderHTTPBackendProviders module.ProviderRef = "plugins.http.backend-provider"
 
+const DefaultHTTPBackendProviderIdleTimeout = 2 * time.Minute
+
 type HTTPBackendProviderIdentity struct {
 	InstanceID string
 	ProviderID string
@@ -285,7 +287,7 @@ func newHTTPBackendProviderAttempt(security httpBackendProviderSecurity, process
 				return nil, errors.New("HTTP backend provider peer changed within an attempt")
 			}
 			binding.peer = peer
-			return &providerIdleConn{Conn: connection, timeout: 2 * time.Minute}, nil
+			return &providerIdleConn{Conn: connection, timeout: DefaultHTTPBackendProviderIdleTimeout}, nil
 		},
 	}
 	return binding

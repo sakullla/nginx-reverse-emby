@@ -294,17 +294,29 @@ func httpRuleEgressProfile(rule model.HTTPRule, dialer moduleegress.Dialer) (mod
 	return profile, nil
 }
 
-func parseHTTPBackends(rule model.HTTPRule, providers HTTPBackendProviderResolver) ([]httpBackend, error) {
+type httpBackendProviderResolutionError struct{ reason string }
+
+func (err *httpBackendProviderResolutionError) Error() string {
+	return "HTTP backend provider " + err.reason
+}
+
+func parseHTTPBackends(rule model.HTTPRule, providers HTTPBackendProviderResolver, expectedGeneration string) ([]httpBackend, error) {
 	rawBackends := rule.Backends
 	backendsOut := make([]httpBackend, 0, len(rawBackends))
 	for _, entry := range rawBackends {
 		if entry.Kind == pluginsdk.HTTPBackendKindPluginProvider {
 			if entry.PluginProvider == nil || providers == nil {
-				return nil, errors.New("HTTP backend provider generation is unavailable")
+				return nil, &httpBackendProviderResolutionError{reason: "generation is unavailable"}
 			}
 			handle, found := providers.Resolve(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
-			if !found || handle.Generation() == "" {
-				return nil, errors.New("HTTP backend provider handle is unavailable")
+			if !found || handle == nil {
+				return nil, &httpBackendProviderResolutionError{reason: "handle is unavailable"}
+			}
+			if handle.InstanceID() != entry.PluginProvider.InstanceID || handle.ProviderID() != entry.PluginProvider.ProviderID {
+				return nil, &httpBackendProviderResolutionError{reason: "handle identity mismatch"}
+			}
+			if expectedGeneration == "" || handle.Generation() != expectedGeneration {
+				return nil, &httpBackendProviderResolutionError{reason: "handle generation mismatch"}
 			}
 			key := pluginrpc.ProviderObservationKey(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
 			backendsOut = append(backendsOut, httpBackend{target: pluginrpc.ProviderSyntheticURL(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID),

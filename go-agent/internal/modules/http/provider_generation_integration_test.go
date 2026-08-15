@@ -17,6 +17,7 @@ import (
 	"time"
 
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
@@ -24,10 +25,12 @@ import (
 )
 
 type providerGenerationModule struct {
-	slowStarted chan struct{}
-	releaseSlow chan struct{}
-	firstSlow   sync.Once
-	requests    atomic.Int32
+	slowStarted  chan struct{}
+	releaseSlow  chan struct{}
+	slowCanceled chan struct{}
+	firstSlow    sync.Once
+	firstCancel  sync.Once
+	requests     atomic.Int32
 }
 
 func (*providerGenerationModule) Name() string { return "provider-fixture" }
@@ -41,19 +44,50 @@ func (*providerGenerationModule) Capabilities(module.SnapshotView) []module.Capa
 func (*providerGenerationModule) Apply(context.Context, module.ApplyRequest) error     { return nil }
 func (*providerGenerationModule) Stop(context.Context) error                           { return nil }
 func (provider *providerGenerationModule) Prepare(_ context.Context, request module.ApplyRequest) (module.ModuleTransaction, error) {
-	return &providerGenerationTransaction{provider: provider, generation: request.Next.DesiredVersion, failReady: strings.Contains(request.Next.DesiredVersion, "fail")}, nil
+	generationContext, err := module.NewGenerationContext(request.Previous, request.Next)
+	if err != nil {
+		return nil, err
+	}
+	transaction := &providerGenerationTransaction{
+		provider: provider, instanceID: "instance-1", providerID: "default",
+		generation: generationContext.ID(), responseLabel: request.Next.DesiredVersion,
+		failReady: strings.Contains(request.Next.DesiredVersion, "readiness-fail"),
+	}
+	switch {
+	case strings.Contains(request.Next.DesiredVersion, "missing"):
+		transaction.missing = true
+	case strings.Contains(request.Next.DesiredVersion, "wrong-instance"):
+		transaction.instanceID = "instance-other"
+		transaction.forceResolve = true
+	case strings.Contains(request.Next.DesiredVersion, "wrong-provider"):
+		transaction.providerID = "provider-other"
+		transaction.forceResolve = true
+	case strings.Contains(request.Next.DesiredVersion, "stale-generation"):
+		transaction.generation = "generation-stale"
+	}
+	return transaction, nil
 }
 
 type providerGenerationTransaction struct {
-	provider   *providerGenerationModule
-	generation string
-	failReady  bool
+	provider      *providerGenerationModule
+	instanceID    string
+	providerID    string
+	generation    string
+	responseLabel string
+	failReady     bool
+	missing       bool
+	forceResolve  bool
 }
 
 func (transaction *providerGenerationTransaction) RegisterProviders(reg module.ProviderRegistry) error {
-	return reg.Provide(pluginrpc.ProviderHTTPBackendProviders, providerFixtureResolver{handle: &providerFixtureHandle{
-		module: transaction.provider, instanceID: "instance-1", providerID: "default", generation: transaction.generation,
-	}})
+	resolver := providerFixtureResolver{forceResolve: transaction.forceResolve}
+	if !transaction.missing {
+		resolver.handle = &providerFixtureHandle{
+			module: transaction.provider, instanceID: transaction.instanceID, providerID: transaction.providerID,
+			generation: transaction.generation, responseLabel: transaction.responseLabel,
+		}
+	}
+	return reg.Provide(pluginrpc.ProviderHTTPBackendProviders, resolver)
 }
 func (transaction *providerGenerationTransaction) Ready(context.Context) error {
 	if transaction.failReady {
@@ -67,10 +101,13 @@ func (*providerGenerationTransaction) Destroy(context.Context) error            
 func (*providerGenerationTransaction) FinalizeGenerationPublication()                     {}
 func (*providerGenerationTransaction) PrepareGenerationPublication(context.Context) error { return nil }
 
-type providerFixtureResolver struct{ handle *providerFixtureHandle }
+type providerFixtureResolver struct {
+	handle       *providerFixtureHandle
+	forceResolve bool
+}
 
 func (resolver providerFixtureResolver) Resolve(instanceID, providerID string) (HTTPBackendProvider, bool) {
-	if resolver.handle == nil || resolver.handle.instanceID != instanceID || resolver.handle.providerID != providerID {
+	if resolver.handle == nil || (!resolver.forceResolve && (resolver.handle.instanceID != instanceID || resolver.handle.providerID != providerID)) {
 		return nil, false
 	}
 	return resolver.handle, true
@@ -80,6 +117,7 @@ func (resolver providerFixtureResolver) ProgressiveDrain() bool { return resolve
 type providerFixtureHandle struct {
 	module                             *providerGenerationModule
 	instanceID, providerID, generation string
+	responseLabel                      string
 }
 
 func (handle *providerFixtureHandle) InstanceID() string { return handle.instanceID }
@@ -90,7 +128,7 @@ func (*providerFixtureHandle) Acquire() (io.Closer, error) {
 }
 func (handle *providerFixtureHandle) RoundTrip(request *http.Request, _ pluginrpc.HTTPBackendProviderAuthority) (*http.Response, error) {
 	handle.module.requests.Add(1)
-	body := io.ReadCloser(io.NopCloser(strings.NewReader(handle.generation)))
+	body := io.ReadCloser(io.NopCloser(strings.NewReader(handle.responseLabel)))
 	status := http.StatusOK
 	header := http.Header{"Content-Type": {"application/octet-stream"}}
 	contentLength := int64(-1)
@@ -102,16 +140,36 @@ func (handle *providerFixtureHandle) RoundTrip(request *http.Request, _ pluginrp
 	}
 	if request.URL.Path == "/slow" {
 		reader, writer := io.Pipe()
-		body = reader
+		stopCancel := context.AfterFunc(request.Context(), func() {
+			handle.module.firstCancel.Do(func() { close(handle.module.slowCanceled) })
+			_ = writer.CloseWithError(request.Context().Err())
+		})
+		body = &providerContextPipeBody{PipeReader: reader, stopCancel: stopCancel}
 		go func() {
 			handle.module.firstSlow.Do(func() { close(handle.module.slowStarted) })
-			_, _ = io.WriteString(writer, handle.generation+":")
-			<-handle.module.releaseSlow
+			_, _ = io.WriteString(writer, handle.responseLabel+":")
+			select {
+			case <-handle.module.releaseSlow:
+			case <-request.Context().Done():
+				return
+			}
 			_, _ = io.WriteString(writer, strings.Repeat("x", 2<<20))
 			_ = writer.Close()
 		}()
 	}
 	return &http.Response{StatusCode: status, Header: header, ContentLength: contentLength, Body: body, Request: request}, nil
+}
+
+type providerContextPipeBody struct {
+	*io.PipeReader
+	stopCancel func() bool
+}
+
+func (body *providerContextPipeBody) Close() error {
+	if body.stopCancel != nil {
+		body.stopCancel()
+	}
+	return body.PipeReader.Close()
 }
 
 type providerInterruptedBody struct {
@@ -176,7 +234,20 @@ func TestHTTPProviderGenerationViewPublishesAtomicallyAndDrainsSlowStream(t *tes
 	}
 	client := &http.Client{Transport: clientTransport}
 	t.Cleanup(clientTransport.CloseIdleConnections)
-	provider := &providerGenerationModule{slowStarted: make(chan struct{}), releaseSlow: make(chan struct{})}
+	provider := &providerGenerationModule{slowStarted: make(chan struct{}), releaseSlow: make(chan struct{}), slowCanceled: make(chan struct{})}
+	ordinaryStarted := make(chan struct{})
+	ordinaryCanceled := make(chan struct{})
+	ordinaryBackend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("o"))
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(ordinaryStarted)
+		<-request.Context().Done()
+		close(ordinaryCanceled)
+	}))
+	defer ordinaryBackend.Close()
 	registry := module.NewRegistry()
 	drain := agentcore.NewGenerationDrain(nil)
 	manager := agentcore.NewManagedGenerationManager(registry, drain, 50*time.Millisecond)
@@ -191,9 +262,13 @@ func TestHTTPProviderGenerationViewPublishesAtomicallyAndDrainsSlowStream(t *tes
 		},
 	})
 	var ordinaryTransportDials atomic.Int32
-	httpModule.transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
-		ordinaryTransportDials.Add(1)
-		return nil, errors.New("ordinary URL transport must not serve provider requests")
+	originalDial := httpModule.transport.DialContext
+	httpModule.transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if strings.Contains(address, "provider.nre.internal") {
+			ordinaryTransportDials.Add(1)
+			return nil, errors.New("ordinary URL transport must not serve provider requests")
+		}
+		return originalDial(ctx, network, address)
 	}
 	for _, candidate := range []module.Module{providerTLSFixtureModule{certificate: certificate}, provider, httpModule} {
 		if err := registry.Register(candidate); err != nil {
@@ -205,10 +280,12 @@ func TestHTTPProviderGenerationViewPublishesAtomicallyAndDrainsSlowStream(t *tes
 	if _, err := client.Get(frontend + "/before-publish"); err == nil {
 		t.Fatal("provider route was reachable before its GenerationView publication")
 	}
-	first := providerSnapshot(1, "g1", frontend)
-	if _, err := manager.Apply(t.Context(), model.Snapshot{}, first); err != nil {
+	first := providerSnapshot(1, "g1", frontend, ordinaryBackend.URL)
+	firstCutover, err := manager.Apply(t.Context(), model.Snapshot{}, first)
+	if err != nil {
 		t.Fatal(err)
 	}
+	firstGenerationID := firstCutover.Active.ID()
 	oldResponse, err := client.Get(frontend + "/slow")
 	if err != nil {
 		t.Fatal(err)
@@ -218,8 +295,24 @@ func TestHTTPProviderGenerationViewPublishesAtomicallyAndDrainsSlowStream(t *tes
 		t.Fatalf("old stream prefix = %q, %v", prefix, err)
 	}
 	<-provider.slowStarted
+	ordinaryResponse, err := client.Get(frontend + "/ordinary/hung")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ordinaryResponse.Body.Close()
+	<-ordinaryStarted
 
-	failed := providerSnapshot(2, "g2-fail", frontend)
+	for index, mode := range []string{"g2-missing", "g2-wrong-instance", "g2-wrong-provider", "g2-stale-generation"} {
+		failed := providerSnapshot(int64(index+2), mode, frontend, ordinaryBackend.URL)
+		if _, err := manager.Apply(t.Context(), first, failed); err == nil {
+			t.Fatalf("provider %s mismatch published a candidate generation", mode)
+		}
+		if got := providerGET(t, client, frontend+"/lkg"); got != "g1" {
+			t.Fatalf("request after %s = %q, want g1 LKG", mode, got)
+		}
+	}
+
+	failed := providerSnapshot(6, "g2-readiness-fail", frontend, ordinaryBackend.URL)
 	if _, err := manager.Apply(t.Context(), first, failed); err == nil {
 		t.Fatal("provider readiness failure published a candidate generation")
 	}
@@ -227,7 +320,7 @@ func TestHTTPProviderGenerationViewPublishesAtomicallyAndDrainsSlowStream(t *tes
 		t.Fatalf("request after failed readiness = %q, want g1 LKG", got)
 	}
 
-	second := providerSnapshot(3, "g2", frontend)
+	second := providerSnapshot(7, "g2", frontend, ordinaryBackend.URL)
 	if _, err := manager.Apply(t.Context(), first, second); err != nil {
 		t.Fatal(err)
 	}
@@ -259,12 +352,37 @@ func TestHTTPProviderGenerationViewPublishesAtomicallyAndDrainsSlowStream(t *tes
 		t.Fatalf("ordinary URL transport dials for provider requests = %d, want 0", got)
 	}
 	time.Sleep(80 * time.Millisecond)
+	select {
+	case <-provider.slowCanceled:
+		t.Fatal("g1 provider request context was canceled by replacement drain timeout")
+	default:
+	}
+	select {
+	case <-ordinaryCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("ordinary g1 hung request was not forced at the replacement drain timeout")
+	}
 	close(provider.releaseSlow)
 	remainder, err := io.ReadAll(oldResponse.Body)
 	_ = oldResponse.Body.Close()
 	if err != nil || len(remainder) != 2<<20 {
 		t.Fatalf("g1 stream after g2 publication = %d bytes, %v", len(remainder), err)
 	}
+	waitForProviderGenerationSessionsReleased(t, drain.Controller(), firstGenerationID)
+}
+
+func waitForProviderGenerationSessionsReleased(t *testing.T, controller *generation.DrainController, generationID string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, status := range controller.Snapshot().Generations {
+			if status.GenerationID == generationID && status.SessionCount == 0 && status.State == model.GenerationDrainStateDrained {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("provider generation %s retained outer or nested sessions: %+v", generationID, controller.Snapshot())
 }
 
 func pickProviderFixturePort(t *testing.T) int {
@@ -277,10 +395,12 @@ func pickProviderFixturePort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
-func providerSnapshot(revision int64, generation, frontend string) model.Snapshot {
+func providerSnapshot(revision int64, generation, frontend, ordinaryBackend string) model.Snapshot {
 	return model.Snapshot{Revision: revision, DesiredVersion: generation, Rules: []model.HTTPRule{{
 		ID: 1, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{Kind: pluginsdk.HTTPBackendKindPluginProvider,
 			PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: "instance-1", ProviderID: "default"}}},
+	}, {
+		ID: 2, Enabled: true, FrontendURL: frontend + "/ordinary", Backends: []model.HTTPBackend{{URL: ordinaryBackend}},
 	}}}
 }
 
