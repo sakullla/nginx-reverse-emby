@@ -205,8 +205,9 @@ func ValidPluginDependencyConsumerVersion(value string) bool {
 func pluginBindingExtensionSupported(kind string, extensions map[string]struct{}) bool {
 	switch kind {
 	case PluginDependencyConsumerHTTPRule:
-		_, provider := extensions[pluginsdk.ExtensionHTTPBackendProvider]
-		return provider
+		_, request := extensions["http.request"]
+		_, response := extensions["http.response"]
+		return request || response
 	case PluginDependencyConsumerL4Rule:
 		_, ok := extensions["l4.accept"]
 		return ok
@@ -216,7 +217,16 @@ func pluginBindingExtensionSupported(kind string, extensions map[string]struct{}
 }
 
 func PluginDependencyConsumerSupportsExtensions(kind string, extensionPoints []string) bool {
-	return pluginBindingExtensionSupported(strings.TrimSpace(kind), stringSet(extensionPoints))
+	kind = strings.TrimSpace(kind)
+	extensions := stringSet(extensionPoints)
+	if pluginBindingExtensionSupported(kind, extensions) {
+		return true
+	}
+	if kind == PluginDependencyConsumerHTTPRule {
+		_, provider := extensions[pluginsdk.ExtensionHTTPBackendProvider]
+		return provider
+	}
+	return false
 }
 
 func (s *GormStore) ResolvePluginInstanceBindingRequests(ctx context.Context, requests []PluginInstanceBindingRequest, providerResourceGroupID string) ([]PluginInstanceBinding, error) {
@@ -300,6 +310,10 @@ func pluginDependencyConsumerOwnershipVersion(binding ResourceBindingRow) string
 }
 
 func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID string, generations []PluginGeneration, httpRules []HTTPRule, l4Rules []L4Rule) ([]PluginDependencyEdge, error) {
+	httpIDs := make(map[string]struct{}, len(httpRules))
+	for _, rule := range httpRules {
+		httpIDs[strconv.Itoa(rule.ID)] = struct{}{}
+	}
 	l4IDs := make(map[string]struct{}, len(l4Rules))
 	for _, rule := range l4Rules {
 		l4IDs[strconv.Itoa(rule.ID)] = struct{}{}
@@ -345,6 +359,8 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 			}
 			consumerExists := false
 			switch binding.Consumer.Kind {
+			case PluginDependencyConsumerHTTPRule:
+				_, consumerExists = httpIDs[binding.Consumer.ID]
 			case PluginDependencyConsumerL4Rule:
 				_, consumerExists = l4IDs[binding.Consumer.ID]
 			}

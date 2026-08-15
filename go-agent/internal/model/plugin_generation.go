@@ -344,12 +344,10 @@ func ValidatePluginDependencies(snapshot Snapshot) error {
 	}
 	actual := make(map[string]struct{})
 	for _, edge := range snapshot.PluginDependencies {
-		if edge.Consumer.Kind == "http_rule" {
+		provider, found := providers[edge.ProviderInstanceID]
+		if edge.Consumer.Kind == "http_rule" && found && slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) {
 			actual[edge.Consumer.ID+"\x00"+edge.ProviderInstanceID] = struct{}{}
 		}
-	}
-	if len(actual) != len(expected) {
-		return errors.New("HTTP provider relationships and dependencies differ")
 	}
 	for key := range expected {
 		if _, found := actual[key]; !found {
@@ -366,16 +364,21 @@ func validatePluginDependencyConsumer(snapshot Snapshot, edge PluginDependencyEd
 	}
 	switch edge.Consumer.Kind {
 	case "http_rule":
-		if !slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) || !slices.Contains(provider.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
-			return errors.New("http rule provider lacks the HTTP backend provider contract")
+		hasProviderContract := slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) && slices.Contains(provider.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1)
+		hasExplicitBindingContract := slices.Contains(provider.ExtensionPoints, "http.request") || slices.Contains(provider.ExtensionPoints, "http.response")
+		if !hasProviderContract && !hasExplicitBindingContract {
+			return errors.New("http rule provider lacks an HTTP dependency contract")
 		}
 		for _, rule := range snapshot.Rules {
 			if rule.ID == id && rule.Enabled {
 				if rule.AgentID != "" && rule.AgentID != edge.Target.AgentID {
 					return errors.New("http rule belongs to another Agent")
 				}
-				for _, backend := range rule.Backends {
-					if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider && backend.PluginProvider != nil && backend.PluginProvider.InstanceID == provider.InstanceID {
+				if hasProviderContract {
+					for _, backend := range rule.Backends {
+						if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil || backend.PluginProvider.InstanceID != provider.InstanceID {
+							continue
+						}
 						for _, descriptor := range provider.HTTPBackendProviders {
 							if descriptor.ID == backend.PluginProvider.ProviderID {
 								return nil
@@ -383,6 +386,9 @@ func validatePluginDependencyConsumer(snapshot Snapshot, edge PluginDependencyEd
 						}
 						return errors.New("http rule references an undeclared provider id")
 					}
+				}
+				if hasExplicitBindingContract {
+					return nil
 				}
 				return errors.New("http rule does not own this provider relationship")
 			}

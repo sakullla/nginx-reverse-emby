@@ -572,6 +572,18 @@ func TestHTTPBackendProviderManifestAdmission(t *testing.T) {
 	if _, err := newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(providerManifest(t), PackageExpectation{}); err != nil {
 		t.Fatalf("complete HTTP backend provider manifest rejected: %v", err)
 	}
+	t.Run("permission only", func(t *testing.T) {
+		root := newRPCPackageFixture(t)
+		path := filepath.Join(root, PackageManifestFile)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFixture(t, root, PackageManifestFile, strings.Replace(string(data), "permissions: [agent.read]", "permissions: [http.outbound]", 1))
+		refreshFixtureDigest(t, root)
+		_, err = newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "http_backend_provider")
+	})
 
 	for name, rewrite := range map[string]func(string) string{
 		"missing descriptor": func(value string) string {
@@ -582,6 +594,9 @@ func TestHTTPBackendProviderManifestAdmission(t *testing.T) {
 		},
 		"wrong host scope": func(value string) string {
 			return strings.Replace(value, "host_scope: agent", "host_scope: control-plane", 1)
+		},
+		"resource scoped outbound": func(value string) string {
+			return strings.Replace(value, "permissions: [http.outbound]", "permissions: [{name: http.outbound, resource: tenant-a}]", 1)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

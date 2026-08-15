@@ -83,23 +83,19 @@ func ValidateHTTPBackends(backends []HTTPBackend) error {
 	if len(backends) == 0 {
 		return errors.New("HTTP backends must not be empty")
 	}
-	seen := make(map[string]struct{}, len(backends))
+	seenProviders := make(map[string]struct{}, len(backends))
 	for index, backend := range backends {
 		if err := backend.Validate(); err != nil {
 			return fmt.Errorf("HTTP backend %d: %w", index, err)
 		}
-		kind := backend.Kind
-		if kind == "" {
-			kind = HTTPBackendKindURL
+		if backend.Kind != HTTPBackendKindPluginProvider {
+			continue
 		}
-		key := kind + "\x00" + backend.URL
-		if backend.PluginProvider != nil {
-			key += backend.PluginProvider.InstanceID + "\x00" + backend.PluginProvider.ProviderID
-		}
-		if _, duplicate := seen[key]; duplicate {
+		key := backend.PluginProvider.InstanceID + "\x00" + backend.PluginProvider.ProviderID
+		if _, duplicate := seenProviders[key]; duplicate {
 			return fmt.Errorf("HTTP backend %d is duplicated", index)
 		}
-		seen[key] = struct{}{}
+		seenProviders[key] = struct{}{}
 	}
 	return nil
 }
@@ -127,7 +123,20 @@ func ValidateHTTPBackendProviderDescriptors(descriptors []HTTPBackendProviderDes
 func ValidateHTTPBackendProviderManifest(manifest Manifest) error {
 	hasExtension := slices.Contains(manifest.ExtensionPoints, ExtensionHTTPBackendProvider)
 	hasDescriptors := len(manifest.HTTPBackendProviders) > 0
-	if !hasExtension && !hasDescriptors {
+	hasOutboundDeclaration := false
+	hasUnscopedOutbound := false
+	hasScopedOutbound := false
+	for _, permission := range manifest.Permissions {
+		if permission.Name == PermissionHTTPOutbound {
+			hasOutboundDeclaration = true
+			if permission.Resource == "" {
+				hasUnscopedOutbound = true
+			} else {
+				hasScopedOutbound = true
+			}
+		}
+	}
+	if !hasExtension && !hasDescriptors && !hasOutboundDeclaration {
 		return nil
 	}
 	if !hasExtension || !hasDescriptors || manifest.Runtime.Kind != RuntimeRPCService || manifest.Runtime.ABI != RPCABIV1 || manifest.Runtime.HostScope != HostScopeAgent {
@@ -136,14 +145,7 @@ func ValidateHTTPBackendProviderManifest(manifest Manifest) error {
 	if err := ValidateHTTPBackendProviderDescriptors(manifest.HTTPBackendProviders); err != nil {
 		return err
 	}
-	hasOutbound := false
-	for _, permission := range manifest.Permissions {
-		if permission.Name == PermissionHTTPOutbound && permission.Resource == "" {
-			hasOutbound = true
-			break
-		}
-	}
-	if !hasOutbound {
+	if !hasUnscopedOutbound || hasScopedOutbound {
 		return errors.New("HTTP backend providers require the internal http.outbound permission")
 	}
 	if !slices.Contains(RequiredRPCFeatures([]string{PermissionHTTPOutbound}), RPCFeatureHTTPBackendProviderV1) {
@@ -154,8 +156,8 @@ func ValidateHTTPBackendProviderManifest(manifest Manifest) error {
 
 func validHTTPBackendURL(raw string) bool {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+	if err != nil || parsed == nil || parsed.Host == "" {
 		return false
 	}
-	return parsed.Scheme == "http" || parsed.Scheme == "https"
+	return strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")
 }

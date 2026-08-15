@@ -78,6 +78,12 @@ func TestPluginGenerationAcceptsCanonicalHostCapabilitiesAndResourceOnlySelector
 func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t *testing.T) {
 	httpProvider := validPluginGenerationForTest()
 	httpProvider.InstanceID = "instance-b"
+	legacyHTTPProvider := validPluginGenerationForTest()
+	legacyHTTPProvider.ID, legacyHTTPProvider.InstanceID, legacyHTTPProvider.OperationID = "generation-http-request", "instance-c", "operation-http-request"
+	legacyHTTPProvider.ExtensionPoints = []string{"http.request"}
+	legacyHTTPProvider.RequiredFeatures = nil
+	legacyHTTPProvider.HTTPBackendProviders = nil
+	legacyHTTPProvider.Grants = []PluginGrantProjection{{Name: "agent.read"}}
 	l4Provider := validPluginGenerationForTest()
 	l4Provider.ID, l4Provider.InstanceID, l4Provider.OperationID = "generation-l4", "instance-a", "operation-l4"
 	l4Provider.ExtensionPoints = []string{"l4.accept"}
@@ -86,9 +92,10 @@ func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t
 	snapshot := Snapshot{Revision: 7,
 		Rules:             []HTTPRule{httpProviderRuleForTest(11, "edge-7", httpProvider)},
 		L4Rules:           []L4Rule{{ID: 12, AgentID: "edge-7", Enabled: true}},
-		PluginGenerations: []PluginGeneration{httpProvider, l4Provider},
+		PluginGenerations: []PluginGeneration{httpProvider, legacyHTTPProvider, l4Provider},
 		PluginDependencies: []PluginDependencyEdge{
 			{Consumer: pluginDependencyConsumerForTest("http_rule", "11", httpProvider.Target.ResourceGroupID), ProviderInstanceID: httpProvider.InstanceID, Target: pluginDependencyTargetForTest(httpProvider)},
+			{Consumer: pluginDependencyConsumerForTest("http_rule", "11", legacyHTTPProvider.Target.ResourceGroupID), ProviderInstanceID: legacyHTTPProvider.InstanceID, Target: pluginDependencyTargetForTest(legacyHTTPProvider)},
 			{Consumer: pluginDependencyConsumerForTest("l4_rule", "12", l4Provider.Target.ResourceGroupID), ProviderInstanceID: l4Provider.InstanceID, Target: pluginDependencyTargetForTest(l4Provider)},
 		},
 	}
@@ -99,7 +106,7 @@ func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got, []string{"instance-a", "instance-b"}) {
+	if !slices.Equal(got, []string{"instance-a", "instance-b", "instance-c"}) {
 		t.Fatalf("RequiredPluginInstanceIDs() = %v", got)
 	}
 }

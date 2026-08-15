@@ -335,6 +335,10 @@ func validatePluginGenerations(snapshot storage.Snapshot) error {
 }
 
 func validateHTTPProviderDependencyOwnership(snapshot storage.Snapshot) error {
+	providers := make(map[string]storage.PluginGeneration, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		providers[generation.InstanceID] = generation
+	}
 	expected := make(map[string]struct{})
 	for _, rule := range snapshot.Rules {
 		for _, backend := range rule.Backends {
@@ -345,12 +349,18 @@ func validateHTTPProviderDependencyOwnership(snapshot storage.Snapshot) error {
 	}
 	actual := make(map[string]struct{})
 	for _, edge := range snapshot.PluginDependencies {
-		if edge.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule {
-			actual[edge.Consumer.ID+"\x00"+edge.ProviderInstanceID] = struct{}{}
+		provider, found := providers[edge.ProviderInstanceID]
+		if edge.Consumer.Kind != storage.PluginDependencyConsumerHTTPRule || !found || !slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) {
+			continue
 		}
-	}
-	if len(actual) != len(expected) {
-		return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP backend provider relationships do not match their derived dependencies", nil)
+		key := edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
+		if _, derived := expected[key]; derived {
+			actual[key] = struct{}{}
+			continue
+		}
+		if !slices.Contains(provider.ExtensionPoints, "http.request") && !slices.Contains(provider.ExtensionPoints, "http.response") {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP backend provider dependency has no owning relationship", nil)
+		}
 	}
 	for key := range expected {
 		if _, found := actual[key]; !found {

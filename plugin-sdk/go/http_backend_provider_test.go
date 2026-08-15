@@ -18,6 +18,14 @@ func TestValidateHTTPBackendsPreservesURLWireAndRequiresTaggedProvider(t *testin
 	if err := ValidateHTTPBackends([]HTTPBackend{legacyURL, provider}); err != nil {
 		t.Fatalf("mixed URL/provider backends rejected: %v", err)
 	}
+	for _, historical := range []string{
+		"HTTP://127.0.0.1:8096",
+		"http://user:pass@127.0.0.1:8096/path#fragment",
+	} {
+		if err := ValidateHTTPBackends([]HTTPBackend{{URL: historical}, {URL: historical}}); err != nil {
+			t.Fatalf("historical duplicate URL backend %q rejected: %v", historical, err)
+		}
+	}
 	wire, err := json.Marshal(legacyURL)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +43,7 @@ func TestValidateHTTPBackendsPreservesURLWireAndRequiresTaggedProvider(t *testin
 		{name: "untagged provider", backends: []HTTPBackend{{PluginProvider: provider.PluginProvider}}},
 		{name: "mixed payload", backends: []HTTPBackend{{Kind: HTTPBackendKindPluginProvider, URL: legacyURL.URL, PluginProvider: provider.PluginProvider}}},
 		{name: "invalid URL", backends: []HTTPBackend{{URL: "ftp://127.0.0.1/file"}}},
-		{name: "duplicate URL spellings", backends: []HTTPBackend{legacyURL, {Kind: HTTPBackendKindURL, URL: legacyURL.URL}}},
+		{name: "duplicate provider", backends: []HTTPBackend{provider, provider}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -74,6 +82,19 @@ func TestValidateHTTPBackendProviderManifestRequiresIndivisibleContract(t *testi
 			mutate(&candidate)
 			if err := ValidateHTTPBackendProviderManifest(candidate); err == nil || strings.TrimSpace(err.Error()) == "" {
 				t.Fatal("incomplete provider manifest was accepted")
+			}
+		})
+	}
+
+	for name, permissions := range map[string][]Permission{
+		"permission only":                  {{Name: PermissionHTTPOutbound}},
+		"resource scoped outbound":         {{Name: PermissionHTTPOutbound, Resource: "tenant-a"}},
+		"mixed scoped outbound permission": {{Name: PermissionHTTPOutbound}, {Name: PermissionHTTPOutbound, Resource: "tenant-a"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := Manifest{Permissions: permissions}
+			if err := ValidateHTTPBackendProviderManifest(candidate); err == nil {
+				t.Fatal("partial provider permission contract was accepted")
 			}
 		})
 	}

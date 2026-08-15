@@ -1918,6 +1918,9 @@ func normalizeHTTPBackends(backends []HTTPRuleBackend) ([]HTTPRuleBackend, error
 		}
 		normalized = append(normalized, backend)
 	}
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL or plugin provider", ErrInvalidArgument)
+	}
 	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}

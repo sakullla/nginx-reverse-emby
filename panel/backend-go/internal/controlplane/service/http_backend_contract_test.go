@@ -24,6 +24,23 @@ func TestNormalizeHTTPBackendsKeepsURLWireAndTagsProviders(t *testing.T) {
 			t.Fatalf("URL backend wire changed: %s", wire)
 		}
 	}
+	historical := "HTTP://user:pass@127.0.0.1:8096/path#fragment"
+	normalized, err := normalizeHTTPBackends([]HTTPRuleBackend{
+		{URL: "ftp://127.0.0.1/file"},
+		{URL: historical},
+		{URL: historical},
+	})
+	if err != nil {
+		t.Fatalf("historical URL matrix rejected: %v", err)
+	}
+	wire, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"url":"HTTP://user:pass@127.0.0.1:8096/path#fragment"},{"url":"HTTP://user:pass@127.0.0.1:8096/path#fragment"}]`
+	if string(wire) != want {
+		t.Fatalf("historical URL normalization/wire = %s, want %s", wire, want)
+	}
 
 	provider := HTTPRuleBackend{
 		Kind: pluginsdk.HTTPBackendKindPluginProvider,
