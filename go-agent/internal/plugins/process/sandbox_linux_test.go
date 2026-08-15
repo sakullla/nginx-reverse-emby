@@ -41,9 +41,100 @@ func TestLinuxLauncherUsesInheritedBindingsAndNoHelperLookup(t *testing.T) {
 		}
 	}
 	attributes := linuxSandboxSysProcAttr(nil, false, true)
-	if !attributes.Setpgid || attributes.Pdeathsig != unix.SIGKILL || attributes.UseCgroupFD || attributes.Cloneflags&unix.CLONE_NEWNET == 0 || attributes.Cloneflags&unix.CLONE_NEWUSER == 0 {
+	if !attributes.Setpgid || attributes.Pdeathsig != unix.SIGKILL || attributes.UseCgroupFD || attributes.Cloneflags != 0 || attributes.Credential != nil {
 		t.Fatalf("launcher process attributes = %+v", attributes)
 	}
+	final := linuxFinalUserNamespaceSysProcAttr(2100000000, false)
+	if final.Cloneflags&unix.CLONE_NEWNET == 0 || final.Cloneflags&unix.CLONE_NEWUSER == 0 || final.Cloneflags&unix.CLONE_NEWPID == 0 || final.Cloneflags&unix.CLONE_NEWNS == 0 {
+		t.Fatalf("final launcher process attributes = %+v", final)
+	}
+	if final.Credential == nil || final.Credential.Uid != 0 || final.Credential.Gid != 0 || !final.Credential.NoSetGroups {
+		t.Fatalf("final launcher namespace credential = %+v", final.Credential)
+	}
+}
+
+func TestLinuxSeccompFilterValidatesArchitectureAndNetworkEscapeSyscalls(t *testing.T) {
+	filters := linuxSeccompFilters(false)
+	deny := uint32(unix.SECCOMP_RET_ERRNO) | uint32(unix.EPERM)
+	if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch^1, uint32(unix.SYS_GETPID), 0); got != unix.SECCOMP_RET_KILL_PROCESS {
+		t.Fatalf("wrong-architecture decision = %#x", got)
+	}
+	if linuxSeccompX32Bit != 0 {
+		if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, uint32(unix.SYS_GETPID)|linuxSeccompX32Bit, 0); got != deny {
+			t.Fatalf("x32 syscall decision = %#x", got)
+		}
+	}
+	for _, number := range []uint32{unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER} {
+		if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, number, 0); got != deny {
+			t.Fatalf("io_uring syscall %d decision = %#x", number, got)
+		}
+		if got := evaluateLinuxSeccomp(linuxSeccompFilters(true), linuxSeccompAuditArch, number, 0); got != unix.SECCOMP_RET_ALLOW {
+			t.Fatalf("network-enabled io_uring syscall %d decision = %#x", number, got)
+		}
+	}
+	for _, number := range []uint32{unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR} {
+		if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, number, 0); got != deny {
+			t.Fatalf("mount-family syscall %d decision = %#x", number, got)
+		}
+	}
+	if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, uint32(unix.SYS_SOCKET), unix.AF_INET); got != deny {
+		t.Fatalf("AF_INET socket decision = %#x", got)
+	}
+	if got := evaluateLinuxSeccomp(filters, linuxSeccompAuditArch, uint32(unix.SYS_SOCKET), unix.AF_UNIX); got != unix.SECCOMP_RET_ALLOW {
+		t.Fatalf("AF_UNIX socket decision = %#x", got)
+	}
+}
+
+func TestLinuxRuntimeBudgetSeparatesGuestAndLauncherTasks(t *testing.T) {
+	budget := Budget{CPUMillis: 500, Processes: 8}
+	if got := linuxGuestGOMAXPROCS(budget); got != 1 {
+		t.Fatalf("guest GOMAXPROCS = %d, want 1", got)
+	}
+	if got := linuxProcessTreeLimit(budget); got != 16 {
+		t.Fatalf("launcher process tree limit = %d, want 16", got)
+	}
+	environment := setLinuxEnvironment([]string{"GOMAXPROCS=64"}, "GOMAXPROCS", strconv.Itoa(linuxGuestGOMAXPROCS(budget)))
+	if len(environment) != 1 || environment[0] != "GOMAXPROCS=1" {
+		t.Fatalf("canonical guest environment = %v", environment)
+	}
+}
+
+func evaluateLinuxSeccomp(filters []unix.SockFilter, arch, number, argument0 uint32) uint32 {
+	var accumulator uint32
+	for pc := 0; pc < len(filters); {
+		instruction := filters[pc]
+		switch instruction.Code {
+		case unix.BPF_LD | unix.BPF_W | unix.BPF_ABS:
+			switch instruction.K {
+			case 0:
+				accumulator = number
+			case 4:
+				accumulator = arch
+			case 16:
+				accumulator = argument0
+			default:
+				return 0
+			}
+			pc++
+		case unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K:
+			if accumulator == instruction.K {
+				pc += int(instruction.Jt) + 1
+			} else {
+				pc += int(instruction.Jf) + 1
+			}
+		case unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K:
+			if accumulator&instruction.K != 0 {
+				pc += int(instruction.Jt) + 1
+			} else {
+				pc += int(instruction.Jf) + 1
+			}
+		case unix.BPF_RET | unix.BPF_K:
+			return instruction.K
+		default:
+			return 0
+		}
+	}
+	return 0
 }
 
 func TestLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testing.T) {
@@ -79,8 +170,14 @@ func TestLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer credential.Close()
+	temp, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer temp.Close()
 	endpointIdentity, _ := linuxFileIdentity(endpoint)
 	credentialIdentity, _ := linuxFileIdentity(credential)
+	tempIdentity, _ := linuxFileIdentity(temp)
 	cookieDigest, _ := digestAt(int(credential.Fd()), "cookie")
 	generationDigest, _ := digestGenerationCookieAt(int(credential.Fd()), "generation-1")
 	launcher, err := os.Open(os.Args[0])
@@ -104,7 +201,9 @@ func TestLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testing.T) {
 		ArtifactFD:             3,
 		EndpointFD:             4,
 		CredentialFD:           5,
-		LauncherFD:             6,
+		Temp:                   tempIdentity,
+		TempFD:                 6,
+		LauncherFD:             7,
 		EndpointRequired:       true,
 		Environment:            []string{"PATH=/usr/bin:/bin"},
 		Budget:                 Budget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64},
@@ -126,8 +225,8 @@ func TestLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			command := exec.Command(os.Args[0], linuxLauncherChildArg, "7")
-			command.ExtraFiles = []*os.File{artifact, endpoint, credential, launcher, protocolFile}
+			command := exec.Command(os.Args[0], linuxLauncherChildArg, "8")
+			command.ExtraFiles = []*os.File{artifact, endpoint, credential, temp, launcher, protocolFile}
 			var output bytes.Buffer
 			command.Stderr = &output
 			err = command.Run()
@@ -184,7 +283,7 @@ func TestLinuxLauncherInheritedImageSurvivesAtomicPathReplacement(t *testing.T) 
 	sandbox := linuxSandbox{
 		prepareCgroup:   func(Budget) (string, *os.File, error) { return "", nil, unix.EROFS },
 		openLauncher:    func() (*os.File, error) { return os.Open(launcherPath) },
-		probeNamespaces: func(*os.File, bool, int) bool { return false },
+		probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
 	}
 	startCleanup, processCleanup, afterStart, err := sandbox.Configure(command, Security{
 		Requirement:    testSandboxRequirement(Budget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64}, false, true),
@@ -227,8 +326,14 @@ func TestLinuxNamespaceMinimalRootLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer launcher.Close()
-	if !probeLinuxNamespaces(launcher, false, 0) {
-		t.Skip("kernel blocks the complete user/PID/mount/network namespace profile")
+	scratch, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scratch.Close()
+	sandboxUID := testLinuxSandboxUID(t)
+	if err := validateLinuxNamespaces(launcher, scratch, false, sandboxUID); err != nil {
+		t.Skipf("kernel blocks the complete user/PID/mount/network namespace profile: %v", err)
 	}
 	source, _, digest := copyLinuxTestArtifact(t)
 	artifact, artifactPath, err := createLinuxArtifactImage(source)
@@ -237,8 +342,25 @@ func TestLinuxNamespaceMinimalRootLive(t *testing.T) {
 	}
 	defer artifact.Close()
 	defer os.Remove(artifactPath)
-	root := filepath.Join(t.TempDir(), "root")
-	if err := os.Mkdir(root, 0o700); err != nil {
+	root, err := os.MkdirTemp("", ".nre-plugin-root-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(root)
+	if err := os.Chown(root, sandboxUID, sandboxUID); err != nil {
+		t.Fatal(err)
+	}
+	tempDirectory := t.TempDir()
+	if err := os.Chown(tempDirectory, sandboxUID, sandboxUID); err != nil {
+		t.Fatal(err)
+	}
+	temp, err := os.Open(tempDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer temp.Close()
+	tempIdentity, err := linuxFileIdentity(temp)
+	if err != nil {
 		t.Fatal(err)
 	}
 	artifactIdentity, _ := linuxFileIdentity(artifact)
@@ -250,17 +372,17 @@ func TestLinuxNamespaceMinimalRootLive(t *testing.T) {
 	}
 	protocol := linuxLaunchProtocol{
 		Version: linuxLauncherVersion, Generation: "namespace-live", ArtifactDigest: digest, LauncherDigest: launcherDigest,
-		Artifact: artifactIdentity, Launcher: launcherIdentity, ArtifactFD: 3, ArtifactPath: artifactPath, LauncherFD: 4,
+		Artifact: artifactIdentity, Launcher: launcherIdentity, Temp: tempIdentity, ArtifactFD: 3, LauncherFD: 4, TempFD: 5,
 		Arguments:   []string{"-test.run=^TestLinuxLauncherGuest$"},
 		Environment: []string{"NRE_TEST_LINUX_LAUNCHER_GUEST=1", "NRE_TEST_NAMESPACE_ROOT=1"}, Budget: Budget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64},
-		Namespaces: true, SandboxRoot: root, ParentNamespaces: parents,
+		Namespaces: true, SandboxRoot: root, SandboxUID: sandboxUID, ParentNamespaces: parents,
 	}
 	protocolFile, err := createLinuxProtocolFile(protocol)
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], linuxLauncherChildArg, "5")
-	command.ExtraFiles = []*os.File{artifact, launcher, protocolFile}
+	command := exec.Command(os.Args[0], linuxLauncherChildArg, "6")
+	command.ExtraFiles = []*os.File{artifact, launcher, temp, protocolFile}
 	command.SysProcAttr = linuxSandboxSysProcAttrForUID(nil, false, true, 0)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
@@ -273,13 +395,42 @@ func TestLinuxNamespaceProbeMapsCurrentNonRootUID(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("non-root mapping fixture")
 	}
+	attributes := linuxFinalUserNamespaceSysProcAttr(os.Geteuid(), false)
+	if len(attributes.UidMappings) != 1 || attributes.UidMappings[0].HostID != os.Geteuid() {
+		t.Fatalf("final namespace uid mapping = %+v, want host euid %d", attributes.UidMappings, os.Geteuid())
+	}
 	launcher, err := os.Open("/proc/self/exe")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer launcher.Close()
-	if !probeLinuxNamespaces(launcher, false, os.Geteuid()) {
+	scratch, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scratch.Close()
+	if !probeLinuxNamespaces(launcher, scratch, false, os.Geteuid()) {
 		t.Skip("kernel blocks unprivileged user namespaces; production fails closed without cgroup and Landlock signal scope")
+	}
+}
+
+func TestLinuxNonRootUnavailableKernelBoundariesFailClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("non-root admission fixture")
+	}
+	artifact, _, digest := copyLinuxTestArtifact(t)
+	defer artifact.Close()
+	command := exec.Command(artifact.Name())
+	_, _, _, err := (linuxSandbox{
+		prepareCgroup:   func(Budget) (string, *os.File, error) { return "", nil, unix.EROFS },
+		probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
+	}).Configure(command, Security{
+		Requirement:    testSandboxRequirement(Budget{CPUMillis: 500, MemoryBytes: 256 << 20, Processes: 8, Files: 64}, false, true),
+		ArtifactDigest: digest,
+		Generation:     "non-root-fail-closed",
+	})
+	if err == nil {
+		t.Fatal("non-root launcher admitted without a complete namespace or delegated cgroup boundary")
 	}
 }
 
@@ -311,6 +462,59 @@ func TestLinuxLauncherGuest(t *testing.T) {
 	}
 	if err := unix.Mount("none", "/", "", 0, ""); !errors.Is(err, unix.EPERM) {
 		t.Fatalf("seccomp mount result = %v, want EPERM", err)
+	}
+	if linuxSeccompX32Bit != 0 {
+		_, _, errno := unix.RawSyscall(uintptr(uint32(unix.SYS_GETPID)|linuxSeccompX32Bit), 0, 0, 0)
+		if !errors.Is(errno, unix.EPERM) {
+			t.Fatalf("x32 syscall result = %v, want EPERM", errno)
+		}
+	}
+	if _, _, errno := unix.RawSyscall(uintptr(unix.SYS_IO_URING_SETUP), 0, 0, 0); !errors.Is(errno, unix.EPERM) {
+		t.Fatalf("io_uring setup result = %v, want EPERM", errno)
+	}
+	if _, _, errno := unix.RawSyscall(uintptr(unix.SYS_OPEN_TREE), 0, 0, 0); !errors.Is(errno, unix.EPERM) {
+		t.Fatalf("open_tree after sandbox setup = %v, want EPERM", errno)
+	}
+	if fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0); !errors.Is(err, unix.EPERM) {
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		t.Fatalf("AF_INET socket result = %v, want EPERM", err)
+	}
+	temporary, err := os.CreateTemp("", "plugin-guest-")
+	if err != nil {
+		t.Fatalf("create private temporary file: %v", err)
+	}
+	temporaryPath := temporary.Name()
+	if _, err := temporary.Write([]byte("temporary")); err != nil {
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		t.Fatalf("unlink private temporary file: %v", err)
+	}
+	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open exact /dev/null device: %v", err)
+	}
+	if _, err := null.Write([]byte("discard")); err != nil {
+		t.Fatal(err)
+	}
+	_ = null.Close()
+	random := make([]byte, 1)
+	if source, err := os.Open("/dev/urandom"); err != nil {
+		t.Fatalf("open exact /dev/urandom device: %v", err)
+	} else {
+		_, err = source.Read(random)
+		_ = source.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.ReadFile("/etc/passwd"); err == nil {
+		t.Fatal("sandbox exposed unrelated host file contents")
 	}
 	if os.Getenv("NRE_TEST_NAMESPACE_ROOT") == "1" {
 		if os.Getpid() != 1 {
@@ -361,6 +565,35 @@ func TestLinuxFallbackCPUThrottleIsNotCumulativeKill(t *testing.T) {
 	if elapsed := time.Since(started); elapsed < 1800*time.Millisecond {
 		_ = cleanup()
 		t.Fatalf("500 milli-CPU guest completed 1.2 CPU seconds without bounded throttling in %s", elapsed)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLinuxProcessCPUDeltaIsMonotonicAcrossExitAndPIDReuse(t *testing.T) {
+	old := linuxProcessIdentity{pid: 10, startTime: 100}
+	reused := linuxProcessIdentity{pid: 11, startTime: 200}
+	previous := map[linuxProcessIdentity]uint64{old: 900, reused: 400}
+	current := map[linuxProcessIdentity]uint64{old: 910, {pid: 11, startTime: 300}: 7}
+	if got := linuxProcessCPUDelta(previous, current); got != 17 {
+		t.Fatalf("CPU delta across exit/PID reuse = %d, want 17", got)
+	}
+	if got := linuxCPUThrottleDuration(17, uint64(100*runtime.NumCPU()), 1000); got != 0 {
+		t.Fatalf("PID churn produced a false throttle = %s", got)
+	}
+}
+
+func TestLinuxFallbackCPUChildChurnDoesNotTriggerFalseMaximumThrottle(t *testing.T) {
+	started := time.Now()
+	process, cleanup, output := startLinuxResourceGuest(t, "churn", Budget{CPUMillis: 1000, MemoryBytes: 1 << 30, Processes: 32, Files: 128})
+	if err := process.Wait(); err != nil {
+		_ = cleanup()
+		t.Fatalf("CPU churn guest: %v; output=%s", err, output.String())
+	}
+	if elapsed := time.Since(started); elapsed > 3200*time.Millisecond {
+		_ = cleanup()
+		t.Fatalf("short-lived child churn incurred false 90ms throttles: %s; output=%s", elapsed, output.String())
 	}
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
@@ -424,7 +657,7 @@ func startLinuxResourceGuest(t *testing.T, mode string, budget Budget) (ManagedP
 		},
 	}, linuxSandbox{
 		prepareCgroup:   func(Budget) (string, *os.File, error) { return "", nil, unix.EROFS },
-		probeNamespaces: func(*os.File, bool, int) bool { return false },
+		probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
 	}, output)
 	if err != nil {
 		t.Fatalf("start resource guest: %v; output=%s", err, output.String())
@@ -466,6 +699,16 @@ func TestLinuxResourceGuest(t *testing.T) {
 				return
 			}
 		}
+	case "churn":
+		for index := 0; index < 8; index++ {
+			child := exec.Command("/proc/self/exe", "-test.run=^TestLinuxCPUChurnChild$")
+			child.Env = append(os.Environ(), "NRE_TEST_LINUX_CPU_CHURN_CHILD=1")
+			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if err := child.Run(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(140 * time.Millisecond)
+		}
 	case "tree":
 		artifact, err := os.Open("/proc/self/fd/3")
 		if err != nil {
@@ -484,6 +727,15 @@ func TestLinuxResourceGuest(t *testing.T) {
 		time.Sleep(time.Minute)
 	default:
 		t.Fatalf("unknown resource fixture %q", mode)
+	}
+}
+
+func TestLinuxCPUChurnChild(t *testing.T) {
+	if os.Getenv("NRE_TEST_LINUX_CPU_CHURN_CHILD") != "1" {
+		t.Skip("CPU churn child helper")
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
 	}
 }
 
@@ -523,6 +775,13 @@ func TestLinuxSandboxEnablesControllersBeforeCreatingInstance(t *testing.T) {
 	}
 	if string(control) != "+cpu +memory +pids" {
 		t.Fatalf("subtree controllers = %q", control)
+	}
+	pidsMax, err := os.ReadFile(filepath.Join(directory, "pids.max"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pidsMax) != "10" {
+		t.Fatalf("pids.max = %q, want guest budget 2 + launcher allowance 8", pidsMax)
 	}
 }
 

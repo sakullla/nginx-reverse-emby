@@ -26,14 +26,17 @@ import (
 const (
 	linuxCgroupRoot        = "/sys/fs/cgroup"
 	linuxLauncherChildArg  = "--nre-plugin-launcher-child-v1"
+	linuxLauncherFinalArg  = "--nre-plugin-launcher-final-v1"
 	linuxNamespaceProbeArg = "--nre-plugin-namespace-probe-v1"
+	linuxNamespaceFinalArg = "--nre-plugin-namespace-final-probe-v1"
 	linuxLauncherVersion   = 2
+	linuxLauncherTasks     = 8
 )
 
 type linuxSandbox struct {
 	prepareCgroup   func(Budget) (string, *os.File, error)
 	openLauncher    func() (*os.File, error)
-	probeNamespaces func(*os.File, bool, int) bool
+	probeNamespaces func(*os.File, *os.File, bool, int) bool
 }
 
 var errLinuxCgroupUnavailable = errors.New("plugin cgroup v2 controllers are unavailable")
@@ -56,11 +59,12 @@ type linuxLaunchProtocol struct {
 	Launcher               linuxFDIdentity   `json:"launcher"`
 	Endpoint               linuxFDIdentity   `json:"endpoint,omitempty"`
 	Credential             linuxFDIdentity   `json:"credential,omitempty"`
+	Temp                   linuxFDIdentity   `json:"temp"`
 	ArtifactFD             int               `json:"artifact_fd"`
-	ArtifactPath           string            `json:"artifact_path,omitempty"`
 	LauncherFD             int               `json:"launcher_fd"`
 	EndpointFD             int               `json:"endpoint_fd,omitempty"`
 	CredentialFD           int               `json:"credential_fd,omitempty"`
+	TempFD                 int               `json:"temp_fd"`
 	Arguments              []string          `json:"arguments,omitempty"`
 	Environment            []string          `json:"environment"`
 	Budget                 Budget            `json:"budget"`
@@ -73,8 +77,24 @@ type linuxLaunchProtocol struct {
 }
 
 func init() {
-	if len(os.Args) == 2 && os.Args[1] == linuxNamespaceProbeArg {
-		if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+	if len(os.Args) == 3 && os.Args[1] == linuxNamespaceProbeArg {
+		hostUID, err := strconv.Atoi(os.Args[2])
+		if err != nil {
+			os.Exit(126)
+		}
+		if err := probeLinuxFDMounts(4, 5, 4); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "validate namespace descriptor mounts: %v\n", err)
+			os.Exit(126)
+		}
+		if err := probeLinuxFinalUserNamespace(3, hostUID, false); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "validate namespace final uid mapping: %v\n", err)
+			os.Exit(126)
+		}
+		os.Exit(0)
+	}
+	if len(os.Args) == 3 && os.Args[1] == linuxNamespaceFinalArg {
+		hostUID, err := strconv.Atoi(os.Args[2])
+		if err != nil || validateLinuxFinalUserNamespace(hostUID) != nil {
 			os.Exit(126)
 		}
 		os.Exit(0)
@@ -82,21 +102,36 @@ func init() {
 	if len(os.Args) == 3 && os.Args[1] == linuxLauncherChildArg {
 		protocolFD, err := strconv.Atoi(os.Args[2])
 		if err == nil {
-			err = runLinuxLauncherChild(protocolFD)
+			err = runLinuxLauncherChild(protocolFD, false)
 		}
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "plugin launcher child rejected request: %v\n", err)
+			os.Exit(125)
 		}
-		os.Exit(125)
+		os.Exit(0)
+	}
+	if len(os.Args) == 3 && os.Args[1] == linuxLauncherFinalArg {
+		protocolFD, err := strconv.Atoi(os.Args[2])
+		if err == nil {
+			err = runLinuxLauncherChild(protocolFD, true)
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "plugin final launcher child rejected request: %v\n", err)
+			os.Exit(125)
+		}
+		os.Exit(0)
 	}
 }
 
 func newPlatformSandbox() Sandbox         { return linuxSandbox{prepareCgroup: prepareLinuxCgroup} }
-func (linuxSandbox) Available() bool      { return true }
+func (linuxSandbox) Available() bool      { return linuxSandboxArchSupported }
 func (linuxSandbox) Provider() string     { return "linux-reexec-kernel-v1" }
 func (linuxSandbox) DefenseInDepth() bool { return false }
 
 func (linuxSandbox) Validate(security Security) error {
+	if !linuxSandboxArchSupported {
+		return errors.New("linux plugin isolation is unavailable on this architecture")
+	}
 	budget := security.Requirement.Budget()
 	if budget.CPUMillis <= 0 || budget.CPUMillis > 1000 {
 		return errors.New("linux plugin isolation requires cpu_millis within 1..1000")
@@ -155,6 +190,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return nil, nil, nil, err
 	}
 	files := []*os.File{artifact}
+	privateTempPath := ""
 	sandboxUID := security.SandboxUID
 	closeFiles := func() error {
 		var result error
@@ -164,7 +200,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return result
 	}
 	fail := func(err error) (func() error, func() error, func(int) error, error) {
-		return nil, nil, nil, errors.Join(err, closeFiles(), os.Remove(artifactPath))
+		return nil, nil, nil, errors.Join(err, closeFiles(), os.Remove(artifactPath), os.RemoveAll(privateTempPath))
 	}
 
 	artifactIdentity, err := linuxFileIdentity(artifact)
@@ -182,15 +218,16 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		CookieDigest:   security.CookieDigest,
 		Artifact:       artifactIdentity,
 		ArtifactFD:     3,
-		ArtifactPath:   artifactPath,
 		Arguments:      append([]string(nil), cmd.Args[1:]...),
 		Environment:    append([]string(nil), cmd.Env...),
 		Budget:         security.Requirement.Budget(),
 		SandboxUID:     sandboxUID,
 	}
 	nextFD := 4
+	var endpoint *os.File
 	if security.EndpointDirectory != "" {
-		endpoint, openErr := os.Open(security.EndpointDirectory)
+		var openErr error
+		endpoint, openErr = os.Open(security.EndpointDirectory)
 		if openErr != nil {
 			return fail(fmt.Errorf("open plugin endpoint directory: %w", openErr))
 		}
@@ -203,8 +240,10 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 			return fail(errors.New("plugin endpoint descriptor is not a directory"))
 		}
 	}
+	var credential *os.File
 	if security.CredentialDirectory != "" {
-		credential, openErr := os.Open(security.CredentialDirectory)
+		var openErr error
+		credential, openErr = os.Open(security.CredentialDirectory)
 		if openErr != nil {
 			return fail(fmt.Errorf("open plugin credential directory: %w", openErr))
 		}
@@ -226,6 +265,29 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		if err != nil {
 			return fail(err)
 		}
+	}
+	privateTempPath, err = os.MkdirTemp("", ".nre-plugin-tmp-")
+	if err != nil {
+		return fail(fmt.Errorf("create plugin private temporary directory: %w", err))
+	}
+	if err := os.Chmod(privateTempPath, 0o700); err != nil {
+		return fail(err)
+	}
+	if sandboxUID != 0 {
+		if err := os.Chown(privateTempPath, sandboxUID, sandboxUID); err != nil {
+			return fail(fmt.Errorf("own plugin private temporary directory: %w", err))
+		}
+	}
+	privateTemp, err := os.Open(privateTempPath)
+	if err != nil {
+		return fail(fmt.Errorf("open plugin private temporary directory: %w", err))
+	}
+	files = append(files, privateTemp)
+	protocol.TempFD = nextFD
+	nextFD++
+	protocol.Temp, err = linuxFileIdentity(privateTemp)
+	if err != nil || protocol.Temp.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return fail(errors.New("plugin temporary descriptor is not a directory"))
 	}
 	openLauncher := s.openLauncher
 	if openLauncher == nil {
@@ -262,8 +324,9 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	if mappingUID == 0 {
 		mappingUID = os.Geteuid()
 	}
-	protocol.Namespaces = probeNamespaces(launcher, protocol.Budget.Network, mappingUID)
+	protocol.Namespaces = probeNamespaces(launcher, privateTemp, protocol.Budget.Network, mappingUID)
 	if protocol.Namespaces {
+		protocol.SandboxUID = mappingUID
 		protocol.ParentNamespaces, err = captureLinuxNamespaceIDs(protocol.Budget.Network)
 		if err != nil {
 			return fail(err)
@@ -285,7 +348,8 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		return fail(errors.New("plugin hard process limits require delegated cgroup v2 or an isolated uid"))
 	}
 	protocol.HardRlimits = cgroupFile == nil
-	protocol.Environment = linuxChildEnvironmentForIsolation(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, security.GuestEndpoint, protocol.Namespaces)
+	protocol.Environment = linuxChildEnvironmentForIsolation(protocol.Environment, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, security.GuestEndpoint, protocol.Namespaces)
+	protocol.Environment = setLinuxEnvironment(protocol.Environment, "GOMAXPROCS", strconv.Itoa(linuxGuestGOMAXPROCS(protocol.Budget)))
 
 	protocolFile, err := createLinuxProtocolFile(protocol)
 	if err != nil {
@@ -299,7 +363,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	cmd.Args = []string{launcherPath, linuxLauncherChildArg, strconv.Itoa(protocolFD)}
 	cmd.ExtraFiles = files
 	cmd.Dir = "/"
-	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp"}
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp", "GOMAXPROCS=1"}
 
 	cmd.SysProcAttr = linuxSandboxSysProcAttrForUID(cgroupFile, protocol.Budget.Network, protocol.Namespaces, mappingUID)
 	governor := newLinuxResourceGovernor(protocol.Budget)
@@ -322,10 +386,11 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 				rootErr = nil
 			}
 		}
+		tempErr := os.RemoveAll(privateTempPath)
 		if cgroupDir == "" {
-			return errors.Join(governorErr, artifactErr, rootErr)
+			return errors.Join(governorErr, artifactErr, rootErr, tempErr)
 		}
-		return errors.Join(governorErr, artifactErr, rootErr, removeLinuxCgroup(cgroupDir))
+		return errors.Join(governorErr, artifactErr, rootErr, tempErr, removeLinuxCgroup(cgroupDir))
 	}
 	afterStart := func(pid int) error {
 		if err := governor.Start(pid); err != nil {
@@ -346,7 +411,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	return startCleanup, processCleanup, afterStart, nil
 }
 
-func runLinuxLauncherChild(protocolFD int) error {
+func runLinuxLauncherChild(protocolFD int, final bool) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if protocolFD < 4 {
@@ -372,7 +437,7 @@ func runLinuxLauncherChild(protocolFD int) error {
 	if protocol.Version != linuxLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !validSHA256(protocol.ArtifactDigest) || !validSHA256(protocol.LauncherDigest) {
 		return errors.New("launcher protocol identity is invalid")
 	}
-	if protocol.ArtifactFD != 3 || protocol.LauncherFD < 4 || !distinctLinuxFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.LauncherFD, protocolFD) {
+	if protocol.ArtifactFD != 3 || protocol.TempFD < 4 || protocol.LauncherFD < 4 || !distinctLinuxFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD, protocolFD) {
 		return errors.New("launcher protocol descriptor binding is invalid")
 	}
 	launcher := os.NewFile(uintptr(protocol.LauncherFD), "plugin-host-launcher")
@@ -417,8 +482,14 @@ func runLinuxLauncherChild(protocolFD int) error {
 			return errors.New("credential generation binding mismatch")
 		}
 	}
+	if err := verifyLinuxDirectoryFD(protocol.TempFD, protocol.Temp); err != nil {
+		return fmt.Errorf("temporary descriptor: %w", err)
+	}
 	if err := validateLinuxBudget(protocol.Budget); err != nil {
 		return err
+	}
+	if protocol.Namespaces && !final {
+		runtime.GOMAXPROCS(1)
 	}
 	if os.Getppid() == 1 {
 		return errors.New("launcher parent is no longer alive")
@@ -431,7 +502,16 @@ func runLinuxLauncherChild(protocolFD int) error {
 	}
 	execPath := "/proc/self/fd/3"
 	if protocol.Namespaces {
-		if err := applyLinuxMinimalRoot(protocol); err != nil {
+		if !final {
+			if err := prepareLinuxMinimalRoot(protocol); err != nil {
+				return err
+			}
+			if _, err := protocolFile.Seek(0, 0); err != nil {
+				return fmt.Errorf("rewind immutable launcher protocol for final stage: %w", err)
+			}
+			return runLinuxLauncherFinal(protocol, protocolFD)
+		}
+		if err := enterLinuxMinimalRoot(protocol); err != nil {
 			return err
 		}
 		execPath = "/plugin/plugin"
@@ -458,6 +538,22 @@ func runLinuxLauncherChild(protocolFD int) error {
 	return syscall.Exec(argv[0], argv, protocol.Environment)
 }
 
+func runLinuxLauncherFinal(protocol linuxLaunchProtocol, protocolFD int) error {
+	launcherPath := "/proc/self/fd/" + strconv.Itoa(protocol.LauncherFD)
+	command := exec.Command(launcherPath, linuxLauncherFinalArg, strconv.Itoa(protocolFD))
+	command.ExtraFiles = make([]*os.File, 0, protocolFD-2)
+	for fd := 3; fd <= protocolFD; fd++ {
+		command.ExtraFiles = append(command.ExtraFiles, os.NewFile(uintptr(fd), "plugin-launcher-inherited"))
+	}
+	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp", "GOMAXPROCS=1"}
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	command.SysProcAttr = linuxFinalUserNamespaceSysProcAttr(protocol.SandboxUID, protocol.Budget.Network)
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("run plugin final namespace stage: %w", err)
+	}
+	return nil
+}
+
 func openLinuxLauncher() (*os.File, error) {
 	return os.Open("/proc/self/exe")
 }
@@ -474,6 +570,17 @@ func distinctLinuxFDs(values ...int) bool {
 		seen[value] = struct{}{}
 	}
 	return true
+}
+
+func setLinuxEnvironment(environment []string, key, value string) []string {
+	prefix := key + "="
+	for index, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			environment[index] = prefix + value
+			return environment
+		}
+	}
+	return append(environment, prefix+value)
 }
 
 func createLinuxProtocolFile(protocol linuxLaunchProtocol) (*os.File, error) {
@@ -667,6 +774,14 @@ func validateLinuxBudget(budget Budget) error {
 	return nil
 }
 
+func linuxGuestGOMAXPROCS(budget Budget) int {
+	return int((budget.CPUMillis + 999) / 1000)
+}
+
+func linuxProcessTreeLimit(budget Budget) int {
+	return budget.Processes + linuxLauncherTasks
+}
+
 func applyLinuxRlimits(budget Budget, hardResources bool) error {
 	limits := []struct {
 		resource int
@@ -674,6 +789,7 @@ func applyLinuxRlimits(budget Budget, hardResources bool) error {
 	}{
 		{unix.RLIMIT_NOFILE, uint64(budget.Files)},
 		{unix.RLIMIT_CORE, 0},
+		{unix.RLIMIT_NPROC, uint64(budget.Processes)},
 	}
 	if hardResources {
 		limits = append(limits,
@@ -681,10 +797,6 @@ func applyLinuxRlimits(budget Budget, hardResources bool) error {
 				resource int
 				value    uint64
 			}{unix.RLIMIT_DATA, uint64(budget.MemoryBytes)},
-			struct {
-				resource int
-				value    uint64
-			}{unix.RLIMIT_NPROC, uint64(budget.Processes)},
 		)
 	}
 	for _, limit := range limits {
@@ -723,27 +835,7 @@ func applyLinuxNamespaces(network, required bool) error {
 }
 
 func installLinuxSeccomp(network bool) error {
-	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID}
-	filters := []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
-	for _, number := range denied {
-		filters = append(filters,
-			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 1, K: number},
-			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
-		)
-	}
-	if !network {
-		for _, syscallNumber := range []uint32{unix.SYS_SOCKET, unix.SYS_SOCKETPAIR} {
-			filters = append(filters,
-				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: syscallNumber},
-				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
-				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, Jf: 0, K: unix.AF_UNIX},
-				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
-				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
-				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
-			)
-		}
-	}
-	filters = append(filters, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
+	filters := linuxSeccompFilters(network)
 	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("enable plugin no-new-privileges: %w", err)
@@ -752,6 +844,46 @@ func installLinuxSeccomp(network bool) error {
 		return fmt.Errorf("install plugin seccomp filter: %w", err)
 	}
 	return nil
+}
+
+func linuxSeccompFilters(network bool) []unix.SockFilter {
+	denied := []uint32{unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID}
+	if !network {
+		denied = append(denied, unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER)
+	}
+	deny := uint32(unix.SECCOMP_RET_ERRNO) | uint32(unix.EPERM)
+	filters := []unix.SockFilter{
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 4},
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: linuxSeccompAuditArch},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_KILL_PROCESS},
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+	}
+	if linuxSeccompX32Bit != 0 {
+		filters = append(filters,
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, Jf: 1, K: linuxSeccompX32Bit},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+		)
+	}
+	for _, number := range denied {
+		filters = append(filters,
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 1, K: number},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+		)
+	}
+	if !network {
+		for _, syscallNumber := range []uint32{unix.SYS_SOCKET, unix.SYS_SOCKETPAIR} {
+			filters = append(filters,
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: syscallNumber},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, Jf: 0, K: unix.AF_UNIX},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+			)
+		}
+	}
+	filters = append(filters, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
+	return filters
 }
 
 type linuxResourceGovernor struct {
@@ -765,8 +897,13 @@ type linuxResourceGovernor struct {
 type linuxResourceSample struct {
 	processes int
 	rssBytes  int64
-	cpuTicks  uint64
 	totalCPU  uint64
+	members   map[linuxProcessIdentity]uint64
+}
+
+type linuxProcessIdentity struct {
+	pid       int
+	startTime uint64
 }
 
 func newLinuxResourceGovernor(budget Budget) *linuxResourceGovernor {
@@ -781,7 +918,7 @@ func (g *linuxResourceGovernor) Start(pid int) error {
 	if initial.processes == 0 {
 		return errors.New("plugin process group is not observable")
 	}
-	if initial.processes > g.budget.Processes || initial.rssBytes > g.budget.MemoryBytes {
+	if initial.processes > linuxProcessTreeLimit(g.budget) || initial.rssBytes > g.budget.MemoryBytes {
 		_ = unix.Kill(-pid, unix.SIGKILL)
 		return errors.New("plugin process group exceeds its resource budget at startup")
 	}
@@ -859,18 +996,17 @@ func (g *linuxResourceGovernor) run(pid int, previous linuxResourceSample) {
 			_ = unix.Kill(-pid, unix.SIGKILL)
 			return
 		}
-		if current.processes > g.budget.Processes || current.rssBytes > g.budget.MemoryBytes {
+		if current.processes > linuxProcessTreeLimit(g.budget) || current.rssBytes > g.budget.MemoryBytes {
 			_ = unix.Kill(-pid, unix.SIGKILL)
 			return
 		}
-		cpuDelta := current.cpuTicks - previous.cpuTicks
-		totalDelta := current.totalCPU - previous.totalCPU
-		allowed := totalDelta * uint64(g.budget.CPUMillis) / uint64(1000*runtime.NumCPU())
-		if totalDelta > 0 && cpuDelta > allowed && cpuDelta > 0 {
-			stopFor := time.Duration((cpuDelta - allowed) * uint64(100*time.Millisecond) / cpuDelta)
-			if stopFor > 90*time.Millisecond {
-				stopFor = 90 * time.Millisecond
-			}
+		cpuDelta := linuxProcessCPUDelta(previous.members, current.members)
+		var totalDelta uint64
+		if current.totalCPU >= previous.totalCPU {
+			totalDelta = current.totalCPU - previous.totalCPU
+		}
+		stopFor := linuxCPUThrottleDuration(cpuDelta, totalDelta, g.budget.CPUMillis)
+		if stopFor > 0 {
 			if stopFor > 0 && unix.Kill(-pid, unix.SIGSTOP) == nil {
 				timer := time.NewTimer(stopFor)
 				select {
@@ -887,6 +1023,21 @@ func (g *linuxResourceGovernor) run(pid int, previous linuxResourceSample) {
 	}
 }
 
+func linuxCPUThrottleDuration(cpuDelta, totalDelta uint64, cpuMillis int64) time.Duration {
+	if totalDelta == 0 || cpuDelta == 0 {
+		return 0
+	}
+	allowed := totalDelta * uint64(cpuMillis) / uint64(1000*runtime.NumCPU())
+	if cpuDelta <= allowed {
+		return 0
+	}
+	stopFor := time.Duration((cpuDelta - allowed) * uint64(100*time.Millisecond) / cpuDelta)
+	if stopFor > 90*time.Millisecond {
+		return 90 * time.Millisecond
+	}
+	return stopFor
+}
+
 func sampleLinuxProcessGroup(group int) (linuxResourceSample, error) {
 	totalCPU, err := readLinuxTotalCPU()
 	if err != nil {
@@ -896,7 +1047,7 @@ func sampleLinuxProcessGroup(group int) (linuxResourceSample, error) {
 	if err != nil {
 		return linuxResourceSample{}, err
 	}
-	sample := linuxResourceSample{totalCPU: totalCPU}
+	sample := linuxResourceSample{totalCPU: totalCPU, members: make(map[linuxProcessIdentity]uint64)}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
@@ -923,8 +1074,9 @@ func sampleLinuxProcessGroup(group int) (linuxResourceSample, error) {
 		}
 		userTicks, userErr := strconv.ParseUint(fields[11], 10, 64)
 		systemTicks, systemErr := strconv.ParseUint(fields[12], 10, 64)
+		startTime, startErr := strconv.ParseUint(fields[19], 10, 64)
 		rssPages, rssErr := strconv.ParseInt(fields[21], 10, 64)
-		if userErr != nil || systemErr != nil || rssErr != nil {
+		if userErr != nil || systemErr != nil || startErr != nil || rssErr != nil {
 			continue
 		}
 		tasks, taskErr := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "task"))
@@ -933,10 +1085,25 @@ func sampleLinuxProcessGroup(group int) (linuxResourceSample, error) {
 		} else {
 			sample.processes += len(tasks)
 		}
-		sample.cpuTicks += userTicks + systemTicks
+		sample.members[linuxProcessIdentity{pid: pid, startTime: startTime}] = userTicks + systemTicks
 		sample.rssBytes += rssPages * int64(os.Getpagesize())
 	}
 	return sample, nil
+}
+
+func linuxProcessCPUDelta(previous, current map[linuxProcessIdentity]uint64) uint64 {
+	var delta uint64
+	for identity, ticks := range current {
+		prior, exists := previous[identity]
+		if !exists {
+			delta += ticks
+			continue
+		}
+		if ticks >= prior {
+			delta += ticks - prior
+		}
+	}
+	return delta
 }
 
 func readLinuxTotalCPU() (uint64, error) {
@@ -1028,7 +1195,7 @@ func prepareLinuxCgroupAt(root string, budget Budget) (string, *os.File, error) 
 			_ = os.Remove(dir)
 		}
 	}()
-	values := map[string]string{"memory.max": strconv.FormatInt(budget.MemoryBytes, 10), "memory.swap.max": "0", "pids.max": strconv.Itoa(budget.Processes), "cpu.max": fmt.Sprintf("%d 100000", budget.CPUMillis*100)}
+	values := map[string]string{"memory.max": strconv.FormatInt(budget.MemoryBytes, 10), "memory.swap.max": "0", "pids.max": strconv.Itoa(linuxProcessTreeLimit(budget)), "cpu.max": fmt.Sprintf("%d 100000", budget.CPUMillis*100)}
 	for name, value := range values {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o600); err != nil {
 			return "", nil, err

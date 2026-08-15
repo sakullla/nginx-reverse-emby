@@ -19,14 +19,34 @@ import (
 
 const linuxLandlockSignalABI = 6
 
-func probeLinuxNamespaces(launcher *os.File, network bool, hostUID int) bool {
-	command := exec.Command("/proc/self/fd/3", linuxNamespaceProbeArg)
-	command.ExtraFiles = []*os.File{launcher}
+func probeLinuxNamespaces(launcher, scratch *os.File, network bool, hostUID int) bool {
+	return validateLinuxNamespaces(launcher, scratch, network, hostUID) == nil
+}
+
+func validateLinuxNamespaces(launcher, scratch *os.File, network bool, hostUID int) error {
+	regular, err := os.CreateTemp(scratch.Name(), ".fd-mount-regular-")
+	if err != nil {
+		return fmt.Errorf("create regular descriptor probe: %w", err)
+	}
+	regularPath := regular.Name()
+	defer func() {
+		_ = regular.Close()
+		_ = os.Remove(regularPath)
+	}()
+	if err := regular.Chmod(0o555); err != nil {
+		return fmt.Errorf("seal regular descriptor probe: %w", err)
+	}
+	command := exec.Command("/proc/self/fd/3", linuxNamespaceProbeArg, strconv.Itoa(hostUID))
+	command.ExtraFiles = []*os.File{launcher, scratch, regular}
 	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
 	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	var stderr strings.Builder
+	command.Stderr = &stderr
 	command.SysProcAttr = linuxSandboxSysProcAttrForUID(nil, network, true, hostUID)
-	return command.Run() == nil
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("run namespace descriptor mount probe: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 func captureLinuxNamespaceIDs(network bool) (map[string]string, error) {
@@ -49,41 +69,93 @@ func requiredLinuxNamespaces(network bool) []string {
 	return names
 }
 
-func linuxChildEnvironmentForIsolation(environment []string, endpointFD, credentialFD int, guestEndpoint string, namespaces bool) []string {
+func linuxChildEnvironmentForIsolation(environment []string, endpointFD, credentialFD, tempFD int, guestEndpoint string, namespaces bool) []string {
 	result := linuxChildEnvironment(environment, endpointFD, credentialFD, guestEndpoint)
-	if !namespaces {
-		return result
+	tempPath := "/proc/self/fd/" + strconv.Itoa(tempFD)
+	if namespaces {
+		tempPath = "/tmp"
 	}
+	tempSet := false
 	for index, entry := range result {
 		key, _, ok := strings.Cut(entry, "=")
 		if !ok {
 			continue
 		}
 		switch key {
+		case "TMPDIR":
+			result[index] = "TMPDIR=" + tempPath
+			tempSet = true
 		case "NRE_PLUGIN_ENDPOINT":
-			result[index] = key + "=unix:/run/nre-plugin/" + filepath.Base(guestEndpoint)
+			if namespaces {
+				result[index] = key + "=unix:/run/nre-plugin/" + filepath.Base(guestEndpoint)
+			}
 		case "NRE_PLUGIN_COOKIE_FILE":
-			result[index] = key + "=/run/nre-plugin-credentials/cookie"
+			if namespaces {
+				result[index] = key + "=/run/nre-plugin-credentials/cookie"
+			}
 		case "NRE_PLUGIN_TLS_CA_FILE":
-			result[index] = key + "=/run/nre-plugin-credentials/ca.crt"
+			if namespaces {
+				result[index] = key + "=/run/nre-plugin-credentials/ca.crt"
+			}
 		case "NRE_PLUGIN_TLS_CERT_FILE":
-			result[index] = key + "=/run/nre-plugin-credentials/server.crt"
+			if namespaces {
+				result[index] = key + "=/run/nre-plugin-credentials/server.crt"
+			}
 		case "NRE_PLUGIN_TLS_KEY_FILE":
-			result[index] = key + "=/run/nre-plugin-credentials/server.key"
+			if namespaces {
+				result[index] = key + "=/run/nre-plugin-credentials/server.key"
+			}
 		}
+	}
+	if !tempSet {
+		result = append(result, "TMPDIR="+tempPath)
 	}
 	return result
 }
 
-func applyLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
-	for _, name := range requiredLinuxNamespaces(protocol.Budget.Network) {
-		current, err := os.Readlink("/proc/self/ns/" + name)
+func prepareLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
+	openMount := func(fd int, identity linuxFDIdentity, name string) (*os.File, error) {
+		source := os.NewFile(uintptr(fd), name)
+		mountFile, err := openLinuxDetachedMount(source, identity)
 		if err != nil {
-			return fmt.Errorf("read plugin %s namespace: %w", name, err)
+			return nil, fmt.Errorf("clone %s descriptor mount: %w", name, err)
 		}
-		if parent := protocol.ParentNamespaces[name]; parent == "" || current == parent {
-			return fmt.Errorf("plugin %s namespace was not isolated", name)
+		return mountFile, nil
+	}
+	artifactMount, err := openMount(protocol.ArtifactFD, protocol.Artifact, "plugin artifact")
+	if err != nil {
+		return err
+	}
+	defer artifactMount.Close()
+	var endpointMount, credentialMount *os.File
+	if protocol.EndpointFD != 0 {
+		endpointMount, err = openMount(protocol.EndpointFD, protocol.Endpoint, "plugin endpoint")
+		if err != nil {
+			return err
 		}
+		defer endpointMount.Close()
+	}
+	if protocol.CredentialFD != 0 {
+		credentialMount, err = openMount(protocol.CredentialFD, protocol.Credential, "plugin credential")
+		if err != nil {
+			return err
+		}
+		defer credentialMount.Close()
+	}
+	tempMount, err := openMount(protocol.TempFD, protocol.Temp, "plugin temporary directory")
+	if err != nil {
+		return err
+	}
+	defer tempMount.Close()
+	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
+		return fmt.Errorf("create plugin mount namespace: %w", err)
+	}
+	currentMountNamespace, err := os.Readlink("/proc/self/ns/mnt")
+	if err != nil {
+		return fmt.Errorf("read plugin mount namespace: %w", err)
+	}
+	if parent := protocol.ParentNamespaces["mnt"]; parent == "" || currentMountNamespace == parent {
+		return errors.New("plugin mount namespace was not isolated")
 	}
 	if protocol.SandboxRoot == "" {
 		return errors.New("plugin mount root is missing")
@@ -99,30 +171,41 @@ func applyLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 			return err
 		}
 	}
-	if protocol.ArtifactPath == "" {
-		return errors.New("private plugin artifact path is missing")
-	}
-	pathIdentity, err := linuxPathIdentity(protocol.ArtifactPath)
-	if err != nil || pathIdentity != protocol.Artifact {
-		return errors.New("private plugin artifact path identity mismatch")
-	}
 	artifactTarget := filepath.Join(protocol.SandboxRoot, "plugin/plugin")
-	if err := bindLinuxSandboxPath(protocol.ArtifactPath, artifactTarget, false, true); err != nil {
-		return fmt.Errorf("bind plugin artifact: %w", err)
+	if err := attachLinuxSandboxMount(int(artifactMount.Fd()), artifactTarget, false, true); err != nil {
+		return fmt.Errorf("attach plugin artifact: %w", err)
 	}
 	mountedIdentity, err := linuxPathIdentity(artifactTarget)
 	if err != nil || mountedIdentity != protocol.Artifact {
 		return errors.New("mounted plugin artifact identity mismatch")
 	}
 	if protocol.EndpointFD != 0 {
-		if err := bindLinuxSandboxPath("/proc/self/fd/"+strconv.Itoa(protocol.EndpointFD), filepath.Join(protocol.SandboxRoot, "run/nre-plugin"), true, false); err != nil {
-			return fmt.Errorf("bind plugin endpoint: %w", err)
+		target := filepath.Join(protocol.SandboxRoot, "run/nre-plugin")
+		if err := attachLinuxSandboxMount(int(endpointMount.Fd()), target, true, false); err != nil {
+			return fmt.Errorf("attach plugin endpoint: %w", err)
+		}
+		mountedIdentity, err := linuxPathIdentity(target)
+		if err != nil || mountedIdentity != protocol.Endpoint {
+			return errors.New("mounted plugin endpoint identity mismatch")
 		}
 	}
 	if protocol.CredentialFD != 0 {
-		if err := bindLinuxSandboxPath("/proc/self/fd/"+strconv.Itoa(protocol.CredentialFD), filepath.Join(protocol.SandboxRoot, "run/nre-plugin-credentials"), true, true); err != nil {
-			return fmt.Errorf("bind plugin credentials: %w", err)
+		target := filepath.Join(protocol.SandboxRoot, "run/nre-plugin-credentials")
+		if err := attachLinuxSandboxMount(int(credentialMount.Fd()), target, true, true); err != nil {
+			return fmt.Errorf("attach plugin credentials: %w", err)
 		}
+		mountedIdentity, err := linuxPathIdentity(target)
+		if err != nil || mountedIdentity != protocol.Credential {
+			return errors.New("mounted plugin credential identity mismatch")
+		}
+	}
+	tempTarget := filepath.Join(protocol.SandboxRoot, "tmp")
+	if err := attachLinuxSandboxMount(int(tempMount.Fd()), tempTarget, true, false); err != nil {
+		return fmt.Errorf("attach plugin private temporary directory: %w", err)
+	}
+	mountedTempIdentity, err := linuxPathIdentity(tempTarget)
+	if err != nil || mountedTempIdentity != protocol.Temp {
+		return errors.New("mounted plugin temporary directory identity mismatch")
 	}
 	for _, binding := range linuxReadOnlySystemBindings(protocol.Budget.Network) {
 		target := filepath.Join(protocol.SandboxRoot, strings.TrimPrefix(binding, "/"))
@@ -132,7 +215,7 @@ func applyLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 	}
 	for _, device := range []string{"/dev/null", "/dev/urandom"} {
 		target := filepath.Join(protocol.SandboxRoot, strings.TrimPrefix(device, "/"))
-		if err := bindLinuxSandboxPath(device, target, false, device != "/dev/null"); err != nil {
+		if err := bindLinuxSandboxDevice(device, target, device != "/dev/null"); err != nil {
 			return fmt.Errorf("bind plugin device %s: %w", device, err)
 		}
 	}
@@ -142,16 +225,78 @@ func applyLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 	if err := unix.Mount("", protocol.SandboxRoot, "", unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV, ""); err != nil {
 		return fmt.Errorf("seal plugin minimal root read-only: %w", err)
 	}
+	return nil
+}
+
+func enterLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
+	for _, name := range requiredLinuxNamespaces(protocol.Budget.Network) {
+		current, err := os.Readlink("/proc/self/ns/" + name)
+		if err != nil {
+			return fmt.Errorf("read final plugin %s namespace: %w", name, err)
+		}
+		if parent := protocol.ParentNamespaces[name]; parent == "" || current == parent {
+			return fmt.Errorf("final plugin %s namespace was not isolated", name)
+		}
+	}
+	if protocol.SandboxRoot == "" {
+		return errors.New("final plugin mount root is missing")
+	}
+	if mounted, err := linuxPathIdentity(filepath.Join(protocol.SandboxRoot, "plugin/plugin")); err != nil || mounted != protocol.Artifact {
+		return errors.New("final mounted plugin artifact identity mismatch")
+	}
+	if protocol.EndpointFD != 0 {
+		if mounted, err := linuxPathIdentity(filepath.Join(protocol.SandboxRoot, "run/nre-plugin")); err != nil || mounted != protocol.Endpoint {
+			return errors.New("final mounted plugin endpoint identity mismatch")
+		}
+	}
+	if protocol.CredentialFD != 0 {
+		if mounted, err := linuxPathIdentity(filepath.Join(protocol.SandboxRoot, "run/nre-plugin-credentials")); err != nil || mounted != protocol.Credential {
+			return errors.New("final mounted plugin credential identity mismatch")
+		}
+	}
+	if mounted, err := linuxPathIdentity(filepath.Join(protocol.SandboxRoot, "tmp")); err != nil || mounted != protocol.Temp {
+		return errors.New("final mounted plugin temporary directory identity mismatch")
+	}
 	if err := unix.Chroot(protocol.SandboxRoot); err != nil {
 		return fmt.Errorf("enter plugin minimal root: %w", err)
 	}
 	if err := os.Chdir("/plugin"); err != nil {
 		return err
 	}
-	for _, fd := range []int{protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.LauncherFD} {
+	for _, fd := range []int{protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD} {
 		if fd != 0 {
 			unix.CloseOnExec(fd)
 		}
+	}
+	return nil
+}
+
+func probeLinuxFinalUserNamespace(launcherFD, hostUID int, network bool) error {
+	launcher := os.NewFile(uintptr(launcherFD), "namespace-final-probe-launcher")
+	command := exec.Command("/proc/self/fd/3", linuxNamespaceFinalArg, strconv.Itoa(hostUID))
+	command.ExtraFiles = []*os.File{launcher}
+	command.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
+	command.Stdout = io.Discard
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	command.SysProcAttr = linuxFinalUserNamespaceSysProcAttr(hostUID, network)
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("run final user namespace probe: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func validateLinuxFinalUserNamespace(hostUID int) error {
+	if os.Geteuid() != 0 || os.Getegid() != 0 {
+		return errors.New("final namespace identity is not uid/gid 0")
+	}
+	body, err := os.ReadFile("/proc/self/uid_map")
+	if err != nil {
+		return err
+	}
+	want := fmt.Sprintf("0 %d 1", hostUID)
+	if strings.Join(strings.Fields(string(body)), " ") != want {
+		return fmt.Errorf("final namespace uid mapping %q does not equal %q", strings.TrimSpace(string(body)), want)
 	}
 	return nil
 }
@@ -184,6 +329,125 @@ func bindLinuxSandboxPath(source, target string, directory, readOnly bool) error
 	}
 	if err := unix.Mount("", target, "", remount, ""); err != nil {
 		return fmt.Errorf("bind remount: %w", err)
+	}
+	return nil
+}
+
+func attachLinuxSandboxMount(mountFD int, target string, directory, readOnly bool) error {
+	if directory {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		file, err := os.OpenFile(target, os.O_CREATE, 0o644)
+		if err != nil {
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+	}
+	if err := unix.MoveMount(mountFD, "", unix.AT_FDCWD, target, unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+		return fmt.Errorf("attach descriptor mount: %w", err)
+	}
+	if readOnly {
+		flags := uintptr(unix.MS_BIND | unix.MS_REMOUNT | unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV)
+		if err := unix.Mount("", target, "", flags, ""); err != nil {
+			return fmt.Errorf("seal descriptor mount read-only: %w", err)
+		}
+	}
+	return nil
+}
+
+func openLinuxDetachedMount(source *os.File, expected linuxFDIdentity) (*os.File, error) {
+	fd, err := unix.OpenTree(int(source.Fd()), "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+	if errors.Is(err, unix.EINVAL) {
+		fd, err = unix.OpenTree(unix.AT_FDCWD, "/proc/self/fd/"+strconv.Itoa(int(source.Fd())), uint(unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+	}
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), "detached-plugin-mount")
+	actual, err := linuxFileIdentity(file)
+	if err != nil || actual != expected {
+		_ = file.Close()
+		return nil, errors.New("detached plugin mount identity mismatch")
+	}
+	return file, nil
+}
+
+func probeLinuxFDMounts(scratchFD, fileSourceFD, directorySourceFD int) error {
+	if err := unix.Fchdir(scratchFD); err != nil {
+		return err
+	}
+	fileSource := os.NewFile(uintptr(fileSourceFD), "namespace-probe-file")
+	fileIdentity, err := linuxFileIdentity(fileSource)
+	if err != nil {
+		return err
+	}
+	fileMount, err := openLinuxDetachedMount(fileSource, fileIdentity)
+	if err != nil {
+		return fmt.Errorf("clone regular descriptor mount: %w", err)
+	}
+	defer fileMount.Close()
+	directorySource := os.NewFile(uintptr(directorySourceFD), "namespace-probe-directory")
+	directoryIdentity, err := linuxFileIdentity(directorySource)
+	if err != nil {
+		return err
+	}
+	directoryMount, err := openLinuxDetachedMount(directorySource, directoryIdentity)
+	if err != nil {
+		return fmt.Errorf("clone directory descriptor mount: %w", err)
+	}
+	defer directoryMount.Close()
+	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
+		return fmt.Errorf("create descriptor probe mount namespace: %w", err)
+	}
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make descriptor probe mounts private: %w", err)
+	}
+	root, err := os.MkdirTemp(".", ".fd-mount-probe-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(root)
+	fileTarget := filepath.Join(root, "file")
+	if err := attachLinuxSandboxMount(int(fileMount.Fd()), fileTarget, false, true); err != nil {
+		return err
+	}
+	if err := unix.Unmount(fileTarget, unix.MNT_DETACH); err != nil {
+		return err
+	}
+	directoryTarget := filepath.Join(root, "directory")
+	if err := attachLinuxSandboxMount(int(directoryMount.Fd()), directoryTarget, true, false); err != nil {
+		return err
+	}
+	return unix.Unmount(directoryTarget, unix.MNT_DETACH)
+}
+
+func bindLinuxSandboxDevice(source, target string, readOnly bool) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(target, os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("initial device bind mount: %w", err)
+	}
+	flags := uintptr(unix.MS_BIND | unix.MS_REMOUNT | unix.MS_NOSUID)
+	if readOnly {
+		flags |= unix.MS_RDONLY
+	}
+	if err := unix.Mount("", target, "", flags, ""); err != nil {
+		return fmt.Errorf("remount device bind: %w", err)
 	}
 	return nil
 }
@@ -266,6 +530,27 @@ func applyLinuxLandlock(protocol linuxLaunchProtocol) error {
 			return err
 		}
 	}
+	tempAllowed := handled &^ uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE|unix.LANDLOCK_ACCESS_FS_MAKE_CHAR|unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK)
+	if err := addLinuxLandlockRule(int(ruleset), protocol.TempFD, tempAllowed); err != nil {
+		return err
+	}
+	for _, device := range []struct {
+		path    string
+		allowed uint64
+	}{
+		{path: "/dev/null", allowed: readFile | unix.LANDLOCK_ACCESS_FS_WRITE_FILE},
+		{path: "/dev/urandom", allowed: readFile},
+	} {
+		fd, openErr := unix.Open(device.path, unix.O_PATH|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			return openErr
+		}
+		err = addLinuxLandlockRule(int(ruleset), fd, device.allowed)
+		_ = unix.Close(fd)
+		if err != nil {
+			return err
+		}
+	}
 	for _, path := range append(linuxReadOnlySystemBindings(protocol.Budget.Network), "/proc/self/fd") {
 		fd, openErr := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
 		if openErr != nil {
@@ -324,18 +609,24 @@ func dropLinuxSandboxIdentity(uid int) error {
 
 func linuxSandboxSysProcAttrForUID(cgroup *os.File, network, namespaces bool, hostUID int) *syscall.SysProcAttr {
 	attributes := &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
-	if namespaces {
-		attributes.Cloneflags = uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWUTS | unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP)
-		if !network {
-			attributes.Cloneflags |= unix.CLONE_NEWNET
-		}
-		attributes.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
-		attributes.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}}
-		attributes.GidMappingsEnableSetgroups = false
-	}
 	if cgroup != nil {
 		attributes.UseCgroupFD = true
 		attributes.CgroupFD = int(cgroup.Fd())
+	}
+	return attributes
+}
+
+func linuxFinalUserNamespaceSysProcAttr(hostUID int, network bool) *syscall.SysProcAttr {
+	attributes := &syscall.SysProcAttr{
+		Pdeathsig:                  syscall.SIGKILL,
+		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWUTS | unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostUID, Size: 1}},
+		GidMappingsEnableSetgroups: false,
+		Credential:                 &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true},
+	}
+	if !network {
+		attributes.Cloneflags |= unix.CLONE_NEWNET
 	}
 	return attributes
 }

@@ -11,11 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 )
 
@@ -57,7 +59,11 @@ func TestRPCRealLinuxSandboxGRPCHandshake(t *testing.T) {
 	}
 	artifactDigest := hex.EncodeToString(hash.Sum(nil))
 	candidate := HostCandidate{InstanceID: "sandbox", PluginID: "plugin", PluginVersion: "1", PackageDigest: artifactDigest, Generation: "g1", Artifact: pluginprocess.Artifact{CachePath: cache, SHA256: artifactDigest, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, Scopes: []string{"relay.read"}, Process: pluginprocess.InstanceSpec{Args: []string{"-test.run=^TestRPCRealLinuxSandboxGRPCHandshake$"}, Environment: []string{"NRE_TEST_LINUX_SANDBOX_GUEST=1"}, GracePeriod: time.Second}, Dial: DialConfig{Network: "unix", Deadline: 5 * time.Second}}
+	if os.Geteuid() == 0 {
+		candidate.Process.Environment = append(candidate.Process.Environment, "NRE_TEST_REQUIRE_NAMESPACE_ROOT=1")
+	}
 	candidate.Requirement = agentSandboxRequirement(t, candidate.PackageDigest)
+	candidate.Process.Environment = append(candidate.Process.Environment, "GOMAXPROCS=64", "NRE_TEST_EXPECT_NPROC="+strconv.Itoa(candidate.Requirement.Budget().Processes))
 	if _, err := host.Activate(t.Context(), candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +80,25 @@ func TestRPCRealLinuxSandboxGRPCHandshake(t *testing.T) {
 
 func runLinuxSandboxGuest(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
+	if os.Getenv("NRE_TEST_REQUIRE_NAMESPACE_ROOT") == "1" {
+		if os.Getpid() != 1 {
+			t.Fatalf("production sandbox used fallback instead of the leased-UID PID namespace: pid=%d", os.Getpid())
+		}
+		if _, err := os.Stat("/etc/passwd"); err == nil {
+			t.Fatal("production leased-UID sandbox did not enter the minimal root")
+		}
+	}
+	if os.Getenv("GOMAXPROCS") != "1" {
+		t.Fatalf("sandbox GOMAXPROCS = %q, want 1", os.Getenv("GOMAXPROCS"))
+	}
+	expectedNPROC, err := strconv.ParseUint(os.Getenv("NRE_TEST_EXPECT_NPROC"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nproc unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NPROC, &nproc); err != nil || nproc.Cur != expectedNPROC || nproc.Max != expectedNPROC {
+		t.Fatalf("sandbox RLIMIT_NPROC = %+v, %v; want %d", nproc, err, expectedNPROC)
+	}
 	endpoint := strings.TrimPrefix(os.Getenv("NRE_PLUGIN_ENDPOINT"), "unix:")
 	cookieBytes, err := os.ReadFile(os.Getenv("NRE_PLUGIN_COOKIE_FILE"))
 	if err != nil {

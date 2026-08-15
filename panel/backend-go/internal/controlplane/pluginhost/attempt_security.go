@@ -73,7 +73,9 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 			endpointHandle = nil
 		}
 		cleanupErr := cleanup(runtimeDirectory, root)
-		releaseSandboxUID()
+		if cleanupErr == nil {
+			releaseSandboxUID()
+		}
 		return errors.Join(closeErr, cleanupErr)
 	}}
 	security.sandboxUID = sandboxUID

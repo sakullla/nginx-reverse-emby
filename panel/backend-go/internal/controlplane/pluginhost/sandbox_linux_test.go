@@ -42,6 +42,101 @@ func TestPluginHostLinuxLauncherUsesInheritedBindingsAndNoHelpers(t *testing.T) 
 	}
 }
 
+func TestPluginHostLinuxNamespaceAttributesAndSeccompFilter(t *testing.T) {
+	attributes := backendLinuxSandboxSysProcAttrForUID(nil, false, true, os.Geteuid())
+	if !attributes.Setpgid || attributes.Pdeathsig != unix.SIGKILL || attributes.Cloneflags != 0 || attributes.Credential != nil {
+		t.Fatalf("control launcher process attributes = %+v", attributes)
+	}
+	final := backendFinalUserNamespaceSysProcAttr(2100000000, false)
+	if final.Cloneflags&unix.CLONE_NEWNET == 0 || final.Cloneflags&unix.CLONE_NEWUSER == 0 || final.Cloneflags&unix.CLONE_NEWPID == 0 || final.Cloneflags&unix.CLONE_NEWNS == 0 {
+		t.Fatalf("final control launcher process attributes = %+v", final)
+	}
+	if final.Credential == nil || final.Credential.Uid != 0 || final.Credential.Gid != 0 || !final.Credential.NoSetGroups {
+		t.Fatalf("final control launcher namespace credential = %+v", final.Credential)
+	}
+	filters := backendSeccompFilters(false)
+	deny := uint32(unix.SECCOMP_RET_ERRNO) | uint32(unix.EPERM)
+	if got := evaluateBackendSeccomp(filters, backendSeccompAuditArch^1, uint32(unix.SYS_GETPID), 0); got != unix.SECCOMP_RET_KILL_PROCESS {
+		t.Fatalf("wrong-architecture decision = %#x", got)
+	}
+	if backendSeccompX32Bit != 0 {
+		if got := evaluateBackendSeccomp(filters, backendSeccompAuditArch, uint32(unix.SYS_GETPID)|backendSeccompX32Bit, 0); got != deny {
+			t.Fatalf("x32 syscall decision = %#x", got)
+		}
+	}
+	for _, number := range []uint32{unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER} {
+		if got := evaluateBackendSeccomp(filters, backendSeccompAuditArch, number, 0); got != deny {
+			t.Fatalf("io_uring syscall %d decision = %#x", number, got)
+		}
+		if got := evaluateBackendSeccomp(backendSeccompFilters(true), backendSeccompAuditArch, number, 0); got != unix.SECCOMP_RET_ALLOW {
+			t.Fatalf("network-enabled io_uring syscall %d decision = %#x", number, got)
+		}
+	}
+	for _, number := range []uint32{unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR} {
+		if got := evaluateBackendSeccomp(filters, backendSeccompAuditArch, number, 0); got != deny {
+			t.Fatalf("control mount-family syscall %d decision = %#x", number, got)
+		}
+	}
+	if got := evaluateBackendSeccomp(filters, backendSeccompAuditArch, uint32(unix.SYS_SOCKET), unix.AF_INET); got != deny {
+		t.Fatalf("AF_INET socket decision = %#x", got)
+	}
+	if got := evaluateBackendSeccomp(filters, backendSeccompAuditArch, uint32(unix.SYS_SOCKET), unix.AF_UNIX); got != unix.SECCOMP_RET_ALLOW {
+		t.Fatalf("AF_UNIX socket decision = %#x", got)
+	}
+}
+
+func TestPluginHostLinuxRuntimeBudgetSeparatesGuestAndLauncherTasks(t *testing.T) {
+	budget := ProcessBudget{CPUMillis: 500, Processes: 8}
+	if got := backendGuestGOMAXPROCS(budget); got != 1 {
+		t.Fatalf("control guest GOMAXPROCS = %d, want 1", got)
+	}
+	if got := backendProcessTreeLimit(budget); got != 16 {
+		t.Fatalf("control launcher process tree limit = %d, want 16", got)
+	}
+	environment := setBackendEnvironment([]string{"GOMAXPROCS=64"}, "GOMAXPROCS", strconv.Itoa(backendGuestGOMAXPROCS(budget)))
+	if len(environment) != 1 || environment[0] != "GOMAXPROCS=1" {
+		t.Fatalf("canonical control guest environment = %v", environment)
+	}
+}
+
+func evaluateBackendSeccomp(filters []unix.SockFilter, arch, number, argument0 uint32) uint32 {
+	var accumulator uint32
+	for pc := 0; pc < len(filters); {
+		instruction := filters[pc]
+		switch instruction.Code {
+		case unix.BPF_LD | unix.BPF_W | unix.BPF_ABS:
+			switch instruction.K {
+			case 0:
+				accumulator = number
+			case 4:
+				accumulator = arch
+			case 16:
+				accumulator = argument0
+			default:
+				return 0
+			}
+			pc++
+		case unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K:
+			if accumulator == instruction.K {
+				pc += int(instruction.Jt) + 1
+			} else {
+				pc += int(instruction.Jf) + 1
+			}
+		case unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K:
+			if accumulator&instruction.K != 0 {
+				pc += int(instruction.Jt) + 1
+			} else {
+				pc += int(instruction.Jf) + 1
+			}
+		case unix.BPF_RET | unix.BPF_K:
+			return instruction.K
+		default:
+			return 0
+		}
+	}
+	return 0
+}
+
 func TestPluginHostLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testing.T) {
 	sourceArtifact, _, digest := copyBackendLinuxTestArtifact(t)
 	artifact, artifactPath, err := createBackendArtifactImage(sourceArtifact)
@@ -75,8 +170,14 @@ func TestPluginHostLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testi
 		t.Fatal(err)
 	}
 	defer credential.Close()
+	temp, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer temp.Close()
 	endpointIdentity, _ := backendFileIdentity(endpoint)
 	credentialIdentity, _ := backendFileIdentity(credential)
+	tempIdentity, _ := backendFileIdentity(temp)
 	cookieDigest, _ := backendDigestAt(int(credential.Fd()), "cookie")
 	generationDigest, _ := backendDigestGenerationCookieAt(int(credential.Fd()), "generation-1")
 	launcher, err := os.Open(os.Args[0])
@@ -94,14 +195,15 @@ func TestPluginHostLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testi
 		CookieDigest:           cookieDigest,
 		GenerationCookieDigest: generationDigest,
 		Artifact:               identity,
-		ArtifactPath:           artifactPath,
 		Launcher:               launcherIdentity,
 		Endpoint:               endpointIdentity,
 		Credential:             credentialIdentity,
 		ArtifactFD:             3,
 		EndpointFD:             4,
 		CredentialFD:           5,
-		LauncherFD:             6,
+		Temp:                   tempIdentity,
+		TempFD:                 6,
+		LauncherFD:             7,
 		EndpointRequired:       true,
 		Environment:            []string{"PATH=/usr/bin:/bin"},
 		Budget:                 ProcessBudget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64},
@@ -123,8 +225,8 @@ func TestPluginHostLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			command := exec.Command(os.Args[0], backendLauncherChildArg, "7")
-			command.ExtraFiles = []*os.File{artifact, endpoint, credential, launcher, protocolFile}
+			command := exec.Command(os.Args[0], backendLauncherChildArg, "8")
+			command.ExtraFiles = []*os.File{artifact, endpoint, credential, temp, launcher, protocolFile}
 			var output bytes.Buffer
 			command.Stderr = &output
 			err = command.Run()
@@ -151,7 +253,7 @@ func TestPluginHostLinuxLauncherCleanPathLiveProcess(t *testing.T) {
 	launcher := ExecLauncher{configure: func(cmd *exec.Cmd, candidate Candidate) (func() error, func() error, func(int) error, error) {
 		return configurePlatformSandboxWithOps(cmd, candidate, backendSandboxOps{
 			prepareCgroup:   func(ProcessBudget) (string, *os.File, error) { return "", nil, unix.EROFS },
-			probeNamespaces: func(*os.File, bool, int) bool { return false },
+			probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
 		})
 	}}
 	process, err := launcher.Start(context.Background(), artifact.Name(), []string{"-test.run=^TestPluginHostLinuxLauncherGuest$"}, []string{"NRE_TEST_CONTROL_LINUX_LAUNCHER_GUEST=1"}, io.Discard, candidate)
@@ -185,7 +287,7 @@ func TestPluginHostLinuxLauncherInheritedImageSurvivesAtomicPathReplacement(t *t
 	startCleanup, processCleanup, afterStart, err := configurePlatformSandboxWithOps(command, candidate, backendSandboxOps{
 		prepareCgroup:   func(ProcessBudget) (string, *os.File, error) { return "", nil, unix.EROFS },
 		openLauncher:    func() (*os.File, error) { return os.Open(launcherPath) },
-		probeNamespaces: func(*os.File, bool, int) bool { return false },
+		probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -222,8 +324,14 @@ func TestPluginHostLinuxNamespaceMinimalRootLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer launcher.Close()
-	if !probeBackendNamespaces(launcher, false, 0) {
-		t.Skip("kernel blocks the complete control-plane namespace profile")
+	scratch, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scratch.Close()
+	sandboxUID := testBackendLinuxSandboxUID(t)
+	if err := validateBackendNamespaces(launcher, scratch, false, sandboxUID); err != nil {
+		t.Skipf("kernel blocks the complete control-plane namespace profile: %v", err)
 	}
 	source, _, digest := copyBackendLinuxTestArtifact(t)
 	artifact, artifactPath, err := createBackendArtifactImage(source)
@@ -232,8 +340,25 @@ func TestPluginHostLinuxNamespaceMinimalRootLive(t *testing.T) {
 	}
 	defer artifact.Close()
 	defer os.Remove(artifactPath)
-	root := filepath.Join(t.TempDir(), "root")
-	if err := os.Mkdir(root, 0o700); err != nil {
+	root, err := os.MkdirTemp("", ".nre-control-plugin-root-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(root)
+	if err := os.Chown(root, sandboxUID, sandboxUID); err != nil {
+		t.Fatal(err)
+	}
+	tempDirectory := t.TempDir()
+	if err := os.Chown(tempDirectory, sandboxUID, sandboxUID); err != nil {
+		t.Fatal(err)
+	}
+	temp, err := os.Open(tempDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer temp.Close()
+	tempIdentity, err := backendFileIdentity(temp)
+	if err != nil {
 		t.Fatal(err)
 	}
 	artifactIdentity, _ := backendFileIdentity(artifact)
@@ -245,19 +370,19 @@ func TestPluginHostLinuxNamespaceMinimalRootLive(t *testing.T) {
 	}
 	protocol := backendLaunchProtocol{
 		Version: backendLauncherVersion, Generation: "namespace-live", ArtifactDigest: digest, LauncherDigest: launcherDigest,
-		Artifact: artifactIdentity, Launcher: launcherIdentity, ArtifactFD: 3, ArtifactPath: artifactPath, LauncherFD: 4,
+		Artifact: artifactIdentity, Launcher: launcherIdentity, Temp: tempIdentity, ArtifactFD: 3, LauncherFD: 4, TempFD: 5,
 		Arguments:   []string{"-test.run=^TestPluginHostLinuxLauncherGuest$"},
 		Environment: []string{"NRE_TEST_CONTROL_LINUX_LAUNCHER_GUEST=1", "NRE_TEST_CONTROL_NAMESPACE_ROOT=1"},
 		Budget:      ProcessBudget{CPUMillis: 1000, MemoryBytes: 2 << 30, Processes: 16, Files: 64},
-		Namespaces:  true, SandboxRoot: root, ParentNamespaces: parents,
+		Namespaces:  true, SandboxRoot: root, SandboxUID: sandboxUID, ParentNamespaces: parents,
 	}
 	protocolFile, err := createBackendProtocolFile(protocol)
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], backendLauncherChildArg, "5")
-	command.ExtraFiles = []*os.File{artifact, launcher, protocolFile}
-	command.SysProcAttr = backendLinuxSandboxSysProcAttrForUID(nil, false, true, 0)
+	command := exec.Command(os.Args[0], backendLauncherChildArg, "6")
+	command.ExtraFiles = []*os.File{artifact, launcher, temp, protocolFile}
+	command.SysProcAttr = backendLinuxSandboxSysProcAttrForUID(nil, false, true, sandboxUID)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Run(); err != nil {
@@ -269,13 +394,42 @@ func TestPluginHostLinuxNamespaceProbeMapsCurrentNonRootUID(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("non-root mapping fixture")
 	}
+	attributes := backendFinalUserNamespaceSysProcAttr(os.Geteuid(), false)
+	if len(attributes.UidMappings) != 1 || attributes.UidMappings[0].HostID != os.Geteuid() {
+		t.Fatalf("final control namespace uid mapping = %+v, want host euid %d", attributes.UidMappings, os.Geteuid())
+	}
 	launcher, err := os.Open("/proc/self/exe")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer launcher.Close()
-	if !probeBackendNamespaces(launcher, false, os.Geteuid()) {
+	scratch, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scratch.Close()
+	if !probeBackendNamespaces(launcher, scratch, false, os.Geteuid()) {
 		t.Skip("kernel blocks unprivileged user namespaces")
+	}
+}
+
+func TestPluginHostLinuxNonRootUnavailableKernelBoundariesFailClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("non-root control-plane admission fixture")
+	}
+	artifact, _, digest := copyBackendLinuxTestArtifact(t)
+	defer artifact.Close()
+	command := exec.Command(artifact.Name())
+	_, _, _, err := configurePlatformSandboxWithOps(command, Candidate{
+		Artifact:    Artifact{SHA256: digest},
+		Identity:    Identity{Generation: "non-root-fail-closed"},
+		Requirement: testControlRequirement(ProcessBudget{CPUMillis: 500, MemoryBytes: 256 << 20, Processes: 8, Files: 64}, false, true),
+	}, backendSandboxOps{
+		prepareCgroup:   func(ProcessBudget) (string, *os.File, error) { return "", nil, unix.EROFS },
+		probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
+	})
+	if err == nil {
+		t.Fatal("non-root control launcher admitted without a complete namespace or delegated cgroup boundary")
 	}
 }
 
@@ -299,6 +453,59 @@ func TestPluginHostLinuxLauncherGuest(t *testing.T) {
 	}
 	if err := unix.Mount("none", "/", "", 0, ""); !errors.Is(err, unix.EPERM) {
 		t.Fatalf("seccomp mount result = %v, want EPERM", err)
+	}
+	if backendSeccompX32Bit != 0 {
+		_, _, errno := unix.RawSyscall(uintptr(uint32(unix.SYS_GETPID)|backendSeccompX32Bit), 0, 0, 0)
+		if !errors.Is(errno, unix.EPERM) {
+			t.Fatalf("x32 syscall result = %v, want EPERM", errno)
+		}
+	}
+	if _, _, errno := unix.RawSyscall(uintptr(unix.SYS_IO_URING_SETUP), 0, 0, 0); !errors.Is(errno, unix.EPERM) {
+		t.Fatalf("io_uring setup result = %v, want EPERM", errno)
+	}
+	if _, _, errno := unix.RawSyscall(uintptr(unix.SYS_OPEN_TREE), 0, 0, 0); !errors.Is(errno, unix.EPERM) {
+		t.Fatalf("control open_tree after sandbox setup = %v, want EPERM", errno)
+	}
+	if fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0); !errors.Is(err, unix.EPERM) {
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		t.Fatalf("AF_INET socket result = %v, want EPERM", err)
+	}
+	temporary, err := os.CreateTemp("", "control-plugin-guest-")
+	if err != nil {
+		t.Fatalf("create control private temporary file: %v", err)
+	}
+	temporaryPath := temporary.Name()
+	if _, err := temporary.Write([]byte("temporary")); err != nil {
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		t.Fatalf("unlink control private temporary file: %v", err)
+	}
+	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open exact control /dev/null device: %v", err)
+	}
+	if _, err := null.Write([]byte("discard")); err != nil {
+		t.Fatal(err)
+	}
+	_ = null.Close()
+	random := make([]byte, 1)
+	if source, err := os.Open("/dev/urandom"); err != nil {
+		t.Fatalf("open exact control /dev/urandom device: %v", err)
+	} else {
+		_, err = source.Read(random)
+		_ = source.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.ReadFile("/etc/passwd"); err == nil {
+		t.Fatal("control sandbox exposed unrelated host file contents")
 	}
 	if os.Getenv("NRE_TEST_CONTROL_NAMESPACE_ROOT") == "1" {
 		if os.Getpid() != 1 {
@@ -355,6 +562,35 @@ func TestPluginHostLinuxFallbackCPUThrottleIsNotCumulativeKill(t *testing.T) {
 	}
 }
 
+func TestPluginHostLinuxProcessCPUDeltaIsMonotonicAcrossExitAndPIDReuse(t *testing.T) {
+	old := backendProcessIdentity{pid: 10, startTime: 100}
+	reused := backendProcessIdentity{pid: 11, startTime: 200}
+	previous := map[backendProcessIdentity]uint64{old: 900, reused: 400}
+	current := map[backendProcessIdentity]uint64{old: 910, {pid: 11, startTime: 300}: 7}
+	if got := backendProcessCPUDelta(previous, current); got != 17 {
+		t.Fatalf("control CPU delta across exit/PID reuse = %d, want 17", got)
+	}
+	if got := backendCPUThrottleDuration(17, uint64(100*runtime.NumCPU()), 1000); got != 0 {
+		t.Fatalf("control PID churn produced a false throttle = %s", got)
+	}
+}
+
+func TestPluginHostLinuxFallbackCPUChildChurnDoesNotTriggerFalseMaximumThrottle(t *testing.T) {
+	started := time.Now()
+	process, output := startBackendLinuxResourceGuest(t, "churn", ProcessBudget{CPUMillis: 1000, MemoryBytes: 1 << 30, Processes: 32, Files: 128})
+	if err := process.Wait(); err != nil {
+		_ = process.(interface{ Cleanup() error }).Cleanup()
+		t.Fatalf("control CPU churn guest: %v; output=%s", err, output.String())
+	}
+	if elapsed := time.Since(started); elapsed > 3200*time.Millisecond {
+		_ = process.(interface{ Cleanup() error }).Cleanup()
+		t.Fatalf("control short-lived child churn incurred false 90ms throttles: %s; output=%s", elapsed, output.String())
+	}
+	if err := process.(interface{ Cleanup() error }).Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPluginHostLinuxCleanupTerminatesDescendantsAfterLeaderExit(t *testing.T) {
 	process, output := startBackendLinuxResourceGuest(t, "tree", ProcessBudget{CPUMillis: 1000, MemoryBytes: 1 << 30, Processes: 32, Files: 64})
 	if err := process.Wait(); err != nil {
@@ -399,7 +635,7 @@ func startBackendLinuxResourceGuest(t *testing.T, mode string, budget ProcessBud
 	launcher := ExecLauncher{configure: func(cmd *exec.Cmd, candidate Candidate) (func() error, func() error, func(int) error, error) {
 		return configurePlatformSandboxWithOps(cmd, candidate, backendSandboxOps{
 			prepareCgroup:   func(ProcessBudget) (string, *os.File, error) { return "", nil, unix.EROFS },
-			probeNamespaces: func(*os.File, bool, int) bool { return false },
+			probeNamespaces: func(*os.File, *os.File, bool, int) bool { return false },
 		})
 	}}
 	output := &bytes.Buffer{}
@@ -444,6 +680,16 @@ func TestPluginHostLinuxResourceGuest(t *testing.T) {
 				return
 			}
 		}
+	case "churn":
+		for index := 0; index < 8; index++ {
+			child := exec.Command("/proc/self/exe", "-test.run=^TestPluginHostLinuxCPUChurnChild$")
+			child.Env = append(os.Environ(), "NRE_TEST_CONTROL_LINUX_CPU_CHURN_CHILD=1")
+			child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if err := child.Run(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(140 * time.Millisecond)
+		}
 	case "tree":
 		artifact, err := os.Open("/proc/self/fd/3")
 		if err != nil {
@@ -462,6 +708,15 @@ func TestPluginHostLinuxResourceGuest(t *testing.T) {
 		time.Sleep(time.Minute)
 	default:
 		t.Fatalf("unknown control resource fixture %q", mode)
+	}
+}
+
+func TestPluginHostLinuxCPUChurnChild(t *testing.T) {
+	if os.Getenv("NRE_TEST_CONTROL_LINUX_CPU_CHURN_CHILD") != "1" {
+		t.Skip("control CPU churn child helper")
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
 	}
 }
 
@@ -501,6 +756,13 @@ func TestBackendLinuxSandboxEnablesControllersBeforeCreatingInstance(t *testing.
 	}
 	if string(control) != "+cpu +memory +pids" {
 		t.Fatalf("subtree controllers = %q", control)
+	}
+	pidsMax, err := os.ReadFile(filepath.Join(directory, "pids.max"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pidsMax) != "10" {
+		t.Fatalf("pids.max = %q, want guest budget 2 + launcher allowance 8", pidsMax)
 	}
 }
 
