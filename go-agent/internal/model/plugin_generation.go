@@ -26,23 +26,25 @@ const (
 // package-manifest metadata. LocalPath is populated only after the Agent has
 // independently materialized and verified Artifact.
 type PluginGeneration struct {
-	ID              string                   `json:"id"`
-	InstanceID      string                   `json:"instance_id"`
-	OperationID     string                   `json:"operation_id,omitempty"`
-	Revision        int64                    `json:"revision"`
-	PluginID        string                   `json:"plugin_id"`
-	PluginVersion   string                   `json:"plugin_version"`
-	PackageDigest   string                   `json:"package_digest"`
-	Runtime         PluginRuntimeDescriptor  `json:"runtime"`
-	Artifact        PluginArtifactDescriptor `json:"artifact"`
-	ExtensionPoints []string                 `json:"extension_points"`
-	ConfigVersion   uint64                   `json:"config_version"`
-	Config          json.RawMessage          `json:"config"`
-	Grants          []PluginGrantProjection  `json:"grants"`
-	SecretHandles   []PluginSecretHandle     `json:"secret_handles"`
-	ResourceBudget  PluginResourceBudget     `json:"resource_budget"`
-	Target          PluginTargetBinding      `json:"target"`
-	FailurePolicy   PluginFailurePolicy      `json:"failure_policy"`
+	ID                   string                                    `json:"id"`
+	InstanceID           string                                    `json:"instance_id"`
+	OperationID          string                                    `json:"operation_id,omitempty"`
+	Revision             int64                                     `json:"revision"`
+	PluginID             string                                    `json:"plugin_id"`
+	PluginVersion        string                                    `json:"plugin_version"`
+	PackageDigest        string                                    `json:"package_digest"`
+	Runtime              PluginRuntimeDescriptor                   `json:"runtime"`
+	Artifact             PluginArtifactDescriptor                  `json:"artifact"`
+	ExtensionPoints      []string                                  `json:"extension_points"`
+	RequiredFeatures     []string                                  `json:"required_features"`
+	HTTPBackendProviders []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
+	ConfigVersion        uint64                                    `json:"config_version"`
+	Config               json.RawMessage                           `json:"config"`
+	Grants               []PluginGrantProjection                   `json:"grants"`
+	SecretHandles        []PluginSecretHandle                      `json:"secret_handles"`
+	ResourceBudget       PluginResourceBudget                      `json:"resource_budget"`
+	Target               PluginTargetBinding                       `json:"target"`
+	FailurePolicy        PluginFailurePolicy                       `json:"failure_policy"`
 }
 
 type PluginRuntimeDescriptor struct {
@@ -327,6 +329,33 @@ func ValidatePluginDependencies(snapshot Snapshot) error {
 			return fmt.Errorf("plugin dependency %d: %w", index, err)
 		}
 	}
+	expected := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		if len(rule.Backends) > 0 {
+			if err := pluginsdk.ValidateHTTPBackends(rule.Backends); err != nil {
+				return fmt.Errorf("HTTP rule %d backends: %w", rule.ID, err)
+			}
+		}
+		for _, backend := range rule.Backends {
+			if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider && backend.PluginProvider != nil {
+				expected[strconv.Itoa(rule.ID)+"\x00"+backend.PluginProvider.InstanceID] = struct{}{}
+			}
+		}
+	}
+	actual := make(map[string]struct{})
+	for _, edge := range snapshot.PluginDependencies {
+		if edge.Consumer.Kind == "http_rule" {
+			actual[edge.Consumer.ID+"\x00"+edge.ProviderInstanceID] = struct{}{}
+		}
+	}
+	if len(actual) != len(expected) {
+		return errors.New("HTTP provider relationships and dependencies differ")
+	}
+	for key := range expected {
+		if _, found := actual[key]; !found {
+			return errors.New("HTTP provider relationship is missing its dependency")
+		}
+	}
 	return nil
 }
 
@@ -337,15 +366,25 @@ func validatePluginDependencyConsumer(snapshot Snapshot, edge PluginDependencyEd
 	}
 	switch edge.Consumer.Kind {
 	case "http_rule":
-		if !slices.Contains(provider.ExtensionPoints, "http.request") && !slices.Contains(provider.ExtensionPoints, "http.response") {
-			return errors.New("http rule provider lacks an HTTP extension point")
+		if !slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) || !slices.Contains(provider.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+			return errors.New("http rule provider lacks the HTTP backend provider contract")
 		}
 		for _, rule := range snapshot.Rules {
 			if rule.ID == id && rule.Enabled {
 				if rule.AgentID != "" && rule.AgentID != edge.Target.AgentID {
 					return errors.New("http rule belongs to another Agent")
 				}
-				return nil
+				for _, backend := range rule.Backends {
+					if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider && backend.PluginProvider != nil && backend.PluginProvider.InstanceID == provider.InstanceID {
+						for _, descriptor := range provider.HTTPBackendProviders {
+							if descriptor.ID == backend.PluginProvider.ProviderID {
+								return nil
+							}
+						}
+						return errors.New("http rule references an undeclared provider id")
+					}
+				}
+				return errors.New("http rule does not own this provider relationship")
 			}
 		}
 		return fmt.Errorf("http rule %d is missing or disabled", id)
@@ -418,6 +457,21 @@ func (generation PluginGeneration) Validate(snapshotRevision int64, materialized
 	if len(generation.ExtensionPoints) == 0 {
 		return errors.New("extension points are required")
 	}
+	if err := validatePluginStringSet("required feature", generation.RequiredFeatures, knownPluginRequiredFeature); err != nil {
+		return err
+	}
+	hasProviderExtension := slices.Contains(generation.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider)
+	if hasProviderExtension != (len(generation.HTTPBackendProviders) > 0) {
+		return errors.New("HTTP backend provider extension and descriptors must be declared together")
+	}
+	if hasProviderExtension {
+		if !slices.Contains(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+			return errors.New("HTTP backend provider RPC feature is required")
+		}
+		if err := pluginsdk.ValidateHTTPBackendProviderDescriptors(generation.HTTPBackendProviders); err != nil {
+			return err
+		}
+	}
 	if err := validatePluginGrants(generation.Grants); err != nil {
 		return err
 	}
@@ -483,11 +537,15 @@ func validatePluginStringSet(label string, values []string, known func(string) b
 
 func knownPluginExtensionPoint(value string) bool {
 	switch value {
-	case "http.request", "http.response", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route":
+	case "http.request", "http.response", pluginsdk.ExtensionHTTPBackendProvider, "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route":
 		return true
 	default:
 		return false
 	}
+}
+
+func knownPluginRequiredFeature(value string) bool {
+	return value == pluginsdk.RPCFeatureDurableActionsV1 || value == pluginsdk.RPCFeatureHTTPBackendProviderV1
 }
 
 func knownPluginGrant(value string) bool {

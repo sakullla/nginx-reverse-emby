@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type Snapshot struct {
@@ -52,23 +54,25 @@ type PluginDependencyTarget struct {
 // deliberately contains no marketplace source, cache path, manifest, UI
 // metadata, or secret plaintext.
 type PluginGeneration struct {
-	ID              string                         `json:"id"`
-	InstanceID      string                         `json:"instance_id"`
-	OperationID     string                         `json:"operation_id,omitempty"`
-	Revision        int64                          `json:"revision"`
-	PluginID        string                         `json:"plugin_id"`
-	PluginVersion   string                         `json:"plugin_version"`
-	PackageDigest   string                         `json:"package_digest"`
-	Runtime         PluginGenerationRuntime        `json:"runtime"`
-	Artifact        PluginGenerationArtifact       `json:"artifact"`
-	ExtensionPoints []string                       `json:"extension_points"`
-	ConfigVersion   uint64                         `json:"config_version"`
-	Config          json.RawMessage                `json:"config"`
-	Grants          []PluginGenerationGrant        `json:"grants"`
-	SecretHandles   []PluginGenerationSecretHandle `json:"secret_handles"`
-	ResourceBudget  PluginGenerationResourceBudget `json:"resource_budget"`
-	Target          PluginGenerationTarget         `json:"target"`
-	FailurePolicy   PluginGenerationFailurePolicy  `json:"failure_policy"`
+	ID                   string                                    `json:"id"`
+	InstanceID           string                                    `json:"instance_id"`
+	OperationID          string                                    `json:"operation_id,omitempty"`
+	Revision             int64                                     `json:"revision"`
+	PluginID             string                                    `json:"plugin_id"`
+	PluginVersion        string                                    `json:"plugin_version"`
+	PackageDigest        string                                    `json:"package_digest"`
+	Runtime              PluginGenerationRuntime                   `json:"runtime"`
+	Artifact             PluginGenerationArtifact                  `json:"artifact"`
+	ExtensionPoints      []string                                  `json:"extension_points"`
+	RequiredFeatures     []string                                  `json:"required_features"`
+	HTTPBackendProviders []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
+	ConfigVersion        uint64                                    `json:"config_version"`
+	Config               json.RawMessage                           `json:"config"`
+	Grants               []PluginGenerationGrant                   `json:"grants"`
+	SecretHandles        []PluginGenerationSecretHandle            `json:"secret_handles"`
+	ResourceBudget       PluginGenerationResourceBudget            `json:"resource_budget"`
+	Target               PluginGenerationTarget                    `json:"target"`
+	FailurePolicy        PluginGenerationFailurePolicy             `json:"failure_policy"`
 }
 
 type PluginGenerationArtifact struct {
@@ -533,9 +537,7 @@ type HTTPHeader struct {
 	Value string `json:"value"`
 }
 
-type HTTPBackend struct {
-	URL string `json:"url"`
-}
+type HTTPBackend = pluginsdk.HTTPBackend
 
 type LoadBalancing struct {
 	Strategy string `json:"strategy,omitempty"`

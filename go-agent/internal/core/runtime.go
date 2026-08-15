@@ -349,6 +349,8 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			clonedGeneration := &cloned.PluginGenerations[i]
 			clonedGeneration.Config = slices.Clone(generation.Config)
 			clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
+			clonedGeneration.RequiredFeatures = slices.Clone(generation.RequiredFeatures)
+			clonedGeneration.HTTPBackendProviders = slices.Clone(generation.HTTPBackendProviders)
 			clonedGeneration.Grants = slices.Clone(generation.Grants)
 			clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
 		}

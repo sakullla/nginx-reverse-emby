@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestPluginGenerationStrictValidationAndWirePresence(t *testing.T) {
@@ -79,8 +81,10 @@ func TestPluginDependenciesValidateRealCoreConsumersAndDeriveRequiredProviders(t
 	l4Provider := validPluginGenerationForTest()
 	l4Provider.ID, l4Provider.InstanceID, l4Provider.OperationID = "generation-l4", "instance-a", "operation-l4"
 	l4Provider.ExtensionPoints = []string{"l4.accept"}
+	l4Provider.RequiredFeatures = nil
+	l4Provider.HTTPBackendProviders = nil
 	snapshot := Snapshot{Revision: 7,
-		Rules:             []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}},
+		Rules:             []HTTPRule{httpProviderRuleForTest(11, "edge-7", httpProvider)},
 		L4Rules:           []L4Rule{{ID: 12, AgentID: "edge-7", Enabled: true}},
 		PluginGenerations: []PluginGeneration{httpProvider, l4Provider},
 		PluginDependencies: []PluginDependencyEdge{
@@ -109,7 +113,7 @@ func TestPluginDependencyProductionWireRoundTripPreservesConsumerAuthority(t *te
 	}
 	snapshot := Snapshot{
 		Revision:           7,
-		Rules:              []HTTPRule{{ID: 11, AgentID: provider.Target.ID, Enabled: true}},
+		Rules:              []HTTPRule{httpProviderRuleForTest(11, provider.Target.ID, provider)},
 		PluginGenerations:  []PluginGeneration{provider},
 		PluginDependencies: []PluginDependencyEdge{edge},
 	}
@@ -212,7 +216,7 @@ func TestPluginSecretRedemptionRequestValidatesExactGenerationFence(t *testing.T
 
 func TestPluginDependenciesRejectDanglingDuplicateCrossTargetAndInvalidConsumers(t *testing.T) {
 	provider := validPluginGenerationForTest()
-	base := Snapshot{Revision: 7, Rules: []HTTPRule{{ID: 11, AgentID: "edge-7", Enabled: true}}, PluginGenerations: []PluginGeneration{provider}}
+	base := Snapshot{Revision: 7, Rules: []HTTPRule{httpProviderRuleForTest(11, "edge-7", provider)}, PluginGenerations: []PluginGeneration{provider}}
 	valid := PluginDependencyEdge{Consumer: pluginDependencyConsumerForTest("http_rule", "11", provider.Target.ResourceGroupID), ProviderInstanceID: provider.InstanceID, Target: pluginDependencyTargetForTest(provider)}
 	for name, mutate := range map[string]func(*Snapshot, *PluginDependencyEdge){
 		"dangling provider":          func(_ *Snapshot, edge *PluginDependencyEdge) { edge.ProviderInstanceID = "missing" },
@@ -267,11 +271,19 @@ func validPluginGenerationForTest() PluginGeneration {
 		Artifact: PluginArtifactDescriptor{ArtifactID: "artifact-7", PackageIdentity: "example.rpc@1.2.3", RelativePath: "artifacts/plugin",
 			SHA256: strings.Repeat("b", 64), SizeBytes: 42, Mode: "executable", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 			SignatureVerified: true, SignerKeyID: "release-key", SignerFingerprint: strings.Repeat("c", 64)},
-		ExtensionPoints: []string{"http.request"}, ConfigVersion: 1, Config: json.RawMessage(`{"enabled":true}`),
-		Grants:         []PluginGrantProjection{{Name: "agent.read"}},
+		ExtensionPoints: []string{pluginsdk.ExtensionHTTPBackendProvider}, RequiredFeatures: []string{pluginsdk.RPCFeatureHTTPBackendProviderV1},
+		HTTPBackendProviders: []pluginsdk.HTTPBackendProviderDescriptor{{ID: "default", DisplayName: "Default"}}, ConfigVersion: 1, Config: json.RawMessage(`{"enabled":true}`),
+		Grants:         []PluginGrantProjection{{Name: pluginsdk.PermissionHTTPOutbound}},
 		SecretHandles:  []PluginSecretHandle{{ID: "secret-7", Version: 1, Digest: strings.Repeat("d", 64), Purpose: "upstream"}},
 		ResourceBudget: PluginResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 100, Restarts: 2},
 		Target:         PluginTargetBinding{Kind: "agent", ID: "edge-7", ResourceGroupID: "default", Version: 1},
 		FailurePolicy:  PluginFailurePolicy{OnError: "degraded", OnBudget: "fail-closed", Restart: "on-failure", CoreFallback: "preserve"},
 	}
+}
+
+func httpProviderRuleForTest(id int, agentID string, provider PluginGeneration) HTTPRule {
+	return HTTPRule{ID: id, AgentID: agentID, Enabled: true, Backends: []HTTPBackend{{
+		Kind:           pluginsdk.HTTPBackendKindPluginProvider,
+		PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: provider.InstanceID, ProviderID: "default"},
+	}}}
 }

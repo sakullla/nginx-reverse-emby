@@ -1,15 +1,17 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+)
 
 type HTTPHeader struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
-type HTTPBackend struct {
-	URL string `json:"url"`
-}
+type HTTPBackend = pluginsdk.HTTPBackend
 
 type LoadBalancing struct {
 	Strategy string `json:"strategy,omitempty"`

@@ -11,13 +11,25 @@ const RPCFeatureDurableActionsV1 = "rpc.durable-actions.v1"
 // RequiredRPCFeatures projects protocol extensions from signed/granted
 // scopes. Older v1 guests remain compatible when no extension is required.
 func RequiredRPCFeatures(scopes []string) []string {
+	features := make([]string, 0, 2)
 	for _, scope := range scopes {
 		switch HostCapability(strings.TrimSpace(scope)) {
 		case CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions:
-			return []string{RPCFeatureDurableActionsV1}
+			features = appendRPCFeature(features, RPCFeatureDurableActionsV1)
+		case CapabilityHTTPOutbound:
+			features = appendRPCFeature(features, RPCFeatureHTTPBackendProviderV1)
 		}
 	}
-	return nil
+	return features
+}
+
+func appendRPCFeature(features []string, feature string) []string {
+	for _, existing := range features {
+		if existing == feature {
+			return features
+		}
+	}
+	return append(features, feature)
 }
 
 // ValidateRPCFeatures requires an exact, canonical acknowledgement of every
@@ -26,7 +38,7 @@ func RequiredRPCFeatures(scopes []string) []string {
 func ValidateRPCFeatures(required, provided []string) error {
 	want := make(map[string]struct{}, len(required))
 	for _, feature := range required {
-		if feature != strings.TrimSpace(feature) || feature != RPCFeatureDurableActionsV1 {
+		if feature != strings.TrimSpace(feature) || (feature != RPCFeatureDurableActionsV1 && feature != RPCFeatureHTTPBackendProviderV1) {
 			return fmt.Errorf("unsupported required RPC feature %q", feature)
 		}
 		if _, exists := want[feature]; exists {

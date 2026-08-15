@@ -175,6 +175,11 @@ type PluginCapabilityAPI interface {
 	InvokeDynamicAction(context.Context, service.PluginDynamicActionRequest) (service.PluginDynamicActionResult, error)
 }
 
+type HTTPBackendProviderAPI interface {
+	ListHTTPBackendProvidersForActor(context.Context, string, authz.Actor) ([]service.HTTPBackendProvider, error)
+	HTTPBackendProviderForActor(context.Context, string, string, string, authz.Actor) (service.HTTPBackendProvider, error)
+}
+
 type Dependencies struct {
 	Config                       config.Config
 	SystemService                SystemService
@@ -429,6 +434,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/egress-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleEgressProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
+		mux.Handle(prefix+"/agents/{agentID}/http-backend-providers", resolved.requirePanelToken(http.HandlerFunc(resolved.handleHTTPBackendProviders)))
+		mux.Handle(prefix+"/agents/{agentID}/http-backend-providers/{instanceID}/{providerID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleHTTPBackendProvider)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rules)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rule)))

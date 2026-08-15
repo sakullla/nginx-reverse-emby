@@ -8,6 +8,46 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
+func (d Dependencies) handleHTTPBackendProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	providers, ok := d.PluginService.(HTTPBackendProviderAPI)
+	actor, hasActor := actorFromRequest(r)
+	if !ok || !hasActor {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("HTTP backend provider catalog unavailable"))
+		return
+	}
+	result, err := providers.ListHTTPBackendProvidersForActor(r.Context(), r.PathValue("agentID"), actor)
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "providers": result})
+}
+
+func (d Dependencies) handleHTTPBackendProvider(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	providers, ok := d.PluginService.(HTTPBackendProviderAPI)
+	actor, hasActor := actorFromRequest(r)
+	if !ok || !hasActor {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("HTTP backend provider catalog unavailable"))
+		return
+	}
+	result, err := providers.HTTPBackendProviderForActor(r.Context(), r.PathValue("agentID"), r.PathValue("instanceID"), r.PathValue("providerID"), actor)
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "provider": result})
+}
+
 func (d Dependencies) handleAgentRules(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agentID")
 

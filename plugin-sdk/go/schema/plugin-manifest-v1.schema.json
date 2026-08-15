@@ -18,7 +18,8 @@
     "compatibility": {"$ref": "#/$defs/compatibility"},
     "runtime": {"$ref": "#/$defs/runtime"},
     "artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/artifact"}},
-    "extension_points": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"enum": ["http.request", "http.response", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route"]}},
+    "extension_points": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"enum": ["http.request", "http.response", "http.backend-provider", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route"]}},
+    "http_backend_providers": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/http_backend_provider"}},
     "permissions": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/permission"}},
     "config_schema": {"type": "string", "minLength": 1, "maxLength": 2048},
     "ui_schema": {"type": "string", "minLength": 1, "maxLength": 2048},
@@ -60,7 +61,14 @@
         "goarch": {"enum": ["amd64", "arm64"]}
       }
     },
-    "permission_name": {"enum": ["agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage", "dns.manage", "policy.atomic-state", "policy.monotonic-clock", "policy.trusted-source", "service.revocable-resource-handle", "ui.dynamic-actions"]},
+    "permission_name": {"enum": ["agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "http.outbound", "l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage", "dns.manage", "policy.atomic-state", "policy.monotonic-clock", "policy.trusted-source", "service.revocable-resource-handle", "ui.dynamic-actions"]},
+    "http_backend_provider": {
+      "type": "object", "additionalProperties": false, "required": ["id", "display_name"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 64},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
     "permission": {
       "oneOf": [
         {"$ref": "#/$defs/permission_name"},

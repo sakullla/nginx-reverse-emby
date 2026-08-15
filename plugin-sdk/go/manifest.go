@@ -29,26 +29,27 @@ func PluginManifestSchemaV1SHA256() string {
 // rules and the official package signing profile are enforced in addition to
 // the structural schema by the host validator.
 type Manifest struct {
-	SchemaVersion   int               `yaml:"schema_version" json:"schema_version"`
-	ID              string            `yaml:"id" json:"id"`
-	Version         string            `yaml:"version" json:"version"`
-	Name            string            `yaml:"name" json:"name"`
-	Description     string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Compatibility   Compatibility     `yaml:"compatibility" json:"compatibility"`
-	Runtime         Runtime           `yaml:"runtime" json:"runtime"`
-	Artifacts       []Artifact        `yaml:"artifacts" json:"artifacts"`
-	ExtensionPoints []string          `yaml:"extension_points" json:"extension_points"`
-	Permissions     []Permission      `yaml:"permissions" json:"permissions"`
-	ConfigSchema    string            `yaml:"config_schema" json:"config_schema"`
-	UISchema        string            `yaml:"ui_schema,omitempty" json:"ui_schema,omitempty"`
-	Assets          []string          `yaml:"assets,omitempty" json:"assets,omitempty"`
-	ResourceBudget  ResourceBudget    `yaml:"resource_budget" json:"resource_budget"`
-	FailurePolicy   FailurePolicy     `yaml:"failure_policy" json:"failure_policy"`
-	Signature       Signature         `yaml:"signature" json:"signature"`
-	Migrations      []Migration       `yaml:"migrations,omitempty" json:"migrations,omitempty"`
-	Cleanup         CleanupPolicy     `yaml:"cleanup" json:"cleanup"`
-	UIRouteID       string            `yaml:"ui_route_id,omitempty" json:"ui_route_id,omitempty"`
-	Metadata        map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	SchemaVersion        int                             `yaml:"schema_version" json:"schema_version"`
+	ID                   string                          `yaml:"id" json:"id"`
+	Version              string                          `yaml:"version" json:"version"`
+	Name                 string                          `yaml:"name" json:"name"`
+	Description          string                          `yaml:"description,omitempty" json:"description,omitempty"`
+	Compatibility        Compatibility                   `yaml:"compatibility" json:"compatibility"`
+	Runtime              Runtime                         `yaml:"runtime" json:"runtime"`
+	Artifacts            []Artifact                      `yaml:"artifacts" json:"artifacts"`
+	ExtensionPoints      []string                        `yaml:"extension_points" json:"extension_points"`
+	HTTPBackendProviders []HTTPBackendProviderDescriptor `yaml:"http_backend_providers,omitempty" json:"http_backend_providers,omitempty"`
+	Permissions          []Permission                    `yaml:"permissions" json:"permissions"`
+	ConfigSchema         string                          `yaml:"config_schema" json:"config_schema"`
+	UISchema             string                          `yaml:"ui_schema,omitempty" json:"ui_schema,omitempty"`
+	Assets               []string                        `yaml:"assets,omitempty" json:"assets,omitempty"`
+	ResourceBudget       ResourceBudget                  `yaml:"resource_budget" json:"resource_budget"`
+	FailurePolicy        FailurePolicy                   `yaml:"failure_policy" json:"failure_policy"`
+	Signature            Signature                       `yaml:"signature" json:"signature"`
+	Migrations           []Migration                     `yaml:"migrations,omitempty" json:"migrations,omitempty"`
+	Cleanup              CleanupPolicy                   `yaml:"cleanup" json:"cleanup"`
+	UIRouteID            string                          `yaml:"ui_route_id,omitempty" json:"ui_route_id,omitempty"`
+	Metadata             map[string]string               `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 type Runtime struct {

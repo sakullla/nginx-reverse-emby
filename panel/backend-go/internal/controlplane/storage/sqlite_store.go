@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -2784,10 +2785,16 @@ func parseHTTPBackends(raw string) []HTTPBackend {
 	values := parseHTTPBackendsForIntent(raw)
 	normalized := make([]HTTPBackend, 0, len(values))
 	for _, value := range values {
-		if value.URL == "" {
-			continue
+		if (value.Kind == "" || value.Kind == pluginsdk.HTTPBackendKindURL) && value.PluginProvider == nil {
+			if value.URL == "" {
+				continue
+			}
+			value.Kind = ""
 		}
 		normalized = append(normalized, value)
+	}
+	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
+		return []HTTPBackend{}
 	}
 	return normalized
 }
@@ -2797,8 +2804,11 @@ func parseHTTPBackendsForIntent(raw string) []HTTPBackend {
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []HTTPBackend{}
 	}
-	for i := range values {
-		values[i].URL = strings.TrimSpace(values[i].URL)
+	for index := range values {
+		if (values[index].Kind == "" || values[index].Kind == pluginsdk.HTTPBackendKindURL) && values[index].PluginProvider == nil {
+			values[index].URL = strings.TrimSpace(values[index].URL)
+			values[index].Kind = ""
+		}
 	}
 	return values
 }

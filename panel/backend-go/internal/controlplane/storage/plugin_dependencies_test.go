@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestPluginConsumerOwnershipFenceIsStableAndReverseIntegrated(t *testing.T) {
@@ -128,12 +129,14 @@ func TestAgentGroupMoveRejectsParentlessRequiredPluginConsumer(t *testing.T) {
 	artifactDigest := strings.Repeat("b", 64)
 	manifest := plugins.Manifest{
 		SchemaVersion: 1, ID: "runtime.rpc-group-move", Version: "1.0.0", Name: "RPC Group Move",
-		Runtime:         plugins.Runtime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "artifacts/linux-amd64/plugin"},
-		Artifacts:       []plugins.Artifact{{Path: "artifacts/linux-amd64/plugin", SHA256: artifactDigest, Size: 42, Mode: "executable", GOOS: "linux", GOARCH: "amd64"}},
-		ExtensionPoints: []string{"http.request"},
-		ResourceBudget:  plugins.ResourceBudget{TimeoutMS: 100, MemoryBytes: 4096, Concurrency: 1, InputBytes: 1024, OutputBytes: 512},
-		FailurePolicy:   plugins.FailurePolicy{OnError: "preserve-old", OnBudget: "preserve-old", Restart: "bounded", CoreFallback: "continue"},
-		Signature:       plugins.Signature{Algorithm: "ed25519", KeyID: "release", File: "package.sig"},
+		Runtime:              plugins.Runtime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "artifacts/linux-amd64/plugin"},
+		Artifacts:            []plugins.Artifact{{Path: "artifacts/linux-amd64/plugin", SHA256: artifactDigest, Size: 42, Mode: "executable", GOOS: "linux", GOARCH: "amd64"}},
+		ExtensionPoints:      []string{pluginsdk.ExtensionHTTPBackendProvider},
+		HTTPBackendProviders: []pluginsdk.HTTPBackendProviderDescriptor{{ID: "default", DisplayName: "Default"}},
+		Permissions:          []plugins.Permission{{Name: pluginsdk.PermissionHTTPOutbound}},
+		ResourceBudget:       plugins.ResourceBudget{TimeoutMS: 100, MemoryBytes: 4096, Concurrency: 1, InputBytes: 1024, OutputBytes: 512},
+		FailurePolicy:        plugins.FailurePolicy{OnError: "preserve-old", OnBudget: "preserve-old", Restart: "bounded", CoreFallback: "continue"},
+		Signature:            plugins.Signature{Algorithm: "ed25519", KeyID: "release", File: "package.sig"},
 	}
 	manifestJSON, _ := json.Marshal(manifest)
 	packageRow, artifacts, err := ProjectPluginPackage(PluginPackageRow{
@@ -144,13 +147,7 @@ func TestAgentGroupMoveRejectsParentlessRequiredPluginConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 	consumerOwner := ResourceBindingRow{ID: "parentless-rule-owner", ResourceKind: "http_rule", ResourceID: "edge:1", ResourceGroupID: "group-a", UpdatedAt: now}
-	bindingsJSON, err := EncodePluginInstanceBindings([]PluginInstanceBinding{{
-		Consumer:      PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "group-a", Version: pluginDependencyConsumerOwnershipVersion(consumerOwner)},
-		TargetAgentID: "edge",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	bindingsJSON := `[]`
 	rows := []any{
 		&ResourceGroupRow{ID: "group-a", Name: "A", CreatedAt: now, UpdatedAt: now},
 		&ResourceGroupRow{ID: "group-b", Name: "B", CreatedAt: now, UpdatedAt: now},
@@ -162,8 +159,9 @@ func TestAgentGroupMoveRejectsParentlessRequiredPluginConsumer(t *testing.T) {
 		&artifacts,
 		&InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: packageDigest, ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: "operation-active", StateVersion: 1, InstalledAt: now, UpdatedAt: now},
 		&PluginInstanceRow{ID: "required-provider", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["edge"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: bindingsJSON, PendingBindingsJSON: `[]`, RollbackBindingsJSON: `[]`, ConfigJSON: `{}`, ConfigVersion: 1, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
+		&PluginGrantRow{ID: "provider-http", PluginID: manifest.ID, PackageDigest: packageDigest, PackageIdentity: packageRow.Identity, Permission: pluginsdk.PermissionHTTPOutbound, GrantedBy: "admin", GrantedAt: now},
 		&ResourceBindingRow{ID: "provider-owner", ResourceKind: "plugin_instance", ResourceID: "required-provider", ResourceGroupID: "group-a", ParentResourceKind: "agent", ParentResourceID: "edge", UpdatedAt: now},
-		&HTTPRuleRow{ID: 1, AgentID: "edge", FrontendURL: "https://required.example.test", BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, Enabled: true, Revision: 1},
+		&HTTPRuleRow{ID: 1, AgentID: "edge", FrontendURL: "https://required.example.test", BackendsJSON: `[{"kind":"plugin_provider","plugin_provider":{"instance_id":"required-provider","provider_id":"default"}}]`, Enabled: true, Revision: 1},
 		&consumerOwner,
 	}
 	for _, row := range rows {

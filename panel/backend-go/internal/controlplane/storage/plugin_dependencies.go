@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -204,9 +205,8 @@ func ValidPluginDependencyConsumerVersion(value string) bool {
 func pluginBindingExtensionSupported(kind string, extensions map[string]struct{}) bool {
 	switch kind {
 	case PluginDependencyConsumerHTTPRule:
-		_, request := extensions["http.request"]
-		_, response := extensions["http.response"]
-		return request || response
+		_, provider := extensions[pluginsdk.ExtensionHTTPBackendProvider]
+		return provider
 	case PluginDependencyConsumerL4Rule:
 		_, ok := extensions["l4.accept"]
 		return ok
@@ -300,16 +300,13 @@ func pluginDependencyConsumerOwnershipVersion(binding ResourceBindingRow) string
 }
 
 func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID string, generations []PluginGeneration, httpRules []HTTPRule, l4Rules []L4Rule) ([]PluginDependencyEdge, error) {
-	httpIDs := make(map[string]struct{}, len(httpRules))
-	for _, rule := range httpRules {
-		httpIDs[strconv.Itoa(rule.ID)] = struct{}{}
-	}
 	l4IDs := make(map[string]struct{}, len(l4Rules))
 	for _, rule := range l4Rules {
 		l4IDs[strconv.Itoa(rule.ID)] = struct{}{}
 	}
 	edges := make([]PluginDependencyEdge, 0)
 	seen := make(map[string]struct{})
+	generationsByInstance := make(map[string]PluginGeneration, len(generations))
 	for _, generation := range generations {
 		if generation.Runtime.Kind != "rpc-service" || generation.Runtime.HostScope != "agent" || generation.Target.Kind != "agent" || generation.Target.ID != agentID {
 			return nil, fmt.Errorf("plugin generation %q cannot provide an Agent RPC dependency", generation.InstanceID)
@@ -322,6 +319,7 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 		if result.RowsAffected != 1 {
 			return nil, fmt.Errorf("plugin generation %q has no enabled durable instance", generation.InstanceID)
 		}
+		generationsByInstance[generation.InstanceID] = generation
 		bindingsJSON := instance.BindingsJSON
 		if instance.PendingOperationID != "" && instance.PendingOperationID == generation.OperationID {
 			bindingsJSON = instance.PendingBindingsJSON
@@ -347,8 +345,6 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 			}
 			consumerExists := false
 			switch binding.Consumer.Kind {
-			case PluginDependencyConsumerHTTPRule:
-				_, consumerExists = httpIDs[binding.Consumer.ID]
 			case PluginDependencyConsumerL4Rule:
 				_, consumerExists = l4IDs[binding.Consumer.ID]
 			}
@@ -358,6 +354,34 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 			key := binding.Consumer.Kind + "\x00" + binding.Consumer.ID + "\x00" + generation.InstanceID
 			if _, duplicate := seen[key]; duplicate {
 				return nil, fmt.Errorf("duplicate plugin dependency %s", key)
+			}
+			seen[key] = struct{}{}
+			edges = append(edges, PluginDependencyEdge{
+				Consumer: authoritative[0].Consumer, ProviderInstanceID: generation.InstanceID,
+				Target: PluginDependencyTarget{AgentID: agentID, ResourceGroupID: generation.Target.ResourceGroupID, Version: generation.Target.Version},
+			})
+		}
+	}
+	for _, rule := range httpRules {
+		for _, backend := range rule.Backends {
+			if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+				continue
+			}
+			generation, found := generationsByInstance[backend.PluginProvider.InstanceID]
+			if !found {
+				return nil, fmt.Errorf("HTTP rule %d references unavailable plugin provider instance %q", rule.ID, backend.PluginProvider.InstanceID)
+			}
+			if !pluginGenerationDeclaresHTTPProvider(generation, backend.PluginProvider.ProviderID) {
+				return nil, fmt.Errorf("HTTP rule %d references undeclared provider %q on instance %q", rule.ID, backend.PluginProvider.ProviderID, generation.InstanceID)
+			}
+			request := PluginInstanceBindingRequest{Consumer: PluginInstanceBindingConsumer{Kind: PluginDependencyConsumerHTTPRule, ID: strconv.Itoa(rule.ID)}, TargetAgentID: agentID}
+			authoritative, err := resolvePluginInstanceBindingRequestsTx(ctx, s.db, []PluginInstanceBindingRequest{request}, generation.Target.ResourceGroupID, false)
+			if err != nil {
+				return nil, fmt.Errorf("HTTP rule %d provider authority: %w", rule.ID, err)
+			}
+			key := PluginDependencyConsumerHTTPRule + "\x00" + strconv.Itoa(rule.ID) + "\x00" + generation.InstanceID
+			if _, duplicate := seen[key]; duplicate {
+				continue
 			}
 			seen[key] = struct{}{}
 			edges = append(edges, PluginDependencyEdge{
@@ -376,6 +400,19 @@ func (s *GormStore) loadAgentPluginDependencies(ctx context.Context, agentID str
 		return edges[i].ProviderInstanceID < edges[j].ProviderInstanceID
 	})
 	return edges, nil
+}
+
+func pluginGenerationDeclaresHTTPProvider(generation PluginGeneration, providerID string) bool {
+	if !pluginGenerationContainsString(generation.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) ||
+		!pluginGenerationContainsString(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+		return false
+	}
+	for _, descriptor := range generation.HTTPBackendProviders {
+		if descriptor.ID == providerID {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSet(values []string) map[string]struct{} {
@@ -502,6 +539,40 @@ func rejectAgentPluginConsumerGroupMoveTx(tx *gorm.DB, agentBinding ResourceBind
 		}
 		if len(authoritative) != 1 || authoritative[0] != item.binding {
 			return fmt.Errorf("%w: plugin instance %s %s binding ownership fence is stale", ErrPluginDependencyConsumerInUse, item.instanceID, item.field)
+		}
+	}
+	instancesByID := make(map[string]PluginInstanceRow, len(instances))
+	for _, instance := range instances {
+		instancesByID[instance.ID] = instance
+	}
+	var rules []HTTPRuleRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ?", agentBinding.ResourceID).Order("id").Find(&rules).Error; err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		for _, backend := range parseHTTPBackendsForIntent(rule.BackendsJSON) {
+			if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+				continue
+			}
+			instance, found := instancesByID[backend.PluginProvider.InstanceID]
+			if !found {
+				return fmt.Errorf("%w: HTTP rule %d references missing plugin instance %s", ErrPluginDependencyConsumerInUse, rule.ID, backend.PluginProvider.InstanceID)
+			}
+			providerGroupID := strings.TrimSpace(instance.ResourceGroupID)
+			targets, err := pluginInstanceTargets(instance.TargetJSON, defaultTargetID)
+			if err != nil {
+				return err
+			}
+			if containsPluginTarget(targets, agentBinding.ResourceID) {
+				providerGroupID = agentBinding.ResourceGroupID
+			}
+			var owner ResourceBindingRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", PluginDependencyConsumerHTTPRule, agentBinding.ResourceID+":"+strconv.Itoa(rule.ID)).First(&owner).Error; err != nil {
+				return fmt.Errorf("%w: HTTP rule %d provider ownership is unavailable: %v", ErrPluginDependencyConsumerInUse, rule.ID, err)
+			}
+			if strings.TrimSpace(owner.ResourceGroupID) != providerGroupID {
+				return fmt.Errorf("%w: HTTP rule %d cannot follow Agent %s to resource group %s while provider %s is referenced", ErrPluginDependencyConsumerInUse, rule.ID, agentBinding.ResourceID, providerGroupID, instance.ID)
+			}
 		}
 	}
 	return nil

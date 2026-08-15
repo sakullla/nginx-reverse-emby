@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type FullSnapshotValidator struct{}
@@ -197,11 +199,8 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 		if len(rule.Backends) == 0 {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has no backend", rule.ID), nil)
 		}
-		for _, backend := range rule.Backends {
-			parsed, err := url.Parse(strings.TrimSpace(backend.URL))
-			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid backend", rule.ID), err)
-			}
+		if err := pluginsdk.ValidateHTTPBackends(rule.Backends); err != nil {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid canonical backend", rule.ID), err)
 		}
 	}
 
@@ -228,6 +227,9 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 		}
 	}
 	if err := validatePluginDependencies(snapshot, httpIDs, l4IDs); err != nil {
+		return err
+	}
+	if err := validateHTTPProviderDependencyOwnership(snapshot); err != nil {
 		return err
 	}
 
@@ -311,10 +313,48 @@ func validatePluginGenerations(snapshot storage.Snapshot) error {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an empty grant", generation.InstanceID), nil)
 			}
 		}
+		hasProviderExtension := slices.Contains(generation.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider)
+		if hasProviderExtension != (len(generation.HTTPBackendProviders) > 0) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q provider descriptors are inconsistent", generation.InstanceID), nil)
+		}
+		if hasProviderExtension {
+			if !slices.Contains(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q lacks the HTTP backend provider RPC feature", generation.InstanceID), nil)
+			}
+			if err := pluginsdk.ValidateHTTPBackendProviderDescriptors(generation.HTTPBackendProviders); err != nil {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q provider descriptors are invalid", generation.InstanceID), err)
+			}
+		}
 		for _, handle := range generation.SecretHandles {
 			if strings.TrimSpace(handle.ID) == "" || handle.Version == 0 || !storage.ValidPluginGenerationDigest(handle.Digest) {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an invalid secret handle", generation.InstanceID), nil)
 			}
+		}
+	}
+	return nil
+}
+
+func validateHTTPProviderDependencyOwnership(snapshot storage.Snapshot) error {
+	expected := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider && backend.PluginProvider != nil {
+				expected[strconv.Itoa(rule.ID)+"\x00"+backend.PluginProvider.InstanceID] = struct{}{}
+			}
+		}
+	}
+	actual := make(map[string]struct{})
+	for _, edge := range snapshot.PluginDependencies {
+		if edge.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule {
+			actual[edge.Consumer.ID+"\x00"+edge.ProviderInstanceID] = struct{}{}
+		}
+	}
+	if len(actual) != len(expected) {
+		return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP backend provider relationships do not match their derived dependencies", nil)
+	}
+	for key := range expected {
+		if _, found := actual[key]; !found {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP backend provider relationship is missing its derived dependency", nil)
 		}
 	}
 	return nil

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -110,6 +111,9 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 		if manifest.ID != plugin.PluginID || manifest.Version != packageRow.Version {
 			return nil, fmt.Errorf("%w: package manifest identity differs from durable projection", ErrPluginGenerationConflict)
 		}
+		if err := pluginsdk.ValidateHTTPBackendProviderManifest(manifest); err != nil {
+			return nil, fmt.Errorf("%w: plugin %s HTTP backend provider manifest: %v", ErrPluginGenerationConflict, plugin.PluginID, err)
+		}
 		// WASM execution remains owned by the existing PluginPolicies projection.
 		// Publishing it through both contracts would instantiate it twice.
 		if strings.TrimSpace(manifest.Runtime.HostScope) != "agent" || strings.TrimSpace(manifest.Runtime.Kind) != "rpc-service" {
@@ -203,10 +207,12 @@ func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	}
 	generation := PluginGeneration{
 		OperationID: operationID, InstanceID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
-		Artifact:        PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
-		Runtime:         PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
-		ExtensionPoints: canonicalPluginGenerationStrings(manifest.ExtensionPoints),
-		ConfigVersion:   configVersion, Config: canonicalConfig, Grants: append([]PluginGenerationGrant(nil), grants...), SecretHandles: secretHandles,
+		Artifact:             PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
+		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
+		ExtensionPoints:      canonicalPluginGenerationStrings(manifest.ExtensionPoints),
+		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants)),
+		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
+		ConfigVersion:        configVersion, Config: canonicalConfig, Grants: append([]PluginGenerationGrant(nil), grants...), SecretHandles: secretHandles,
 		ResourceBudget: PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
 		Target:         PluginGenerationTarget{Kind: "agent", ID: agentID, ResourceGroupID: resourceGroupID, Version: configVersion},
 		FailurePolicy:  PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
@@ -217,6 +223,14 @@ func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 		return PluginGeneration{}, err
 	}
 	return generation, nil
+}
+
+func pluginGenerationRequiredFeatures(grants []PluginGenerationGrant) []string {
+	scopes := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		scopes = append(scopes, grant.Name)
+	}
+	return pluginsdk.RequiredRPCFeatures(scopes)
 }
 
 func splitPluginGrantSelector(selector string) (string, string) {
@@ -313,6 +327,13 @@ func canonicalizePluginGeneration(generation *PluginGeneration, stripRevision bo
 		generation.Revision = 0
 	}
 	generation.ExtensionPoints = canonicalPluginGenerationStrings(generation.ExtensionPoints)
+	generation.RequiredFeatures = canonicalPluginGenerationStrings(generation.RequiredFeatures)
+	sort.Slice(generation.HTTPBackendProviders, func(i, j int) bool {
+		return generation.HTTPBackendProviders[i].ID < generation.HTTPBackendProviders[j].ID
+	})
+	if generation.HTTPBackendProviders == nil {
+		generation.HTTPBackendProviders = []pluginsdk.HTTPBackendProviderDescriptor{}
+	}
 	sort.Slice(generation.Grants, func(i, j int) bool {
 		if generation.Grants[i].Name != generation.Grants[j].Name {
 			return generation.Grants[i].Name < generation.Grants[j].Name

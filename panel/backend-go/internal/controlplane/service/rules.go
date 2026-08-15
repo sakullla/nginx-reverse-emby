@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -500,6 +501,9 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := s.validateHTTPBackendProviders(ctx, resolvedID, rule.Backends); err != nil {
+		return HTTPRule{}, err
+	}
 	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
 		return HTTPRule{}, err
 	}
@@ -698,6 +702,9 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := s.validateHTTPBackendProviders(ctx, resolvedID, rule.Backends); err != nil {
+		return HTTPRule{}, err
+	}
 	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
 		return HTTPRule{}, err
 	}
@@ -1881,34 +1888,123 @@ func (s *ruleService) validateRelayChain(ctx context.Context, agentID string, re
 
 func normalizeHTTPBackendsInput(input HTTPRuleInput, fallback HTTPRule) ([]HTTPRuleBackend, error) {
 	if input.Backends != nil {
-		backends := normalizeHTTPBackends(*input.Backends)
-		if len(backends) > 0 {
-			return backends, nil
-		}
-		return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL", ErrInvalidArgument)
+		return normalizeHTTPBackends(*input.Backends)
 	}
 
 	if input.BackendURL != nil {
 		return nil, fmt.Errorf("%w: backend_url is legacy; use backends[].url", ErrInvalidArgument)
 	}
 
-	backends := normalizeHTTPBackends(fallback.Backends)
-	if len(backends) > 0 {
-		return backends, nil
-	}
-	return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL", ErrInvalidArgument)
+	return normalizeHTTPBackends(fallback.Backends)
 }
 
-func normalizeHTTPBackends(backends []HTTPRuleBackend) []HTTPRuleBackend {
+func normalizeHTTPBackends(backends []HTTPRuleBackend) ([]HTTPRuleBackend, error) {
 	normalized := make([]HTTPRuleBackend, 0, len(backends))
 	for _, backend := range backends {
-		urlValue := strings.TrimSpace(backend.URL)
-		if !isValidHTTPURL(urlValue) {
+		backend.Kind = strings.TrimSpace(backend.Kind)
+		backend.URL = strings.TrimSpace(backend.URL)
+		if (backend.Kind == "" || backend.Kind == pluginsdk.HTTPBackendKindURL) && backend.PluginProvider == nil {
+			if !isValidHTTPURL(backend.URL) {
+				continue
+			}
+			normalized = append(normalized, HTTPRuleBackend{URL: backend.URL})
 			continue
 		}
-		normalized = append(normalized, HTTPRuleBackend{URL: urlValue})
+		if backend.PluginProvider != nil {
+			provider := *backend.PluginProvider
+			provider.InstanceID = strings.TrimSpace(provider.InstanceID)
+			provider.ProviderID = strings.TrimSpace(provider.ProviderID)
+			backend.PluginProvider = &provider
+		}
+		normalized = append(normalized, backend)
 	}
-	return normalized
+	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	return normalized, nil
+}
+
+type httpBackendProviderAdmissionStore interface {
+	LoadAgentPluginGenerations(context.Context, string, string) ([]storage.PluginGeneration, error)
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
+}
+
+func (s *ruleService) validateHTTPBackendProviders(ctx context.Context, agentID string, backends []HTTPRuleBackend) error {
+	hasProvider := false
+	for _, backend := range backends {
+		if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider {
+			hasProvider = true
+			break
+		}
+	}
+	if !hasProvider {
+		return nil
+	}
+	providerStore, ok := s.store.(httpBackendProviderAdmissionStore)
+	if !ok {
+		return fmt.Errorf("%w: HTTP backend provider admission is unavailable", ErrInvalidArgument)
+	}
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, agent := range agents {
+		if strings.TrimSpace(agent.ID) == agentID && strings.TrimSpace(agent.Platform) != "" {
+			platform = strings.TrimSpace(agent.Platform)
+			break
+		}
+	}
+	generations, err := providerStore.LoadAgentPluginGenerations(ctx, agentID, platform)
+	if err != nil {
+		return fmt.Errorf("%w: load HTTP backend providers: %v", ErrInvalidArgument, err)
+	}
+	byInstance := make(map[string]storage.PluginGeneration, len(generations))
+	for _, generation := range generations {
+		byInstance[generation.InstanceID] = generation
+	}
+	for _, backend := range backends {
+		if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+			continue
+		}
+		ref := backend.PluginProvider
+		if err := authorizeReferencedResource(ctx, s.store, "plugin_instance", ref.InstanceID); err != nil {
+			return err
+		}
+		instance, found, err := providerStore.GetPluginInstance(ctx, ref.InstanceID)
+		if err != nil {
+			return err
+		}
+		if !found || !instance.DesiredEnabled || instance.CurrentState != "active" {
+			return fmt.Errorf("%w: plugin provider instance %q is not active", ErrInvalidArgument, ref.InstanceID)
+		}
+		generation, found := byInstance[ref.InstanceID]
+		if !found || generation.Runtime.Kind != pluginsdk.RuntimeRPCService || generation.Runtime.HostScope != pluginsdk.HostScopeAgent || generation.Target.ID != agentID {
+			return fmt.Errorf("%w: plugin provider instance %q is unavailable on Agent %q", ErrInvalidArgument, ref.InstanceID, agentID)
+		}
+		if !slices.Contains(generation.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) || !slices.Contains(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+			return fmt.Errorf("%w: plugin provider instance %q lacks the canonical HTTP provider contract", ErrInvalidArgument, ref.InstanceID)
+		}
+		declared := false
+		for _, descriptor := range generation.HTTPBackendProviders {
+			if descriptor.ID == ref.ProviderID {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return fmt.Errorf("%w: plugin provider %q is not declared by instance %q", ErrInvalidArgument, ref.ProviderID, ref.InstanceID)
+		}
+		status, found, err := providerStore.GetPluginAgentRuntimeStatusFence(ctx, generation.OperationID, agentID, generation.InstanceID)
+		if err != nil {
+			return err
+		}
+		if !found || status.State != "active" || status.GenerationID != generation.ID {
+			return fmt.Errorf("%w: plugin provider instance %q has no ready generation", ErrInvalidArgument, ref.InstanceID)
+		}
+	}
+	return nil
 }
 
 func normalizeHTTPCustomHeaders(values []HTTPCustomHeader) []HTTPCustomHeader {

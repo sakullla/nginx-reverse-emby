@@ -17,6 +17,7 @@ const (
 	CapabilityPolicyTrustedSource            HostCapability = "policy.trusted-source"
 	CapabilityServiceRevocableResourceHandle HostCapability = "service.revocable-resource-handle"
 	CapabilityUIDynamicActions               HostCapability = "ui.dynamic-actions"
+	CapabilityHTTPOutbound                   HostCapability = PermissionHTTPOutbound
 )
 
 var hostCapabilityIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`)
@@ -28,7 +29,7 @@ func (capability HostCapability) Validate() error {
 	}
 	switch capability {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
-		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions:
+		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound:
 		return nil
 	default:
 		return fmt.Errorf("host capability %q is not in the canonical catalog", value)

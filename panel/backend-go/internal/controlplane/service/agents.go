@@ -23,6 +23,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 var ErrAgentNotFound = errors.New("agent not found")
@@ -157,9 +158,7 @@ type PKIRegistrationReply struct {
 	SecuritySnapshot storage.PKISecuritySnapshot `json:"security_snapshot"`
 }
 
-type HTTPRuleBackend struct {
-	URL string `json:"url"`
-}
+type HTTPRuleBackend = pluginsdk.HTTPBackend
 
 type HTTPLoadBalancing struct {
 	Strategy string `json:"strategy"`
@@ -2216,22 +2215,23 @@ func parseIntLayers(raw string) [][]int {
 }
 
 func parseBackends(raw string) []HTTPRuleBackend {
-	type backend struct {
-		URL string `json:"url"`
-	}
-
-	var values []backend
+	var values []HTTPRuleBackend
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []HTTPRuleBackend{}
 	}
-
 	normalized := make([]HTTPRuleBackend, 0, len(values))
-	for _, item := range values {
-		url := strings.TrimSpace(item.URL)
-		if url == "" {
-			continue
+	for _, value := range values {
+		if (value.Kind == "" || value.Kind == pluginsdk.HTTPBackendKindURL) && value.PluginProvider == nil {
+			value.URL = strings.TrimSpace(value.URL)
+			if value.URL == "" {
+				continue
+			}
+			value.Kind = ""
 		}
-		normalized = append(normalized, HTTPRuleBackend{URL: url})
+		normalized = append(normalized, value)
+	}
+	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
+		return []HTTPRuleBackend{}
 	}
 	return normalized
 }

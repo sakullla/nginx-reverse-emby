@@ -17,7 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestConfigurePluginBindingDerivesOwnershipAndRejectsCrossGroup(t *testing.T) {
+func TestConfigurePluginBindingRejectsLegacyHTTPRuleConsumers(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(t.Context(), "test")
 	dataRoot := t.TempDir()
 	store, err := storage.NewSQLiteStore(dataRoot, "local")
@@ -54,21 +54,8 @@ func TestConfigurePluginBindingDerivesOwnershipAndRejectsCrossGroup(t *testing.T
 		t.Fatal("cross-group core consumer binding was accepted")
 	}
 	owned := []storage.PluginInstanceBindingRequest{{Consumer: storage.PluginInstanceBindingConsumer{Kind: "http_rule", ID: "1"}, TargetAgentID: "local"}}
-	instance, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "provider", ResourceGroupID: "default", Targets: []string{"local"}, Bindings: &owned, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pending, err := storage.CanonicalPluginInstanceBindings(instance.PendingBindingsJSON)
-	if err != nil || len(pending) != 1 || pending[0].Consumer.ResourceGroupID != "default" || !storage.ValidPluginDependencyConsumerVersion(pending[0].Consumer.Version) {
-		t.Fatalf("derived pending binding = %+v err=%v", pending, err)
-	}
-	instance, err = svc.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"local": "applied"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	active, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
-	if err != nil || len(active) != 1 || active[0] != pending[0] || instance.PendingBindingsJSON != "[]" {
-		t.Fatalf("promoted binding active=%+v pending=%q err=%v", active, instance.PendingBindingsJSON, err)
+	if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "provider", ResourceGroupID: "default", Targets: []string{"local"}, Bindings: &owned, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); err == nil {
+		t.Fatal("legacy HTTP rule binding was accepted")
 	}
 }
 

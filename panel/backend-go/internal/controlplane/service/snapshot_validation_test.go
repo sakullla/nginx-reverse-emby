@@ -7,6 +7,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestFullSnapshotValidatorAcceptsCompleteResourceGraph(t *testing.T) {
@@ -51,15 +52,19 @@ func TestFullSnapshotValidatorRejectsInvalidPluginDependencyGraph(t *testing.T) 
 		InstanceID: "provider", OperationID: "operation", Revision: 7, PluginID: "runtime.rpc", PluginVersion: "1.0.0", PackageDigest: digest,
 		Runtime:         storage.PluginGenerationRuntime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "plugin"},
 		Artifact:        storage.PluginGenerationArtifact{ArtifactID: digest, PackageIdentity: digest, RelativePath: "plugin", SHA256: digest, SizeBytes: 1, Mode: "executable", GOOS: "linux", GOARCH: "amd64", SignatureVerified: true, SignerKeyID: "release", SignerFingerprint: digest},
-		ExtensionPoints: []string{"http.request"}, ConfigVersion: 1, Config: json.RawMessage(`{}`), Grants: []storage.PluginGenerationGrant{}, SecretHandles: []storage.PluginGenerationSecretHandle{},
+		ExtensionPoints: []string{pluginsdk.ExtensionHTTPBackendProvider}, RequiredFeatures: []string{pluginsdk.RPCFeatureHTTPBackendProviderV1},
+		HTTPBackendProviders: []pluginsdk.HTTPBackendProviderDescriptor{{ID: "default", DisplayName: "Default"}}, ConfigVersion: 1, Config: json.RawMessage(`{}`),
+		Grants: []storage.PluginGenerationGrant{{Name: pluginsdk.PermissionHTTPOutbound}}, SecretHandles: []storage.PluginGenerationSecretHandle{},
 		ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: 10, MemoryBytes: 1024, Concurrency: 1, InputBytes: 128, OutputBytes: 128},
 		Target:         storage.PluginGenerationTarget{Kind: "agent", ID: "edge-1", ResourceGroupID: "group", Version: 1},
 		FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: "preserve-old", OnBudget: "preserve-old", Restart: "bounded", CoreFallback: "continue"},
 	}
 	generation.ID, _ = storage.PluginGenerationIdentity(generation)
 	base := storage.Snapshot{
-		Revision:           7,
-		Rules:              []storage.HTTPRule{{ID: 1, AgentID: "edge-1", FrontendURL: "https://edge.example.test", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+		Revision: 7,
+		Rules: []storage.HTTPRule{{ID: 1, AgentID: "edge-1", FrontendURL: "https://edge.example.test", Backends: []storage.HTTPBackend{{
+			Kind: pluginsdk.HTTPBackendKindPluginProvider, PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: "provider", ProviderID: "default"},
+		}}}},
 		PluginGenerations:  []storage.PluginGeneration{generation},
 		PluginDependencies: []storage.PluginDependencyEdge{{Consumer: storage.PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "group", Version: digest}, ProviderInstanceID: "provider", Target: storage.PluginDependencyTarget{AgentID: "edge-1", ResourceGroupID: "group", Version: 1}}},
 	}
