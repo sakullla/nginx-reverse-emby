@@ -1,11 +1,67 @@
 package localagent
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+type pluginReportSyncStore struct {
+	reportErr error
+	logErr    error
+}
+
+func (s pluginReportSyncStore) LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error) {
+	return storage.Snapshot{Revision: 7}, nil
+}
+
+func (s pluginReportSyncStore) RecordPluginAgentRuntimeReport(context.Context, storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error) {
+	return storage.PluginAgentRuntimeStatusRow{}, false, s.reportErr
+}
+
+func (s pluginReportSyncStore) RecordPluginRuntimeLogReport(context.Context, string, storage.PluginRuntimeLogReport) (bool, error) {
+	return false, s.logErr
+}
+
+func TestLocalSyncSourceDiscardsStalePluginTelemetry(t *testing.T) {
+	snapshot, err := NewSyncSource(pluginReportSyncStore{
+		reportErr: storage.ErrPluginGenerationStale,
+		logErr:    storage.ErrPluginGenerationStale,
+	}, "local").Sync(t.Context(), SyncRequest{
+		PluginStatuses: []storage.PluginRuntimeStatus{{InstanceID: "retired-instance"}},
+		PluginLogs:     []storage.PluginRuntimeLogReport{{InstanceID: "retired-instance"}},
+	})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if snapshot.Revision != 7 {
+		t.Fatalf("snapshot revision = %d", snapshot.Revision)
+	}
+}
+
+func TestLocalSyncSourceDiscardsConflictingPluginTelemetry(t *testing.T) {
+	snapshot, err := NewSyncSource(pluginReportSyncStore{
+		reportErr: storage.ErrPluginGenerationConflict,
+	}, "local").Sync(t.Context(), SyncRequest{
+		PluginStatuses: []storage.PluginRuntimeStatus{{InstanceID: "conflicting-instance"}},
+	})
+	if err != nil || snapshot.Revision != 7 {
+		t.Fatalf("Sync() error = %v", err)
+	}
+}
+
+func TestLocalSyncSourceKeepsUnexpectedPluginTelemetryErrorsFatal(t *testing.T) {
+	expected := errors.New("telemetry storage unavailable")
+	_, err := NewSyncSource(pluginReportSyncStore{reportErr: expected}, "local").Sync(t.Context(), SyncRequest{
+		PluginStatuses: []storage.PluginRuntimeStatus{{InstanceID: "instance"}},
+	})
+	if !errors.Is(err, expected) {
+		t.Fatalf("Sync() error = %v", err)
+	}
+}
 
 func TestLocalSyncSourceOverlaysPendingManagedCertificateGeneration(t *testing.T) {
 	dataRoot := t.TempDir()

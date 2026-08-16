@@ -203,6 +203,7 @@ func TestPluginHostLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testi
 	launcherDigest, _ := backendDigestOpenFile(launcher)
 	base := backendLaunchProtocol{
 		Version:                backendLauncherVersion,
+		ParentPID:              os.Getpid(),
 		Generation:             "generation-1",
 		ArtifactDigest:         digest,
 		LauncherDigest:         launcherDigest,
@@ -230,6 +231,7 @@ func TestPluginHostLinuxLauncherChildRejectsMismatchedInheritedBindings(t *testi
 		"fd":         {func(protocol *backendLaunchProtocol) { protocol.Endpoint = credentialIdentity }, "control launcher endpoint descriptor: descriptor identity mismatch"},
 		"cookie":     {func(protocol *backendLaunchProtocol) { protocol.CookieDigest = strings.Repeat("0", 64) }, "credential cookie digest mismatch"},
 		"generation": {func(protocol *backendLaunchProtocol) { protocol.GenerationCookieDigest = strings.Repeat("0", 64) }, "credential generation binding mismatch"},
+		"parent":     {func(protocol *backendLaunchProtocol) { protocol.ParentPID++ }, "control launcher parent identity changed"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -386,7 +388,7 @@ func TestPluginHostLinuxNamespaceMinimalRootLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	protocol := backendLaunchProtocol{
-		Version: backendLauncherVersion, Generation: "namespace-live", ArtifactDigest: digest, LauncherDigest: launcherDigest,
+		Version: backendLauncherVersion, ParentPID: os.Getpid(), Generation: "namespace-live", ArtifactDigest: digest, LauncherDigest: launcherDigest,
 		Artifact: artifactIdentity, Launcher: launcherIdentity, Temp: tempIdentity, ArtifactFD: 3, LauncherFD: 4, TempFD: 5,
 		Arguments:   []string{"-test.run=^TestPluginHostLinuxLauncherGuest$"},
 		Environment: []string{"NRE_TEST_CONTROL_LINUX_LAUNCHER_GUEST=1", "NRE_TEST_CONTROL_NAMESPACE_ROOT=1"},

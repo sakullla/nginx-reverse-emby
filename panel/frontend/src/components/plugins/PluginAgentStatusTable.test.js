@@ -21,8 +21,9 @@ describe('PluginAgentStatusTable', () => {
   })
 
   it('offers an explicit revision retry only for actionable failed targets', async () => {
-    const wrapper = mount(PluginAgentStatusTable, { props: { actionable: true, statuses: [{ instance_id: 'rpc', agent_id: 'edge', runtime_state: 'failed', desired_revision: 9 }] } })
+    const wrapper = mount(PluginAgentStatusTable, { props: { actionable: true, statuses: [{ instance_id: 'rpc', agent_id: 'edge', runtime_state: 'failed', desired_revision: 8, target_revision: 9 }] } })
+    expect(wrapper.text()).toContain('0 / 9')
     await wrapper.get('button').trigger('click')
-    expect(wrapper.emitted('retry')[0][0]).toMatchObject({ agent_id: 'edge', desired_revision: 9 })
+    expect(wrapper.emitted('retry')[0][0]).toMatchObject({ agent_id: 'edge', desired_revision: 8, target_revision: 9 })
   })
 })

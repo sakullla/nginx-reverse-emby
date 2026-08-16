@@ -1,13 +1,13 @@
 package http
 
 import (
-	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyheaders"
 )
 
 const internalRedirectPathSegment = "/__nre_redirect"
@@ -285,9 +285,8 @@ func normalizeURLAuthority(target *url.URL) string {
 }
 
 func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) map[string]string {
-	values := make(map[string]string)
 	if req == nil {
-		return values
+		return map[string]string{}
 	}
 	host := strings.TrimSpace(incomingHost)
 	if host == "" {
@@ -296,44 +295,22 @@ func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) ma
 			host = strings.TrimSpace(req.URL.Host)
 		}
 	}
-	if host != "" {
-		values["X-Forwarded-Host"] = host
-	}
-	if port := forwardedPort(host, req, incomingScheme); port != "" {
-		values["X-Forwarded-Port"] = port
-	}
-	ip := clientIP(req.RemoteAddr)
-	if ip != "" {
-		values["X-Forwarded-For"] = ip
-		values["X-Real-IP"] = ip
-	}
 	scheme := strings.TrimSpace(incomingScheme)
 	if scheme == "" {
 		scheme = requestScheme(req)
 	}
-	values["X-Forwarded-Proto"] = scheme
+	explicitPort := ""
+	if req.URL != nil {
+		explicitPort = req.URL.Port()
+	}
+	forwarded := proxyheaders.ForwardedWithPort(scheme, host, req.RemoteAddr, explicitPort)
+	values := make(map[string]string, len(forwarded))
+	for key, items := range forwarded {
+		if len(items) > 0 {
+			values[key] = items[0]
+		}
+	}
 	return values
-}
-
-func forwardedPort(host string, req *http.Request, incomingScheme string) string {
-	if _, port, err := net.SplitHostPort(strings.TrimSpace(host)); err == nil && port != "" {
-		return port
-	}
-	if req != nil && req.URL != nil && req.URL.Port() != "" {
-		return req.URL.Port()
-	}
-	scheme := strings.ToLower(strings.TrimSpace(incomingScheme))
-	if scheme == "" {
-		scheme = requestScheme(req)
-	}
-	if scheme == "https" {
-		return "443"
-	}
-	return "80"
-}
-
-func clientIP(remoteAddr string) string {
-	return model.ClientIP(remoteAddr)
 }
 
 func requestScheme(req *http.Request) string {

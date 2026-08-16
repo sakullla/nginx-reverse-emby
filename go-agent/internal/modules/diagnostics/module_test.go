@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 	"reflect"
 	"testing"
 )
@@ -24,6 +25,7 @@ func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
 		module.ProviderDiagnosticsHTTPSource,
 		module.ProviderDiagnosticsL4Source,
 		module.ProviderDiagnosticsRelaySource,
+		pluginrpc.ProviderHTTPBackendProviders,
 	}
 	if !reflect.DeepEqual(descriptor.Optional, wantOptional) {
 		t.Fatalf("Optional = %+v, want %+v", descriptor.Optional, wantOptional)

@@ -329,6 +329,14 @@ func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
 func (s *Server) routeFor(host string, requestPath string) *routeEntry {
 	entries := s.routes[host]
 	if len(entries) == 0 {
+		for routeHost, routeEntries := range s.routes {
+			if bindingHostsEquivalent(host, routeHost) {
+				entries = routeEntries
+				break
+			}
+		}
+	}
+	if len(entries) == 0 {
 		return nil
 	}
 

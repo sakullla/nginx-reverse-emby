@@ -1,4 +1,4 @@
-import { api } from './client'
+import { api, longRunningRequest } from './client'
 import { redactPluginData, redactPluginProjection } from './pluginSecurity'
 
 const pluginRoot = '/plugins'
@@ -19,7 +19,7 @@ export async function fetchPlugins() {
 }
 
 export async function fetchPluginDetail(pluginID) {
-  const { data } = await api.get(pluginPath(pluginID))
+  const { data } = await api.get(pluginPath(pluginID), longRunningRequest)
   return redactPluginProjection(data)
 }
 
@@ -29,19 +29,19 @@ export async function fetchPluginOperations(pluginID) {
 }
 
 export async function fetchPluginPackageDetail(selection) {
-  const { data } = await api.post(`${pluginRoot}/package-detail`, selection)
+  const { data } = await api.post(`${pluginRoot}/package-detail`, selection, longRunningRequest)
   return redactPluginProjection(data?.package || {})
 }
 
 export async function installPlugin(selection) {
-  const { data } = await api.post(`${pluginRoot}/install`, selection)
+  const { data } = await api.post(`${pluginRoot}/install`, selection, longRunningRequest)
   return redactPluginProjection(data?.plugin || {})
 }
 
 export async function runPluginAction(pluginID, action, payload = {}) {
   const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall'])
   if (!allowed.has(action)) throw new Error('plugin action is invalid')
-  const { data } = await api.post(pluginPath(pluginID, `/${action}`), payload)
+  const { data } = await api.post(pluginPath(pluginID, `/${action}`), payload, longRunningRequest)
   return redactPluginProjection(data?.result)
 }
 

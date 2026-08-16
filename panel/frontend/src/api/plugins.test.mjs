@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const get = vi.fn()
 const post = vi.fn()
-vi.mock('./client', () => ({ api: { get, post } }))
+const longRunningRequest = { timeout: 0 }
+vi.mock('./client', () => ({ api: { get, post }, longRunningRequest }))
 
 const plugins = await import('./plugins.js')
 
@@ -28,9 +29,13 @@ describe('plugin administration API', () => {
     await plugins.enablePlugin('official.waf')
 
     expect(get).toHaveBeenNthCalledWith(1, '/plugins')
-    expect(get).toHaveBeenNthCalledWith(2, '/plugins/official.waf')
+    expect(get).toHaveBeenNthCalledWith(2, '/plugins/official.waf', longRunningRequest)
     expect(get).toHaveBeenNthCalledWith(3, '/plugins/official.waf/operations')
-    expect(post.mock.calls.map(([path]) => path)).toEqual(['/plugins/package-detail', '/plugins/install', '/plugins/official.waf/enable'])
+    expect(post.mock.calls).toEqual([
+      ['/plugins/package-detail', expect.any(Object), longRunningRequest],
+      ['/plugins/install', expect.any(Object), longRunningRequest],
+      ['/plugins/official.waf/enable', {}, longRunningRequest]
+    ])
   })
 
   it('redacts secret-bearing read projections and rejects arbitrary actions', async () => {
@@ -51,6 +56,6 @@ describe('plugin administration API', () => {
     expect(detail.package.config_schema.properties.token.title).toBe('ordinary token metadata')
     expect(detail.agent_statuses[0].last_apply_message).toContain('[REDACTED]')
     await expect(plugins.runPluginAction('team/plugin', 'execute-script')).rejects.toThrow('plugin action is invalid')
-    expect(get).toHaveBeenCalledWith('/plugins/team%2Fplugin')
+    expect(get).toHaveBeenCalledWith('/plugins/team%2Fplugin', longRunningRequest)
   })
 })

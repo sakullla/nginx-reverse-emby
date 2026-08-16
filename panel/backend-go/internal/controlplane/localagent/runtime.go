@@ -23,6 +23,10 @@ type Store interface {
 	tunnelPKICredentialTargetStore
 }
 
+type localPluginArtifactResolver interface {
+	ResolveLocalPluginGenerationArtifact(context.Context, storage.PluginGeneration) (string, error)
+}
+
 type tunnelPKICredentialTargetStore interface {
 	LoadRelayListenerCredentialTargets(context.Context, string) ([]storage.RelayListener, error)
 }
@@ -47,6 +51,7 @@ type Runtime struct {
 	heartbeatInterval time.Duration
 	credentials       tunnelCredentialStore
 	credentialTargets tunnelPKICredentialTargetStore
+	pluginArtifacts   localPluginArtifactResolver
 	pkiMu             sync.RWMutex
 	tunnelPKI         TunnelPKIService
 	pkiReconcileMu    sync.Mutex
@@ -122,11 +127,15 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 		credentials = owner.TunnelCredentialStore()
 	}
 
-	return &Runtime{
+	result := &Runtime{
 		source: source, sink: sink, runtime: runtime,
 		agentID: cfg.LocalAgentID, heartbeatInterval: cfg.HeartbeatInterval,
 		credentials: credentials, credentialTargets: store, now: time.Now,
-	}, nil
+	}
+	if resolver, ok := store.(localPluginArtifactResolver); ok {
+		result.pluginArtifacts = resolver
+	}
+	return result, nil
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
@@ -169,7 +178,29 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 			return fmt.Errorf("reconcile embedded tunnel PKI before revision apply: %w", err)
 		}
 	}
-	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(snapshot), drainTimeout)
+	materialized, err := r.materializeLocalPluginGenerations(ctx, snapshot)
+	if err != nil {
+		return err
+	}
+	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(materialized), drainTimeout)
+}
+
+func (r *Runtime) materializeLocalPluginGenerations(ctx context.Context, snapshot Snapshot) (Snapshot, error) {
+	if len(snapshot.PluginGenerations) == 0 {
+		return snapshot, nil
+	}
+	if r.pluginArtifacts == nil {
+		return Snapshot{}, errors.New("embedded plugin artifact resolver is unavailable")
+	}
+	snapshot.PluginGenerations = append([]storage.PluginGeneration(nil), snapshot.PluginGenerations...)
+	for index := range snapshot.PluginGenerations {
+		artifactPath, err := r.pluginArtifacts.ResolveLocalPluginGenerationArtifact(ctx, snapshot.PluginGenerations[index])
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("materialize embedded plugin generation %q: %w", snapshot.PluginGenerations[index].InstanceID, err)
+		}
+		snapshot.PluginGenerations[index].Artifact.LocalPath = artifactPath
+	}
+	return snapshot, nil
 }
 
 func snapshotRequiresTunnelPKI(snapshot Snapshot) bool {
@@ -197,7 +228,11 @@ func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, envel
 	if err != nil {
 		return nil, err
 	}
-	return r.runtime.DiagnoseSnapshot(ctx, toEmbeddedSnapshot(snapshot), goagentembedded.DiagnosticRequest{
+	materialized, err := r.materializeLocalPluginGenerations(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return r.runtime.DiagnoseSnapshot(ctx, toEmbeddedSnapshot(materialized), goagentembedded.DiagnosticRequest{
 		TaskType: envelope.Type,
 		RuleID:   ruleID,
 	})
@@ -560,7 +595,12 @@ func toEmbeddedHTTPBackends(backends []storage.HTTPBackend) []goagentembedded.HT
 	}
 	embedded := make([]goagentembedded.HTTPBackend, 0, len(backends))
 	for _, backend := range backends {
-		embedded = append(embedded, goagentembedded.HTTPBackend{URL: backend.URL})
+		copyValue := goagentembedded.HTTPBackend{Kind: backend.Kind, URL: backend.URL}
+		if backend.PluginProvider != nil {
+			provider := *backend.PluginProvider
+			copyValue.PluginProvider = &provider
+		}
+		embedded = append(embedded, copyValue)
 	}
 	return embedded
 }

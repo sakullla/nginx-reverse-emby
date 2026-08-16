@@ -14,6 +14,10 @@ function statusTone(status) {
   if (['active', 'ready', 'applied'].includes(value)) return 'success'
   return 'pending'
 }
+
+function desiredRevision(status) {
+  return Math.max(Number(status.desired_revision) || 0, Number(status.target_revision) || 0)
+}
 </script>
 
 <template>
@@ -28,14 +32,14 @@ function statusTone(status) {
         <span :class="`tone-${statusTone(status)}`">{{ status.runtime_state || status.current_state }}</span>
       </header>
       <dl>
-        <div><dt>Revision</dt><dd>{{ status.current_revision || 0 }} / {{ status.desired_revision || status.target_revision || 0 }}</dd></div>
+        <div><dt>Revision</dt><dd>{{ status.current_revision || 0 }} / {{ desiredRevision(status) }}</dd></div>
         <div><dt>操作</dt><dd>{{ status.operation_kind || '—' }} · {{ status.operation_status || '—' }}</dd></div>
         <div><dt>最近回报</dt><dd>{{ status.reported_at || '—' }}</dd></div>
         <div><dt>错误码</dt><dd>{{ status.runtime_error_code || '—' }}</dd></div>
       </dl>
       <p v-if="status.last_apply_message" class="agent-status-card__message">{{ sanitizePluginText(status.last_apply_message) }}</p>
       <button
-        v-if="actionable && ['failed', 'degraded', 'crashed'].includes(status.runtime_state || status.current_state) && (status.desired_revision || status.target_revision)"
+        v-if="actionable && ['failed', 'degraded', 'crashed'].includes(status.runtime_state || status.current_state) && desiredRevision(status)"
         class="btn btn-secondary"
         type="button"
         :disabled="busyAgent === status.agent_id"

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyheaders"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -203,10 +204,11 @@ func (handle *HTTPBackendProviderHandle) RoundTrip(request *http.Request, author
 		return nil, err
 	}
 	out := request.Clone(request.Context())
+	externalHost := trustedExternalProviderAuthorityHost(authority.Host)
 	out.URL = cloneProviderURL(request.URL)
 	out.URL.Scheme = "http"
 	out.URL.Host = "provider.nre.internal"
-	out.Host = authority.Host
+	out.Host = externalHost
 	upgrade := out.Header.Get("Upgrade")
 	wantsUpgrade := headerHasToken(out.Header, "Connection", "upgrade") && upgrade != ""
 	stripUntrustedProviderHeaders(out.Header)
@@ -214,16 +216,7 @@ func (handle *HTTPBackendProviderHandle) RoundTrip(request *http.Request, author
 		out.Header.Set("Connection", "Upgrade")
 		out.Header.Set("Upgrade", upgrade)
 	}
-	clientHost := providerClientIP(authority.ClientAddress)
-	out.Header.Set("X-Forwarded-Proto", authority.Scheme)
-	out.Header.Set("X-Forwarded-Host", authority.Host)
-	if port := externalAuthorityPort(authority.Scheme, authority.Host); port != "" {
-		out.Header.Set("X-Forwarded-Port", port)
-	}
-	if clientHost != "" {
-		out.Header.Set("X-Forwarded-For", clientHost)
-	}
-	out.Header.Set("Forwarded", forwardedHeader(authority.Scheme, authority.Host, clientHost))
+	setTrustedProviderForwardingHeaders(out.Header, authority, externalHost)
 	setProviderCapabilityHeaders(out.Header, binding, false)
 	response, err := binding.transport.RoundTrip(out)
 	if err != nil {
@@ -364,8 +357,8 @@ func stripUntrustedProviderHeaders(header http.Header) {
 	}
 	for key := range header {
 		canonical := http.CanonicalHeaderKey(key)
-		if canonical == "Forwarded" || strings.HasPrefix(canonical, "X-Forwarded-") || strings.HasPrefix(canonical, "X-Nre-Provider-") || isProviderHopHeader(canonical) {
-			header.Del(key)
+		if canonical == "Forwarded" || strings.EqualFold(key, "X-Real-IP") || strings.HasPrefix(canonical, "X-Forwarded-") || strings.HasPrefix(canonical, "X-Nre-Provider-") || isProviderHopHeader(canonical) {
+			delete(header, key)
 		}
 	}
 }
@@ -406,14 +399,19 @@ func cloneProviderURL(source *url.URL) *url.URL {
 	return &clone
 }
 
-func externalAuthorityPort(scheme, authority string) string {
-	if _, port, err := net.SplitHostPort(authority); err == nil {
-		return port
+func trustedExternalProviderAuthorityHost(authority string) string {
+	parsed, err := url.Parse("//" + authority)
+	if err != nil {
+		return authority
 	}
-	if scheme == "https" {
-		return "443"
+	ip := net.ParseIP(parsed.Hostname())
+	if ip == nil || !ip.IsLoopback() {
+		return authority
 	}
-	return "80"
+	if port := parsed.Port(); port != "" {
+		return net.JoinHostPort("localhost", port)
+	}
+	return "localhost"
 }
 
 func forwardedHeader(scheme, host, client string) string {
@@ -423,6 +421,16 @@ func forwardedHeader(scheme, host, client string) string {
 	}
 	parts = append(parts, "proto="+scheme, "host="+providerQuotedString(host))
 	return strings.Join(parts, ";")
+}
+
+func setTrustedProviderForwardingHeaders(header http.Header, authority HTTPBackendProviderAuthority, externalHost string) {
+	clientHost := providerClientIP(authority.ClientAddress)
+	for key, values := range proxyheaders.Forwarded(authority.Scheme, externalHost, authority.ClientAddress) {
+		for _, value := range values {
+			header.Add(key, value)
+		}
+	}
+	header.Set("Forwarded", forwardedHeader(authority.Scheme, externalHost, clientHost))
 }
 
 func validProviderAuthorityHost(authority string) bool {

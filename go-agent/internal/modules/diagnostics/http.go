@@ -7,6 +7,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"io"
 	"net"
 	"net/http"
@@ -17,19 +19,67 @@ import (
 )
 
 type HTTPProberConfig struct {
-	Attempts      int
-	Timeout       time.Duration
-	HTTPClient    *http.Client
-	Cache         *model.Cache
-	RelayProvider relay.TLSMaterialProvider
+	Attempts             int
+	Timeout              time.Duration
+	HTTPClient           *http.Client
+	Cache                *model.Cache
+	RelayProvider        relay.TLSMaterialProvider
+	HTTPBackendProviders diagnosticHTTPBackendProviderResolver
+}
+
+type diagnosticHTTPBackendProviderResolver interface {
+	Resolve(instanceID, providerID string) (diagnosticHTTPBackendProvider, bool)
+}
+
+type diagnosticHTTPBackendProvider interface {
+	InstanceID() string
+	ProviderID() string
+	Acquire() (io.Closer, error)
+	RoundTrip(*http.Request, pluginrpc.HTTPBackendProviderAuthority) (*http.Response, error)
+}
+
+type rpcDiagnosticHTTPBackendProviderResolver struct {
+	set *pluginrpc.HTTPBackendProviderSet
+}
+
+func (resolver rpcDiagnosticHTTPBackendProviderResolver) Resolve(instanceID, providerID string) (diagnosticHTTPBackendProvider, bool) {
+	if resolver.set == nil {
+		return nil, false
+	}
+	handle, found := resolver.set.Resolve(instanceID, providerID)
+	if !found || handle == nil {
+		return nil, false
+	}
+	return rpcDiagnosticHTTPBackendProvider{handle: handle}, true
+}
+
+type rpcDiagnosticHTTPBackendProvider struct {
+	handle *pluginrpc.HTTPBackendProviderHandle
+}
+
+func (provider rpcDiagnosticHTTPBackendProvider) InstanceID() string {
+	return provider.handle.InstanceID()
+}
+
+func (provider rpcDiagnosticHTTPBackendProvider) ProviderID() string {
+	return provider.handle.ProviderID()
+}
+
+func (provider rpcDiagnosticHTTPBackendProvider) Acquire() (io.Closer, error) {
+	return provider.handle.Acquire()
+}
+
+func (provider rpcDiagnosticHTTPBackendProvider) RoundTrip(request *http.Request, authority pluginrpc.HTTPBackendProviderAuthority) (*http.Response, error) {
+	return provider.handle.RoundTrip(request, authority)
 }
 
 type HTTPProber struct {
-	attempts      int
-	timeout       time.Duration
-	httpClient    *http.Client
-	cache         *model.Cache
-	relayProvider relay.TLSMaterialProvider
+	attempts             int
+	timeout              time.Duration
+	httpClient           *http.Client
+	cache                *model.Cache
+	relayProvider        relay.TLSMaterialProvider
+	httpBackendProviders diagnosticHTTPBackendProviderResolver
 }
 
 type httpResolvedCandidate struct {
@@ -52,18 +102,19 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 		cfg.Cache = model.NewCache(model.BackendCacheConfig{})
 	}
 	return &HTTPProber{
-		attempts:      cfg.Attempts,
-		timeout:       cfg.Timeout,
-		httpClient:    cfg.HTTPClient,
-		cache:         cfg.Cache,
-		relayProvider: cfg.RelayProvider,
+		attempts:             cfg.Attempts,
+		timeout:              cfg.Timeout,
+		httpClient:           cfg.HTTPClient,
+		cache:                cfg.Cache,
+		relayProvider:        cfg.RelayProvider,
+		httpBackendProviders: cfg.HTTPBackendProviders,
 	}
 }
 
 func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener) (Report, error) {
 	baseCache := p.cache
 	cache := baseCache.Clone()
-	candidates, err := httpCandidates(ctx, baseCache, rule)
+	candidates, err := httpCandidatesWithProviders(ctx, baseCache, rule, p.httpBackendProviders)
 	if err != nil {
 		return Report{}, err
 	}
@@ -120,6 +171,7 @@ type httpProbeCandidate struct {
 	relayProbeTarget      string
 	relayChain            []int
 	relayPaths            []relayplan.Path
+	provider              diagnosticHTTPBackendProvider
 }
 
 func (p *HTTPProber) probeCandidate(ctx context.Context, cache *model.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (Sample, []int) {
@@ -196,10 +248,34 @@ func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, ru
 	for _, header := range rule.CustomHeaders {
 		req.Header.Set(header.Name, header.Value)
 	}
+	if candidate.provider != nil {
+		frontend, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
+		if err != nil || frontend.Scheme == "" || frontend.Host == "" {
+			return nil, fmt.Errorf("frontend URL is required for plugin provider diagnostics")
+		}
+		lease, err := candidate.provider.Acquire()
+		if err != nil {
+			return nil, err
+		}
+		response, err := candidate.provider.RoundTrip(req, pluginrpc.HTTPBackendProviderAuthority{
+			Scheme: frontend.Scheme,
+			Host:   frontend.Host,
+		})
+		if err != nil {
+			_ = lease.Close()
+			return nil, err
+		}
+		pluginrpc.WrapHTTPBackendProviderResponseLease(req.Context(), response, lease)
+		return response, nil
+	}
 	return client.Do(req)
 }
 
 func httpCandidates(ctx context.Context, cache *model.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
+	return httpCandidatesWithProviders(ctx, cache, rule, nil)
+}
+
+func httpCandidatesWithProviders(ctx context.Context, cache *model.Cache, rule model.HTTPRule, providers diagnosticHTTPBackendProviderResolver) ([]httpProbeCandidate, error) {
 	rawBackends := rule.Backends
 	if len(rawBackends) == 0 {
 		return nil, fmt.Errorf("backends[].url is required")
@@ -208,12 +284,30 @@ func httpCandidates(ctx context.Context, cache *model.Cache, rule model.HTTPRule
 	placeholders := make([]model.Candidate, 0, len(rawBackends))
 	indicesByID := make(map[string][]int, len(rawBackends))
 	parsed := make([]*url.URL, 0, len(rawBackends))
+	providerHandles := make([]diagnosticHTTPBackendProvider, 0, len(rawBackends))
 	for i, entry := range rawBackends {
+		if entry.Kind == pluginsdk.HTTPBackendKindPluginProvider {
+			if entry.PluginProvider == nil || providers == nil {
+				return nil, fmt.Errorf("plugin backend provider diagnostics are unavailable")
+			}
+			handle, found := providers.Resolve(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			if !found || handle == nil {
+				return nil, fmt.Errorf("plugin backend provider is unavailable")
+			}
+			target := pluginrpc.ProviderSyntheticURL(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			parsed = append(parsed, target)
+			providerHandles = append(providerHandles, handle)
+			id := pluginrpc.ProviderObservationKey(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			placeholders = append(placeholders, model.Candidate{Address: id})
+			indicesByID[id] = append(indicesByID[id], i)
+			continue
+		}
 		target, err := url.Parse(strings.TrimSpace(entry.URL))
 		if err != nil {
 			return nil, err
 		}
 		parsed = append(parsed, target)
+		providerHandles = append(providerHandles, nil)
 		id := model.StableBackendID(strings.TrimSpace(entry.URL))
 		placeholders = append(placeholders, model.Candidate{Address: id})
 		indicesByID[id] = append(indicesByID[id], i)
@@ -232,6 +326,23 @@ func httpCandidates(ctx context.Context, cache *model.Cache, rule model.HTTPRule
 			continue
 		}
 		target := parsed[indices[idx]]
+		provider := providerHandles[indices[idx]]
+		if provider != nil {
+			label := fmt.Sprintf("插件提供商 %s / %s", provider.InstanceID(), provider.ProviderID())
+			observationKey := pluginrpc.ProviderObservationKey(provider.InstanceID(), provider.ProviderID())
+			out = append(out, httpProbeCandidate{
+				targetURL:             target,
+				backendLabel:          label,
+				dialAddress:           label,
+				backendObservationKey: observationKey,
+				configuredURL:         label,
+				resolvedCandidates: []httpResolvedCandidate{{
+					label: label, dialAddress: label,
+				}},
+				provider: provider,
+			})
+			continue
+		}
 		if ruleUsesHTTPRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)

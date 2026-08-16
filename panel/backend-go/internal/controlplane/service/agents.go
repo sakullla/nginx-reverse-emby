@@ -36,7 +36,7 @@ func (e agentRegistrationError) Is(target error) bool {
 	return target == ErrInvalidArgument
 }
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", managedCertificateReportsCapability, "l4", "relay_quic", "egress_profiles", packageManifestCapability}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", managedCertificateReportsCapability, "l4", "relay_quic", "egress_profiles", packageManifestCapability, storage.PluginGenerationCapability}
 
 const (
 	packageManifestCapability           = "package_manifest_v1"
@@ -1402,6 +1402,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 				Budget: append(json.RawMessage(nil), status.Budget...), ReportedAt: s.now().UTC(),
 			}
 			if _, _, err := reportStore.RecordPluginAgentRuntimeReport(ctx, report); err != nil {
+				if discardPluginHeartbeatTelemetryError(err) {
+					continue
+				}
 				return HeartbeatReply{}, err
 			}
 		}
@@ -1411,6 +1414,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	}); ok {
 		for _, report := range request.PluginLogs {
 			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, row.ID, report); err != nil {
+				if discardPluginHeartbeatTelemetryError(err) {
+					continue
+				}
 				return HeartbeatReply{}, err
 			}
 		}
@@ -2179,6 +2185,10 @@ func defaultString(value string, fallback string) string {
 		return fallback
 	}
 	return trimmed
+}
+
+func discardPluginHeartbeatTelemetryError(err error) bool {
+	return errors.Is(err, storage.ErrPluginGenerationStale) || errors.Is(err, storage.ErrPluginGenerationConflict)
 }
 
 func parseStringArray(raw string) []string {

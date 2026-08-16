@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -635,6 +636,7 @@ func writePluginError(w http.ResponseWriter, err error) {
 	}
 	message := err.Error()
 	if status == http.StatusInternalServerError {
+		log.Printf("[plugins] internal marketplace or plugin service error: %v", err)
 		message = "internal marketplace or plugin service error"
 	}
 	writeJSON(w, status, errorPayload(message))

@@ -951,6 +951,27 @@ func TestIntegrationNewServerWiresDirectClassedTransportsForDirectRoute(t *testi
 	}
 }
 
+func TestIntegrationRouteForTreatsLocalhostAsLoopbackAlias(t *testing.T) {
+	t.Parallel()
+	server, err := newServerWithResilience(
+		model.HTTPListener{Rules: []model.HTTPRule{{
+			FrontendURL: "http://127.0.0.1",
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example:8096"}},
+		}}},
+		nil,
+		Providers{},
+		model.NewCache(model.BackendCacheConfig{}),
+		NewSharedTransport(),
+		StreamResilienceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+	if entry := server.routeFor("localhost", "/api/offline/token"); entry == nil {
+		t.Fatal("localhost did not route to the loopback frontend")
+	}
+}
+
 func TestIntegrationNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) {
 	t.Parallel()
 	shared := NewSharedTransport()

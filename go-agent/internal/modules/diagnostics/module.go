@@ -10,6 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
 
 type Handler interface {
@@ -52,6 +53,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 			module.ProviderDiagnosticsHTTPSource,
 			module.ProviderDiagnosticsL4Source,
 			module.ProviderDiagnosticsRelaySource,
+			pluginrpc.ProviderHTTPBackendProviders,
 		},
 	}
 }
@@ -131,9 +133,10 @@ func (t *diagnosticsTransaction) Rollback() error {
 func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
 	relayProvider := relayProviderFromResolver(req.Providers)
 	httpProber := NewHTTPProber(HTTPProberConfig{
-		Attempts:      5,
-		Cache:         diagnosticsCache(req.Providers, module.ProviderDiagnosticsHTTPSource),
-		RelayProvider: relayProvider,
+		Attempts:             5,
+		Cache:                diagnosticsCache(req.Providers, module.ProviderDiagnosticsHTTPSource),
+		RelayProvider:        relayProvider,
+		HTTPBackendProviders: httpBackendProvidersFromResolver(req.Providers),
 	})
 	tcpProber := NewTCPProber(TCPProberConfig{
 		Attempts:      5,
@@ -150,6 +153,18 @@ func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
 	}
 	handler := NewDiagnosticHandler(mem, httpProber, tcpProber)
 	return diagnosticsState{handler: handler, httpProber: httpProber, tcpProber: tcpProber}, nil
+}
+
+func httpBackendProvidersFromResolver(resolver module.ProviderResolver) diagnosticHTTPBackendProviderResolver {
+	if resolver == nil {
+		return nil
+	}
+	provider, _ := resolver.Resolve(pluginrpc.ProviderHTTPBackendProviders)
+	providers, _ := provider.(*pluginrpc.HTTPBackendProviderSet)
+	if providers == nil {
+		return nil
+	}
+	return rpcDiagnosticHTTPBackendProviderResolver{set: providers}
 }
 
 func (m *Module) committedState() diagnosticsState {

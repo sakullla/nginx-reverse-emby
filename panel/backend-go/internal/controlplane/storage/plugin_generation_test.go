@@ -60,6 +60,10 @@ func TestRevisionLedgerMaterializesAndAuthorizesPluginRuntimeArtifact(t *testing
 		Runtime:  PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
 		Artifact: PluginGenerationArtifact{ArtifactID: artifacts[0].ID, PackageIdentity: packageRow.Identity, RelativePath: artifacts[0].Path, SHA256: artifactDigest, SizeBytes: int64(len(payload)), Mode: artifacts[0].Mode, GOOS: artifacts[0].GOOS, GOARCH: artifacts[0].GOARCH, SignatureVerified: true, SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: signerFingerprint},
 	}
+	resolvedPath, err := store.ResolveLocalPluginGenerationArtifact(t.Context(), generation)
+	if err != nil || resolvedPath != artifactPath {
+		t.Fatalf("local runtime artifact path = %q, want %q, error = %v", resolvedPath, artifactPath, err)
+	}
 	snapshot := Snapshot{Revision: 7, PluginGenerations: []PluginGeneration{generation}, PluginPolicies: []PluginPolicy{}}
 	blobs, refs, err := store.BuildAgentRevisionPolicyArtifacts(t.Context(), "local", 7, snapshot, time.Now().UTC())
 	if err != nil {
@@ -91,7 +95,7 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 	artifactDigest := strings.Repeat("b", 64)
 	manifest := plugins.Manifest{
 		SchemaVersion: 1, ID: "runtime.rpc", Version: "1.2.3", Name: "Runtime RPC",
-		Runtime:              plugins.Runtime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "artifacts/linux-amd64/plugin"},
+		Runtime:              plugins.Runtime{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "agent", Entry: "plugin"},
 		Artifacts:            []plugins.Artifact{{Path: "artifacts/linux-amd64/plugin", SHA256: artifactDigest, Size: 42, Mode: "executable", GOOS: "linux", GOARCH: "amd64"}},
 		ExtensionPoints:      []string{"http.request", pluginsdk.ExtensionHTTPBackendProvider},
 		HTTPBackendProviders: []pluginsdk.HTTPBackendProviderDescriptor{{ID: "default", DisplayName: "Default"}},
@@ -119,6 +123,7 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 		&InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: packageDigest, ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: "operation-active", StateVersion: 1, InstalledAt: now, UpdatedAt: now},
 		&PluginInstanceRow{ID: "instance-rpc", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[{"id":"secret-1","version":2,"digest":"` + strings.Repeat("d", 64) + `","purpose":"token"}]`, BindingsJSON: `[]`, ConfigJSON: `{"enabled":true}`, ConfigVersion: 7, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
 		&PluginInstanceRow{ID: "instance-optional", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: explicitBindingsJSON, ConfigJSON: `{"enabled":true}`, ConfigVersion: 8, DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
+		&PluginInstanceRow{ID: "instance-abandoned", PluginID: manifest.ID, ResourceGroupID: "group-a", TargetJSON: `["local"]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{}`, ConfigVersion: 0, DesiredEnabled: true, CurrentState: "degraded", StatusSummaryJSON: `{}`, StateVersion: 1, UpdatedAt: now},
 		&PluginGrantRow{ID: "grant-rpc", GrantKey: "grant-rpc", PluginID: manifest.ID, PackageDigest: packageDigest, PackageIdentity: packageRow.Identity, Permission: "relay.manage", ResourceSelector: "relay:public", GrantedBy: "admin", GrantedAt: now},
 		&PluginGrantRow{ID: "grant-http", GrantKey: "grant-http", PluginID: manifest.ID, PackageDigest: packageDigest, PackageIdentity: packageRow.Identity, Permission: pluginsdk.PermissionHTTPOutbound, GrantedBy: "admin", GrantedAt: now},
 		&HTTPRuleRow{ID: 1, AgentID: "local", FrontendURL: "https://plugin.example.test", BackendsJSON: `[{"kind":"plugin_provider","plugin_provider":{"instance_id":"instance-rpc","provider_id":"default"}}]`, Enabled: true, Revision: 3},
@@ -137,7 +142,7 @@ func TestLoadAgentPluginGenerationsProjectsOnlyTargetRPCContract(t *testing.T) {
 		t.Fatalf("generations = %+v", generations)
 	}
 	generation := generations[1]
-	if generation.PluginID != manifest.ID || generation.OperationID != "operation-active" || generation.Artifact.PackageIdentity != packageRow.Identity || !generation.Artifact.SignatureVerified || generation.Target.ID != "local" || generation.Target.Version != 7 || len(generation.SecretHandles) != 1 || !pluginGenerationContainsString(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+	if generation.PluginID != manifest.ID || generation.OperationID != "operation-active" || generation.Runtime.Entry != "artifacts/linux-amd64/plugin" || generation.Artifact.PackageIdentity != packageRow.Identity || !generation.Artifact.SignatureVerified || generation.Target.ID != "local" || generation.Target.Version != 7 || len(generation.SecretHandles) != 1 || !pluginGenerationContainsString(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
 		t.Fatalf("generation projection = %+v", generation)
 	}
 	encoded, _ := json.Marshal(generation)
@@ -392,5 +397,50 @@ func TestPluginAgentRuntimeReportLogsKeepImmutableRebindAuthority(t *testing.T) 
 	foreign, err := store.ListPluginRuntimeLogs(t.Context(), PluginRuntimeLogQuery{InstanceID: status.InstanceID, ResourceGroupID: instance.ResourceGroupID})
 	if err != nil || len(foreign.Rows) != 0 {
 		t.Fatalf("logs leaked into mutable instance group: %+v err=%v", foreign, err)
+	}
+}
+
+func TestPluginAgentRuntimeReportRearmsExactCoordinatorRetry(t *testing.T) {
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	digest := strings.Repeat("a", 64)
+	status := PluginAgentRuntimeStatusRow{
+		OperationID: "retry-operation", AgentID: "edge-retry", InstanceID: "retry-instance", PluginID: "retry-plugin",
+		Revision: 7, GenerationID: digest, PackageDigest: strings.Repeat("b", 64), ArtifactDigest: strings.Repeat("c", 64),
+	}
+	if err := store.StagePluginAgentRuntimeStatuses(t.Context(), []PluginAgentRuntimeStatusRow{status}); err != nil {
+		t.Fatal(err)
+	}
+	first := PluginGenerationReport{
+		OperationID: status.OperationID, AgentID: status.AgentID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+		Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest, ArtifactDigest: status.ArtifactDigest,
+		State: "failed", Sequence: 1, ErrorCode: "initial_failure", ReportedAt: now,
+	}
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return completePluginAgentRuntimeAuthorityTx(tx, PluginOperationRow{ID: status.OperationID, Status: "failed"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retry := first
+	retry.State, retry.ErrorCode = "active", ""
+	if _, _, err := store.RecordPluginAgentRuntimeReport(t.Context(), retry); !errors.Is(err, ErrPluginGenerationStale) {
+		t.Fatalf("retired report without coordinator retry error = %v", err)
+	}
+	if err := store.db.Create(&AgentRevisionPointerRow{AgentID: status.AgentID, DesiredRevision: status.Revision, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&AgentRevisionRow{AgentID: status.AgentID, Revision: status.Revision, OperationID: status.OperationID, State: AgentRevisionStateApplied, RetryCycle: 1, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	updated, replayed, err := store.RecordPluginAgentRuntimeReport(t.Context(), retry)
+	if err != nil || replayed || updated.State != "active" || updated.AuthoritySlot != "pending" || updated.ReportSequence != 1 {
+		t.Fatalf("retried runtime report = %+v replay=%v err=%v", updated, replayed, err)
 	}
 }

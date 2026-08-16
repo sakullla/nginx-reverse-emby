@@ -85,7 +85,7 @@
               添加后端
             </button>
           </div>
-          <div class="backend-mode" role="group" aria-label="后端类型">
+          <div v-if="showBackendMode" class="backend-mode" role="group" aria-label="后端类型">
             <button
               type="button"
               class="backend-mode__option"
@@ -622,7 +622,7 @@ const {
   error: providerQueryFailure,
   refetch: refetchProviderCatalog
 } = useQuery({
-  queryKey: computed(() => ['http-backend-providers', resolvedAgentId.value]),
+  queryKey: computed(() => ['rule-form-http-backend-providers', resolvedAgentId.value]),
   enabled: computed(() => Boolean(resolvedAgentId.value)),
   queryFn: async () => {
     const agentId = resolvedAgentId.value
@@ -669,6 +669,11 @@ const providerOptions = computed(() => {
     state: 'unavailable'
   }]
 })
+const showBackendMode = computed(() => (
+  !providerCatalogReady.value
+  || providerOptions.value.length > 0
+  || form.value.backend_mode === 'provider'
+))
 const selectedProvider = computed(() => {
   if (!providerCatalogReady.value) return null
   const selected = providerOptions.value.find((provider) => providerKey(provider) === form.value.provider_key)

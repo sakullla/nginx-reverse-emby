@@ -929,3 +929,11 @@ func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T)
 		t.Fatalf("rules after failed revision bump = %+v, want rollback to empty", got)
 	}
 }
+
+func TestConfigMutationTargetsAdvertiseLocalPluginRuntime(t *testing.T) {
+	t.Parallel()
+	targets := configMutationTargets(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, []string{"local"}, nil)
+	if len(targets) != 1 || !targets[0].Local || !agentHasCapability(targets[0].Capabilities, storage.PluginGenerationCapability) {
+		t.Fatalf("local mutation target = %+v, want %s capability", targets, storage.PluginGenerationCapability)
+	}
+}

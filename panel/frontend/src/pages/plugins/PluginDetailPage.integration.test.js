@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   refreshActor: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
-vi.mock('../../api/client', () => ({ api: { get: mocks.get, post: mocks.post } }))
+vi.mock('../../api/client', () => ({ api: { get: mocks.get, post: mocks.post }, longRunningRequest: { timeout: 0 } }))
 vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'rpc.plugin' } }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
@@ -108,7 +108,7 @@ describe('PluginDetailPage production API projection', () => {
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { token: 'ordinary-value' }, secret_replacements: {}
-    }))
+    }), { timeout: 0 })
     expect(configModal(wrapper).exists()).toBe(false)
 
     await wrapper.findAll('[role="tab"]').find((tab) => tab.text().includes('instance-b')).trigger('click')
@@ -169,7 +169,7 @@ describe('PluginDetailPage production API projection', () => {
     await flushPromises()
     expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
       config: { region: 'eu', sources: [{ host: 'edge.example' }] }
-    }))
+    }), { timeout: 0 })
   })
 
   it('lets a resource writer persist an existing instance through the real configure adapter', async () => {
@@ -203,6 +203,6 @@ describe('PluginDetailPage production API projection', () => {
       instance_id: 'instance-a',
       resource_group_id: 'group-a',
       config: { mode: 'block' }
-    }))
+    }), { timeout: 0 })
   })
 })

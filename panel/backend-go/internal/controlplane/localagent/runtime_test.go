@@ -15,6 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type bridgeStoreStub struct {
@@ -56,6 +57,12 @@ func (s *bridgeStoreStub) RecordPluginRuntimeLogReport(_ context.Context, _ stri
 type embeddedRuntimeStub struct {
 	start         func(context.Context) error
 	applyRevision func(context.Context, goagentembedded.Snapshot) error
+}
+
+type localPluginArtifactResolverFunc func(context.Context, storage.PluginGeneration) (string, error)
+
+func (fn localPluginArtifactResolverFunc) ResolveLocalPluginGenerationArtifact(ctx context.Context, generation storage.PluginGeneration) (string, error) {
+	return fn(ctx, generation)
 }
 
 type localTrafficSummaryStub struct {
@@ -446,7 +453,10 @@ func TestToEmbeddedSnapshotPreservesRelayAndProxyTransportFields(t *testing.T) {
 		Rules: []storage.HTTPRule{{
 			ID:          7,
 			FrontendURL: "https://media.example.test",
-			Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			Backends: []storage.HTTPBackend{
+				{URL: "http://127.0.0.1:8096"},
+				{Kind: "plugin_provider", PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: "accelerator-sources", ProviderID: "default"}},
+			},
 			RelayLayers: [][]int{{1, 2}, {3}},
 		}},
 		L4Rules: []storage.L4Rule{{
@@ -501,6 +511,11 @@ func TestToEmbeddedSnapshotPreservesRelayAndProxyTransportFields(t *testing.T) {
 	}
 	if len(embedded.Rules) != 1 || embedded.Rules[0].ID != 7 || !embedded.Rules[0].Enabled {
 		t.Fatalf("embedded HTTP rules = %+v", embedded.Rules)
+	}
+	if len(embedded.Rules[0].Backends) != 2 || embedded.Rules[0].Backends[0].URL != "http://127.0.0.1:8096" ||
+		embedded.Rules[0].Backends[1].Kind != pluginsdk.HTTPBackendKindPluginProvider || embedded.Rules[0].Backends[1].PluginProvider == nil ||
+		embedded.Rules[0].Backends[1].PluginProvider.InstanceID != "accelerator-sources" || embedded.Rules[0].Backends[1].PluginProvider.ProviderID != "default" {
+		t.Fatalf("embedded HTTP backends = %+v", embedded.Rules[0].Backends)
 	}
 	if len(embedded.Rules[0].RelayLayers) != 2 || embedded.Rules[0].RelayLayers[1][0] != 3 {
 		t.Fatalf("embedded HTTP RelayLayers = %+v", embedded.Rules[0].RelayLayers)
@@ -576,6 +591,36 @@ func TestEmbeddedBridgePreservesPluginGenerationAndRuntimeStatus(t *testing.T) {
 	state := fromEmbeddedRuntimeState(goagentembedded.RuntimeState{PluginStatuses: []goagentembedded.PluginRuntimeStatus{{InstanceID: "instance", Sequence: 4}}})
 	if len(state.PluginStatuses) != 1 || state.PluginStatuses[0].Sequence != 4 {
 		t.Fatalf("embedded runtime state statuses = %+v", state.PluginStatuses)
+	}
+}
+
+func TestEmbeddedRuntimeMaterializesPluginGenerationFromVerifiedCache(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	snapshot := Snapshot{Revision: 7, PluginGenerations: []storage.PluginGeneration{{
+		ID: digest, InstanceID: "instance", OperationID: "operation", Revision: 7, PluginID: "plugin", PackageDigest: digest,
+		Artifact: storage.PluginGenerationArtifact{ArtifactID: "artifact", PackageIdentity: "package", RelativePath: "artifacts/linux-amd64/plugin", SHA256: digest, SizeBytes: 1},
+	}}}
+	var applied goagentembedded.Snapshot
+	runtime := &Runtime{
+		pluginArtifacts: localPluginArtifactResolverFunc(func(_ context.Context, generation storage.PluginGeneration) (string, error) {
+			if generation.InstanceID != "instance" {
+				t.Fatalf("resolved generation = %+v", generation)
+			}
+			return "/verified/cache/plugin", nil
+		}),
+		runtime: embeddedRuntimeStub{applyRevision: func(_ context.Context, candidate goagentembedded.Snapshot) error {
+			applied = candidate
+			return nil
+		}},
+	}
+	if err := runtime.ApplyRevision(t.Context(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.PluginGenerations) != 1 || applied.PluginGenerations[0].Artifact.LocalPath != "/verified/cache/plugin" {
+		t.Fatalf("materialized embedded snapshot = %+v", applied.PluginGenerations)
+	}
+	if snapshot.PluginGenerations[0].Artifact.LocalPath != "" {
+		t.Fatalf("source snapshot was mutated: %+v", snapshot.PluginGenerations[0])
 	}
 }
 

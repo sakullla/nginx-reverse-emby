@@ -29,7 +29,7 @@ const (
 	linuxLauncherFinalArg  = "--nre-plugin-launcher-final-v1"
 	linuxNamespaceProbeArg = "--nre-plugin-namespace-probe-v1"
 	linuxNamespaceFinalArg = "--nre-plugin-namespace-final-probe-v1"
-	linuxLauncherVersion   = 3
+	linuxLauncherVersion   = 4
 	linuxLauncherTasks     = 8
 )
 
@@ -50,6 +50,7 @@ type linuxFDIdentity struct {
 
 type linuxLaunchProtocol struct {
 	Version                int               `json:"version"`
+	ParentPID              int               `json:"parent_pid"`
 	Generation             string            `json:"generation"`
 	ArtifactDigest         string            `json:"artifact_digest"`
 	LauncherDigest         string            `json:"launcher_digest"`
@@ -220,6 +221,7 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 
 	protocol := linuxLaunchProtocol{
 		Version:        linuxLauncherVersion,
+		ParentPID:      os.Getpid(),
 		Generation:     security.Generation,
 		ArtifactDigest: security.ArtifactDigest,
 		CookieDigest:   security.CookieDigest,
@@ -441,7 +443,7 @@ func runLinuxLauncherChild(protocolFD int, final bool) error {
 	if err := ensureJSONEOF(decoder); err != nil {
 		return err
 	}
-	if protocol.Version != linuxLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !validSHA256(protocol.ArtifactDigest) || !validSHA256(protocol.LauncherDigest) {
+	if protocol.Version != linuxLauncherVersion || protocol.ParentPID <= 0 || strings.TrimSpace(protocol.Generation) == "" || !validSHA256(protocol.ArtifactDigest) || !validSHA256(protocol.LauncherDigest) {
 		return errors.New("launcher protocol identity is invalid")
 	}
 	if protocol.ArtifactFD != 3 || protocol.TempFD < 4 || protocol.LauncherFD < 4 || !distinctLinuxFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD, protocolFD) {
@@ -498,11 +500,14 @@ func runLinuxLauncherChild(protocolFD int, final bool) error {
 	if protocol.Namespaces && !final {
 		runtime.GOMAXPROCS(1)
 	}
-	if os.Getppid() == 1 {
-		return errors.New("launcher parent is no longer alive")
+	if !final && os.Getppid() != protocol.ParentPID {
+		return errors.New("launcher parent identity changed")
 	}
 	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
 		return fmt.Errorf("bind launcher child lifetime: %w", err)
+	}
+	if !final && os.Getppid() != protocol.ParentPID {
+		return errors.New("launcher parent identity changed")
 	}
 	if err := applyLinuxRlimits(protocol.Budget, protocol.HardRlimits); err != nil {
 		return err

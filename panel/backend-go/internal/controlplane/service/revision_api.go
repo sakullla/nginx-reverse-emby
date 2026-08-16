@@ -815,6 +815,9 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 	}); ok {
 		for _, report := range input.PluginLogs {
 			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, agentID, report); err != nil {
+				if errors.Is(err, storage.ErrPluginGenerationStale) {
+					continue
+				}
 				return err
 			}
 		}

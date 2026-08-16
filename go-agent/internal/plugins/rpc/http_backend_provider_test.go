@@ -71,6 +71,7 @@ func TestStripUntrustedProviderHeadersRemovesForwardingInternalAndHopByHop(t *te
 	header := http.Header{
 		"Forwarded":                 {"for=spoofed"},
 		"X-Forwarded-For":           {"spoofed"},
+		"X-Real-IP":                 {"spoofed"},
 		"X-Nre-Provider-Credential": {"spoofed"},
 		"Connection":                {"keep-alive, X-Remove-Me"},
 		"X-Remove-Me":               {"secret"},
@@ -80,6 +81,32 @@ func TestStripUntrustedProviderHeadersRemovesForwardingInternalAndHopByHop(t *te
 	stripUntrustedProviderHeaders(header)
 	for key := range header {
 		t.Fatalf("header %q survived provider sanitization", key)
+	}
+}
+
+func TestTrustedProviderForwardingHeadersMatchHTTPProxyHeaders(t *testing.T) {
+	t.Parallel()
+	header := make(http.Header)
+	authority := HTTPBackendProviderAuthority{
+		Scheme:        "http",
+		Host:          "127.0.0.1",
+		ClientAddress: "203.0.113.7:3210",
+	}
+	setTrustedProviderForwardingHeaders(header, authority, trustedExternalProviderAuthorityHost(authority.Host))
+
+	for key, want := range map[string]string{
+		"X-Forwarded-Host":  "localhost",
+		"X-Forwarded-Port":  "80",
+		"X-Forwarded-Proto": "http",
+		"X-Forwarded-For":   "203.0.113.7",
+		"X-Real-IP":         "203.0.113.7",
+	} {
+		if got := header.Get(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if got := header.Get("Forwarded"); got != `for="203.0.113.7";proto=http;host="localhost"` {
+		t.Fatalf("Forwarded = %q", got)
 	}
 }
 
@@ -120,5 +147,20 @@ func TestHTTPBackendProviderAuthorityRejectsUnsafeValues(t *testing.T) {
 	}
 	if err := (HTTPBackendProviderAuthority{Scheme: "https", Host: "example.test", ClientAddress: "203.0.113.1:1234"}).Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTrustedExternalProviderAuthorityUsesLocalhostForLoopbackIP(t *testing.T) {
+	t.Parallel()
+	for input, want := range map[string]string{
+		"127.0.0.1":    "localhost",
+		"127.0.0.1:80": "localhost:80",
+		"[::1]":        "localhost",
+		"192.0.2.10":   "192.0.2.10",
+		"mirror.test":  "mirror.test",
+	} {
+		if got := trustedExternalProviderAuthorityHost(input); got != want {
+			t.Errorf("trustedExternalProviderAuthorityHost(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

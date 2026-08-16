@@ -1335,6 +1335,9 @@ func TestIntegrationBackupHTTPProviderAdmissionMatchesPreviewAndImport(t *testin
 		{name: "inactive", platform: "linux-amd64", mutate: func(store *backupProviderAdmissionStore, _ *storage.PluginGeneration) {
 			store.instance.CurrentState = "disabled"
 		}},
+		{name: "recovered degraded", platform: "linux-amd64", wantImported: true, mutate: func(store *backupProviderAdmissionStore, _ *storage.PluginGeneration) {
+			store.instance.CurrentState = "degraded"
+		}},
 		{name: "wrong agent", platform: "linux-amd64", mutate: func(_ *backupProviderAdmissionStore, generation *storage.PluginGeneration) {
 			generation.Target.ID = "edge-other"
 		}},

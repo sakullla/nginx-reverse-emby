@@ -71,7 +71,7 @@ func (s *PluginService) ListHTTPBackendProvidersForActor(ctx context.Context, ag
 			if err != nil {
 				return err
 			}
-			if !found || !instance.DesiredEnabled || instance.CurrentState != "active" || (!actor.Has(authz.PermissionSystemAdmin) && !actor.Bootstrap && !actor.CanAccessGroup(instance.ResourceGroupID)) {
+			if !found || !instance.DesiredEnabled || (instance.CurrentState != "active" && instance.CurrentState != "degraded") || (!actor.Has(authz.PermissionSystemAdmin) && !actor.Bootstrap && !actor.CanAccessGroup(instance.ResourceGroupID)) {
 				continue
 			}
 			status, found, err := store.GetPluginAgentRuntimeStatusFence(ctx, generation.OperationID, agentID, generation.InstanceID)

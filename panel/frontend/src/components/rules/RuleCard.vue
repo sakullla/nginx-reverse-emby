@@ -118,7 +118,7 @@ const providerStatus = computed(() => {
   const provider = backendDescriptions.value.find((backend) => backend.kind === 'provider')
   if (!provider) return ''
   if (provider.state === 'active') {
-    return provider.generation ? `插件已就绪 · ${provider.generation}` : '插件已就绪'
+    return '插件已就绪'
   }
   return provider.state === 'unknown' ? '插件状态待确认' : '插件当前不可用'
 })

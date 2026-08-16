@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchPluginLogs, invokePluginDynamicAction } from './plugins'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
-vi.mock('./client', () => ({ api: mocks }))
+vi.mock('./client', () => ({ api: mocks, longRunningRequest: { timeout: 0 } }))
 
 describe('plugin dynamic action and log API', () => {
   beforeEach(() => { mocks.get.mockReset(); mocks.post.mockReset() })

@@ -5,7 +5,8 @@ import RuleForm from './RuleForm.vue'
 const mocks = vi.hoisted(() => ({
   createMutateAsync: vi.fn(),
   updateMutateAsync: vi.fn(),
-  query: null
+  query: null,
+  queryOptions: null
 }))
 
 vi.mock('@tanstack/vue-query', async () => {
@@ -19,7 +20,12 @@ vi.mock('@tanstack/vue-query', async () => {
     error: ref(null),
     refetch: vi.fn()
   }
-  return { useQuery: () => mocks.query }
+  return {
+    useQuery: (options) => {
+      mocks.queryOptions = options
+      return mocks.query
+    }
+  }
 })
 
 vi.mock('../api', () => ({ fetchHTTPBackendProviders: vi.fn() }))
@@ -69,6 +75,12 @@ describe('RuleForm HTTP backend provider', () => {
     mocks.query.isSuccess.value = true
     mocks.query.error.value = null
     mocks.query.refetch.mockReset().mockResolvedValue({})
+  })
+
+  it('uses a picker-specific cache key instead of the rules-page catalog shape', () => {
+    mountForm()
+
+    expect(mocks.queryOptions.queryKey.value).toEqual(['rule-form-http-backend-providers', 'edge-a'])
   })
 
   it('publishes one canonical provider reference without internal runtime fields', async () => {
@@ -169,14 +181,14 @@ describe('RuleForm HTTP backend provider', () => {
     expect(wrapper.get('select[name="http-backend-provider"]').attributes('disabled')).toBeUndefined()
   })
 
-  it('renders a successful empty catalog without the failure retry state', async () => {
+  it('keeps the original URL backend layout when the provider catalog is empty', async () => {
     mocks.query.data.value = { agentId: 'edge-a', providers: [] }
     const wrapper = mountForm()
-    await switchToProvider(wrapper)
+    await flushPromises()
 
-    expect(wrapper.text()).toContain('当前节点没有可用的插件提供商')
-    expect(wrapper.text()).not.toContain('插件列表加载失败')
-    expect(wrapper.find('.provider-picker__error').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('插件提供商')
+    expect(wrapper.find('.backend-mode').exists()).toBe(false)
+    expect(wrapper.get('#backend-url').exists()).toBe(true)
   })
 
   it('rejects an old Agent catalog response until the current Agent succeeds', async () => {

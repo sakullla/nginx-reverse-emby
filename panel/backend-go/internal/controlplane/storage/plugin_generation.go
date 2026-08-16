@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -74,6 +75,14 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 		}
 		targetedInstances := make([]PluginInstanceRow, 0, len(instances))
 		for _, instance := range instances {
+			hasPendingGeneration := instance.PendingOperationID != "" && instance.PendingOperationID == plugin.PendingOperationID && instance.PendingVersion > 0
+			if instance.ConfigVersion == 0 && !hasPendingGeneration {
+				// A failed first deployment has no committed runtime identity.
+				// Keeping a zero-version generation in the snapshot makes the
+				// next valid configure operation fail validation before it can
+				// replace that abandoned candidate.
+				continue
+			}
 			targetJSON := instance.TargetJSON
 			if instance.PendingOperationID == plugin.PendingOperationID && strings.TrimSpace(instance.PendingTargetJSON) != "" {
 				targetJSON = instance.PendingTargetJSON
@@ -151,7 +160,7 @@ func (s *GormStore) selectPluginGenerationArtifact(ctx context.Context, packageR
 	}
 	goos, goarch := splitPluginPlatform(platform)
 	for _, artifact := range artifacts {
-		if artifact.Path != manifest.Runtime.Entry || artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope {
+		if !pluginGenerationArtifactMatchesRuntimeEntry(artifact, manifest) {
 			continue
 		}
 		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
@@ -160,6 +169,19 @@ func (s *GormStore) selectPluginGenerationArtifact(ctx context.Context, packageR
 		return artifact, nil
 	}
 	return PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", ErrPluginGenerationConflict, platform)
+}
+
+func pluginGenerationArtifactMatchesRuntimeEntry(artifact PluginArtifactRow, manifest plugins.Manifest) bool {
+	if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope {
+		return false
+	}
+	artifactPath := path.Clean(strings.TrimSpace(artifact.Path))
+	entry := strings.TrimSpace(manifest.Runtime.Entry)
+	if artifactPath == path.Clean(entry) {
+		return true
+	}
+	logicalEntry := strings.TrimSuffix(path.Base(artifactPath), ".exe")
+	return logicalEntry == entry
 }
 
 func (s *GormStore) loadPluginGenerationGrants(ctx context.Context, plugin InstalledPluginRow, packageRow PluginPackageRow) ([]PluginGenerationGrant, error) {
@@ -208,7 +230,7 @@ func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	generation := PluginGeneration{
 		OperationID: operationID, InstanceID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
 		Artifact:             PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
-		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
+		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: artifact.Path},
 		ExtensionPoints:      canonicalPluginGenerationStrings(manifest.ExtensionPoints),
 		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants)),
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
@@ -496,6 +518,17 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
 			return err
 		}
+		if result.AuthoritySlot == "retired" {
+			rearmed, err := rearmPluginRuntimeStatusForCoordinatorRetryTx(tx, result, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			if rearmed {
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
+					return err
+				}
+			}
+		}
 		expected := PluginAgentRuntimeStatusRow{OperationID: report.OperationID, AgentID: report.AgentID, InstanceID: report.InstanceID, PluginID: report.PluginID, Revision: report.Revision, ConfigVersion: result.ConfigVersion, GenerationID: report.GenerationID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest, ResourceGroupID: result.ResourceGroupID, TargetVersion: result.TargetVersion, AuthoritySlot: result.AuthoritySlot}
 		if !samePluginAgentRuntimeFence(result, expected) {
 			return ErrPluginGenerationStale
@@ -559,6 +592,42 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 		})
 	})
 	return result, replayed, err
+}
+
+// A manual coordinator retry reissues the same immutable plugin generation.
+// Its previous operation result remains historical, but the exact current
+// desired revision must be allowed to report a fresh sequence from a restarted
+// Agent runtime. The coordinator may commit the revision before asynchronous
+// runtime status ingestion arrives, so the applied state remains admissible.
+// Reports for any older or non-retrying revision stay retired.
+func rearmPluginRuntimeStatusForCoordinatorRetryTx(tx *gorm.DB, status PluginAgentRuntimeStatusRow, now time.Time) (bool, error) {
+	var pointer AgentRevisionPointerRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ?", status.AgentID).First(&pointer).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if pointer.DesiredRevision != status.Revision {
+		return false, nil
+	}
+	var revision AgentRevisionRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ? AND revision = ?", status.AgentID, status.Revision).First(&revision).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if revision.RetryCycle <= 0 || (revision.State != AgentRevisionStatePending && revision.State != AgentRevisionStateApplying && revision.State != AgentRevisionStateApplied) {
+		return false, nil
+	}
+	result := tx.Model(&PluginAgentRuntimeStatusRow{}).
+		Where("operation_id = ? AND agent_id = ? AND instance_id = ? AND authority_slot = ?", status.OperationID, status.AgentID, status.InstanceID, "retired").
+		Updates(map[string]any{
+			"authority_slot": "pending", "state": "applying", "report_sequence": 0, "report_digest": "",
+			"error_code": "", "details_json": "{}", "budget_json": "{}", "reported_at": nil, "updated_at": now,
+		})
+	return result.RowsAffected == 1, result.Error
 }
 
 func mustPluginGenerationJSON(value any) json.RawMessage {

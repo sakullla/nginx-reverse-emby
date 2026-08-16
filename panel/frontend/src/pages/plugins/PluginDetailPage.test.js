@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(),
-  fetchResourceGroups: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
+  fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' } }), useRouter: () => ({ push: mocks.push }) }))
@@ -17,7 +17,7 @@ vi.mock('../../api/plugins', () => ({
   enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin,
   invokePluginDynamicAction: mocks.invokePluginDynamicAction, fetchPluginLogs: mocks.fetchPluginLogs
 }))
-vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
+vi.mock('../../api/operations', () => ({ retryRevision: mocks.retryRevision }))
 vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
   return {
@@ -100,6 +100,7 @@ beforeEach(() => {
     { id: 'default', name: '默认组' },
     { id: 'team', name: '团队组' }
   ])
+  mocks.retryRevision.mockReset().mockResolvedValue({})
   mocks.push.mockReset()
   mocks.refreshActor.mockReset()
   mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
@@ -113,6 +114,39 @@ async function mountPage(detail = makeDetail()) {
 }
 
 describe('PluginDetailPage', () => {
+  it('refreshes plugin state in the background and stops after unmount', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = await mountPage()
+      expect(mocks.fetchPluginDetail).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(5000)
+      await flushPromises()
+      expect(mocks.fetchPluginDetail).toHaveBeenCalledTimes(2)
+      expect(wrapper.find('.plugin-detail-page__loading').exists()).toBe(false)
+
+      wrapper.unmount()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(mocks.fetchPluginDetail).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries the newest target revision when the Agent projection is stale', async () => {
+    const detail = makeDetail({ agent_statuses: [{
+      instance_id: 'waf-a', agent_id: 'edge-a', target_scope: 'active', runtime_state: 'failed',
+      desired_revision: 1, target_revision: 2, current_revision: 1, operation_kind: 'configure', operation_status: 'failed'
+    }] })
+    const wrapper = await mountPage(detail)
+    await buttonByText(wrapper, '重试此 Agent revision').trigger('click')
+    await flushPromises()
+    expect(mocks.retryRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'edge-a', desired_revision: 2 }),
+      expect.objectContaining({ agent_id: 'edge-a', desired_revision: 2 })
+    )
+  })
+
   it('renders the shared page header with a primary action and a danger uninstall', async () => {
     const wrapper = await mountPage()
     expect(wrapper.find('.page-header').exists()).toBe(true)

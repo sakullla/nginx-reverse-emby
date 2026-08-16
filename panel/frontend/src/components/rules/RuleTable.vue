@@ -132,7 +132,7 @@ function backendTooltip(rule) {
     const status = backend.state === 'active'
       ? '插件已就绪'
       : (backend.state === 'unknown' ? '插件状态待确认' : '插件状态不可用')
-    return `${backend.label} · ${backend.detail}${backend.generation ? `\n${status} · ${backend.generation}` : `\n${status}`}`
+    return `${backend.label} · ${backend.detail}\n${status}`
   }).join('\n')
 }
 </script>

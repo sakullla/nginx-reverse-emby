@@ -30,7 +30,7 @@ const (
 	backendLauncherFinalArg  = "--nre-control-plugin-launcher-final-v1"
 	backendNamespaceProbeArg = "--nre-control-plugin-namespace-probe-v1"
 	backendNamespaceFinalArg = "--nre-control-plugin-namespace-final-probe-v1"
-	backendLauncherVersion   = 3
+	backendLauncherVersion   = 4
 	backendLauncherTasks     = 8
 )
 
@@ -51,6 +51,7 @@ var errBackendCgroupUnavailable = errors.New("control-plane plugin cgroup v2 con
 
 type backendLaunchProtocol struct {
 	Version                int               `json:"version"`
+	ParentPID              int               `json:"parent_pid"`
 	Generation             string            `json:"generation"`
 	ArtifactDigest         string            `json:"artifact_digest"`
 	LauncherDigest         string            `json:"launcher_digest"`
@@ -205,6 +206,7 @@ func configurePlatformSandboxWithOps(cmd *exec.Cmd, candidate Candidate, ops bac
 	cookieHash := sha256.Sum256([]byte(candidate.Endpoint.Cookie))
 	protocol := backendLaunchProtocol{
 		Version:        backendLauncherVersion,
+		ParentPID:      os.Getpid(),
 		Generation:     candidate.Identity.Generation,
 		ArtifactDigest: candidate.Artifact.SHA256,
 		CookieDigest:   hex.EncodeToString(cookieHash[:]),
@@ -417,7 +419,7 @@ func runBackendLauncherChild(protocolFD int, final bool) error {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return errors.New("control launcher protocol has trailing data")
 	}
-	if protocol.Version != backendLauncherVersion || strings.TrimSpace(protocol.Generation) == "" || !backendValidSHA256(protocol.ArtifactDigest) || !backendValidSHA256(protocol.LauncherDigest) {
+	if protocol.Version != backendLauncherVersion || protocol.ParentPID <= 0 || strings.TrimSpace(protocol.Generation) == "" || !backendValidSHA256(protocol.ArtifactDigest) || !backendValidSHA256(protocol.LauncherDigest) {
 		return errors.New("control launcher protocol identity is invalid")
 	}
 	if protocol.ArtifactFD != 3 || protocol.TempFD < 4 || protocol.LauncherFD < 4 || !distinctBackendFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD, protocolFD) {
@@ -471,11 +473,14 @@ func runBackendLauncherChild(protocolFD int, final bool) error {
 	if protocol.Namespaces && !final {
 		runtime.GOMAXPROCS(1)
 	}
-	if os.Getppid() == 1 {
-		return errors.New("control launcher parent is no longer alive")
+	if !final && os.Getppid() != protocol.ParentPID {
+		return errors.New("control launcher parent identity changed")
 	}
 	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
 		return fmt.Errorf("bind control launcher child lifetime: %w", err)
+	}
+	if !final && os.Getppid() != protocol.ParentPID {
+		return errors.New("control launcher parent identity changed")
 	}
 	if err := applyBackendRlimits(protocol.Budget, protocol.HardRlimits); err != nil {
 		return err

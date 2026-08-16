@@ -112,6 +112,9 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	if reportStore, ok := s.store.(localPluginRuntimeReportStore); ok {
 		for _, status := range request.PluginStatuses {
 			if _, _, err := reportStore.RecordPluginAgentRuntimeReport(ctx, pluginGenerationReportFromRuntimeStatus(s.agentID, status)); err != nil {
+				if discardPluginTelemetryError(err) {
+					continue
+				}
 				return Snapshot{}, err
 			}
 		}
@@ -119,6 +122,9 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	if logStore, ok := s.store.(localPluginRuntimeLogStore); ok {
 		for _, report := range request.PluginLogs {
 			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, s.agentID, report); err != nil {
+				if discardPluginTelemetryError(err) {
+					continue
+				}
 				return Snapshot{}, err
 			}
 		}
@@ -166,6 +172,10 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	snapshot.AgentConfig.TrafficBlocked = blocked
 	snapshot.AgentConfig.TrafficBlockReason = reason
 	return snapshot, nil
+}
+
+func discardPluginTelemetryError(err error) bool {
+	return errors.Is(err, storage.ErrPluginGenerationStale) || errors.Is(err, storage.ErrPluginGenerationConflict)
 }
 
 func (s *SyncSource) persistDDNSAddresses(ctx context.Context, ipv4, ipv6 string) error {

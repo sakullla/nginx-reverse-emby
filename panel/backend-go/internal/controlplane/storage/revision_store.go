@@ -268,6 +268,37 @@ func loadIssuedRuntimeArtifact(ctx context.Context, db *gorm.DB, generation Plug
 	return payload.Bytes(), nil
 }
 
+// ResolveLocalPluginGenerationArtifact returns the already-verified immutable
+// package path used by the embedded Agent. Remote Agents still receive the
+// same bytes through the revision artifact endpoint.
+func (s *GormStore) ResolveLocalPluginGenerationArtifact(ctx context.Context, generation PluginGeneration) (string, error) {
+	resolve := func(scoped *GormStore) (string, error) {
+		if _, err := loadIssuedRuntimeArtifact(ctx, scoped.db, generation); err != nil {
+			return "", err
+		}
+		var packageRow PluginPackageRow
+		if err := scoped.db.WithContext(ctx).Where("identity = ?", generation.Artifact.PackageIdentity).First(&packageRow).Error; err != nil {
+			return "", err
+		}
+		artifactPath := filepath.Join(packageRow.CachePath, filepath.FromSlash(generation.Artifact.RelativePath))
+		relative, err := filepath.Rel(packageRow.CachePath, artifactPath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("plugin runtime artifact %q path escapes verified package cache", generation.Artifact.ArtifactID)
+		}
+		return artifactPath, nil
+	}
+	if s.transactionScoped {
+		return resolve(s)
+	}
+	var artifactPath string
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var err error
+		artifactPath, err = resolve(scoped)
+		return err
+	})
+	return artifactPath, err
+}
+
 // EnsureAgentHeartbeatRevision atomically issues the exact positive snapshot
 // used by legacy heartbeat sync when an earlier mutation did not pass through
 // revision.Executor. Concurrent identical heartbeats converge on one immutable

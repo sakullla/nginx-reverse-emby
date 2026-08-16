@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchAgents } from '../../api'
 import { fetchResourceGroups } from '../../api/access'
@@ -55,6 +55,9 @@ const lifecycleLabel = computed(() => {
   return labels[detail.value?.plugin?.current_lifecycle] || detail.value?.plugin?.current_lifecycle || '未知'
 })
 const deploymentStatusLabel = computed(() => (detail.value?.instances || []).length ? '已部署' : '尚未部署')
+const refreshIntervalMs = 5000
+let refreshTimer = 0
+let refreshInFlight = false
 
 const instanceTabs = computed(() => (detail.value?.instances || []).map((instance) => ({
   id: instance.id,
@@ -102,11 +105,25 @@ const confirmCopy = computed(() => {
   }
 })
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  refreshTimer = window.setInterval(() => {
+    if (busy.value || configModalOpen.value || confirmDialog.value.visible) return
+    void load({ background: true })
+  }, refreshIntervalMs)
+})
 
-async function load() {
-  loading.value = true
-  error.value = ''
+onBeforeUnmount(() => {
+  if (refreshTimer) window.clearInterval(refreshTimer)
+})
+
+async function load({ background = false } = {}) {
+  if (refreshInFlight) return
+  refreshInFlight = true
+  if (!background) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     if (!actor.value) await refreshActor()
     const pluginID = String(route.params.id || '')
@@ -129,7 +146,8 @@ async function load() {
   } catch (cause) {
     error.value = sanitizePluginText(cause?.message || '读取插件详情失败')
   } finally {
-    loading.value = false
+    refreshInFlight = false
+    if (!background) loading.value = false
   }
 }
 
@@ -215,7 +233,8 @@ async function retryAgent(status) {
   retryingAgent.value = status.agent_id
   error.value = ''
   try {
-    const revision = status.desired_revision || status.target_revision
+    const revision = Math.max(Number(status.desired_revision) || 0, Number(status.target_revision) || 0)
+    if (!revision) throw new Error('Agent revision 无效')
     await retryRevision({ agent_id: status.agent_id, desired_revision: revision, agents: [] }, { agent_id: status.agent_id, desired_revision: revision })
     await load()
   } catch (cause) {
