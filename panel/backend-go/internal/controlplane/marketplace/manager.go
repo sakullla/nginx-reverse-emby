@@ -19,6 +19,7 @@ import (
 type Manager struct {
 	root             string
 	fetcher          Fetcher
+	packageFetcher   PackageFetcher
 	validator        *plugins.Validator
 	validators       SourceValidatorFactory
 	officialLockPath string
@@ -68,7 +69,42 @@ func newManager(root string, fetcher Fetcher, validator *plugins.Validator, cach
 	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o755); err != nil {
 		return nil, err
 	}
-	return &Manager{root: root, fetcher: fetcher, validator: validator, validators: validators, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 10 * time.Minute}, nil
+	return &Manager{root: root, fetcher: fetcher, packageFetcher: HTTPPackageFetcher{}, validator: validator, validators: validators, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 10 * time.Minute}, nil
+}
+
+// AcquirePackage downloads and verifies one v2 official package only when a
+// caller resolves that catalog entry for use. Refresh remains metadata-only.
+func (m *Manager) AcquirePackage(ctx context.Context, source Source, entry plugins.MarketEntry) (string, error) {
+	if source.Kind != SourceKindOfficial || !entry.Official || entry.SignatureKeyID != plugins.OfficialSignatureKeyID || entry.BlobFormat == "" {
+		return "", errors.New("on-demand acquisition requires an official v2 market entry")
+	}
+	if err := ValidateSource(source); err != nil {
+		return "", err
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		return "", err
+	}
+	validator, err := m.validators(source)
+	if err != nil {
+		return "", err
+	}
+	staging := filepath.Join(m.root, "package-staging", source.ID, randomID("package"))
+	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(staging)
+	if err := m.packageFetcher.FetchPackage(ctx, entry, staging); err != nil {
+		return "", err
+	}
+	validated, err := validator.ValidatePackage(staging, plugins.PackageExpectation{
+		ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Capabilities: entry.Capabilities, Compatibility: entry.Compatibility,
+		Runtime: entry.Runtime, Artifacts: entry.Artifacts, SignatureKeyID: entry.SignatureKeyID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return m.cache.StoreWithTrust(validated, validator, trust)
 }
 
 func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationActor) (Snapshot, error) {

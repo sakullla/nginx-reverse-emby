@@ -144,6 +144,22 @@ func (v *Validator) validateOfficialPackageV1Snapshot(root, sourceRoot string, e
 }
 
 func (v *Validator) validateOfficialMarketV1Snapshot(root, sourceRoot string, marketData []byte) (ValidatedMarket, error) {
+	var header struct {
+		SchemaVersion int              `yaml:"schema_version"`
+		Commit        string           `yaml:"commit"`
+		SDKABI        string           `yaml:"sdk_abi"`
+		Packages      []map[string]any `yaml:"packages"`
+	}
+	if err := decodeStrictYAML(marketData, &header); err != nil {
+		return ValidatedMarket{}, validationError("market_schema", MarketManifestFile, err)
+	}
+	if header.SchemaVersion == 2 {
+		return v.validateOfficialMarketV2Snapshot(root, sourceRoot, marketData)
+	}
+	return v.validateOfficialMarketV1EagerSnapshot(root, sourceRoot, marketData)
+}
+
+func (v *Validator) validateOfficialMarketV1EagerSnapshot(root, sourceRoot string, marketData []byte) (ValidatedMarket, error) {
 	var market officialMarketManifestV1
 	if err := decodeStrictYAML(marketData, &market); err != nil {
 		return ValidatedMarket{}, validationError("market_schema", MarketManifestFile, err)

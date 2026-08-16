@@ -628,6 +628,7 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 	requestedDigest := strings.ToLower(strings.TrimSpace(digest))
 	var entryID, entryVersion, packageDigest, signatureKeyID string
 	var compatibility plugins.Compatibility
+	var selectedEntry *plugins.MarketEntry
 	if source.Purpose == marketplace.SourcePurposePlugin {
 		direct, ok, loadErr := s.store.CurrentDirectPlugin(ctx, sourceID, pluginID, version, requestedDigest)
 		if loadErr != nil {
@@ -646,6 +647,7 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 			return PluginPackageCandidate{}, ErrMarketplaceEntryNotFound
 		}
 		entryID, entryVersion, packageDigest, signatureKeyID, compatibility = entry.ID, entry.Version, entry.PackageSHA256, entry.SignatureKeyID, entry.Compatibility
+		selectedEntry = &entry
 	}
 	acquisition, ok, err := s.store.CurrentPackageAcquisition(ctx, sourceID, packageDigest)
 	if err != nil {
@@ -659,13 +661,31 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 		return PluginPackageCandidate{}, err
 	}
 	if _, statErr := os.Stat(cachePath); errors.Is(statErr, os.ErrNotExist) {
-		// Existing installations and pre-signature-identity migrations used one
-		// digest-only directory. Exact source-bound signature verification below
-		// makes this a safe read-only compatibility fallback; all new refreshes
-		// enter the signer-aware layout.
-		cachePath, err = marketplace.CachePath(s.cacheRoot, packageDigest)
-		if err != nil {
-			return PluginPackageCandidate{}, err
+		if selectedEntry != nil && selectedEntry.BlobFormat != "" {
+			if s.manager == nil {
+				return PluginPackageCandidate{}, errors.New("marketplace package acquisition manager is unavailable")
+			}
+			cachePath, err = s.manager.AcquirePackage(ctx, source, *selectedEntry)
+			if err != nil {
+				return PluginPackageCandidate{}, err
+			}
+			latest, latestErr := s.Source(ctx, sourceID)
+			if latestErr != nil || latest.CurrentSnapshot != source.CurrentSnapshot || !strings.EqualFold(latest.CurrentResolvedOID, source.CurrentResolvedOID) {
+				return PluginPackageCandidate{}, errors.New("marketplace catalog changed during package acquisition")
+			}
+			currentAcquisition, found, loadErr := s.store.CurrentPackageAcquisition(ctx, sourceID, packageDigest)
+			if loadErr != nil || !found || currentAcquisition.SnapshotID != acquisition.SnapshotID || currentAcquisition.Trust.Fingerprint != acquisition.Trust.Fingerprint {
+				return PluginPackageCandidate{}, errors.New("marketplace package acquisition changed during download")
+			}
+		} else {
+			// Existing installations and pre-signature-identity migrations used one
+			// digest-only directory. Exact source-bound signature verification below
+			// makes this a safe read-only compatibility fallback; all new refreshes
+			// enter the signer-aware layout.
+			cachePath, err = marketplace.CachePath(s.cacheRoot, packageDigest)
+			if err != nil {
+				return PluginPackageCandidate{}, err
+			}
 		}
 	}
 	validator := s.validator

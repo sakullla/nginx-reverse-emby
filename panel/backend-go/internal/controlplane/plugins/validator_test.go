@@ -38,6 +38,50 @@ func TestValidatorAcceptsCanonicalRuntimePackage(t *testing.T) {
 	}
 }
 
+func TestValidatorDefaultSizeBudgetsAllowCurrentOfficialArtifact(t *testing.T) {
+	validator := NewValidator(ValidatorOptions{})
+	if validator.options.MaxFileBytes != DefaultMaxFileBytes || validator.options.MaxPackageBytes != DefaultMaxPackageBytes || validator.options.MaxMarketBytes != DefaultMaxMarketBytes {
+		t.Fatalf("default size budgets = file %d, package %d, market %d", validator.options.MaxFileBytes, validator.options.MaxPackageBytes, validator.options.MaxMarketBytes)
+	}
+
+	root := t.TempDir()
+	artifact := filepath.Join(root, "accelerator-sources")
+	file, err := os.Create(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(20 << 20); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := createPackageSnapshot(root, validator.options)
+	if err != nil {
+		t.Fatalf("snapshot current official artifact: %v", err)
+	}
+	if err := os.RemoveAll(snapshot.temporaryRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	oversizedRoot := t.TempDir()
+	oversized := filepath.Join(oversizedRoot, "oversized")
+	file, err = os.Create(oversized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(DefaultMaxFileBytes + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = createPackageSnapshot(oversizedRoot, validator.options)
+	assertValidationCode(t, err, "size_limit")
+}
+
 func TestDirectPluginRepositoryProjectsRootManifestWithoutMarketEntry(t *testing.T) {
 	root := newPackageFixture(t)
 	validated, err := newTestValidator(ValidatorOptions{HostVersion: "1.2.0", AgentVersion: "1.3.0"}).ValidateDirectPlugin(root, false)

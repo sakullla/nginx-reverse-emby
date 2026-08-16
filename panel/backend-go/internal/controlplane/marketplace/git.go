@@ -44,7 +44,7 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 	if err != nil {
 		return "", err
 	}
-	options := &git.CloneOptions{URL: source.URL, Depth: 1, SingleBranch: true, NoCheckout: true, ReferenceName: referenceName}
+	options := &git.CloneOptions{URL: source.URL, Depth: 1, SingleBranch: true, NoCheckout: true, ReferenceName: referenceName, Tags: git.NoTags}
 	if source.CredentialRef != "" {
 		if f.ResolveCredential == nil {
 			return "", fmt.Errorf("credential resolver is required for source %s", source.ID)

@@ -74,6 +74,9 @@ type MarketEntry struct {
 	Artifacts      []ArtifactIndex `yaml:"artifacts" json:"artifacts"`
 	PackagePath    string          `yaml:"package" json:"package"`
 	PackageSHA256  string          `yaml:"sha256" json:"sha256"`
+	BlobSHA256     string          `yaml:"blob_sha256,omitempty" json:"blob_sha256,omitempty"`
+	BlobSize       int64           `yaml:"blob_size,omitempty" json:"blob_size,omitempty"`
+	BlobFormat     string          `yaml:"blob_format,omitempty" json:"blob_format,omitempty"`
 	SignatureKeyID string          `yaml:"signature_key_id" json:"signature_key_id"`
 	Provenance     string          `yaml:"provenance" json:"provenance"`
 	Official       bool            `yaml:"official,omitempty" json:"official,omitempty"`

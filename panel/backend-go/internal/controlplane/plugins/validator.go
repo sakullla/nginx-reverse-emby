@@ -39,8 +39,11 @@ const OfficialSignatureKeyID = "sakullla-official-root-2026"
 const officialSignaturePublicKeyHex = "9edfaf2a05f9eb3aeff6e9c68f587f8c330a497eadd6f80d4dacb21eb9ff47ce"
 
 const (
+	DefaultMaxPackageFiles     = 4096
 	DefaultMaxMarketFiles      = 16384
-	DefaultMaxMarketBytes      = int64(256 << 20)
+	DefaultMaxFileBytes        = int64(128 << 20)
+	DefaultMaxPackageBytes     = int64(512 << 20)
+	DefaultMaxMarketBytes      = int64(2 << 30)
 	DefaultMaxMarketPackages   = 512
 	MaxPluginIDBytes           = 190
 	MaxPluginVersionBytes      = 64
@@ -143,13 +146,13 @@ func OfficialSignerIdentity() SignerIdentity {
 
 func NewValidator(options ValidatorOptions) *Validator {
 	if options.MaxFiles <= 0 {
-		options.MaxFiles = 4096
+		options.MaxFiles = DefaultMaxPackageFiles
 	}
 	if options.MaxPackageBytes <= 0 {
-		options.MaxPackageBytes = 64 << 20
+		options.MaxPackageBytes = DefaultMaxPackageBytes
 	}
 	if options.MaxFileBytes <= 0 {
-		options.MaxFileBytes = 16 << 20
+		options.MaxFileBytes = DefaultMaxFileBytes
 	}
 	if options.MaxMarketFiles <= 0 {
 		options.MaxMarketFiles = DefaultMaxMarketFiles
