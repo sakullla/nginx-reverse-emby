@@ -1,0 +1,413 @@
+//go:build !integration
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+)
+
+func TestGovernedMutationWithoutPrincipalFailsClosed(t *testing.T) {
+	t.Parallel()
+	store := &recordingResourceQuotaStore{}
+	ctx := context.Background()
+	if err := authorizeReferencedResource(ctx, store, "agent", "edge-a"); !errors.Is(err, ErrMutationPrincipalRequired) {
+		t.Fatalf("authorizeReferencedResource() error = %v, want %v", err, ErrMutationPrincipalRequired)
+	}
+	if err := consumeResourceQuota(ctx, store, "http_rule", "edge-a:1", "agent", "edge-a", "rule_count", 1); !errors.Is(err, ErrMutationPrincipalRequired) {
+		t.Fatalf("consumeResourceQuota() error = %v, want %v", err, ErrMutationPrincipalRequired)
+	}
+	if store.called {
+		t.Fatal("quota store was called without a principal")
+	}
+
+	ctx = WithSystemMutationPrincipal(context.Background(), "system:reconciler")
+	if err := authorizeReferencedResource(ctx, store, "agent", "edge-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeResourceQuota(ctx, store, "http_rule", "edge-a:1", "agent", "edge-a", "rule_count", 1); err != nil {
+		t.Fatal(err)
+	}
+	if !store.called || store.actor.UserID != "system:reconciler" || !store.actor.Bootstrap {
+		t.Fatalf("system principal actor = %+v called=%v", store.actor, store.called)
+	}
+}
+
+func TestFullSnapshotValidatorRejectsMissingL4BackendAndHTTPConflict(t *testing.T) {
+	t.Parallel()
+	validator := FullSnapshotValidator{}
+	target := revision.Target{AgentID: "local", Local: true}
+	if err := validator.Validate(t.Context(), revision.SnapshotValidation{
+		Target: target,
+		Snapshot: storage.Snapshot{
+			L4Rules: []storage.L4Rule{{
+				ID: 1, AgentID: "local", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 8080,
+				ListenMode: "direct",
+			}},
+		},
+	}); err == nil || revision.ErrorCodeOf(err) == "" {
+		t.Fatalf("missing L4 backend error = %v", err)
+	}
+
+	conflict := validator.Validate(t.Context(), revision.SnapshotValidation{
+		Target: target,
+		Snapshot: storage.Snapshot{
+			Rules: []storage.HTTPRule{{
+				ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com:8443",
+				Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8080"}},
+			}},
+			L4Rules: []storage.L4Rule{{
+				ID: 2, AgentID: "local", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 8443,
+				ListenMode: "proxy", Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9000}},
+			}},
+		},
+	})
+	if revision.ErrorCodeOf(conflict) != revision.ErrorCodeConflict {
+		t.Fatalf("HTTP/L4 listener conflict = %v code=%q", conflict, revision.ErrorCodeOf(conflict))
+	}
+}
+
+func TestNewMutationExecutorInstallsFullSnapshotValidator(t *testing.T) {
+	t.Parallel()
+	executor := NewMutationExecutor(nil)
+	if executor == nil {
+		t.Fatal("NewMutationExecutor returned nil")
+	}
+}
+
+func TestPKILifecycleExpiredFailureClosesAndForceRotationIsTargeted(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	expired := testPKIEndpointState("identity-expired", "cert-expired-1", 1, now.Add(-25*time.Hour), now.Add(-time.Hour), "c")
+	notDue := testPKIEndpointState("identity-target", "cert-target-1", 1, now.Add(-time.Hour), now.Add(89*24*time.Hour), "d")
+	untouched := testPKIEndpointState("identity-other", "cert-other-1", 1, now.Add(-time.Hour), now.Add(89*24*time.Hour), "e")
+	repository := newPKIEndpointRotationTestRepository(expired, notDue, untouched)
+	rotator := &pkiEndpointRotationTestRotator{
+		errByIdentity: map[string]error{"identity-expired": errors.New("issuer unavailable")},
+		candidateByIdentity: map[string]PKIEndpointRotationCandidate{
+			"identity-target": testPKIEndpointCandidate("cert-target-2", 2, now, "f"),
+		},
+	}
+	svc, err := NewPKILifecycleService(PKILifecycleServiceOptions{
+		Policy: DefaultInternalPKIPolicy(), Repository: repository, Rotator: rotator,
+		Lease: pkiStaticLeaseGate{}, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := svc.RunEndpointRotation(t.Context(), "identity-expired", false)
+	if !errors.Is(err, ErrPKIEndpointFailedClosed) || !failed.FailedClosed || failed.ActiveCertificate != "cert-expired-1" {
+		t.Fatalf("expired rotation = (%+v, %v)", failed, err)
+	}
+	forced, err := svc.ForceRotateEndpoint(t.Context(), "identity-target")
+	if err != nil || !forced.Forced || !forced.Activated || forced.ActiveCertificate != "cert-target-2" {
+		t.Fatalf("ForceRotateEndpoint = (%+v, %v)", forced, err)
+	}
+	if repository.state("identity-other").CertificateID != "cert-other-1" {
+		t.Fatal("force rotation changed a non-target identity")
+	}
+}
+
+func TestPluginLifecycleReconcilerWaitsForEveryExactAgentReport(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("a", 64)
+	store := &lifecycleReconcileStore{
+		operation: storage.PluginOperationRow{
+			ID: "operation", PluginID: "plugin", Kind: "enable", Status: "applying",
+			TargetPackageDigest: digest, TargetRevision: 8, ActorID: "admin",
+		},
+		statuses: []storage.PluginAgentRuntimeStatusRow{
+			{OperationID: "operation", AgentID: "edge-a", InstanceID: "instance", PluginID: "plugin", Revision: 7, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "applying", DetailsJSON: `{}`},
+			{OperationID: "operation", AgentID: "edge-b", InstanceID: "instance", PluginID: "plugin", Revision: 8, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "applying", DetailsJSON: `{}`},
+		},
+	}
+	completion := &lifecycleCompletionRecorder{}
+	reconciler, err := NewPluginLifecycleReconciler(store, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := storage.PluginGenerationReport{
+		OperationID: "operation", AgentID: "edge-a", InstanceID: "instance", PluginID: "plugin",
+		Revision: 7, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "active", Sequence: 1,
+	}
+	result, err := reconciler.Reconcile(t.Context(), report, "agent:edge-a")
+	if err != nil || !result.Pending || result.Completed || completion.kind != "" {
+		t.Fatalf("partial reconcile = %+v kind=%q err=%v", result, completion.kind, err)
+	}
+	report.AgentID = "edge-b"
+	report.Revision = 8
+	result, err = reconciler.Reconcile(t.Context(), report, "agent:edge-b")
+	if err != nil || !result.Completed || !result.Applied || completion.kind != "lifecycle" {
+		t.Fatalf("terminal reconcile = %+v completion=%+v err=%v", result, completion, err)
+	}
+	if _, err := reconciler.Reconcile(t.Context(), report, ""); err == nil {
+		t.Fatal("empty actor accepted")
+	}
+}
+
+func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{}
+	raw, _ := json.Marshal(storage.DDNSConfig{
+		Enabled: true, Domain: "host.example.com",
+		IPv4: storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	})
+	store := &fakeDDNSStore{rows: map[string]storage.AgentRow{
+		"a1": {ID: "a1", DdnsConfigJSON: string(raw), LastSeenIPv4: "203.0.113.10"},
+	}}
+	svc := NewDDNSService(config.Config{}, store, cf, func() time.Time { return time.Unix(1700, 0) })
+	svc.reconcileAgent(context.Background(), "a1")
+	if cf.calls != 0 {
+		t.Fatalf("Cloudflare calls = %d, want 0", cf.calls)
+	}
+	if store.status("a1").Status != "disabled" {
+		t.Fatalf("status = %+v", store.status("a1"))
+	}
+}
+
+func TestRevisionAPIRequiresRepositoryAndCoordinator(t *testing.T) {
+	t.Parallel()
+	if api := NewRevisionAPI(nil, nil); api != nil {
+		t.Fatal("NewRevisionAPI(nil, nil) should be nil")
+	}
+}
+
+func TestRuleServiceCreateRequiresMutationPrincipal(t *testing.T) {
+	t.Parallel()
+	store := &ruleOwnerStore{agents: []storage.AgentRow{{ID: "local", Name: "local"}}}
+	svc := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	frontend := "https://edge.example.com"
+	backend := "http://127.0.0.1:8080"
+	enabled := true
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: &frontend, BackendURL: &backend, Enabled: &enabled,
+	})
+	if err == nil {
+		t.Fatal("Create without principal succeeded")
+	}
+}
+
+type recordingResourceQuotaStore struct {
+	called bool
+	actor  storage.QuotaActor
+}
+
+func (s *recordingResourceQuotaStore) ConsumeQuotaForResource(ctx context.Context, _, _, _, _, metric string, _ int64) (storage.QuotaDecision, error) {
+	s.called = true
+	s.actor, _ = storage.QuotaActorFromContext(ctx)
+	return storage.QuotaDecision{Metric: metric, Allowed: true}, nil
+}
+
+func testPKIEndpointState(identityID, certificateID string, generation int64, notBefore, notAfter time.Time, marker string) PKIEndpointCertificateState {
+	return PKIEndpointCertificateState{
+		IdentityID: identityID, CertificateID: certificateID, Generation: generation,
+		CertificateFingerprintSHA256: strings.Repeat(marker, 64),
+		PublicKeyFingerprintSHA256:   strings.Repeat(marker+"0", 32),
+		NotBefore:                    notBefore, NotAfter: notAfter,
+	}
+}
+
+func testPKIEndpointCandidate(certificateID string, generation int64, now time.Time, marker string) PKIEndpointRotationCandidate {
+	return PKIEndpointRotationCandidate{
+		CertificateID: certificateID, Generation: generation,
+		CertificateFingerprintSHA256: strings.Repeat(marker, 64),
+		PublicKeyFingerprintSHA256:   strings.Repeat(marker+"0", 32),
+		NotBefore:                    now.Add(-time.Minute), NotAfter: now.Add(90 * 24 * time.Hour), Verified: true,
+	}
+}
+
+type pkiEndpointRotationTestRepository struct {
+	states      map[string]PKIEndpointCertificateState
+	failures    []PKIEndpointRotationFailure
+	activations int
+}
+
+func newPKIEndpointRotationTestRepository(states ...PKIEndpointCertificateState) *pkiEndpointRotationTestRepository {
+	repository := &pkiEndpointRotationTestRepository{states: map[string]PKIEndpointCertificateState{}}
+	for _, state := range states {
+		repository.states[state.IdentityID] = state
+	}
+	return repository
+}
+
+func (r *pkiEndpointRotationTestRepository) LoadPKIEndpointCertificate(_ context.Context, identityID string) (PKIEndpointCertificateState, error) {
+	state, ok := r.states[identityID]
+	if !ok {
+		return PKIEndpointCertificateState{}, errors.New("identity not found")
+	}
+	return state, nil
+}
+
+func (r *pkiEndpointRotationTestRepository) RecordPKIEndpointRotationFailure(_ context.Context, failure PKIEndpointRotationFailure) error {
+	if validatePKIMutationLeaseFence(failure.Lease) != nil {
+		return ErrPKILeaseNotHeld
+	}
+	state := r.states[failure.IdentityID]
+	state.FailureCount = failure.FailureCount
+	state.NextAttemptAt = failure.NextAttemptAt
+	r.states[failure.IdentityID] = state
+	r.failures = append(r.failures, failure)
+	return nil
+}
+
+func (r *pkiEndpointRotationTestRepository) ActivatePKIEndpointCandidate(_ context.Context, activation PKIEndpointActivation) error {
+	if validatePKIMutationLeaseFence(activation.Lease) != nil {
+		return ErrPKILeaseNotHeld
+	}
+	state := r.states[activation.IdentityID]
+	state.CertificateID = activation.Candidate.CertificateID
+	state.CertificateFingerprintSHA256 = activation.Candidate.CertificateFingerprintSHA256
+	state.PublicKeyFingerprintSHA256 = activation.Candidate.PublicKeyFingerprintSHA256
+	state.Generation = activation.Candidate.Generation
+	state.NotBefore = activation.Candidate.NotBefore
+	state.NotAfter = activation.Candidate.NotAfter
+	state.FailureCount = 0
+	state.NextAttemptAt = time.Time{}
+	r.states[activation.IdentityID] = state
+	r.activations++
+	return nil
+}
+
+func (r *pkiEndpointRotationTestRepository) state(identityID string) PKIEndpointCertificateState {
+	return r.states[identityID]
+}
+
+type pkiEndpointRotationTestRotator struct {
+	errByIdentity       map[string]error
+	candidateByIdentity map[string]PKIEndpointRotationCandidate
+}
+
+func (r *pkiEndpointRotationTestRotator) StageAndVerifyPKIEndpoint(_ context.Context, active PKIEndpointCertificateState, _ bool) (PKIEndpointRotationCandidate, error) {
+	if err := r.errByIdentity[active.IdentityID]; err != nil {
+		return PKIEndpointRotationCandidate{}, err
+	}
+	return r.candidateByIdentity[active.IdentityID], nil
+}
+
+type lifecycleReconcileStore struct {
+	operation storage.PluginOperationRow
+	statuses  []storage.PluginAgentRuntimeStatusRow
+}
+
+func (s *lifecycleReconcileStore) RecordPluginAgentRuntimeReport(_ context.Context, report storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error) {
+	for index := range s.statuses {
+		row := &s.statuses[index]
+		if row.OperationID == report.OperationID && row.AgentID == report.AgentID && row.InstanceID == report.InstanceID {
+			row.State, row.ReportSequence = report.State, report.Sequence
+			return *row, false, nil
+		}
+	}
+	return storage.PluginAgentRuntimeStatusRow{}, false, storage.ErrPluginGenerationStale
+}
+
+func (s *lifecycleReconcileStore) ListPluginAgentRuntimeStatuses(context.Context, string) ([]storage.PluginAgentRuntimeStatusRow, error) {
+	return append([]storage.PluginAgentRuntimeStatusRow(nil), s.statuses...), nil
+}
+
+func (s *lifecycleReconcileStore) GetPluginOperation(context.Context, string) (storage.PluginOperationRow, bool, error) {
+	return s.operation, true, nil
+}
+
+type lifecycleCompletionRecorder struct {
+	kind   string
+	result PluginApplyResult
+}
+
+func (r *lifecycleCompletionRecorder) CompleteLifecycleApply(_ context.Context, result PluginApplyResult) (storage.InstalledPluginRow, error) {
+	r.kind, r.result = "lifecycle", result
+	return storage.InstalledPluginRow{}, nil
+}
+func (r *lifecycleCompletionRecorder) CompleteConfigure(_ context.Context, result PluginApplyResult) (storage.PluginInstanceRow, error) {
+	r.kind, r.result = "configure", result
+	return storage.PluginInstanceRow{}, nil
+}
+func (r *lifecycleCompletionRecorder) CompleteUpgrade(_ context.Context, result PluginApplyResult) (storage.InstalledPluginRow, error) {
+	r.kind, r.result = "upgrade", result
+	return storage.InstalledPluginRow{}, nil
+}
+func (r *lifecycleCompletionRecorder) CompleteRollback(_ context.Context, result PluginApplyResult) (storage.InstalledPluginRow, error) {
+	r.kind, r.result = "rollback", result
+	return storage.InstalledPluginRow{}, nil
+}
+func (r *lifecycleCompletionRecorder) CompleteTrustedRevisionOperation(_ context.Context, operation storage.PluginOperationRow, applied bool, _ any) error {
+	r.kind = "trusted-" + operation.Kind
+	r.result = PluginApplyResult{PluginID: operation.PluginID, Applied: applied}
+	return nil
+}
+
+type fakeDDNSStore struct {
+	rows map[string]storage.AgentRow
+}
+
+func (f *fakeDDNSStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	out := make([]storage.AgentRow, 0, len(f.rows))
+	for _, row := range f.rows {
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (f *fakeDDNSStore) UpdateDdnsStatusColumn(_ context.Context, agentID, statusJSON string) error {
+	row := f.rows[agentID]
+	row.DdnsStatusJSON = statusJSON
+	f.rows[agentID] = row
+	return nil
+}
+
+func (f *fakeDDNSStore) status(id string) storage.DdnsStatus {
+	var status storage.DdnsStatus
+	_ = json.Unmarshal([]byte(f.rows[id].DdnsStatusJSON), &status)
+	return status
+}
+
+type fakeCFClient struct{ calls int }
+
+func (c *fakeCFClient) EnsureRecord(context.Context, string, string, string, string, int) (cloudflareRecordOutcome, error) {
+	c.calls++
+	return cloudflareRecordOutcome{}, nil
+}
+
+type ruleOwnerStore struct {
+	agents []storage.AgentRow
+}
+
+func (s *ruleOwnerStore) ListAgents(context.Context) ([]storage.AgentRow, error) { return s.agents, nil }
+func (s *ruleOwnerStore) ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error) {
+	return nil, nil
+}
+func (s *ruleOwnerStore) GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error) {
+	return storage.HTTPRuleRow{}, false, nil
+}
+func (s *ruleOwnerStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
+	return nil, nil
+}
+func (s *ruleOwnerStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return nil, nil
+}
+func (s *ruleOwnerStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
+	return storage.LocalAgentStateRow{}, nil
+}
+func (s *ruleOwnerStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
+	return nil, nil
+}
+func (s *ruleOwnerStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
+	return nil, nil
+}
+func (s *ruleOwnerStore) SaveAgent(context.Context, storage.AgentRow) error { return nil }
+func (s *ruleOwnerStore) SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error {
+	return nil
+}
+func (s *ruleOwnerStore) SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error {
+	return nil
+}
+func (s *ruleOwnerStore) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
+	return nil
+}

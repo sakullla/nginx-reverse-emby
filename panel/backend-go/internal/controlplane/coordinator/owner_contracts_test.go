@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,9 +53,6 @@ func newTestCoordinatorWithClock(t *testing.T, store *storage.GormStore, clock *
 
 func newCoordinatorTestStore(t *testing.T) *storage.GormStore {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("SQLite-backed coordinator scenarios run in the full test tier")
-	}
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
 	if err := ensureCoordinatorSQLiteFixture(dbPath); err != nil {
 		t.Fatal(err)
@@ -184,5 +182,16 @@ func TestIntegrationCoordinatorRetryAndRollbackRemainIdempotent(t *testing.T) {
 	second, err := coord.RetryIdempotent(t.Context(), "edge-1", 2, idempotency)
 	if err != nil || second.Revision.Revision != first.Revision.Revision {
 		t.Fatalf("retry replay = %+v err=%v", second, err)
+	}
+
+	rollbackKey := storage.CoordinatorActionIdempotency{
+		Scope: "panel", Key: "rollback-1", RequestFingerprint: "rollback-edge-1", ExpiresAt: now.Add(time.Hour),
+	}
+	if _, err := coord.RollbackIdempotent(t.Context(), "edge-1", rollbackKey); err == nil || !strings.Contains(err.Error(), "last-known-good") {
+		t.Fatalf("RollbackIdempotent without LKG snapshot err=%v, want last-known-good fail-closed", err)
+	}
+	startup, err := coord.ReconcileStartup(t.Context())
+	if err != nil || len(startup.Agents) == 0 {
+		t.Fatalf("ReconcileStartup = %+v err=%v", startup, err)
 	}
 }

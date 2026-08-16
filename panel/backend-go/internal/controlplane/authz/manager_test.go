@@ -282,6 +282,12 @@ func TestAuthorizationPersistsAcrossReopenAndNestedGroupsFailClosed(t *testing.T
 	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceRead, "agent", "hidden-edge"); !errors.Is(err, authz.ErrForbidden) {
 		t.Fatalf("cross-group fail-closed = %v", err)
 	}
+	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceRead, "http_rule", "visible-edge:1"); err != nil {
+		t.Fatalf("parent agent http_rule inheritance = %v", err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceRead, "http_rule", "hidden-edge:1"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("hidden parent http_rule fail-closed = %v", err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -296,6 +302,12 @@ func TestAuthorizationPersistsAcrossReopenAndNestedGroupsFailClosed(t *testing.T
 	}
 	if err := reopened.AuthorizeResource(t.Context(), restored, authz.PermissionResourceRead, "agent", "hidden-edge"); !errors.Is(err, authz.ErrForbidden) {
 		t.Fatalf("restart cross-group fail-closed = %v", err)
+	}
+	if err := reopened.AuthorizeResource(t.Context(), restored, authz.PermissionResourceRead, "http_rule", "visible-edge:1"); err != nil {
+		t.Fatalf("restart parent agent http_rule inheritance = %v", err)
+	}
+	if err := reopened.AuthorizeResource(t.Context(), restored, authz.PermissionResourceRead, "http_rule", "hidden-edge:1"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("restart hidden parent http_rule fail-closed = %v", err)
 	}
 }
 
