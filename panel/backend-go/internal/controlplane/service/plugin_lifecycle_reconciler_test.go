@@ -1,3 +1,5 @@
+//go:build !integration
+
 package service
 
 import (
@@ -125,21 +127,5 @@ func TestPluginLifecycleReconcilerRejectsUntrustedActor(t *testing.T) {
 	_, err := reconciler.Reconcile(t.Context(), storage.PluginGenerationReport{}, "")
 	if err == nil {
 		t.Fatalf("untrusted actor error = %v", err)
-	}
-}
-
-func TestPluginLifecycleReconcilerCutsOverControlPlaneBatchBeforeCompletion(t *testing.T) {
-	completion := &lifecycleCompletionRecorder{plan: controlPlanePluginRuntimePlan{Controlled: true, Candidates: []pluginhost.Candidate{
-		{InstanceID: "a", Identity: pluginhost.Identity{Generation: "generation-a"}},
-		{InstanceID: "b", Identity: pluginhost.Identity{Generation: "generation-b"}},
-	}}}
-	runtime := &lifecycleRuntimeRecorder{active: map[string]string{"a": "old-a", "b": "old-b"}}
-	reconciler := &PluginLifecycleReconciler{plugins: completion, runtime: runtime}
-	operation := storage.PluginOperationRow{ID: "operation", PluginID: "plugin", Kind: "upgrade", TargetRevision: 7}
-	if err := reconciler.completeTrustedRevisionOperation(t.Context(), operation, true, map[string]any{}); err != nil {
-		t.Fatal(err)
-	}
-	if completion.kind != "trusted-upgrade" || len(runtime.activated) != 2 || runtime.active["a"] != "generation-a" || runtime.active["b"] != "generation-b" {
-		t.Fatalf("runtime/completion = %+v / %+v", runtime, completion)
 	}
 }

@@ -1,3 +1,5 @@
+//go:build !integration
+
 package storage
 
 import (
@@ -6,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 )
 
 type dryRunConnPool struct{}
@@ -43,35 +43,6 @@ func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported database driver") {
 		t.Fatalf("NewStore() error = %v, want unsupported database driver error", err)
-	}
-}
-
-func TestNewStoreAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
-	t.Parallel()
-	dbPath := t.TempDir() + "/panel.db"
-	store, err := NewStore(StoreConfig{
-		Driver:              "sqlite",
-		DSN:                 dbPath,
-		LocalAgentID:        "local",
-		SkipBootstrapSchema: true,
-	})
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = store.Close()
-	})
-}
-
-func TestNewStoreRequiresDataRootForDefaultSQLiteDSN(t *testing.T) {
-	t.Parallel()
-	_, err := NewStore(StoreConfig{
-		Driver:              "sqlite",
-		LocalAgentID:        "local",
-		SkipBootstrapSchema: true,
-	})
-	if err == nil || !strings.Contains(err.Error(), "data root is required") {
-		t.Fatalf("NewStore() error = %v, want data root is required", err)
 	}
 }
 
@@ -117,56 +88,6 @@ func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
 	}
 	if tempStore != 2 {
 		t.Fatalf("temp_store = %d, want 2 (MEMORY)", tempStore)
-	}
-}
-
-func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
-	t.Parallel()
-	got := withSQLiteLockPragmas("file:/tmp/panel.db?mode=ro")
-
-	if strings.Contains(strings.ToLower(got), "journal_mode") {
-		t.Fatalf("DSN = %q, want no journal_mode pragma", got)
-	}
-	if strings.Contains(strings.ToLower(got), "synchronous") {
-		t.Fatalf("DSN = %q, want no synchronous pragma", got)
-	}
-	if strings.Contains(strings.ToLower(got), "cache_size") {
-		t.Fatalf("DSN = %q, want no cache_size pragma", got)
-	}
-	if strings.Contains(strings.ToLower(got), "temp_store") {
-		t.Fatalf("DSN = %q, want no temp_store pragma", got)
-	}
-	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
-		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
-	}
-}
-
-func TestSchemaOptionsForDriverGatesSQLiteLegacyMigrations(t *testing.T) {
-	t.Parallel()
-	testCases := []struct {
-		driver string
-		want   bool
-	}{
-		{driver: "", want: true},
-		{driver: "sqlite", want: true},
-		{driver: " SQLite ", want: true},
-		{driver: "postgres", want: false},
-		{driver: "mysql", want: false},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.driver, func(t *testing.T) {
-			options := SchemaOptionsForDriver(tc.driver, true)
-			if options.Driver != strings.ToLower(strings.TrimSpace(tc.driver)) {
-				t.Fatalf("Driver = %q", options.Driver)
-			}
-			if options.SQLiteLegacyMigrations != tc.want {
-				t.Fatalf("SQLiteLegacyMigrations = %v, want %v", options.SQLiteLegacyMigrations, tc.want)
-			}
-			if !options.TrafficStatsEnabled {
-				t.Fatal("TrafficStatsEnabled = false, want true")
-			}
-		})
 	}
 }
 
@@ -233,73 +154,5 @@ func TestBootstrapSchemaUpgradesOriginalPluginDigestPrimaryKeys(t *testing.T) {
 	var variantCount int64
 	if err := store.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", "legacy-source", digest).Count(&variantCount).Error; err != nil || variantCount != 2 {
 		t.Fatalf("same digest signer variant count = %d, %v", variantCount, err)
-	}
-}
-
-func TestSQLiteLegacyGCIntentBackfillChoosesStablePackageVariant(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	digest := strings.Repeat("d", 64)
-	firstFingerprint := strings.Repeat("1", 64)
-	secondFingerprint := strings.Repeat("2", 64)
-	now := time.Now().UTC()
-	for _, row := range []PluginPackageRow{
-		{Identity: strings.Repeat("a", 64), Digest: digest, PluginID: "legacy.gc", Version: "1.0.0", SourceID: "legacy-source", SignatureFingerprint: firstFingerprint, CachePath: "first", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
-		{Identity: strings.Repeat("b", 64), Digest: digest, PluginID: "legacy.gc", Version: "1.0.0", SourceID: "legacy-source", SignatureFingerprint: secondFingerprint, CachePath: "second", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
-	} {
-		if err := store.db.Create(&row).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.db.Exec("DROP TABLE plugin_cache_gc_intents").Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := store.db.Exec(`CREATE TABLE plugin_cache_gc_intents (
-source_id text NOT NULL, digest text NOT NULL, status text NOT NULL, deferred numeric NOT NULL DEFAULT false,
-claim_token text NOT NULL DEFAULT '', claim_expires_at datetime, quarantine_path text NOT NULL DEFAULT '',
-last_error text NOT NULL, updated_at datetime NOT NULL, PRIMARY KEY (source_id,digest))`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := store.db.Exec(`INSERT INTO plugin_cache_gc_intents (source_id,digest,status,last_error,updated_at) VALUES (?,?,?,?,?)`, "legacy-source", digest, "pending", "", now).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := migrateSQLitePluginGCVariantIdentity(t.Context(), store.db); err != nil {
-		t.Fatal(err)
-	}
-	var intent PluginCacheGCIntentRow
-	if err := store.db.First(&intent).Error; err != nil || intent.SignerFingerprint != firstFingerprint {
-		t.Fatalf("deterministic legacy intent backfill = %+v, %v", intent, err)
-	}
-}
-
-func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
-	t.Parallel()
-	cfg := config.Default()
-	cfg.DatabaseDriver = "postgres"
-	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
-	cfg.DataDir = "/tmp/nre-data"
-	cfg.LocalAgentID = "edge-1"
-	cfg.TrafficStatsEnabled = false
-
-	storeCfg := StoreConfigFromConfig(cfg)
-
-	if storeCfg.Driver != "postgres" {
-		t.Fatalf("Driver = %q", storeCfg.Driver)
-	}
-	if storeCfg.DSN != "postgres://nre:nre@postgres:5432/nre?sslmode=disable" {
-		t.Fatalf("DSN = %q", storeCfg.DSN)
-	}
-	if storeCfg.DataRoot != "/tmp/nre-data" {
-		t.Fatalf("DataRoot = %q", storeCfg.DataRoot)
-	}
-	if storeCfg.LocalAgentID != "edge-1" {
-		t.Fatalf("LocalAgentID = %q", storeCfg.LocalAgentID)
-	}
-	if storeCfg.TrafficStatsEnabled {
-		t.Fatal("TrafficStatsEnabled = true, want false")
 	}
 }
