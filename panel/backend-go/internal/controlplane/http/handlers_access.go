@@ -76,7 +76,7 @@ func (d Dependencies) handleAccessUsers(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "users": users})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "users": filterAccessUsers(users, r.URL.Query().Get("q"))})
 	case http.MethodPost:
 		var input struct {
 			Username    string   `json:"username"`
@@ -123,11 +123,16 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": user})
 	case http.MethodPut:
 		var input struct {
-			RoleIDs  *[]string `json:"role_ids"`
-			Disabled *bool     `json:"disabled"`
+			DisplayName *string   `json:"display_name"`
+			RoleIDs     *[]string `json:"role_ids"`
+			Disabled    *bool     `json:"disabled"`
 		}
 		if err := decodeAccessJSON(r, &input); err != nil {
 			writeAccessError(w, err)
+			return
+		}
+		if input.DisplayName == nil && input.RoleIDs == nil && input.Disabled == nil {
+			writeAccessError(w, authz.ErrInvalidInput)
 			return
 		}
 		var user authz.User
@@ -146,15 +151,15 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 					return id, err
 				}
 			}
-			err = nil
-			if input.RoleIDs != nil {
+			user = current
+			if input.DisplayName != nil {
+				user, err = tx.SetUserDisplayName(r.Context(), id, *input.DisplayName)
+			}
+			if err == nil && input.RoleIDs != nil {
 				user, err = tx.SetUserRoles(r.Context(), id, *input.RoleIDs)
 			}
 			if err == nil && input.Disabled != nil {
 				user, err = tx.DisableUser(r.Context(), id, *input.Disabled)
-			}
-			if input.RoleIDs == nil && input.Disabled == nil {
-				err = authz.ErrInvalidInput
 			}
 			return id, err
 		})
@@ -166,6 +171,74 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
 	}
+}
+
+func (d Dependencies) handleAccessMePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	if actor.Bootstrap {
+		writeAccessError(w, authz.ErrForbidden)
+		return
+	}
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.password.change", "user", actor.ID, "", nil, func(tx *authz.Manager) (string, error) {
+		return actor.ID, tx.ChangePassword(r.Context(), actor.ID, input.CurrentPassword, input.NewPassword)
+	})
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (d Dependencies) handleAccessUserPassword(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	id := r.PathValue("id")
+	var input struct {
+		NewPassword string `json:"new_password"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.password.reset", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
+		current, err := tx.GetUser(r.Context(), id)
+		if err != nil {
+			return id, err
+		}
+		if !actor.Has(authz.PermissionSystemAdmin) {
+			if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
+				return id, err
+			}
+		}
+		return id, tx.ResetPassword(r.Context(), id, input.NewPassword)
+	})
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (d Dependencies) handleAccessPermissions(w http.ResponseWriter, r *http.Request) {
@@ -646,6 +719,9 @@ func ensureDelegableRoles(ctx context.Context, manager *authz.Manager, actor aut
 			return authz.ErrForbidden
 		}
 		role, err := manager.GetRole(ctx, roleID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -689,6 +765,8 @@ func writeAccessError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusUnauthorized, "authentication_required", "authentication required"
 	case errors.Is(err, authz.ErrForbidden):
 		status, code, message = http.StatusForbidden, "permission_denied", "permission denied"
+	case errors.Is(err, authz.ErrLastAdministrator):
+		status, code, message = http.StatusConflict, "last_admin_protected", "cannot disable or demote the last sign-in capable full administrator"
 	case errors.Is(err, authz.ErrInvalidInput), errors.Is(err, secrets.ErrInvalidSecret):
 		status, code, message = http.StatusBadRequest, "invalid_input", "invalid request"
 	case errors.Is(err, storage.ErrQuotaExceeded):
@@ -700,5 +778,27 @@ func writeAccessError(w http.ResponseWriter, err error) {
 		writeJSON(w, status, quotaErrorPayload(err))
 		return
 	}
-	writeJSON(w, status, errorPayloadCode(code, message))
+	payload := errorPayloadCode(code, message)
+	if errors.Is(err, authz.ErrLastAdministrator) {
+		payload["details"] = map[string]any{"reason": "last_admin"}
+	}
+	var fieldErr *authz.FieldError
+	if errors.As(err, &fieldErr) && len(fieldErr.Fields) > 0 {
+		payload["fields"] = fieldErr.Fields
+	}
+	writeJSON(w, status, payload)
+}
+
+func filterAccessUsers(users []authz.User, raw string) []authz.User {
+	q := strings.ToLower(strings.TrimSpace(raw))
+	if q == "" {
+		return users
+	}
+	filtered := make([]authz.User, 0, len(users))
+	for _, user := range users {
+		if strings.Contains(strings.ToLower(user.Username), q) || strings.Contains(strings.ToLower(user.DisplayName), q) {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
 }

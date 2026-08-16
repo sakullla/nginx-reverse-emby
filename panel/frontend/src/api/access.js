@@ -1,10 +1,62 @@
 import { api } from './client'
 import {
   clearCredentials,
+  clearSessionToken,
   setSessionToken
 } from './authState'
 
 const body = (response) => response.data
+
+const SECRET_KEYS = new Set([
+  'password',
+  'password_hash',
+  'current_password',
+  'new_password'
+])
+
+function omitSecrets(value) {
+  if (!value || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map(omitSecrets)
+  const result = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (SECRET_KEYS.has(key)) continue
+    result[key] = omitSecrets(item)
+  }
+  return result
+}
+
+function withAccessError(promise) {
+  return promise.catch((error) => {
+    const data = error?.response?.data
+    if (data && typeof data === 'object') {
+      if (data.fields != null) error.fields = data.fields
+      if (data.details != null) error.details = data.details
+      if (error.code == null && data.code != null) error.code = data.code
+    }
+    throw error
+  })
+}
+
+function userPath(id) {
+  return `/access/users/${encodeURIComponent(id)}`
+}
+
+function createUserInput(input = {}) {
+  return {
+    username: input.username,
+    display_name: input.display_name,
+    password: input.password,
+    role_ids: input.role_ids
+  }
+}
+
+function updateUserInput(input = {}) {
+  const payload = {}
+  if (Object.hasOwn(input, 'display_name')) payload.display_name = input.display_name
+  if (Object.hasOwn(input, 'role_ids')) payload.role_ids = input.role_ids
+  if (Object.hasOwn(input, 'disabled')) payload.disabled = input.disabled
+  return payload
+}
 
 export async function login(username, password) {
   clearCredentials()
@@ -22,9 +74,40 @@ export async function logout() {
 }
 
 export const fetchCurrentActor = () => api.get('/auth/me').then(body).then((data) => data.actor)
-export const fetchUsers = () => api.get('/access/users').then(body).then((data) => data.users)
-export const createUser = (input) => api.post('/access/users', input).then(body).then((data) => data.user)
-export const updateUser = (id, input) => api.put(`/access/users/${encodeURIComponent(id)}`, input).then(body).then((data) => data.user)
+export function fetchUsers(query) {
+  const q = String(query?.q ?? '').trim()
+  return withAccessError(api.get('/access/users', q ? { params: { q } } : undefined))
+    .then(body)
+    .then((data) => (Array.isArray(data.users) ? data.users : []).map(omitSecrets))
+}
+export function fetchUser(id) {
+  return withAccessError(api.get(userPath(id)))
+    .then(body)
+    .then((data) => omitSecrets(data.user))
+}
+export function createUser(input) {
+  return withAccessError(api.post('/access/users', createUserInput(input)))
+    .then(body)
+    .then((data) => omitSecrets(data.user))
+}
+export function updateUser(id, input) {
+  return withAccessError(api.put(userPath(id), updateUserInput(input)))
+    .then(body)
+    .then((data) => omitSecrets(data.user))
+}
+export async function changePassword(input = {}) {
+  const payload = await withAccessError(api.post('/access/me/password', {
+    current_password: input.current_password,
+    new_password: input.new_password
+  })).then(body)
+  clearSessionToken()
+  return omitSecrets(payload)
+}
+export function resetUserPassword(id, input = {}) {
+  return withAccessError(api.post(`${userPath(id)}/password`, {
+    new_password: input.new_password
+  })).then(body).then(omitSecrets)
+}
 export const fetchRoles = () => api.get('/access/roles').then(body).then((data) => data.roles)
 export const createRole = (input) => api.post('/access/roles', input).then(body).then((data) => data.role)
 export const updateRolePermissions = (id, permissions) => api.put(`/access/roles/${encodeURIComponent(id)}`, { permissions }).then(body).then((data) => data.role)

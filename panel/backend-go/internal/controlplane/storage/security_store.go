@@ -22,6 +22,8 @@ var (
 	ErrQuotaActorRequired           = errors.New("quota actor required")
 	ErrCertificateTargetsCrossGroup = errors.New("certificate targets span resource groups")
 	ErrCertificateGroupMismatch     = errors.New("certificate resource group does not match target agents")
+	ErrUsernameTaken                = errors.New("unique username constraint")
+	ErrLastFullAdministrator        = errors.New("last full administrator protected")
 )
 
 const (
@@ -87,12 +89,12 @@ func QuotaActorFromContext(ctx context.Context) (QuotaActor, bool) {
 }
 
 func (s *GormStore) CreateUser(ctx context.Context, row UserRow) error {
-	return s.writeTransaction(ctx, func(tx *gorm.DB) error { return tx.Create(&row).Error })
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error { return createUserTx(tx, row) })
 }
 
 func (s *GormStore) CreateUserWithRoleBindings(ctx context.Context, row UserRow, bindings []RoleBindingRow) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if err := tx.Create(&row).Error; err != nil {
+		if err := createUserTx(tx, row); err != nil {
 			return err
 		}
 		for _, binding := range bindings {
@@ -107,11 +109,35 @@ func (s *GormStore) CreateUserWithRoleBindings(ctx context.Context, row UserRow,
 	})
 }
 
+func createUserTx(tx *gorm.DB, row UserRow) error {
+	row.Username = strings.ToLower(strings.TrimSpace(row.Username))
+	if row.Username == "" {
+		return fmt.Errorf("username is required")
+	}
+	var existing UserRow
+	err := tx.Where("username = ?", row.Username).First(&existing).Error
+	if err == nil {
+		return ErrUsernameTaken
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if err := tx.Create(&row).Error; err != nil {
+		if isDuplicateKeyError(err) {
+			return ErrUsernameTaken
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *GormStore) SaveUser(ctx context.Context, row UserRow) error {
 	row.UpdatedAt = time.Now().UTC()
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		// Username is immutable after create; password changes keep using this
+		// helper only when the caller also revokes that user's sessions.
 		result := tx.Model(&UserRow{}).Where("id = ?", row.ID).Updates(map[string]any{
-			"username": row.Username, "display_name": row.DisplayName, "password_hash": row.PasswordHash,
+			"display_name": row.DisplayName, "password_hash": row.PasswordHash,
 			"disabled": row.Disabled, "auth_revision": row.AuthRevision, "updated_at": row.UpdatedAt,
 		})
 		if result.Error != nil {
@@ -137,8 +163,18 @@ func (s *GormStore) GetUserByUsername(ctx context.Context, username string) (Use
 }
 
 func (s *GormStore) ListUsers(ctx context.Context) ([]UserRow, error) {
+	return s.ListUsersFiltered(ctx, "")
+}
+
+func (s *GormStore) ListUsersFiltered(ctx context.Context, q string) ([]UserRow, error) {
+	query := s.db.WithContext(ctx).Model(&UserRow{})
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q != "" {
+		like := "%" + q + "%"
+		query = query.Where("LOWER(username) LIKE ? OR LOWER(COALESCE(display_name, '')) LIKE ?", like, like)
+	}
 	var rows []UserRow
-	err := s.db.WithContext(ctx).Order("username ASC").Find(&rows).Error
+	err := query.Order("username ASC").Find(&rows).Error
 	return rows, err
 }
 
@@ -168,6 +204,68 @@ func (s *GormStore) RevokeUserSessions(ctx context.Context, userID string, at ti
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		return tx.Model(&SessionRow{}).Where("user_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", at).Error
 	})
+}
+
+func (s *GormStore) UpdateUserPasswordAndRevokeSessions(ctx context.Context, userID, passwordHash string, at time.Time) error {
+	if strings.TrimSpace(userID) == "" || passwordHash == "" {
+		return fmt.Errorf("password hash is required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		result := tx.Model(&UserRow{}).Where("id = ?", userID).Updates(map[string]any{
+			"password_hash": passwordHash,
+			"auth_revision": gorm.Expr("auth_revision + 1"),
+			"updated_at":    at,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Model(&SessionRow{}).Where("user_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", at).Error
+	})
+}
+
+func (s *GormStore) ListUserSessions(ctx context.Context, userID string) ([]SessionRow, error) {
+	var rows []SessionRow
+	err := s.db.WithContext(ctx).Where("user_id = ?", userID).Order("created_at ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (s *GormStore) EnabledFullAdministratorIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := s.db.WithContext(ctx).Raw(`
+		SELECT DISTINCT u.id
+		FROM user_rows u
+		WHERE u.disabled = ?
+		  AND (
+			EXISTS (SELECT 1 FROM role_binding_rows rb WHERE rb.user_id = u.id AND rb.role_id = ?)
+			OR EXISTS (
+				SELECT 1 FROM role_binding_rows rb
+				JOIN role_permission_rows rp ON rp.role_id = rb.role_id
+				WHERE rb.user_id = u.id AND rp.permission_id = ?
+			)
+		  )
+		ORDER BY u.id
+	`, false, "administrator", "*").Scan(&ids).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return ids, nil
+}
+
+func (s *GormStore) RequireEnabledFullAdministrator(ctx context.Context) error {
+	ids, err := s.EnabledFullAdministratorIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return ErrLastFullAdministrator
+	}
+	return nil
 }
 
 func (s *GormStore) UpsertPermission(ctx context.Context, row PermissionRow) error {

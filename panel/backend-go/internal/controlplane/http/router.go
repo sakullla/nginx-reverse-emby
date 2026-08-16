@@ -365,6 +365,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/auth/logout", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLogout)))
 		mux.Handle(prefix+"/access/users", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUsers)))
 		mux.Handle(prefix+"/access/users/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUser)))
+		mux.Handle(prefix+"/access/users/{id}/password", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUserPassword)))
+		mux.Handle(prefix+"/access/me/password", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessMePassword)))
 		mux.Handle(prefix+"/access/permissions", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessPermissions)))
 		mux.Handle(prefix+"/access/roles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRoles)))
 		mux.Handle(prefix+"/access/roles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRole)))

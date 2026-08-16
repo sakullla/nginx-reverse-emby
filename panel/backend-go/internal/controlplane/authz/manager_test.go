@@ -4,9 +4,11 @@ package authz_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -311,6 +313,228 @@ func TestAuthorizationPersistsAcrossReopenAndNestedGroupsFailClosed(t *testing.T
 	}
 }
 
+func TestCreateUserRejectsFieldErrorsWithoutCreating(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	manager := newAccessManager(t)
+	before, err := manager.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = manager.CreateUser(ctx, "  ", "Admin", "short", nil)
+	fields := fieldMessages(t, err)
+	if fields["username"] == "" || fields["password"] == "" || fields["role_ids"] == "" {
+		t.Fatalf("CreateUser() fields = %#v, want username/password/role_ids", fields)
+	}
+
+	_, err = manager.CreateUser(ctx, "alice", "Alice", "correct-horse-battery", []string{"missing-role"})
+	fields = fieldMessages(t, err)
+	if fields["role_ids"] == "" {
+		t.Fatalf("CreateUser(unknown role) fields = %#v", fields)
+	}
+
+	created, err := manager.CreateUser(ctx, " Alice ", "Alice", "correct-horse-battery", []string{authz.RoleAdministrator})
+	if err != nil {
+		t.Fatalf("CreateUser() error = %v", err)
+	}
+	if created.Username != "alice" {
+		t.Fatalf("CreateUser() username = %q, want alice", created.Username)
+	}
+	assertUserHasNoSecretMaterial(t, created)
+
+	_, err = manager.CreateUser(ctx, "ALICE", "Dup", "correct-horse-battery", []string{authz.RoleOperator})
+	fields = fieldMessages(t, err)
+	if fields["username"] == "" {
+		t.Fatalf("CreateUser(duplicate) fields = %#v", fields)
+	}
+
+	after, err := manager.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("ListUsers() len = %d, want %d", len(after), len(before)+1)
+	}
+}
+
+func TestSetUserDisplayNameDoesNotChangeUsername(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	manager := newAccessManager(t)
+	user, err := manager.CreateUser(ctx, "bob", "Bob", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := manager.SetUserDisplayName(ctx, user.ID, "  Bobby  ")
+	if err != nil {
+		t.Fatalf("SetUserDisplayName() error = %v", err)
+	}
+	if updated.Username != "bob" || updated.DisplayName != "Bobby" {
+		t.Fatalf("updated user = %+v, want username bob display Bobby", updated)
+	}
+	reloaded, err := manager.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Username != "bob" || reloaded.DisplayName != "Bobby" {
+		t.Fatalf("GetUser() = %+v after display name update", reloaded)
+	}
+}
+
+func TestLastAdministratorProtection(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	manager := newAccessManager(t)
+	admin, err := manager.CreateUser(ctx, "root", "Root", "correct-horse-battery", []string{authz.RoleAdministrator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator, err := manager.CreateUser(ctx, "ops", "Ops", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminLogin, err := manager.Login(ctx, admin.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.DisableUser(ctx, admin.ID, true); !errors.Is(err, authz.ErrLastAdministrator) {
+		t.Fatalf("DisableUser(last admin) error = %v, want last administrator", err)
+	}
+	if _, err := manager.SetUserRoles(ctx, admin.ID, []string{authz.RoleOperator}); !errors.Is(err, authz.ErrLastAdministrator) {
+		t.Fatalf("SetUserRoles(last admin) error = %v, want last administrator", err)
+	}
+	if _, err := manager.SetUserRoles(ctx, admin.ID, nil); !errors.Is(err, authz.ErrInvalidInput) {
+		t.Fatalf("SetUserRoles(empty) error = %v, want invalid input", err)
+	}
+	current, err := manager.GetUser(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Disabled || !containsString(current.RoleIDs, authz.RoleAdministrator) {
+		t.Fatalf("last admin mutated after rejected protection: %+v", current)
+	}
+	if _, err := manager.AuthenticateSession(ctx, adminLogin.Token); err != nil {
+		t.Fatalf("AuthenticateSession() after rejected last-admin disable error = %v", err)
+	}
+
+	second, err := manager.CreateUser(ctx, "root-2", "Root 2", "correct-horse-battery", []string{authz.RoleAdministrator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.DisableUser(ctx, admin.ID, true); err != nil {
+		t.Fatalf("DisableUser(second admin remains) error = %v", err)
+	}
+	if _, err := manager.DisableUser(ctx, second.ID, true); !errors.Is(err, authz.ErrLastAdministrator) {
+		t.Fatalf("DisableUser(remaining admin) error = %v, want last administrator", err)
+	}
+	if _, err := manager.DisableUser(ctx, operator.ID, true); err != nil {
+		t.Fatalf("DisableUser(operator) error = %v", err)
+	}
+
+	starRole, err := manager.CreateRole(ctx, "star-admin", "", []string{authz.PermissionAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	starUser, err := manager.CreateUser(ctx, "star", "Star", "correct-horse-battery", []string{starRole.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.DisableUser(ctx, second.ID, true); err != nil {
+		t.Fatalf("DisableUser(builtin admin while * remains) error = %v", err)
+	}
+	if _, err := manager.SetUserRoles(ctx, starUser.ID, []string{authz.RoleReadonly}); !errors.Is(err, authz.ErrLastAdministrator) {
+		t.Fatalf("SetUserRoles(* holder) error = %v, want last administrator", err)
+	}
+}
+
+func TestChangeAndResetPasswordRevokeSessions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	manager := newAccessManager(t)
+	user, err := manager.CreateUser(ctx, "alice", "Alice", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := authz.BootstrapActor()
+	err = manager.AuditedMutation(ctx, actor, "access.user.password.change", "user", user.ID, "", map[string]any{"password": "correct-horse-battery", "new_password": "new-correct-horse"}, func(tx *authz.Manager) (string, error) {
+		return user.ID, tx.ChangePassword(ctx, user.ID, "correct-horse-battery", "new-correct-horse")
+	})
+	if err != nil {
+		t.Fatalf("ChangePassword() error = %v", err)
+	}
+	assertSessionRevoked(t, manager, first.Token)
+	assertSessionRevoked(t, manager, second.Token)
+	if _, err := manager.Login(ctx, user.Username, "correct-horse-battery"); !errors.Is(err, authz.ErrInvalidCredentials) {
+		t.Fatalf("Login(old password) error = %v, want invalid credentials", err)
+	}
+	afterChange, err := manager.Login(ctx, user.Username, "new-correct-horse")
+	if err != nil {
+		t.Fatalf("Login(new password) error = %v", err)
+	}
+
+	err = manager.AuditedMutation(ctx, actor, "access.user.password.reset", "user", user.ID, "", map[string]any{"new_password": "reset-correct-horse"}, func(tx *authz.Manager) (string, error) {
+		return user.ID, tx.ResetPassword(ctx, user.ID, "reset-correct-horse")
+	})
+	if err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	assertSessionRevoked(t, manager, afterChange.Token)
+	if _, err := manager.Login(ctx, user.Username, "new-correct-horse"); !errors.Is(err, authz.ErrInvalidCredentials) {
+		t.Fatalf("Login(pre-reset password) error = %v, want invalid credentials", err)
+	}
+	if _, err := manager.Login(ctx, user.Username, "reset-correct-horse"); err != nil {
+		t.Fatalf("Login(reset password) error = %v", err)
+	}
+	assertAuditHasNoSecretMaterial(t, manager)
+	reloaded, err := manager.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertUserHasNoSecretMaterial(t, reloaded)
+}
+
+func TestPasswordFailuresLeaveCredentialsAndSessions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	manager := newAccessManager(t)
+	user, err := manager.CreateUser(ctx, "alice", "Alice", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ChangePassword(ctx, user.ID, "wrong-horse-battery", "new-correct-horse"); !errors.Is(err, authz.ErrInvalidCredentials) {
+		t.Fatalf("ChangePassword(wrong current) error = %v, want invalid credentials", err)
+	}
+	shortErr := manager.ChangePassword(ctx, user.ID, "correct-horse-battery", "short")
+	if !errors.Is(shortErr, authz.ErrInvalidInput) {
+		t.Fatalf("ChangePassword(short next) error = %v, want invalid input", shortErr)
+	}
+	if fields := fieldMessages(t, shortErr); fields["new_password"] == "" {
+		t.Fatalf("ChangePassword(short next) fields = %#v", fields)
+	}
+	if err := manager.ResetPassword(ctx, user.ID, "tiny"); !errors.Is(err, authz.ErrInvalidInput) {
+		t.Fatalf("ResetPassword(short next) error = %v, want invalid input", err)
+	}
+	if _, err := manager.AuthenticateSession(ctx, login.Token); err != nil {
+		t.Fatalf("AuthenticateSession() after failed password writes error = %v", err)
+	}
+	if _, err := manager.Login(ctx, user.Username, "correct-horse-battery"); err != nil {
+		t.Fatalf("Login(original password) after failures error = %v", err)
+	}
+}
+
 var securityStoreTemplate struct {
 	once sync.Once
 	data []byte
@@ -351,4 +575,87 @@ func newSecurityStore(t *testing.T) *storage.GormStore {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func newAccessManager(t *testing.T) *authz.Manager {
+	t.Helper()
+	manager := authz.NewManager(newSecurityStore(t), authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	return manager
+}
+
+func fieldMessages(t *testing.T, err error) map[string]string {
+	t.Helper()
+	var fieldErr *authz.FieldError
+	if !errors.As(err, &fieldErr) {
+		t.Fatalf("error %v is not FieldError", err)
+	}
+	return fieldErr.Fields
+}
+
+func assertUserHasNoSecretMaterial(t *testing.T, user authz.User) {
+	t.Helper()
+	encoded, err := json.Marshal(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(encoded))
+	for _, marker := range []string{"password", "password_hash", "correct-horse", "new-correct", "reset-correct"} {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			t.Fatalf("user payload contains secret material %q: %s", marker, encoded)
+		}
+	}
+}
+
+func assertSessionRevoked(t *testing.T, manager *authz.Manager, token string) {
+	t.Helper()
+	if _, err := manager.AuthenticateSession(t.Context(), token); !errors.Is(err, authz.ErrUnauthorized) {
+		t.Fatalf("AuthenticateSession() error = %v, want unauthorized", err)
+	}
+}
+
+func assertAuditHasNoSecretMaterial(t *testing.T, manager *authz.Manager) {
+	t.Helper()
+	events, err := manager.ListAuditEvents(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(encoded))
+	for _, marker := range []string{"correct-horse-battery", "new-correct-horse", "reset-correct-horse"} {
+		if strings.Contains(lower, marker) {
+			t.Fatalf("audit events contain password material %q: %s", marker, encoded)
+		}
+	}
+	foundRedaction := false
+	for _, event := range events {
+		if event.Metadata == nil {
+			continue
+		}
+		for key, value := range event.Metadata {
+			if strings.Contains(strings.ToLower(key), "password") {
+				if value != "[REDACTED]" {
+					t.Fatalf("audit metadata %q = %#v, want [REDACTED]", key, value)
+				}
+				foundRedaction = true
+			}
+		}
+	}
+	if !foundRedaction {
+		t.Fatal("expected password keys in audit metadata to be redacted")
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

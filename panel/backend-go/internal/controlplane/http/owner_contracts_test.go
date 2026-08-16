@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +22,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestTokenMatchesRequiresExactSecret(t *testing.T) {
@@ -319,4 +323,466 @@ func (f *fakeOwnerRuleService) Update(_ context.Context, agentID string, id int,
 }
 func (f *fakeOwnerRuleService) Delete(context.Context, string, int) (service.HTTPRule, error) {
 	return service.HTTPRule{}, io.EOF
+}
+
+func TestAccessUserAccountOwnerContract(t *testing.T) {
+	t.Parallel()
+	env := newUserAccountHTTP(t)
+	bootstrap := "secret"
+	password := "correct-horse-battery"
+
+	created := env.do(t, http.MethodPost, "/api/access/users", bootstrapToken(bootstrap), `{
+		"username":" Alice ",
+		"display_name":"Alice",
+		"password":"`+password+`",
+		"role_ids":["administrator"]
+	}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create user status=%d body=%s", created.Code, created.Body.String())
+	}
+	assertJSONHasNoSecretMaterial(t, created.Body.Bytes())
+	alice := decodeUser(t, created)
+	if alice.Username != "alice" || alice.DisplayName != "Alice" {
+		t.Fatalf("created user = %+v, want normalized alice", alice)
+	}
+	if alice.ID == "" || !containsString(alice.RoleIDs, authz.RoleAdministrator) {
+		t.Fatalf("created user missing id or administrator role: %+v", alice)
+	}
+
+	beforeUsers := env.listUsers(t, bootstrap, "")
+	for _, item := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"empty", `{"username":"","display_name":"X","password":"` + password + `","role_ids":["administrator"]}`, []string{"username"}},
+		{"short-password", `{"username":"bob","display_name":"Bob","password":"short","role_ids":["administrator"]}`, []string{"password"}},
+		{"missing-role", `{"username":"bob","display_name":"Bob","password":"` + password + `","role_ids":[]}`, []string{"role_ids"}},
+		{"unknown-role", `{"username":"bob","display_name":"Bob","password":"` + password + `","role_ids":["missing-role"]}`, []string{"role_ids"}},
+		{"duplicate", `{"username":"ALICE","display_name":"Dup","password":"` + password + `","role_ids":["operator"]}`, []string{"username"}},
+	} {
+		t.Run("create-"+item.name, func(t *testing.T) {
+			rec := env.do(t, http.MethodPost, "/api/access/users", bootstrapToken(bootstrap), item.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			payload := decodeMap(t, rec)
+			if payload["code"] != "invalid_input" {
+				t.Fatalf("code=%v body=%s", payload["code"], rec.Body.String())
+			}
+			fields := fieldMap(payload["fields"])
+			for _, key := range item.want {
+				if strings.TrimSpace(fields[key]) == "" {
+					t.Fatalf("fields=%v missing %s body=%s", fields, key, rec.Body.String())
+				}
+			}
+			assertJSONHasNoSecretMaterial(t, rec.Body.Bytes())
+		})
+	}
+	afterUsers := env.listUsers(t, bootstrap, "")
+	if len(afterUsers) != len(beforeUsers) {
+		t.Fatalf("failed creates inserted users: before=%d after=%d", len(beforeUsers), len(afterUsers))
+	}
+
+	operator := env.do(t, http.MethodPost, "/api/access/users", bootstrapToken(bootstrap), `{
+		"username":"Operator",
+		"display_name":"Ops",
+		"password":"`+password+`",
+		"role_ids":["operator"]
+	}`)
+	if operator.Code != http.StatusCreated {
+		t.Fatalf("create operator status=%d body=%s", operator.Code, operator.Body.String())
+	}
+	ops := decodeUser(t, operator)
+
+	renamed := env.do(t, http.MethodPut, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), `{"display_name":"Alicia"}`)
+	if renamed.Code != http.StatusOK {
+		t.Fatalf("update display_name status=%d body=%s", renamed.Code, renamed.Body.String())
+	}
+	got := decodeUser(t, renamed)
+	if got.Username != "alice" || got.DisplayName != "Alicia" {
+		t.Fatalf("updated user = %+v, want display Alicia without username change", got)
+	}
+
+	usernameWrite := env.do(t, http.MethodPut, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), `{"username":"renamed"}`)
+	if usernameWrite.Code != http.StatusBadRequest {
+		t.Fatalf("put username status=%d body=%s", usernameWrite.Code, usernameWrite.Body.String())
+	}
+	deleted := env.do(t, http.MethodDelete, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), "")
+	if deleted.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("delete user status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+
+	roles := env.do(t, http.MethodPut, "/api/access/users/"+ops.ID, bootstrapToken(bootstrap), `{"role_ids":["readonly"]}`)
+	if roles.Code != http.StatusOK {
+		t.Fatalf("update roles status=%d body=%s", roles.Code, roles.Body.String())
+	}
+	if got = decodeUser(t, roles); !containsString(got.RoleIDs, authz.RoleReadonly) || containsString(got.RoleIDs, authz.RoleOperator) {
+		t.Fatalf("updated roles = %v", got.RoleIDs)
+	}
+
+	disabled := env.do(t, http.MethodPut, "/api/access/users/"+ops.ID, bootstrapToken(bootstrap), `{"disabled":true}`)
+	if disabled.Code != http.StatusOK {
+		t.Fatalf("disable operator status=%d body=%s", disabled.Code, disabled.Body.String())
+	}
+	if got = decodeUser(t, disabled); !got.Disabled {
+		t.Fatalf("operator not disabled: %+v", got)
+	}
+
+	lastAdmin := env.do(t, http.MethodPut, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), `{"disabled":true}`)
+	if lastAdmin.Code == http.StatusOK {
+		t.Fatalf("disabled last administrator: %s", lastAdmin.Body.String())
+	}
+	lastAdminBody := decodeMap(t, lastAdmin)
+	if code, _ := lastAdminBody["code"].(string); code != "last_admin_protected" && code != "last_administrator_protected" {
+		t.Fatalf("last admin code=%q body=%s", code, lastAdmin.Body.String())
+	}
+	demote := env.do(t, http.MethodPut, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), `{"role_ids":["operator"]}`)
+	if demote.Code == http.StatusOK {
+		t.Fatalf("demoted last administrator: %s", demote.Body.String())
+	}
+	current := env.getUser(t, bootstrap, alice.ID)
+	if current.Disabled || current.Username != "alice" || !containsString(current.RoleIDs, authz.RoleAdministrator) {
+		t.Fatalf("last admin mutated after rejected writes: %+v", current)
+	}
+
+	filtered := env.listUsers(t, bootstrap, " ali ")
+	if len(filtered) != 1 || filtered[0].Username != "alice" {
+		t.Fatalf("list q=ali users=%v", usernames(filtered))
+	}
+
+	first := env.login(t, "alice", password)
+	second := env.login(t, "alice", password)
+	if err := env.Manager.ChangePassword(t.Context(), alice.ID, password, "new-correct-horse"); err != nil {
+		t.Fatalf("ChangePassword() error = %v", err)
+	}
+	assertHTTPSessionRejected(t, env, first)
+	assertHTTPSessionRejected(t, env, second)
+	if rec := env.do(t, http.MethodPost, "/api/auth/login", nil, `{"username":"alice","password":"`+password+`"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("login old password status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	changed := env.login(t, "alice", "new-correct-horse")
+	if err := env.Manager.ResetPassword(t.Context(), alice.ID, "reset-correct-horse"); err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	assertHTTPSessionRejected(t, env, changed)
+	env.login(t, "alice", "reset-correct-horse")
+
+	selfLogin := env.login(t, "alice", "reset-correct-horse")
+	if err := env.Manager.ChangePassword(t.Context(), alice.ID, "wrong-horse-battery", "fresh-correct"); !errors.Is(err, authz.ErrInvalidCredentials) {
+		t.Fatalf("ChangePassword(wrong current) error = %v", err)
+	}
+	if err := env.Manager.ChangePassword(t.Context(), alice.ID, "reset-correct-horse", "short"); !errors.Is(err, authz.ErrInvalidInput) {
+		t.Fatalf("ChangePassword(short next) error = %v", err)
+	}
+	me := env.do(t, http.MethodGet, "/api/auth/me", sessionToken(selfLogin), "")
+	if me.Code != http.StatusOK {
+		t.Fatalf("session after failed password writes status=%d body=%s", me.Code, me.Body.String())
+	}
+
+	changeRoute := env.do(t, http.MethodPost, "/api/access/me/password", sessionToken(selfLogin), `{
+		"current_password":"reset-correct-horse",
+		"new_password":"route-correct-horse"
+	}`)
+	if changeRoute.Code != http.StatusOK {
+		t.Fatalf("POST /access/me/password status=%d body=%s", changeRoute.Code, changeRoute.Body.String())
+	}
+	assertJSONHasNoSecretMaterial(t, changeRoute.Body.Bytes())
+	assertHTTPSessionRejected(t, env, selfLogin)
+	resetActor := env.login(t, "alice", "route-correct-horse")
+	resetRoute := env.do(t, http.MethodPost, "/api/access/users/"+ops.ID+"/password", bootstrapToken(bootstrap), `{"new_password":"ops-reset-horse"}`)
+	if resetRoute.Code != http.StatusOK {
+		t.Fatalf("POST /access/users/{id}/password status=%d body=%s", resetRoute.Code, resetRoute.Body.String())
+	}
+	assertJSONHasNoSecretMaterial(t, resetRoute.Body.Bytes())
+	_ = resetActor
+
+	events := env.do(t, http.MethodGet, "/api/access/audit-events?limit=100", bootstrapToken(bootstrap), "")
+	if events.Code != http.StatusOK {
+		t.Fatalf("audit status=%d body=%s", events.Code, events.Body.String())
+	}
+	assertJSONHasNoSecretMaterial(t, events.Body.Bytes())
+}
+
+func TestUserAccountStoreProtectsUsernamePasswordAndLastAdmin(t *testing.T) {
+	t.Parallel()
+	store := newHTTPAuthzStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := manager.CreateUser(t.Context(), "root", "Root", "correct-horse-battery", []string{authz.RoleAdministrator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.CreateUser(t.Context(), "ops", "Ops", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	row, err := store.GetUser(t.Context(), admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHash := row.PasswordHash
+	row.Username = "renamed"
+	if err := store.SaveUser(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.GetUser(t.Context(), admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Username != "root" {
+		t.Fatalf("SaveUser changed username to %q", reloaded.Username)
+	}
+
+	dup := storage.UserRow{ID: "usr_dup", Username: "ROOT", DisplayName: "Dup", PasswordHash: originalHash, AuthRevision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := store.CreateUser(t.Context(), dup); !errors.Is(err, storage.ErrUsernameTaken) {
+		t.Fatalf("CreateUser(duplicate) error = %v, want username taken", err)
+	}
+
+	filtered, err := store.ListUsersFiltered(t.Context(), "Roo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].Username != "root" {
+		t.Fatalf("ListUsersFiltered(Roo) = %+v", filtered)
+	}
+
+	login, err := manager.Login(t.Context(), "root", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := manager.Login(t.Context(), "root", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateUserPasswordAndRevokeSessions(t.Context(), "missing-user", "hash", time.Now().UTC()); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("UpdateUserPasswordAndRevokeSessions(missing) error = %v", err)
+	}
+	sessions, err := store.ListUserSessions(t.Context(), admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := 0
+	for _, session := range sessions {
+		if session.RevokedAt == nil {
+			active++
+		}
+	}
+	if active != 2 {
+		t.Fatalf("active sessions after failed password write = %d, want 2", active)
+	}
+	if _, err := manager.AuthenticateSession(t.Context(), login.Token); err != nil {
+		t.Fatalf("session revoked after failed password write: %v", err)
+	}
+
+	if err := store.UpdateUserPasswordAndRevokeSessions(t.Context(), admin.ID, "replacement-hash", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.AuthenticateSession(t.Context(), login.Token); !errors.Is(err, authz.ErrUnauthorized) {
+		t.Fatalf("first session after password write error = %v", err)
+	}
+	if _, err := manager.AuthenticateSession(t.Context(), other.Token); !errors.Is(err, authz.ErrUnauthorized) {
+		t.Fatalf("second session after password write error = %v", err)
+	}
+
+	ids, err := store.EnabledFullAdministratorIDs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != admin.ID {
+		t.Fatalf("EnabledFullAdministratorIDs() = %v, want [%s]", ids, admin.ID)
+	}
+	if err := store.RequireEnabledFullAdministrator(t.Context()); err != nil {
+		t.Fatalf("RequireEnabledFullAdministrator() error = %v", err)
+	}
+}
+
+type userAccountHTTP struct {
+	*authz.Manager
+	mux http.Handler
+}
+
+type userAccountUser struct {
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	Disabled    bool     `json:"disabled"`
+	RoleIDs     []string `json:"role_ids"`
+}
+
+func newUserAccountHTTP(t *testing.T) userAccountHTTP {
+	t.Helper()
+	store := newHTTPAuthzStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	deps := Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{info: service.SystemInfo{Role: "master"}},
+		AgentService:  fakeOwnerAgentService{},
+		RuleService:   &fakeOwnerRuleService{},
+		AccessManager: manager,
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/auth/login", http.HandlerFunc(deps.handleLogin))
+	mux.Handle("/api/auth/me", deps.requirePanelToken(http.HandlerFunc(deps.handleMe)))
+	mux.Handle("/api/access/users", deps.requirePanelToken(http.HandlerFunc(deps.handleAccessUsers)))
+	mux.Handle("/api/access/users/{id}", deps.requirePanelToken(http.HandlerFunc(deps.handleAccessUser)))
+	mux.Handle("/api/access/audit-events", deps.requirePanelToken(http.HandlerFunc(deps.handleAuditEvents)))
+	if mePassword, ok := any(deps).(interface {
+		handleAccessMePassword(http.ResponseWriter, *http.Request)
+	}); ok {
+		mux.Handle("/api/access/me/password", deps.requirePanelToken(http.HandlerFunc(mePassword.handleAccessMePassword)))
+	}
+	if userPassword, ok := any(deps).(interface {
+		handleAccessUserPassword(http.ResponseWriter, *http.Request)
+	}); ok {
+		mux.Handle("/api/access/users/{id}/password", deps.requirePanelToken(http.HandlerFunc(userPassword.handleAccessUserPassword)))
+	}
+	return userAccountHTTP{Manager: manager, mux: mux}
+}
+
+func (env userAccountHTTP) do(t *testing.T, method, path string, auth func(*http.Request), body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if auth != nil {
+		auth(req)
+	}
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func (env userAccountHTTP) listUsers(t *testing.T, token, q string) []userAccountUser {
+	t.Helper()
+	path := "/api/access/users"
+	if strings.TrimSpace(q) != "" {
+		path += "?q=" + url.QueryEscape(q)
+	}
+	rec := env.do(t, http.MethodGet, path, bootstrapToken(token), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list users status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Users []userAccountUser `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	assertJSONHasNoSecretMaterial(t, rec.Body.Bytes())
+	return payload.Users
+}
+
+func (env userAccountHTTP) getUser(t *testing.T, token, id string) userAccountUser {
+	t.Helper()
+	rec := env.do(t, http.MethodGet, "/api/access/users/"+id, bootstrapToken(token), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get user status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	return decodeUser(t, rec)
+}
+
+func (env userAccountHTTP) login(t *testing.T, username, password string) string {
+	t.Helper()
+	rec := env.do(t, http.MethodPost, "/api/auth/login", nil, `{"username":"`+username+`","password":"`+password+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login %s status=%d body=%s", username, rec.Code, rec.Body.String())
+	}
+	assertJSONHasNoSecretMaterial(t, rec.Body.Bytes())
+	var payload struct {
+		Session struct {
+			Token string `json:"token"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Session.Token == "" {
+		t.Fatal("login returned empty session token")
+	}
+	return payload.Session.Token
+}
+
+func bootstrapToken(token string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set("X-Panel-Token", token) }
+}
+
+func sessionToken(token string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set("X-Panel-Session", token) }
+}
+
+func decodeUser(t *testing.T, rec *httptest.ResponseRecorder) userAccountUser {
+	t.Helper()
+	assertJSONHasNoSecretMaterial(t, rec.Body.Bytes())
+	var payload struct {
+		User userAccountUser `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode user %s: %v", rec.Body.String(), err)
+	}
+	return payload.User
+}
+
+func decodeMap(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	return payload
+}
+
+func fieldMap(value any) map[string]string {
+	raw, _ := value.(map[string]any)
+	out := map[string]string{}
+	for key, item := range raw {
+		out[key] = fmt.Sprint(item)
+	}
+	return out
+}
+
+func usernames(users []userAccountUser) []string {
+	out := make([]string, 0, len(users))
+	for _, user := range users {
+		out = append(out, user.Username)
+	}
+	return out
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func assertHTTPSessionRejected(t *testing.T, env userAccountHTTP, token string) {
+	t.Helper()
+	rec := env.do(t, http.MethodGet, "/api/auth/me", sessionToken(token), "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("session still authorized status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func assertJSONHasNoSecretMaterial(t *testing.T, raw []byte) {
+	t.Helper()
+	lower := strings.ToLower(string(raw))
+	for _, marker := range []string{"password_hash", "correct-horse-battery", "new-correct-horse", "reset-correct-horse", "route-correct-horse", "ops-reset-horse"} {
+		if strings.Contains(lower, marker) {
+			t.Fatalf("payload contains secret material %q: %s", marker, raw)
+		}
+	}
 }

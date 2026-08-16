@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +41,8 @@ const (
 	QuotaPublicPorts  = "public_port_count"
 	QuotaBandwidth    = "bandwidth_bytes_per_second"
 	QuotaTraffic      = "traffic_bytes"
+
+	MinPasswordLength = 10
 )
 
 var (
@@ -48,7 +51,34 @@ var (
 	ErrForbidden          = errors.New("permission denied")
 	ErrInvalidInput       = errors.New("invalid access-control input")
 	ErrAuditUnavailable   = errors.New("audit persistence unavailable")
+	ErrLastAdministrator  = errors.New("last administrator protected")
 )
+
+// FieldError is an invalid_input error with per-field messages for callers
+// that render form validation.
+type FieldError struct {
+	Fields map[string]string
+}
+
+func (e *FieldError) Error() string {
+	if e == nil || len(e.Fields) == 0 {
+		return ErrInvalidInput.Error()
+	}
+	keys := make([]string, 0, len(e.Fields))
+	for key := range e.Fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+": "+e.Fields[key])
+	}
+	return fmt.Sprintf("%s: %s", ErrInvalidInput.Error(), strings.Join(parts, "; "))
+}
+
+func (e *FieldError) Unwrap() error {
+	return ErrInvalidInput
+}
 
 type Store interface {
 	UpsertPermission(context.Context, storage.PermissionRow) error
@@ -251,14 +281,39 @@ func (m *Manager) EnsureDefaults(ctx context.Context) error {
 
 func (m *Manager) CreateUser(ctx context.Context, username, displayName, password string, roleIDs []string) (User, error) {
 	username = normalizeUsername(username)
-	if username == "" || len(password) < 10 {
-		return User{}, fmt.Errorf("%w: username and a password of at least 10 characters are required", ErrInvalidInput)
-	}
 	roleIDs = uniqueStrings(roleIDs)
+	fields := map[string]string{}
+	if username == "" {
+		fields["username"] = "username is required"
+	}
+	if len(password) < MinPasswordLength {
+		fields["password"] = fmt.Sprintf("password must be at least %d characters", MinPasswordLength)
+	}
+	if len(roleIDs) == 0 {
+		fields["role_ids"] = "at least one role is required"
+	}
+	unknownRole := false
 	for _, roleID := range roleIDs {
 		if _, _, err := m.store.GetRole(ctx, roleID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				unknownRole = true
+				continue
+			}
 			return User{}, err
 		}
+	}
+	if unknownRole {
+		fields["role_ids"] = "unknown role"
+	}
+	if username != "" {
+		if _, err := m.store.GetUserByUsername(ctx, username); err == nil {
+			fields["username"] = "username already exists"
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return User{}, err
+		}
+	}
+	if err := fieldErrors(fields); err != nil {
+		return User{}, err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -271,6 +326,9 @@ func (m *Manager) CreateUser(ctx context.Context, username, displayName, passwor
 		bindings = append(bindings, storage.RoleBindingRow{ID: newID("rb"), UserID: row.ID, RoleID: roleID, CreatedAt: now})
 	}
 	if err := m.store.CreateUserWithRoleBindings(ctx, row, bindings); err != nil {
+		if uniqueUsernameConflict(err) {
+			return User{}, newFieldError("username", "username already exists")
+		}
 		return User{}, err
 	}
 	return m.GetUser(ctx, row.ID)
@@ -345,16 +403,61 @@ func userFromRow(row storage.UserRow, roles []string) User {
 	return User{ID: row.ID, Username: row.Username, DisplayName: row.DisplayName, Disabled: row.Disabled, AuthRevision: row.AuthRevision, RoleIDs: roles, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
+func (m *Manager) SetUserDisplayName(ctx context.Context, userID, displayName string) (User, error) {
+	row, err := m.store.GetUser(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	row.DisplayName = strings.TrimSpace(displayName)
+	if err := m.store.SaveUser(ctx, row); err != nil {
+		return User{}, err
+	}
+	return m.GetUser(ctx, userID)
+}
+
 func (m *Manager) SetUserRoles(ctx context.Context, userID string, roleIDs []string) (User, error) {
+	var user User
+	err := m.transaction(ctx, func(tx *Manager) error {
+		var err error
+		user, err = tx.applyUserRoles(ctx, userID, roleIDs)
+		return err
+	})
+	return user, err
+}
+
+func (m *Manager) applyUserRoles(ctx context.Context, userID string, roleIDs []string) (User, error) {
+	if _, err := m.store.GetUser(ctx, userID); err != nil {
+		return User{}, err
+	}
 	current, err := m.store.UserRoleIDs(ctx, userID)
 	if err != nil {
 		return User{}, err
 	}
 	next := uniqueStrings(roleIDs)
+	fields := map[string]string{}
+	if len(next) == 0 {
+		fields["role_ids"] = "at least one role is required"
+	}
+	unknownRole := false
 	for _, roleID := range next {
 		if _, _, err := m.store.GetRole(ctx, roleID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				unknownRole = true
+				continue
+			}
 			return User{}, err
 		}
+	}
+	if unknownRole {
+		fields["role_ids"] = "unknown role"
+	}
+	if err := fieldErrors(fields); err != nil {
+		return User{}, err
+	}
+	if err := m.guardLastAdministrator(ctx, userID, next, nil); err != nil {
+		return User{}, err
+	}
+	for _, roleID := range next {
 		if !contains(current, roleID) {
 			if err := m.store.BindRole(ctx, storage.RoleBindingRow{ID: newID("rb"), UserID: userID, RoleID: roleID, CreatedAt: m.now()}); err != nil {
 				return User{}, err
@@ -380,8 +483,21 @@ func (m *Manager) SetUserRoles(ctx context.Context, userID string, roleIDs []str
 }
 
 func (m *Manager) DisableUser(ctx context.Context, userID string, disabled bool) (User, error) {
+	var user User
+	err := m.transaction(ctx, func(tx *Manager) error {
+		var err error
+		user, err = tx.applyUserDisabled(ctx, userID, disabled)
+		return err
+	})
+	return user, err
+}
+
+func (m *Manager) applyUserDisabled(ctx context.Context, userID string, disabled bool) (User, error) {
 	row, err := m.store.GetUser(ctx, userID)
 	if err != nil {
+		return User{}, err
+	}
+	if err := m.guardLastAdministrator(ctx, userID, nil, &disabled); err != nil {
 		return User{}, err
 	}
 	row.Disabled = disabled
@@ -395,6 +511,44 @@ func (m *Manager) DisableUser(ctx context.Context, userID string, disabled bool)
 		}
 	}
 	return m.GetUser(ctx, userID)
+}
+
+func (m *Manager) ChangePassword(ctx context.Context, userID, current, next string) error {
+	if err := validatePassword(next, "new_password"); err != nil {
+		return err
+	}
+	return m.transaction(ctx, func(tx *Manager) error {
+		return tx.writeUserPassword(ctx, userID, current, next, true)
+	})
+}
+
+func (m *Manager) ResetPassword(ctx context.Context, userID, next string) error {
+	if err := validatePassword(next, "new_password"); err != nil {
+		return err
+	}
+	return m.transaction(ctx, func(tx *Manager) error {
+		return tx.writeUserPassword(ctx, userID, "", next, false)
+	})
+}
+
+func (m *Manager) writeUserPassword(ctx context.Context, userID, current, next string, verifyCurrent bool) error {
+	row, err := m.store.GetUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if verifyCurrent && bcrypt.CompareHashAndPassword([]byte(row.PasswordHash), []byte(current)) != nil {
+		return ErrInvalidCredentials
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	row.PasswordHash = string(hash)
+	row.AuthRevision++
+	if err := m.store.SaveUser(ctx, row); err != nil {
+		return err
+	}
+	return m.store.RevokeUserSessions(ctx, userID, m.now())
 }
 
 func (m *Manager) Login(ctx context.Context, username, password string) (LoginResult, error) {
@@ -1072,14 +1226,119 @@ func contains(values []string, target string) bool {
 }
 
 func errorClass(err error) string {
-	if err == nil {
+	switch {
+	case err == nil:
 		return ""
-	}
-	if errors.Is(err, storage.ErrQuotaExceeded) {
+	case errors.Is(err, storage.ErrQuotaExceeded):
 		return "quota_exceeded"
-	}
-	if errors.Is(err, ErrForbidden) {
+	case errors.Is(err, ErrForbidden):
 		return "forbidden"
+	case errors.Is(err, ErrLastAdministrator):
+		return "last_administrator_protected"
+	case errors.Is(err, ErrInvalidCredentials):
+		return "invalid_credentials"
+	case errors.Is(err, ErrInvalidInput):
+		return "invalid_input"
+	default:
+		return "operation_failed"
 	}
-	return "operation_failed"
+}
+
+func newFieldError(field, message string) error {
+	return &FieldError{Fields: map[string]string{field: message}}
+}
+
+func fieldErrors(fields map[string]string) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(fields))
+	for key, value := range fields {
+		cloned[key] = value
+	}
+	return &FieldError{Fields: cloned}
+}
+
+func validatePassword(password, field string) error {
+	if len(password) < MinPasswordLength {
+		return newFieldError(field, fmt.Sprintf("password must be at least %d characters", MinPasswordLength))
+	}
+	return nil
+}
+
+func uniqueUsernameConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique") && strings.Contains(message, "username")
+}
+
+// guardLastAdministrator rejects mutations that would leave no enabled user
+// with permission "*" or the built-in administrator role. Bootstrap identities
+// are not users and are not counted.
+func (m *Manager) guardLastAdministrator(ctx context.Context, userID string, nextRoles []string, nextDisabled *bool) error {
+	remaining, err := m.countEnabledFullAdministratorsAfter(ctx, userID, nextRoles, nextDisabled)
+	if err != nil {
+		return err
+	}
+	if remaining > 0 {
+		return nil
+	}
+	current, err := m.countEnabledFullAdministratorsAfter(ctx, "", nil, nil)
+	if err != nil {
+		return err
+	}
+	if current == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: cannot disable or demote the last sign-in capable full administrator", ErrLastAdministrator)
+}
+
+func (m *Manager) countEnabledFullAdministratorsAfter(ctx context.Context, userID string, nextRoles []string, nextDisabled *bool) (int, error) {
+	users, err := m.store.ListUsers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, user := range users {
+		disabled := user.Disabled
+		if nextDisabled != nil && user.ID == userID {
+			disabled = *nextDisabled
+		}
+		if disabled {
+			continue
+		}
+		roles, err := m.store.UserRoleIDs(ctx, user.ID)
+		if err != nil {
+			return 0, err
+		}
+		if user.ID == userID && nextRoles != nil {
+			roles = nextRoles
+		}
+		fullAdmin, err := m.rolesGrantFullAdministration(ctx, roles)
+		if err != nil {
+			return 0, err
+		}
+		if fullAdmin {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *Manager) rolesGrantFullAdministration(ctx context.Context, roleIDs []string) (bool, error) {
+	if contains(roleIDs, RoleAdministrator) {
+		return true, nil
+	}
+	for _, roleID := range roleIDs {
+		_, permissions, err := m.store.GetRole(ctx, roleID)
+		if err != nil {
+			return false, err
+		}
+		if contains(permissions, PermissionAll) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
