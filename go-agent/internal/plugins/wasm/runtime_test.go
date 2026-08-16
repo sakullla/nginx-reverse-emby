@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
 
 	"google.golang.org/protobuf/proto"
@@ -22,9 +24,78 @@ import (
 
 var testWASMHeader = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
-// This is the old v1 free-text wire shape with real request-derived values
-// in rule_id and summary. The new enum schema treats both length-delimited
-// fields as unknown, leaving code/action unspecified and rejecting dispatch.
+func TestWASMHostEmitEventAcceptsOnlyFixedWireEnums(t *testing.T) {
+	message, err := newPolicyMessage("EmitEventRequest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message.Set(policyField(message, "code"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(pluginsdk.PolicySecurityEventCodeWAFRuleMatch)))
+	message.Set(policyField(message, "action"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(pluginsdk.PolicySecurityEventActionDeny)))
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &eventCapturePolicyHost{}
+	if _, status, _ := dispatchHost(context.Background(), host, pluginsdk.PolicyHostEmitEvent, encoded); status != pluginsdk.PolicyStatusOK {
+		t.Fatalf("fixed event status=%d, want OK", status)
+	}
+	if host.event.Code != pluginsdk.PolicySecurityEventCodeWAFRuleMatch || host.event.Action != pluginsdk.PolicySecurityEventActionDeny {
+		t.Fatalf("host event=%+v", host.event)
+	}
+
+	message.Set(policyField(message, "action"), protoreflect.ValueOfEnum(200))
+	encoded, err = (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, status, _ := dispatchHost(context.Background(), host, pluginsdk.PolicyHostEmitEvent, encoded); status != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("unknown guest event enum status=%d, want invalid argument", status)
+	}
+
+	headerSecret := "actual-header-secret-7c993"
+	bodySecret := "actual-body-secret-1fa26"
+	legacyPayload := []byte(`{"rule_id":"` + headerSecret + `","action":"deny","summary":"` + bodySecret + `"}`)
+	legacyWire := append([]byte{0x0a, byte(len("waf.hit"))}, []byte("waf.hit")...)
+	legacyWire = append(legacyWire, 0x12, byte(len(legacyPayload)))
+	legacyWire = append(legacyWire, legacyPayload...)
+	if _, status, _ := dispatchHost(context.Background(), host, pluginsdk.PolicyHostEmitEvent, legacyWire); status != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("legacy free-text guest event status=%d, want invalid argument", status)
+	}
+	if host.calls != 1 {
+		t.Fatalf("host event calls=%d, legacy/unknown event reached host", host.calls)
+	}
+}
+
+func TestWASMHostNormalizedHTTPSnapshotUsesOneFixedResponse(t *testing.T) {
+	host := &normalizedHTTPPolicyHost{snapshot: pluginsdk.PolicyNormalizedHTTP{
+		Path: []byte("/items"), Query: []byte("q=1"), Headers: []byte("user-agent:test"),
+		TrustedSource: []byte("198.51.100.10"), TrustedSourceAuthenticated: true, BodyWindowComplete: true,
+		BodyWindowLength: 17,
+	}}
+	encoded, status, _ := dispatchHost(t.Context(), host, pluginsdk.PolicyHostReadNormalizedHTTP, nil)
+	if status != pluginsdk.PolicyStatusOK || host.calls != 1 {
+		t.Fatalf("snapshot status=%d calls=%d", status, host.calls)
+	}
+	message, err := decodePolicyMessage("NormalizedHTTPResponse", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(messageBytes(message, "path")); got != "/items" {
+		t.Fatalf("snapshot path = %q", got)
+	}
+	if got := string(messageBytes(message, "headers")); got != "user-agent:test" {
+		t.Fatalf("snapshot headers = %q", got)
+	}
+	if !messageBool(message, "trusted_source_authenticated") || !messageBool(message, "body_window_complete") {
+		t.Fatal("snapshot booleans were not preserved")
+	}
+	if got := messageUint32(message, "body_window_length"); got != 17 {
+		t.Fatalf("snapshot body length = %d", got)
+	}
+	if _, status, _ := dispatchHost(t.Context(), &testPolicyHost{}, pluginsdk.PolicyHostReadNormalizedHTTP, nil); status != pluginsdk.PolicyStatusIncompatibleABI {
+		t.Fatalf("legacy host snapshot status=%d, want incompatible ABI", status)
+	}
+}
 
 func TestWASMVerifiedBoundaryAndGenerationReuse(t *testing.T) {
 	wasmBytes := compatfixture.PolicyV1GuestWASM()
@@ -215,6 +286,37 @@ func TestWASMRejectsForbiddenCapabilitiesAndMemory(t *testing.T) {
 	}
 }
 
+func TestWASMAgentAcceptanceUsesCanonicalPolicyV1Declarations(t *testing.T) {
+	fixture := compatfixture.PolicyV1GuestWASM()
+	wrongMajorPattern := []byte{0x04, 0x00, 0x41, 0x01, 0x0b}
+	if bytes.Count(fixture, wrongMajorPattern) != 1 {
+		t.Fatal("canonical policy major body is not uniquely identifiable")
+	}
+	wrongMajor := bytes.Replace(fixture, wrongMajorPattern, []byte{0x04, 0x00, 0x41, 0x02, 0x0b}, 1)
+	cases := map[string][]byte{
+		"wrong major":      wrongMajor,
+		"duplicate import": policyFixtureWithDuplicateFirstImport(t),
+		"table":            policyFixtureWithSection(t, 4, []byte{0x01, 0x70, 0x00, 0x00}),
+	}
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	for name, wasmBytes := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := runtime.CompileGeneration(ctx, verifiedArtifactFromBytes(t, wasmBytes), GenerationConfig{
+				ID:          "invalid-" + name,
+				InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
+				Budget:      Budget{MaxMemoryPages: 16},
+			}); !IsCode(err, ErrorIncompatibleABI) {
+				t.Fatalf("compile error=%v, want incompatible ABI", err)
+			}
+		})
+	}
+}
+
 func TestWASMOutputBudgetIsObservable(t *testing.T) {
 	ctx := context.Background()
 	events := make(chan Event, 4)
@@ -241,6 +343,230 @@ func TestWASMOutputBudgetIsObservable(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("output budget failure was not observable")
+	}
+}
+
+func TestWASMWireFrameBudgetsAcceptExactInitEvaluateAndHostBoundaries(t *testing.T) {
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	initFrame := compatfixture.CanonicalPolicyV1InitRequest()
+	generation, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
+		ID:          "wire-boundaries",
+		InitRequest: initFrame,
+		Budget: Budget{
+			MaxInputBytes:  uint32(len(initFrame)),
+			MaxOutputBytes: uint32(pluginsdk.PolicyV1MaxOutputFrameBytes),
+			MaxMemoryPages: 16,
+			MaxConcurrency: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("exact init frame boundary rejected: %v", err)
+	}
+	if _, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
+		ID:          "init-over-boundary",
+		InitRequest: initFrame,
+		Budget: Budget{
+			MaxInputBytes:  uint32(len(initFrame) - 1),
+			MaxOutputBytes: uint32(pluginsdk.PolicyV1MaxOutputFrameBytes),
+			MaxMemoryPages: 16,
+			MaxConcurrency: 1,
+		},
+	}); !IsCode(err, ErrorInputBudget) {
+		t.Fatalf("oversized init frame error=%v, want input budget", err)
+	}
+
+	evaluateFrame := compatfixture.CanonicalPolicyV1EvaluateRequest()
+	generation.budget.MaxInputBytes = uint32(len(evaluateFrame))
+	response, err := generation.Evaluate(ctx, &testPolicyHost{}, evaluateFrame)
+	if err != nil {
+		t.Fatalf("exact evaluate frame boundary rejected: %v", err)
+	}
+	generation.budget.MaxOutputBytes = uint32(len(response))
+	if _, err := generation.Evaluate(ctx, &testPolicyHost{}, evaluateFrame); err != nil {
+		t.Fatalf("exact evaluate response frame boundary rejected: %v", err)
+	}
+	generation.budget.MaxInputBytes--
+	if _, err := generation.Evaluate(ctx, &testPolicyHost{}, evaluateFrame); !IsCode(err, ErrorInputBudget) {
+		t.Fatalf("oversized evaluate frame error=%v, want input budget", err)
+	}
+	generation.budget.MaxInputBytes++
+	generation.budget.MaxOutputBytes--
+	if _, err := generation.Evaluate(ctx, &testPolicyHost{}, evaluateFrame); !IsCode(err, ErrorOutputBudget) {
+		t.Fatalf("oversized evaluate response frame error=%v, want output budget", err)
+	}
+
+	guest, err := generation.acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer generation.release(guest, true)
+	request := marshalHostTestMessage(t, "ReadFieldRequest", func(message protoreflect.Message) {
+		message.Set(policyField(message.Interface(), "name"), protoreflect.ValueOfString("method"))
+	})
+	hostResponse, status, _ := encodeBytesResponse([]byte("GET"), true, nil)
+	if status != pluginsdk.PolicyStatusOK {
+		t.Fatalf("encode host response status=%d", status)
+	}
+	hostBudget := Budget{MaxInputBytes: uint32(len(request)), MaxOutputBytes: uint32(len(hostResponse))}
+	packed := callHostTestFrame(t, runtime, guest, &testPolicyHost{}, pluginsdk.PolicyHostReadField, request, uint32(len(hostResponse)), hostBudget)
+	callStatus, written := pluginsdk.UnpackPolicyHostResult(packed)
+	if callStatus != pluginsdk.PolicyStatusOK || written != uint32(len(hostResponse)) {
+		t.Fatalf("exact host frame boundary status=%d written=%d, want OK/%d", callStatus, written, len(hostResponse))
+	}
+}
+
+func TestWASMHostBudgetEventsPreserveInputOutputAndStateDimensions(t *testing.T) {
+	events := make(chan Event, 16)
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{
+		MaxMemoryPages: 16,
+		Observer:       ObserverFunc(func(event Event) { events <- event }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	generation, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
+		ID:          "host-budget-dimensions",
+		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
+		Budget:      Budget{MaxMemoryPages: 16, MaxConcurrency: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := generation.acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer generation.release(guest, true)
+
+	readRequest := marshalHostTestMessage(t, "ReadFieldRequest", func(message protoreflect.Message) {
+		message.Set(policyField(message.Interface(), "name"), protoreflect.ValueOfString("method"))
+	})
+	readResponse, _, _ := encodeBytesResponse([]byte("GET"), true, nil)
+	tests := []struct {
+		name             string
+		hostName         string
+		request          []byte
+		responseCapacity uint32
+		budget           Budget
+		host             pluginsdk.PolicyHost
+		code             ErrorCode
+		dimension        pluginsdk.BudgetDimension
+	}{
+		{
+			name: "input frame", hostName: pluginsdk.PolicyHostReadField, request: readRequest,
+			responseCapacity: uint32(len(readResponse)), budget: Budget{MaxInputBytes: uint32(len(readRequest) - 1), MaxOutputBytes: uint32(len(readResponse))},
+			host: &testPolicyHost{}, code: ErrorInputBudget, dimension: pluginsdk.BudgetDimensionInput,
+		},
+		{
+			name: "response capacity", hostName: pluginsdk.PolicyHostReadField, request: readRequest,
+			responseCapacity: uint32(len(readResponse) + 1), budget: Budget{MaxInputBytes: uint32(len(readRequest)), MaxOutputBytes: uint32(len(readResponse))},
+			host: &testPolicyHost{}, code: ErrorOutputBudget, dimension: pluginsdk.BudgetDimensionOutput,
+		},
+		{
+			name: "response frame", hostName: pluginsdk.PolicyHostReadField, request: readRequest,
+			responseCapacity: uint32(len(readResponse)), budget: Budget{MaxInputBytes: uint32(len(readRequest)), MaxOutputBytes: uint32(len(readResponse) - 1)},
+			host: &testPolicyHost{}, code: ErrorOutputBudget, dimension: pluginsdk.BudgetDimensionOutput,
+		},
+	}
+	for _, budgetCode := range []string{"state-key-budget", "state-value-budget", "state-capacity"} {
+		stateRequest := marshalHostTestMessage(t, "StatePutRequest", func(message protoreflect.Message) {
+			message.Set(policyField(message.Interface(), "key"), protoreflect.ValueOfString("key"))
+			message.Set(policyField(message.Interface(), "value"), protoreflect.ValueOfBytes([]byte("value")))
+		})
+		tests = append(tests, struct {
+			name             string
+			hostName         string
+			request          []byte
+			responseCapacity uint32
+			budget           Budget
+			host             pluginsdk.PolicyHost
+			code             ErrorCode
+			dimension        pluginsdk.BudgetDimension
+		}{
+			name: budgetCode, hostName: pluginsdk.PolicyHostStatePut, request: stateRequest,
+			budget: Budget{MaxInputBytes: uint32(len(stateRequest)), MaxOutputBytes: uint32(pluginsdk.PolicyV1MinOutputFrameBytes)},
+			host: &dimensionPolicyHost{statePutError: &testBudgetDimensionError{
+				dimension: pluginsdk.BudgetDimensionState,
+				cause:     &pluginsdk.RuntimeError{Code: pluginsdk.ErrorResourceExhausted, Message: budgetCode},
+			}},
+			code: ErrorHost, dimension: pluginsdk.BudgetDimensionState,
+		})
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			callHostTestFrame(t, runtime, guest, test.host, test.hostName, test.request, test.responseCapacity, test.budget)
+			select {
+			case event := <-events:
+				if event.Code != test.code || event.Dimension != test.dimension {
+					t.Fatalf("event=%+v, want code=%s dimension=%s", event, test.code, test.dimension)
+				}
+			default:
+				t.Fatal("host budget event was not observed")
+			}
+		})
+	}
+}
+
+func TestWASMHostReadFieldExactWireBoundaryAndOverflow(t *testing.T) {
+	events := make(chan Event, 2)
+	ctx := context.Background()
+	runtime, err := NewRuntime(ctx, RuntimeOptions{
+		MaxMemoryPages: 16,
+		Observer:       ObserverFunc(func(event Event) { events <- event }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	generation, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
+		ID:          "host-read-field-wire-boundary",
+		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
+		Budget:      Budget{MaxMemoryPages: 16, MaxConcurrency: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := generation.acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer generation.release(guest, true)
+
+	request := marshalHostTestMessage(t, "ReadFieldRequest", func(message protoreflect.Message) {
+		message.Set(policyField(message.Interface(), "name"), protoreflect.ValueOfString("request.path"))
+	})
+	budget := Budget{
+		MaxInputBytes:  uint32(len(request)),
+		MaxOutputBytes: uint32(pluginsdk.PolicyV1MaxOutputFrameBytes),
+	}
+	exactHost := &readFieldBoundaryHost{value: bytes.Repeat([]byte("x"), int(policy.MaxPolicyReadFieldValueBytes))}
+	packed := callHostTestFrame(t, runtime, guest, exactHost, pluginsdk.PolicyHostReadField, request, budget.MaxOutputBytes, budget)
+	status, written := pluginsdk.UnpackPolicyHostResult(packed)
+	if status != pluginsdk.PolicyStatusOK || written != budget.MaxOutputBytes {
+		t.Fatalf("exact ReadField boundary status=%d written=%d, want OK/%d", status, written, budget.MaxOutputBytes)
+	}
+
+	overflowHost := &readFieldBoundaryHost{value: bytes.Repeat([]byte("x"), int(policy.MaxPolicyReadFieldValueBytes+1))}
+	packed = callHostTestFrame(t, runtime, guest, overflowHost, pluginsdk.PolicyHostReadField, request, budget.MaxOutputBytes, budget)
+	status, required := pluginsdk.UnpackPolicyHostResult(packed)
+	if status != pluginsdk.PolicyStatusResourceExhausted || required != budget.MaxOutputBytes+1 {
+		t.Fatalf("overflow ReadField status=%d required=%d, want resource-exhausted/%d", status, required, budget.MaxOutputBytes+1)
+	}
+	select {
+	case event := <-events:
+		if event.Code != ErrorOutputBudget || event.Dimension != pluginsdk.BudgetDimensionOutput {
+			t.Fatalf("overflow event=%+v, want output budget dimension", event)
+		}
+	default:
+		t.Fatal("overflow ReadField was not observed")
 	}
 }
 
@@ -428,6 +754,99 @@ func replaceLastCodeBody(t *testing.T, section, replacement []byte) []byte {
 	return result
 }
 
+func policyFixtureWithDuplicateFirstImport(t *testing.T) []byte {
+	t.Helper()
+	return rewritePolicyFixtureSection(t, compatfixture.PolicyV1GuestWASM(), 2, func(section []byte) []byte {
+		count, consumed, ok := consumeTestULEB32(section)
+		if !ok || count == 0 {
+			t.Fatal("compatibility fixture import vector is missing")
+		}
+		entryLength := wasmImportEntryLength(t, section[consumed:])
+		result := appendTestULEB32(nil, count+1)
+		result = append(result, section[consumed:consumed+entryLength]...)
+		result = append(result, section[consumed:]...)
+		return result
+	})
+}
+
+func wasmImportEntryLength(t *testing.T, entry []byte) int {
+	t.Helper()
+	remaining := entry
+	for index := 0; index < 2; index++ {
+		length, consumed, ok := consumeTestULEB32(remaining)
+		if !ok || int(length) > len(remaining)-consumed {
+			t.Fatal("malformed compatibility fixture import name")
+		}
+		remaining = remaining[consumed+int(length):]
+	}
+	if len(remaining) == 0 || remaining[0] != 0 {
+		t.Fatal("compatibility fixture first import is not a function")
+	}
+	remaining = remaining[1:]
+	_, consumed, ok := consumeTestULEB32(remaining)
+	if !ok {
+		t.Fatal("malformed compatibility fixture import type")
+	}
+	return len(entry) - len(remaining) + consumed
+}
+
+func policyFixtureWithSection(t *testing.T, sectionID byte, payload []byte) []byte {
+	t.Helper()
+	module := compatfixture.PolicyV1GuestWASM()
+	result := append([]byte(nil), testWASMHeader...)
+	remaining := module[len(testWASMHeader):]
+	inserted := false
+	for len(remaining) > 0 {
+		currentID := remaining[0]
+		length, consumed, ok := consumeTestULEB32(remaining[1:])
+		if !ok || int(length) > len(remaining)-1-consumed {
+			t.Fatal("malformed compatibility fixture section")
+		}
+		if !inserted && currentID > sectionID {
+			result = append(result, sectionID)
+			result = appendTestULEB32(result, uint32(len(payload)))
+			result = append(result, payload...)
+			inserted = true
+		}
+		fullLength := 1 + consumed + int(length)
+		result = append(result, remaining[:fullLength]...)
+		remaining = remaining[fullLength:]
+	}
+	if !inserted {
+		result = append(result, sectionID)
+		result = appendTestULEB32(result, uint32(len(payload)))
+		result = append(result, payload...)
+	}
+	return result
+}
+
+func rewritePolicyFixtureSection(t *testing.T, module []byte, targetID byte, rewrite func([]byte) []byte) []byte {
+	t.Helper()
+	result := append([]byte(nil), testWASMHeader...)
+	remaining := module[len(testWASMHeader):]
+	found := false
+	for len(remaining) > 0 {
+		sectionID := remaining[0]
+		length, consumed, ok := consumeTestULEB32(remaining[1:])
+		if !ok || int(length) > len(remaining)-1-consumed {
+			t.Fatal("malformed compatibility fixture section")
+		}
+		section := append([]byte(nil), remaining[1+consumed:1+consumed+int(length)]...)
+		remaining = remaining[1+consumed+int(length):]
+		if sectionID == targetID {
+			section = rewrite(section)
+			found = true
+		}
+		result = append(result, sectionID)
+		result = appendTestULEB32(result, uint32(len(section)))
+		result = append(result, section...)
+	}
+	if !found {
+		t.Fatalf("compatibility fixture section %d is missing", targetID)
+	}
+	return result
+}
+
 func consumeTestULEB32(encoded []byte) (uint32, int, bool) {
 	var result uint32
 	for index := 0; index < len(encoded) && index < 5; index++ {
@@ -461,6 +880,17 @@ type eventCapturePolicyHost struct {
 	testPolicyHost
 	event pluginsdk.PolicySecurityEvent
 	calls int
+}
+
+type normalizedHTTPPolicyHost struct {
+	testPolicyHost
+	snapshot pluginsdk.PolicyNormalizedHTTP
+	calls    int
+}
+
+func (host *normalizedHTTPPolicyHost) ReadNormalizedHTTP(context.Context) (pluginsdk.PolicyNormalizedHTTP, error) {
+	host.calls++
+	return host.snapshot, nil
 }
 
 func (host *eventCapturePolicyHost) EmitEvent(_ context.Context, event pluginsdk.PolicySecurityEvent) error {

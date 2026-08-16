@@ -26,16 +26,6 @@ import (
 	"testing"
 )
 
-type appSecretRedeemingSyncClient struct{}
-
-func (appSecretRedeemingSyncClient) Sync(context.Context, SyncRequest) (Snapshot, error) {
-	return Snapshot{}, nil
-}
-
-func (appSecretRedeemingSyncClient) RedeemPluginSecrets(context.Context, model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
-	return nil, nil
-}
-
 func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testing.T) {
 	store, err := core.NewFilesystem(t.TempDir())
 	if err != nil {
@@ -115,25 +105,6 @@ func TestHotRestartReplacementAbortsAndRetainsParentOnFailure(t *testing.T) {
 		t.Fatalf("failure order = %v, want %v", order, want)
 	}
 }
-
-type supervisedHotRestartProcess struct {
-	waitStarted chan struct{}
-	release     chan struct{}
-	signaled    chan os.Signal
-}
-
-func (*supervisedHotRestartProcess) Activate(context.Context) error          { return nil }
-func (*supervisedHotRestartProcess) TransferAuthority(context.Context) error { return nil }
-func (p *supervisedHotRestartProcess) Wait() error {
-	close(p.waitStarted)
-	<-p.release
-	return nil
-}
-func (p *supervisedHotRestartProcess) Signal(signal os.Signal) error {
-	p.signaled <- signal
-	return nil
-}
-func (p *supervisedHotRestartProcess) Abort() error { return nil }
 
 type recordingHotRestartProcess struct {
 	order        *[]string
@@ -295,5 +266,4 @@ func mustRegisterAppModule(t *testing.T, registry *agentmodule.Registry, candida
 	}
 }
 
-var _ SyncClient = (*control.SyncClient)(nil)
 var _ pluginrpc.SecretRedeemer = (*control.SyncClient)(nil)
