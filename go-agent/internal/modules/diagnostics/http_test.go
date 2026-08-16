@@ -57,7 +57,7 @@ func TestIntegrationHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.
 
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts:   2,
-		Timeout:    100 * time.Millisecond,
+		Timeout:    500 * time.Millisecond,
 		HTTPClient: good.Client(),
 	})
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{

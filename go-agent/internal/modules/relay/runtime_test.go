@@ -737,7 +737,7 @@ func pickFreeDualStackPort(t *testing.T) int {
 	}
 
 	for attempt := 0; attempt < 64; attempt++ {
-		if port, ok := tryPair(attempt%2 == 0); ok && reserveRelayTestPort(port) {
+		if port, ok := tryPair(attempt%2 == 0); ok {
 			return port
 		}
 	}
@@ -752,10 +752,7 @@ func pickFreeDualStackPort(t *testing.T) int {
 		if err == nil {
 			_ = udpLn.Close()
 			_ = tcpLn.Close()
-			if reserveRelayTestPort(port) {
-				return port
-			}
-			continue
+			return port
 		}
 		_ = tcpLn.Close()
 	}

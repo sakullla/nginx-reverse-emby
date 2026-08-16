@@ -1,5 +1,3 @@
-//go:build integration
-
 package l4
 
 import (
