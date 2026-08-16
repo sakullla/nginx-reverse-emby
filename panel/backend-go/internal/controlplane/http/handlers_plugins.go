@@ -491,6 +491,26 @@ func (d Dependencies) handlePluginLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+func (d Dependencies) handlePluginInstance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+		return
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorPayload("plugin actor is unavailable"))
+		return
+	}
+	err := d.PluginService.DeleteInstanceMutation(r.Context(), service.PluginDeleteInstanceRequest{
+		PluginID: r.PathValue("id"), InstanceID: r.PathValue("instance"), ActorID: actor.ID, Actor: actor,
+	})
+	if err != nil {
+		writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"deleted": true})
+}
+
 func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
@@ -610,11 +630,11 @@ func pluginActorID(r *http.Request) string {
 func writePluginError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, service.ErrPluginNotInstalled), errors.Is(err, service.ErrMarketplaceSourceNotFound), errors.Is(err, service.ErrMarketplaceEntryNotFound):
+	case errors.Is(err, service.ErrPluginNotInstalled), errors.Is(err, service.ErrPluginInstanceNotFound), errors.Is(err, service.ErrMarketplaceSourceNotFound), errors.Is(err, service.ErrMarketplaceEntryNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, service.ErrPluginPermissionConfirmation), errors.Is(err, service.ErrPluginRiskConfirmation), errors.Is(err, service.ErrPluginResourceAuthorization), errors.Is(err, service.ErrMutationPrincipalRequired):
 		status = http.StatusForbidden
-	case errors.Is(err, service.ErrPluginUninstallBlocked), errors.Is(err, storage.ErrQuotaExceeded):
+	case errors.Is(err, service.ErrPluginUninstallBlocked), errors.Is(err, storage.ErrQuotaExceeded), errors.Is(err, storage.ErrPluginDependencyConsumerInUse):
 		status = http.StatusConflict
 	case errors.Is(err, service.ErrMarketplaceSourceExists), errors.Is(err, storage.ErrPluginAlreadyInstalled), errors.Is(err, storage.ErrPluginConflict):
 		status = http.StatusConflict

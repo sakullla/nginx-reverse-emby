@@ -28,6 +28,7 @@ import (
 
 var (
 	ErrPluginNotInstalled           = errors.New("plugin is not installed")
+	ErrPluginInstanceNotFound       = errors.New("plugin instance is not found")
 	ErrPluginPermissionConfirmation = errors.New("plugin permissions require exact administrator confirmation")
 	ErrPluginRiskConfirmation       = errors.New("unofficial plugin source risk requires administrator confirmation")
 	ErrPluginUninstallBlocked       = errors.New("plugin runtime must be disabled and drained before uninstall")
@@ -72,6 +73,13 @@ type PluginConfigureRequest struct {
 	SecretReplacements map[string]json.RawMessage
 	ActorID            string
 	Actor              authz.Actor
+}
+
+type PluginDeleteInstanceRequest struct {
+	PluginID   string
+	InstanceID string
+	ActorID    string
+	Actor      authz.Actor
 }
 
 type PluginUpgradeRequest struct {
@@ -589,6 +597,15 @@ func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginCon
 	return prospective, nil
 }
 
+func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request PluginDeleteInstanceRequest) error {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.DeleteInstance(ctx, request)
+	}
+	return s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.delete-instance", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
+		return txService.DeleteInstance(mutationCtx, request)
+	})
+}
+
 func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgradeRequest) (PluginSummary, error) {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Upgrade(ctx, request)
@@ -635,7 +652,7 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 		return err
 	}
 	dependencyAction := revision.DependencyActionApply
-	if strings.HasSuffix(kind, ".disable") {
+	if strings.HasSuffix(kind, ".disable") || strings.HasSuffix(kind, ".delete-instance") {
 		dependencyAction = revision.DependencyActionDelete
 	}
 	mutationCtx := context.WithValue(ctx, pluginLifecycleOperationContextKey{}, operationID)
@@ -1115,6 +1132,55 @@ func pluginDefaultJSONArray(value string) string {
 
 func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRequest) (storage.PluginInstanceRow, error) {
 	return s.configureWithProspectiveDetail(ctx, request, nil)
+}
+
+func (s *PluginService) DeleteInstance(ctx context.Context, request PluginDeleteInstanceRequest) error {
+	request.PluginID = strings.TrimSpace(request.PluginID)
+	request.InstanceID = strings.TrimSpace(request.InstanceID)
+	if request.PluginID == "" || request.InstanceID == "" {
+		return fmt.Errorf("%w: plugin and instance identities are required", ErrInvalidArgument)
+	}
+	installed, ok, err := s.store.GetInstalledPlugin(ctx, request.PluginID)
+	if err != nil {
+		return err
+	}
+	operation := s.operation(ctx, request.PluginID, "delete_instance", installed.ActivePackageDigest, request.ActorID)
+	if !ok {
+		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginNotInstalled)
+	}
+	if err := bindInstalledActiveOperation(&operation, installed); err != nil {
+		return err
+	}
+	instance, exists, err := s.store.GetPluginInstance(ctx, request.InstanceID)
+	if err != nil {
+		return err
+	}
+	if !exists || instance.PluginID != request.PluginID {
+		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginInstanceNotFound)
+	}
+	if err := authorizePluginInstanceWrite(request.Actor, instance); err != nil {
+		return s.recordFailure(ctx, operation, request.ActorID, err)
+	}
+	if err := ensureNoPendingOperation(installed); err != nil {
+		return s.recordFailure(ctx, operation, request.ActorID, err)
+	}
+	bindings, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	if err != nil {
+		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginReadProjection)
+	}
+	if len(bindings) > 0 {
+		return s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: instance %s is still used by %d bound rule(s)", storage.ErrPluginDependencyConsumerInUse, instance.ID, len(bindings)))
+	}
+	now := s.now()
+	operation.InstanceID, operation.ResourceGroupID = instance.ID, instance.ResourceGroupID
+	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
+	operation.Status, operation.CompletedAt = "succeeded", &now
+	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
+	return s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
+		PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, DeleteInstanceID: instance.ID, ExpectedInstanceVersion: instance.StateVersion,
+		Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now),
+	})
 }
 
 func (s *PluginService) materializeStoredPluginConfig(ctx context.Context, schema map[string]any, rawConfig, rawHandles, resourceGroupID, actorID, correlationID string) (json.RawMessage, []storage.PluginInstanceSecretHandle, error) {
@@ -2879,6 +2945,16 @@ func authorizePluginConfigureScope(request PluginConfigureRequest, exists bool, 
 		return authz.ErrForbidden
 	}
 	if !actor.CanAccessGroup(currentGroup) {
+		return authz.ErrForbidden
+	}
+	return nil
+}
+
+func authorizePluginInstanceWrite(actor authz.Actor, instance storage.PluginInstanceRow) error {
+	if actor.ID == "" || actor.Bootstrap || actor.Has(authz.PermissionSystemAdmin) || actor.Has(authz.PermissionAll) {
+		return nil
+	}
+	if !actor.Has(authz.PermissionResourceWrite) || !actor.CanAccessGroup(strings.TrimSpace(instance.ResourceGroupID)) {
 		return authz.ErrForbidden
 	}
 	return nil

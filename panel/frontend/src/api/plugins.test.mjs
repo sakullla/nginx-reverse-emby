@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const del = vi.fn()
 const get = vi.fn()
 const post = vi.fn()
 const longRunningRequest = { timeout: 0 }
-vi.mock('./client', () => ({ api: { get, post }, longRunningRequest }))
+vi.mock('./client', () => ({ api: { delete: del, get, post }, longRunningRequest }))
 
 const plugins = await import('./plugins.js')
 
 describe('plugin administration API', () => {
   beforeEach(() => {
+    del.mockReset()
     get.mockReset()
     post.mockReset()
   })
@@ -36,6 +38,12 @@ describe('plugin administration API', () => {
       ['/plugins/install', expect.any(Object), longRunningRequest],
       ['/plugins/official.waf/enable', {}, longRunningRequest]
     ])
+  })
+
+  it('deletes one encoded deployment instance', async () => {
+    del.mockResolvedValue({ data: { deleted: true } })
+    await expect(plugins.deletePluginInstance('official.rpc', 'instance/a')).resolves.toBe(true)
+    expect(del).toHaveBeenCalledWith('/plugins/official.rpc/instances/instance%2Fa', longRunningRequest)
   })
 
   it('redacts secret-bearing read projections and rejects arbitrary actions', async () => {

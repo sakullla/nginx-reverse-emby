@@ -52,6 +52,11 @@ export const configurePlugin = (pluginID, payload) => runPluginAction(pluginID, 
 export const upgradePlugin = (pluginID, selection) => runPluginAction(pluginID, 'upgrade', selection)
 export const uninstallPlugin = (pluginID) => runPluginAction(pluginID, 'uninstall', { drained: true })
 
+export async function deletePluginInstance(pluginID, instanceID) {
+  const { data } = await api.delete(pluginPath(pluginID, `/instances/${identity(instanceID, 'instance id')}`), longRunningRequest)
+  return data?.deleted === true
+}
+
 export function newPluginActionKey() {
   if (globalThis.crypto?.randomUUID) return `ui:${globalThis.crypto.randomUUID()}`
   const bytes = new Uint8Array(24)

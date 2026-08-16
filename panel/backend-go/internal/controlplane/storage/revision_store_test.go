@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -765,6 +766,80 @@ func TestIntegrationPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *te
 		}
 		if found != test.want {
 			t.Errorf("operation %q found = %v, want %v", test.id, found, test.want)
+		}
+	}
+}
+
+func TestIntegrationPruneRevisionHistoryBoundsNewOperationalTables(t *testing.T) {
+	t.Parallel()
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-120 * 24 * time.Hour)
+	veryOld := now.Add(-400 * 24 * time.Hour)
+	recent := now.Add(-24 * time.Hour)
+	completedOld := old
+	completedRecent := recent
+	rows := []any{
+		&SessionRow{ID: "expired-session", TokenHash: "expired-token", UserID: "user", CreatedAt: old, ExpiresAt: old, LastSeen: old},
+		&SessionRow{ID: "recent-session", TokenHash: "recent-token", UserID: "user", CreatedAt: recent, ExpiresAt: now.Add(24 * time.Hour), LastSeen: recent},
+		&AuditEventRow{ID: "audit-old", Action: "plugin.test", Result: "success", MetadataJSON: "{}", CreatedAt: veryOld},
+		&AuditEventRow{ID: "audit-recent", Action: "plugin.test", Result: "success", MetadataJSON: "{}", CreatedAt: old},
+		&MarketplaceRefreshOperationRow{ID: "refresh-old", SourceID: "source", Status: "succeeded", DiffJSON: "{}", Error: "", StartedAt: old, FinishedAt: &completedOld},
+		&MarketplaceRefreshOperationRow{ID: "refresh-recent", SourceID: "source", Status: "succeeded", DiffJSON: "{}", Error: "", StartedAt: recent, FinishedAt: &completedRecent},
+		&PluginOperationRow{ID: "plugin-op-old", PluginID: "plugin", Kind: "configure", Status: "succeeded", AgentResultsJSON: "{}", Error: "", ActorID: "admin", CreatedAt: old, CompletedAt: &completedOld},
+		&PluginOperationRow{ID: "plugin-op-active", PluginID: "plugin", Kind: "enable", Status: "succeeded", AgentResultsJSON: "{}", Error: "", ActorID: "admin", CreatedAt: old, CompletedAt: &completedOld},
+		&PluginOperationScopeRow{OperationID: "plugin-op-old", InstanceID: "instance-old", PluginID: "plugin", ResourceGroupID: "default", CreatedAt: old},
+		&PluginOperationSecretRow{OperationID: "plugin-op-old", SecretID: "secret-old", InstanceID: "instance-old", Role: "retired", State: "retired", CreatedAt: old, RetiredAt: &completedOld},
+		&PluginAgentRuntimeStatusRow{OperationID: "plugin-op-old", AgentID: "edge", InstanceID: "instance-old", PluginID: "plugin", GenerationID: "generation-old", State: "stopped", AuthoritySlot: "retired", UpdatedAt: old},
+		&PluginAgentRuntimeStatusRow{OperationID: "plugin-op-old", AgentID: "edge-two", InstanceID: "instance-draining", PluginID: "plugin", GenerationID: "generation-draining", State: "draining", AuthoritySlot: "pending", UpdatedAt: old},
+		&PluginAgentRuntimeStatusRow{OperationID: "plugin-op-active", AgentID: "edge", InstanceID: "instance-active", PluginID: "plugin", GenerationID: "generation-active", State: "active", AuthoritySlot: "active", UpdatedAt: old},
+		&PluginRuntimeLogReportRow{AgentID: "edge", InstanceID: "instance-old", GenerationID: "generation-old", PluginID: "plugin", Sequence: 1, ReportDigest: strings.Repeat("a", 64), UpdatedAt: old},
+		&PluginRuntimeLogReportRow{AgentID: "edge-two", InstanceID: "instance-draining", GenerationID: "generation-draining", PluginID: "plugin", Sequence: 1, ReportDigest: strings.Repeat("d", 64), UpdatedAt: old},
+		&PluginRuntimeLogReportRow{AgentID: "edge", InstanceID: "instance-active", GenerationID: "generation-active", PluginID: "plugin", Sequence: 1, ReportDigest: strings.Repeat("b", 64), UpdatedAt: old},
+		&PluginRuntimeLogRow{InstanceID: "instance-old", PluginID: "plugin", AgentID: "edge", ResourceGroupID: "default", Level: "info", Message: "old", CreatedAt: old},
+		&PluginRuntimeLogRow{InstanceID: "instance-active", PluginID: "plugin", AgentID: "edge", ResourceGroupID: "default", Level: "info", Message: "recent", CreatedAt: recent},
+		&PluginControlPlaneLogOutboxRow{EventID: "event-old", InstanceID: "instance-old", PluginID: "plugin", OperationID: "plugin-op-old", GenerationID: "generation-old", ResourceGroupID: "default", Level: "info", Message: "old", CreatedAt: old},
+		&SecretRow{ID: "secret-old", Name: "secret-old", Purpose: "plugin-config:instance-old:value", ResourceGroupID: "default", ActiveVersion: 1, Fingerprint: "fingerprint", CreatedAt: old, RotatedAt: old, RetiredAt: &completedOld},
+		&SecretVersionRow{SecretID: "secret-old", Version: 1, KeyID: "key", Nonce: []byte{}, Ciphertext: []byte{}, CreatedAt: old, DestroyedAt: &completedOld},
+		&PluginDigestFenceRow{Digest: strings.Repeat("c", 64), UpdatedAt: old},
+	}
+	for _, row := range rows {
+		if err := store.db.Create(row).Error; err != nil {
+			t.Fatalf("create %T: %v", row, err)
+		}
+	}
+
+	result, err := store.PruneRevisionHistory(t.Context(), RevisionRetentionPolicy{Now: now, MaxAge: 30 * 24 * time.Hour, OperationMaxAge: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionsDeleted != 1 || result.AuditEventsDeleted != 1 || result.MarketplaceOperationsDeleted != 1 || result.PluginOperationsDeleted != 1 || result.PluginRuntimeStatusesDeleted != 2 || result.PluginRuntimeLogsDeleted != 1 || result.PluginRuntimeLogReportsDeleted != 2 || result.PluginLogOutboxDeleted != 1 || result.SecretVersionsDeleted != 1 || result.SecretsDeleted != 1 || result.PluginDigestFencesDeleted != 1 {
+		t.Fatalf("prune result = %+v", result)
+	}
+
+	for _, check := range []struct {
+		model any
+		where string
+		args  []any
+		want  int64
+	}{
+		{&SessionRow{}, "id = ?", []any{"recent-session"}, 1},
+		{&AuditEventRow{}, "id = ?", []any{"audit-recent"}, 1},
+		{&MarketplaceRefreshOperationRow{}, "id = ?", []any{"refresh-recent"}, 1},
+		{&PluginOperationRow{}, "id = ?", []any{"plugin-op-active"}, 1},
+		{&PluginOperationScopeRow{}, "operation_id = ?", []any{"plugin-op-old"}, 0},
+		{&PluginOperationSecretRow{}, "operation_id = ?", []any{"plugin-op-old"}, 0},
+		{&PluginRuntimeLogReportRow{}, "generation_id = ?", []any{"generation-active"}, 1},
+		{&PluginRuntimeLogRow{}, "message = ?", []any{"recent"}, 1},
+	} {
+		var count int64
+		if err := store.db.Model(check.model).Where(check.where, check.args...).Count(&count).Error; err != nil || count != check.want {
+			t.Errorf("count %T where %q = %d, want %d (err=%v)", check.model, check.where, count, check.want, err)
 		}
 	}
 }

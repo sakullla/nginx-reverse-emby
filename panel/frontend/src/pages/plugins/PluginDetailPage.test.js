@@ -4,7 +4,7 @@ import PluginDetailPage from './PluginDetailPage.vue'
 
 const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(),
-  enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(),
+  enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(), deletePluginInstance: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(),
   fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
@@ -14,7 +14,7 @@ vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
 vi.mock('../../api/access', () => ({ fetchResourceGroups: mocks.fetchResourceGroups }))
 vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
-  enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin,
+  enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin, deletePluginInstance: mocks.deletePluginInstance,
   invokePluginDynamicAction: mocks.invokePluginDynamicAction, fetchPluginLogs: mocks.fetchPluginLogs
 }))
 vi.mock('../../api/operations', () => ({ retryRevision: mocks.retryRevision }))
@@ -90,6 +90,7 @@ beforeEach(() => {
   mocks.disablePlugin.mockReset().mockResolvedValue({})
   mocks.rollbackPlugin.mockReset().mockResolvedValue({})
   mocks.uninstallPlugin.mockReset().mockResolvedValue({})
+  mocks.deletePluginInstance.mockReset().mockResolvedValue(true)
   mocks.invokePluginDynamicAction.mockReset()
   mocks.fetchPluginLogs.mockReset().mockResolvedValue({ entries: [], next_cursor: '' })
   mocks.fetchAgents.mockReset().mockResolvedValue([
@@ -229,6 +230,22 @@ describe('PluginDetailPage', () => {
     await flushPromises()
     expect(mocks.uninstallPlugin).toHaveBeenCalledWith('official.waf')
     expect(mocks.push).toHaveBeenCalledWith('/plugins')
+  })
+
+  it('confirms deletion of only the selected deployment instance', async () => {
+    const wrapper = await mountPage(makeDetail({
+      instances: [
+        { id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [], config: { mode: 'observe' }, config_version: 1, current_state: 'active' },
+        { id: 'waf-b', resource_group_id: 'group-a', targets: ['edge-b'], policy_chains: [], bindings: [], config: { mode: 'block' }, config_version: 1, current_state: 'active' }
+      ]
+    }))
+    await buttonByText(wrapper, '删除实例').trigger('click')
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认删除部署实例')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.deletePluginInstance).toHaveBeenCalledWith('official.waf', 'waf-a')
+    expect(mocks.uninstallPlugin).not.toHaveBeenCalled()
+    expect(mocks.push).not.toHaveBeenCalled()
   })
 
   it('enables immediately but gates disable behind DeleteConfirmDialog', async () => {

@@ -124,6 +124,9 @@ func requestPermission(r *http.Request) string {
 	if pluginPath && strings.Contains(path, "/instances/") && strings.Contains(path, "/actions/") {
 		return authz.PermissionResourceWrite
 	}
+	if pluginPath && r.Method == http.MethodDelete && strings.Contains(path, "/instances/") {
+		return authz.PermissionResourceWrite
+	}
 	if pluginPath && r.Method == http.MethodPost && strings.HasSuffix(strings.TrimRight(path, "/"), "/configure") {
 		return authz.PermissionResourceWrite
 	}

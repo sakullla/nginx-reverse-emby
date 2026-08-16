@@ -157,6 +157,7 @@ type PluginAPI interface {
 	EnableMutation(context.Context, string, string) (service.PluginSummary, error)
 	DisableMutation(context.Context, string, string) (service.PluginSummary, error)
 	ConfigureMutation(context.Context, service.PluginConfigureRequest) (service.PluginInstanceDetail, error)
+	DeleteInstanceMutation(context.Context, service.PluginDeleteInstanceRequest) error
 	UpgradeMutation(context.Context, service.PluginUpgradeRequest) (service.PluginSummary, error)
 	RollbackMutation(context.Context, service.PluginRollbackRequest) (service.PluginSummary, error)
 	Uninstall(context.Context, service.PluginUninstallRequest) error
@@ -470,6 +471,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/plugins/install", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstall)))
 			mux.Handle(prefix+"/plugins/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugin)))
 			mux.Handle(prefix+"/plugins/{id}/operations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginOperations)))
+			mux.Handle(prefix+"/plugins/{id}/instances/{instance}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstance)))
 			mux.Handle(prefix+"/plugins/{id}/instances/{instance}/logs", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginLogs)))
 			if resolved.PluginCapabilityService != nil {
 				mux.Handle(prefix+"/plugins/{id}/instances/{instance}/actions/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginDynamicAction)))

@@ -625,14 +625,26 @@ type RevisionRetentionPolicy struct {
 	Now             time.Time
 	MaxAge          time.Duration
 	OperationMaxAge time.Duration
+	AuditMaxAge     time.Duration
 	MaxPerAgent     int
 }
 
 type RevisionPruneResult struct {
-	RevisionsDeleted          int64
-	OperationsDeleted         int64
-	ArtifactsDeleted          int64
-	IdempotencyRecordsDeleted int64
+	RevisionsDeleted               int64
+	OperationsDeleted              int64
+	ArtifactsDeleted               int64
+	IdempotencyRecordsDeleted      int64
+	SessionsDeleted                int64
+	MarketplaceOperationsDeleted   int64
+	PluginOperationsDeleted        int64
+	PluginRuntimeStatusesDeleted   int64
+	PluginRuntimeLogsDeleted       int64
+	PluginRuntimeLogReportsDeleted int64
+	PluginLogOutboxDeleted         int64
+	SecretVersionsDeleted          int64
+	SecretsDeleted                 int64
+	PluginDigestFencesDeleted      int64
+	AuditEventsDeleted             int64
 }
 
 type RevisionEventQuery struct {
@@ -1172,8 +1184,16 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 	if operationMaxAge < maxAge {
 		operationMaxAge = maxAge
 	}
+	auditMaxAge := policy.AuditMaxAge
+	if auditMaxAge <= 0 {
+		auditMaxAge = 365 * 24 * time.Hour
+	}
+	if auditMaxAge < operationMaxAge {
+		auditMaxAge = operationMaxAge
+	}
 	cutoff := now.Add(-maxAge)
 	operationCutoff := now.Add(-operationMaxAge)
+	auditCutoff := now.Add(-auditMaxAge)
 	result := RevisionPruneResult{}
 
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
@@ -1226,6 +1246,125 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 			return expired.Error
 		}
 		result.IdempotencyRecordsDeleted = expired.RowsAffected
+
+		deletedSessions := tx.Where("expires_at <= ? OR (revoked_at IS NOT NULL AND revoked_at <= ?)", now, cutoff).Delete(&SessionRow{})
+		if deletedSessions.Error != nil {
+			return deletedSessions.Error
+		}
+		result.SessionsDeleted = deletedSessions.RowsAffected
+
+		deletedAuditEvents := tx.Where("created_at <= ?", auditCutoff).Delete(&AuditEventRow{})
+		if deletedAuditEvents.Error != nil {
+			return deletedAuditEvents.Error
+		}
+		result.AuditEventsDeleted = deletedAuditEvents.RowsAffected
+
+		var expiredRefreshOperationIDs []string
+		if err := tx.Model(&MarketplaceRefreshOperationRow{}).
+			Where("finished_at IS NOT NULL AND finished_at <= ?", operationCutoff).
+			Pluck("id", &expiredRefreshOperationIDs).Error; err != nil {
+			return err
+		}
+		if len(expiredRefreshOperationIDs) > 0 {
+			if err := tx.Where("operation_id IN ?", expiredRefreshOperationIDs).Delete(&PluginPackageStagingRow{}).Error; err != nil {
+				return err
+			}
+			deleted := tx.Where("id IN ?", expiredRefreshOperationIDs).Delete(&MarketplaceRefreshOperationRow{})
+			if deleted.Error != nil {
+				return deleted.Error
+			}
+			result.MarketplaceOperationsDeleted = deleted.RowsAffected
+		}
+
+		deletedRuntimeStatuses := tx.
+			Where("updated_at <= ? AND (authority_slot = ? OR (authority_slot = ? AND state = ?))", operationCutoff, "retired", "pending", "draining").
+			Delete(&PluginAgentRuntimeStatusRow{})
+		if deletedRuntimeStatuses.Error != nil {
+			return deletedRuntimeStatuses.Error
+		}
+		result.PluginRuntimeStatusesDeleted = deletedRuntimeStatuses.RowsAffected
+
+		deletedLogReports := tx.Where("updated_at <= ?", operationCutoff).
+			Where("NOT EXISTS (SELECT 1 FROM plugin_agent_runtime_statuses WHERE plugin_agent_runtime_statuses.agent_id = plugin_runtime_log_reports.agent_id AND plugin_agent_runtime_statuses.instance_id = plugin_runtime_log_reports.instance_id AND plugin_agent_runtime_statuses.generation_id = plugin_runtime_log_reports.generation_id AND plugin_agent_runtime_statuses.authority_slot IN ?)", []string{"pending", "active"}).
+			Delete(&PluginRuntimeLogReportRow{})
+		if deletedLogReports.Error != nil {
+			return deletedLogReports.Error
+		}
+		result.PluginRuntimeLogReportsDeleted = deletedLogReports.RowsAffected
+
+		deletedRuntimeLogs := tx.Where("created_at <= ?", operationCutoff).Delete(&PluginRuntimeLogRow{})
+		if deletedRuntimeLogs.Error != nil {
+			return deletedRuntimeLogs.Error
+		}
+		result.PluginRuntimeLogsDeleted = deletedRuntimeLogs.RowsAffected
+
+		deletedOutbox := tx.Where("created_at <= ?", operationCutoff).Delete(&PluginControlPlaneLogOutboxRow{})
+		if deletedOutbox.Error != nil {
+			return deletedOutbox.Error
+		}
+		result.PluginLogOutboxDeleted = deletedOutbox.RowsAffected
+
+		protectedPluginOperationIDs := make([]string, 0)
+		for _, query := range []struct {
+			db     *gorm.DB
+			column string
+		}{
+			{tx.Model(&InstalledPluginRow{}).Where("last_operation_id <> ?", ""), "last_operation_id"},
+			{tx.Model(&InstalledPluginRow{}).Where("pending_operation_id <> ?", ""), "pending_operation_id"},
+			{tx.Model(&PluginInstanceRow{}).Where("pending_operation_id <> ?", ""), "pending_operation_id"},
+			{tx.Model(&PluginAgentRuntimeStatusRow{}).Where("authority_slot IN ?", []string{"pending", "active"}), "operation_id"},
+		} {
+			var ids []string
+			if err := query.db.Pluck(query.column, &ids).Error; err != nil {
+				return err
+			}
+			protectedPluginOperationIDs = append(protectedPluginOperationIDs, ids...)
+		}
+		protectedPluginOperationIDs = uniqueNonEmptyStrings(protectedPluginOperationIDs)
+		pluginOperations := tx.Model(&PluginOperationRow{}).
+			Where("completed_at IS NOT NULL AND completed_at <= ?", operationCutoff)
+		if len(protectedPluginOperationIDs) > 0 {
+			pluginOperations = pluginOperations.Where("id NOT IN ?", protectedPluginOperationIDs)
+		}
+		var expiredPluginOperationIDs []string
+		if err := pluginOperations.Pluck("id", &expiredPluginOperationIDs).Error; err != nil {
+			return err
+		}
+		if len(expiredPluginOperationIDs) > 0 {
+			for _, model := range []any{&PluginOperationScopeRow{}, &PluginOperationSecretRow{}} {
+				if err := tx.Where("operation_id IN ?", expiredPluginOperationIDs).Delete(model).Error; err != nil {
+					return err
+				}
+			}
+			deleted := tx.Where("id IN ?", expiredPluginOperationIDs).Delete(&PluginOperationRow{})
+			if deleted.Error != nil {
+				return deleted.Error
+			}
+			result.PluginOperationsDeleted = deleted.RowsAffected
+		}
+
+		deletedSecretVersions := tx.Where("destroyed_at IS NOT NULL AND destroyed_at <= ?", operationCutoff).Delete(&SecretVersionRow{})
+		if deletedSecretVersions.Error != nil {
+			return deletedSecretVersions.Error
+		}
+		result.SecretVersionsDeleted = deletedSecretVersions.RowsAffected
+		deletedSecrets := tx.Where("retired_at IS NOT NULL AND retired_at <= ?", operationCutoff).
+			Where("id NOT IN (?)", tx.Model(&SecretVersionRow{}).Select("secret_id")).Delete(&SecretRow{})
+		if deletedSecrets.Error != nil {
+			return deletedSecrets.Error
+		}
+		result.SecretsDeleted = deletedSecrets.RowsAffected
+
+		deletedDigestFences := tx.Where("claim_token = ? AND updated_at <= ?", "", operationCutoff).
+			Where("digest NOT IN (?)", tx.Model(&PluginPackageRow{}).Select("digest")).
+			Where("digest NOT IN (?)", tx.Model(&PluginPackageAcquisitionRow{}).Select("digest")).
+			Where("digest NOT IN (?)", tx.Model(&PluginPackageStagingRow{}).Select("digest")).
+			Where("digest NOT IN (?)", tx.Model(&PluginCacheGCIntentRow{}).Select("digest")).
+			Delete(&PluginDigestFenceRow{})
+		if deletedDigestFences.Error != nil {
+			return deletedDigestFences.Error
+		}
+		result.PluginDigestFencesDeleted = deletedDigestFences.RowsAffected
 
 		deletedOperations := tx.
 			Where("completed_at IS NOT NULL AND completed_at <= ?", operationCutoff).

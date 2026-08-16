@@ -3062,6 +3062,8 @@ type PluginMutation struct {
 	ReplaceGrants              []PluginGrantRow
 	ReplaceInstance            *PluginInstanceRow
 	ReplaceInstances           []PluginInstanceRow
+	DeleteInstanceID           string
+	ExpectedInstanceVersion    uint64
 	DeletePlugin               bool
 	DeleteInstances            bool
 	DeleteGrants               bool
@@ -3311,6 +3313,11 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 				}
 			}
 		}
+		if mutation.DeleteInstanceID != "" {
+			if err := s.deletePluginInstanceTx(tx, mutation); err != nil {
+				return err
+			}
+		}
 	}
 	if err := reconcilePluginSecretOwnershipTx(tx, mutation, secretCandidates); err != nil {
 		return err
@@ -3355,6 +3362,48 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 		return err
 	}
 	return persistPluginOperationScopesTx(tx, mutation.Operation, operationScopes)
+}
+
+func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation) error {
+	instanceID := strings.TrimSpace(mutation.DeleteInstanceID)
+	if instanceID == "" {
+		return errors.New("plugin instance identity is required")
+	}
+	var current PluginInstanceRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND plugin_id = ?", instanceID, mutation.PluginID).First(&current).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: plugin instance is unavailable", ErrPluginConflict)
+		}
+		return err
+	}
+	if mutation.ExpectedInstanceVersion != 0 && current.StateVersion != mutation.ExpectedInstanceVersion {
+		return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
+	}
+	bindings, err := CanonicalPluginInstanceBindings(current.BindingsJSON)
+	if err != nil {
+		return fmt.Errorf("plugin instance %s bindings: %w", current.ID, err)
+	}
+	if len(bindings) > 0 {
+		return fmt.Errorf("%w: plugin instance %s still serves %d bound consumer(s)", ErrPluginDependencyConsumerInUse, current.ID, len(bindings))
+	}
+	if err := tx.Where("resource_kind = ? AND resource_id = ?", "plugin_instance", instanceID).Delete(&QuotaAllocationRow{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("resource_kind = ? AND resource_id = ?", "plugin_instance", instanceID).Delete(&ResourceBindingRow{}).Error; err != nil {
+		return err
+	}
+	result := tx.Where("id = ? AND plugin_id = ? AND state_version = ?", instanceID, mutation.PluginID, current.StateVersion).Delete(&PluginInstanceRow{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
+	}
+	now := mutation.Operation.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return recomputeCountQuotaUsageTx(tx, now)
 }
 
 func completePluginAgentRuntimeAuthorityTx(tx *gorm.DB, operation PluginOperationRow) error {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestConfigurePluginBindingDerivesOwnershipAndRejectsCrossGroup(t *testing.T) {
@@ -69,6 +72,31 @@ func TestConfigurePluginBindingDerivesOwnershipAndRejectsCrossGroup(t *testing.T
 	active, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
 	if err != nil || len(active) != 1 || active[0] != pending[0] || instance.PendingBindingsJSON != "[]" {
 		t.Fatalf("promoted binding active=%+v pending=%q err=%v", active, instance.PendingBindingsJSON, err)
+	}
+	deleteRequest := PluginDeleteInstanceRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ActorID: "admin"}
+	if err := svc.DeleteInstance(ctx, deleteRequest); !errors.Is(err, storage.ErrPluginDependencyConsumerInUse) {
+		t.Fatalf("delete bound provider error = %v, want dependency conflict", err)
+	}
+	emptyBindings := []storage.PluginInstanceBindingRequest{}
+	instance, err = svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Targets: []string{"local"}, Bindings: &emptyBindings, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err = svc.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"local": "applied"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.EnableLocalAgent, cfg.LocalAgentID = true, "local"
+	svc.ConfigureRevisionMutations(cfg, store)
+	if err := svc.DeleteInstanceMutation(ctx, deleteRequest); err != nil {
+		t.Fatalf("delete unbound provider: %v", err)
+	}
+	if _, found, err := store.GetPluginInstance(ctx, instance.ID); err != nil || found {
+		t.Fatalf("deleted instance found=%v err=%v", found, err)
+	}
+	if _, err := store.GetResourceBinding(ctx, "plugin_instance", instance.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("deleted instance resource binding error = %v, want not found", err)
 	}
 }
 

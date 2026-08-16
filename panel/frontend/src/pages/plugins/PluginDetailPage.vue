@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { fetchAgents } from '../../api'
 import { fetchResourceGroups } from '../../api/access'
 import {
+  deletePluginInstance,
   disablePlugin,
   enablePlugin,
   fetchPluginDetail,
@@ -92,6 +93,7 @@ const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.c
 
 const confirmDialog = ref({ visible: false, loading: false, action: '' })
 const pluginName = computed(() => detail.value?.package?.manifest?.name || detail.value?.plugin?.plugin_id || '')
+const confirmName = computed(() => confirmDialog.value.action === 'delete-instance' ? selectedInstance.value?.id || '' : pluginName.value)
 
 const confirmCopy = computed(() => {
   switch (confirmDialog.value.action) {
@@ -99,6 +101,8 @@ const confirmCopy = computed(() => {
       return { title: '确认停用插件', message: '停用后该插件将停止处理流量，依赖其防护的流量可能中断；可随时重新启用。', confirmText: '确认停用' }
     case 'rollback':
       return { title: '确认回滚插件', message: '回滚将把插件恢复到上一版本，并可能变更其权限。', confirmText: '确认回滚' }
+    case 'delete-instance':
+      return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置与插件密钥将被清理；已绑定规则时不能删除。', confirmText: '确认删除实例' }
     case 'uninstall':
     default:
       return { title: '确认卸载插件', message: '卸载将移除插件及其配置，此操作不可撤销。', confirmText: '确认卸载' }
@@ -188,20 +192,24 @@ function cancelConfirm() {
 }
 
 async function confirmAction() {
-  if (!admin.value) return
   const action = confirmDialog.value.action
+  if (action === 'delete-instance' ? !canWrite.value : !admin.value) return
   confirmDialog.value.loading = true
   error.value = ''
   try {
     if (action === 'uninstall') {
       await uninstallPlugin(detail.value.plugin.plugin_id)
       await router.push('/plugins')
+    } else if (action === 'delete-instance') {
+      await deletePluginInstance(detail.value.plugin.plugin_id, selectedInstance.value.id)
+      await load()
     } else {
       await lifecycle(action)
     }
   } catch (cause) {
-    if (action === 'uninstall') {
-      error.value = sanitizePluginText(cause?.message || '卸载插件失败')
+    if (action === 'uninstall' || action === 'delete-instance') {
+      const fallback = action === 'delete-instance' ? '删除插件实例失败' : '卸载插件失败'
+      error.value = sanitizePluginText(cause?.message || fallback)
     }
   } finally {
     confirmDialog.value = { visible: false, loading: false, action: '' }
@@ -297,7 +305,10 @@ async function retryAgent(status) {
           <span>目标：{{ selectedInstance.targets.join(', ') || '—' }}</span>
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
-          <button v-if="canWrite && !formEmpty" class="btn btn-secondary btn-sm" type="button" @click="configModalOpen = true">编辑配置</button>
+          <div v-if="canWrite" class="instance-actions">
+            <button v-if="!formEmpty" class="btn btn-secondary btn-sm" type="button" @click="configModalOpen = true">编辑配置</button>
+            <button class="btn btn-danger btn-sm" type="button" :disabled="!!busy" @click="confirmDialog = { visible: true, loading: false, action: 'delete-instance' }">删除实例</button>
+          </div>
         </div>
         <p v-else class="plugin-config-empty">尚未部署。</p>
         <p v-if="selectedInstance && canWrite && formEmpty" class="plugin-config-empty">此插件没有宿主允许的可配置字段。</p>
@@ -346,7 +357,7 @@ async function retryAgent(status) {
         :show="confirmDialog.visible"
         :title="confirmCopy.title"
         :message="confirmCopy.message"
-        :name="pluginName"
+        :name="confirmName"
         :confirm-text="confirmCopy.confirmText"
         :loading="confirmDialog.loading"
         @confirm="confirmAction"
@@ -389,11 +400,11 @@ async function retryAgent(status) {
 .plugin-section-heading > div { display: grid; gap: var(--space-1); }
 .plugin-section-heading p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .instance-facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
-.instance-facts .btn { margin-left: auto; }
+.instance-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
 
 @media (max-width: 640px) {
   .plugin-section-heading { align-items: stretch; flex-direction: column; }
   .plugin-section-heading .btn { width: 100%; }
-  .instance-facts .btn { margin-left: 0; }
+  .instance-actions { margin-left: 0; }
 }
 </style>

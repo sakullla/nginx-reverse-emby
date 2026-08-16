@@ -87,6 +87,7 @@ type pluginReadAPIFake struct {
 	configureErr   error
 	configureIn    service.PluginConfigureRequest
 	configureCalls int
+	deleteIn       service.PluginDeleteInstanceRequest
 }
 
 func (f *pluginReadAPIFake) ListForActor(context.Context, authz.Actor) ([]service.PluginSummary, error) {
@@ -168,6 +169,9 @@ func TestPluginReadHandlersUseAuthenticatedResourceScopedProjection(t *testing.T
 	if permission := requestPermission(httptest.NewRequest(http.MethodPost, "/panel-api/plugins/p/configure", nil)); permission != authz.PermissionResourceWrite {
 		t.Fatalf("configure permission=%q", permission)
 	}
+	if permission := requestPermission(httptest.NewRequest(http.MethodDelete, "/panel-api/plugins/p/instances/i", nil)); permission != authz.PermissionResourceWrite {
+		t.Fatalf("delete instance permission=%q", permission)
+	}
 	if permission := requestPermission(httptest.NewRequest(http.MethodPost, "/panel-api/plugins/p/enable", nil)); permission != authz.PermissionSystemAdmin {
 		t.Fatalf("enable permission=%q", permission)
 	}
@@ -229,6 +233,11 @@ func (f *pluginReadAPIFake) ConfigureMutation(_ context.Context, input service.P
 	f.configureCalls++
 	f.configureIn = input
 	return f.configured, f.configureErr
+}
+
+func (f *pluginReadAPIFake) DeleteInstanceMutation(_ context.Context, input service.PluginDeleteInstanceRequest) error {
+	f.deleteIn = input
+	return nil
 }
 
 func (f *pluginReadAPIFake) UpgradeMutation(context.Context, service.PluginUpgradeRequest) (service.PluginSummary, error) {
@@ -345,6 +354,14 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	}
 	if string(pluginAPI.configureIn.SecretReplacements["/credentials/token"]) != `"replacement-secret"` || strings.Contains(configureResponse.Body.String(), "replacement-secret") {
 		t.Fatalf("configure secret replacement was not write-only: input=%s body=%s", pluginAPI.configureIn.SecretReplacements["/credentials/token"], configureResponse.Body.String())
+	}
+	deleteRequest := pluginReadRequest(http.MethodDelete, "/panel-api/plugins/official.read/instances/instance")
+	deleteRequest.SetPathValue("id", installed.PluginID)
+	deleteRequest.SetPathValue("instance", "instance")
+	deleteResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePluginInstance(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusAccepted || pluginAPI.deleteIn.PluginID != installed.PluginID || pluginAPI.deleteIn.InstanceID != "instance" || pluginAPI.deleteIn.ActorID != "admin" {
+		t.Fatalf("delete instance status=%d input=%+v body=%s", deleteResponse.Code, pluginAPI.deleteIn, deleteResponse.Body.String())
 	}
 	omittedChains := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{"mode":"observe"}}`))
 	omittedChains.SetPathValue("id", installed.PluginID)
