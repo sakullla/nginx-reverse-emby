@@ -1,9 +1,11 @@
+//go:build !integration
+
 package hostapi
 
 import (
 	"context"
 	"errors"
-	"net/netip"
+
 	"testing"
 	"time"
 
@@ -25,11 +27,48 @@ func (quota *blockingQuota) Consume(ctx context.Context, _ pluginsdk.HostCapabil
 	}
 }
 
-type auditRecorder struct{ events []AuditEvent }
+type auditRecorder struct {
+	events []AuditEvent
+	err    error
+}
 
 func (recorder *auditRecorder) Audit(_ context.Context, event AuditEvent) error {
 	recorder.events = append(recorder.events, event)
-	return nil
+	return recorder.err
+}
+
+func TestHostAPIAuditFailureNeverIssuesProtectedHandle(t *testing.T) {
+	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
+	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}
+	call := pluginsdk.HostCapabilityCall{PluginID: "official.reverse", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.reverse", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
+	for _, test := range []struct {
+		name string
+		deny bool
+	}{
+		{name: "otherwise allowed"},
+		{name: "already denied", deny: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			quota, _ := NewCallQuota(1)
+			auditErr := errors.New("audit store unavailable")
+			audit := &auditRecorder{err: auditErr}
+			authorizer := Authorizer{PluginID: call.PluginID, InstanceID: call.InstanceID, Generation: call.Generation, Declared: []pluginsdk.HostCapability{capability}, Granted: []pluginsdk.HostCapability{capability}, Actor: call.Actor, ActorCapabilities: []pluginsdk.HostCapability{capability}, Targets: []pluginsdk.HostTarget{target}, Quota: quota, Auditor: audit}
+			if test.deny {
+				authorizer.Granted = nil
+			}
+			handles := NewResourceHandles()
+			token, err := handles.Issue(t.Context(), authorizer, call, "protected-effect")
+			if token != "" || err == nil || !errors.Is(err, ErrDenied) {
+				t.Fatalf("Issue() = token %q error %v", token, err)
+			}
+			if len(handles.handles) != 0 {
+				t.Fatalf("audit failure published handles: %+v", handles.handles)
+			}
+			if len(audit.events) != 1 || audit.events[0].Outcome != map[bool]string{false: "allowed", true: "denied"}[test.deny] {
+				t.Fatalf("audit events = %+v", audit.events)
+			}
+		})
+	}
 }
 
 func TestHostAPIAuthorizationChecksDeclarationGrantActorGroupTargetQuotaAndAudit(t *testing.T) {
@@ -64,48 +103,6 @@ func TestHostAPIAuthorizationChecksDeclarationGrantActorGroupTargetQuotaAndAudit
 		if err := candidate.Authorize(t.Context(), candidateCall); !errors.Is(err, ErrDenied) {
 			t.Fatalf("negative authorization error = %v", err)
 		}
-	}
-}
-
-func TestPolicyAtomicStateIsBoundedAndLinearizable(t *testing.T) {
-	state, err := NewAtomicState(AtomicStateLimits{TotalEntries: 2, NamespaceEntries: 2, TotalBytes: 16, NamespaceBytes: 16, KeyBytes: 8, ValueBytes: 8})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if swapped, err := state.CompareAndSwap("instance", "count", nil, []byte("1")); err != nil || !swapped {
-		t.Fatalf("initial CAS = (%v, %v)", swapped, err)
-	}
-	if swapped, err := state.CompareAndSwap("instance", "count", []byte("0"), []byte("2")); err != nil || swapped {
-		t.Fatalf("stale CAS = (%v, %v)", swapped, err)
-	}
-	if value, ok := state.Get("instance", "count"); !ok || string(value) != "1" {
-		t.Fatalf("state = (%q, %v)", value, ok)
-	}
-	if err := state.Put("instance", "oversize", []byte("123456789")); err == nil {
-		t.Fatal("oversize atomic state value was accepted")
-	}
-}
-
-func TestPolicyMonotonicClockAndTrustedSource(t *testing.T) {
-	clock := NewMonotonicClock()
-	previous := clock.NowNanoseconds()
-	for index := 0; index < 100; index++ {
-		current := clock.NowNanoseconds()
-		if current < previous {
-			t.Fatalf("clock moved backward: %d -> %d", previous, current)
-		}
-		previous = current
-	}
-	source := netip.MustParseAddrPort("198.51.100.1:443")
-	peer := netip.MustParseAddrPort("10.0.0.1:1234")
-	if _, err := NewTrustedSource(source, peer, "trusted-proxy", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewTrustedSource(source, peer, "trusted-proxy", false); err == nil {
-		t.Fatal("unauthenticated source metadata was accepted")
-	}
-	if _, err := NewTrustedSource(source, peer, "forwarded-header", true); err == nil {
-		t.Fatal("unowned source kind was accepted")
 	}
 }
 

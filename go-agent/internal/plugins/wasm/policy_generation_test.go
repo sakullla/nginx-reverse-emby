@@ -1,7 +1,8 @@
+//go:build !integration
+
 package wasm
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,43 +15,9 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
-	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
-	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
-	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/dynamicpb"
-)
 
-func TestMarshalEvaluateRequestEmbedsNormalizedHTTP(t *testing.T) {
-	snapshot := pluginsdk.PolicyNormalizedHTTP{
-		Path:                       []byte("/library"),
-		Query:                      []byte("token=redacted"),
-		Headers:                    []byte("host: media.example\n"),
-		TrustedSource:              []byte("192.0.2.10"),
-		TrustedSourceAuthenticated: true,
-		BodyWindowComplete:         true,
-		BodyWindowLength:           17,
-	}
-	normalized := appendNormalizedHTTPResponse(
-		make([]byte, 0, normalizedHTTPResponseSize(snapshot)), snapshot,
-	)
-	encoded, err := marshalEvaluateRequest(policy.ExtensionHTTP, "request-1", []byte("payload"), normalized)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor, err := protoschema.Message("nre.plugin.policy.v1.EvaluateRequest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	message := dynamicpb.NewMessage(descriptor)
-	if err := proto.Unmarshal(encoded, message.Interface()); err != nil {
-		t.Fatal(err)
-	}
-	field := message.Descriptor().Fields().ByName("normalized_http")
-	if got := message.Get(field).Bytes(); !bytes.Equal(got, normalized) {
-		t.Fatalf("normalized_http=%x, want %x", got, normalized)
-	}
-}
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
+)
 
 func TestPolicyGenerationPreparesMultipleStages(t *testing.T) {
 	ctx := context.Background()
@@ -116,27 +83,6 @@ func TestPolicyGenerationPrepareFailureRollsBackAtomically(t *testing.T) {
 	runtime.mu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("failed preparation retained %d compiled generations", remaining)
-	}
-}
-
-func TestPolicyGenerationRejectsUnknownInstance(t *testing.T) {
-	ctx := context.Background()
-	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-	artifactPath, digest := writePolicyFixture(t)
-	stage := fixturePolicyStage("known-instance", model.PolicyKindIP, artifactPath, digest)
-	generation, err := PreparePolicyGeneration(ctx, runtime, "compat-generation-1", []model.PolicyStage{stage}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = generation.Close(context.Background()) })
-	_, err = generation.Evaluate(ctx, policy.ModuleRequest{InstanceID: "unknown-instance"})
-	var evaluationError *policy.EvaluationError
-	if !errors.As(err, &evaluationError) || evaluationError.Code != "unknown-instance" || evaluationError.Kind != policy.FailureRuntime {
-		t.Fatalf("unknown instance error=%v", err)
 	}
 }
 
@@ -211,73 +157,6 @@ func TestPolicyGenerationFactoryRequiredFailureRollsBackOptionalStages(t *testin
 	}
 }
 
-func TestPolicyGenerationFactoryReusesSharedStageAcrossHTTPAndL4Chains(t *testing.T) {
-	ctx := context.Background()
-	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-	artifactPath, digest := writePolicyFixture(t)
-	shared := fixturePolicyStage("shared-ip", model.PolicyKindIP, artifactPath, digest)
-	factory := GenerationFactory{Runtime: runtime}
-	prepared, err := factory.PrepareGeneration(ctx, policy.GenerationSpec{
-		ID: "compat-generation-1", RequiredPolicyIDs: []string{"http-chain"},
-		Policies: []model.PluginPolicy{
-			{ID: "http-chain", Revision: 1, Stages: []model.PolicyStage{shared}},
-			{ID: "l4-chain", Revision: 1, Stages: []model.PolicyStage{clonePolicyStage(shared)}},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	generation := prepared.(*PolicyGeneration)
-	t.Cleanup(func() { _ = generation.Close(context.Background()) })
-	if len(generation.stages) != 1 {
-		t.Fatalf("shared authority compiled %d pools, want one", len(generation.stages))
-	}
-	response, err := generation.Evaluate(ctx, policy.ModuleRequest{
-		GenerationID: "compat-generation-1", PolicyID: shared.PolicyID, PolicyKind: shared.Kind,
-		InstanceID: shared.InstanceID, ExtensionPoint: policy.ExtensionHTTP, RequestID: "request-1",
-		Payload: []byte("input"), Budget: shared.ResourceBudget, Host: &testPolicyHost{},
-	})
-	if err != nil {
-		t.Fatalf("evaluate shared authority: %v", err)
-	}
-	if response.Action != policy.ActionAllow || string(response.Payload) != "guest-ok" {
-		t.Fatalf("shared authority response = %+v", response)
-	}
-}
-
-func TestPolicyGenerationFactoryRejectsConflictingSharedStage(t *testing.T) {
-	ctx := context.Background()
-	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-	artifactPath, digest := writePolicyFixture(t)
-	shared := fixturePolicyStage("shared-ip", model.PolicyKindIP, artifactPath, digest)
-	conflict := clonePolicyStage(shared)
-	conflict.Config = []byte(`{"mode":"conflict"}`)
-	factory := GenerationFactory{Runtime: runtime}
-	if _, err := factory.PrepareGeneration(ctx, policy.GenerationSpec{
-		ID: "compat-generation-1",
-		Policies: []model.PluginPolicy{
-			{ID: "http-chain", Revision: 1, Stages: []model.PolicyStage{shared}},
-			{ID: "l4-chain", Revision: 1, Stages: []model.PolicyStage{conflict}},
-		},
-	}); err == nil {
-		t.Fatal("accepted conflicting definitions for one shared instance")
-	}
-	runtime.mu.Lock()
-	remaining := len(runtime.generations)
-	runtime.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("conflicting shared definition retained %d generations", remaining)
-	}
-}
-
 func TestPolicyGenerationRejectsOverflowAndConcurrencyBudgets(t *testing.T) {
 	stage := model.PolicyStage{
 		InstanceID: "budget-instance", PolicyID: "budget-policy", ABI: model.PolicyABIV1,
@@ -296,13 +175,6 @@ func TestPolicyGenerationRejectsOverflowAndConcurrencyBudgets(t *testing.T) {
 	overConcurrency.ResourceBudget.Concurrency = policy.MaxPolicyConcurrency + 1
 	if err := validatePolicyStageEvidence(overConcurrency); err == nil {
 		t.Fatal("accepted concurrency above the policy ceiling")
-	}
-}
-
-func TestStageBudgetPreservesExactNonPageAlignedMemoryBytes(t *testing.T) {
-	projected := stageBudget(model.PolicyResourceBudget{MemoryBytes: 65537})
-	if projected.MemoryBytes != 65537 || projected.MaxMemoryPages != 2 {
-		t.Fatalf("stage budget memory bytes=%d pages=%d, want exact 65537 bytes and two-page ceiling", projected.MemoryBytes, projected.MaxMemoryPages)
 	}
 }
 

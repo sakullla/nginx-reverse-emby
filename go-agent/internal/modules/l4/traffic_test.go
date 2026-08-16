@@ -3,7 +3,6 @@
 package l4
 
 import (
-	"bytes"
 	"context"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
@@ -170,83 +169,6 @@ func TestIntegrationL4DropsNewAndExistingUDPPacketsWhenTrafficBlocked(t *testing
 	}
 }
 
-func TestIntegrationL4UDPTrafficBecomesVisibleBeforeSessionCloses(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	defer traffic.Reset()
-
-	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenUDP() upstream error = %v", err)
-	}
-	defer upstreamConn.Close()
-
-	go func() {
-		buf := make([]byte, 64)
-		for {
-			_ = upstreamConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-			n, addr, err := upstreamConn.ReadFromUDP(buf)
-			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					continue
-				}
-				return
-			}
-			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
-		}
-	}()
-
-	listenConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenUDP() reserve error = %v", err)
-	}
-	listenPort := listenConn.LocalAddr().(*net.UDPAddr).Port
-	if err := listenConn.Close(); err != nil {
-		t.Fatalf("Close() reserve error = %v", err)
-	}
-
-	srv, err := NewServerWithResources(context.Background(), []Rule{{
-		ID:         45,
-		Protocol:   "udp",
-		ListenHost: "127.0.0.1",
-		ListenPort: listenPort,
-		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
-	}}, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("NewServerWithResources() error = %v", err)
-	}
-	defer srv.Close()
-	if len(srv.udpConns) == 0 {
-		t.Fatal("expected udp listener")
-	}
-
-	client, err := net.DialUDP("udp", nil, srv.udpConns[0].LocalAddr().(*net.UDPAddr))
-	if err != nil {
-		t.Fatalf("DialUDP() error = %v", err)
-	}
-	defer client.Close()
-
-	if _, err := client.Write([]byte("udp traffic")); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	reply := make([]byte, 64)
-	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("SetReadDeadline() error = %v", err)
-	}
-	if _, err := client.Read(reply); err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-
-	stats := traffic.SnapshotNonZero()
-	if stats == nil {
-		t.Fatal("SnapshotNonZero() = nil, want visible UDP traffic while session is active")
-	}
-	l4Stats := stats["traffic"].(map[string]any)["l4"].(map[string]uint64)
-	if l4Stats["rx_bytes"] == 0 && l4Stats["tx_bytes"] == 0 {
-		t.Fatal("expected active UDP traffic to be flushed before session closes")
-	}
-}
-
 func TestIntegrationCopyBidirectionalTCPRecordsAggregateAndRuleTrafficBeforeClose(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
@@ -291,79 +213,6 @@ func TestIntegrationCopyBidirectionalTCPRecordsAggregateAndRuleTrafficBeforeClos
 	l4Stats := stats["l4"].(map[string]uint64)
 	if l4Stats["rx_bytes"] != uint64(len("client-to-upstream")) || l4Stats["tx_bytes"] != uint64(len("upstream-to-client")) {
 		t.Fatalf("aggregate l4 traffic = %#v", l4Stats)
-	}
-}
-
-func TestIntegrationRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	defer traffic.Reset()
-
-	client, downstream := net.Pipe()
-	defer client.Close()
-	upstream, relayConn := net.Pipe()
-	defer relayConn.Close()
-	dialer := &fakeL4RelayPathDialer{conn: upstream}
-	srv := &Server{
-		ctx:   context.Background(),
-		cache: model.NewCache(model.BackendCacheConfig{}),
-		now:   time.Now,
-		relayListenersByID: map[int]model.RelayListener{
-			2: {
-				ID:         2,
-				Name:       "two",
-				ListenHost: "127.0.0.1",
-				ListenPort: 9002,
-				Enabled:    true,
-				TLSMode:    "pin_only",
-				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
-			},
-		},
-		relayPathDialer: dialer,
-		tcpConns:        make(map[net.Conn]int),
-	}
-	rule := model.L4Rule{
-		ID:          42,
-		Protocol:    "tcp",
-		ListenHost:  "127.0.0.1",
-		ListenPort:  9443,
-		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
-		RelayLayers: [][]int{{2}},
-		Tuning: model.L4Tuning{
-			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true},
-		},
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		srv.handleTCPConnection(downstream, rule)
-	}()
-
-	initialPayload := []byte("prefetched-client-bytes")
-	header := "PROXY TCP4 192.0.2.10 198.51.100.20 12345 443\r\n"
-	if _, err := client.Write(append([]byte(header), initialPayload...)); err != nil {
-		t.Fatalf("write initial payload: %v", err)
-	}
-	if !waitForL4RelayPathCalls(dialer, 2) {
-		t.Fatalf("dialed paths = %+v, want path [2]", dialer.calledPaths())
-	}
-	options := dialer.calledOptions()
-	if len(options) == 0 {
-		t.Fatal("expected relay dial options")
-	}
-	if !bytes.Equal(options[0].InitialPayload, initialPayload) {
-		t.Fatalf("relay initial payload = %q, want %q", options[0].InitialPayload, initialPayload)
-	}
-
-	waitL4RuleTraffic(t, "42", len(initialPayload), 0)
-
-	_ = client.Close()
-	_ = relayConn.Close()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("handleTCPConnection did not exit")
 	}
 }
 

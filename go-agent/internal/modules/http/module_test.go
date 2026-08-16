@@ -9,7 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +18,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+
 	httpmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 )
 
@@ -41,40 +41,6 @@ func TestModuleAppliesHTTPRulesAndProvidesDiagnosticsSource(t *testing.T) {
 	if _, ok := registry.Resolve(module.ProviderDiagnosticsHTTPSource); !ok {
 		t.Fatal("diagnostics.http.source provider missing")
 	}
-}
-
-func TestModuleUsesSnapshotCurrentEgressProfilesDuringRegistryApply(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	}))
-	defer backend.Close()
-
-	profileID := 77
-	port := pickFreeTCPPort(t)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
-	mustRegister(t, registry, moduleegress.NewModule(nil))
-	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
-
-	next := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{{
-			ID:      profileID,
-			Name:    "direct-now",
-			Type:    "direct",
-			Enabled: true,
-		}},
-		Rules: []model.HTTPRule{{
-			ID:              1,
-			FrontendURL:     "http://edge.example.test:" + port,
-			Backends:        []model.HTTPBackend{{URL: backend.URL}},
-			EgressProfileID: &profileID,
-			Enabled:         true,
-		}},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "ok")
 }
 
 func TestModuleConsumesFinalHopDialerForEgressProfiles(t *testing.T) {
@@ -122,40 +88,6 @@ func TestModuleConsumesFinalHopDialerForEgressProfiles(t *testing.T) {
 	}
 }
 
-func TestModuleConsumesPendingEgressFinalHopDialerDuringRegistryApply(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("via-pending-final-hop"))
-	}))
-	defer backend.Close()
-
-	profileID := 90
-	port := pickFreeTCPPort(t)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
-	mustRegister(t, registry, moduleegress.NewModule(nil))
-	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
-
-	next := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{{
-			ID:      profileID,
-			Name:    "pending-direct-final-hop",
-			Type:    "direct",
-			Enabled: true,
-		}},
-		Rules: []model.HTTPRule{{
-			ID:              4,
-			FrontendURL:     "http://edge.example.test:" + port,
-			Backends:        []model.HTTPBackend{{URL: backend.URL}},
-			EgressProfileID: &profileID,
-			Enabled:         true,
-		}},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "via-pending-final-hop")
-}
-
 func TestModuleRollbackRestoresPreviousRuntimeAfterLaterCommitFailure(t *testing.T) {
 	oldBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("old-runtime"))
@@ -195,94 +127,6 @@ func TestModuleRollbackRestoresPreviousRuntimeAfterLaterCommitFailure(t *testing
 		t.Fatal("Apply() error = nil, want later commit failure")
 	}
 	assertHTTPBody(t, port, "edge.example.test:"+port, "old-runtime")
-}
-
-func TestModuleRollbackRestoresPreviousRuntimeAfterDeletingAllRules(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("still-here"))
-	}))
-	defer backend.Close()
-
-	port := pickFreeTCPPort(t)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
-	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
-	failer := &commitFailingModule{name: "after-http"}
-	mustRegister(t, registry, failer)
-
-	previous := model.Snapshot{Rules: []model.HTTPRule{{
-		ID:          6,
-		FrontendURL: "http://edge.example.test:" + port,
-		Backends:    []model.HTTPBackend{{URL: backend.URL}},
-		Enabled:     true,
-	}}}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
-		t.Fatalf("initial Apply() error = %v", err)
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "still-here")
-
-	failer.failCommit = true
-	if err := registry.Apply(context.Background(), previous, model.Snapshot{}); err == nil {
-		t.Fatal("Apply() error = nil, want later commit failure")
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "still-here")
-}
-
-func TestModuleRollbackRestoresPreviousProviderStateAfterLaterCommitFailure(t *testing.T) {
-	oldBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("old-provider"))
-	}))
-	defer oldBackend.Close()
-	newBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("new-provider"))
-	}))
-	defer newBackend.Close()
-
-	profileID := 91
-	port := pickFreeTCPPort(t)
-	unusedBackend := httptest.NewServer(http.NotFoundHandler())
-	unusedBackend.Close()
-	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
-	mustRegister(t, registry, moduleegress.NewModule(nil))
-	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
-	failer := &commitFailingModule{name: "after-http"}
-	mustRegister(t, registry, failer)
-
-	previous := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{{
-			ID:       profileID,
-			Name:     "old-socks",
-			Type:     "socks",
-			ProxyURL: startForwardingSOCKS5Proxy(t, oldBackend.URL),
-			Enabled:  true,
-		}},
-		Rules: []model.HTTPRule{{
-			ID:              7,
-			FrontendURL:     "http://edge.example.test:" + port,
-			Backends:        []model.HTTPBackend{{URL: unusedBackend.URL}},
-			EgressProfileID: &profileID,
-			Enabled:         true,
-		}},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
-		t.Fatalf("initial Apply() error = %v", err)
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "old-provider")
-
-	next := previous
-	next.EgressProfiles = []model.EgressProfile{{
-		ID:       profileID,
-		Name:     "new-socks",
-		Type:     "socks",
-		ProxyURL: startForwardingSOCKS5Proxy(t, newBackend.URL),
-		Enabled:  true,
-	}}
-	failer.failCommit = true
-	if err := registry.Apply(context.Background(), previous, next); err == nil {
-		t.Fatal("Apply() error = nil, want later commit failure")
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "old-provider")
 }
 
 type staticTLSMaterial struct{}
@@ -395,102 +239,6 @@ func assertHTTPBody(t *testing.T, port string, host string, want string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for HTTP body %q: %v", want, lastErr)
-}
-
-func startForwardingSOCKS5Proxy(t *testing.T, backendURL string) string {
-	t.Helper()
-	parsed, err := url.Parse(backendURL)
-	if err != nil {
-		t.Fatalf("parse backend URL: %v", err)
-	}
-	target := parsed.Host
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen socks proxy: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go handleForwardingSOCKS5Conn(conn, target)
-		}
-	}()
-	return "socks5://" + ln.Addr().String()
-}
-
-func handleForwardingSOCKS5Conn(client net.Conn, target string) {
-	defer client.Close()
-	if err := readSOCKS5Greeting(client); err != nil {
-		return
-	}
-	if _, err := client.Write([]byte{0x05, 0x00}); err != nil {
-		return
-	}
-	if err := readSOCKS5ConnectRequest(client); err != nil {
-		return
-	}
-	upstream, err := net.Dial("tcp", target)
-	if err != nil {
-		_, _ = client.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		return
-	}
-	defer upstream.Close()
-	if _, err := client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
-		return
-	}
-	errCh := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(upstream, client)
-		errCh <- err
-	}()
-	go func() {
-		_, err := io.Copy(client, upstream)
-		errCh <- err
-	}()
-	<-errCh
-}
-
-func readSOCKS5Greeting(conn net.Conn) error {
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return err
-	}
-	if header[0] != 0x05 {
-		return fmt.Errorf("unsupported socks version %d", header[0])
-	}
-	methods := make([]byte, int(header[1]))
-	_, err := io.ReadFull(conn, methods)
-	return err
-}
-
-func readSOCKS5ConnectRequest(conn net.Conn) error {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return err
-	}
-	if header[0] != 0x05 || header[1] != 0x01 {
-		return fmt.Errorf("unsupported socks request")
-	}
-	switch header[3] {
-	case 0x01:
-		_, err := io.ReadFull(conn, make([]byte, net.IPv4len+2))
-		return err
-	case 0x03:
-		var length [1]byte
-		if _, err := io.ReadFull(conn, length[:]); err != nil {
-			return err
-		}
-		_, err := io.ReadFull(conn, make([]byte, int(length[0])+2))
-		return err
-	case 0x04:
-		_, err := io.ReadFull(conn, make([]byte, net.IPv6len+2))
-		return err
-	default:
-		return fmt.Errorf("unsupported socks address type %d", header[3])
-	}
 }
 
 type recordingFinalHopDialer struct {

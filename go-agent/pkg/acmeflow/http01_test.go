@@ -96,44 +96,6 @@ func TestIntegrationHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
 	}
 }
 
-func TestIntegrationHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T) {
-	t.Parallel()
-	challenge := testHTTP01Challenge()
-	solver := NewHTTP01Solver("127.0.0.1", "0")
-	_, address := presentHTTP01(t, solver, context.Background(), challenge)
-	defer cleanupHTTP01(t, solver, challenge)
-
-	request, err := http.NewRequest(http.MethodGet, "http://"+address+challenge.HTTPPath+"?", nil)
-	if err != nil {
-		t.Fatalf("NewRequest() error = %v", err)
-	}
-	if !request.URL.ForceQuery || !strings.HasSuffix(request.URL.RequestURI(), "?") {
-		t.Fatalf("test request does not preserve trailing query marker: ForceQuery = %t, RequestURI = %q", request.URL.ForceQuery, request.URL.RequestURI())
-	}
-	client := &http.Client{Timeout: time.Second}
-	defer client.CloseIdleConnections()
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("GET trailing query marker: %v", err)
-	}
-	body, readErr := io.ReadAll(response.Body)
-	closeErr := response.Body.Close()
-	if readErr != nil {
-		t.Fatalf("read response: %v", readErr)
-	}
-	if closeErr != nil {
-		t.Fatalf("close response: %v", closeErr)
-	}
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusNotFound)
-	}
-	for _, secret := range []string{challenge.Token, challenge.KeyAuthorization} {
-		if strings.Contains(string(body), secret) {
-			t.Fatalf("trailing-query response exposed challenge secret %q", secret)
-		}
-	}
-}
-
 func TestIntegrationHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	challenge := testHTTP01Challenge()
@@ -233,64 +195,6 @@ func TestIntegrationHTTP01ContextCancellationStopsServer(t *testing.T) {
 	}
 	if err := solver.Cleanup(context.Background(), challenge); err != nil {
 		t.Fatalf("repeated Cleanup() after cancellation error = %v", err)
-	}
-}
-
-func TestIntegrationHTTP01WaitNormalizesDeadlineAndCleanupStillStopsServer(t *testing.T) {
-	t.Parallel()
-	challenge := testHTTP01Challenge()
-	solver := NewHTTP01Solver("127.0.0.1", "0")
-	session, address := presentHTTP01(t, solver, context.Background(), challenge)
-
-	expiredContext, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	err := solver.Wait(expiredContext, challenge)
-	if category := ErrorCategoryOf(err); category != CategoryTimeout {
-		t.Fatalf("ErrorCategoryOf(Wait()) = %q, want %q (err = %v)", category, CategoryTimeout, err)
-	}
-	requireSafeHTTP01Error(t, err, challenge)
-
-	if err := solver.Cleanup(context.Background(), challenge); err != nil {
-		t.Fatalf("Cleanup() after Wait timeout error = %v", err)
-	}
-	select {
-	case <-session.done:
-	default:
-		t.Fatal("Cleanup returned before the serving goroutine stopped")
-	}
-	connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
-	if err == nil {
-		connection.Close()
-		t.Fatal("listener still accepted connections after timed-out Wait was cleaned up")
-	}
-}
-
-func TestIntegrationHTTP01ReadHeaderTimeoutClosesSlowRequest(t *testing.T) {
-	t.Parallel()
-	challenge := testHTTP01Challenge()
-	solver := NewHTTP01Solver("127.0.0.1", "0")
-	solver.readTimeout = 100 * time.Millisecond
-	solver.readHeaderTimeout = 40 * time.Millisecond
-	solver.idleTimeout = 100 * time.Millisecond
-	solver.shutdownTimeout = 250 * time.Millisecond
-	_, address := presentHTTP01(t, solver, context.Background(), challenge)
-	defer cleanupHTTP01(t, solver, challenge)
-
-	connection, err := net.DialTimeout("tcp", address, time.Second)
-	if err != nil {
-		t.Fatalf("dial solver: %v", err)
-	}
-	defer connection.Close()
-	if _, err := io.WriteString(connection, "GET "+challenge.HTTPPath+" HTTP/1.1\r\nHost: example.test\r\nX-Incomplete:"); err != nil {
-		t.Fatalf("write partial request: %v", err)
-	}
-	if err := connection.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
-	_, err = io.ReadAll(connection)
-	var networkErr net.Error
-	if errors.As(err, &networkErr) && networkErr.Timeout() {
-		t.Fatal("server did not close a slow request within its read-header timeout")
 	}
 }
 

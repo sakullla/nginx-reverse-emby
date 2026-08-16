@@ -1,8 +1,11 @@
+//go:build !integration
+
 package service
 
 import "testing"
 
 func TestNormalizeManagedCertificateInputClearsSelfSignedForACME(t *testing.T) {
+	t.Parallel()
 	domain := "192.0.2.1"
 	scope := "ip"
 	issuerMode := "local_http01"

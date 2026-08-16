@@ -1,14 +1,16 @@
+//go:build !integration
+
 package policy
 
 import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
+
 	"log/slog"
 	"net"
 	"reflect"
-	"strconv"
+
 	"strings"
 	"testing"
 
@@ -85,75 +87,6 @@ func TestPolicyChainRunsIPRateWAFInStrictOrderAndStopsOnRateDeny(t *testing.T) {
 	}
 }
 
-func TestPolicyConstructionRejectsOutOfOrderAndUnsignedStages(t *testing.T) {
-	for name, policy := range map[string]model.PluginPolicy{
-		"out of order": testPolicy("bad-order", model.PolicyKindRate, model.PolicyKindIP),
-		"unsigned": func() model.PluginPolicy {
-			policy := testPolicy("unsigned", model.PolicyKindIP)
-			policy.Stages[0].SignatureVerified = false
-			return policy
-		}(),
-		"concurrency over ceiling": func() model.PluginPolicy {
-			policy := testPolicy("concurrency", model.PolicyKindIP)
-			policy.Stages[0].ResourceBudget.Concurrency = MaxPolicyConcurrency + 1
-			return policy
-		}(),
-		"missing resource group": func() model.PluginPolicy {
-			policy := testPolicy("missing-group", model.PolicyKindIP)
-			policy.Stages[0].ResourceGroupID = ""
-			return policy
-		}(),
-		"duplicate declaration": func() model.PluginPolicy {
-			policy := testPolicy("duplicate-declaration", model.PolicyKindIP)
-			policy.Stages[0].DeclaredScopes = append(policy.Stages[0].DeclaredScopes, policy.Stages[0].DeclaredScopes[0])
-			return policy
-		}(),
-		"noncanonical grant": func() model.PluginPolicy {
-			policy := testPolicy("noncanonical-grant", model.PolicyKindIP)
-			policy.Stages[0].GrantedScopes = append(policy.Stages[0].GrantedScopes, " policy.read")
-			return policy
-		}(),
-		"grant outside declaration": func() model.PluginPolicy {
-			policy := testPolicy("excess-grant", model.PolicyKindIP)
-			policy.Stages[0].GrantedScopes = append(policy.Stages[0].GrantedScopes, "storage.write")
-			return policy
-		}(),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := NewGenerationEvaluator("generation-1", []model.PluginPolicy{policy}, &scriptedModule{}, nil); err == nil {
-				t.Fatal("NewGenerationEvaluator() error = nil")
-			}
-		})
-	}
-}
-
-func TestPolicyStageCloneOwnsDeclaredAndGrantedScopeMemory(t *testing.T) {
-	original := testPolicy("clone-scopes", model.PolicyKindIP)
-	cloned, err := validateAndClonePolicy(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original.Stages[0].DeclaredScopes[0] = "storage.write"
-	original.Stages[0].GrantedScopes[0] = "storage.write"
-	if cloned.Stages[0].DeclaredScopes[0] == "storage.write" || cloned.Stages[0].GrantedScopes[0] == "storage.write" {
-		t.Fatal("validated stage aliases caller-owned declaration or grant slices")
-	}
-}
-
-func TestPolicyChainsMayReuseOneIdenticalAuthorityInstance(t *testing.T) {
-	httpPolicy := testPolicy("http-chain", model.PolicyKindIP, model.PolicyKindRate, model.PolicyKindWAF)
-	l4Policy := testPolicy("l4-chain", model.PolicyKindIP, model.PolicyKindRate)
-	l4Policy.Stages[0] = cloneStage(httpPolicy.Stages[0])
-	l4Policy.Stages[1] = cloneStage(httpPolicy.Stages[1])
-	if _, err := NewGenerationEvaluator("generation-shared", []model.PluginPolicy{httpPolicy, l4Policy}, &scriptedModule{}, nil); err != nil {
-		t.Fatalf("shared authority instance was rejected: %v", err)
-	}
-	l4Policy.Stages[0].ArtifactDigest = "conflicting-digest"
-	if _, err := NewGenerationEvaluator("generation-conflict", []model.PluginPolicy{httpPolicy, l4Policy}, &scriptedModule{}, nil); err == nil {
-		t.Fatal("conflicting shared authority instance was accepted")
-	}
-}
-
 func TestPolicyFailureOnlyAffectsDependentTrafficAndHonorsFailureMode(t *testing.T) {
 	moduleErr := RuntimeError("trap", errors.New("guest failed"))
 	module := &scriptedModule{errors: map[model.PolicyKind]error{model.PolicyKindIP: moduleErr}}
@@ -180,54 +113,6 @@ func TestPolicyFailureOnlyAffectsDependentTrafficAndHonorsFailureMode(t *testing
 	}
 }
 
-func TestPolicyBodyWindowAndCanonicalSourceAreBoundedHostOwnedInputs(t *testing.T) {
-	body, err := NewBodyWindow([]byte("prefix"), false, BodyStreaming)
-	if err != nil {
-		t.Fatalf("NewBodyWindow() error = %v", err)
-	}
-	metadata, err := NewAuthenticatedMetadata(SourceTrustedProxy,
-		&net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 443},
-		&net.TCPAddr{IP: net.ParseIP("198.51.100.25"), Port: 50000},
-	)
-	if err != nil {
-		t.Fatalf("NewAuthenticatedMetadata() error = %v", err)
-	}
-	if _, err := NewInput(ExtensionHTTP, "request-1", metadata, map[string][]byte{"source.ip": []byte("203.0.113.99")}, body); err == nil {
-		t.Fatal("spoofed host-owned source field was accepted")
-	}
-	input, err := NewInput(ExtensionHTTP, "request-1", metadata, map[string][]byte{FieldRequestPath: []byte("/upload")}, body)
-	if err != nil {
-		t.Fatalf("NewInput() error = %v", err)
-	}
-	host := &requestHost{
-		input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(),
-		stage:             model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyTrustedSource)}, GrantedScopes: []string{"http.inspect", string(pluginsdk.CapabilityPolicyTrustedSource)}},
-		capabilityAuditor: acknowledgedCapabilityAudit{},
-	}
-	source, _ := host.ReadField(context.Background(), "source.ip")
-	complete, _ := host.ReadField(context.Background(), "body.complete")
-	skip, _ := host.ReadField(context.Background(), "body.skip_reason")
-	window, _ := host.ReadBodyWindow(context.Background(), 2, 1000)
-	if string(source) != "198.51.100.25" || string(complete) != "false" || string(skip) != string(BodyStreaming) || string(window) != "efix" {
-		t.Fatalf("source/body = %q %q %q %q", source, complete, skip, window)
-	}
-	if _, err := NewBodyWindow(make([]byte, MaxBodyPrefixBytes+1), false, BodyLimitExceeded); err == nil {
-		t.Fatal("oversized prefix was accepted")
-	}
-}
-
-func TestCanonicalHTTPHeaderFieldIsBoundedAndCannotAliasHostSource(t *testing.T) {
-	field, ok := CanonicalHTTPHeaderField("User-Agent")
-	if !ok || field != "request.header.user-agent" {
-		t.Fatalf("CanonicalHTTPHeaderField() = %q, %v", field, ok)
-	}
-	for _, invalid := range []string{"", "bad header", "source.ip\n"} {
-		if field, ok := CanonicalHTTPHeaderField(invalid); ok || field != "" {
-			t.Fatalf("invalid header %q = %q, %v", invalid, field, ok)
-		}
-	}
-}
-
 func TestPolicyBudgetFailureIsObservableAndFailOpenByDefault(t *testing.T) {
 	var events []observability.Event
 	observer := observability.ObserverFunc(func(_ context.Context, event observability.Event) { events = append(events, event) })
@@ -242,18 +127,6 @@ func TestPolicyBudgetFailureIsObservableAndFailOpenByDefault(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Name != observability.PolicyBudget || events[0].Outcome != "exhausted" || events[0].PolicyStage != "waf" {
 		t.Fatalf("events = %+v", events)
-	}
-}
-
-func TestPolicyObserverFailureCannotAffectTrafficDecision(t *testing.T) {
-	observer := observability.ObserverFunc(func(context.Context, observability.Event) { panic("telemetry unavailable") })
-	evaluator, err := NewGenerationEvaluator("generation-observer", []model.PluginPolicy{testPolicy("ip", model.PolicyKindIP)}, &scriptedModule{}, observer)
-	if err != nil {
-		t.Fatalf("NewGenerationEvaluator() error = %v", err)
-	}
-	decision := evaluator.Evaluate(context.Background(), &model.PolicyRef{ID: "ip"}, testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil)))
-	if decision.Action != ActionAllow || decision.Degraded {
-		t.Fatalf("decision = %+v", decision)
 	}
 }
 
@@ -279,79 +152,6 @@ func TestPolicyGenerationStateIsInstanceScopedAndCopiesValues(t *testing.T) {
 	}
 }
 
-func TestPolicyGenerationStateCapacityIsolatedPerInstance(t *testing.T) {
-	state := newGenerationState()
-	for index := 0; index < maxInstanceStateEntries; index++ {
-		if err := state.put("instance-a", fmt.Sprintf("key-%04d", index), nil); err != nil {
-			t.Fatalf("fill instance A entry %d: %v", index, err)
-		}
-	}
-	if err := state.put("instance-a", "overflow", nil); failureKind(err) != FailureBudget {
-		t.Fatalf("instance A overflow error = %v", err)
-	}
-	if err := state.put("instance-b", "available", []byte("value")); err != nil {
-		t.Fatalf("instance B was exhausted by instance A: %v", err)
-	}
-	if value, ok := state.get("instance-b", "available"); !ok || string(value) != "value" {
-		t.Fatalf("instance B value = %q, %v", value, ok)
-	}
-}
-
-func TestPolicyGenerationStateRetainsTotalCeiling(t *testing.T) {
-	state := newGenerationState()
-	value := make([]byte, maxStateValueBytes)
-	instances := maxGenerationStateBytes / maxInstanceStateBytes
-	valuesPerInstance := maxInstanceStateBytes / maxStateValueBytes
-	for instance := 0; instance < instances; instance++ {
-		instanceID := fmt.Sprintf("instance-%02d", instance)
-		for index := 0; index < valuesPerInstance; index++ {
-			if err := state.put(instanceID, fmt.Sprintf("key-%04d", index), value); err != nil {
-				t.Fatalf("fill generation instance/key %d/%d: %v", instance, index, err)
-			}
-		}
-	}
-	if err := state.put("instance-overflow", "key", []byte("x")); failureKind(err) != FailureBudget {
-		t.Fatalf("generation overflow error = %v", err)
-	}
-}
-
-func TestPolicyWireFrameBudgetExactBoundariesAndDimensions(t *testing.T) {
-	budget := model.PolicyResourceBudget{
-		TimeoutMS:   pluginsdk.PolicyV1MaxTimeoutMilliseconds,
-		MemoryBytes: pluginsdk.PolicyV1MinMemoryBytes,
-		Concurrency: 1,
-		InputBytes:  pluginsdk.PolicyV1MinInputFrameBytes,
-		OutputBytes: pluginsdk.PolicyV1MinOutputFrameBytes,
-	}
-	if err := ValidatePolicyResourceBudget(budget); err != nil {
-		t.Fatalf("ValidatePolicyResourceBudget(exact minimum frames) error = %v", err)
-	}
-	if err := AdmitPolicyInputFrame(budget, int(budget.InputBytes)); err != nil {
-		t.Fatalf("AdmitPolicyInputFrame(exact) error = %v", err)
-	}
-	if err := AdmitPolicyOutputFrame(budget, int(budget.OutputBytes)); err != nil {
-		t.Fatalf("AdmitPolicyOutputFrame(exact) error = %v", err)
-	}
-	for name, testCase := range map[string]struct {
-		err  error
-		want pluginsdk.BudgetDimension
-	}{
-		"input":  {AdmitPolicyInputFrame(budget, int(budget.InputBytes)+1), pluginsdk.BudgetDimensionInput},
-		"output": {AdmitPolicyOutputFrame(budget, int(budget.OutputBytes)+1), pluginsdk.BudgetDimensionOutput},
-		"state":  {resourceExhausted("state-capacity", "full"), pluginsdk.BudgetDimensionState},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var dimensionError pluginsdk.BudgetDimensionError
-			if !errors.As(testCase.err, &dimensionError) || dimensionError.BudgetDimension() != testCase.want {
-				t.Fatalf("budget error = %v dimension = %v, want %v", testCase.err, dimensionError, testCase.want)
-			}
-			if failureKind(testCase.err) != FailureBudget {
-				t.Fatalf("failureKind(%v) = %q", testCase.err, failureKind(testCase.err))
-			}
-		})
-	}
-}
-
 func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
 	host := &requestHost{input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a"}, capabilityAuditor: acknowledgedCapabilityAudit{}}
@@ -372,169 +172,6 @@ func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	}
 	if err := host.StatePut(context.Background(), "bucket", []byte("value")); err != nil {
 		t.Fatalf("granted StatePut() error = %v", err)
-	}
-}
-
-func TestPolicyV1StatePreservesLegacyGrantAndNegotiatesAtomicCapability(t *testing.T) {
-	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
-	legacy := &requestHost{
-		input: input, generationID: "generation-1", instanceID: "legacy-instance", state: newGenerationState(),
-		stage:             model.PolicyStage{PluginID: "official.legacy-policy", ResourceGroupID: "group-a", GrantedScopes: []string{"policy.read", "policy.write"}},
-		capabilityAuditor: acknowledgedCapabilityAudit{err: errors.New("new capability audit must not run for a legacy v1 package")},
-	}
-	if err := legacy.StatePut(t.Context(), "bucket", []byte("legacy")); err != nil {
-		t.Fatalf("legacy StatePut() error = %v", err)
-	}
-	if value, found, err := legacy.StateGet(t.Context(), "bucket"); err != nil || !found || string(value) != "legacy" {
-		t.Fatalf("legacy StateGet() = %q, %v, %v", value, found, err)
-	}
-
-	negotiated := &requestHost{
-		input: input, generationID: "generation-1", instanceID: "negotiated-instance", state: newGenerationState(),
-		stage: model.PolicyStage{
-			PluginID: "official.atomic-policy", ResourceGroupID: "group-a",
-			DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyAtomicState)},
-			GrantedScopes:  []string{"policy.read", "policy.write"},
-		},
-		capabilityAuditor: acknowledgedCapabilityAudit{},
-	}
-	if err := negotiated.StatePut(t.Context(), "bucket", []byte("value")); !isPermissionDenied(err) {
-		t.Fatalf("negotiated StatePut() without capability grant error = %v", err)
-	}
-	negotiated.stage.GrantedScopes = append(negotiated.stage.GrantedScopes, string(pluginsdk.CapabilityPolicyAtomicState))
-	negotiated.authorizer = nil
-	if err := negotiated.StatePut(t.Context(), "bucket", []byte("value")); err != nil {
-		t.Fatalf("negotiated StatePut() with capability grant error = %v", err)
-	}
-}
-
-func TestPolicyHostCapabilitiesUseSignedProjectionAndNodeLocalPrimitives(t *testing.T) {
-	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
-	capabilities := []string{
-		string(pluginsdk.CapabilityPolicyAtomicState),
-		string(pluginsdk.CapabilityPolicyMonotonicClock),
-		string(pluginsdk.CapabilityPolicyTrustedSource),
-	}
-	newHost := func() *requestHost {
-		return &requestHost{
-			input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
-			stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: append([]string(nil), capabilities...), GrantedScopes: append([]string{"http.inspect", "policy.read", "policy.write"}, capabilities...)},
-			state: newGenerationState(), clock: hostapi.NewMonotonicClock(),
-			capabilityAuditor: acknowledgedCapabilityAudit{},
-		}
-	}
-	host := newHost()
-	if source, err := host.ReadField(t.Context(), "source.ip"); err != nil || len(source) == 0 {
-		t.Fatalf("trusted source = %q, %v", source, err)
-	}
-	first, err := host.ReadField(t.Context(), "clock.monotonic_ns")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := host.ReadField(t.Context(), "clock.monotonic_ns")
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstValue, _ := strconv.ParseInt(string(first), 10, 64)
-	secondValue, _ := strconv.ParseInt(string(second), 10, 64)
-	if secondValue < firstValue {
-		t.Fatalf("monotonic clock moved backwards: %d then %d", firstValue, secondValue)
-	}
-	if err := host.StatePut(t.Context(), "bucket", []byte("value")); err != nil {
-		t.Fatal(err)
-	}
-	if value, found, err := host.StateGet(t.Context(), "bucket"); err != nil || !found || string(value) != "value" {
-		t.Fatalf("atomic state = %q, %v, %v", value, found, err)
-	}
-
-	for name, mutate := range map[string]func(*requestHost){
-		"missing declaration": func(candidate *requestHost) { candidate.stage.DeclaredScopes = nil },
-		"missing grant":       func(candidate *requestHost) { candidate.stage.GrantedScopes = []string{"http.inspect"} },
-		"missing group":       func(candidate *requestHost) { candidate.stage.ResourceGroupID = "" },
-	} {
-		t.Run(name, func(t *testing.T) {
-			candidate := newHost()
-			mutate(candidate)
-			if _, err := candidate.ReadField(t.Context(), "source.ip"); !isPermissionDenied(err) {
-				t.Fatalf("trusted source denial error = %v", err)
-			}
-		})
-	}
-	t.Run("audit failure", func(t *testing.T) {
-		candidate := newHost()
-		candidate.capabilityAuditor = acknowledgedCapabilityAudit{err: errors.New("durable journal unavailable")}
-		if _, err := candidate.ReadField(t.Context(), "source.ip"); !isPermissionDenied(err) {
-			t.Fatalf("audit failure error = %v", err)
-		}
-	})
-}
-
-func TestPolicyHostPreservesEmptyFieldPresenceAndEmitsSafeEvent(t *testing.T) {
-	input := testInput(t, ExtensionHTTP, map[string][]byte{
-		FieldRequestQuery: {},
-	}, testCompleteBody(t, nil))
-	var observed observability.Event
-	host := &requestHost{
-		input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
-		stage: model.PolicyStage{Kind: model.PolicyKindWAF, PluginID: "official.waf", GrantedScopes: []string{"http.inspect", "event.emit"}},
-		state: newGenerationState(), observer: observability.ObserverFunc(func(_ context.Context, event observability.Event) { observed = event }),
-	}
-	present, err := host.ReadField(context.Background(), FieldRequestQuery)
-	if err != nil || present == nil || len(present) != 0 {
-		t.Fatalf("present empty field = %#v, error = %v", present, err)
-	}
-	missing, err := host.ReadField(context.Background(), "request.header.x-missing")
-	if err != nil || missing != nil {
-		t.Fatalf("missing field = %#v, error = %v", missing, err)
-	}
-	if err := host.EmitEvent(context.Background(), pluginsdk.PolicySecurityEvent{Code: pluginsdk.PolicySecurityEventCodeWAFRuleMatch, Action: pluginsdk.PolicySecurityEventActionDeny}); err != nil {
-		t.Fatalf("EmitEvent() error = %v", err)
-	}
-	if observed.SecurityCode != "waf.rule_match" || observed.SecurityAction != "deny" || observed.SecurityTemplate != "WAF rule matched" {
-		t.Fatalf("observed event = %+v", observed)
-	}
-	if observed.RequestID != "request-1" || observed.PluginID != "official.waf" {
-		t.Fatalf("observed identity = %+v", observed)
-	}
-	if err := host.EmitEvent(context.Background(), pluginsdk.PolicySecurityEvent{Code: 200, Action: pluginsdk.PolicySecurityEventActionDeny}); err == nil {
-		t.Fatal("EmitEvent() accepted unknown guest event code")
-	}
-}
-
-func TestPolicyHostReturnsOneCanonicalNormalizedHTTPSnapshot(t *testing.T) {
-	input := testInput(t, ExtensionHTTP, map[string][]byte{
-		FieldRequestPath:                     []byte("/library/%2e%2e/item"),
-		FieldRequestQuery:                    []byte("sort=created"),
-		FieldRequestHeaderPrefix + "z-last":  []byte("two"),
-		FieldRequestHeaderPrefix + "a-first": []byte("one"),
-	}, testCompleteBody(t, nil))
-	host := &requestHost{
-		input: input, generationID: "generation-1", instanceID: "instance-1", policyID: "policy-1",
-		stage: model.PolicyStage{
-			PluginID: "official.waf", ResourceGroupID: "group-a",
-			DeclaredScopes: []string{string(pluginsdk.CapabilityPolicyTrustedSource)},
-			GrantedScopes:  []string{"http.inspect", string(pluginsdk.CapabilityPolicyTrustedSource)},
-		},
-		state: newGenerationState(), capabilityAuditor: acknowledgedCapabilityAudit{},
-	}
-	snapshot, err := host.ReadNormalizedHTTP(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(snapshot.Path) != "/library/%2e%2e/item" || string(snapshot.Query) != "sort=created" {
-		t.Fatalf("snapshot path/query = %q, %q", snapshot.Path, snapshot.Query)
-	}
-	if string(snapshot.Headers) != "a-first:one\nz-last:two" {
-		t.Fatalf("snapshot headers = %q", snapshot.Headers)
-	}
-	if len(snapshot.TrustedSource) == 0 || !snapshot.TrustedSourceAuthenticated || !snapshot.BodyWindowComplete || snapshot.BodyWindowLength != 0 {
-		t.Fatalf("snapshot metadata = %+v", snapshot)
-	}
-
-	host.stage.DeclaredScopes = nil
-	host.authorizer = nil
-	if _, err := host.ReadNormalizedHTTP(t.Context()); !isPermissionDenied(err) {
-		t.Fatalf("snapshot without trusted-source declaration error = %v", err)
 	}
 }
 

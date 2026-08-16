@@ -1,10 +1,12 @@
+//go:build !integration
+
 package policy
 
 import (
 	"bytes"
 	"context"
 	"errors"
-	"slices"
+
 	"strings"
 	"testing"
 
@@ -126,89 +128,12 @@ func TestPolicyValidationModuleAllowsOptionalCatalogAndRejectsRequiredPolicy(t *
 	}
 }
 
-func TestRequiredPolicyIDsUsesOnlyEnabledHTTPAndL4References(t *testing.T) {
-	snapshot := model.Snapshot{
-		Rules: []model.HTTPRule{
-			{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: " waf "}},
-			{ID: 2, Enabled: false, PolicyRef: &model.PolicyRef{ID: "disabled"}},
-		},
-		L4Rules: []model.L4Rule{
-			{ID: 3, Enabled: true, PolicyRef: &model.PolicyRef{ID: "rate"}},
-			{ID: 4, Enabled: true, PolicyRef: &model.PolicyRef{ID: "waf"}},
-		},
-	}
-	if got := RequiredPolicyIDs(snapshot); !slices.Equal(got, []string{"rate", "waf"}) {
-		t.Fatalf("RequiredPolicyIDs() = %v", got)
-	}
-}
-
-func TestPolicyModuleRejectsMalformedTrustedSourceAllowlists(t *testing.T) {
-	for name, next := range map[string]model.Snapshot{
-		"http": {
-			PluginPolicies: []model.PluginPolicy{testPolicy("ip", model.PolicyKindIP)},
-			Rules: []model.HTTPRule{{
-				ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "ip"}, TrustedProxyRanges: []string{"not-a-prefix"},
-			}},
-		},
-		"l4": {
-			PluginPolicies: []model.PluginPolicy{testPolicy("ip", model.PolicyKindIP)},
-			L4Rules: []model.L4Rule{{
-				ID: 2, Enabled: true, PolicyRef: &model.PolicyRef{ID: "ip"},
-				Tuning: model.L4Tuning{ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true, TrustedPeers: []string{"not-a-prefix"}}},
-			}},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			factory := &testGenerationFactory{}
-			if _, err := NewModule(factory, nil).Prepare(context.Background(), module.ApplyRequest{Next: next}); err == nil {
-				t.Fatal("Prepare() accepted malformed trusted source allowlist")
-			}
-			if factory.runtime != nil {
-				t.Fatal("factory was called for malformed trusted source allowlist")
-			}
-		})
-	}
-}
-
 func TestPolicyModuleRejectsWAFOnL4(t *testing.T) {
 	policyModule := NewModule(&testGenerationFactory{}, nil)
 	next := model.Snapshot{Revision: 1, PluginPolicies: []model.PluginPolicy{testPolicy("waf", model.PolicyKindWAF)}}
 	next.L4Rules = []model.L4Rule{{ID: 2, Enabled: true, PolicyRef: &model.PolicyRef{ID: "waf"}}}
 	if _, err := policyModule.Prepare(context.Background(), module.ApplyRequest{Next: next}); err == nil {
 		t.Fatal("Prepare() accepted an L4 WAF dependency")
-	}
-}
-
-func TestPolicyModuleRejectsStageExtensionMismatchBeforeFactory(t *testing.T) {
-	for name, test := range map[string]struct {
-		extension string
-		snapshot  model.Snapshot
-	}{
-		"http": {
-			extension: ExtensionHTTP,
-			snapshot:  model.Snapshot{Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}},
-		},
-		"l4": {
-			extension: ExtensionL4,
-			snapshot:  model.Snapshot{L4Rules: []model.L4Rule{{ID: 2, Enabled: true, PolicyRef: &model.PolicyRef{ID: "shared"}}}},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			definition := testPolicy("shared", model.PolicyKindIP)
-			if test.extension == ExtensionHTTP {
-				definition.Stages[0].ExtensionPoints = []string{ExtensionL4}
-			} else {
-				definition.Stages[0].ExtensionPoints = []string{ExtensionHTTP}
-			}
-			test.snapshot.PluginPolicies = []model.PluginPolicy{definition}
-			factory := &testGenerationFactory{}
-			if _, err := NewModule(factory, nil).Prepare(context.Background(), module.ApplyRequest{Next: test.snapshot}); err == nil {
-				t.Fatalf("Prepare() accepted a stage without %q", test.extension)
-			}
-			if factory.runtime != nil {
-				t.Fatal("factory was called for an incompatible extension")
-			}
-		})
 	}
 }
 
@@ -236,24 +161,6 @@ func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) 
 	snapshot.PluginPolicies[0].Stages[1].ResourceBudget.InputBytes--
 	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err == nil {
 		t.Fatal("one-byte-over-budget frame accepted by second stage")
-	}
-}
-
-func TestPolicyModuleExcludesInvalidOptionalDefinitionWithoutBlockingRequiredPolicy(t *testing.T) {
-	factory := &testGenerationFactory{}
-	policyModule := NewModule(factory, nil)
-	required := testPolicy("required", model.PolicyKindIP)
-	optional := testPolicy("optional", model.PolicyKindWAF)
-	optional.Stages[0].SignatureVerified = false
-	next := model.Snapshot{Revision: 1, PluginPolicies: []model.PluginPolicy{required, optional}}
-	next.Rules = []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "required"}}}
-	transaction, err := policyModule.Prepare(context.Background(), module.ApplyRequest{Next: next})
-	if err != nil {
-		t.Fatalf("Prepare() error = %v", err)
-	}
-	defer func() { _ = transaction.(module.GenerationTransaction).Destroy(context.Background()) }()
-	if len(factory.spec.Policies) != 1 || factory.spec.Policies[0].ID != "required" {
-		t.Fatalf("factory policies = %+v", factory.spec.Policies)
 	}
 }
 

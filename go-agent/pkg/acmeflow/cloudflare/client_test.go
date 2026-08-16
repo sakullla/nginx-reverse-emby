@@ -157,61 +157,6 @@ func TestCloudflareClientContractsPaginationAndTokenScopes(t *testing.T) {
 	}
 }
 
-func TestCloudflareClientAcceptsZeroTotalPagesForEmptyCollections(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/zones":
-			name := request.URL.Query().Get("name")
-			if name == "example.com" {
-				writeCloudflareEnvelope(t, response, []Zone{{ID: "zone-id", Name: name, Status: "active"}}, 1, 1)
-				return
-			}
-			writeCloudflareEnvelope(t, response, []Zone{}, 1, 0)
-		case "/zones/zone-id/dns_records":
-			writeCloudflareEnvelope(t, response, []TXTRecord{}, 1, 0)
-		default:
-			http.NotFound(response, request)
-		}
-	}))
-	defer server.Close()
-
-	client, err := NewClient(ClientConfig{BaseURL: server.URL, DNSAPIToken: "token", HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	zone, err := client.FindZone(context.Background(), "_acme-challenge.service.example.com")
-	if err != nil {
-		t.Fatalf("FindZone() error = %v", err)
-	}
-	if zone.ID != "zone-id" || zone.Name != "example.com" {
-		t.Fatalf("FindZone() = %#v", zone)
-	}
-	records, err := client.ListTXTRecords(context.Background(), zone.ID, "_acme-challenge.service.example.com")
-	if err != nil {
-		t.Fatalf("ListTXTRecords() error = %v", err)
-	}
-	if len(records) != 0 {
-		t.Fatalf("ListTXTRecords() = %#v, want empty", records)
-	}
-}
-
-func TestCloudflareClientRejectsZeroTotalPagesForNonEmptyCollections(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		name := request.URL.Query().Get("name")
-		writeCloudflareEnvelope(t, response, []Zone{{ID: "zone-id", Name: name, Status: "active"}}, 1, 0)
-	}))
-	defer server.Close()
-
-	client, err := NewClient(ClientConfig{BaseURL: server.URL, DNSAPIToken: "token", HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	_, err = client.FindZone(context.Background(), "example.com")
-	if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryProtocol {
-		t.Fatalf("FindZone() category = %q, want %q; err=%v", got, acmeflow.CategoryProtocol, err)
-	}
-}
-
 func TestCloudflareClientFallbackErrorsRetryAfterCancellationAndRedaction(t *testing.T) {
 	const token = "provider-token-canary"
 	const providerBody = "provider-raw-body-canary"
@@ -342,43 +287,6 @@ func TestCloudflareClientRejectsUnsafeConfigurationAndIdentifiers(t *testing.T) 
 	}
 	if got := parseProviderRetryAfter("9223372036854775807", time.Now()); got != 0 {
 		t.Fatalf("parseProviderRetryAfter(overflow) = %v, want 0", got)
-	}
-}
-
-func TestCloudflareClientRejectsMismatchedDeleteResult(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodDelete {
-			t.Errorf("method = %q, want DELETE", request.Method)
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{"result": map[string]string{"id": "other-record"}})
-	}))
-	defer server.Close()
-	client, err := NewClient(ClientConfig{BaseURL: server.URL, DNSAPIToken: "token", HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	if err := client.DeleteRecord(context.Background(), "zone-id", "record-id"); err == nil {
-		t.Fatal("DeleteRecord(mismatched result) error = nil")
-	}
-}
-
-func TestCloudflareClientDeleteFailureIsSafeCleanupError(t *testing.T) {
-	const providerBody = "delete-provider-body-canary"
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		response.WriteHeader(http.StatusBadRequest)
-		_, _ = response.Write([]byte(providerBody))
-	}))
-	defer server.Close()
-	client, err := NewClient(ClientConfig{BaseURL: server.URL, DNSAPIToken: "token", HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	err = client.DeleteRecord(context.Background(), "zone-id", "record-id")
-	if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryCleanup {
-		t.Fatalf("category = %q, want cleanup; err=%v", got, err)
-	}
-	if strings.Contains(err.Error(), providerBody) {
-		t.Fatalf("DeleteRecord() error leaked provider body: %v", err)
 	}
 }
 

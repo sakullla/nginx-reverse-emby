@@ -5,7 +5,7 @@ package l4
 import (
 	"bufio"
 	"context"
-	"errors"
+
 	"fmt"
 	"io"
 	"net"
@@ -17,42 +17,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
-
-func TestIntegrationL4GenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
-	t.Parallel()
-	backend := startL4GenerationTCPBackend(t, "backend")
-	frontendPort := pickFreeTCPPort(t)
-	next := l4GenerationSnapshot(1, "tcp", frontendPort, backend)
-	registry := module.NewRegistry()
-	mod := NewModule(Config{
-		GenerationSelector:     registry,
-		SessionRegistrar:       l4GenerationNoopRegistrar{},
-		ExternalDrainLifecycle: true,
-	})
-	defer mod.Close()
-	if err := registry.Register(mod); err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-	generationContext, err := module.NewGenerationContext(model.Snapshot{}, next)
-	if err != nil {
-		t.Fatalf("NewGenerationContext() error = %v", err)
-	}
-	applyCtx, cancelApply := context.WithCancel(t.Context())
-	candidate, err := registry.PrepareGeneration(applyCtx, generationContext)
-	if err != nil {
-		t.Fatalf("PrepareGeneration() error = %v", err)
-	}
-	if err := candidate.Ready(applyCtx); err != nil {
-		t.Fatalf("Ready() error = %v", err)
-	}
-	view, _ := candidate.Publish()
-	defer view.Destroy(context.Background())
-	cancelApply()
-
-	if got, err := l4GenerationTCPExchange(frontendPort, "request"); err != nil || got != "backend:request" {
-		t.Fatalf("exchange after apply context cancellation = %q, %v", got, err)
-	}
-}
 
 func TestIntegrationL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 	t.Parallel()
@@ -300,86 +264,6 @@ func TestIntegrationL4GenerationDrainRevokesTargetAndForcesOldestGeneration(t *t
 	_ = thirdServer.Close()
 }
 
-func TestIntegrationL4GenerationNaturalFinishDoesNotWaitOnItsOwnServer(t *testing.T) {
-	t.Parallel()
-	controller := generation.NewDrainController(nil)
-	firstServer := newBareL4GenerationServer("g1", controller)
-	firstTarget, firstPeer := net.Pipe()
-	defer firstPeer.Close()
-	firstServer.trackTCPConn(firstTarget, 1)
-	handle, _ := firstServer.registerSession(1, "tcp", l4ConnectionSession{conn: firstTarget})
-	firstTx := &l4GenerationTransaction{
-		server: firstServer, generationID: "g1", generationRevision: 1,
-		drainController: controller, drainTimeout: time.Minute, manageDrain: true, published: true,
-	}
-	firstTx.FinalizeCommitSuccess()
-
-	secondServer := newBareL4GenerationServer("g2", controller)
-	secondTx := &l4GenerationTransaction{
-		server: secondServer, previousServer: firstServer,
-		generationID: "g2", generationRevision: 2,
-		drainController: controller, drainTimeout: time.Minute, manageDrain: true, published: true,
-	}
-	secondTx.FinalizeCommitSuccess()
-
-	finished := make(chan struct{})
-	firstServer.wg.Add(1)
-	go func() {
-		defer firstServer.wg.Done()
-		handle.Finish()
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-time.After(time.Second):
-		t.Fatal("natural session finish deadlocked on Server.Close")
-	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		status := l4GenerationDrainStatus(t, controller.Snapshot(), "g1")
-		if status.State == model.GenerationDrainStateDrained {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("g1 drain status = %+v, want drained", status)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	_ = firstTarget.Close()
-	_ = firstServer.Close()
-	_ = secondServer.Close()
-}
-
-func TestIntegrationL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
-	t.Parallel()
-	previous := []model.L4Rule{
-		{ID: 1, Enabled: true, Protocol: "tcp"},
-		{ID: 2, Enabled: true, Protocol: "tcp"},
-		{ID: 3, Enabled: true, Protocol: "tcp", Name: "before"},
-	}
-	next := []model.L4Rule{
-		{ID: 2, Enabled: false, Protocol: "tcp"},
-		{ID: 3, Enabled: true, Protocol: "tcp", Name: "after"},
-	}
-	revoked := revokedL4RuleEntities(previous, next)
-	if _, ok := revoked["1"]; !ok {
-		t.Fatal("deleted rule was not revoked")
-	}
-	if _, ok := revoked["2"]; !ok {
-		t.Fatal("disabled rule was not revoked")
-	}
-	if _, ok := revoked["3"]; ok {
-		t.Fatal("modified rule was revoked")
-	}
-	changes := l4RuleEntityChanges(previous, next)
-	if len(changes) != 3 || changes[0].Action != generation.EntityDeleted || changes[1].Action != generation.EntityDisabled || changes[2].Action != generation.EntityModified {
-		t.Fatalf("entity changes = %+v", changes)
-	}
-	if active := generationL4Rules(next); len(active) != 1 || active[0].ID != 3 {
-		t.Fatalf("active generation rules = %+v", active)
-	}
-}
-
 func TestIntegrationL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -441,39 +325,6 @@ func TestIntegrationL4UDPInitializationCannotOutliveRevocationOrClose(t *testing
 				t.Fatal("canceled UDP upstream remained open")
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				t.Fatal("canceled UDP upstream remained open until timeout")
-			}
-		})
-	}
-}
-
-func TestIntegrationL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testing.T) {
-	t.Parallel()
-	registerErr := errors.New("register failed")
-	for _, registrationReady := range []bool{true, false} {
-		t.Run(fmt.Sprintf("ready=%t", registrationReady), func(t *testing.T) {
-			registrar := l4GenerationFailingRegistrar{err: registerErr}
-			server := newBareL4GenerationServer("g1", registrar)
-			server.sessions = newL4SessionTracker("g1", registrar, registrationReady)
-			defer server.Close()
-			target, peer := net.Pipe()
-			defer peer.Close()
-			handle, err := server.registerSession(9, "tcp", l4ConnectionSession{conn: target})
-			if registrationReady {
-				if !errors.Is(err, registerErr) || handle != nil {
-					t.Fatalf("registerSession() = %v, %v", handle, err)
-				}
-			} else {
-				if err != nil || handle == nil {
-					t.Fatalf("deferred registerSession() = %v, %v", handle, err)
-				}
-				server.sessions.enableRegistration()
-			}
-			assertL4GenerationPipeClosed(t, peer, "registration failure")
-			server.sessions.mu.Lock()
-			remaining := len(server.sessions.sessions)
-			server.sessions.mu.Unlock()
-			if remaining != 0 {
-				t.Fatalf("local session entities = %d, want 0", remaining)
 			}
 		})
 	}

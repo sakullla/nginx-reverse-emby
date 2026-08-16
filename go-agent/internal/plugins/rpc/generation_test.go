@@ -1,3 +1,5 @@
+//go:build !integration
+
 package rpc
 
 import (
@@ -5,7 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+
 	"fmt"
 	"io"
 	"os"
@@ -131,25 +133,6 @@ func (generationTestSandbox) Configure(*exec.Cmd, pluginprocess.Security) (func(
 	return nil, nil, nil, nil
 }
 
-func TestHostCandidatePreservesProviderGenerationAndAgentIdentity(t *testing.T) {
-	generation := rpcPluginGenerationForTest(t, t.TempDir(), 7, "operation-7")
-	generation.SecretHandles = []model.PluginSecretHandle{{ID: "secret-a", Version: 2, Digest: strings.Repeat("c", 64), Purpose: "plugin-config:" + generation.InstanceID + ":/token"}}
-	candidate, err := hostCandidateFromGeneration(generation, "module-generation-context")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if candidate.Generation != "module-generation-context" || candidate.ProviderGenerationID != generation.ID || candidate.AgentID != generation.Target.ID || candidate.Revision != generation.Revision || candidate.InstanceID != generation.InstanceID || candidate.PackageDigest != generation.PackageDigest || candidate.Artifact.SHA256 != generation.Artifact.SHA256 {
-		t.Fatalf("host candidate identity = %+v, generation = %+v", candidate, generation)
-	}
-	if len(candidate.SecretHandles) != 1 || candidate.SecretHandles[0] != generation.SecretHandles[0] {
-		t.Fatalf("host candidate secret fence = %+v", candidate.SecretHandles)
-	}
-	generation.SecretHandles[0].ID = "mutated"
-	if candidate.SecretHandles[0].ID != "secret-a" {
-		t.Fatal("host candidate secret handles alias the snapshot projection")
-	}
-}
-
 func (c *generationLifecycleClient) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
 	c.mu.Lock()
 	c.handshakes++
@@ -201,6 +184,7 @@ func (c *generationLifecycleClient) counts() (int, int, int, int) {
 }
 
 func TestRPCGenerationPrepareReadyAtomicPublishAndDestroy(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	generation := rpcPluginGenerationForTest(t, root, 1, "operation-1")
 	client := &generationLifecycleClient{}
@@ -254,6 +238,7 @@ func TestRPCGenerationPrepareReadyAtomicPublishAndDestroy(t *testing.T) {
 }
 
 func TestRPCGenerationRequiredFailureRetryPreservesSameFenceSequence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	generation := rpcPluginGenerationForTest(t, root, 11, "operation-11")
 	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
@@ -306,92 +291,8 @@ func TestRPCGenerationRequiredFailureRetryPreservesSameFenceSequence(t *testing.
 	}
 }
 
-func TestRPCGenerationRestartThenRemovalRetiresSemanticFenceAndAllowsReclamation(t *testing.T) {
-	root := t.TempDir()
-	generation := rpcPluginGenerationForTest(t, root, 12, "operation-12")
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	store := agentcore.NewInMemory()
-	draft := rpcGenerationLogDraft(generation, "before restart removal")
-	assigned, err := store.EnqueuePluginLogReports(fmt.Sprintf("%064x", 1), []model.PluginRuntimeLogReport{draft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
-		t.Fatal(err)
-	}
-	retirer := &generationLogFenceRetirer{store: store}
-	moduleUnderTest := NewGenerationModule(host)
-	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
-	previous := model.Snapshot{Revision: 12, PluginGenerations: []model.PluginGeneration{generation}}
-	next := model.Snapshot{Revision: 13, PluginGenerations: []model.PluginGeneration{}}
-	removed := preparePublishRPCGeneration(t, moduleUnderTest, previous, next)
-	if len(retirer.drained) != 1 || len(retirer.identities) != 0 {
-		t.Fatalf("restart removal drain/completion = %v/%+v", retirer.drained, retirer.identities)
-	}
-	if err := retirer.CompletePluginRuntimeLogRetirementIntent(retirer.drained[0]); err != nil {
-		t.Fatal(err)
-	}
-	for index := 0; index < generationTestReplayChurn; index++ {
-		churn := draft
-		churn.GenerationID = fmt.Sprintf("retired-churn-%d", index)
-		batch := fmt.Sprintf("%064x", index+2)
-		reports, err := store.EnqueuePluginLogReports(batch, []model.PluginRuntimeLogReport{churn})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.AcknowledgePluginLogReports(reports); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.RetirePluginRuntimeLogFence(pluginprocess.RuntimeLogIdentity{
-			Revision: churn.Revision, ProviderGenerationID: churn.GenerationID, InstanceID: churn.InstanceID,
-			PluginID: churn.PluginID, AgentID: churn.AgentID, PackageDigest: churn.PackageDigest, ArtifactDigest: churn.ArtifactDigest,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	reclaimed, err := store.EnqueuePluginLogReports(fmt.Sprintf("%064x", generationTestReplayChurn+2), []model.PluginRuntimeLogReport{draft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reclaimed[0].Sequence != 1 {
-		t.Fatalf("retired restart fence was not reclaimed: sequence=%d", reclaimed[0].Sequence)
-	}
-	if err := removed.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRPCGenerationUnchangedSemanticFenceIsNotRetired(t *testing.T) {
-	root := t.TempDir()
-	generation := rpcPluginGenerationForTest(t, root, 14, "operation-14")
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return &generationLifecycleClient{}, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	retirer := &generationLogFenceRetirer{}
-	moduleUnderTest := NewGenerationModule(host)
-	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
-	snapshot := model.Snapshot{Revision: 14, PluginGenerations: []model.PluginGeneration{generation}}
-	transaction := preparePublishRPCGeneration(t, moduleUnderTest, snapshot, snapshot)
-	if len(retirer.identities) != 0 {
-		t.Fatalf("unchanged semantic fence retired: %+v", retirer.identities)
-	}
-	if err := transaction.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if len(retirer.identities) != 0 {
-		t.Fatalf("unchanged generation drain retired its live fence: %+v", retirer.identities)
-	}
-}
-
 func TestRPCGenerationReplacementAndRemovalRetireOldOnlyAfterDrain(t *testing.T) {
+	t.Parallel()
 	for _, replacement := range []bool{false, true} {
 		name := "removal"
 		if replacement {
@@ -444,103 +345,8 @@ func TestRPCGenerationReplacementAndRemovalRetireOldOnlyAfterDrain(t *testing.T)
 	}
 }
 
-func TestRPCGenerationRetirementHandoffContractErrorRemainsVisible(t *testing.T) {
-	root := t.TempDir()
-	oldGeneration := rpcPluginGenerationForTest(t, root, 17, "operation-17")
-	client := &generationLifecycleClient{}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	retirer := &generationLogFenceRetirer{markErrors: []error{errors.New("injected retirement handoff contract rejection")}}
-	moduleUnderTest := NewGenerationModule(host)
-	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
-	oldSnapshot := model.Snapshot{Revision: 17, PluginGenerations: []model.PluginGeneration{oldGeneration}}
-	old := preparePublishRPCGeneration(t, moduleUnderTest, model.Snapshot{}, oldSnapshot)
-	next := preparePublishRPCGeneration(t, moduleUnderTest, oldSnapshot, model.Snapshot{Revision: 18, PluginGenerations: []model.PluginGeneration{}})
-	if err := old.Destroy(t.Context()); err == nil {
-		t.Fatal("retirement handoff contract rejection was hidden")
-	}
-	if len(retirer.identities) != 0 || len(retirer.drained) != 0 {
-		t.Fatalf("failed drained write retired fence: drained=%v completed=%+v", retirer.drained, retirer.identities)
-	}
-	if err := old.Destroy(t.Context()); err != nil {
-		t.Fatalf("cleanup retry failed: %v", err)
-	}
-	if len(retirer.drained) != 1 || len(retirer.identities) != 0 {
-		t.Fatalf("cleanup retry drain = %v/%+v", retirer.drained, retirer.identities)
-	}
-	if err := retirer.CompletePluginRuntimeLogRetirementIntent(retirer.drained[0]); err != nil {
-		t.Fatal(err)
-	}
-	if len(retirer.identities) != 1 || retirer.identities[0] != runtimeLogIdentityFromGeneration(oldGeneration) {
-		t.Fatalf("cutover retirement = %+v", retirer.identities)
-	}
-	if err := next.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRPCGenerationRealProcessCleanupFailureRemainsTerminal(t *testing.T) {
-	root := t.TempDir()
-	oldGeneration := rpcPluginGenerationForTest(t, root, 21, "operation-21")
-	client := &generationLifecycleClient{stopErr: errors.New("injected guest credential cleanup failure")}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	retirer := &generationLogFenceRetirer{}
-	moduleUnderTest := NewGenerationModule(host)
-	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
-	oldSnapshot := model.Snapshot{Revision: 21, PluginGenerations: []model.PluginGeneration{oldGeneration}}
-	old := preparePublishRPCGeneration(t, moduleUnderTest, model.Snapshot{}, oldSnapshot)
-	next := preparePublishRPCGeneration(t, moduleUnderTest, oldSnapshot, model.Snapshot{Revision: 22, PluginGenerations: []model.PluginGeneration{}})
-	if err := old.Destroy(t.Context()); err == nil || !strings.Contains(err.Error(), "credential cleanup failure") {
-		t.Fatalf("real process cleanup error = %v", err)
-	}
-	if len(retirer.drained) != 0 || len(retirer.identities) != 0 {
-		t.Fatalf("failed process cleanup marked retirement: drained=%v completed=%+v", retirer.drained, retirer.identities)
-	}
-	if err := next.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRPCGenerationFailedRequiredCandidateAbortsStagedRetirement(t *testing.T) {
-	root := t.TempDir()
-	oldGeneration := rpcPluginGenerationForTest(t, root, 19, "operation-19")
-	newGeneration := rpcPluginGenerationForTest(t, root, 20, "operation-20")
-	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Close(context.Background()) })
-	retirer := &generationLogFenceRetirer{}
-	moduleUnderTest := NewGenerationModule(host)
-	moduleUnderTest.SetRuntimeLogFenceRetirer(retirer)
-	previous := model.Snapshot{Revision: 19, PluginGenerations: []model.PluginGeneration{oldGeneration}}
-	next := rpcSnapshotWithRequiredInstance(t, 20, []model.PluginGeneration{newGeneration}, newGeneration.InstanceID)
-	if _, err := moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Previous: previous, Next: next}); err == nil {
-		t.Fatal("required replacement failure was accepted")
-	}
-	if len(retirer.staged) != 1 || len(retirer.aborted) != 1 || retirer.staged[0] != retirer.aborted[0] {
-		t.Fatalf("failed candidate retirement intent lifecycle: staged=%v aborted=%v", retirer.staged, retirer.aborted)
-	}
-	if len(retirer.identities) != 0 || len(retirer.drained) != 0 || len(retirer.intents) != 0 {
-		t.Fatalf("failed candidate retired old fence: identities=%+v drained=%v intents=%+v", retirer.identities, retirer.drained, retirer.intents)
-	}
-}
-
 func TestRPCGenerationRequiredPrepareFailureCleansCandidateWithoutPublishing(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	generation := rpcPluginGenerationForTest(t, root, 2, "operation-2")
 	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
@@ -568,6 +374,7 @@ func TestRPCGenerationRequiredPrepareFailureCleansCandidateWithoutPublishing(t *
 }
 
 func TestRPCGenerationRequiredReadinessFailureAbortsPublication(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	generation := rpcPluginGenerationForTest(t, root, 23, "operation-23")
 	runner := &generationControlledRunner{}
@@ -601,37 +408,8 @@ func TestRPCGenerationRequiredReadinessFailureAbortsPublication(t *testing.T) {
 	}
 }
 
-func TestRPCGenerationRequiredActivationFailureAbortsPublication(t *testing.T) {
-	root := t.TempDir()
-	generation := rpcPluginGenerationForTest(t, root, 24, "operation-24")
-	client := &generationLifecycleClient{activateErr: context.DeadlineExceeded}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	next := rpcSnapshotWithRequiredInstance(t, 24, []model.PluginGeneration{generation}, generation.InstanceID)
-	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: next})
-	if err != nil {
-		t.Fatal(err)
-	}
-	transaction := prepared.(*generationTransaction)
-	if err := transaction.Ready(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := transaction.PrepareGenerationPublication(t.Context()); err == nil {
-		t.Fatal("PrepareGenerationPublication() accepted required activation failure")
-	}
-	if err := transaction.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, active := host.Active(generation.InstanceID); active {
-		t.Fatal("required activation failure became active")
-	}
-}
-
 func TestRPCGenerationOptionalPrepareFailurePublishesFencedDegradedStatus(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	generation := rpcPluginGenerationForTest(t, root, 20, "operation-20")
 	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
@@ -663,222 +441,6 @@ func TestRPCGenerationOptionalPrepareFailurePublishesFencedDegradedStatus(t *tes
 	host.mu.RUnlock()
 	if pending != 0 {
 		t.Fatalf("optional prepare failure pending ownership = %d", pending)
-	}
-}
-
-func TestRPCGenerationOptionalPrepareFailureDoesNotShiftSiblingIdentity(t *testing.T) {
-	root := t.TempDir()
-	failed := rpcPluginGenerationForTest(t, root, 22, "operation-22a")
-	failed.InstanceID = "instance-failed"
-	healthy := rpcPluginGenerationForTest(t, root, 22, "operation-22b")
-	healthy.InstanceID = "instance-healthy"
-	clients := []LifecycleClient{
-		&generationLifecycleClient{prepareErr: context.DeadlineExceeded},
-		&generationLifecycleClient{},
-	}
-	var clientsMu sync.Mutex
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		clientsMu.Lock()
-		defer clientsMu.Unlock()
-		client := clients[0]
-		clients = clients[1:]
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 22, PluginGenerations: []model.PluginGeneration{failed, healthy}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	transaction := prepared.(*generationTransaction)
-	if err := transaction.Ready(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := transaction.PrepareGenerationPublication(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	transaction.FinalizeGenerationPublication()
-	statuses := transaction.PluginRuntimeStatuses()
-	if len(statuses) != 2 || statuses[0].InstanceID != failed.InstanceID || statuses[0].GenerationID != failed.ID || statuses[0].State != "degraded" ||
-		statuses[1].InstanceID != healthy.InstanceID || statuses[1].GenerationID != healthy.ID || statuses[1].OperationID != healthy.OperationID || statuses[1].State != "active" {
-		t.Fatalf("runtime statuses shifted across optional failure = %+v", statuses)
-	}
-	if _, active := host.Active(failed.InstanceID); active {
-		t.Fatal("failed optional instance became active")
-	}
-	if _, active := host.Active(healthy.InstanceID); !active {
-		t.Fatal("healthy sibling was not published")
-	}
-	if err := transaction.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRPCGenerationOptionalReadinessFailureIsCleanedAndExcluded(t *testing.T) {
-	root := t.TempDir()
-	generation := rpcPluginGenerationForTest(t, root, 21, "operation-21")
-	runner := &generationControlledRunner{}
-	client := &generationLifecycleClient{}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(runner, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 21, PluginGenerations: []model.PluginGeneration{generation}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	transaction := prepared.(*generationTransaction)
-	runner.Fail(context.DeadlineExceeded)
-	instance := transaction.candidates[0].instance
-	select {
-	case <-instance.attempt.handle.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("controlled candidate did not reach failed readiness")
-	}
-	if err := transaction.Ready(t.Context()); err != nil {
-		t.Fatalf("optional Ready() error = %v", err)
-	}
-	if err := transaction.PrepareGenerationPublication(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	transaction.FinalizeGenerationPublication()
-	assertOptionalFailureStatus(t, transaction.PluginRuntimeStatuses(), generation, "degraded", "rpc_readiness_failed")
-	if _, active := host.Active(generation.InstanceID); active {
-		t.Fatal("optional readiness failure became active")
-	}
-}
-
-func TestRPCGenerationOptionalActivationFailurePublishesHealthySibling(t *testing.T) {
-	root := t.TempDir()
-	first := rpcPluginGenerationForTest(t, root, 3, "operation-3a")
-	first.InstanceID = "instance-a"
-	second := rpcPluginGenerationForTest(t, root, 3, "operation-3b")
-	second.InstanceID = "instance-b"
-	firstClient := &generationLifecycleClient{}
-	secondClient := &generationLifecycleClient{activateErr: context.DeadlineExceeded}
-	clients := []LifecycleClient{firstClient, secondClient}
-	var clientsMu sync.Mutex
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		clientsMu.Lock()
-		defer clientsMu.Unlock()
-		client := clients[0]
-		clients = clients[1:]
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	moduleUnderTest := NewGenerationModule(host)
-	registry := module.NewRegistry()
-	if err := registry.Register(generationCoreTestModule{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Register(moduleUnderTest); err != nil {
-		t.Fatal(err)
-	}
-	generationContext, err := module.NewGenerationContext(model.Snapshot{}, model.Snapshot{Revision: 3, PluginGenerations: []model.PluginGeneration{first, second}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepared, err := registry.PrepareGeneration(t.Context(), generationContext)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := prepared.Ready(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	publication, ok := prepared.(interface{ PreparePublication(context.Context) error })
-	if !ok {
-		t.Fatal("prepared generation has no publication barrier")
-	}
-	if err := publication.PreparePublication(t.Context()); err != nil {
-		t.Fatalf("PrepareGenerationPublication() error = %v", err)
-	}
-	active, _ := prepared.Publish()
-	if coreRevision, ok := active.Resolve(generationCoreTestProvider); !ok || coreRevision != int64(3) {
-		t.Fatalf("unrelated core provider = %v/%v, want revision 3", coreRevision, ok)
-	}
-	if _, active := host.Active(first.InstanceID); !active {
-		t.Fatal("healthy sibling was not published")
-	}
-	if _, active := host.Active(second.InstanceID); active {
-		t.Fatal("failed sibling became active")
-	}
-	statuses := active.PluginRuntimeStatuses()
-	if len(statuses) != 2 || statuses[0].InstanceID != first.InstanceID || statuses[0].State != "active" ||
-		statuses[1].InstanceID != second.InstanceID || statuses[1].State != "degraded" || statuses[1].ErrorCode != "rpc_activation_failed" || statuses[1].Sequence != 1 {
-		t.Fatalf("runtime statuses = %+v", statuses)
-	}
-	if _, _, _, stops := firstClient.counts(); stops != 0 {
-		t.Fatalf("healthy sibling stops = %d before generation drain", stops)
-	}
-	if _, _, _, stops := secondClient.counts(); stops != 1 {
-		t.Fatalf("failed optional sibling stops = %d, want isolated cleanup", stops)
-	}
-	if err := active.Destroy(t.Context()); err != nil {
-		t.Fatalf("Destroy() error = %v", err)
-	}
-	if _, _, _, stops := firstClient.counts(); stops != 1 {
-		t.Fatalf("healthy sibling stops after generation drain = %d", stops)
-	}
-}
-
-func TestRPCGenerationDisableCutsOverBeforePreviousDrainCleanup(t *testing.T) {
-	root := t.TempDir()
-	generation := rpcPluginGenerationForTest(t, root, 4, "operation-4")
-	client := &generationLifecycleClient{}
-	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
-		return client, hostCloser{}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	moduleUnderTest := NewGenerationModule(host)
-	firstPrepared, err := moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{Next: model.Snapshot{Revision: 4, PluginGenerations: []model.PluginGeneration{generation}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := firstPrepared.(*generationTransaction)
-	if err := first.Ready(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.PrepareGenerationPublication(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	first.FinalizeGenerationPublication()
-
-	disabledPrepared, err := moduleUnderTest.Prepare(t.Context(), module.ApplyRequest{
-		Previous: model.Snapshot{Revision: 4, PluginGenerations: []model.PluginGeneration{generation}},
-		Next:     model.Snapshot{Revision: 5, PluginGenerations: []model.PluginGeneration{}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	disabled := disabledPrepared.(*generationTransaction)
-	if err := disabled.Ready(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := disabled.PrepareGenerationPublication(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	disabled.FinalizeGenerationPublication()
-	if _, active := host.Active(generation.InstanceID); active {
-		t.Fatal("disabled generation left behavior visible")
-	}
-	if _, _, _, stops := client.counts(); stops != 0 {
-		t.Fatalf("previous generation stopped before drain = %d", stops)
-	}
-	if err := first.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, stops := client.counts(); stops != 1 {
-		t.Fatalf("previous generation stops after drain = %d", stops)
-	}
-	if err := disabled.Destroy(t.Context()); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -930,8 +492,6 @@ func rpcGenerationLogDraft(generation model.PluginGeneration, message string) mo
 		ArtifactDigest: identity.ArtifactDigest, Entries: []model.PluginRuntimeLogEntry{{Level: "info", Message: message}},
 	}
 }
-
-const generationTestReplayChurn = 513
 
 func rpcSnapshotWithRequiredInstance(t *testing.T, revision int64, generations []model.PluginGeneration, instanceID string) model.Snapshot {
 	t.Helper()

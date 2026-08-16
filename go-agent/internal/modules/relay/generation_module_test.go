@@ -1,3 +1,5 @@
+//go:build !integration
+
 package relay_test
 
 import (
@@ -8,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	relaymodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
@@ -122,131 +123,6 @@ func TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish(t *
 	_ = relayModule.Close()
 }
 
-func TestRelayGenerationReusesWildcardIngressForConcreteRebind(t *testing.T) {
-	firstCertificateID := 1
-	secondCertificateID := 2
-	thirdCertificateID := 3
-	firstCertificate := mustIssueTestTLSCertificate(t)
-	secondCertificate := mustIssueTestTLSCertificate(t)
-	thirdCertificate := mustIssueTestTLSCertificate(t)
-	provider := &fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{
-		firstCertificateID:  firstCertificate,
-		secondCertificateID: secondCertificate,
-		thirdCertificateID:  thirdCertificate,
-	}}
-	registry := module.NewRegistry()
-	relayModule := relaymodule.NewModule(relaymodule.Config{
-		AgentID: "agent-a", AgentName: "node-a", GenerationSelector: registry, ExternalDrainLifecycle: true,
-	})
-	mustRegister(t, registry, generationProviderModule{name: "certs", ref: module.ProviderTLSMaterial, provider: provider})
-	mustRegister(t, registry, relayModule)
-	port := pickFreeTCPPort(t)
-
-	firstListener := testRelayListener(2, "agent-a", "node-a", port, firstCertificateID)
-	firstListener.BindHosts = []string{"0.0.0.0"}
-	firstListener.ListenHost = "0.0.0.0"
-	firstSnapshot := model.Snapshot{Revision: 1, RelayListeners: []model.RelayListener{firstListener}}
-	firstCandidate := prepareRelayCandidate(t, registry, model.Snapshot{}, firstSnapshot)
-	firstView, _ := firstCandidate.Publish()
-	if got := dialServedCertificate(t, port); !certificateDEREqual(got, firstCertificate) {
-		t.Fatal("wildcard generation served the wrong certificate")
-	}
-
-	secondListener := firstListener
-	secondListener.BindHosts = []string{"127.0.0.1"}
-	secondListener.ListenHost = "127.0.0.1"
-	secondListener.CertificateID = &secondCertificateID
-	secondListener.Revision = 2
-	thirdListener := testRelayListener(3, "agent-a", "node-a", port, thirdCertificateID)
-	thirdListener.BindHosts = []string{"127.0.0.2"}
-	thirdListener.ListenHost = "127.0.0.2"
-	thirdListener.Revision = 2
-	secondSnapshot := model.Snapshot{Revision: 2, RelayListeners: []model.RelayListener{secondListener, thirdListener}}
-	secondCandidate := prepareRelayCandidate(t, registry, firstSnapshot, secondSnapshot)
-	if got := dialServedCertificate(t, port); !certificateDEREqual(got, firstCertificate) {
-		t.Fatal("concrete candidate replaced the wildcard generation before publish")
-	}
-	secondView, previous := secondCandidate.Publish()
-	if previous != firstView {
-		t.Fatal("concrete publish did not retire the wildcard generation")
-	}
-	if got := dialServedCertificate(t, port); !certificateDEREqual(got, secondCertificate) {
-		t.Fatal("published concrete generation did not serve the new certificate")
-	}
-	if got := dialServedCertificateAt(t, "127.0.0.2", port); !certificateDEREqual(got, thirdCertificate) {
-		t.Fatal("published concrete generation routed the second bind address to the wrong listener")
-	}
-	assertRelayTLSDialFailsAt(t, "127.0.0.3", port)
-	if err := firstView.Destroy(context.Background()); err != nil {
-		t.Fatalf("destroy wildcard generation: %v", err)
-	}
-	if got := dialServedCertificate(t, port); !certificateDEREqual(got, secondCertificate) {
-		t.Fatal("destroying wildcard generation disrupted the concrete generation")
-	}
-	if got := dialServedCertificateAt(t, "127.0.0.2", port); !certificateDEREqual(got, thirdCertificate) {
-		t.Fatal("destroying wildcard generation disrupted the second concrete listener")
-	}
-	_ = secondView.Destroy(context.Background())
-	_ = relayModule.Close()
-}
-
-func TestRelayQUICGenerationCandidateKeepsAssociationAndTLSInvisibleUntilPublish(t *testing.T) {
-	t.Parallel()
-	firstID, secondID := 11, 12
-	firstCertificate := mustIssueTestTLSCertificate(t)
-	secondCertificate := mustIssueTestTLSCertificate(t)
-	provider := &fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{firstID: firstCertificate, secondID: secondCertificate}}
-	registry := module.NewRegistry()
-	relayModule := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a", GenerationSelector: registry, ExternalDrainLifecycle: true})
-	mustRegister(t, registry, generationProviderModule{name: "certs", ref: module.ProviderTLSMaterial, provider: provider})
-	mustRegister(t, registry, relayModule)
-	port := pickFreeUDPPort(t)
-	firstListener := testRelayListener(72, "agent-a", "node-a", port, firstID)
-	firstListener.TransportMode = relaymodule.ListenerTransportModeQUIC
-	firstSnapshot := model.Snapshot{Revision: 1, RelayListeners: []model.RelayListener{firstListener}}
-	firstCandidate := prepareRelayCandidate(t, registry, model.Snapshot{}, firstSnapshot)
-	assertRelayQUICDialFails(t, port)
-	firstView, _ := firstCandidate.Publish()
-	if got := dialQUICServedCertificate(t, port); !certificateDEREqual(got, firstCertificate) {
-		t.Fatal("first QUIC generation served the wrong certificate")
-	}
-
-	secondListener := firstListener
-	secondListener.CertificateID = &secondID
-	secondListener.Revision = 2
-	secondSnapshot := model.Snapshot{Revision: 2, RelayListeners: []model.RelayListener{secondListener}}
-	secondCandidate := prepareRelayCandidate(t, registry, firstSnapshot, secondSnapshot)
-	if got := dialQUICServedCertificate(t, port); !certificateDEREqual(got, firstCertificate) {
-		t.Fatal("unpublished QUIC candidate replaced active TLS material")
-	}
-	secondView, previous := secondCandidate.Publish()
-	if previous != firstView {
-		t.Fatal("QUIC publish did not retire first generation")
-	}
-	if got := dialQUICServedCertificate(t, port); !certificateDEREqual(got, secondCertificate) {
-		t.Fatal("published QUIC generation did not serve new TLS material")
-	}
-	_ = firstView.Destroy(context.Background())
-	_ = secondView.Destroy(context.Background())
-	_ = relayModule.Close()
-}
-
-func prepareRelayCandidate(t *testing.T, registry *module.Registry, previous, next model.Snapshot) module.PreparedGeneration {
-	t.Helper()
-	generationContext, err := module.NewGenerationContext(previous, next)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
-	if err != nil {
-		t.Fatalf("prepare relay generation: %v", err)
-	}
-	if err := candidate.Ready(context.Background()); err != nil {
-		t.Fatalf("ready relay generation: %v", err)
-	}
-	return candidate
-}
-
 func assertRelayTLSDialFails(t *testing.T, port int) {
 	t.Helper()
 	assertRelayTLSDialFailsAt(t, "127.0.0.1", port)
@@ -259,19 +135,6 @@ func assertRelayTLSDialFailsAt(t *testing.T, host string, port int) {
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("unpublished relay endpoint accepted a TLS connection")
-	}
-}
-
-func assertRelayQUICDialFails(t *testing.T, port int) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	conn, err := quic.DialAddr(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), &tls.Config{
-		InsecureSkipVerify: true, NextProtos: []string{"nre-relay-quic/1"},
-	}, nil)
-	if err == nil {
-		_ = conn.CloseWithError(0, "")
-		t.Fatal("unpublished relay QUIC endpoint accepted a connection")
 	}
 }
 

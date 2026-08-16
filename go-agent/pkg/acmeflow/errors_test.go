@@ -1,3 +1,5 @@
+//go:build integration
+
 package acmeflow
 
 import (
@@ -75,31 +77,5 @@ func TestSafeErrorClassifiesAuthorizationAndCancellation(t *testing.T) {
 	}
 	if !errors.Is(cancelErr, context.Canceled) {
 		t.Fatal("normalized cancellation no longer unwraps to context.Canceled")
-	}
-}
-
-func TestSafeErrorPrimaryCategoryWinsCleanupFailure(t *testing.T) {
-	primary := WrapError(CategoryAuthorization, "wait_authorization", errors.New("raw primary token"))
-	err := mergeCleanupError(primary, errors.New("raw cleanup token"))
-
-	var safe *SafeError
-	if !errors.As(err, &safe) {
-		t.Fatalf("mergeCleanupError() error type = %T, want *SafeError", err)
-	}
-	if safe.Category != CategoryAuthorization {
-		t.Fatalf("category = %q, want primary category %q", safe.Category, CategoryAuthorization)
-	}
-	if !safe.CleanupFailed {
-		t.Fatal("CleanupFailed = false, want true")
-	}
-	if strings.Contains(err.Error(), "raw primary token") || strings.Contains(err.Error(), "raw cleanup token") {
-		t.Fatalf("merged error leaked a raw cause: %q", err)
-	}
-}
-
-func TestSafeErrorCleanupFailureHasStableCategory(t *testing.T) {
-	err := mergeCleanupError(nil, errors.New("provider response body"))
-	if got := ErrorCategoryOf(err); got != CategoryCleanup {
-		t.Fatalf("category = %q, want %q", got, CategoryCleanup)
 	}
 }

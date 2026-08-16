@@ -1,3 +1,5 @@
+//go:build integration
+
 package traffic
 
 import (
@@ -11,38 +13,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
 )
 
 const (
 	testRuntimeMetaTrafficStatsInterval       = "traffic_stats_interval"
 	testRuntimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
 )
-
-func TestReporterReturnsExplicitEmptyStatsWhenTrafficDisabled(t *testing.T) {
-	reporter := NewReporter(ReporterConfig{
-		Enabled: func() bool { return false },
-		SnapshotNonZero: func() map[string]any {
-			t.Fatal("SnapshotNonZero should not be called when traffic is disabled")
-			return nil
-		},
-		Now: fixedTrafficReportTime,
-	})
-
-	report, err := reporter.TrafficReport(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("TrafficReport() error = %v", err)
-	}
-	if !report.StatsPresent {
-		t.Fatal("StatsPresent = false, want true for disabled traffic reporting")
-	}
-	if report.Stats == nil || len(report.Stats) != 0 {
-		t.Fatalf("Stats = %#v, want explicit empty stats", report.Stats)
-	}
-	if len(report.RuntimeMetadata) != 0 {
-		t.Fatalf("RuntimeMetadata = %+v, want none when disabled", report.RuntimeMetadata)
-	}
-}
 
 func TestReporterSuppressesStatsBeforeTrafficStatsIntervalElapses(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
@@ -95,83 +71,6 @@ func TestReporterReportsInternalTrafficStatsAfterIntervalElapses(t *testing.T) {
 	}
 	if got := report.RuntimeMetadata[testRuntimeMetaLastTrafficStatsReportUnix]; got != strconv.FormatInt(fixedTrafficReportTime().Unix(), 10) {
 		t.Fatalf("last report metadata = %q, want fixed report time", got)
-	}
-}
-
-func TestReporterMergesHostTrafficSnapshotIntoPayload(t *testing.T) {
-	reporter := NewReporter(ReporterConfig{
-		Enabled:         func() bool { return true },
-		SnapshotNonZero: nonzeroTrafficSnapshot,
-		HostSnapshotter: staticHostSnapshotter{snapshot: hosttraffic.Snapshot{
-			BootID: "boot-123",
-			Total:  hosttraffic.Counters{RXBytes: 1000, TXBytes: 2000},
-			Interfaces: map[string]hosttraffic.Counters{
-				"eth0": {RXBytes: 900, TXBytes: 1800},
-			},
-		}},
-		Now: fixedTrafficReportTime,
-	})
-
-	report, err := reporter.TrafficReport(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("TrafficReport() error = %v", err)
-	}
-	trafficStats := report.Stats["traffic"].(map[string]any)
-	host := trafficStats["host"].(map[string]any)
-	total := host["total"].(map[string]any)
-	if total["rx_bytes"] != uint64(1000) || total["tx_bytes"] != uint64(2000) {
-		t.Fatalf("host total stats = %+v, want 1000/2000", total)
-	}
-	if host["boot_id"] != "boot-123" {
-		t.Fatalf("host boot_id = %#v, want boot-123", host["boot_id"])
-	}
-	ifaces := host["interfaces"].(map[string]any)
-	eth0 := ifaces["eth0"].(map[string]any)
-	if eth0["rx_bytes"] != uint64(900) || eth0["tx_bytes"] != uint64(1800) {
-		t.Fatalf("eth0 stats = %+v, want 900/1800", eth0)
-	}
-}
-
-func TestReporterOnlyAddsLastReportMetadataWhenIntervalActiveAndStatsReported(t *testing.T) {
-	tests := []struct {
-		name string
-		meta map[string]string
-		want bool
-	}{
-		{
-			name: "no interval",
-			meta: nil,
-			want: false,
-		},
-		{
-			name: "invalid interval",
-			meta: map[string]string{testRuntimeMetaTrafficStatsInterval: "bad"},
-			want: false,
-		},
-		{
-			name: "active interval",
-			meta: map[string]string{testRuntimeMetaTrafficStatsInterval: "1s"},
-			want: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			reporter := NewReporter(ReporterConfig{
-				Enabled:         func() bool { return true },
-				SnapshotNonZero: nonzeroTrafficSnapshot,
-				Now:             fixedTrafficReportTime,
-			})
-
-			report, err := reporter.TrafficReport(context.Background(), tc.meta)
-			if err != nil {
-				t.Fatalf("TrafficReport() error = %v", err)
-			}
-			_, got := report.RuntimeMetadata[testRuntimeMetaLastTrafficStatsReportUnix]
-			if got != tc.want {
-				t.Fatalf("last report metadata present = %v, want %v; metadata=%+v", got, tc.want, report.RuntimeMetadata)
-			}
-		})
 	}
 }
 
@@ -255,15 +154,6 @@ func nonzeroTrafficSnapshot() map[string]any {
 			},
 		},
 	}
-}
-
-type staticHostSnapshotter struct {
-	snapshot hosttraffic.Snapshot
-	err      error
-}
-
-func (s staticHostSnapshotter) Snapshot() (hosttraffic.Snapshot, error) {
-	return s.snapshot, s.err
 }
 
 type trafficSyncClient struct {

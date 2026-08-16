@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4_test
 
 import (
@@ -307,18 +309,6 @@ func (m *commitFailingModule) Prepare(context.Context, module.ApplyRequest) (mod
 	return module.TransactionFuncs{
 		CommitFunc: func() error { return m.commitErr },
 	}, nil
-}
-
-func stringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {

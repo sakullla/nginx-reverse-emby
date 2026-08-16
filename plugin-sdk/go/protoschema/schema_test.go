@@ -39,7 +39,10 @@ func TestCanonicalDescriptorsMatchCheckedInIDL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(generated, checkedSource) {
+	normalizeNewlines := func(value []byte) []byte {
+		return bytes.ReplaceAll(value, []byte("\r\n"), []byte("\n"))
+	}
+	if !bytes.Equal(normalizeNewlines(generated), normalizeNewlines(checkedSource)) {
 		t.Fatal("descriptor generator output is not reproducible")
 	}
 }

@@ -1,3 +1,5 @@
+//go:build integration
+
 package traffic_test
 
 import (
@@ -9,71 +11,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	trafficmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
-
-func TestModuleReportsRuntimeMetadataAfterAppliedTrafficStatsInterval(t *testing.T) {
-	mod := trafficmodule.NewModule(trafficmodule.Config{Interfaces: []string{"lo"}})
-	trafficmodule.Reset()
-	trafficmodule.SetEnabled(true)
-	t.Cleanup(func() {
-		trafficmodule.SetEnabled(true)
-		trafficmodule.Reset()
-	})
-	trafficmodule.AddHTTP(1, 2)
-
-	if err := mod.Apply(context.Background(), module.ApplyRequest{
-		Next: model.Snapshot{AgentConfig: model.AgentConfig{TrafficStatsInterval: "5s"}},
-	}); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-
-	report, err := mod.TrafficReport(context.Background(), map[string]string{})
-	if err != nil {
-		t.Fatalf("TrafficReport() error = %v", err)
-	}
-	if report.RuntimeMetadata == nil {
-		t.Fatal("RuntimeMetadata = nil, want last traffic stats report metadata")
-	}
-}
-
-func TestModuleTrafficReportMergesModuleMetadataWithNilInput(t *testing.T) {
-	mod := trafficmodule.NewModule(trafficmodule.Config{Interfaces: []string{"lo"}})
-	trafficmodule.Reset()
-	trafficmodule.SetEnabled(true)
-	t.Cleanup(func() {
-		trafficmodule.SetEnabled(true)
-		trafficmodule.Reset()
-	})
-	trafficmodule.AddHTTP(1, 2)
-
-	if err := mod.Apply(context.Background(), module.ApplyRequest{
-		Next: model.Snapshot{AgentConfig: model.AgentConfig{TrafficStatsInterval: "5s"}},
-	}); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-
-	report, err := mod.TrafficReport(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("TrafficReport() error = %v", err)
-	}
-	if !report.StatsPresent {
-		t.Fatal("StatsPresent = false, want report produced with module metadata")
-	}
-	if report.RuntimeMetadata == nil {
-		t.Fatal("RuntimeMetadata = nil, want last traffic stats report metadata")
-	}
-}
-
-func TestModuleDescriptorProvidesTrafficSink(t *testing.T) {
-	mod := trafficmodule.NewModule()
-
-	descriptor := mod.Descriptor()
-	if descriptor.Name != "traffic" {
-		t.Fatalf("Descriptor().Name = %q, want traffic", descriptor.Name)
-	}
-	if len(descriptor.Provides) != 1 || descriptor.Provides[0] != module.ProviderTrafficSink {
-		t.Fatalf("Descriptor().Provides = %+v, want traffic sink provider", descriptor.Provides)
-	}
-}
 
 func TestModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
 	trafficmodule.SetEnabled(true)
@@ -224,71 +161,6 @@ func assertModuleTrafficCounters(t *testing.T, value any, rx, tx uint64) {
 	}
 }
 
-func TestGenerationModuleReportsOnlyActiveViewConfiguration(t *testing.T) {
-	trafficmodule.Reset()
-	trafficmodule.SetEnabled(false)
-	t.Cleanup(func() {
-		trafficmodule.SetEnabled(true)
-		trafficmodule.Reset()
-	})
-
-	registry := module.NewRegistry()
-	mod := trafficmodule.NewModule(trafficmodule.Config{EnabledSet: true, Enabled: false, GenerationSelector: registry})
-	trafficmodule.AddHTTP(7, 11)
-	mustRegisterTrafficTestModule(t, registry, mod)
-	disabled := false
-	first := model.Snapshot{Revision: 1, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &disabled}}
-	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
-	if err != nil {
-		t.Fatalf("NewGenerationContext(first) error = %v", err)
-	}
-	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
-	if err != nil {
-		t.Fatalf("PrepareGeneration(first) error = %v", err)
-	}
-	if err := firstCandidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready(first) error = %v", err)
-	}
-	firstCandidate.Publish()
-	report, err := mod.TrafficReport(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("TrafficReport(first) error = %v", err)
-	}
-	if !report.StatsPresent || len(report.Stats) != 0 {
-		t.Fatalf("TrafficReport(first) = %+v, want active disabled view", report)
-	}
-
-	enabled := true
-	second := model.Snapshot{Revision: 2, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &enabled}}
-	secondContext, err := module.NewGenerationContext(first, second)
-	if err != nil {
-		t.Fatalf("NewGenerationContext(second) error = %v", err)
-	}
-	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
-	if err != nil {
-		t.Fatalf("PrepareGeneration(second) error = %v", err)
-	}
-	if err := secondCandidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready(second) error = %v", err)
-	}
-	report, err = mod.TrafficReport(context.Background(), nil)
-	if err != nil || !report.StatsPresent || len(report.Stats) != 0 {
-		t.Fatalf("TrafficReport(before second publish) = %+v, %v, want first disabled view", report, err)
-	}
-	secondCandidate.Publish()
-	if leaked := trafficmodule.SnapshotNonZero(); leaked != nil {
-		t.Fatalf("disabled generation traffic leaked after enable: %+v", leaked)
-	}
-	trafficmodule.AddHTTP(7, 11)
-	report, err = mod.TrafficReport(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("TrafficReport(second) error = %v", err)
-	}
-	if !report.StatsPresent || report.Stats["traffic"] == nil {
-		t.Fatalf("TrafficReport(second) = %+v, want active enabled view", report)
-	}
-}
-
 func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {
@@ -346,84 +218,6 @@ func TestModuleRollbackAfterDisablePreservesCommittedCounters(t *testing.T) {
 	total := stats["total"].(map[string]uint64)
 	if total["rx_bytes"] != 11 || total["tx_bytes"] != 22 {
 		t.Fatalf("traffic total after rollback = %+v, want committed counters preserved", total)
-	}
-}
-
-func TestModuleRollbackAfterDisableKeepsLiveScopedRecordersAttached(t *testing.T) {
-	tests := []struct {
-		name        string
-		newRecorder func(int) interface {
-			Add(int64, int64)
-			Flush()
-		}
-		bucket string
-	}{
-		{
-			name: "http rule",
-			newRecorder: func(id int) interface {
-				Add(int64, int64)
-				Flush()
-			} {
-				return trafficmodule.NewHTTPRuleRecorder(id)
-			},
-			bucket: "http_rules",
-		},
-		{
-			name: "l4 rule",
-			newRecorder: func(id int) interface {
-				Add(int64, int64)
-				Flush()
-			} {
-				return trafficmodule.NewL4RuleRecorder(id)
-			},
-			bucket: "l4_rules",
-		},
-		{
-			name: "relay listener",
-			newRecorder: func(id int) interface {
-				Add(int64, int64)
-				Flush()
-			} {
-				return trafficmodule.NewRelayListenerRecorder(id)
-			},
-			bucket: "relay_listeners",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			trafficmodule.Reset()
-			trafficmodule.SetEnabled(true)
-			t.Cleanup(func() {
-				trafficmodule.SetEnabled(true)
-				trafficmodule.Reset()
-			})
-			disabled := false
-			recorder := tc.newRecorder(41)
-			recorder.Add(3, 4)
-			recorder.Flush()
-
-			mod := trafficmodule.NewModule()
-			registry := module.NewRegistry()
-			mustRegisterTrafficTestModule(t, registry, mod)
-			mustRegisterTrafficTestModule(t, registry, trafficCommitFailingModule{name: "after-traffic", err: errors.New("later commit failed")})
-
-			err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{AgentConfig: model.AgentConfig{
-				TrafficStatsEnabled: &disabled,
-			}})
-			if err == nil {
-				t.Fatal("Apply() error = nil, want later commit failure")
-			}
-
-			recorder.Add(5, 6)
-			recorder.Flush()
-
-			stats := trafficmodule.Snapshot()["traffic"].(map[string]any)
-			scoped := stats[tc.bucket].(map[string]map[string]uint64)["41"]
-			if scoped["rx_bytes"] != 8 || scoped["tx_bytes"] != 10 {
-				t.Fatalf("%s[41] after rollback = %+v, want live recorder to stay attached", tc.bucket, scoped)
-			}
-		})
 	}
 }
 

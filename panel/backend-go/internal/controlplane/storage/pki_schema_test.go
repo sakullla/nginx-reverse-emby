@@ -3,9 +3,26 @@
 package storage
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func openPKIFocusedTestStore(t *testing.T, root string, skipBootstrap bool) *GormStore {
+	t.Helper()
+	store, err := NewStore(StoreConfig{
+		Driver: "sqlite", DataRoot: root, DSN: filepath.Join(root, "panel.db"), LocalAgentID: "local", SkipBootstrapSchema: skipBootstrap,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	return store
+}
 
 type legacyPKIIdentityOwnerRow struct {
 	ID                   string     `gorm:"column:id;primaryKey"`

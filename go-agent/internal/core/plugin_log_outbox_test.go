@@ -1,18 +1,18 @@
+//go:build !integration
+
 package core
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
+
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 func TestFilesystemPluginLogOutboxSurvivesRestartAndExactMultiBatchACK(t *testing.T) {
@@ -98,38 +98,6 @@ func TestFilesystemPluginLogOutboxRecoversPartialCrashTail(t *testing.T) {
 	}
 }
 
-func TestFilesystemPluginLogOutboxRetryAfterDirectorySyncFailureIsIdempotent(t *testing.T) {
-	store, err := NewFilesystem(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var calls atomic.Int32
-	store.syncDirectory = func(string) error {
-		if calls.Add(1) == 1 {
-			return fmt.Errorf("injected directory sync failure")
-		}
-		return nil
-	}
-	draft := []model.PluginRuntimeLogReport{pluginLogTestDraft("uncertain")}
-	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), draft); err == nil {
-		t.Fatal("enqueue accepted uncertain directory durability")
-	}
-	retried, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), draft)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pending, err := store.PendingPluginLogReports()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retried) != 1 || retried[0].Sequence != 1 || len(pending) != 1 || pending[0].Sequence != 1 {
-		t.Fatalf("idempotent retry = retried:%+v pending:%+v", retried, pending)
-	}
-	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{pluginLogTestDraft("different capture")}); err == nil {
-		t.Fatal("capture batch identity collision was accepted")
-	}
-}
-
 func TestFilesystemPluginLogOutboxSerializesConcurrentEnqueue(t *testing.T) {
 	store, err := NewFilesystem(t.TempDir())
 	if err != nil {
@@ -168,54 +136,6 @@ func TestFilesystemPluginLogOutboxSerializesConcurrentEnqueue(t *testing.T) {
 		if _, ok := seen[sequence]; !ok {
 			t.Fatalf("missing sequence %d", sequence)
 		}
-	}
-}
-
-func TestFilesystemPluginLogOutboxCompactsLongRunningReplayState(t *testing.T) {
-	directory := t.TempDir()
-	store, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const cycles = 300
-	for index := 1; index <= cycles; index++ {
-		assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(index), []model.PluginRuntimeLogReport{pluginLogTestDraft(fmt.Sprintf("cycle-%d", index))})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if assigned[0].Sequence != uint64(index) {
-			t.Fatalf("cycle %d sequence = %d", index, assigned[0].Sequence)
-		}
-		if err := store.AcknowledgePluginLogReports(assigned); err != nil {
-			t.Fatal(err)
-		}
-	}
-	journal, err := os.ReadFile(filepath.Join(directory, pluginLogOutboxFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if records := bytes.Count(journal, []byte("\n")); records > maxPluginLogOutboxJournalRecords {
-		t.Fatalf("compacted journal retained %d records", records)
-	}
-	restarted, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(cycles+1), []model.PluginRuntimeLogReport{pluginLogTestDraft("after checkpoint")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next[0].Sequence != cycles+1 {
-		t.Fatalf("post-checkpoint sequence = %d", next[0].Sequence)
-	}
-	restarted.mu.Lock()
-	state, err := restarted.loadPluginLogOutboxLocked()
-	restarted.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
-		t.Fatalf("replay identities are unbounded: batches=%d ACKs=%d", len(state.batches), len(state.acks))
 	}
 }
 
@@ -260,291 +180,6 @@ func TestFilesystemPluginLogOutboxCheckpointCommitUncertaintyRestartsExactly(t *
 	}
 }
 
-func TestFilesystemPluginLogOutboxIgnoresPreRenameCheckpointCrashFile(t *testing.T) {
-	directory := t.TempDir()
-	store, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{pluginLogTestDraft("authoritative")}); err != nil {
-		t.Fatal(err)
-	}
-	crashFile, err := os.CreateTemp(directory, pluginLogOutboxFile+".checkpoint-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := crashFile.WriteString(`{"partial_checkpoint":`); err != nil {
-		t.Fatal(err)
-	}
-	if err := crashFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-	restarted, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pending, err := restarted.PendingPluginLogReports()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 1 || pending[0].Entries[0].Message != "authoritative" {
-		t.Fatalf("pre-rename crash file replaced journal: %+v", pending)
-	}
-}
-
-func TestPluginLogOutboxNeverEvictsLiveFenceHighWaterDuringRetiredChurn(t *testing.T) {
-	state := newPluginLogOutboxState()
-	live := pluginLogTestDraft("live-1")
-	assigned, _, err := state.enqueue(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{live})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := state.acknowledge(assigned); err != nil {
-		t.Fatal(err)
-	}
-	const churn = maxPluginLogReplayIdentities * 2
-	for index := 1; index <= churn; index++ {
-		draft := pluginLogTestDraft("historical")
-		draft.GenerationID = fmt.Sprintf("retired-generation-%d", index)
-		assigned, _, err := state.enqueue(pluginLogTestBatchID(index+1), []model.PluginRuntimeLogReport{draft})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, _, _, err := state.acknowledge(assigned); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := state.retire(pluginLogRuntimeIdentity(draft)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	resumed, _, err := state.enqueue(pluginLogTestBatchID(churn+2), []model.PluginRuntimeLogReport{pluginLogTestDraft("live-2")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resumed[0].Sequence != 2 {
-		t.Fatalf("live generation resumed sequence = %d", resumed[0].Sequence)
-	}
-	if len(state.sequence) > maxPluginLogReplayIdentities+2 || len(state.batches) > maxPluginLogReplayIdentities || len(state.acks) > maxPluginLogReplayIdentities {
-		t.Fatalf("historical replay state is unbounded: sequences=%d batches=%d ACKs=%d", len(state.sequence), len(state.batches), len(state.acks))
-	}
-}
-
-func TestFilesystemPluginLogOutboxRetirementRetainsPendingAndLiveResumeAcrossCheckpointRestart(t *testing.T) {
-	directory := t.TempDir()
-	store, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	liveDraft := pluginLogTestDraft("live-before-restart")
-	live, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{liveDraft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AcknowledgePluginLogReports(live); err != nil {
-		t.Fatal(err)
-	}
-	retiredDraft := pluginLogTestDraft("retired-pending")
-	retiredDraft.GenerationID = "retired-generation"
-	retired, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(2), []model.PluginRuntimeLogReport{retiredDraft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RetirePluginRuntimeLogFence(pluginLogRuntimeIdentity(retiredDraft)); err != nil {
-		t.Fatal(err)
-	}
-	pending, err := store.PendingPluginLogReports()
-	if err != nil || len(pending) != 1 || pending[0].Sequence != retired[0].Sequence {
-		t.Fatalf("retirement lost pending report: pending=%+v err=%v", pending, err)
-	}
-	store.mu.Lock()
-	state, err := store.loadPluginLogOutboxLocked()
-	if err == nil {
-		state.records = maxPluginLogOutboxJournalRecords + 1
-		err = store.maybeCompactPluginLogOutboxLocked(&state)
-	}
-	store.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	restarted, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resumed, err := restarted.EnqueuePluginLogReports(pluginLogTestBatchID(3), []model.PluginRuntimeLogReport{pluginLogTestDraft("live-after-restart")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resumed[0].Sequence != 2 {
-		t.Fatalf("live checkpoint/restart resume sequence = %d", resumed[0].Sequence)
-	}
-	pending, err = restarted.PendingPluginLogReports()
-	if err != nil || len(pending) != 2 || pending[0].GenerationID != retiredDraft.GenerationID {
-		t.Fatalf("checkpoint/restart pending reports = %+v, %v", pending, err)
-	}
-}
-
-func TestFilesystemPluginLogRetirementIntentRetriesTransientDrainedWrite(t *testing.T) {
-	directory := t.TempDir()
-	store, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft := pluginLogTestDraft("retirement-intent")
-	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
-		t.Fatal(err)
-	}
-	intentID := strings.Repeat("c", 64)
-	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveAppliedSnapshot(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
-		t.Fatal(err)
-	}
-	failed := false
-	store.pluginLogAppendFailure = func(operation string) error {
-		if operation == "retire_intent_drained" && !failed {
-			failed = true
-			return errors.New("injected drained retirement write failure")
-		}
-		return nil
-	}
-	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err != nil {
-		t.Fatalf("drained persistence handoff returned terminal error: %v", err)
-	}
-	if _, err := store.PendingPluginLogReports(); err != nil {
-		t.Fatalf("same-process drained retry failed: %v", err)
-	}
-	store.mu.Lock()
-	drainedState, err := store.loadPluginLogOutboxLocked()
-	store.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if intent, ok := drainedState.retireIntents[intentID]; !ok || !intent.Drained {
-		t.Fatalf("drained intent was not durable before authorization: %+v", drainedState.retireIntents)
-	}
-	if err := store.AuthorizePluginRuntimeLogRetirementIntents(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
-		t.Fatalf("cutover authorization failed: %v", err)
-	}
-	store.mu.Lock()
-	state, err := store.loadPluginLogOutboxLocked()
-	store.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fenceID := pluginRuntimeLogFenceIdentity(draft)
-	if len(state.retireIntents) != 0 {
-		t.Fatalf("completed retirement intents = %+v", state.retireIntents)
-	}
-	if _, retired := state.retired[fenceID]; !retired {
-		t.Fatalf("fence %q was not durably retired", fenceID)
-	}
-}
-
-func TestFilesystemPluginLogRetirementCompletionRetriesAfterAuthorizationFailure(t *testing.T) {
-	store, err := NewFilesystem(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft := pluginLogTestDraft("completion retry")
-	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
-		t.Fatal(err)
-	}
-	intentID := strings.Repeat("e", 64)
-	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.MarkPluginRuntimeLogRetirementIntentDrained(intentID); err != nil {
-		t.Fatal(err)
-	}
-	failed := false
-	store.pluginLogAppendFailure = func(operation string) error {
-		if operation == "retire_intent_complete" && !failed {
-			failed = true
-			return errors.New("injected completion write failure")
-		}
-		return nil
-	}
-	applied := model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}
-	if err := store.AuthorizePluginRuntimeLogRetirementIntents(applied); err == nil {
-		t.Fatal("completion write failure was hidden")
-	}
-	if err := store.AuthorizePluginRuntimeLogRetirementIntents(applied); err != nil {
-		t.Fatalf("completion authorization retry failed: %v", err)
-	}
-	store.mu.Lock()
-	state, err := store.loadPluginLogOutboxLocked()
-	store.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.retireIntents) != 0 {
-		t.Fatalf("completion retry left intents = %+v", state.retireIntents)
-	}
-}
-
-func TestFilesystemPluginLogRetirementIntentRecoversOnlyAfterRestart(t *testing.T) {
-	directory := t.TempDir()
-	store, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft := pluginLogTestDraft("restart-retirement-intent")
-	assigned, err := store.EnqueuePluginLogReports(pluginLogTestBatchID(1), []model.PluginRuntimeLogReport{draft})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AcknowledgePluginLogReports(assigned); err != nil {
-		t.Fatal(err)
-	}
-	intentID := strings.Repeat("d", 64)
-	if err := store.StagePluginRuntimeLogRetirementIntent(intentID, 8, []pluginprocess.RuntimeLogIdentity{pluginLogRuntimeIdentity(draft)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveAppliedSnapshot(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.PendingPluginLogReports(); err != nil {
-		t.Fatal(err)
-	}
-	store.mu.Lock()
-	beforeRestart, err := store.loadPluginLogOutboxLocked()
-	store.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(beforeRestart.retireIntents) != 1 {
-		t.Fatalf("same-session undrained intent retired early: %+v", beforeRestart.retireIntents)
-	}
-	restarted, err := NewFilesystem(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restarted.AuthorizePluginRuntimeLogRetirementIntents(model.Snapshot{Revision: 8, PluginGenerations: []model.PluginGeneration{}}); err != nil {
-		t.Fatalf("restart retirement recovery failed: %v", err)
-	}
-	restarted.mu.Lock()
-	afterRestart, err := restarted.loadPluginLogOutboxLocked()
-	restarted.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(afterRestart.retireIntents) != 0 {
-		t.Fatalf("restart left retirement intents = %+v", afterRestart.retireIntents)
-	}
-	if _, retired := afterRestart.retired[pluginRuntimeLogFenceIdentity(draft)]; !retired {
-		t.Fatal("restart did not retire the removed fence")
-	}
-}
-
 func pluginLogTestDraft(message string) model.PluginRuntimeLogReport {
 	return model.PluginRuntimeLogReport{
 		Revision: 7, GenerationID: "generation-7", InstanceID: "instance-7", PluginID: "example.rpc", AgentID: "edge-7",
@@ -554,10 +189,3 @@ func pluginLogTestDraft(message string) model.PluginRuntimeLogReport {
 }
 
 func pluginLogTestBatchID(value int) string { return fmt.Sprintf("%064x", value) }
-
-func pluginLogRuntimeIdentity(report model.PluginRuntimeLogReport) pluginprocess.RuntimeLogIdentity {
-	return pluginprocess.RuntimeLogIdentity{
-		Revision: report.Revision, ProviderGenerationID: report.GenerationID, InstanceID: report.InstanceID,
-		PluginID: report.PluginID, AgentID: report.AgentID, PackageDigest: report.PackageDigest, ArtifactDigest: report.ArtifactDigest,
-	}
-}

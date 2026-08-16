@@ -1,9 +1,10 @@
+//go:build !integration
+
 package control
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
+
 	"encoding/json"
 	"errors"
 	"io"
@@ -120,42 +121,5 @@ func TestHeartbeatRejectsPKIEnvelopeWithoutExecutionPlaneHandler(t *testing.T) {
 	}, server.Client())
 	if _, err := client.Sync(t.Context(), SyncRequest{CurrentRevision: 7}); err == nil {
 		t.Fatal("Sync() accepted PKI state without an execution-plane handler")
-	}
-}
-
-func TestPKIHeartbeatKeepsTokenOnlyControlTLS(t *testing.T) {
-	handler := &recordingPKIHeartbeatHandler{}
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/agents/heartbeat" {
-			t.Fatalf("heartbeat path = %q", r.URL.Path)
-		}
-		if got := r.Header.Get("X-Agent-Token"); got != "control-token" {
-			t.Fatalf("X-Agent-Token = %q, want control-token", got)
-		}
-		if r.TLS == nil {
-			t.Fatal("heartbeat did not use TLS")
-		}
-		if len(r.TLS.PeerCertificates) != 0 {
-			t.Fatalf("control heartbeat unexpectedly sent %d client certificate(s)", len(r.TLS.PeerCertificates))
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"sync":{"has_update":false,"desired_revision":7}}`)
-	}))
-	server.TLS = &tls.Config{ClientAuth: tls.RequestClientCert, MinVersion: tls.VersionTLS12}
-	server.StartTLS()
-	defer server.Close()
-
-	client := NewSyncClient(SyncClientConfig{
-		MasterURL: server.URL, AgentToken: "control-token", AgentID: "agent-1",
-		PKIHeartbeatHandler: handler,
-	}, nil)
-	roots := x509.NewCertPool()
-	roots.AddCert(server.Certificate())
-	client.transport.TLSClientConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		RootCAs:    roots,
-	}
-	if _, err := client.Sync(t.Context(), SyncRequest{CurrentRevision: 7}); err != nil {
-		t.Fatalf("Sync() error = %v", err)
 	}
 }

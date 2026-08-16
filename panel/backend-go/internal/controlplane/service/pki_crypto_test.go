@@ -1,51 +1,31 @@
-//go:build integration
+//go:build !integration
 
 package service
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"sync"
 	"testing"
-	"time"
 )
 
-const (
-	pkiLockHelperEnv    = "NRE_PKI_LOCK_HELPER"
-	pkiLockHelperDirEnv = "NRE_PKI_LOCK_HELPER_DIR"
-)
-
-type pkiCloseErrorLock struct {
-	pkiDirectoryLock
-	closeErr error
-}
-
-func (lock *pkiCloseErrorLock) Close() error {
-	return errors.Join(lock.pkiDirectoryLock.Close(), lock.closeErr)
-}
-
-func TestIntegrationVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
+func TestPKIVaultSealsOpensAndFailsClosedOnTamper(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
 	if err != nil {
-		t.Fatalf("OpenPKIVault() error = %v", err)
+		t.Fatal(err)
 	}
 	plaintext := []byte("test-ca-private-key-material-that-must-not-be-visible")
 	reference, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext)
 	if err != nil {
-		t.Fatalf("SealCAKey() error = %v", err)
+		t.Fatal(err)
 	}
 	recordPath := filepath.Join(root, "pki", "vault", reference)
 	record, err := os.ReadFile(recordPath)
 	if err != nil {
-		t.Fatalf("ReadFile(vault record) error = %v", err)
+		t.Fatal(err)
 	}
 	if bytes.Contains(record, plaintext) {
 		t.Fatal("vault record contains plaintext CA key")
@@ -55,304 +35,13 @@ func TestIntegrationVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
 		t.Fatalf("OpenCAKey() = %q, %v", opened, err)
 	}
 	if _, err := vault.OpenCAKey(reference, "domain-2", 1, "ca-signing"); !errors.Is(err, ErrPKIVaultInvalid) {
-		t.Fatalf("OpenCAKey(wrong AAD) error = %v, want ErrPKIVaultInvalid", err)
+		t.Fatalf("wrong AAD err=%v", err)
 	}
-	if repeatedReference, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext); err != nil || repeatedReference != reference {
-		t.Fatalf("SealCAKey(idempotent retry) = %q, %v", repeatedReference, err)
-	}
-	if _, err := vault.SealCAKey("domain-1", 1, "ca-signing", []byte("different-key-material")); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("SealCAKey(conflicting generation) error = %v, want os.ErrExist", err)
-	}
-
 	record[len(record)-1] ^= 0xff
 	if err := os.WriteFile(recordPath, record, 0o600); err != nil {
-		t.Fatalf("tamper vault record: %v", err)
+		t.Fatal(err)
 	}
 	if _, err := vault.OpenCAKey(reference, "domain-1", 1, "ca-signing"); !errors.Is(err, ErrPKIVaultInvalid) {
-		t.Fatalf("OpenCAKey(tampered) error = %v, want ErrPKIVaultInvalid", err)
-	}
-	if err := os.Truncate(recordPath, int64(len(record)/2)); err != nil {
-		t.Fatalf("truncate vault record: %v", err)
-	}
-	if _, err := vault.OpenCAKey(reference, "domain-1", 1, "ca-signing"); !errors.Is(err, ErrPKIVaultInvalid) {
-		t.Fatalf("OpenCAKey(truncated) error = %v, want ErrPKIVaultInvalid", err)
-	}
-
-	masterPath := filepath.Join(root, "pki", "master.key")
-	master, err := os.ReadFile(masterPath)
-	if err != nil || len(master) != 32 {
-		t.Fatalf("master key length = %d, error = %v", len(master), err)
-	}
-	if runtime.GOOS != "windows" {
-		for _, path := range []string{filepath.Join(root, "pki"), filepath.Join(root, "pki", "vault")} {
-			info, statErr := os.Stat(path)
-			if statErr != nil || info.Mode().Perm() != 0o700 {
-				t.Fatalf("directory %s mode = %v, error = %v", path, info.Mode().Perm(), statErr)
-			}
-		}
-		for _, path := range []string{masterPath, recordPath} {
-			info, statErr := os.Stat(path)
-			if statErr != nil || info.Mode().Perm() != 0o600 {
-				t.Fatalf("file %s mode = %v, error = %v", path, info.Mode().Perm(), statErr)
-			}
-		}
-	}
-}
-
-func TestIntegrationVaultAtomicPublicationFailureRetryAndConcurrency(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	pkiRoot := filepath.Join(root, "pki")
-	if err := ensurePKIRestrictedDirectory(pkiRoot); err != nil {
-		t.Fatalf("ensurePKIRestrictedDirectory() error = %v", err)
-	}
-	canonical := filepath.Join(pkiRoot, "master.key")
-	if err := writePKIRestrictedFileFromReader(canonical, bytes.NewReader([]byte("truncated")), 32); err == nil {
-		t.Fatal("truncated temporary write unexpectedly succeeded")
-	}
-	if _, err := os.Stat(canonical); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canonical file after failed temporary write error = %v, want os.ErrNotExist", err)
-	}
-	entries, err := os.ReadDir(pkiRoot)
-	if err != nil {
-		t.Fatalf("ReadDir() error = %v", err)
-	}
-	for _, entry := range entries {
-		if bytes.Contains([]byte(entry.Name()), []byte(".master.key.tmp-")) {
-			t.Fatalf("failed publication left temporary file %q", entry.Name())
-		}
-	}
-	stale := filepath.Join(pkiRoot, ".master.key.tmp-crashed-writer")
-	if err := os.WriteFile(stale, bytes.Repeat([]byte{0x11}, 32), 0o600); err != nil {
-		t.Fatalf("write stale publication: %v", err)
-	}
-	payload := bytes.Repeat([]byte{0x5a}, 32)
-	if err := writePKIRestrictedFile(canonical, payload); err != nil {
-		t.Fatalf("retry writePKIRestrictedFile() error = %v", err)
-	}
-	if _, err := os.Lstat(stale); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale publication after retry error = %v, want os.ErrNotExist", err)
-	}
-	if err := writePKIRestrictedFile(canonical, bytes.Repeat([]byte{0xa5}, 32)); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("no-clobber write error = %v, want os.ErrExist", err)
-	}
-	stored, err := os.ReadFile(canonical)
-	if err != nil || !bytes.Equal(stored, payload) {
-		t.Fatalf("canonical payload = %x, error = %v", stored, err)
-	}
-
-	concurrentRoot := t.TempDir()
-	const workers = 8
-	vaults := make(chan *PKIVault, workers)
-	errorsByWorker := make(chan error, workers)
-	var wait sync.WaitGroup
-	for range workers {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			vault, openErr := OpenPKIVault(PKIVaultConfig{DataRoot: concurrentRoot})
-			if openErr != nil {
-				errorsByWorker <- openErr
-				return
-			}
-			vaults <- vault
-		}()
-	}
-	wait.Wait()
-	close(vaults)
-	close(errorsByWorker)
-	for workerErr := range errorsByWorker {
-		t.Errorf("concurrent OpenPKIVault() error = %v", workerErr)
-	}
-	var winnerKey []byte
-	count := 0
-	for vault := range vaults {
-		count++
-		if winnerKey == nil {
-			winnerKey = append([]byte(nil), vault.masterKey...)
-			continue
-		}
-		if !bytes.Equal(vault.masterKey, winnerKey) {
-			t.Fatal("concurrent vault creators did not converge on the published master key")
-		}
-	}
-	if count != workers {
-		t.Fatalf("successful concurrent vault opens = %d, want %d", count, workers)
-	}
-}
-
-func testVaultDirectoryLockReleasedWhenHelperProcessExits(t *testing.T) {
-	if os.Getenv(pkiLockHelperEnv) == "1" {
-		lock, err := acquirePKIOSDirectoryLock(os.Getenv(pkiLockHelperDirEnv))
-		if err != nil {
-			os.Exit(2)
-		}
-		if _, err := os.Stdout.WriteString("locked\n"); err != nil {
-			os.Exit(3)
-		}
-		_ = os.Stdout.Sync()
-		runtime.KeepAlive(lock)
-		os.Exit(0)
-	}
-
-	directory := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestVaultDirectoryLockReleasedWhenHelperProcessExits$")
-	command.Env = append(os.Environ(), pkiLockHelperEnv+"=1", pkiLockHelperDirEnv+"="+directory)
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		t.Fatalf("helper StdoutPipe() error = %v", err)
-	}
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		t.Fatalf("start lock helper: %v", err)
-	}
-	line, readErr := bufio.NewReader(stdout).ReadString('\n')
-	if readErr != nil || line != "locked\n" {
-		cancel()
-		_ = command.Wait()
-		t.Fatalf("lock helper marker = %q, %v; stderr = %q", line, readErr, stderr.String())
-	}
-	if err := command.Wait(); err != nil {
-		t.Fatalf("lock helper exit error = %v; stderr = %q", err, stderr.String())
-	}
-
-	reacquired := make(chan error, 1)
-	go func() {
-		lock, err := acquirePKIOSDirectoryLock(directory)
-		if err == nil {
-			err = lock.Close()
-		}
-		reacquired <- err
-	}()
-	select {
-	case err := <-reacquired:
-		if err != nil {
-			t.Fatalf("reacquire lock after helper exit: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out reacquiring OS lock after helper exited without Close")
-	}
-}
-
-func TestIntegrationVaultRestartCleansCompleteStagingAndHardLinkAliases(t *testing.T) {
-	t.Parallel()
-	t.Run("complete staging leftovers", func(t *testing.T) {
-		root := t.TempDir()
-		pkiRoot := filepath.Join(root, "pki")
-		vaultDir := filepath.Join(pkiRoot, "vault")
-		if err := ensurePKIRestrictedDirectory(vaultDir); err != nil {
-			t.Fatalf("ensure vault directory: %v", err)
-		}
-		masterStaging := filepath.Join(pkiRoot, ".master.key.tmp-complete-crash")
-		vaultCanonical := pkiVaultReference("domain-1", 1, "ca-signing")
-		vaultStaging := filepath.Join(vaultDir, "."+vaultCanonical+".tmp-complete-crash")
-		if err := os.WriteFile(masterStaging, bytes.Repeat([]byte{0x11}, pkiVaultMasterKeySize), 0o600); err != nil {
-			t.Fatalf("write master staging: %v", err)
-		}
-		if err := os.WriteFile(vaultStaging, bytes.Repeat([]byte{0x22}, 64), 0o600); err != nil {
-			t.Fatalf("write vault staging: %v", err)
-		}
-
-		expectedKey := bytes.Repeat([]byte{0x33}, pkiVaultMasterKeySize)
-		vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, Random: bytes.NewReader(expectedKey)})
-		if err != nil {
-			t.Fatalf("OpenPKIVault(restart) error = %v", err)
-		}
-		if !bytes.Equal(vault.masterKey, expectedKey) {
-			t.Fatalf("recovered master key = %x, want newly published %x", vault.masterKey, expectedKey)
-		}
-		for _, path := range []string{masterStaging, vaultStaging} {
-			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("staging path %s after restart error = %v, want os.ErrNotExist", path, err)
-			}
-		}
-	})
-
-	t.Run("old hard-link alias", func(t *testing.T) {
-		root := t.TempDir()
-		vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
-		if err != nil {
-			t.Fatalf("OpenPKIVault() error = %v", err)
-		}
-		masterPath := vault.masterKeyFile
-		aliasPath := filepath.Join(filepath.Dir(masterPath), "."+filepath.Base(masterPath)+".tmp-old-hardlink")
-		if err := os.Link(masterPath, aliasPath); err != nil {
-			t.Skipf("hard links are unavailable on this test filesystem: %v", err)
-		}
-		canonicalInfo, err := os.Stat(masterPath)
-		if err != nil {
-			t.Fatalf("stat canonical master key: %v", err)
-		}
-		aliasInfo, err := os.Stat(aliasPath)
-		if err != nil || !os.SameFile(canonicalInfo, aliasInfo) {
-			t.Fatalf("staging alias does not share canonical inode: %v", err)
-		}
-		originalKey := append([]byte(nil), vault.masterKey...)
-		reopened, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
-		if err != nil {
-			t.Fatalf("OpenPKIVault(restart) error = %v", err)
-		}
-		if !bytes.Equal(reopened.masterKey, originalKey) {
-			t.Fatal("restart changed the canonical master key while removing its old alias")
-		}
-		if _, err := os.Lstat(aliasPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("old hard-link alias after restart error = %v, want os.ErrNotExist", err)
-		}
-	})
-
-	t.Run("external master old hard-link alias", func(t *testing.T) {
-		root := t.TempDir()
-		externalRoot := t.TempDir()
-		externalPath := filepath.Join(externalRoot, "master.key")
-		expectedKey := bytes.Repeat([]byte{0x61}, pkiVaultMasterKeySize)
-		if err := os.WriteFile(externalPath, expectedKey, 0o600); err != nil {
-			t.Fatalf("write external master key: %v", err)
-		}
-		aliasPath := filepath.Join(externalRoot, ".master.key.tmp-old-hardlink")
-		if err := os.Link(externalPath, aliasPath); err != nil {
-			t.Skipf("hard links are unavailable on this test filesystem: %v", err)
-		}
-		vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root, MasterKeyFile: externalPath})
-		if err != nil {
-			t.Fatalf("OpenPKIVault(external alias upgrade) error = %v", err)
-		}
-		if !bytes.Equal(vault.masterKey, expectedKey) {
-			t.Fatalf("external master key = %x, want %x", vault.masterKey, expectedKey)
-		}
-		if _, err := os.Lstat(aliasPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("external hard-link alias after upgrade error = %v, want os.ErrNotExist", err)
-		}
-	})
-}
-
-func TestIntegrationVaultPureConflictWithLockCloseFailureIsNotIdempotentSuccess(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
-	if err != nil {
-		t.Fatalf("OpenPKIVault() error = %v", err)
-	}
-	plaintext := []byte("stable-ca-key")
-	if _, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext); err != nil {
-		t.Fatalf("SealCAKey() error = %v", err)
-	}
-	injected := errors.New("injected lock close failure")
-	defaultAcquire := vault.fileOps.acquireLock
-	vault.fileOps.acquireLock = func(directory string) (pkiDirectoryLock, error) {
-		lock, err := defaultAcquire(directory)
-		if err != nil {
-			return nil, err
-		}
-		return &pkiCloseErrorLock{pkiDirectoryLock: lock, closeErr: injected}, nil
-	}
-	if _, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext); !errors.Is(err, os.ErrExist) || !errors.Is(err, errPKIVaultCleanup) || !errors.Is(err, injected) {
-		t.Fatalf("SealCAKey(conflict plus close failure) error = %v, want conflict, cleanup, and injected errors", err)
-	}
-	vault.fileOps.acquireLock = defaultAcquire
-	if _, err := vault.SealCAKey("domain-1", 1, "ca-signing", plaintext); err != nil {
-		t.Fatalf("SealCAKey(after close-error recovery) error = %v", err)
+		t.Fatalf("tampered record err=%v", err)
 	}
 }

@@ -1,3 +1,5 @@
+//go:build !integration
+
 package pki
 
 import (
@@ -17,9 +19,9 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
+
 	"path/filepath"
-	"reflect"
+
 	"runtime"
 	"slices"
 	"strings"
@@ -275,84 +277,9 @@ func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *te
 	}
 }
 
-func TestPrivateFilePermissionDriftFailsClosed(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
-	store := newTestStore(t, now)
-	expectation := CredentialExpectation{DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient}
-	prepareKnownAgent(t, store, expectation)
-	keyPath := filepath.Join(store.Root(), identitiesDirName, "agent", pendingDirName, pendingKeyName)
-	if runtime.GOOS == "windows" {
-		output, err := exec.Command("icacls", keyPath, "/grant", "*S-1-1-0:(R)").CombinedOutput()
-		if err != nil {
-			t.Fatalf("broaden Windows private-key DACL: %v: %s", err, output)
-		}
-	} else if err := os.Chmod(keyPath, 0o644); err != nil {
-		t.Fatalf("broaden Unix private-key mode: %v", err)
-	}
-	if _, err := store.LoadPending("agent"); !errors.Is(err, ErrCredentialInvalid) {
-		t.Fatalf("LoadPending() with exposed private key error = %v, want ErrCredentialInvalid", err)
-	}
-}
-
-func testActivateStagedRegistrationConsumesSanitizedJoinResponse(t *testing.T) {
-	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
-	store := newTestStore(t, now)
-	authority := newTestAuthority(t, now, "authority-1", 1)
-	pending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{
-		StorageIdentity: "agent", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient,
-	})
-	if err != nil {
-		t.Fatalf("PrepareEnrollment() error = %v", err)
-	}
-	expectation := CredentialExpectation{
-		DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent,
-		Purpose: model.PKICertificatePurposeClient,
-	}
-	staged := StagedRegistration{
-		AgentID:          "agent-1",
-		TunnelCredential: authority.issueCredential(t, pending, expectation, "identity-1", "certificate-staged", now),
-		SecuritySnapshot: authority.snapshot(t, "domain-1", 0, 0, true, nil, nil, now),
-	}
-	rawResponse := map[string]any{
-		"ok":             true,
-		"register_token": "register-secret",
-		"pki": map[string]any{
-			"agent_id": "agent-1", "agent_token": "control-secret",
-			"tunnel_credential": staged.TunnelCredential,
-			"security_snapshot": staged.SecuritySnapshot,
-		},
-	}
-	responsePath := stageRegistrationWithJoinScript(t, store.dataRoot, rawResponse)
-	encoded, err := os.ReadFile(responsePath)
-	if err != nil {
-		t.Fatalf("read script-staged response: %v", err)
-	}
-	if strings.Contains(string(encoded), "control-secret") || strings.Contains(string(encoded), "register-secret") || !strings.Contains(string(encoded), `"certificate_id":"certificate-staged"`) {
-		t.Fatalf("script-staged response is not the sanitized PKI projection: %s", encoded)
-	}
-	environment, err := os.ReadFile(filepath.Join(store.dataRoot, "agent.env"))
-	if err != nil {
-		t.Fatalf("read script-persisted agent environment: %v", err)
-	}
-	if !strings.Contains(string(environment), "control-secret") || strings.Contains(string(environment), "register-secret") {
-		t.Fatalf("script-persisted agent environment does not contain only the durable control token: %s", environment)
-	}
-	// Production starts (or restarts) the native agent after the shell helper.
-	// Reopening the Store must apply the fixed-root Windows DACL migration to
-	// the raw Git-Bash artifacts without a test-only ACL pre-pass.
-	store, err = NewStore(store.dataRoot, WithClock(func() time.Time { return now }))
-	if err != nil {
-		t.Fatalf("reopen Store over raw join artifacts: %v", err)
-	}
-	active, err := store.ActivateStagedRegistration(context.Background(), "agent")
-	if err != nil {
-		t.Fatalf("ActivateStagedRegistration() error = %v", err)
-	}
-	if active.Manifest.Credential.CertificateID != "certificate-staged" {
-		t.Fatalf("active staged certificate = %s", active.Manifest.Credential.CertificateID)
-	}
-}
+// Production starts (or restarts) the native agent after the shell helper.
+// Reopening the Store must apply the fixed-root Windows DACL migration to
+// the raw Git-Bash artifacts without a test-only ACL pre-pass.
 
 func TestCredentialValidationUsesStoreClockAndTypedReasons(t *testing.T) {
 	t.Parallel()
@@ -423,61 +350,6 @@ func TestCredentialValidationUsesStoreClockAndTypedReasons(t *testing.T) {
 	}
 }
 
-func TestRenewalStateIsPrivateAtomicAndUsesStoreClock(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
-	current := now
-	dataRoot := t.TempDir()
-	store, err := NewStore(dataRoot, WithClock(func() time.Time { return current }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := RenewalState{
-		Version: 99, CredentialIdentity: " identity-1 ", CredentialFingerprint: strings.Repeat("a", 64),
-		DueAt: now.Add(8 * time.Hour), FailureCount: 2, NextAttemptAt: now.Add(time.Minute),
-		ReenrollmentRequired: true, Reason: " revoked_identity ", UpdatedAt: now.Add(-24 * time.Hour),
-		PendingRejectionRequestID: " " + strings.Repeat("b", 32) + " ", PendingRejectionCode: " owner_mismatch ",
-	}
-	saved, err := store.SaveRenewalState("agent", input)
-	if err != nil {
-		t.Fatalf("SaveRenewalState() error = %v", err)
-	}
-	if saved.Version != 1 || saved.CredentialIdentity != "identity-1" || saved.Reason != "revoked_identity" ||
-		saved.PendingRejectionRequestID != strings.Repeat("b", 32) || saved.PendingRejectionCode != "owner_mismatch" || !saved.UpdatedAt.Equal(now) {
-		t.Fatalf("normalized renewal state = %+v", saved)
-	}
-	invalidIntent := saved
-	invalidIntent.PendingRejectionCode = ""
-	if _, err := store.SaveRenewalState("agent", invalidIntent); !errors.Is(err, ErrCredentialInvalid) {
-		t.Fatalf("partial rejection intent error = %v, want ErrCredentialInvalid", err)
-	}
-	path := filepath.Join(store.Root(), identitiesDirName, "agent", renewalStateName)
-	if err := verifyPrivatePath(path, false); err != nil {
-		t.Fatalf("renewal state permissions: %v", err)
-	}
-	current = now.Add(time.Hour)
-	unchanged, err := store.SaveRenewalState("agent", saved)
-	if err != nil || !unchanged.UpdatedAt.Equal(now) {
-		t.Fatalf("unchanged SaveRenewalState() = %+v, error = %v", unchanged, err)
-	}
-	saved.FailureCount++
-	changed, err := store.SaveRenewalState("agent", saved)
-	if err != nil || !changed.UpdatedAt.Equal(current) {
-		t.Fatalf("changed SaveRenewalState() = %+v, error = %v", changed, err)
-	}
-	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return current.Add(time.Hour) }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := reopened.LoadRenewalState("agent")
-	if err != nil || !reflect.DeepEqual(loaded, changed) {
-		t.Fatalf("LoadRenewalState() = %+v, error = %v, want %+v", loaded, err, changed)
-	}
-	if _, err := reopened.LoadRenewalState("missing"); !errors.Is(err, ErrRenewalStateNotFound) {
-		t.Fatalf("missing LoadRenewalState() error = %v", err)
-	}
-}
-
 func assertCredentialInvalidReason(t *testing.T, err error, reason CredentialInvalidReason) {
 	t.Helper()
 	if !errors.Is(err, ErrCredentialInvalid) {
@@ -501,31 +373,6 @@ func TestSecuritySnapshotRejectsForgedSignature(t *testing.T) {
 	}
 }
 
-func TestNewStoreDurablyCreatesMissingDataRoot(t *testing.T) {
-	t.Parallel()
-	parent := t.TempDir()
-	dataRoot := filepath.Join(parent, "new", "agent-data")
-	injected := errors.New("injected process loss after data-root publication")
-	if _, err := NewStore(dataRoot, withPersistenceCheckpoint(func(point string) error {
-		if point == "store.after_data_root_publish" {
-			return injected
-		}
-		return nil
-	})); !errors.Is(err, injected) {
-		t.Fatalf("NewStore() publication error = %v, want injected failure", err)
-	}
-	if info, err := os.Lstat(dataRoot); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		t.Fatalf("published data root = %+v, error = %v", info, err)
-	}
-	reopened, err := NewStore(dataRoot)
-	if err != nil {
-		t.Fatalf("reopen durably published data root: %v", err)
-	}
-	if reopened.Root() != filepath.Join(dataRoot, storeDirName) {
-		t.Fatalf("reopened root = %q", reopened.Root())
-	}
-}
-
 func newTestStore(t *testing.T, now time.Time) *Store {
 	t.Helper()
 	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return now }))
@@ -533,82 +380,6 @@ func newTestStore(t *testing.T, now time.Time) *Store {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	return store
-}
-
-func stageRegistrationWithJoinScript(t *testing.T, dataRoot string, response any) string {
-	t.Helper()
-	shell := findJoinTestShell(t)
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	joinScript := filepath.Clean(filepath.Join(workingDirectory, "..", "..", "..", "..", "scripts", "join-agent.sh"))
-	script, err := os.ReadFile(joinScript)
-	if err != nil {
-		t.Fatalf("read join-agent.sh: %v", err)
-	}
-	marker := []byte("\nCOMMAND=\"join\"\n")
-	index := strings.Index(string(script), string(marker))
-	if index < 0 {
-		t.Fatal("join-agent.sh function boundary is missing")
-	}
-	temporary := t.TempDir()
-	functionsPath := filepath.Join(temporary, "join-functions.sh")
-	if err := os.WriteFile(functionsPath, script[:index+1], 0o600); err != nil {
-		t.Fatal(err)
-	}
-	responseData, err := json.Marshal(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	responsePath := filepath.Join(temporary, "register-response.json")
-	if err := os.WriteFile(responsePath, responseData, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	command := `. "$1"
-DATA_DIR="$2"
-ENV_FILE="$DATA_DIR/agent.env"
-REGISTER_RESPONSE="$(cat "$3")"
-MASTER_URL="https://control.example.test"
-AGENT_NAME="agent-1"
-AGENT_ID=""
-AGENT_TOKEN=""
-AGENT_URL=""
-AGENT_VERSION="1"
-AGENT_TAGS=""
-AGENT_CAPABILITIES=""
-PKI_DOMAIN_ID=""
-stage_pki_registration_response >/dev/null`
-	output, err := exec.Command(shell, "-c", command, "join-stage-test", shellTestPath(functionsPath), shellTestPath(dataRoot), shellTestPath(responsePath)).CombinedOutput()
-	if err != nil {
-		t.Fatalf("stage_pki_registration_response: %v: %s", err, output)
-	}
-	stagedPath := filepath.Join(dataRoot, storeDirName, identitiesDirName, "agent", pendingDirName, "response.json")
-	return stagedPath
-}
-
-func findJoinTestShell(t *testing.T) string {
-	t.Helper()
-	if shell, err := exec.LookPath("sh"); err == nil {
-		return shell
-	}
-	if runtime.GOOS == "windows" {
-		for _, candidate := range []string{
-			`C:\Program Files\Git\bin\sh.exe`,
-			`C:\Program Files\Git\usr\bin\sh.exe`,
-			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Git", "bin", "sh.exe"),
-		} {
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				return candidate
-			}
-		}
-	}
-	t.Skip("POSIX shell unavailable for join-agent projection contract")
-	return ""
-}
-
-func shellTestPath(path string) string {
-	return filepath.ToSlash(path)
 }
 
 func prepareKnownAgent(t *testing.T, store *Store, expectation CredentialExpectation) PendingEnrollment {

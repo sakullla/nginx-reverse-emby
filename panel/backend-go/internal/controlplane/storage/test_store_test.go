@@ -103,3 +103,17 @@ func newStorageMigrationTestStore(t *testing.T, localAgentID string) *SQLiteStor
 	})
 	return store
 }
+
+func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
+	t.Helper()
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", trafficStatsEnabled)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close() error = %v", err)
+		}
+	})
+	return store
+}

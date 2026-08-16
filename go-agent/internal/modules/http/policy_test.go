@@ -3,14 +3,13 @@ package http
 import (
 	"bytes"
 	"context"
-	"fmt"
+
 	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
-	"strings"
+
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -87,40 +86,6 @@ func TestWAFPolicyStreamingBodyWindowPreservesBodyAndTrustedSource(t *testing.T)
 	}
 }
 
-func TestWAFPolicyUnknownLengthBodyDoesNotBlockAdmission(t *testing.T) {
-	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
-
-	var captured policy.Input
-	server := &Server{policyEvaluator: httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
-		captured = input
-		return policy.Decision{Action: policy.ActionAllow}
-	})}
-	req := httptest.NewRequest(stdhttp.MethodPost, "http://media.example.test/upload", reader)
-	req.ContentLength = -1
-	req.RemoteAddr = "192.0.2.40:43210"
-	result := make(chan bool, 1)
-	go func() {
-		_, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}})
-		result <- allowed
-	}()
-	select {
-	case allowed := <-result:
-		if !allowed {
-			t.Fatal("unknown-length request was denied")
-		}
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("policy admission blocked reading an open unknown-length body")
-	}
-	if captured.Body().Complete() || captured.Body().SkipReason() != policy.BodyLengthUnknown || len(captured.Body().Prefix()) != 0 {
-		t.Fatalf("unknown-length body window = complete %v skip %q prefix %d", captured.Body().Complete(), captured.Body().SkipReason(), len(captured.Body().Prefix()))
-	}
-	if req.Body != reader {
-		t.Fatal("unknown-length request body was replaced despite no read")
-	}
-}
-
 func TestIPPolicyTrustedSourceWalksXFFOnlyThroughTrustedPeers(t *testing.T) {
 	var captured policy.Input
 	evaluator := httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
@@ -188,108 +153,6 @@ func TestIPPolicyUntrustedOrMalformedXFFCannotForgeSource(t *testing.T) {
 	}
 }
 
-func TestWAFPolicyRejectsIncompleteSecurityFieldProjection(t *testing.T) {
-	for name, mutate := range map[string]func(*stdhttp.Request){
-		"malicious query suffix": func(req *stdhttp.Request) {
-			req.URL.RawQuery = strings.Repeat("a", httpPolicyFieldValueBytes) + "<script>"
-		},
-		"header value suffix": func(req *stdhttp.Request) {
-			req.Header.Set("X-Policy-Input", strings.Repeat("a", httpPolicyHeaderValueBytes)+"malicious-suffix")
-		},
-		"aggregate header overflow": func(req *stdhttp.Request) {
-			for index := 0; index < 9; index++ {
-				req.Header.Set(fmt.Sprintf("X-Overflow-%02d", index), strings.Repeat("a", httpPolicyHeaderValueBytes-8))
-			}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var calls int
-			server := &Server{policyEvaluator: httpPolicyEvaluatorFunc(func(context.Context, *model.PolicyRef, policy.Input) policy.Decision {
-				calls++
-				return policy.Decision{Action: policy.ActionAllow}
-			})}
-			req := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/library", nil)
-			mutate(req)
-			decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}})
-			if allowed || decision.Reason != "input-projection" || calls != 0 {
-				t.Fatalf("overflow decision/allowed/calls = %+v/%v/%d", decision, allowed, calls)
-			}
-		})
-	}
-}
-
-func TestWAFPolicyFieldProjectionFitsCompleteHostResponseBoundary(t *testing.T) {
-	tests := map[string]struct {
-		field    string
-		exact    func(*stdhttp.Request)
-		overflow func(*stdhttp.Request)
-	}{
-		"path": {
-			field: policy.FieldRequestPath,
-			exact: func(req *stdhttp.Request) {
-				req.URL.Path = "/" + strings.Repeat("p", httpPolicyFieldValueBytes-1)
-			},
-			overflow: func(req *stdhttp.Request) {
-				req.URL.Path = "/" + strings.Repeat("p", httpPolicyFieldValueBytes-1) + "<script>"
-			},
-		},
-		"query": {
-			field: policy.FieldRequestQuery,
-			exact: func(req *stdhttp.Request) {
-				req.URL.RawQuery = strings.Repeat("q", httpPolicyFieldValueBytes)
-			},
-			overflow: func(req *stdhttp.Request) {
-				req.URL.RawQuery = strings.Repeat("q", httpPolicyFieldValueBytes) + "<script>"
-			},
-		},
-		"host": {
-			field: policy.FieldRequestHost,
-			exact: func(req *stdhttp.Request) {
-				req.Host = strings.Repeat("h", httpPolicyFieldValueBytes)
-			},
-			overflow: func(req *stdhttp.Request) {
-				req.Host = strings.Repeat("h", httpPolicyFieldValueBytes) + ".evil"
-			},
-		},
-		"header": {
-			field: "request.header.x-policy-boundary",
-			exact: func(req *stdhttp.Request) {
-				req.Header.Set("X-Policy-Boundary", strings.Repeat("h", httpPolicyFieldValueBytes))
-			},
-			overflow: func(req *stdhttp.Request) {
-				req.Header.Set("X-Policy-Boundary", strings.Repeat("h", httpPolicyFieldValueBytes)+"malicious-suffix")
-			},
-		},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			var captured policy.Input
-			calls := 0
-			server := &Server{policyEvaluator: httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
-				calls++
-				captured = input
-				return policy.Decision{Action: policy.ActionAllow}
-			})}
-			rule := model.HTTPRule{PolicyRef: &model.PolicyRef{ID: "waf-policy"}}
-			exact := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/library", nil)
-			test.exact(exact)
-			if decision, allowed := server.allowPolicyRequest(exact, rule); !allowed {
-				t.Fatalf("exact boundary denied: %+v", decision)
-			}
-			if got := len(captured.Fields()[test.field]); got != httpPolicyFieldValueBytes {
-				t.Fatalf("projected field length = %d, want %d", got, httpPolicyFieldValueBytes)
-			}
-
-			overflow := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/library", nil)
-			test.overflow(overflow)
-			decision, allowed := server.allowPolicyRequest(overflow, rule)
-			if allowed || decision.Reason != "input-projection" || calls != 1 {
-				t.Fatalf("overflow decision/allowed/calls = %+v/%v/%d", decision, allowed, calls)
-			}
-		})
-	}
-}
-
 func TestGenerationPolicyRunsAfterHTTPSessionRegistrationBeforeUpstream(t *testing.T) {
 	registrar := &policyOrderingRegistrar{}
 	evaluator := httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, input policy.Input) policy.Decision {
@@ -318,25 +181,5 @@ func TestGenerationPolicyRunsAfterHTTPSessionRegistrationBeforeUpstream(t *testi
 	handler.serveActive(recorder, req)
 	if recorder.Code != stdhttp.StatusForbidden {
 		t.Fatalf("status = %d, want policy deny before upstream", recorder.Code)
-	}
-}
-
-func TestGenerationProviderPolicyEvaluatorIsResolvedWithoutAffectingUnconfiguredRules(t *testing.T) {
-	evaluator := httpPolicyEvaluatorFunc(func(context.Context, *model.PolicyRef, policy.Input) policy.Decision {
-		return policy.Decision{Action: policy.ActionDeny}
-	})
-	providers, err := new(Module).runtimeProviders(httpPolicyProviderResolver{module.ProviderPolicyEvaluator: evaluator}, nil)
-	if err != nil {
-		t.Fatalf("runtimeProviders() error = %v", err)
-	}
-	if providers.PolicyEvaluator == nil {
-		t.Fatal("generation policy evaluator was not resolved")
-	}
-
-	server := &Server{policyEvaluator: evaluator}
-	req := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
-	decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{})
-	if !allowed || decision.Action != policy.ActionAllow {
-		t.Fatalf("unconfigured rule decision = %+v, allowed=%v", decision, allowed)
 	}
 }

@@ -126,6 +126,9 @@ func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 }
 
 func TestFinalHopDialerUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
+	if !egressIntegrationTierEnabled {
+		t.Skip("live SOCKS5 UDP proxy runs in the integration tier")
+	}
 	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
 	profileID := 17
 	dialer := NewFinalHopDialer([]model.EgressProfile{{
@@ -169,24 +172,6 @@ func assertResolvedEgressProfile(t *testing.T, resolver module.ProviderResolver,
 	if err != nil || !found || profile.ID != id {
 		t.Fatalf("Resolve(%d) = %+v/%v/%v", id, profile, found, err)
 	}
-}
-
-func mustEgressGenerationContext(t *testing.T, previous, next model.Snapshot) module.GenerationContext {
-	t.Helper()
-	generationContext, err := module.NewGenerationContext(previous, next)
-	if err != nil {
-		t.Fatalf("NewGenerationContext() error = %v", err)
-	}
-	return generationContext
-}
-
-type testProviderRegistry struct {
-	providers map[module.ProviderRef]any
-}
-
-func (r testProviderRegistry) Provide(ref module.ProviderRef, provider any) error {
-	r.providers[ref] = provider
-	return nil
 }
 
 func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan model.SOCKS5UDPPacket) {

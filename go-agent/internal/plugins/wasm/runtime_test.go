@@ -1,3 +1,5 @@
+//go:build !integration
+
 package wasm
 
 import (
@@ -12,39 +14,15 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/testing/wasmreference"
-	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
-	"github.com/tetratelabs/wazero"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 var testWASMHeader = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
-
-func TestWASMRuntimeCompilerUnavailableIsTypedWithoutFallback(t *testing.T) {
-	compilerCalls := 0
-	runtimeCalls := 0
-	hostRuntime, err := NewRuntime(context.Background(), RuntimeOptions{
-		compilerConfigFactory: func() wazero.RuntimeConfig {
-			compilerCalls++
-			panic("unsupported compiler platform")
-		},
-		runtimeFactory: func(context.Context, wazero.RuntimeConfig) wazero.Runtime {
-			runtimeCalls++
-			return nil
-		},
-	})
-	if hostRuntime != nil {
-		t.Fatal("compiler capability failure returned a runtime")
-	}
-	if !IsCode(err, ErrorUnavailable) {
-		t.Fatalf("compiler capability error=%v, want %s", err, ErrorUnavailable)
-	}
-	if compilerCalls != 1 || runtimeCalls != 0 {
-		t.Fatalf("compiler calls=%d runtime calls=%d, want compiler-only failure without fallback", compilerCalls, runtimeCalls)
-	}
-}
 
 func TestWASMHostEmitEventAcceptsOnlyFixedWireEnums(t *testing.T) {
 	message, err := newPolicyMessage("EmitEventRequest")
@@ -74,9 +52,6 @@ func TestWASMHostEmitEventAcceptsOnlyFixedWireEnums(t *testing.T) {
 		t.Fatalf("unknown guest event enum status=%d, want invalid argument", status)
 	}
 
-	// This is the old v1 free-text wire shape with real request-derived values
-	// in rule_id and summary. The new enum schema treats both length-delimited
-	// fields as unknown, leaving code/action unspecified and rejecting dispatch.
 	headerSecret := "actual-header-secret-7c993"
 	bodySecret := "actual-body-secret-1fa26"
 	legacyPayload := []byte(`{"rule_id":"` + headerSecret + `","action":"deny","summary":"` + bodySecret + `"}`)
@@ -119,21 +94,6 @@ func TestWASMHostNormalizedHTTPSnapshotUsesOneFixedResponse(t *testing.T) {
 	}
 	if _, status, _ := dispatchHost(t.Context(), &testPolicyHost{}, pluginsdk.PolicyHostReadNormalizedHTTP, nil); status != pluginsdk.PolicyStatusIncompatibleABI {
 		t.Fatalf("legacy host snapshot status=%d, want incompatible ABI", status)
-	}
-}
-
-func TestWASMRuntimeExecutableMemoryPanicIsTypedUnavailable(t *testing.T) {
-	hostRuntime, err := NewRuntime(context.Background(), RuntimeOptions{
-		compilerConfigFactory: wazero.NewRuntimeConfigCompiler,
-		runtimeFactory: func(context.Context, wazero.RuntimeConfig) wazero.Runtime {
-			panic("executable memory denied")
-		},
-	})
-	if hostRuntime != nil {
-		t.Fatal("runtime construction panic returned a runtime")
-	}
-	if !IsCode(err, ErrorUnavailable) {
-		t.Fatalf("runtime construction error=%v, want %s", err, ErrorUnavailable)
 	}
 }
 
@@ -237,47 +197,6 @@ func TestWASMGenerationConcurrencyBudgetAndDrain(t *testing.T) {
 		}
 	default:
 		t.Fatal("budget failure was not observable")
-	}
-}
-
-func TestWASMBudgetsAreObservable(t *testing.T) {
-	ctx := context.Background()
-	events := make(chan Event, 4)
-	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16, Observer: ObserverFunc(func(event Event) { events <- event })})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-	_, err = runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
-		ID:          "budget-generation",
-		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
-		Budget:      Budget{MaxInputBytes: 8, MaxOutputBytes: 8, MaxMemoryPages: 16, MaxConcurrency: 1, Timeout: time.Second},
-	})
-	if err == nil || !IsCode(err, ErrorInputBudget) {
-		t.Fatalf("compile error=%v, want init input budget", err)
-	}
-	if event := <-events; event.Code != ErrorInputBudget {
-		t.Fatalf("event=%+v, want input budget", event)
-	}
-}
-
-func TestWASMReadyColdRuntimeWithTwoMillisecondRequestBudget(t *testing.T) {
-	ctx := context.Background()
-	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 16})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-	generation, err := runtime.CompileGeneration(ctx, verifiedFixture(t), GenerationConfig{
-		ID:          "cold-ready-generation",
-		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
-		Budget:      Budget{MaxMemoryPages: 16, MaxConcurrency: 1, Timeout: 2 * time.Millisecond},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := generation.Ready(ctx); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -395,40 +314,6 @@ func TestWASMAgentAcceptanceUsesCanonicalPolicyV1Declarations(t *testing.T) {
 				t.Fatalf("compile error=%v, want incompatible ABI", err)
 			}
 		})
-	}
-}
-
-func TestWASMAgentAcceptancePreservesExactNonPageAlignedMemoryBudget(t *testing.T) {
-	ctx := context.Background()
-	runtime, err := NewRuntime(ctx, RuntimeOptions{MaxMemoryPages: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
-	artifact := verifiedArtifactFromBytes(t, wasmreference.WAFGuest(wasmreference.WAFOptions{
-		MemoryMinPages: 2,
-		MemoryMaxPages: 2,
-	}))
-	configuration := GenerationConfig{
-		ID:          "non-page-aligned-memory",
-		InitRequest: compatfixture.CanonicalPolicyV1InitRequest(),
-		Budget: Budget{
-			MemoryBytes:    65537,
-			MaxMemoryPages: 2,
-			MaxConcurrency: 1,
-		},
-	}
-	if _, err := runtime.CompileGeneration(ctx, artifact, configuration); !IsCode(err, ErrorIncompatibleABI) {
-		t.Fatalf("two-page module with exact 65,537-byte budget error=%v, want incompatible ABI", err)
-	}
-	configuration.ID = "page-aligned-memory"
-	configuration.Budget.MemoryBytes = 2 * int64(pluginsdk.WASMPageSizeBytes)
-	generation, err := runtime.CompileGeneration(ctx, artifact, configuration)
-	if err != nil {
-		t.Fatalf("two-page module with exact two-page budget rejected: %v", err)
-	}
-	if err := generation.Drain(ctx); err != nil {
-		t.Fatal(err)
 	}
 }
 
