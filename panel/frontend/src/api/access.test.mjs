@@ -215,7 +215,8 @@ describe('authz user account contract', () => {
     localStorage.setItem('panel_session', 'session-token')
     post.mockRejectedValueOnce(accessError({
       code: 'invalid_credentials',
-      message: 'invalid username or password'
+      message: 'current password is incorrect',
+      fields: { current_password: 'current password is incorrect' }
     }))
     post.mockRejectedValueOnce(accessError({
       code: 'invalid_input',
@@ -226,7 +227,10 @@ describe('authz user account contract', () => {
     await expect(changePassword({
       current_password: 'wrong-password',
       new_password: 'new-password-1'
-    })).rejects.toMatchObject({ code: 'invalid_credentials' })
+    })).rejects.toMatchObject({
+      code: 'invalid_credentials',
+      fields: { current_password: 'current password is incorrect' }
+    })
     await expect(resetUserPassword('usr-2', { new_password: 'short' })).rejects.toMatchObject({
       code: 'invalid_input',
       fields: { new_password: 'must be at least 10 characters' }

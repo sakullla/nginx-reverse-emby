@@ -480,6 +480,26 @@ func TestAccessUserAccountOwnerContract(t *testing.T) {
 		t.Fatalf("session after failed password writes status=%d body=%s", me.Code, me.Body.String())
 	}
 
+	wrongCurrent := env.do(t, http.MethodPost, "/api/access/me/password", sessionToken(selfLogin), `{
+		"current_password":"wrong-horse-battery",
+		"new_password":"fresh-correct-horse"
+	}`)
+	if wrongCurrent.Code == http.StatusUnauthorized || wrongCurrent.Code < 400 {
+		t.Fatalf("POST /access/me/password wrong current status=%d body=%s", wrongCurrent.Code, wrongCurrent.Body.String())
+	}
+	wrongBody := decodeMap(t, wrongCurrent)
+	if wrongBody["code"] != "invalid_credentials" {
+		t.Fatalf("wrong current code=%v body=%s", wrongBody["code"], wrongCurrent.Body.String())
+	}
+	if fields := fieldMap(wrongBody["fields"]); strings.TrimSpace(fields["current_password"]) == "" {
+		t.Fatalf("wrong current fields=%v body=%s", wrongBody["fields"], wrongCurrent.Body.String())
+	}
+	assertJSONHasNoSecretMaterial(t, wrongCurrent.Body.Bytes())
+	meAfterWrong := env.do(t, http.MethodGet, "/api/auth/me", sessionToken(selfLogin), "")
+	if meAfterWrong.Code != http.StatusOK {
+		t.Fatalf("session after wrong current password status=%d body=%s", meAfterWrong.Code, meAfterWrong.Body.String())
+	}
+
 	changeRoute := env.do(t, http.MethodPost, "/api/access/me/password", sessionToken(selfLogin), `{
 		"current_password":"reset-correct-horse",
 		"new_password":"route-correct-horse"

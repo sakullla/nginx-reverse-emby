@@ -199,6 +199,12 @@ func (d Dependencies) handleAccessMePassword(w http.ResponseWriter, r *http.Requ
 		return actor.ID, tx.ChangePassword(r.Context(), actor.ID, input.CurrentPassword, input.NewPassword)
 	})
 	if err != nil {
+		if errors.Is(err, authz.ErrInvalidCredentials) {
+			payload := errorPayloadCode("invalid_credentials", "current password is incorrect")
+			payload["fields"] = map[string]string{"current_password": "current password is incorrect"}
+			writeJSON(w, http.StatusBadRequest, payload)
+			return
+		}
 		writeAccessError(w, err)
 		return
 	}
