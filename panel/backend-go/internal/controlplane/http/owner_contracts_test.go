@@ -34,6 +34,7 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 	created := &fakeOwnerRuleService{rules: []service.HTTPRule{
 		{ID: 1, AgentID: "visible-edge", FrontendURL: "https://visible.example.com"},
 	}}
+	updates := make(chan service.AgentMonitorUpdate, 2)
 	deps := Dependencies{
 		Config: config.Config{
 			PanelToken:    "secret",
@@ -52,7 +53,7 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 				{ID: "visible-edge", Name: "visible"},
 				{ID: "hidden-edge", Name: "hidden"},
 			}},
-			updates: make(chan service.AgentMonitorUpdate),
+			updates: updates,
 		},
 		RuleService:   created,
 		AccessManager: access.Manager,
@@ -134,11 +135,26 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 	for monitor.Body.Len() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
+	if monitor.Body.Len() == 0 {
+		t.Fatal("monitor snapshot was never written")
+	}
+	updates <- service.AgentMonitorUpdate{Agent: service.AgentMonitorAgent{ID: "hidden-edge", Name: "hidden-live"}}
+	updates <- service.AgentMonitorUpdate{Agent: service.AgentMonitorAgent{ID: "visible-edge", Name: "visible-live"}}
+	deadline = time.Now().Add(2 * time.Second)
+	for !strings.Contains(monitor.Body.String(), `"visible-live"`) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	cancel()
 	<-done
 	body := monitor.Body.String()
 	if !strings.Contains(body, `"id":"visible-edge"`) || strings.Contains(body, `"id":"hidden-edge"`) {
 		t.Fatalf("monitor snapshot leaked unauthorized agents: %s", body)
+	}
+	if !strings.Contains(body, `"type":"update"`) || !strings.Contains(body, `"visible-live"`) {
+		t.Fatalf("authorized monitor update missing: %s", body)
+	}
+	if strings.Contains(body, `"hidden-live"`) {
+		t.Fatalf("monitor update leaked unauthorized agent: %s", body)
 	}
 }
 

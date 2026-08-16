@@ -3,7 +3,13 @@
 package plugins
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,59 +112,168 @@ func TestValidatorRuntimeConfigExactNumericConstraints(t *testing.T) {
 
 func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	t.Parallel()
-	write := func(t *testing.T, root, name, body string) {
+	assertCode := func(t *testing.T, err error, code string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || validationErr.Code != code {
+			t.Fatalf("expected validation code %q, got %v", code, err)
 		}
 	}
-	missing := t.TempDir()
-	write(t, missing, "README", "not a plugin")
-	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(missing, PackageExpectation{}); err == nil {
-		t.Fatal("missing package manifest accepted")
+
+	root := newSignedWASMPackage(t, "")
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil || got.Digest == "" || got.Manifest.ID != "official.waf" {
+		t.Fatalf("valid package = %+v err=%v", got, err)
 	}
 
-	official := NewValidator(ValidatorOptions{})
-	exact := official.WithTrustedSigners(nil, TrustedSignerPolicyExact)
-	if exact == official {
-		t.Fatal("WithTrustedSigners returned the same validator")
+	tampered := newSignedWASMPackage(t, "")
+	if err := os.WriteFile(filepath.Join(tampered, PackageSignatureFile), []byte(base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	_, err = newOwnerValidator().ValidatePackage(tampered, PackageExpectation{})
+	assertCode(t, err, "signature_mismatch")
 
-	manifest := t.TempDir()
-	write(t, manifest, PackageManifestFile, "schema_version: 1\nid: demo\nversion: 1.0.0\nname: demo\n")
-	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(manifest, PackageExpectation{}); err == nil {
-		t.Fatal("incomplete signed package accepted")
+	official := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "key_id: test-fixture", "key_id: "+OfficialSignatureKeyID, 1)
+	if err := os.WriteFile(filepath.Join(official, PackageManifestFile), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	refreshOwnerPackage(t, official)
+	overridden := NewValidator(ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{OfficialSignatureKeyID: ownerSigningKey().Public().(ed25519.PublicKey)}})
+	_, err = overridden.ValidatePackage(official, PackageExpectation{})
+	assertCode(t, err, "signature_mismatch")
 
-	abi := t.TempDir()
-	write(t, abi, PackageManifestFile, strings.Join([]string{
-		"schema_version: 1",
-		"id: demo-plugin",
-		"version: 1.0.0",
-		"name: Demo",
-		"compatibility:",
-		"  control_plane: \">=1.0.0\"",
-		"runtime:",
-		"  kind: rpc-service",
-		"  abi: not-an-abi",
-		"  host_scope: control-plane",
-		"  entry: plugin.exe",
-		"artifacts:",
-		"  - path: plugin.exe",
-		"    sha256: " + strings.Repeat("a", 64),
-		"    size: 1",
-		"    mode: \"0755\"",
-		"extension_points: [http.request]",
-		"permissions: [{name: agent.read}]",
-		"config_schema: config.schema.json",
-		"resource_budget: {timeout_ms: 1000, memory_bytes: 65536, concurrency: 1, input_bytes: 1024, output_bytes: 1024, cpu_millis: 100, restarts: 1}",
-		"failure_policy: {on_crash: disable, on_timeout: disable}",
-		"signature: {key_id: custom-signer, algorithm: ed25519}",
-		"cleanup: {on_disable: retain}",
-	}, "\n"))
-	write(t, abi, "config.schema.json", `{"type":"object"}`)
-	write(t, abi, "plugin.exe", "x")
-	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(abi, PackageExpectation{}); err == nil {
-		t.Fatal("invalid ABI accepted")
+	digestRoot := newSignedWASMPackage(t, "")
+	if err := os.WriteFile(filepath.Join(digestRoot, "artifacts", "policy.wasm"), append(ownerWASMArtifact(), 0), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newOwnerValidator().ValidatePackage(digestRoot, PackageExpectation{})
+	assertCode(t, err, "artifact_size")
+
+	modeRoot := newSignedWASMPackage(t, "")
+	if err := os.Chmod(filepath.Join(modeRoot, "artifacts", "policy.wasm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(modeRoot, "artifacts", "policy.wasm")); err != nil || info.Mode().Perm()&0o111 == 0 {
+		t.Skip("filesystem does not preserve POSIX execute bits")
+	}
+	_, err = newOwnerValidator().ValidatePackage(modeRoot, PackageExpectation{})
+	assertCode(t, err, "artifact_mode")
+
+	cycle := newSignedWASMPackage(t, "migrations:\n  - {from: 0.8.0, to: 0.9.0, file: migrations/a.json}\n  - {from: 0.9.0, to: 0.8.0, file: migrations/b.json}\n")
+	writeOwnerFile(t, cycle, "migrations/a.json", `{"operations":[{"op":"set","path":"/a","value":true}]}`)
+	writeOwnerFile(t, cycle, "migrations/b.json", `{"operations":[{"op":"set","path":"/b","value":true}]}`)
+	refreshOwnerPackage(t, cycle)
+	_, err = newOwnerValidator().ValidatePackage(cycle, PackageExpectation{})
+	assertCode(t, err, "migration")
+	if !strings.Contains(err.Error(), "contains a cycle") {
+		t.Fatalf("cycle error = %v", err)
+	}
+}
+
+func newSignedWASMPackage(t *testing.T, extraManifest string) string {
+	t.Helper()
+	root := t.TempDir()
+	writeOwnerFile(t, root, PackageManifestFile, validOwnerManifestYAML()+extraManifest)
+	writeOwnerFile(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"additionalProperties":false}`)
+	writeOwnerBytes(t, root, "artifacts/policy.wasm", ownerWASMArtifact())
+	refreshOwnerPackage(t, root)
+	return root
+}
+
+func validOwnerManifestYAML() string {
+	artifact := ownerWASMArtifact()
+	digest := sha256.Sum256(artifact)
+	return fmt.Sprintf(`schema_version: 1
+id: official.waf
+version: 1.0.0
+name: WAF
+compatibility:
+  host: ">=1.0.0 <2.0.0"
+  agent: ">=1.0.0 <2.0.0"
+runtime:
+  kind: wasm-policy
+  abi: nre:policy/v1
+  host_scope: agent
+  entry: artifacts/policy.wasm
+  policy_kind: waf
+artifacts:
+  - path: artifacts/policy.wasm
+    sha256: %x
+    size: %d
+    mode: wasm
+extension_points: [http.request]
+permissions: [http.inspect]
+config_schema: config.schema.json
+resource_budget:
+  timeout_ms: 2
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 4096
+failure_policy:
+  on_error: fail-open
+  on_budget: fail-open
+  restart: never
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
+cleanup:
+  instances: delete
+  config: delete
+  owned_data: delete
+  grants: delete
+  shared_refs: retain
+  audit_events: retain
+`, digest, len(artifact))
+}
+
+func refreshOwnerPackage(t *testing.T, root string) {
+	t.Helper()
+	digest, err := ComputePackageDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOwnerFile(t, root, PackageDigestFile, digest+"\n")
+	writeOwnerFile(t, root, PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(ownerSigningKey(), []byte(digest)))+"\n")
+}
+
+func newOwnerValidator() *Validator {
+	return NewValidator(ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": ownerSigningKey().Public().(ed25519.PublicKey)}})
+}
+
+func ownerSigningKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("nre-validator-test-fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func ownerWASMArtifact() []byte {
+	name := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex")
+	encoded, err := os.ReadFile(name)
+	if err != nil {
+		panic(err)
+	}
+	artifact, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		panic(err)
+	}
+	return artifact
+}
+
+func writeOwnerFile(t *testing.T, root, name, value string) {
+	t.Helper()
+	writeOwnerBytes(t, root, name, []byte(value))
+}
+
+func writeOwnerBytes(t *testing.T, root, name string, value []byte) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, value, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

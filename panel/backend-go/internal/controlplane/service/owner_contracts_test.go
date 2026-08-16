@@ -13,8 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"crypto/sha256"
+	"encoding/hex"
+
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -109,6 +113,16 @@ func TestMutationExecutorRejectsInvalidL4AndHTTPConflictWithRollback(t *testing.
 		t.Fatal(listErr)
 	} else if len(rules) != 0 {
 		t.Fatalf("conflict HTTP rules survived: %+v", rules)
+	}
+
+	missingBackendErr := FullSnapshotValidator{}.Validate(t.Context(), revision.SnapshotValidation{
+		Target: revision.Target{AgentID: "local", Local: true},
+		Snapshot: storage.Snapshot{L4Rules: []storage.L4Rule{{
+			ID: 3, AgentID: "local", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, ListenMode: "tcp",
+		}}},
+	})
+	if revision.ErrorCodeOf(missingBackendErr) != revision.ErrorCodeUnprocessable {
+		t.Fatalf("missing L4 backend err=%v code=%q", missingBackendErr, revision.ErrorCodeOf(missingBackendErr))
 	}
 }
 
@@ -206,22 +220,93 @@ func TestRevisionAPIRedactsLeaseIDAndReportsDegradedStatus(t *testing.T) {
 	t.Parallel()
 	store := newServiceOwnerStore(t)
 	now := time.Date(2026, 8, 17, 5, 0, 0, 0, time.UTC)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a", Name: "edge-a", Platform: "linux-amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-b", Name: "edge-b", Platform: "linux-amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-ok", Name: "edge-ok", Platform: "linux-amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	snapA := mustOwnerSnapshotArtifact(t, storage.Snapshot{
+		Revision: 1,
+		Rules: []storage.HTTPRule{{
+			ID: 1, AgentID: "edge-a", FrontendURL: "https://a.example.com",
+			RelayLayers: [][]int{{10}},
+		}},
+	})
+	snapB := mustOwnerSnapshotArtifact(t, storage.Snapshot{
+		Revision: 1,
+		RelayListeners: []storage.RelayListener{{
+			ID: 10, AgentID: "edge-b", Name: "hop", ListenHost: "0.0.0.0", ListenPort: 443,
+			Enabled: true, TLSMode: "terminate", TransportMode: "tls_tcp",
+		}},
+	})
+	snapOK := mustOwnerSnapshotArtifact(t, storage.Snapshot{Revision: 1})
+	plan, err := dependency.BuildPlan("op-redact", dependency.ActionApply, []dependency.SnapshotRevision{
+		{AgentID: "edge-a", Revision: 1, Snapshot: storage.Snapshot{
+			Revision: 1,
+			Rules: []storage.HTTPRule{{
+				ID: 1, AgentID: "edge-a", FrontendURL: "https://a.example.com",
+				RelayLayers: [][]int{{10}},
+			}},
+		}},
+		{AgentID: "edge-b", Revision: 1, Snapshot: storage.Snapshot{
+			Revision: 1,
+			RelayListeners: []storage.RelayListener{{
+				ID: 10, AgentID: "edge-b", Name: "hop", ListenHost: "0.0.0.0", ListenPort: 443,
+				Enabled: true, TLSMode: "terminate", TransportMode: "tls_tcp",
+			}},
+		}},
+		{AgentID: "edge-ok", Revision: 1, Snapshot: storage.Snapshot{Revision: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planPayload, err := plan.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	planDigest := sha256.Sum256(planPayload)
+	planID := "dependency-plan-" + hex.EncodeToString(planDigest[:])
 	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
 		Operation: storage.OperationRow{
 			ID: "op-redact", Kind: "http_rule.create", Status: storage.OperationStatusPending,
-			PrimaryAgentID: "local", CreatedAt: now, UpdatedAt: now,
+			PrimaryAgentID: "edge-a", CreatedAt: now, UpdatedAt: now,
 		},
-		Revisions: []storage.AgentRevisionRow{{
-			AgentID: "local", Revision: 1, OperationID: "op-redact", State: storage.AgentRevisionStatePending,
-			CreatedAt: now, UpdatedAt: now,
-		}},
-		Pointers: []storage.AgentRevisionPointerRow{{
-			AgentID: "local", DesiredRevision: 1, AppliedRevision: 0, LastKnownGoodRevision: 0, UpdatedAt: now,
-		}},
+		Revisions: []storage.AgentRevisionRow{
+			{
+				AgentID: "edge-a", Revision: 1, OperationID: "op-redact", State: storage.AgentRevisionStatePending,
+				SnapshotArtifactID: snapA.ID, SnapshotDigest: snapA.SHA256, CreatedAt: now, UpdatedAt: now,
+			},
+			{
+				AgentID: "edge-b", Revision: 1, OperationID: "op-redact", State: storage.AgentRevisionStateFailed,
+				SnapshotArtifactID: snapB.ID, SnapshotDigest: snapB.SHA256, CreatedAt: now, UpdatedAt: now,
+			},
+			{
+				AgentID: "edge-ok", Revision: 1, OperationID: "op-redact", State: storage.AgentRevisionStateApplied,
+				SnapshotArtifactID: snapOK.ID, SnapshotDigest: snapOK.SHA256, CreatedAt: now, UpdatedAt: now,
+			},
+		},
+		Pointers: []storage.AgentRevisionPointerRow{
+			{AgentID: "edge-a", DesiredRevision: 1, AppliedRevision: 0, LastKnownGoodRevision: 0, UpdatedAt: now},
+			{AgentID: "edge-b", DesiredRevision: 1, AppliedRevision: 0, LastKnownGoodRevision: 0, UpdatedAt: now},
+			{AgentID: "edge-ok", DesiredRevision: 1, AppliedRevision: 1, LastKnownGoodRevision: 1, UpdatedAt: now},
+		},
 		Events: []storage.RevisionEventRow{{
-			OperationID: "op-redact", AgentID: "local", Revision: 1, EventType: "lease_claimed",
+			OperationID: "op-redact", AgentID: "edge-a", Revision: 1, EventType: "lease_claimed",
 			PayloadJSON: `{"lease_id":"secret-lease","reason":"claimed"}`, CreatedAt: now,
 		}},
+		Artifacts: []storage.GenerationArtifactRow{
+			snapA, snapB, snapOK,
+			{ID: planID, Kind: storage.GenerationArtifactKindDependencyPlan, SHA256: hex.EncodeToString(planDigest[:]), Payload: planPayload, SizeBytes: int64(len(planPayload)), CreatedAt: now},
+		},
+		ArtifactRefs: []storage.AgentRevisionArtifactRow{
+			{AgentID: "edge-a", Revision: 1, ArtifactID: planID, Role: storage.RevisionArtifactRoleDependencyPlan, CreatedAt: now},
+			{AgentID: "edge-b", Revision: 1, ArtifactID: planID, Role: storage.RevisionArtifactRoleDependencyPlan, CreatedAt: now},
+			{AgentID: "edge-ok", Revision: 1, ArtifactID: planID, Role: storage.RevisionArtifactRoleDependencyPlan, CreatedAt: now},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,8 +326,21 @@ func TestRevisionAPIRedactsLeaseIDAndReportsDegradedStatus(t *testing.T) {
 		t.Fatalf("lease_id leaked: %+v", page.Events[0].Payload)
 	}
 	status, err := api.GetOperationStatus(t.Context(), "op-redact")
-	if err != nil || status.OperationID != "op-redact" || len(status.Agents) == 0 {
+	if err != nil || status.OperationID != "op-redact" || !status.Degraded || status.ApplyStatus != string(dependency.StatusDegraded) {
 		t.Fatalf("GetOperationStatus = %+v err=%v", status, err)
+	}
+	blocked := false
+	for _, agent := range status.Agents {
+		if agent.AgentID == "edge-a" {
+			for _, dep := range agent.BlockedBy {
+				if dep == "edge-b" {
+					blocked = true
+				}
+			}
+		}
+	}
+	if !blocked {
+		t.Fatalf("blocked_by missing edge-b: %+v", status.Agents)
 	}
 }
 
@@ -259,6 +357,7 @@ func TestRuleServiceCreateRequiresMutationPrincipalOnRevisionStore(t *testing.T)
 		return nil
 	})
 	frontend := "https://edge.example.com"
+	updatedFrontend := "https://edge-updated.example.com"
 	enabled := true
 	backends := []HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}}
 	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
@@ -268,11 +367,64 @@ func TestRuleServiceCreateRequiresMutationPrincipalOnRevisionStore(t *testing.T)
 		t.Fatalf("Create without principal err=%v", err)
 	}
 	if applies != 0 {
-		t.Fatalf("apply trigger fired %d times", applies)
+		t.Fatalf("apply trigger fired %d times before principal", applies)
 	}
 	rules, err := store.ListHTTPRules(t.Context(), "local")
 	if err != nil || len(rules) != 0 {
 		t.Fatalf("unprincipaled create leaked rules=%+v err=%v", rules, err)
+	}
+
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	created, err := svc.Create(ctx, "local", HTTPRuleInput{
+		FrontendURL: &frontend, Backends: &backends, Enabled: &enabled,
+	})
+	if err != nil || created.ID == 0 || created.FrontendURL != frontend {
+		t.Fatalf("Create with principal = %+v err=%v", created, err)
+	}
+	if applies != 0 {
+		t.Fatalf("apply trigger fired %d times on committed create", applies)
+	}
+	updated, err := svc.Update(ctx, "local", created.ID, HTTPRuleInput{FrontendURL: &updatedFrontend})
+	if err != nil || updated.FrontendURL != updatedFrontend {
+		t.Fatalf("Update = %+v err=%v", updated, err)
+	}
+	if applies != 0 {
+		t.Fatalf("apply trigger fired %d times on committed update", applies)
+	}
+	if _, err := svc.Delete(ctx, "local", created.ID); err != nil {
+		t.Fatalf("Delete err=%v", err)
+	}
+	if applies != 0 {
+		t.Fatalf("apply trigger fired %d times on committed delete", applies)
+	}
+	remaining, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("delete leftover rules=%+v err=%v", remaining, err)
+	}
+
+	missingRelay := [][]int{{404}}
+	_, err = svc.Create(ctx, "local", HTTPRuleInput{
+		FrontendURL: &frontend, Backends: &backends, Enabled: &enabled, RelayLayers: &missingRelay,
+	})
+	if err == nil || !strings.Contains(err.Error(), "relay listener not found") {
+		t.Fatalf("missing relay err=%v", err)
+	}
+	if leftover, listErr := store.ListHTTPRules(t.Context(), "local"); listErr != nil || len(leftover) != 0 {
+		t.Fatalf("missing relay leaked rules=%+v err=%v", leftover, listErr)
+	}
+}
+
+func mustOwnerSnapshotArtifact(t *testing.T, snapshot storage.Snapshot) storage.GenerationArtifactRow {
+	t.Helper()
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+	return storage.GenerationArtifactRow{
+		ID: "snapshot-" + digest, Kind: "agent_snapshot", SHA256: digest,
+		Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: time.Date(2026, 8, 17, 5, 0, 0, 0, time.UTC),
 	}
 }
 
