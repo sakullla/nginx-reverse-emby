@@ -169,6 +169,8 @@ func NewValidator(options ValidatorOptions) *Validator {
 			pluginsdk.PermissionHTTPOutbound,
 			"l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use",
 			"storage.read", "storage.write", "container.read", "container.manage", "dns.manage",
+			string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule),
+			string(pluginsdk.CapabilityUIDynamic),
 			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
 			string(pluginsdk.CapabilityUIDynamicActions),

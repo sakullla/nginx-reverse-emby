@@ -43,7 +43,9 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 			requirement.privileged = true
 		case string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
-			string(pluginsdk.CapabilityUIDynamicActions):
+			string(pluginsdk.CapabilityUIDynamicActions),
+			string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule),
+			string(pluginsdk.CapabilityUIDynamic):
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
 		}
@@ -113,7 +115,9 @@ func validControlSandboxDigest(value string) bool {
 func knownControlSandboxPermission(value string) bool {
 	switch value {
 	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
-		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage", "dns.manage":
+		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage",
+		string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule), string(pluginsdk.CapabilityUIDynamic),
+		"dns.manage":
 		return true
 	default:
 		// Canonical Host capabilities are mediated by the host broker. They do

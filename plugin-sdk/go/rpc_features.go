@@ -14,7 +14,7 @@ func RequiredRPCFeatures(scopes []string) []string {
 	features := make([]string, 0, 2)
 	for _, scope := range scopes {
 		switch HostCapability(strings.TrimSpace(scope)) {
-		case CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions:
+		case CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityUIDynamic:
 			features = appendRPCFeature(features, RPCFeatureDurableActionsV1)
 		case CapabilityHTTPOutbound:
 			features = appendRPCFeature(features, RPCFeatureHTTPBackendProviderV1)

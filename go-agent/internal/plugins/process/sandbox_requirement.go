@@ -28,6 +28,9 @@ const (
 	PermissionStorageWrite                   SandboxPermission = "storage.write"
 	PermissionContainerRead                  SandboxPermission = "container.read"
 	PermissionContainerManage                SandboxPermission = "container.manage"
+	PermissionContainerCompose               SandboxPermission = SandboxPermission(pluginsdk.CapabilityContainerCompose)
+	PermissionHTTPRule                       SandboxPermission = SandboxPermission(pluginsdk.CapabilityHTTPRule)
+	PermissionUIDynamic                      SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamic)
 	PermissionDNSManage                      SandboxPermission = "dns.manage"
 	PermissionPolicyAtomicState              SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyAtomicState)
 	PermissionPolicyMonotonicClock           SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyMonotonicClock)
@@ -89,7 +92,8 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		case PermissionContainerManage, PermissionDNSManage, PermissionSecretUse, PermissionStorageWrite:
 			requirement.privileged = true
 		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
-			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
+			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions,
+			PermissionContainerCompose, PermissionHTTPRule, PermissionUIDynamic:
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
 		}
@@ -164,6 +168,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
 		PermissionStorageRead, PermissionStorageWrite, PermissionContainerRead, PermissionContainerManage, PermissionDNSManage,
+		PermissionContainerCompose, PermissionHTTPRule, PermissionUIDynamic,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
 		return true

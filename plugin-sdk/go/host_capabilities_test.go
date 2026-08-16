@@ -1,11 +1,15 @@
 package pluginsdk
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCanonicalPluginCapabilitiesAndCalls(t *testing.T) {
 	capabilities := []HostCapability{
 		CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
-		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions,
+		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
+		CapabilityContainerCompose, CapabilityHTTPRule, CapabilityUIDynamic,
 	}
 	for _, capability := range capabilities {
 		if err := capability.Validate(); err != nil {
@@ -28,6 +32,12 @@ func TestCanonicalPluginCapabilitiesAndCalls(t *testing.T) {
 	}
 	if err := (HostCapability("policy.clock.wall")).Validate(); err == nil {
 		t.Fatal("unknown host capability was accepted")
+	}
+	schema := string(PluginManifestSchemaV1())
+	for _, name := range []string{"container.compose", "http.rule", "ui.dynamic"} {
+		if !strings.Contains(schema, `"`+name+`"`) {
+			t.Fatalf("manifest schema omits permission %q", name)
+		}
 	}
 }
 

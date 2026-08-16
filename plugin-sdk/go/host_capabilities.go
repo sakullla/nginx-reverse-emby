@@ -18,6 +18,9 @@ const (
 	CapabilityServiceRevocableResourceHandle HostCapability = "service.revocable-resource-handle"
 	CapabilityUIDynamicActions               HostCapability = "ui.dynamic-actions"
 	CapabilityHTTPOutbound                   HostCapability = PermissionHTTPOutbound
+	CapabilityContainerCompose               HostCapability = "container.compose"
+	CapabilityHTTPRule                       HostCapability = "http.rule"
+	CapabilityUIDynamic                      HostCapability = "ui.dynamic"
 )
 
 var hostCapabilityIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`)
@@ -29,7 +32,8 @@ func (capability HostCapability) Validate() error {
 	}
 	switch capability {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
-		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound:
+		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
+		CapabilityContainerCompose, CapabilityHTTPRule, CapabilityUIDynamic:
 		return nil
 	default:
 		return fmt.Errorf("host capability %q is not in the canonical catalog", value)
@@ -102,7 +106,7 @@ func (action DynamicAction) Validate() error {
 	if err := action.Capability.Validate(); err != nil {
 		return err
 	}
-	if action.Capability == CapabilityUIDynamicActions {
+	if action.Capability == CapabilityUIDynamicActions || action.Capability == CapabilityUIDynamic {
 		return errors.New("dynamic actions cannot recursively invoke ui.dynamic-actions")
 	}
 	if !hostCapabilityIDPattern.MatchString(action.TargetKind) {

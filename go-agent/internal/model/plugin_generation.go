@@ -558,7 +558,8 @@ func knownPluginGrant(value string) bool {
 	switch value {
 	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
 		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage",
-		"dns.manage":
+		"dns.manage", string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule),
+		string(pluginsdk.CapabilityUIDynamic):
 		return true
 	default:
 		return pluginsdk.HostCapability(value).Validate() == nil
