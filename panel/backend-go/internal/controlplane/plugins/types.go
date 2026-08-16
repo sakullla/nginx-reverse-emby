@@ -67,6 +67,7 @@ type MarketManifest struct {
 type MarketEntry struct {
 	ID             string          `yaml:"id" json:"id"`
 	Version        string          `yaml:"version" json:"version"`
+	Name           string          `yaml:"name,omitempty" json:"name,omitempty"`
 	Description    string          `yaml:"description,omitempty" json:"description,omitempty"`
 	Capabilities   []string        `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	Compatibility  Compatibility   `yaml:"compatibility" json:"compatibility"`
@@ -87,6 +88,7 @@ type MarketEntry struct {
 type DirectPluginSnapshot struct {
 	ID             string          `json:"id"`
 	Version        string          `json:"version"`
+	Name           string          `json:"name,omitempty"`
 	Description    string          `json:"description,omitempty"`
 	Capabilities   []string        `json:"capabilities,omitempty"`
 	Compatibility  Compatibility   `json:"compatibility"`

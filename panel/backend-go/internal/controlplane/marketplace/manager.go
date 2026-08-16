@@ -220,6 +220,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		directResult, err = validator.ValidateDirectPlugin(staging, source.Kind == SourceKindOfficial)
 		if err == nil {
 			direct = &directResult.Projection
+			direct.Name = strings.TrimSpace(directResult.Package.Manifest.Name)
 			packages = []plugins.ValidatedPackage{directResult.Package}
 		}
 	} else {
@@ -239,6 +240,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if packages == nil {
 		packages = validated.Packages
 	}
+	applyPackageDisplayNames(validated.Manifest.Entries, packages)
 	for _, candidate := range packages {
 		if err := checkRefresh(); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
@@ -337,6 +339,32 @@ func (m *Manager) failRefresh(ctx context.Context, operation RefreshOperation, c
 		return fmt.Errorf("%v (record refresh failure: %w)", cause, err)
 	}
 	return cause
+}
+
+// applyPackageDisplayNames projects the signed package manifests' display
+// names onto the matching market entries so panel listings can show the
+// publisher's localized names instead of falling back to plugin ids.
+func applyPackageDisplayNames(entries []plugins.MarketEntry, packages []plugins.ValidatedPackage) {
+	if len(entries) == 0 || len(packages) == 0 {
+		return
+	}
+	names := make(map[string]string, len(packages))
+	digests := make(map[string]string, len(packages))
+	for _, candidate := range packages {
+		name := strings.TrimSpace(candidate.Manifest.Name)
+		if name == "" {
+			continue
+		}
+		names[candidate.Manifest.ID+"\x00"+candidate.Manifest.Version] = name
+		digests[strings.ToLower(candidate.Digest)] = name
+	}
+	for index := range entries {
+		if name, ok := names[entries[index].ID+"\x00"+entries[index].Version]; ok {
+			entries[index].Name = name
+			continue
+		}
+		entries[index].Name = digests[strings.ToLower(entries[index].PackageSHA256)]
+	}
 }
 
 func snapshotDiff(current Snapshot, exists bool, next Snapshot) string {

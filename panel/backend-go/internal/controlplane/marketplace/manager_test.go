@@ -800,3 +800,32 @@ func copyFixtureTree(source, destination string) error {
 		return os.WriteFile(target, data, 0o644)
 	})
 }
+
+func TestApplyPackageDisplayNamesProjectsSignedManifestNames(t *testing.T) {
+	entries := []plugins.MarketEntry{
+		{ID: "accelerator-sources", Version: "0.1.0", PackageSHA256: strings.Repeat("a", 64)},
+		{ID: "waf", Version: "0.1.0"},
+		{ID: "waf", Version: "0.2.0", PackageSHA256: strings.Repeat("b", 64)},
+		{ID: "unknown", Version: "9.9.9"},
+	}
+	packages := []plugins.ValidatedPackage{
+		{Manifest: plugins.Manifest{ID: "accelerator-sources", Version: "0.1.0", Name: "资源加速"}, Digest: strings.Repeat("a", 64)},
+		{Manifest: plugins.Manifest{ID: "waf", Version: "0.1.0", Name: "Web 防火墙"}, Digest: strings.Repeat("c", 64)},
+		{Manifest: plugins.Manifest{ID: "waf", Version: "0.2.0", Name: "  "}, Digest: strings.Repeat("b", 64)},
+	}
+	applyPackageDisplayNames(entries, packages)
+	if entries[0].Name != "资源加速" {
+		t.Fatalf("entry 0 name = %q", entries[0].Name)
+	}
+	if entries[1].Name != "Web 防火墙" {
+		t.Fatalf("entry 1 name = %q", entries[1].Name)
+	}
+	if entries[2].Name != "" {
+		t.Fatalf("blank manifest name must not project, got %q", entries[2].Name)
+	}
+	if entries[3].Name != "" {
+		t.Fatalf("entry without package must stay unnamed, got %q", entries[3].Name)
+	}
+	applyPackageDisplayNames(nil, packages)
+	applyPackageDisplayNames(entries, nil)
+}
