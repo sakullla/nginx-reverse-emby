@@ -6,9 +6,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -50,7 +52,7 @@ func TestIntegrationRelayCredentialCompositeExposesTunnelSecurity(t *testing.T) 
 }
 
 func TestRelayCredentialCompositePreservesActiveMetadata(t *testing.T) {
-	metadata := embeddedRelayCredentialMetadata(t)
+	metadata, certificateFingerprint := embeddedRelayCredentialMetadata(t)
 	security := modulepki.SecurityState{
 		Hash: "security-hash",
 		Snapshot: model.PKISecuritySnapshot{
@@ -76,14 +78,14 @@ func TestRelayCredentialCompositePreservesActiveMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEmbeddedRelayMetadata(t, loaded)
+	assertEmbeddedRelayMetadata(t, loaded, certificateFingerprint)
 
 	tlsConfig := &tls.Config{}
 	installed, err := tunnel.InstallTunnelCertificate(t.Context(), "listener-71", tlsConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEmbeddedRelayMetadata(t, installed)
+	assertEmbeddedRelayMetadata(t, installed, certificateFingerprint)
 	if store.installIdentity != "listener-71" || store.installConfig != tlsConfig {
 		t.Fatalf("install binding = %q/%p, want listener-71/%p", store.installIdentity, store.installConfig, tlsConfig)
 	}
@@ -123,7 +125,7 @@ func (store *embeddedRelayCredentialStore) LoadSecuritySnapshot() (modulepki.Sec
 	return store.security, nil
 }
 
-func embeddedRelayCredentialMetadata(t *testing.T) modulepki.CredentialMetadata {
+func embeddedRelayCredentialMetadata(t *testing.T) (modulepki.CredentialMetadata, string) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -143,6 +145,7 @@ func embeddedRelayCredentialMetadata(t *testing.T) modulepki.CredentialMetadata 
 	if err != nil {
 		t.Fatal(err)
 	}
+	fingerprint := sha256.Sum256(der)
 	return modulepki.CredentialMetadata{Manifest: modulepki.CredentialManifest{
 		Generation: "generation-7", PKIDomainID: "domain-1", PKIEpoch: 3, SecurityRevision: 8,
 		Credential: model.PKITunnelCredential{
@@ -155,13 +158,14 @@ func embeddedRelayCredentialMetadata(t *testing.T) modulepki.CredentialMetadata 
 			ListenerID: "71", Purpose: model.PKICertificatePurposeServer,
 			DNSNames: []string{"relay.example.com"}, IPAddresses: []string{"192.0.2.71"},
 		},
-	}}
+	}}, hex.EncodeToString(fingerprint[:])
 }
 
-func assertEmbeddedRelayMetadata(t *testing.T, metadata relay.TunnelCredentialMetadata) {
+func assertEmbeddedRelayMetadata(t *testing.T, metadata relay.TunnelCredentialMetadata, certificateFingerprint string) {
 	t.Helper()
 	if metadata.Generation != "generation-7" || metadata.IdentityID != "identity-71" ||
-		metadata.CertificateID != "certificate-71" || metadata.CredentialFingerprintSHA256 == "" ||
+		metadata.CertificateID != "certificate-71" || len(metadata.CredentialFingerprintSHA256) != sha256.Size*2 ||
+		metadata.CredentialFingerprintSHA256 != certificateFingerprint ||
 		metadata.Purpose != model.PKICertificatePurposeServer || metadata.AuthorityID != "authority-1" || metadata.CAGeneration != 4 ||
 		metadata.PKIDomainID != "domain-1" || metadata.PKIEpoch != 3 || metadata.SecurityRevision != 8 ||
 		metadata.AgentID != "agent-1" || metadata.ListenerID != "71" ||
