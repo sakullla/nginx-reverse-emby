@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4_test
 
 import (

@@ -1,5 +1,3 @@
-//go:build integration
-
 package egress
 
 import (
@@ -128,6 +126,9 @@ func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 }
 
 func TestFinalHopDialerUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
+	if !egressIntegrationTierEnabled {
+		t.Skip("live SOCKS5 UDP proxy runs in the integration tier")
+	}
 	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
 	profileID := 17
 	dialer := NewFinalHopDialer([]model.EgressProfile{{
