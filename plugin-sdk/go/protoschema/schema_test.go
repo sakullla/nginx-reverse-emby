@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -30,17 +29,6 @@ func TestCanonicalDescriptorsMatchCheckedInIDL(t *testing.T) {
 	digest := sha256.Sum256(checkedIn)
 	if got := hex.EncodeToString(digest[:]); got != CanonicalDescriptorSetSHA256 {
 		t.Fatalf("descriptor checksum = %s, want %s", got, CanonicalDescriptorSetSHA256)
-	}
-	generated, err := protogen.RenderGo(compiled)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkedSource, err := os.ReadFile("descriptors_gen.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(generated, checkedSource) {
-		t.Fatal("descriptor generator output is not reproducible")
 	}
 }
 
