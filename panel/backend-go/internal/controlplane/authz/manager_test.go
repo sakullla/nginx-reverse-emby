@@ -5,6 +5,8 @@ package authz_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -221,11 +223,119 @@ func TestConsumeQuotaUsesStrictestPolicyAtomically(t *testing.T) {
 	}
 }
 
+func TestAuthorizationPersistsAcrossReopenAndNestedGroupsFailClosed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	open := func() *storage.GormStore {
+		t.Helper()
+		store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	store := open()
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "visible-edge"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "hidden-edge"}); err != nil {
+		t.Fatal(err)
+	}
+	visible, err := manager.CreateResourceGroup(t.Context(), "visible-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(t.Context(), "hidden-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "scoped-reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "scoped-user", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	if err := manager.GrantResourceGroup(t.Context(), admin, "user", user.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), admin, "agent", "visible-edge", visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), admin, "agent", "hidden-edge", hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceRead, "agent", "visible-edge"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceRead, "agent", "hidden-edge"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("cross-group fail-closed = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := authz.NewManager(open(), authz.Options{})
+	restored, err := reopened.AuthenticateSession(t.Context(), login.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.AuthorizeResource(t.Context(), restored, authz.PermissionResourceRead, "agent", "visible-edge"); err != nil {
+		t.Fatalf("restart persistence failed: %v", err)
+	}
+	if err := reopened.AuthorizeResource(t.Context(), restored, authz.PermissionResourceRead, "agent", "hidden-edge"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("restart cross-group fail-closed = %v", err)
+	}
+}
+
+var securityStoreTemplate struct {
+	once sync.Once
+	data []byte
+	err  error
+}
+
 func newSecurityStore(t *testing.T) *storage.GormStore {
 	t.Helper()
-	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	securityStoreTemplate.once.Do(func() {
+		root, err := os.MkdirTemp("", "nre-authz-template-")
+		if err != nil {
+			securityStoreTemplate.err = err
+			return
+		}
+		defer os.RemoveAll(root)
+		store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local"})
+		if err != nil {
+			securityStoreTemplate.err = err
+			return
+		}
+		if err := store.Close(); err != nil {
+			securityStoreTemplate.err = err
+			return
+		}
+		securityStoreTemplate.data, securityStoreTemplate.err = os.ReadFile(filepath.Join(root, "panel.db"))
+	})
+	if securityStoreTemplate.err != nil {
+		t.Fatal(securityStoreTemplate.err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "panel.db"), securityStoreTemplate.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dsn := filepath.Join(root, "panel.db") + "?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=temp_store(MEMORY)"
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DSN: dsn, DataRoot: root, LocalAgentID: "local", SkipBootstrapSchema: true})
 	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store

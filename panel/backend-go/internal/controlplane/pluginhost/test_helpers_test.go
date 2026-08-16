@@ -9,10 +9,6 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-func testControlRequirement(budget ProcessBudget, privileged, networkBound bool) SandboxRequirement {
-	return SandboxRequirement{packageDigest: "test-package", budget: budget, privileged: privileged, networkBound: networkBound}
-}
-
 func validatedSandboxPackage(digest string, permissions []string, extensions []string) plugins.ValidatedPackage {
 	manifestPermissions := make([]plugins.Permission, 0, len(permissions))
 	for _, permission := range permissions {
