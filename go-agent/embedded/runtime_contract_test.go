@@ -4,7 +4,9 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,26 +50,97 @@ func TestIntegrationRuntimeRevisionPersistenceLifecycle(t *testing.T) {
 	if err := waitEmbeddedRuntimeExit(t, secondExit); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestSanitizeSnapshotContract(t *testing.T) {
+	edge := PluginDependencyEdge{
+		Consumer:           PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "default"},
+		ProviderInstanceID: "rpc-1",
+		Target:             PluginDependencyTarget{AgentID: "local", ResourceGroupID: "default", Version: 1},
+	}
+	for _, tc := range []struct {
+		name         string
+		dependencies []PluginDependencyEdge
+		wantNil      bool
+	}{
+		{name: "nil dependency presence", wantNil: true},
+		{name: "explicit empty dependency presence", dependencies: []PluginDependencyEdge{}},
+		{name: "populated dependency presence", dependencies: []PluginDependencyEdge{edge}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeSnapshot(Snapshot{
+				DesiredVersion:     "2.0.0",
+				VersionPackage:     &VersionPackage{URL: "https://example.invalid/agent", SHA256: "digest"},
+				PluginDependencies: tc.dependencies,
+			})
+			if got.DesiredVersion != "" || got.VersionPackage != nil {
+				t.Fatalf("self-update fields survived sanitization: version=%q package=%+v", got.DesiredVersion, got.VersionPackage)
+			}
+			if (got.PluginDependencies == nil) != tc.wantNil || len(got.PluginDependencies) != len(tc.dependencies) {
+				t.Fatalf("dependency presence = %#v, want %#v", got.PluginDependencies, tc.dependencies)
+			}
+			if len(tc.dependencies) == 1 && got.PluginDependencies[0] != edge {
+				t.Fatalf("populated dependency = %+v, want %+v", got.PluginDependencies[0], edge)
+			}
+		})
+	}
+}
+
+func TestRuntimeConcurrentCloseMemoizesFailure(t *testing.T) {
+	wantErr := errors.New("embedded app close failed")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	dependency := &embeddedCloseFailureApp{closeFn: func() error {
+		close(started)
+		<-release
+		return wantErr
+	}}
+	runtime := &Runtime{app: dependency}
 
 	const callers = 4
-	start := make(chan struct{})
 	errs := make(chan error, callers)
 	var ready sync.WaitGroup
 	ready.Add(callers)
 	for range callers {
 		go func() {
 			ready.Done()
-			<-start
-			errs <- second.Close()
+			errs <- runtime.Close()
 		}()
 	}
 	ready.Wait()
-	close(start)
+	<-started
+	select {
+	case err := <-errs:
+		t.Fatalf("Close() returned before the dependency completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
 	for range callers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent Close() error = %v", err)
+		if err := <-errs; !errors.Is(err, wantErr) {
+			t.Fatalf("concurrent Close() error = %v, want %v", err, wantErr)
 		}
 	}
+	if err := runtime.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("memoized Close() error = %v, want %v", err, wantErr)
+	}
+	if calls := dependency.closeCalls.Load(); calls != 1 {
+		t.Fatalf("embedded app Close() calls = %d, want 1", calls)
+	}
+}
+
+type embeddedCloseFailureApp struct {
+	closeCalls atomic.Int32
+	closeFn    func() error
+}
+
+func (*embeddedCloseFailureApp) Run(context.Context) error     { return nil }
+func (*embeddedCloseFailureApp) SyncNow(context.Context) error { return nil }
+func (app *embeddedCloseFailureApp) Close() error {
+	app.closeCalls.Add(1)
+	return app.closeFn()
 }
 
 type embeddedRuntimeSource struct {
