@@ -48,6 +48,35 @@ func TestDeclarativeUIProjectionRejectsExecutableMarkupAndWriteOnlyMismatch(t *t
 	if _, err := ProjectDeclarativeUI(mismatchData, schema, nil); err == nil || !strings.Contains(err.Error(), "writeOnly") {
 		t.Fatalf("writeOnly mismatch error = %v", err)
 	}
+
+	unbound := map[string]any{
+		"schema_version": 1, "title": "Plugin settings",
+		"components": []any{map[string]any{"type": "text", "id": "missing", "label": "Missing", "binding": "/missing"}},
+		"actions":    []any{map[string]any{"type": "submit", "id": "save", "label": "Save"}},
+	}
+	unboundData, err := json.Marshal(unbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDeclarativeUI(unboundData, schema, nil); err == nil {
+		t.Fatal("undeclared binding accepted")
+	}
+
+	dynamic := map[string]any{
+		"schema_version": 1, "title": "Plugin settings",
+		"components": []any{map[string]any{"type": "text", "id": "name", "label": "Name", "binding": "/name"}},
+		"actions": []any{map[string]any{
+			"type": "dynamic", "id": "refresh", "label": "Refresh",
+			"capability": "policy.atomic-state", "target_kind": "agent",
+		}},
+	}
+	dynamicData, err := json.Marshal(dynamic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDeclarativeUI(dynamicData, schema, nil); err == nil || !strings.Contains(err.Error(), "ui.dynamic-actions") {
+		t.Fatalf("missing dynamic-actions error = %v", err)
+	}
 }
 
 func TestValidatorRuntimeConfigExactNumericConstraints(t *testing.T) {
@@ -75,19 +104,61 @@ func TestValidatorRuntimeConfigExactNumericConstraints(t *testing.T) {
 	}
 }
 
-func TestValidatePackageRejectsMissingManifest(t *testing.T) {
+func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "README"), []byte("not a plugin"), 0o600); err != nil {
-		t.Fatal(err)
+	write := func(t *testing.T, root, name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
-	if err == nil {
+	missing := t.TempDir()
+	write(t, missing, "README", "not a plugin")
+	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(missing, PackageExpectation{}); err == nil {
 		t.Fatal("missing package manifest accepted")
 	}
+
 	official := NewValidator(ValidatorOptions{})
 	exact := official.WithTrustedSigners(nil, TrustedSignerPolicyExact)
 	if exact == official {
 		t.Fatal("WithTrustedSigners returned the same validator")
+	}
+
+	manifest := t.TempDir()
+	write(t, manifest, PackageManifestFile, "schema_version: 1\nid: demo\nversion: 1.0.0\nname: demo\n")
+	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(manifest, PackageExpectation{}); err == nil {
+		t.Fatal("incomplete signed package accepted")
+	}
+
+	abi := t.TempDir()
+	write(t, abi, PackageManifestFile, strings.Join([]string{
+		"schema_version: 1",
+		"id: demo-plugin",
+		"version: 1.0.0",
+		"name: Demo",
+		"compatibility:",
+		"  control_plane: \">=1.0.0\"",
+		"runtime:",
+		"  kind: rpc-service",
+		"  abi: not-an-abi",
+		"  host_scope: control-plane",
+		"  entry: plugin.exe",
+		"artifacts:",
+		"  - path: plugin.exe",
+		"    sha256: " + strings.Repeat("a", 64),
+		"    size: 1",
+		"    mode: \"0755\"",
+		"extension_points: [http.request]",
+		"permissions: [{name: agent.read}]",
+		"config_schema: config.schema.json",
+		"resource_budget: {timeout_ms: 1000, memory_bytes: 65536, concurrency: 1, input_bytes: 1024, output_bytes: 1024, cpu_millis: 100, restarts: 1}",
+		"failure_policy: {on_crash: disable, on_timeout: disable}",
+		"signature: {key_id: custom-signer, algorithm: ed25519}",
+		"cleanup: {on_disable: retain}",
+	}, "\n"))
+	write(t, abi, "config.schema.json", `{"type":"object"}`)
+	write(t, abi, "plugin.exe", "x")
+	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(abi, PackageExpectation{}); err == nil {
+		t.Fatal("invalid ABI accepted")
 	}
 }

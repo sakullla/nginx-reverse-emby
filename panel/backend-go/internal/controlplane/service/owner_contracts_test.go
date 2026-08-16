@@ -6,11 +6,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -41,45 +45,70 @@ func TestGovernedMutationWithoutPrincipalFailsClosed(t *testing.T) {
 	}
 }
 
-func TestFullSnapshotValidatorRejectsMissingL4BackendAndHTTPConflict(t *testing.T) {
+func TestMutationExecutorRejectsInvalidL4AndHTTPConflictWithRollback(t *testing.T) {
 	t.Parallel()
-	validator := FullSnapshotValidator{}
-	target := revision.Target{AgentID: "local", Local: true}
-	if err := validator.Validate(t.Context(), revision.SnapshotValidation{
-		Target: target,
-		Snapshot: storage.Snapshot{
-			L4Rules: []storage.L4Rule{{
-				ID: 1, AgentID: "local", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 8080,
-				ListenMode: "direct",
-			}},
-		},
-	}); err == nil || revision.ErrorCodeOf(err) == "" {
-		t.Fatalf("missing L4 backend error = %v", err)
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local", Name: "local", Platform: "windows-amd64"}); err != nil {
+		t.Fatal(err)
 	}
+	executor := NewMutationExecutor(store, revision.WithClock(func() time.Time {
+		return time.Date(2026, 8, 17, 4, 0, 0, 0, time.UTC)
+	}), revision.WithOperationIDGenerator(func() (string, error) { return "op-invalid-l4", nil }))
 
-	conflict := validator.Validate(t.Context(), revision.SnapshotValidation{
-		Target: target,
-		Snapshot: storage.Snapshot{
-			Rules: []storage.HTTPRule{{
-				ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com:8443",
-				Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8080"}},
-			}},
-			L4Rules: []storage.L4Rule{{
-				ID: 2, AgentID: "local", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 8443,
-				ListenMode: "proxy", Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9000}},
-			}},
+	missingProfile := 999
+	_, err := executor.Execute(t.Context(), revision.MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "missing-ref", Request: map[string]any{"rule": 1},
+		Targets: []revision.Target{{AgentID: "local", Local: true, Capabilities: []string{"egress_profiles"}}},
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+			return tx.ListHTTPRules(ctx, target.AgentID)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "local", FrontendURL: "https://missing.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				EgressProfileID: &missingProfile, Revision: int(revisions["local"]),
+			}})
 		},
 	})
-	if revision.ErrorCodeOf(conflict) != revision.ErrorCodeConflict {
-		t.Fatalf("HTTP/L4 listener conflict = %v code=%q", conflict, revision.ErrorCodeOf(conflict))
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeNotFound {
+		t.Fatalf("missing egress err=%v code=%q", err, revision.ErrorCodeOf(err))
 	}
-}
+	if rules, listErr := store.ListHTTPRules(t.Context(), "local"); listErr != nil {
+		t.Fatal(listErr)
+	} else if len(rules) != 0 {
+		t.Fatalf("missing-ref HTTP rules survived: %+v", rules)
+	}
 
-func TestNewMutationExecutorInstallsFullSnapshotValidator(t *testing.T) {
-	t.Parallel()
-	executor := NewMutationExecutor(nil)
-	if executor == nil {
-		t.Fatal("NewMutationExecutor returned nil")
+	executor = NewMutationExecutor(store, revision.WithClock(func() time.Time {
+		return time.Date(2026, 8, 17, 4, 1, 0, 0, time.UTC)
+	}), revision.WithOperationIDGenerator(func() (string, error) { return "op-http-l4", nil }))
+	_, err = executor.Execute(t.Context(), revision.MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "http-l4-conflict", Request: map[string]any{"rule": 1},
+		Targets: []revision.Target{{AgentID: "local", Local: true}},
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+			return tx.ListHTTPRules(ctx, target.AgentID)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			if err := tx.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+				ID: 2, AgentID: "local", Name: "listen", Protocol: "tcp", ListenMode: "proxy",
+				ListenHost: "0.0.0.0", ListenPort: 8443, Enabled: true, Revision: int(revisions["local"]),
+				BackendsJSON: `[{"host":"127.0.0.1","port":9000}]`,
+			}}); err != nil {
+				return err
+			}
+			return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com:8443",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true, Revision: int(revisions["local"]),
+			}})
+		},
+	})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeConflict {
+		t.Fatalf("HTTP/L4 conflict err=%v code=%q", err, revision.ErrorCodeOf(err))
+	}
+	if rules, listErr := store.ListHTTPRules(t.Context(), "local"); listErr != nil {
+		t.Fatal(listErr)
+	} else if len(rules) != 0 {
+		t.Fatalf("conflict HTTP rules survived: %+v", rules)
 	}
 }
 
@@ -173,26 +202,123 @@ func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 	}
 }
 
-func TestRevisionAPIRequiresRepositoryAndCoordinator(t *testing.T) {
+func TestRevisionAPIRedactsLeaseIDAndReportsDegradedStatus(t *testing.T) {
 	t.Parallel()
-	if api := NewRevisionAPI(nil, nil); api != nil {
-		t.Fatal("NewRevisionAPI(nil, nil) should be nil")
+	store := newServiceOwnerStore(t)
+	now := time.Date(2026, 8, 17, 5, 0, 0, 0, time.UTC)
+	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "op-redact", Kind: "http_rule.create", Status: storage.OperationStatusPending,
+			PrimaryAgentID: "local", CreatedAt: now, UpdatedAt: now,
+		},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: "local", Revision: 1, OperationID: "op-redact", State: storage.AgentRevisionStatePending,
+			CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{
+			AgentID: "local", DesiredRevision: 1, AppliedRevision: 0, LastKnownGoodRevision: 0, UpdatedAt: now,
+		}},
+		Events: []storage.RevisionEventRow{{
+			OperationID: "op-redact", AgentID: "local", Revision: 1, EventType: "lease_claimed",
+			PayloadJSON: `{"lease_id":"secret-lease","reason":"claimed"}`, CreatedAt: now,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	coord, err := coordinator.New(store, coordinator.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(store, coord)
+	if api == nil {
+		t.Fatal("NewRevisionAPI returned nil")
+	}
+	page, err := api.ListEvents(t.Context(), RevisionEventQuery{OperationID: "op-redact", Limit: 10})
+	if err != nil || len(page.Events) != 1 {
+		t.Fatalf("ListEvents = %+v err=%v", page, err)
+	}
+	if _, leaked := page.Events[0].Payload["lease_id"]; leaked {
+		t.Fatalf("lease_id leaked: %+v", page.Events[0].Payload)
+	}
+	status, err := api.GetOperationStatus(t.Context(), "op-redact")
+	if err != nil || status.OperationID != "op-redact" || len(status.Agents) == 0 {
+		t.Fatalf("GetOperationStatus = %+v err=%v", status, err)
 	}
 }
 
-func TestRuleServiceCreateRequiresMutationPrincipal(t *testing.T) {
+func TestRuleServiceCreateRequiresMutationPrincipalOnRevisionStore(t *testing.T) {
 	t.Parallel()
-	store := &ruleOwnerStore{agents: []storage.AgentRow{{ID: "local", Name: "local"}}}
-	svc := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
-	frontend := "https://edge.example.com"
-	backend := "http://127.0.0.1:8080"
-	enabled := true
-	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
-		FrontendURL: &frontend, BackendURL: &backend, Enabled: &enabled,
-	})
-	if err == nil {
-		t.Fatal("Create without principal succeeded")
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local", Name: "local", Platform: "windows-amd64"}); err != nil {
+		t.Fatal(err)
 	}
+	svc := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	applies := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applies++
+		return nil
+	})
+	frontend := "https://edge.example.com"
+	enabled := true
+	backends := []HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}}
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: &frontend, Backends: &backends, Enabled: &enabled,
+	})
+	if !errors.Is(err, ErrMutationPrincipalRequired) {
+		t.Fatalf("Create without principal err=%v", err)
+	}
+	if applies != 0 {
+		t.Fatalf("apply trigger fired %d times", applies)
+	}
+	rules, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil || len(rules) != 0 {
+		t.Fatalf("unprincipaled create leaked rules=%+v err=%v", rules, err)
+	}
+}
+
+var serviceOwnerStoreTemplate struct {
+	once sync.Once
+	data []byte
+	err  error
+}
+
+func newServiceOwnerStore(t *testing.T) *storage.GormStore {
+	t.Helper()
+	serviceOwnerStoreTemplate.once.Do(func() {
+		root, err := os.MkdirTemp("", "nre-service-owner-template-")
+		if err != nil {
+			serviceOwnerStoreTemplate.err = err
+			return
+		}
+		defer os.RemoveAll(root)
+		store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local", TrafficStatsEnabled: true})
+		if err != nil {
+			serviceOwnerStoreTemplate.err = err
+			return
+		}
+		if err := store.Close(); err != nil {
+			serviceOwnerStoreTemplate.err = err
+			return
+		}
+		serviceOwnerStoreTemplate.data, serviceOwnerStoreTemplate.err = os.ReadFile(filepath.Join(root, "panel.db"))
+	})
+	if serviceOwnerStoreTemplate.err != nil {
+		t.Fatal(serviceOwnerStoreTemplate.err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "panel.db"), serviceOwnerStoreTemplate.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dsn := filepath.Join(root, "panel.db") + "?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=temp_store(MEMORY)"
+	store, err := storage.NewStore(storage.StoreConfig{
+		Driver: "sqlite", DSN: dsn, DataRoot: root, LocalAgentID: "local",
+		SkipBootstrapSchema: true, TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 type recordingResourceQuotaStore struct {
@@ -373,41 +499,4 @@ type fakeCFClient struct{ calls int }
 func (c *fakeCFClient) EnsureRecord(context.Context, string, string, string, string, int) (cloudflareRecordOutcome, error) {
 	c.calls++
 	return cloudflareRecordOutcome{}, nil
-}
-
-type ruleOwnerStore struct {
-	agents []storage.AgentRow
-}
-
-func (s *ruleOwnerStore) ListAgents(context.Context) ([]storage.AgentRow, error) { return s.agents, nil }
-func (s *ruleOwnerStore) ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error) {
-	return nil, nil
-}
-func (s *ruleOwnerStore) GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error) {
-	return storage.HTTPRuleRow{}, false, nil
-}
-func (s *ruleOwnerStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
-	return nil, nil
-}
-func (s *ruleOwnerStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
-	return nil, nil
-}
-func (s *ruleOwnerStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
-	return storage.LocalAgentStateRow{}, nil
-}
-func (s *ruleOwnerStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
-	return nil, nil
-}
-func (s *ruleOwnerStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
-	return nil, nil
-}
-func (s *ruleOwnerStore) SaveAgent(context.Context, storage.AgentRow) error { return nil }
-func (s *ruleOwnerStore) SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error {
-	return nil
-}
-func (s *ruleOwnerStore) SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error {
-	return nil
-}
-func (s *ruleOwnerStore) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
-	return nil
 }

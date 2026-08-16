@@ -64,11 +64,73 @@ func TestPluginCapabilityAuthorizationMatrix(t *testing.T) {
 	if err := policy.Authorize(t.Context(), denied); !errors.Is(err, ErrCapabilityDenied) {
 		t.Fatalf("undeclared capability error = %v", err)
 	}
+
+	ungranted := policy
+	ungranted.Granted = nil
+	if err := ungranted.Authorize(t.Context(), call); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("not-granted error = %v", err)
+	}
+	wrongActor := call
+	wrongActor.Actor.ID = "other"
+	if err := policy.Authorize(t.Context(), wrongActor); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("actor deny error = %v", err)
+	}
+	wrongTarget := call
+	wrongTarget.Target.ID = "edge-hidden"
+	if err := policy.Authorize(t.Context(), wrongTarget); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("target deny error = %v", err)
+	}
+	deniedQuota := policy
+	deniedQuota.Quota = &capabilityQuotaStub{err: errors.New("quota exceeded")}
+	if err := deniedQuota.Authorize(t.Context(), call); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("quota deny error = %v", err)
+	}
+
+	handlePolicy := policy
+	handlePolicy.Declared = append(handlePolicy.Declared, pluginsdk.CapabilityServiceRevocableResourceHandle)
+	handlePolicy.Granted = append(handlePolicy.Granted, pluginsdk.CapabilityServiceRevocableResourceHandle)
+	handlePolicy.ActorCapabilities = append(handlePolicy.ActorCapabilities, pluginsdk.CapabilityServiceRevocableResourceHandle)
+	handleCall := call
+	handleCall.Capability = pluginsdk.CapabilityServiceRevocableResourceHandle
+	broker := NewResourceHandleBroker()
+	token, err := broker.Issue(t.Context(), handlePolicy, handleCall, "resource")
+	if err != nil || token == "" {
+		t.Fatalf("Issue() = %q err=%v", token, err)
+	}
+	broker.RevokeGeneration(handleCall.InstanceID, handleCall.Generation)
+	if _, err := broker.Resolve(t.Context(), token, handleCall); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("revoked handle resolve = %v", err)
+	}
+
+	action := pluginsdk.DynamicAction{
+		ID: "refresh", Label: "Refresh", Capability: pluginsdk.CapabilityPolicyAtomicState, TargetKind: "agent",
+	}
+	actionPolicy := policy
+	actionPolicy.DynamicActions = []pluginsdk.DynamicAction{action}
+	registry := NewDynamicActionRegistry()
+	if err := registry.Register(action, call, actionPolicy, func(context.Context, pluginsdk.HostCapabilityCall) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	forged := action
+	forged.ID = "forged"
+	if err := registry.Register(forged, call, actionPolicy, func(context.Context, pluginsdk.HostCapabilityCall) error { return nil }); err == nil {
+		t.Fatal("unsigned dynamic action registered")
+	}
+	registry.RevokeGeneration(call.InstanceID, call.Generation)
+	if err := registry.Invoke(t.Context(), call.InstanceID, call.Generation, action.ID, call.Actor); err == nil {
+		t.Fatal("revoked dynamic action invoked")
+	}
 }
 
-type capabilityQuotaStub struct{ calls int }
+type capabilityQuotaStub struct {
+	calls int
+	err   error
+}
 
 func (q *capabilityQuotaStub) ConsumeHostCapability(context.Context, pluginsdk.HostCapabilityCall) error {
+	if q.err != nil {
+		return q.err
+	}
 	q.calls++
 	return nil
 }

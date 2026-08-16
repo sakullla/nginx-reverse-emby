@@ -3,17 +3,22 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestTokenMatchesRequiresExactSecret(t *testing.T) {
@@ -25,6 +30,10 @@ func TestTokenMatchesRequiresExactSecret(t *testing.T) {
 
 func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 	t.Parallel()
+	access := newScopedAccessManager(t)
+	created := &fakeOwnerRuleService{rules: []service.HTTPRule{
+		{ID: 1, AgentID: "visible-edge", FrontendURL: "https://visible.example.com"},
+	}}
 	deps := Dependencies{
 		Config: config.Config{
 			PanelToken:    "secret",
@@ -43,18 +52,17 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 				{ID: "visible-edge", Name: "visible"},
 				{ID: "hidden-edge", Name: "hidden"},
 			}},
+			updates: make(chan service.AgentMonitorUpdate),
 		},
-		RuleService: fakeOwnerRuleService{rules: []service.HTTPRule{
-			{ID: 1, AgentID: "visible-edge", FrontendURL: "https://visible.example.com"},
-			{ID: 2, AgentID: "hidden-edge", FrontendURL: "https://hidden.example.com"},
-		}},
-		AccessManager: nil,
+		RuleService:   created,
+		AccessManager: access.Manager,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/panel-api/health", deps.handleHealth)
 	mux.Handle("/panel-api/info", deps.requirePanelToken(http.HandlerFunc(deps.handleInfo)))
 	mux.Handle("/panel-api/agents/{agentID}/rules", deps.requirePanelToken(http.HandlerFunc(deps.handleAgentRules)))
+	mux.Handle("/panel-api/agents/{agentID}/rules/{id}", deps.requirePanelToken(http.HandlerFunc(deps.handleAgentRule)))
 	mux.Handle("/panel-api/agents/monitor-stream", deps.requirePanelToken(http.HandlerFunc(deps.handleAgentMonitorStream)))
 
 	health := httptest.NewRecorder()
@@ -70,7 +78,7 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 	}
 
 	infoReq := httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)
-	infoReq.Header.Set("X-Panel-Token", "secret")
+	infoReq.Header.Set("X-Panel-Session", access.session)
 	info := httptest.NewRecorder()
 	mux.ServeHTTP(info, infoReq)
 	if info.Code != http.StatusOK {
@@ -80,38 +88,142 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 	if err := json.Unmarshal(info.Body.Bytes(), &infoBody); err != nil {
 		t.Fatal(err)
 	}
-	if infoBody["data_dir"] != "C:/srv/nre/data" || infoBody["master_register_token"] != "register-secret" {
-		t.Fatalf("bootstrap info omitted privileged fields: %v", infoBody)
+	if _, hasDir := infoBody["data_dir"]; hasDir {
+		t.Fatalf("scoped actor received data_dir: %v", infoBody)
+	}
+	if _, hasToken := infoBody["master_register_token"]; hasToken {
+		t.Fatalf("scoped actor received register token: %v", infoBody)
 	}
 
-	kind, id, ok := deps.requestResource(http.MethodGet, "/panel-api/agents/visible-edge/rules/1")
+	kind, id, ok := deps.requestResource(http.MethodPut, "/panel-api/agents/visible-edge/rules/1")
 	if !ok || kind != "http_rule" || id != "visible-edge:1" {
 		t.Fatalf("nested rule resource = %s %s ok=%v", kind, id, ok)
 	}
 
-	rulesReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/visible-edge/rules", nil)
-	rulesReq.Header.Set("X-Panel-Token", "secret")
-	rules := httptest.NewRecorder()
-	mux.ServeHTTP(rules, rulesReq)
-	if rules.Code != http.StatusOK || !strings.Contains(rules.Body.String(), "visible.example.com") {
-		t.Fatalf("rules status=%d body=%s", rules.Code, rules.Body.String())
+	allowBody := `{"frontend_url":"https://visible.example.com"}`
+	allowReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/visible-edge/rules/1", strings.NewReader(allowBody))
+	allowReq.Header.Set("X-Panel-Session", access.session)
+	allowReq.Header.Set("Content-Type", "application/json")
+	allow := httptest.NewRecorder()
+	mux.ServeHTTP(allow, allowReq)
+	if allow.Code != http.StatusOK {
+		t.Fatalf("visible nested mutation status=%d body=%s", allow.Code, allow.Body.String())
 	}
 
-	monitorReq := httptest.NewRequest(http.MethodHead, "/panel-api/agents/monitor-stream", nil)
-	monitorReq.Header.Set("X-Panel-Token", "secret")
-	monitor := httptest.NewRecorder()
-	mux.ServeHTTP(monitor, monitorReq)
-	if monitor.Code != http.StatusOK {
-		t.Fatalf("monitor HEAD status = %d", monitor.Code)
+	denyReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/hidden-edge/rules/2", bytes.NewBufferString(allowBody))
+	denyReq.Header.Set("X-Panel-Session", access.session)
+	denyReq.Header.Set("Content-Type", "application/json")
+	deny := httptest.NewRecorder()
+	mux.ServeHTTP(deny, denyReq)
+	if deny.Code != http.StatusForbidden {
+		t.Fatalf("hidden nested mutation status=%d body=%s", deny.Code, deny.Body.String())
 	}
 
-	snapshot := service.AgentMonitorSnapshot{Agents: []service.AgentMonitorAgent{
-		{ID: "visible-edge"}, {ID: "hidden-edge"},
-	}}
-	filtered, err := deps.filterMonitorSnapshot(context.WithValue(t.Context(), actorContextKey{}, authz.BootstrapActor()), snapshot)
-	if err != nil || len(filtered.Agents) != 2 {
-		t.Fatalf("bootstrap monitor filter = %+v err=%v", filtered, err)
+	monitorReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	monitorReq.Header.Set("X-Panel-Session", access.session)
+	ctx, cancel := context.WithCancel(monitorReq.Context())
+	defer cancel()
+	monitorReq = monitorReq.WithContext(ctx)
+	monitor := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mux.ServeHTTP(monitor, monitorReq)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for monitor.Body.Len() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
 	}
+	cancel()
+	<-done
+	body := monitor.Body.String()
+	if !strings.Contains(body, `"id":"visible-edge"`) || strings.Contains(body, `"id":"hidden-edge"`) {
+		t.Fatalf("monitor snapshot leaked unauthorized agents: %s", body)
+	}
+}
+
+type flushRecorder struct{ *httptest.ResponseRecorder }
+
+func (flushRecorder) Flush() {}
+
+type scopedAccess struct {
+	*authz.Manager
+	session string
+}
+
+func newScopedAccessManager(t *testing.T) scopedAccess {
+	t.Helper()
+	store := newHTTPAuthzStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "visible-edge"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "hidden-edge"}); err != nil {
+		t.Fatal(err)
+	}
+	visible, err := manager.CreateResourceGroup(t.Context(), "visible-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(t.Context(), "hidden-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "http-writer", "", []string{authz.PermissionResourceRead, authz.PermissionResourceWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "scoped-http", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	if err := manager.GrantResourceGroup(t.Context(), admin, "user", user.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), admin, "agent", "visible-edge", visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), admin, "agent", "hidden-edge", hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scopedAccess{Manager: manager, session: login.Token}
+}
+
+func newHTTPAuthzStore(t *testing.T) *storage.GormStore {
+	t.Helper()
+	root := t.TempDir()
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := t.TempDir()
+	if err := os.WriteFile(filepath.Join(clone, "panel.db"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dsn := filepath.Join(clone, "panel.db") + "?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=temp_store(MEMORY)"
+	opened, err := storage.NewStore(storage.StoreConfig{
+		Driver: "sqlite", DSN: dsn, DataRoot: clone, LocalAgentID: "local", SkipBootstrapSchema: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	return opened
 }
 
 type fakeSystemService struct {
@@ -123,6 +235,7 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo { return f.i
 type fakeOwnerAgentService struct {
 	agents   []service.AgentSummary
 	snapshot service.AgentMonitorSnapshot
+	updates  chan service.AgentMonitorUpdate
 }
 
 func (f fakeOwnerAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -156,7 +269,10 @@ func (f fakeOwnerAgentService) MonitorSnapshot(context.Context) (service.AgentMo
 	return f.snapshot, nil
 }
 func (f fakeOwnerAgentService) SubscribeMonitorUpdates(context.Context) (<-chan service.AgentMonitorUpdate, func()) {
-	ch := make(chan service.AgentMonitorUpdate)
+	ch := f.updates
+	if ch == nil {
+		ch = make(chan service.AgentMonitorUpdate)
+	}
 	return ch, func() {}
 }
 
@@ -164,21 +280,27 @@ type fakeOwnerRuleService struct {
 	rules []service.HTTPRule
 }
 
-func (f fakeOwnerRuleService) List(context.Context, string) ([]service.HTTPRule, error) {
-	return f.rules, nil
+func (f *fakeOwnerRuleService) List(_ context.Context, agentID string) ([]service.HTTPRule, error) {
+	out := make([]service.HTTPRule, 0, len(f.rules))
+	for _, rule := range f.rules {
+		if rule.AgentID == agentID {
+			out = append(out, rule)
+		}
+	}
+	return out, nil
 }
-func (f fakeOwnerRuleService) ListPage(context.Context, service.ListQuery) ([]service.HTTPRule, service.PageMeta, error) {
+func (f *fakeOwnerRuleService) ListPage(context.Context, service.ListQuery) ([]service.HTTPRule, service.PageMeta, error) {
 	return nil, service.PageMeta{}, nil
 }
-func (f fakeOwnerRuleService) Get(context.Context, string, int) (service.HTTPRule, error) {
+func (f *fakeOwnerRuleService) Get(context.Context, string, int) (service.HTTPRule, error) {
 	return service.HTTPRule{}, io.EOF
 }
-func (f fakeOwnerRuleService) Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error) {
+func (f *fakeOwnerRuleService) Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error) {
 	return service.HTTPRule{}, io.EOF
 }
-func (f fakeOwnerRuleService) Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error) {
-	return service.HTTPRule{}, io.EOF
+func (f *fakeOwnerRuleService) Update(_ context.Context, agentID string, id int, _ service.HTTPRuleInput) (service.HTTPRule, error) {
+	return service.HTTPRule{ID: id, AgentID: agentID, FrontendURL: "https://visible.example.com"}, nil
 }
-func (f fakeOwnerRuleService) Delete(context.Context, string, int) (service.HTTPRule, error) {
+func (f *fakeOwnerRuleService) Delete(context.Context, string, int) (service.HTTPRule, error) {
 	return service.HTTPRule{}, io.EOF
 }

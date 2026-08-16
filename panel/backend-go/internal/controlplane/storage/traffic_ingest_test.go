@@ -51,4 +51,28 @@ func TestIntegrationIngestTrafficCursorDeltaFirstReplayAndBootReset(t *testing.T
 	if err != nil || !rolled.CounterReset {
 		t.Fatalf("event ingest = %+v err=%v", rolled, err)
 	}
+
+	scoped := AgentTrafficRawCursorRow{
+		AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", RXBytes: 40, TXBytes: 50,
+		ObservedAt: "2026-05-03T08:04:00Z",
+	}
+	if _, err := store.IngestTrafficCursorDelta(ctx, scoped, bucket); err != nil {
+		t.Fatal(err)
+	}
+	before, found, err := store.GetTrafficCursor(ctx, "edge-1", "http_rule", "11")
+	if err != nil || !found || before.RXBytes != 40 {
+		t.Fatalf("scoped cursor before failed event found=%v row=%+v err=%v", found, before, err)
+	}
+	failedEvent := &AgentTrafficEventRow{Message: "missing type"}
+	failed := scoped
+	failed.RXBytes = 10
+	failed.TXBytes = 5
+	failed.ObservedAt = "2026-05-03T08:05:00Z"
+	if _, err := store.IngestTrafficCursorDeltaWithEvent(ctx, failed, bucket, failedEvent); err == nil {
+		t.Fatal("event without type was accepted")
+	}
+	after, found, err := store.GetTrafficCursor(ctx, "edge-1", "http_rule", "11")
+	if err != nil || !found || after.RXBytes != before.RXBytes || after.TXBytes != before.TXBytes {
+		t.Fatalf("failed event mutated cursor before=%+v after=%+v", before, after)
+	}
 }
