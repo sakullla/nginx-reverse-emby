@@ -27,11 +27,48 @@ func (quota *blockingQuota) Consume(ctx context.Context, _ pluginsdk.HostCapabil
 	}
 }
 
-type auditRecorder struct{ events []AuditEvent }
+type auditRecorder struct {
+	events []AuditEvent
+	err    error
+}
 
 func (recorder *auditRecorder) Audit(_ context.Context, event AuditEvent) error {
 	recorder.events = append(recorder.events, event)
-	return nil
+	return recorder.err
+}
+
+func TestHostAPIAuditFailureNeverIssuesProtectedHandle(t *testing.T) {
+	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
+	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}
+	call := pluginsdk.HostCapabilityCall{PluginID: "official.reverse", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.reverse", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
+	for _, test := range []struct {
+		name string
+		deny bool
+	}{
+		{name: "otherwise allowed"},
+		{name: "already denied", deny: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			quota, _ := NewCallQuota(1)
+			auditErr := errors.New("audit store unavailable")
+			audit := &auditRecorder{err: auditErr}
+			authorizer := Authorizer{PluginID: call.PluginID, InstanceID: call.InstanceID, Generation: call.Generation, Declared: []pluginsdk.HostCapability{capability}, Granted: []pluginsdk.HostCapability{capability}, Actor: call.Actor, ActorCapabilities: []pluginsdk.HostCapability{capability}, Targets: []pluginsdk.HostTarget{target}, Quota: quota, Auditor: audit}
+			if test.deny {
+				authorizer.Granted = nil
+			}
+			handles := NewResourceHandles()
+			token, err := handles.Issue(t.Context(), authorizer, call, "protected-effect")
+			if token != "" || err == nil || !errors.Is(err, ErrDenied) {
+				t.Fatalf("Issue() = token %q error %v", token, err)
+			}
+			if len(handles.handles) != 0 {
+				t.Fatalf("audit failure published handles: %+v", handles.handles)
+			}
+			if len(audit.events) != 1 || audit.events[0].Outcome != map[bool]string{false: "allowed", true: "denied"}[test.deny] {
+				t.Fatalf("audit events = %+v", audit.events)
+			}
+		})
+	}
 }
 
 func TestHostAPIAuthorizationChecksDeclarationGrantActorGroupTargetQuotaAndAudit(t *testing.T) {

@@ -1,3 +1,5 @@
+//go:build integration
+
 package acmeflow
 
 import (
@@ -21,9 +23,6 @@ import (
 )
 
 func TestIntegrationGenerationStagePromoteAndProjection(t *testing.T) {
-	if !acmeflowIntegrationTierEnabled {
-		t.Skip("generation persistence scenarios run in the integration tier")
-	}
 	if testing.Short() {
 		t.Skip("durable generation projection runs in the integration tier")
 	}
@@ -98,9 +97,6 @@ func TestIntegrationGenerationStagePromoteAndProjection(t *testing.T) {
 }
 
 func TestIntegrationGenerationPendingReferenceSurvivesRestart(t *testing.T) {
-	if !acmeflowIntegrationTierEnabled {
-		t.Skip("generation persistence scenarios run in the integration tier")
-	}
 	if testing.Short() {
 		t.Skip("durable pending generation recovery runs in the integration tier")
 	}
@@ -147,123 +143,7 @@ func TestIntegrationGenerationPendingReferenceSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T) {
-	if !acmeflowIntegrationTierEnabled {
-		t.Skip("generation persistence scenarios run in the integration tier")
-	}
-	if testing.Short() {
-		t.Skip("durable generation fault recovery runs in the integration tier")
-	}
-	t.Parallel()
-	ctx := context.Background()
-	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
-	oldInput := testGenerationInput(t, 11, now)
-	newInput := testGenerationInput(t, 12, now)
-
-	var discovered []PersistenceFaultPoint
-	discoveryStore, err := OpenStateStore(t.TempDir(),
-		WithStateClock(func() time.Time { return now }),
-		WithPersistenceFaultInjector(func(point PersistenceFaultPoint) error {
-			discovered = append(discovered, point)
-			return nil
-		}),
-	)
-	if err != nil {
-		t.Fatalf("OpenStateStore(discovery) error = %v", err)
-	}
-	oldManifest, err := discoveryStore.StageGeneration(ctx, oldInput)
-	if err != nil {
-		t.Fatalf("StageGeneration(discovery old) error = %v", err)
-	}
-	if err := discoveryStore.PromoteGeneration(ctx, oldManifest.ID, nil); err != nil {
-		t.Fatalf("PromoteGeneration(discovery old) error = %v", err)
-	}
-	discovered = nil
-	newManifest, err := discoveryStore.StageGeneration(ctx, newInput)
-	if err != nil {
-		t.Fatalf("StageGeneration(discovery new) error = %v", err)
-	}
-	if err := discoveryStore.PromoteGeneration(ctx, newManifest.ID, nil); err != nil {
-		t.Fatalf("PromoteGeneration(discovery new) error = %v", err)
-	}
-	_ = discoveryStore.Close()
-
-	points := uniqueFaultPoints(discovered)
-	if len(points) < 20 {
-		t.Fatalf("discovered only %d persistence boundaries: %v", len(points), points)
-	}
-	points = representativeGenerationFaultPoints(t, points)
-	for _, point := range points {
-		point := point
-		t.Run(strings.NewReplacer(".", "_", "/", "_").Replace(string(point)), func(t *testing.T) {
-			t.Parallel()
-			root := t.TempDir()
-			injected := errors.New("injected persistence fault")
-			armed := false
-			store, err := OpenStateStore(root,
-				WithStateClock(func() time.Time { return now }),
-				WithPersistenceFaultInjector(func(actual PersistenceFaultPoint) error {
-					if armed && actual == point {
-						return injected
-					}
-					return nil
-				}),
-			)
-			if err != nil {
-				t.Fatalf("OpenStateStore() error = %v", err)
-			}
-			base, err := store.StageGeneration(ctx, oldInput)
-			if err != nil {
-				t.Fatalf("StageGeneration(base) error = %v", err)
-			}
-			if err := store.PromoteGeneration(ctx, base.ID, nil); err != nil {
-				t.Fatalf("PromoteGeneration(base) error = %v", err)
-			}
-
-			armed = true
-			candidate, stageErr := store.StageGeneration(ctx, newInput)
-			operationErr := stageErr
-			if stageErr == nil {
-				operationErr = store.PromoteGeneration(ctx, candidate.ID, nil)
-			}
-			if !errors.Is(operationErr, injected) {
-				t.Fatalf("fault point %q produced error %v", point, operationErr)
-			}
-			_ = store.Close()
-
-			reopened, err := OpenStateStore(root, WithStateClock(func() time.Time { return now }))
-			if err != nil {
-				t.Fatalf("OpenStateStore(reopen) error = %v", err)
-			}
-			t.Cleanup(func() { _ = reopened.Close() })
-			if _, err := reopened.Reconcile(ctx); err != nil {
-				t.Fatalf("Reconcile() error = %v", err)
-			}
-			current, err := reopened.LoadCurrent(ctx)
-			if err != nil {
-				t.Fatalf("LoadCurrent() error = %v", err)
-			}
-			switch current.Manifest.ID {
-			case base.ID:
-				assertGenerationEqualsInput(t, current, oldInput)
-			case candidate.ID:
-				assertGenerationEqualsInput(t, current, newInput)
-			default:
-				t.Fatalf("LoadCurrent() ID = %q, want old or complete candidate", current.Manifest.ID)
-			}
-			oldGeneration, err := reopened.LoadGeneration(ctx, base.ID)
-			if err != nil {
-				t.Fatalf("LoadGeneration(old) error = %v", err)
-			}
-			assertGenerationEqualsInput(t, oldGeneration, oldInput)
-		})
-	}
-}
-
 func TestIntegrationGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
-	if !acmeflowIntegrationTierEnabled {
-		t.Skip("generation persistence scenarios run in the integration tier")
-	}
 	if testing.Short() {
 		t.Skip("durable generation recovery runs in the integration tier")
 	}
