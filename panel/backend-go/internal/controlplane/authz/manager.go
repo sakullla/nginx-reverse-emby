@@ -180,10 +180,29 @@ type Role struct {
 }
 
 type ResourceGroup struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Builtin     bool   `json:"builtin"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Builtin       bool   `json:"builtin"`
+	GrantCount    int64  `json:"grant_count"`
+	ResourceCount int64  `json:"resource_count"`
+}
+
+type ResourceGroupDetail struct {
+	ResourceGroup
+	Grants  []storage.ResourceGroupGrantRow          `json:"grants"`
+	Members map[string][]storage.ResourceCatalogItem `json:"members"`
+}
+
+type resourceGroupAdminStore interface {
+	ListResourceGroupsFiltered(context.Context, string) ([]storage.ResourceGroupRow, error)
+	UpdateResourceGroup(context.Context, string, string, string) (storage.ResourceGroupRow, error)
+	DeleteResourceGroup(context.Context, string) error
+	ListResourceGroupGrantsForGroup(context.Context, string) ([]storage.ResourceGroupGrantRow, error)
+	ResourceGroupCounts(context.Context) (map[string]storage.ResourceGroupCounts, error)
+	UnbindResource(context.Context, string, string) error
+	ListResourceCatalog(context.Context, string, string) ([]storage.ResourceCatalogItem, error)
+	ListResourceGroupMembers(context.Context, string) ([]storage.ResourceCatalogItem, error)
 }
 
 type LoginResult struct {
@@ -826,25 +845,98 @@ func (m *Manager) CreateResourceGroup(ctx context.Context, name, description str
 	if err := m.store.CreateResourceGroup(ctx, row); err != nil {
 		return ResourceGroup{}, err
 	}
-	return groupFrom(row), nil
+	return m.decorateResourceGroup(ctx, row)
 }
 
-func (m *Manager) ListResourceGroups(ctx context.Context, actor Actor) ([]ResourceGroup, error) {
-	rows, err := m.store.ListResourceGroups(ctx)
+func (m *Manager) ListResourceGroups(ctx context.Context, actor Actor, query ...string) ([]ResourceGroup, error) {
+	q := ""
+	if len(query) > 0 {
+		q = query[0]
+	}
+	rows, counts, err := m.listResourceGroupRows(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	groups := make([]ResourceGroup, 0, len(rows))
 	for _, row := range rows {
 		if actor.CanAccessGroup(row.ID) {
-			groups = append(groups, groupFrom(row))
+			groups = append(groups, resourceGroupFrom(row, counts[row.ID]))
 		}
 	}
 	return groups, nil
 }
 
+func (m *Manager) GetResourceGroup(ctx context.Context, actor Actor, id string) (ResourceGroupDetail, error) {
+	row, err := m.store.GetResourceGroup(ctx, id)
+	if err != nil {
+		return ResourceGroupDetail{}, err
+	}
+	if !actor.CanAccessGroup(row.ID) {
+		return ResourceGroupDetail{}, gorm.ErrRecordNotFound
+	}
+	admin, err := m.resourceGroupAdmin()
+	if err != nil {
+		return ResourceGroupDetail{}, err
+	}
+	counts, err := admin.ResourceGroupCounts(ctx)
+	if err != nil {
+		return ResourceGroupDetail{}, err
+	}
+	grants, err := admin.ListResourceGroupGrantsForGroup(ctx, row.ID)
+	if err != nil {
+		return ResourceGroupDetail{}, err
+	}
+	members, err := admin.ListResourceGroupMembers(ctx, row.ID)
+	if err != nil {
+		return ResourceGroupDetail{}, err
+	}
+	grouped := emptyResourceGroupMembers()
+	for _, member := range members {
+		grouped[member.Kind] = append(grouped[member.Kind], member)
+	}
+	return ResourceGroupDetail{ResourceGroup: resourceGroupFrom(row, counts[row.ID]), Grants: grants, Members: grouped}, nil
+}
+
+func (m *Manager) UpdateResourceGroup(ctx context.Context, actor Actor, id, name, description string) (ResourceGroup, error) {
+	if !actor.Has(PermissionAccessManage) {
+		return ResourceGroup{}, ErrForbidden
+	}
+	current, err := m.store.GetResourceGroup(ctx, id)
+	if err != nil {
+		return ResourceGroup{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = current.Name
+	}
+	admin, err := m.resourceGroupAdmin()
+	if err != nil {
+		return ResourceGroup{}, err
+	}
+	row, err := admin.UpdateResourceGroup(ctx, id, name, strings.TrimSpace(description))
+	if err != nil {
+		return ResourceGroup{}, mapResourceGroupWriteError(err)
+	}
+	return m.decorateResourceGroup(ctx, row)
+}
+
+func (m *Manager) DeleteResourceGroup(ctx context.Context, actor Actor, id string) error {
+	if !actor.Has(PermissionSystemAdmin) {
+		return ErrForbidden
+	}
+	admin, err := m.resourceGroupAdmin()
+	if err != nil {
+		return err
+	}
+	return mapResourceGroupWriteError(admin.DeleteResourceGroup(ctx, id))
+}
+
 func groupFrom(row storage.ResourceGroupRow) ResourceGroup {
-	return ResourceGroup{ID: row.ID, Name: row.Name, Description: row.Description, Builtin: row.Builtin}
+	return resourceGroupFrom(row, storage.ResourceGroupCounts{})
+}
+
+func resourceGroupFrom(row storage.ResourceGroupRow, counts storage.ResourceGroupCounts) ResourceGroup {
+	return ResourceGroup{ID: row.ID, Name: row.Name, Description: row.Description, Builtin: row.Builtin, GrantCount: counts.GrantCount, ResourceCount: counts.ResourceCount}
 }
 
 func (m *Manager) GrantResourceGroup(ctx context.Context, actor Actor, subjectKind, subjectID, groupID string) error {
@@ -914,6 +1006,128 @@ func (m *Manager) BindResource(ctx context.Context, actor Actor, kind, id, group
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	return err
+}
+
+func (m *Manager) UnbindResource(ctx context.Context, actor Actor, kind, id string) error {
+	if !actor.Has(PermissionSystemAdmin) {
+		return ErrForbidden
+	}
+	normalizedKind, normalizedID := strings.TrimSpace(kind), strings.TrimSpace(id)
+	if normalizedKind == "" || normalizedID == "" || normalizedKind != kind || normalizedID != id {
+		return ErrInvalidInput
+	}
+	exists, err := m.store.ResourceExists(ctx, kind, id)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	admin, err := m.resourceGroupAdmin()
+	if err != nil {
+		return err
+	}
+	return admin.UnbindResource(ctx, kind, id)
+}
+
+func (m *Manager) ListResources(ctx context.Context, actor Actor, kind, q string) ([]storage.ResourceCatalogItem, error) {
+	kind = strings.TrimSpace(kind)
+	if kind != "" && !catalogResourceKindKnown(kind) {
+		return nil, ErrInvalidInput
+	}
+	admin, err := m.resourceGroupAdmin()
+	if err != nil {
+		return nil, err
+	}
+	items, err := admin.ListResourceCatalog(ctx, kind, q)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]storage.ResourceCatalogItem, 0, len(items))
+	for _, item := range items {
+		if actor.CanAccessGroup(item.ResourceGroupID) {
+			visible = append(visible, item)
+		}
+	}
+	return visible, nil
+}
+
+func (m *Manager) resourceGroupAdmin() (resourceGroupAdminStore, error) {
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("access manager store is required")
+	}
+	store, ok := m.store.(resourceGroupAdminStore)
+	if !ok {
+		return nil, fmt.Errorf("resource group administration store is unavailable")
+	}
+	return store, nil
+}
+
+func (m *Manager) listResourceGroupRows(ctx context.Context, q string) ([]storage.ResourceGroupRow, map[string]storage.ResourceGroupCounts, error) {
+	if admin, err := m.resourceGroupAdmin(); err == nil {
+		rows, listErr := admin.ListResourceGroupsFiltered(ctx, q)
+		if listErr != nil {
+			return nil, nil, listErr
+		}
+		counts, countErr := admin.ResourceGroupCounts(ctx)
+		if countErr != nil {
+			return nil, nil, countErr
+		}
+		return rows, counts, nil
+	}
+	rows, err := m.store.ListResourceGroups(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return rows, map[string]storage.ResourceGroupCounts{}, nil
+	}
+	filtered := make([]storage.ResourceGroupRow, 0, len(rows))
+	for _, row := range rows {
+		if strings.Contains(strings.ToLower(row.Name), q) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, map[string]storage.ResourceGroupCounts{}, nil
+}
+
+func (m *Manager) decorateResourceGroup(ctx context.Context, row storage.ResourceGroupRow) (ResourceGroup, error) {
+	counts := storage.ResourceGroupCounts{}
+	if admin, err := m.resourceGroupAdmin(); err == nil {
+		all, countErr := admin.ResourceGroupCounts(ctx)
+		if countErr != nil {
+			return ResourceGroup{}, countErr
+		}
+		counts = all[row.ID]
+	}
+	return resourceGroupFrom(row, counts), nil
+}
+
+func mapResourceGroupWriteError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, storage.ErrResourceGroupNameTaken):
+		return newFieldError("name", "name already exists")
+	default:
+		return err
+	}
+}
+
+func emptyResourceGroupMembers() map[string][]storage.ResourceCatalogItem {
+	return map[string][]storage.ResourceCatalogItem{
+		"agent": {}, "http_rule": {}, "l4_rule": {}, "relay_listener": {}, "certificate": {}, "egress_profile": {},
+	}
+}
+
+func catalogResourceKindKnown(kind string) bool {
+	switch kind {
+	case "agent", "http_rule", "l4_rule", "relay_listener", "certificate", "egress_profile":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) UpsertQuotaPolicy(ctx context.Context, actor Actor, row storage.QuotaPolicyRow) (storage.QuotaPolicyRow, error) {
@@ -1231,6 +1445,10 @@ func errorClass(err error) string {
 		return ""
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return "quota_exceeded"
+	case errors.Is(err, storage.ErrResourceGroupHasDependencies):
+		return "resource_group_in_use"
+	case errors.Is(err, storage.ErrBuiltinResourceGroup):
+		return "builtin_resource_group_protected"
 	case errors.Is(err, ErrForbidden):
 		return "forbidden"
 	case errors.Is(err, ErrLastAdministrator):

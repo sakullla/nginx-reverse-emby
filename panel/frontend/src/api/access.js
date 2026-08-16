@@ -41,6 +41,22 @@ function userPath(id) {
   return `/access/users/${encodeURIComponent(id)}`
 }
 
+function resourceGroupPath(id) {
+  return `/access/resource-groups/${encodeURIComponent(id)}`
+}
+
+function trimmedQuery(value) {
+  return String(value ?? '').trim()
+}
+
+function optionalParams(params) {
+  const next = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (value) next[key] = value
+  }
+  return Object.keys(next).length ? { params: next } : undefined
+}
+
 function createUserInput(input = {}) {
   return {
     username: input.username,
@@ -56,6 +72,43 @@ function updateUserInput(input = {}) {
   if (Object.hasOwn(input, 'role_ids')) payload.role_ids = input.role_ids
   if (Object.hasOwn(input, 'disabled')) payload.disabled = input.disabled
   return payload
+}
+
+function createResourceGroupInput(input = {}) {
+  return {
+    name: input.name,
+    description: input.description
+  }
+}
+
+function updateResourceGroupInput(input = {}) {
+  const payload = {}
+  if (Object.hasOwn(input, 'name')) payload.name = input.name
+  if (Object.hasOwn(input, 'description')) payload.description = input.description
+  return payload
+}
+
+function resourceGroupGrantInput(input = {}) {
+  return {
+    subject_kind: input.subject_kind,
+    subject_id: input.subject_id,
+    resource_group_id: input.resource_group_id
+  }
+}
+
+function resourceBindingInput(input = {}) {
+  return {
+    resource_kind: input.resource_kind,
+    resource_id: input.resource_id,
+    resource_group_id: input.resource_group_id
+  }
+}
+
+function resourceUnbindInput(input = {}) {
+  return {
+    resource_kind: input.resource_kind,
+    resource_id: input.resource_id
+  }
 }
 
 export async function login(username, password) {
@@ -112,11 +165,54 @@ export const fetchRoles = () => api.get('/access/roles').then(body).then((data) 
 export const createRole = (input) => api.post('/access/roles', input).then(body).then((data) => data.role)
 export const updateRolePermissions = (id, permissions) => api.put(`/access/roles/${encodeURIComponent(id)}`, { permissions }).then(body).then((data) => data.role)
 export const fetchPermissions = () => api.get('/access/permissions').then(body).then((data) => data.permissions)
-export const fetchResourceGroups = () => api.get('/access/resource-groups').then(body).then((data) => data.resource_groups)
-export const createResourceGroup = (input) => api.post('/access/resource-groups', input).then(body).then((data) => data.resource_group)
-export const fetchResourceGroupGrants = () => api.get('/access/resource-group-grants').then(body).then((data) => data.resource_group_grants)
-export const grantResourceGroup = (input) => api.post('/access/resource-group-grants', input).then(body)
-export const bindResource = (input) => api.post('/access/resource-bindings', input).then(body)
+export function fetchResourceGroups(query) {
+  return withAccessError(api.get('/access/resource-groups', optionalParams({ q: trimmedQuery(query?.q) })))
+    .then(body)
+    .then((data) => (Array.isArray(data.resource_groups) ? data.resource_groups : []))
+}
+export function fetchResourceGroup(id) {
+  return withAccessError(api.get(resourceGroupPath(id)))
+    .then(body)
+    .then((data) => data.resource_group)
+}
+export function createResourceGroup(input) {
+  return withAccessError(api.post('/access/resource-groups', createResourceGroupInput(input)))
+    .then(body)
+    .then((data) => data.resource_group)
+}
+export function updateResourceGroup(id, input) {
+  return withAccessError(api.put(resourceGroupPath(id), updateResourceGroupInput(input)))
+    .then(body)
+    .then((data) => data.resource_group)
+}
+export function deleteResourceGroup(id) {
+  return withAccessError(api.delete(resourceGroupPath(id))).then(body)
+}
+export function fetchResourceGroupGrants() {
+  return withAccessError(api.get('/access/resource-group-grants'))
+    .then(body)
+    .then((data) => (Array.isArray(data.resource_group_grants) ? data.resource_group_grants : []))
+}
+export function grantResourceGroup(input) {
+  return withAccessError(api.post('/access/resource-group-grants', resourceGroupGrantInput(input))).then(body)
+}
+export function revokeResourceGroupGrant(input) {
+  return withAccessError(api.delete('/access/resource-group-grants', { data: resourceGroupGrantInput(input) })).then(body)
+}
+export function fetchResources(query) {
+  return withAccessError(api.get('/access/resources', optionalParams({
+    kind: trimmedQuery(query?.kind),
+    q: trimmedQuery(query?.q)
+  })))
+    .then(body)
+    .then((data) => (Array.isArray(data.resources) ? data.resources : []))
+}
+export function bindResource(input) {
+  return withAccessError(api.post('/access/resource-bindings', resourceBindingInput(input))).then(body)
+}
+export function unbindResource(input) {
+  return withAccessError(api.delete('/access/resource-bindings', { data: resourceUnbindInput(input) })).then(body)
+}
 export const fetchQuotaPolicies = () => api.get('/access/quota-policies').then(body).then((data) => data.quota_policies)
 export const fetchQuotaOverview = () => api.get('/access/quota-policies').then(body)
 export const saveQuotaPolicy = (input) => api.post('/access/quota-policies', input).then(body).then((data) => data.quota_policy)

@@ -502,6 +502,460 @@ func TestChangeAndResetPasswordRevokeSessions(t *testing.T) {
 	assertUserHasNoSecretMaterial(t, reloaded)
 }
 
+func TestResourceGroupUpdateDeleteAndDependencies(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-1", Name: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	editorRole, err := manager.CreateRole(ctx, "group-editor", "", []string{authz.PermissionAccessManage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor, err := manager.CreateUser(ctx, "editor", "Editor", "correct-horse-battery", []string{editorRole.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	editorLogin, err := manager.Login(ctx, editor.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := manager.CreateResourceGroup(ctx, "media", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated authz.ResourceGroup
+	err = manager.AuditedMutation(ctx, editorLogin.Actor, "access.resource_group.update", "resource_group", group.ID, group.ID, nil, func(tx *authz.Manager) (string, error) {
+		var updateErr error
+		updated, updateErr = tx.UpdateResourceGroup(ctx, editorLogin.Actor, group.ID, "media-core", "updated")
+		return group.ID, updateErr
+	})
+	if err != nil {
+		t.Fatalf("UpdateResourceGroup() error = %v", err)
+	}
+	if updated.Name != "media-core" || updated.Description != "updated" || updated.ID != group.ID || updated.Builtin {
+		t.Fatalf("updated group = %+v", updated)
+	}
+	reloaded, err := manager.GetResourceGroup(ctx, admin, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Name != "media-core" || reloaded.Description != "updated" || reloaded.Builtin {
+		t.Fatalf("GetResourceGroup() after update = %+v", reloaded.ResourceGroup)
+	}
+
+	defaultGroup, err := manager.GetResourceGroup(ctx, admin, authz.DefaultResourceGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpdateResourceGroup(ctx, editorLogin.Actor, authz.DefaultResourceGroup, "renamed-default", "fallback notes"); !errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		t.Fatalf("UpdateResourceGroup(default name) error = %v, want builtin protected", err)
+	}
+	described, err := manager.UpdateResourceGroup(ctx, editorLogin.Actor, authz.DefaultResourceGroup, "", "fallback notes")
+	if err != nil {
+		t.Fatalf("UpdateResourceGroup(default description) error = %v", err)
+	}
+	if described.ID != authz.DefaultResourceGroup || described.Name != defaultGroup.Name || !described.Builtin || described.Description != "fallback notes" {
+		t.Fatalf("default after description update = %+v", described)
+	}
+
+	if err := manager.DeleteResourceGroup(ctx, admin, authz.DefaultResourceGroup); !errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		t.Fatalf("DeleteResourceGroup(default) error = %v, want builtin protected", err)
+	}
+	if _, err := manager.GetResourceGroup(ctx, admin, authz.DefaultResourceGroup); err != nil {
+		t.Fatalf("default group missing after rejected delete: %v", err)
+	}
+
+	if err := manager.GrantResourceGroup(ctx, admin, "user", editor.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(ctx, admin, "agent", "edge-1", group.ID); err != nil {
+		t.Fatal(err)
+	}
+	err = manager.AuditedMutation(ctx, admin, "access.resource_group.delete", "resource_group", group.ID, group.ID, nil, func(tx *authz.Manager) (string, error) {
+		return group.ID, tx.DeleteResourceGroup(ctx, admin, group.ID)
+	})
+	var deps *storage.ResourceGroupHasDependenciesError
+	if !errors.As(err, &deps) || !errors.Is(err, storage.ErrResourceGroupHasDependencies) {
+		t.Fatalf("DeleteResourceGroup(in use) error = %v, want classified dependencies", err)
+	}
+	if len(deps.Grants) != 1 || deps.Grants[0].SubjectKind != "user" || deps.Grants[0].SubjectID != editor.ID {
+		t.Fatalf("dependency grants = %+v", deps.Grants)
+	}
+	if len(deps.Bindings) != 1 || deps.Bindings[0].ResourceKind != "agent" || deps.Bindings[0].ResourceID != "edge-1" {
+		t.Fatalf("dependency bindings = %+v", deps.Bindings)
+	}
+	if _, err := manager.GetResourceGroup(ctx, admin, group.ID); err != nil {
+		t.Fatalf("in-use group disappeared: %v", err)
+	}
+
+	if err := manager.RevokeResourceGroupGrant(ctx, admin, "user", editor.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.UnbindResource(ctx, admin, "agent", "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	err = manager.AuditedMutation(ctx, admin, "access.resource_group.delete", "resource_group", group.ID, group.ID, nil, func(tx *authz.Manager) (string, error) {
+		return group.ID, tx.DeleteResourceGroup(ctx, admin, group.ID)
+	})
+	if err != nil {
+		t.Fatalf("DeleteResourceGroup(empty) error = %v", err)
+	}
+	if _, err := manager.GetResourceGroup(ctx, admin, group.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("GetResourceGroup() after delete error = %v, want not found", err)
+	}
+	listed, err := manager.ListResourceGroups(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed {
+		if item.ID == group.ID {
+			t.Fatalf("deleted group still listed: %+v", item)
+		}
+	}
+}
+
+func TestResourceGroupListDetailCatalogAndQuery(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "hidden-edge", Name: "hidden-edge"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{{ID: 1, AgentID: "edge-a", FrontendURL: "https://emby.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	visible, err := manager.CreateResourceGroup(ctx, "media-team", "visible team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(ctx, "other-group", "hidden team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(ctx, "catalog-reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(ctx, "reader", "Reader", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(ctx, admin, "user", user.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(ctx, admin, "role", role.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(ctx, admin, "agent", "edge-a", visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(ctx, admin, "agent", "hidden-edge", hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := manager.ListResourceGroups(ctx, login.Actor, "  MEDIA ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != visible.ID || listed[0].GrantCount != 2 || listed[0].ResourceCount < 1 {
+		t.Fatalf("ListResourceGroups(q) = %+v", listed)
+	}
+	hiddenListed, err := manager.ListResourceGroups(ctx, login.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range hiddenListed {
+		if item.ID == hidden.ID {
+			t.Fatalf("scoped list leaked hidden group: %+v", hiddenListed)
+		}
+	}
+
+	detail, err := manager.GetResourceGroup(ctx, login.Actor, visible.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.GrantCount != 2 || detail.ResourceCount < 2 {
+		t.Fatalf("detail counts = grant %d resource %d", detail.GrantCount, detail.ResourceCount)
+	}
+	if len(detail.Grants) != 2 {
+		t.Fatalf("detail grants = %+v", detail.Grants)
+	}
+	if len(detail.Members["agent"]) != 1 || detail.Members["agent"][0].ID != "edge-a" {
+		t.Fatalf("detail agent members = %+v", detail.Members["agent"])
+	}
+	if len(detail.Members["http_rule"]) != 1 || detail.Members["http_rule"][0].ID != "edge-a:1" {
+		t.Fatalf("detail http_rule members = %+v", detail.Members["http_rule"])
+	}
+	if _, err := manager.GetResourceGroup(ctx, login.Actor, hidden.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("GetResourceGroup(hidden) error = %v, want not found", err)
+	}
+
+	catalog, err := manager.ListResources(ctx, login.Actor, "agent", "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || catalog[0].ID != "edge-a" || catalog[0].ResourceGroupID != visible.ID {
+		t.Fatalf("ListResources(visible) = %+v", catalog)
+	}
+	allVisible, err := manager.ListResources(ctx, login.Actor, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range allVisible {
+		if item.ID == "hidden-edge" || item.ResourceGroupID == hidden.ID {
+			t.Fatalf("catalog leaked hidden resource: %+v", item)
+		}
+	}
+	if _, err := manager.ListResources(ctx, login.Actor, "unknown", ""); !errors.Is(err, authz.ErrInvalidInput) {
+		t.Fatalf("ListResources(unknown kind) error = %v, want invalid input", err)
+	}
+}
+
+func TestResourceGroupGrantRevokeMoveAndUnbindFallback(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-1", Name: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	role, err := manager.CreateRole(ctx, "grant-reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(ctx, "grant-user", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := manager.CreateResourceGroup(ctx, "source-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := manager.CreateResourceGroup(ctx, "target-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = manager.AuditedMutation(ctx, admin, "access.resource_group.grant", "user", user.ID, source.ID, nil, func(tx *authz.Manager) (string, error) {
+		return user.ID, tx.GrantResourceGroup(ctx, admin, "user", user.ID, source.ID)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(ctx, admin, "user", user.ID, source.ID); err != nil {
+		t.Fatalf("duplicate GrantResourceGroup() error = %v", err)
+	}
+	if err := manager.GrantResourceGroup(ctx, admin, "user", user.ID, target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(ctx, admin, "agent", "edge-1", source.ID); err != nil {
+		t.Fatal(err)
+	}
+	sourceDetail, err := manager.GetResourceGroup(ctx, admin, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchingGrants := 0
+	for _, grant := range sourceDetail.Grants {
+		if grant.SubjectKind == "user" && grant.SubjectID == user.ID && grant.ResourceGroupID == source.ID {
+			matchingGrants++
+		}
+	}
+	if matchingGrants != 1 {
+		t.Fatalf("duplicate grant count = %d, want 1: %+v", matchingGrants, sourceDetail.Grants)
+	}
+
+	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, login.Actor, authz.PermissionResourceRead, "agent", "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	err = manager.AuditedMutation(ctx, admin, "access.resource.move", "agent", "edge-1", target.ID, nil, func(tx *authz.Manager) (string, error) {
+		return "edge-1", tx.BindResource(ctx, admin, "agent", "edge-1", target.ID)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.GetResourceBinding(ctx, "agent", "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ResourceGroupID != target.ID {
+		t.Fatalf("moved binding group = %q, want %s", binding.ResourceGroupID, target.ID)
+	}
+	sourceAfterMove, err := manager.GetResourceGroup(ctx, admin, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range sourceAfterMove.Members["agent"] {
+		if member.ID == "edge-1" {
+			t.Fatalf("moved resource still in source members: %+v", sourceAfterMove.Members)
+		}
+	}
+	targetDetail, err := manager.GetResourceGroup(ctx, admin, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTarget := false
+	for _, member := range targetDetail.Members["agent"] {
+		if member.ID == "edge-1" {
+			foundTarget = true
+		}
+	}
+	if !foundTarget {
+		t.Fatalf("moved resource missing from target members: %+v", targetDetail.Members)
+	}
+	refreshed, err := manager.AuthenticateSession(ctx, login.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, refreshed, authz.PermissionResourceRead, "agent", "edge-1"); err != nil {
+		t.Fatalf("AuthorizeResource() after move error = %v", err)
+	}
+
+	err = manager.AuditedMutation(ctx, admin, "access.resource_group.revoke", "user", user.ID, target.ID, nil, func(tx *authz.Manager) (string, error) {
+		return user.ID, tx.RevokeResourceGroupGrant(ctx, admin, "user", user.ID, target.ID)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRevoke, err := manager.AuthenticateSession(ctx, login.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, afterRevoke, authz.PermissionResourceRead, "agent", "edge-1"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("AuthorizeResource() after revoke error = %v, want forbidden", err)
+	}
+
+	err = manager.AuditedMutation(ctx, admin, "access.resource.unbind", "agent", "edge-1", "", nil, func(tx *authz.Manager) (string, error) {
+		return "edge-1", tx.UnbindResource(ctx, admin, "agent", "edge-1")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetResourceBinding(ctx, "agent", "edge-1"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("GetResourceBinding() after unbind error = %v, want not found", err)
+	}
+	unboundCatalog, err := manager.ListResources(ctx, admin, "agent", "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unboundCatalog) != 1 || unboundCatalog[0].ResourceGroupID != authz.DefaultResourceGroup {
+		t.Fatalf("unbound catalog = %+v, want default", unboundCatalog)
+	}
+	allowed, err := manager.CanAccessResource(ctx, afterRevoke, "agent", "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed {
+		t.Fatal("scoped actor still sees unbound resource without default grant")
+	}
+	operator, err := manager.CreateUser(ctx, "ops", "", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opsLogin, err := manager.Login(ctx, operator.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, opsLogin.Actor, authz.PermissionResourceRead, "agent", "edge-1"); err != nil {
+		t.Fatalf("default fallback after unbind = %v", err)
+	}
+}
+
+func TestResourceGroupMutationsRequireMatchingPermissions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	group, err := manager.CreateResourceGroup(ctx, "locked-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessRole, err := manager.CreateRole(ctx, "access-manager", "", []string{authz.PermissionAccessManage, authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerRole, err := manager.CreateRole(ctx, "reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessUser, err := manager.CreateUser(ctx, "access-manager", "", "correct-horse-battery", []string{accessRole.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := manager.CreateUser(ctx, "reader", "", "correct-horse-battery", []string{readerRole.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	if err := manager.GrantResourceGroup(ctx, admin, "user", accessUser.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(ctx, admin, "user", reader.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	accessLogin, err := manager.Login(ctx, accessUser.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerLogin, err := manager.Login(ctx, reader.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpdateResourceGroup(ctx, readerLogin.Actor, group.ID, "renamed", ""); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("UpdateResourceGroup(reader) error = %v, want forbidden", err)
+	}
+	if _, err := manager.UpdateResourceGroup(ctx, accessLogin.Actor, group.ID, "renamed", "ok"); err != nil {
+		t.Fatalf("UpdateResourceGroup(access.manage) error = %v", err)
+	}
+	if err := manager.DeleteResourceGroup(ctx, accessLogin.Actor, group.ID); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("DeleteResourceGroup(access.manage) error = %v, want forbidden", err)
+	}
+	if err := manager.UnbindResource(ctx, accessLogin.Actor, "agent", "edge-1"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("UnbindResource(access.manage) error = %v, want forbidden", err)
+	}
+	if err := manager.GrantResourceGroup(ctx, accessLogin.Actor, "user", reader.ID, group.ID); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("GrantResourceGroup(access.manage) error = %v, want forbidden", err)
+	}
+	if err := manager.BindResource(ctx, accessLogin.Actor, "agent", "edge-1", group.ID); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("BindResource(access.manage) error = %v, want forbidden", err)
+	}
+	if _, err := manager.GetResourceGroup(ctx, readerLogin.Actor, group.ID); err != nil {
+		t.Fatalf("GetResourceGroup(reader) error = %v", err)
+	}
+}
+
 func TestPasswordFailuresLeaveCredentialsAndSessions(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

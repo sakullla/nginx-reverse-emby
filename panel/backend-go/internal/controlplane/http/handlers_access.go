@@ -370,7 +370,7 @@ func (d Dependencies) handleResourceGroups(w http.ResponseWriter, r *http.Reques
 			writeAccessError(w, err)
 			return
 		}
-		groups, err := d.AccessManager.ListResourceGroups(r.Context(), actor)
+		groups, err := d.AccessManager.ListResourceGroups(r.Context(), actor, r.URL.Query().Get("q"))
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -403,6 +403,102 @@ func (d Dependencies) handleResourceGroups(w http.ResponseWriter, r *http.Reques
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
 	}
+}
+
+func (d Dependencies) handleResourceGroup(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	id := r.PathValue("id")
+	switch r.Method {
+	case http.MethodGet:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "resource_group", id, id); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		group, err := d.AccessManager.GetResourceGroup(r.Context(), actor, id)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_group": group})
+	case http.MethodPut:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionAccessManage, "resource_group", id, id); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var input struct {
+			Name        *string `json:"name"`
+			Description *string `json:"description"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		if input.Name == nil && input.Description == nil {
+			writeAccessError(w, authz.ErrInvalidInput)
+			return
+		}
+		var group authz.ResourceGroup
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.update", "resource_group", id, id, nil, func(tx *authz.Manager) (string, error) {
+			name, description, err := resourceGroupUpdateFields(r.Context(), tx, actor, id, input.Name, input.Description)
+			if err != nil {
+				return id, err
+			}
+			group, err = tx.UpdateResourceGroup(r.Context(), actor, id, name, description)
+			return id, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_group": group})
+	case http.MethodDelete:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSystemAdmin, "resource_group", id, id); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.delete", "resource_group", id, id, nil, func(tx *authz.Manager) (string, error) {
+			return id, tx.DeleteResourceGroup(r.Context(), actor, id)
+		})
+		if err != nil {
+			if errors.Is(err, storage.ErrBuiltinResourceGroup) {
+				payload := errorPayloadCode("resource_group_protected", "builtin resource group cannot be deleted")
+				payload["details"] = map[string]any{"reason": "builtin", "id": id}
+				writeJSON(w, http.StatusConflict, payload)
+				return
+			}
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleResources(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "resource", "list", ""); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	items, err := d.AccessManager.ListResources(r.Context(), actor, r.URL.Query().Get("kind"), r.URL.Query().Get("q"))
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resources": items})
 }
 
 func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.Request) {
@@ -456,6 +552,25 @@ func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.R
 func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Request) {
 	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSystemAdmin)
 	if !ok {
+		return
+	}
+	if r.Method == http.MethodDelete {
+		var input struct {
+			ResourceKind string `json:"resource_kind"`
+			ResourceID   string `json:"resource_id"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.unbind", input.ResourceKind, input.ResourceID, "", nil, func(tx *authz.Manager) (string, error) {
+			return input.ResourceID, tx.UnbindResource(r.Context(), actor, input.ResourceKind, input.ResourceID)
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -773,6 +888,10 @@ func writeAccessError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "permission_denied", "permission denied"
 	case errors.Is(err, authz.ErrLastAdministrator):
 		status, code, message = http.StatusConflict, "last_admin_protected", "cannot disable or demote the last sign-in capable full administrator"
+	case errors.Is(err, storage.ErrResourceGroupHasDependencies):
+		status, code, message = http.StatusConflict, "resource_group_in_use", "resource group still has grants or bindings"
+	case errors.Is(err, storage.ErrBuiltinResourceGroup):
+		status, code, message = http.StatusConflict, "resource_group_protected", "builtin resource group cannot be changed"
 	case errors.Is(err, authz.ErrInvalidInput), errors.Is(err, secrets.ErrInvalidSecret):
 		status, code, message = http.StatusBadRequest, "invalid_input", "invalid request"
 	case errors.Is(err, storage.ErrQuotaExceeded):
@@ -788,11 +907,54 @@ func writeAccessError(w http.ResponseWriter, err error) {
 	if errors.Is(err, authz.ErrLastAdministrator) {
 		payload["details"] = map[string]any{"reason": "last_admin"}
 	}
+	if errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		payload["details"] = map[string]any{"reason": "builtin"}
+	}
+	var deps *storage.ResourceGroupHasDependenciesError
+	if errors.As(err, &deps) {
+		payload["details"] = resourceGroupDependencyDetails(deps)
+	}
 	var fieldErr *authz.FieldError
 	if errors.As(err, &fieldErr) && len(fieldErr.Fields) > 0 {
 		payload["fields"] = fieldErr.Fields
 	}
 	writeJSON(w, status, payload)
+}
+
+func resourceGroupUpdateFields(ctx context.Context, manager *authz.Manager, actor authz.Actor, id string, name, description *string) (string, string, error) {
+	current, err := manager.GetResourceGroup(ctx, actor, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		current, err = manager.GetResourceGroup(ctx, authz.BootstrapActor(), id)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	nextName, nextDescription := current.Name, current.Description
+	if name != nil {
+		nextName = *name
+	}
+	if description != nil {
+		nextDescription = *description
+	}
+	return nextName, nextDescription, nil
+}
+
+func resourceGroupDependencyDetails(deps *storage.ResourceGroupHasDependenciesError) map[string]any {
+	if deps == nil {
+		return map[string]any{"grants": []map[string]string{}, "bindings": []map[string]string{}}
+	}
+	details := deps.Details()
+	if grants, ok := details["grants"].([]map[string]string); ok {
+		for _, grant := range grants {
+			grant["resource_group_id"] = deps.ResourceGroupID
+		}
+	}
+	if bindings, ok := details["bindings"].([]map[string]string); ok {
+		for _, binding := range bindings {
+			binding["resource_group_id"] = deps.ResourceGroupID
+		}
+	}
+	return details
 }
 
 func filterAccessUsers(users []authz.User, raw string) []authz.User {

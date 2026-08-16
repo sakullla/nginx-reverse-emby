@@ -24,7 +24,64 @@ var (
 	ErrCertificateGroupMismatch     = errors.New("certificate resource group does not match target agents")
 	ErrUsernameTaken                = errors.New("unique username constraint")
 	ErrLastFullAdministrator        = errors.New("last full administrator protected")
+	ErrBuiltinResourceGroup         = errors.New("builtin resource group protected")
+	ErrResourceGroupNameTaken       = errors.New("unique resource group name constraint")
+	ErrResourceGroupHasDependencies = errors.New("resource group still has dependencies")
 )
+
+// ResourceGroupHasDependenciesError lists the grant and binding rows that still
+// pin a custom group. Callers must revoke or unbind these before delete.
+type ResourceGroupHasDependenciesError struct {
+	ResourceGroupID string
+	Grants          []ResourceGroupGrantRow
+	Bindings        []ResourceBindingRow
+}
+
+func (e *ResourceGroupHasDependenciesError) Error() string {
+	return ErrResourceGroupHasDependencies.Error()
+}
+
+func (e *ResourceGroupHasDependenciesError) Unwrap() error {
+	return ErrResourceGroupHasDependencies
+}
+
+func (e *ResourceGroupHasDependenciesError) Details() map[string]any {
+	if e == nil {
+		return map[string]any{"grants": []map[string]string{}, "bindings": []map[string]string{}}
+	}
+	grants := make([]map[string]string, 0, len(e.Grants))
+	for _, grant := range e.Grants {
+		grants = append(grants, map[string]string{
+			"subject_kind": grant.SubjectKind,
+			"subject_id":   grant.SubjectID,
+		})
+	}
+	bindings := make([]map[string]string, 0, len(e.Bindings))
+	for _, binding := range e.Bindings {
+		bindings = append(bindings, map[string]string{
+			"resource_kind": binding.ResourceKind,
+			"resource_id":   binding.ResourceID,
+		})
+	}
+	return map[string]any{"grants": grants, "bindings": bindings}
+}
+
+type ResourceGroupCounts struct {
+	GrantCount    int64 `json:"grant_count"`
+	ResourceCount int64 `json:"resource_count"`
+}
+
+// ResourceCatalogItem is one existing resource of a ResourceExists kind, with
+// the group resolved by the binding unique key and default fallback.
+type ResourceCatalogItem struct {
+	Kind            string `json:"kind"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Context         string `json:"context,omitempty"`
+	ResourceGroupID string `json:"resource_group_id"`
+}
+
+const defaultResourceGroupID = "default"
 
 const (
 	agentBandwidthMetric    = "bandwidth_bytes_per_second"
@@ -377,8 +434,17 @@ func (s *GormStore) UpsertBuiltinResourceGroup(ctx context.Context, row Resource
 }
 
 func (s *GormStore) ListResourceGroups(ctx context.Context) ([]ResourceGroupRow, error) {
+	return s.ListResourceGroupsFiltered(ctx, "")
+}
+
+func (s *GormStore) ListResourceGroupsFiltered(ctx context.Context, q string) ([]ResourceGroupRow, error) {
+	query := s.db.WithContext(ctx).Model(&ResourceGroupRow{})
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q != "" {
+		query = query.Where("LOWER(name) LIKE ?", "%"+q+"%")
+	}
 	var rows []ResourceGroupRow
-	err := s.db.WithContext(ctx).Order("name ASC").Find(&rows).Error
+	err := query.Order("name ASC").Find(&rows).Error
 	return rows, err
 }
 
@@ -386,6 +452,128 @@ func (s *GormStore) GetResourceGroup(ctx context.Context, id string) (ResourceGr
 	var row ResourceGroupRow
 	err := s.db.WithContext(ctx).Where("id = ?", id).First(&row).Error
 	return row, err
+}
+
+func (s *GormStore) UpdateResourceGroup(ctx context.Context, id, name, description string) (ResourceGroupRow, error) {
+	var updated ResourceGroupRow
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var row ResourceGroupRow
+		if err := tx.Where("id = ?", id).First(&row).Error; err != nil {
+			return err
+		}
+		name = strings.TrimSpace(name)
+		description = strings.TrimSpace(description)
+		if row.Builtin {
+			if name != "" && name != row.Name {
+				return ErrBuiltinResourceGroup
+			}
+			name = row.Name
+		} else if name == "" {
+			return fmt.Errorf("resource group name is required")
+		}
+		if name != row.Name {
+			var clash ResourceGroupRow
+			clashErr := tx.Where("name = ? AND id <> ?", name, id).First(&clash).Error
+			if clashErr == nil {
+				return ErrResourceGroupNameTaken
+			}
+			if !errors.Is(clashErr, gorm.ErrRecordNotFound) {
+				return clashErr
+			}
+		}
+		now := time.Now().UTC()
+		result := tx.Model(&ResourceGroupRow{}).Where("id = ?", id).Updates(map[string]any{
+			"name": name, "description": description, "updated_at": now,
+		})
+		if result.Error != nil {
+			if isDuplicateKeyError(result.Error) {
+				return ErrResourceGroupNameTaken
+			}
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		row.Name = name
+		row.Description = description
+		row.UpdatedAt = now
+		updated = row
+		return nil
+	})
+	return updated, err
+}
+
+func (s *GormStore) DeleteResourceGroup(ctx context.Context, id string) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var row ResourceGroupRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&row).Error; err != nil {
+			return err
+		}
+		if row.Builtin || row.ID == defaultResourceGroupID {
+			return ErrBuiltinResourceGroup
+		}
+		var grants []ResourceGroupGrantRow
+		if err := tx.Where("resource_group_id = ?", id).Order("subject_kind ASC, subject_id ASC").Find(&grants).Error; err != nil {
+			return err
+		}
+		var bindings []ResourceBindingRow
+		if err := tx.Where("resource_group_id = ?", id).Order("resource_kind ASC, resource_id ASC").Find(&bindings).Error; err != nil {
+			return err
+		}
+		if len(grants) > 0 || len(bindings) > 0 {
+			return &ResourceGroupHasDependenciesError{ResourceGroupID: id, Grants: grants, Bindings: bindings}
+		}
+		result := tx.Where("id = ? AND builtin = ?", id, false).Delete(&ResourceGroupRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrBuiltinResourceGroup
+		}
+		return nil
+	})
+}
+
+func (s *GormStore) ListResourceGroupGrantsForGroup(ctx context.Context, groupID string) ([]ResourceGroupGrantRow, error) {
+	var rows []ResourceGroupGrantRow
+	err := s.db.WithContext(ctx).Where("resource_group_id = ?", groupID).Order("subject_kind ASC, subject_id ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (s *GormStore) ResourceGroupCounts(ctx context.Context) (map[string]ResourceGroupCounts, error) {
+	groups, err := s.ListResourceGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]ResourceGroupCounts, len(groups))
+	for _, group := range groups {
+		out[group.ID] = ResourceGroupCounts{}
+	}
+	var grantRows []struct {
+		ResourceGroupID string
+		Count           int64
+	}
+	if err := s.db.WithContext(ctx).Model(&ResourceGroupGrantRow{}).
+		Select("resource_group_id, COUNT(*) AS count").
+		Group("resource_group_id").
+		Scan(&grantRows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range grantRows {
+		counts := out[row.ResourceGroupID]
+		counts.GrantCount = row.Count
+		out[row.ResourceGroupID] = counts
+	}
+	items, err := s.ListResourceCatalog(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		counts := out[item.ResourceGroupID]
+		counts.ResourceCount++
+		out[item.ResourceGroupID] = counts
+	}
+	return out, nil
 }
 
 func (s *GormStore) GrantResourceGroup(ctx context.Context, row ResourceGroupGrantRow) error {
@@ -801,6 +989,295 @@ func (s *GormStore) GetResourceBinding(ctx context.Context, kind, id string) (Re
 	var row ResourceBindingRow
 	err := s.db.WithContext(ctx).Where("resource_kind = ? AND resource_id = ?", kind, id).First(&row).Error
 	return row, err
+}
+
+func (s *GormStore) ListResourceBindings(ctx context.Context) ([]ResourceBindingRow, error) {
+	var rows []ResourceBindingRow
+	err := s.db.WithContext(ctx).Order("resource_kind ASC, resource_id ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (s *GormStore) ListResourceBindingsForGroup(ctx context.Context, groupID string) ([]ResourceBindingRow, error) {
+	var rows []ResourceBindingRow
+	err := s.db.WithContext(ctx).Where("resource_group_id = ?", groupID).Order("resource_kind ASC, resource_id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// UnbindResource deletes the explicit binding row so access falls back to
+// default. It must not insert a default-group binding.
+func (s *GormStore) UnbindResource(ctx context.Context, kind, id string) error {
+	kind, id = strings.TrimSpace(kind), strings.TrimSpace(id)
+	if kind == "" || id == "" {
+		return fmt.Errorf("resource kind and id are required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		result := tx.Where("resource_kind = ? AND resource_id = ?", kind, id).Delete(&ResourceBindingRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+}
+
+func (s *GormStore) ResolveResourceGroupID(ctx context.Context, kind, id string) (string, error) {
+	kind, id = strings.TrimSpace(kind), strings.TrimSpace(id)
+	binding, err := s.GetResourceBinding(ctx, kind, id)
+	if err == nil {
+		if strings.TrimSpace(binding.ResourceGroupID) == "" {
+			return defaultResourceGroupID, nil
+		}
+		return binding.ResourceGroupID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", err
+	}
+	switch kind {
+	case "http_rule", "l4_rule", "relay_listener":
+		agentID, _, ok := splitBoundResourceID(id)
+		if ok {
+			parent, parentErr := s.GetResourceBinding(ctx, "agent", agentID)
+			if parentErr == nil {
+				if strings.TrimSpace(parent.ResourceGroupID) == "" {
+					return defaultResourceGroupID, nil
+				}
+				return parent.ResourceGroupID, nil
+			}
+			if !errors.Is(parentErr, gorm.ErrRecordNotFound) {
+				return "", parentErr
+			}
+		}
+	}
+	return defaultResourceGroupID, nil
+}
+
+func (s *GormStore) ListResourceCatalog(ctx context.Context, kind, q string) ([]ResourceCatalogItem, error) {
+	kind = strings.TrimSpace(kind)
+	if kind != "" && !catalogResourceKindKnown(kind) {
+		return []ResourceCatalogItem{}, nil
+	}
+	bindings, err := s.listResourceBindingGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	q = strings.ToLower(strings.TrimSpace(q))
+	items := make([]ResourceCatalogItem, 0)
+	kinds := catalogResourceKinds
+	if kind != "" {
+		kinds = []string{kind}
+	}
+	for _, itemKind := range kinds {
+		kindItems, err := s.listCatalogKind(ctx, itemKind, bindings)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, kindItems...)
+	}
+	if q != "" {
+		filtered := items[:0]
+		for _, item := range items {
+			if catalogItemMatches(item, q) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Kind != items[j].Kind {
+			return items[i].Kind < items[j].Kind
+		}
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].ID < items[j].ID
+	})
+	return items, nil
+}
+
+func (s *GormStore) ListResourceGroupMembers(ctx context.Context, groupID string) ([]ResourceCatalogItem, error) {
+	groupID = strings.TrimSpace(groupID)
+	items, err := s.ListResourceCatalog(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	members := make([]ResourceCatalogItem, 0)
+	for _, item := range items {
+		if item.ResourceGroupID == groupID {
+			members = append(members, item)
+		}
+	}
+	return members, nil
+}
+
+var catalogResourceKinds = []string{"agent", "http_rule", "l4_rule", "relay_listener", "certificate", "egress_profile"}
+
+func catalogResourceKindKnown(kind string) bool {
+	for _, known := range catalogResourceKinds {
+		if known == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *GormStore) listResourceBindingGroups(ctx context.Context) (map[string]string, error) {
+	var rows []ResourceBindingRow
+	if err := s.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		groupID := strings.TrimSpace(row.ResourceGroupID)
+		if groupID == "" {
+			groupID = defaultResourceGroupID
+		}
+		out[row.ResourceKind+"\x00"+row.ResourceID] = groupID
+	}
+	return out, nil
+}
+
+func resolveCatalogGroup(bindings map[string]string, kind, id, agentID string) string {
+	if groupID, ok := bindings[kind+"\x00"+id]; ok {
+		return groupID
+	}
+	if agentID != "" {
+		if groupID, ok := bindings["agent\x00"+agentID]; ok {
+			return groupID
+		}
+	}
+	return defaultResourceGroupID
+}
+
+func catalogItemMatches(item ResourceCatalogItem, q string) bool {
+	return strings.Contains(strings.ToLower(item.ID), q) ||
+		strings.Contains(strings.ToLower(item.Name), q) ||
+		strings.Contains(strings.ToLower(item.Context), q)
+}
+
+func (s *GormStore) listCatalogKind(ctx context.Context, kind string, bindings map[string]string) ([]ResourceCatalogItem, error) {
+	db := s.db.WithContext(ctx)
+	switch kind {
+	case "agent":
+		var rows []AgentRow
+		if err := db.Order("id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		items := make([]ResourceCatalogItem, 0, len(rows))
+		for _, row := range rows {
+			name := strings.TrimSpace(row.Name)
+			if name == "" {
+				name = row.ID
+			}
+			items = append(items, ResourceCatalogItem{
+				Kind: "agent", ID: row.ID, Name: name,
+				ResourceGroupID: resolveCatalogGroup(bindings, "agent", row.ID, ""),
+			})
+		}
+		return items, nil
+	case "http_rule":
+		var rows []HTTPRuleRow
+		if err := db.Order("agent_id ASC, id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		items := make([]ResourceCatalogItem, 0, len(rows))
+		for _, row := range rows {
+			id := row.AgentID + ":" + strconv.Itoa(row.ID)
+			name := strings.TrimSpace(row.FrontendURL)
+			if name == "" {
+				name = id
+			}
+			items = append(items, ResourceCatalogItem{
+				Kind: "http_rule", ID: id, Name: name, Context: row.AgentID,
+				ResourceGroupID: resolveCatalogGroup(bindings, "http_rule", id, row.AgentID),
+			})
+		}
+		return items, nil
+	case "l4_rule":
+		var rows []L4RuleRow
+		if err := db.Order("agent_id ASC, id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		items := make([]ResourceCatalogItem, 0, len(rows))
+		for _, row := range rows {
+			id := row.AgentID + ":" + strconv.Itoa(row.ID)
+			name := strings.TrimSpace(row.Name)
+			if name == "" {
+				name = strings.TrimSpace(row.ListenHost)
+				if row.ListenPort > 0 {
+					if name != "" {
+						name += ":"
+					}
+					name += strconv.Itoa(row.ListenPort)
+				}
+			}
+			if name == "" {
+				name = id
+			}
+			items = append(items, ResourceCatalogItem{
+				Kind: "l4_rule", ID: id, Name: name, Context: row.AgentID,
+				ResourceGroupID: resolveCatalogGroup(bindings, "l4_rule", id, row.AgentID),
+			})
+		}
+		return items, nil
+	case "relay_listener":
+		var rows []RelayListenerRow
+		if err := db.Order("agent_id ASC, id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		items := make([]ResourceCatalogItem, 0, len(rows))
+		for _, row := range rows {
+			id := row.AgentID + ":" + strconv.Itoa(row.ID)
+			name := strings.TrimSpace(row.Name)
+			if name == "" {
+				name = id
+			}
+			items = append(items, ResourceCatalogItem{
+				Kind: "relay_listener", ID: id, Name: name, Context: row.AgentID,
+				ResourceGroupID: resolveCatalogGroup(bindings, "relay_listener", id, row.AgentID),
+			})
+		}
+		return items, nil
+	case "certificate":
+		var rows []ManagedCertificateRow
+		if err := db.Order("id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		items := make([]ResourceCatalogItem, 0, len(rows))
+		for _, row := range rows {
+			id := strconv.Itoa(row.ID)
+			name := strings.TrimSpace(row.Domain)
+			if name == "" {
+				name = id
+			}
+			items = append(items, ResourceCatalogItem{
+				Kind: "certificate", ID: id, Name: name,
+				ResourceGroupID: resolveCatalogGroup(bindings, "certificate", id, ""),
+			})
+		}
+		return items, nil
+	case "egress_profile":
+		var rows []EgressProfileRow
+		if err := db.Order("id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		items := make([]ResourceCatalogItem, 0, len(rows))
+		for _, row := range rows {
+			id := strconv.Itoa(row.ID)
+			name := strings.TrimSpace(row.Name)
+			if name == "" {
+				name = id
+			}
+			items = append(items, ResourceCatalogItem{
+				Kind: "egress_profile", ID: id, Name: name, Context: row.Type,
+				ResourceGroupID: resolveCatalogGroup(bindings, "egress_profile", id, ""),
+			})
+		}
+		return items, nil
+	default:
+		return nil, nil
+	}
 }
 
 func (s *GormStore) ResourceExists(ctx context.Context, kind, id string) (bool, error) {

@@ -371,6 +371,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/access/roles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRoles)))
 		mux.Handle(prefix+"/access/roles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRole)))
 		mux.Handle(prefix+"/access/resource-groups", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroups)))
+		mux.Handle(prefix+"/access/resource-groups/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroup)))
+		mux.Handle(prefix+"/access/resources", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResources)))
 		mux.Handle(prefix+"/access/resource-group-grants", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroupGrants)))
 		mux.Handle(prefix+"/access/resource-bindings", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceBindings)))
 		mux.Handle(prefix+"/access/quota-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleQuotaPolicies)))

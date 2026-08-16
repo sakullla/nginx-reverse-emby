@@ -806,3 +806,511 @@ func assertJSONHasNoSecretMaterial(t *testing.T, raw []byte) {
 		}
 	}
 }
+
+func TestResourceGroupStoreProtectsDefaultCatalogAndUnbindFallback(t *testing.T) {
+	t.Parallel()
+	store := newHTTPAuthzStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	media := storage.ResourceGroupRow{ID: "rg_media", Name: "media", Description: "old", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateResourceGroup(t.Context(), media); err != nil {
+		t.Fatal(err)
+	}
+	other := storage.ResourceGroupRow{ID: "rg_other", Name: "other", Description: "other", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateResourceGroup(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.UpdateResourceGroup(t.Context(), media.ID, "media-library", "films")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "media-library" || updated.Description != "films" || updated.Builtin || updated.ID != media.ID {
+		t.Fatalf("updated custom group = %+v", updated)
+	}
+	reloaded, err := store.GetResourceGroup(t.Context(), media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Name != "media-library" || reloaded.Description != "films" {
+		t.Fatalf("persisted custom group = %+v", reloaded)
+	}
+	if _, err := store.UpdateResourceGroup(t.Context(), media.ID, "other", "clash"); !errors.Is(err, storage.ErrResourceGroupNameTaken) {
+		t.Fatalf("UpdateResourceGroup(duplicate name) error = %v", err)
+	}
+
+	defaultGroup, err := store.UpdateResourceGroup(t.Context(), authz.DefaultResourceGroup, authz.DefaultResourceGroup, "fallback display")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaultGroup.Builtin || defaultGroup.ID != authz.DefaultResourceGroup || defaultGroup.Name != authz.DefaultResourceGroup {
+		t.Fatalf("default identity changed: %+v", defaultGroup)
+	}
+	if defaultGroup.Description != "fallback display" {
+		t.Fatalf("default description = %q", defaultGroup.Description)
+	}
+	if _, err := store.UpdateResourceGroup(t.Context(), authz.DefaultResourceGroup, "renamed-default", "x"); !errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		t.Fatalf("UpdateResourceGroup(default name) error = %v", err)
+	}
+	if err := store.DeleteResourceGroup(t.Context(), authz.DefaultResourceGroup); !errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		t.Fatalf("DeleteResourceGroup(default) error = %v", err)
+	}
+	stillDefault, err := store.GetResourceGroup(t.Context(), authz.DefaultResourceGroup)
+	if err != nil || !stillDefault.Builtin {
+		t.Fatalf("default group after rejected delete = %+v err=%v", stillDefault, err)
+	}
+
+	filtered, err := store.ListResourceGroupsFiltered(t.Context(), "Media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != media.ID {
+		t.Fatalf("ListResourceGroupsFiltered(Media) = %+v", filtered)
+	}
+
+	user, err := manager.CreateUser(t.Context(), "viewer", "Viewer", "correct-horse-battery", []string{authz.RoleReadonly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.GrantResourceGroup(t.Context(), storage.ResourceGroupGrantRow{
+		ID: "grant_viewer_media", SubjectKind: "user", SubjectID: user.ID, ResourceGroupID: media.ID, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.GrantResourceGroup(t.Context(), storage.ResourceGroupGrantRow{
+		ID: "grant_viewer_media_dup", SubjectKind: "user", SubjectID: user.ID, ResourceGroupID: media.ID, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := store.ListResourceGroupGrantsForGroup(t.Context(), media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].SubjectID != user.ID {
+		t.Fatalf("duplicate grant was not kept as one row: %+v", grants)
+	}
+	err = store.DeleteResourceGroup(t.Context(), media.ID)
+	if !errors.Is(err, storage.ErrResourceGroupHasDependencies) {
+		t.Fatalf("DeleteResourceGroup(with grant) error = %v", err)
+	}
+	var grantDeps *storage.ResourceGroupHasDependenciesError
+	if !errors.As(err, &grantDeps) || grantDeps == nil || len(grantDeps.Grants) != 1 || len(grantDeps.Bindings) != 0 {
+		t.Fatalf("grant dependency details = %+v", grantDeps)
+	}
+	if details := grantDeps.Details(); len(details["grants"].([]map[string]string)) != 1 {
+		t.Fatalf("grant dependency details = %#v", details)
+	}
+	if _, err := store.GetResourceGroup(t.Context(), media.ID); err != nil {
+		t.Fatalf("group deleted while grant dependency exists: %v", err)
+	}
+
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-media", Name: "Media Edge"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "edge-media", []storage.HTTPRuleRow{{
+		ID: 1, FrontendURL: "https://media.example.com", BackendURL: "http://127.0.0.1:8096", Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := store.ListResourceCatalog(t.Context(), "agent", "media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || catalog[0].ID != "edge-media" || catalog[0].ResourceGroupID != authz.DefaultResourceGroup {
+		t.Fatalf("unbound catalog = %+v", catalog)
+	}
+	if groupID, err := store.ResolveResourceGroupID(t.Context(), "agent", "edge-media"); err != nil || groupID != authz.DefaultResourceGroup {
+		t.Fatalf("ResolveResourceGroupID(unbound) = %q err=%v", groupID, err)
+	}
+
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{
+		ID: "bind_media", ResourceKind: "agent", ResourceID: "edge-media", ResourceGroupID: media.ID, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if groupID, err := store.ResolveResourceGroupID(t.Context(), "agent", "edge-media"); err != nil || groupID != media.ID {
+		t.Fatalf("ResolveResourceGroupID(bound) = %q err=%v", groupID, err)
+	}
+	if groupID, err := store.ResolveResourceGroupID(t.Context(), "http_rule", "edge-media:1"); err != nil || groupID != media.ID {
+		t.Fatalf("inherited http_rule group = %q err=%v", groupID, err)
+	}
+	members, err := store.ListResourceGroupMembers(t.Context(), media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalogContains(members, "agent", "edge-media") || !catalogContains(members, "http_rule", "edge-media:1") {
+		t.Fatalf("media members = %+v", members)
+	}
+	counts, err := store.ResourceGroupCounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[media.ID].GrantCount != 1 || counts[media.ID].ResourceCount < 2 {
+		t.Fatalf("media counts = %+v", counts[media.ID])
+	}
+
+	err = store.DeleteResourceGroup(t.Context(), media.ID)
+	if !errors.Is(err, storage.ErrResourceGroupHasDependencies) {
+		t.Fatalf("DeleteResourceGroup(with binding) error = %v", err)
+	}
+	var bindingDeps *storage.ResourceGroupHasDependenciesError
+	if !errors.As(err, &bindingDeps) || bindingDeps == nil || len(bindingDeps.Bindings) == 0 {
+		t.Fatalf("binding dependency details = %+v", bindingDeps)
+	}
+
+	if err := store.UnbindResource(t.Context(), "agent", "edge-media"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetResourceBinding(t.Context(), "agent", "edge-media"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("explicit binding remained after unbind: %v", err)
+	}
+	if groupID, err := store.ResolveResourceGroupID(t.Context(), "agent", "edge-media"); err != nil || groupID != authz.DefaultResourceGroup {
+		t.Fatalf("ResolveResourceGroupID(unbound after delete) = %q err=%v", groupID, err)
+	}
+	defaultMembers, err := store.ListResourceGroupMembers(t.Context(), authz.DefaultResourceGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalogContains(defaultMembers, "agent", "edge-media") {
+		t.Fatalf("unbound agent missing from default members: %+v", defaultMembers)
+	}
+	agents, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAgent := false
+	for _, agent := range agents {
+		if agent.ID == "edge-media" {
+			foundAgent = true
+			if agent.Name != "Media Edge" {
+				t.Fatalf("unbind changed agent business config: %+v", agent)
+			}
+		}
+	}
+	if !foundAgent {
+		t.Fatal("agent row missing after unbind")
+	}
+
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{
+		ID: "bind_default", ResourceKind: "agent", ResourceID: "edge-media", ResourceGroupID: authz.DefaultResourceGroup, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	explicitDefault, err := store.GetResourceBinding(t.Context(), "agent", "edge-media")
+	if err != nil || explicitDefault.ResourceGroupID != authz.DefaultResourceGroup {
+		t.Fatalf("bind-to-default row = %+v err=%v", explicitDefault, err)
+	}
+	if err := store.UnbindResource(t.Context(), "agent", "edge-media"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetResourceBinding(t.Context(), "agent", "edge-media"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("unbind left a default binding row: %v", err)
+	}
+
+	if err := store.RevokeResourceGroupGrant(t.Context(), "user", user.ID, media.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteResourceGroup(t.Context(), media.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetResourceGroup(t.Context(), media.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("deleted group still present: %v", err)
+	}
+}
+
+func TestAccessResourceGroupOwnerContract(t *testing.T) {
+	t.Parallel()
+	env := newResourceGroupHTTP(t)
+	bootstrap := "secret"
+	password := "correct-horse-battery"
+
+	created := env.do(t, http.MethodPost, "/api/access/resource-groups", bootstrapToken(bootstrap), `{"name":"studio","description":"edit me"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create group status=%d body=%s", created.Code, created.Body.String())
+	}
+	group := decodeResourceGroup(t, created)
+	if group.ID == "" || group.Name != "studio" || group.Builtin {
+		t.Fatalf("created group = %+v", group)
+	}
+
+	listed := env.listGroups(t, bootstrap, "")
+	if !resourceGroupNamed(listed, "studio") {
+		t.Fatalf("created group missing from list: %+v", listed)
+	}
+
+	reader := env.do(t, http.MethodPost, "/api/access/users", bootstrapToken(bootstrap), `{
+		"username":"reader",
+		"display_name":"Reader",
+		"password":"`+password+`",
+		"role_ids":["readonly"]
+	}`)
+	if reader.Code != http.StatusCreated {
+		t.Fatalf("create reader status=%d body=%s", reader.Code, reader.Body.String())
+	}
+	readerUser := decodeUser(t, reader)
+
+	firstGrant := env.do(t, http.MethodPost, "/api/access/resource-group-grants", bootstrapToken(bootstrap), `{
+		"subject_kind":"user","subject_id":"`+readerUser.ID+`","resource_group_id":"`+group.ID+`"
+	}`)
+	if firstGrant.Code != http.StatusCreated {
+		t.Fatalf("grant status=%d body=%s", firstGrant.Code, firstGrant.Body.String())
+	}
+	dupGrant := env.do(t, http.MethodPost, "/api/access/resource-group-grants", bootstrapToken(bootstrap), `{
+		"subject_kind":"user","subject_id":"`+readerUser.ID+`","resource_group_id":"`+group.ID+`"
+	}`)
+	if dupGrant.Code != http.StatusCreated && dupGrant.Code != http.StatusOK {
+		t.Fatalf("duplicate grant status=%d body=%s", dupGrant.Code, dupGrant.Body.String())
+	}
+	grants := env.listGrants(t, bootstrap)
+	if countMatchingGrants(grants, "user", readerUser.ID, group.ID) != 1 {
+		t.Fatalf("duplicate grant rows = %+v", grants)
+	}
+
+	if err := env.store.SaveAgent(t.Context(), storage.AgentRow{ID: "studio-edge", Name: "Studio"}); err != nil {
+		t.Fatal(err)
+	}
+	bind := env.do(t, http.MethodPost, "/api/access/resource-bindings", bootstrapToken(bootstrap), `{
+		"resource_kind":"agent","resource_id":"studio-edge","resource_group_id":"`+group.ID+`"
+	}`)
+	if bind.Code != http.StatusCreated {
+		t.Fatalf("bind status=%d body=%s", bind.Code, bind.Body.String())
+	}
+
+	readerToken := env.login(t, "reader", password)
+	visible := env.do(t, http.MethodGet, "/api/access/resource-groups", sessionToken(readerToken), "")
+	if visible.Code != http.StatusOK {
+		t.Fatalf("reader list groups status=%d body=%s", visible.Code, visible.Body.String())
+	}
+	if !resourceGroupNamed(decodeResourceGroups(t, visible), "studio") {
+		t.Fatalf("reader did not see granted group: %s", visible.Body.String())
+	}
+
+	deniedGrant := env.do(t, http.MethodPost, "/api/access/resource-group-grants", sessionToken(readerToken), `{
+		"subject_kind":"user","subject_id":"`+readerUser.ID+`","resource_group_id":"`+group.ID+`"
+	}`)
+	if deniedGrant.Code != http.StatusForbidden {
+		t.Fatalf("reader grant status=%d body=%s", deniedGrant.Code, deniedGrant.Body.String())
+	}
+	if decodeMap(t, deniedGrant)["code"] != "permission_denied" {
+		t.Fatalf("reader grant body=%s", deniedGrant.Body.String())
+	}
+	deniedBind := env.do(t, http.MethodPost, "/api/access/resource-bindings", sessionToken(readerToken), `{
+		"resource_kind":"agent","resource_id":"studio-edge","resource_group_id":"`+group.ID+`"
+	}`)
+	if deniedBind.Code != http.StatusForbidden || decodeMap(t, deniedBind)["code"] != "permission_denied" {
+		t.Fatalf("reader bind status=%d body=%s", deniedBind.Code, deniedBind.Body.String())
+	}
+
+	revoked := env.do(t, http.MethodDelete, "/api/access/resource-group-grants", bootstrapToken(bootstrap), `{
+		"subject_kind":"user","subject_id":"`+readerUser.ID+`","resource_group_id":"`+group.ID+`"
+	}`)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", revoked.Code, revoked.Body.String())
+	}
+	if countMatchingGrants(env.listGrants(t, bootstrap), "user", readerUser.ID, group.ID) != 0 {
+		t.Fatal("grant remained after revoke")
+	}
+	hidden := env.do(t, http.MethodGet, "/api/access/resource-groups", sessionToken(readerToken), "")
+	if hidden.Code != http.StatusOK {
+		t.Fatalf("reader list after revoke status=%d body=%s", hidden.Code, hidden.Body.String())
+	}
+	if resourceGroupNamed(decodeResourceGroups(t, hidden), "studio") {
+		t.Fatalf("reader still saw revoked group: %s", hidden.Body.String())
+	}
+
+	updated, err := env.store.UpdateResourceGroup(t.Context(), group.ID, "studio-west", "edited")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "studio-west" || updated.Description != "edited" {
+		t.Fatalf("store update = %+v", updated)
+	}
+	if err := env.store.DeleteResourceGroup(t.Context(), group.ID); !errors.Is(err, storage.ErrResourceGroupHasDependencies) {
+		t.Fatalf("delete with binding error = %v", err)
+	}
+	if err := env.store.UnbindResource(t.Context(), "agent", "studio-edge"); err != nil {
+		t.Fatal(err)
+	}
+	if groupID, err := env.store.ResolveResourceGroupID(t.Context(), "agent", "studio-edge"); err != nil || groupID != authz.DefaultResourceGroup {
+		t.Fatalf("unbind fallback = %q err=%v", groupID, err)
+	}
+	if err := env.store.DeleteResourceGroup(t.Context(), group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if resourceGroupNamed(env.listGroups(t, bootstrap, ""), "studio-west") {
+		t.Fatal("deleted group still listed")
+	}
+	if err := env.store.DeleteResourceGroup(t.Context(), authz.DefaultResourceGroup); !errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		t.Fatalf("delete default error = %v", err)
+	}
+
+	events := env.do(t, http.MethodGet, "/api/access/audit-events?limit=100", bootstrapToken(bootstrap), "")
+	if events.Code != http.StatusOK {
+		t.Fatalf("audit status=%d body=%s", events.Code, events.Body.String())
+	}
+	body := events.Body.String()
+	for _, action := range []string{"access.resource_group.create", "access.resource_group.grant", "access.resource_group.revoke", "access.resource.move"} {
+		if !strings.Contains(body, action) {
+			t.Fatalf("audit missing %s: %s", action, body)
+		}
+	}
+}
+
+type resourceGroupHTTP struct {
+	*authz.Manager
+	store *storage.GormStore
+	mux   http.Handler
+}
+
+type resourceGroupDTO struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Builtin       bool   `json:"builtin"`
+	GrantCount    int64  `json:"grant_count"`
+	ResourceCount int64  `json:"resource_count"`
+}
+
+func newResourceGroupHTTP(t *testing.T) resourceGroupHTTP {
+	t.Helper()
+	store := newHTTPAuthzStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	deps := Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{info: service.SystemInfo{Role: "master"}},
+		AgentService:  fakeOwnerAgentService{},
+		RuleService:   &fakeOwnerRuleService{},
+		AccessManager: manager,
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/auth/login", http.HandlerFunc(deps.handleLogin))
+	mux.Handle("/api/auth/me", deps.requirePanelToken(http.HandlerFunc(deps.handleMe)))
+	mux.Handle("/api/access/users", deps.requirePanelToken(http.HandlerFunc(deps.handleAccessUsers)))
+	mux.Handle("/api/access/resource-groups", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceGroups)))
+	mux.Handle("/api/access/resource-group-grants", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceGroupGrants)))
+	mux.Handle("/api/access/resource-bindings", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceBindings)))
+	mux.Handle("/api/access/audit-events", deps.requirePanelToken(http.HandlerFunc(deps.handleAuditEvents)))
+	return resourceGroupHTTP{Manager: manager, store: store, mux: mux}
+}
+
+func (env resourceGroupHTTP) do(t *testing.T, method, path string, auth func(*http.Request), body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if auth != nil {
+		auth(req)
+	}
+	rec := httptest.NewRecorder()
+	env.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func (env resourceGroupHTTP) login(t *testing.T, username, password string) string {
+	t.Helper()
+	rec := env.do(t, http.MethodPost, "/api/auth/login", nil, `{"username":"`+username+`","password":"`+password+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login %s status=%d body=%s", username, rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Session struct {
+			Token string `json:"token"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Session.Token == "" {
+		t.Fatal("login returned empty session token")
+	}
+	return payload.Session.Token
+}
+
+func (env resourceGroupHTTP) listGroups(t *testing.T, token, q string) []resourceGroupDTO {
+	t.Helper()
+	path := "/api/access/resource-groups"
+	if strings.TrimSpace(q) != "" {
+		path += "?q=" + url.QueryEscape(q)
+	}
+	rec := env.do(t, http.MethodGet, path, bootstrapToken(token), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list groups status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	return decodeResourceGroups(t, rec)
+}
+
+func (env resourceGroupHTTP) listGrants(t *testing.T, token string) []storage.ResourceGroupGrantRow {
+	t.Helper()
+	rec := env.do(t, http.MethodGet, "/api/access/resource-group-grants", bootstrapToken(token), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list grants status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Grants []storage.ResourceGroupGrantRow `json:"resource_group_grants"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Grants
+}
+
+func decodeResourceGroup(t *testing.T, rec *httptest.ResponseRecorder) resourceGroupDTO {
+	t.Helper()
+	var payload struct {
+		ResourceGroup resourceGroupDTO `json:"resource_group"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode group %s: %v", rec.Body.String(), err)
+	}
+	return payload.ResourceGroup
+}
+
+func decodeResourceGroups(t *testing.T, rec *httptest.ResponseRecorder) []resourceGroupDTO {
+	t.Helper()
+	var payload struct {
+		ResourceGroups []resourceGroupDTO `json:"resource_groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode groups %s: %v", rec.Body.String(), err)
+	}
+	return payload.ResourceGroups
+}
+
+func resourceGroupNamed(groups []resourceGroupDTO, name string) bool {
+	for _, group := range groups {
+		if group.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func countMatchingGrants(grants []storage.ResourceGroupGrantRow, subjectKind, subjectID, groupID string) int {
+	count := 0
+	for _, grant := range grants {
+		if grant.SubjectKind == subjectKind && grant.SubjectID == subjectID && grant.ResourceGroupID == groupID {
+			count++
+		}
+	}
+	return count
+}
+
+func catalogContains(items []storage.ResourceCatalogItem, kind, id string) bool {
+	for _, item := range items {
+		if item.Kind == kind && item.ID == id {
+			return true
+		}
+	}
+	return false
+}
