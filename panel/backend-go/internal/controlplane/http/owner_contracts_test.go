@@ -1040,6 +1040,9 @@ func TestAccessResourceGroupOwnerContract(t *testing.T) {
 	if !resourceGroupNamed(listed, "studio") {
 		t.Fatalf("created group missing from list: %+v", listed)
 	}
+	if filtered := env.listGroups(t, bootstrap, "Stu"); !resourceGroupNamed(filtered, "studio") {
+		t.Fatalf("q=Stu missed created group: %+v", filtered)
+	}
 
 	reader := env.do(t, http.MethodPost, "/api/access/users", bootstrapToken(bootstrap), `{
 		"username":"reader",
@@ -1079,12 +1082,39 @@ func TestAccessResourceGroupOwnerContract(t *testing.T) {
 		t.Fatalf("bind status=%d body=%s", bind.Code, bind.Body.String())
 	}
 
+	detail := env.getGroup(t, bootstrap, group.ID)
+	if detail.Name != "studio" || detail.GrantCount != 1 || detail.ResourceCount < 1 {
+		t.Fatalf("detail counts = %+v", detail.resourceGroupDTO)
+	}
+	if countMatchingGrants(detail.Grants, "user", readerUser.ID, group.ID) != 1 {
+		t.Fatalf("detail grants = %+v", detail.Grants)
+	}
+	if !catalogContains(detail.Members["agent"], "agent", "studio-edge") {
+		t.Fatalf("detail members = %+v", detail.Members)
+	}
+	catalog := env.listCatalog(t, bootstrap, "agent", "studio")
+	if item, ok := catalogItem(catalog, "agent", "studio-edge"); !ok || item.ResourceGroupID != group.ID {
+		t.Fatalf("catalog after bind = %+v", catalog)
+	}
+
+	updated := env.do(t, http.MethodPut, env.groupPath(group.ID), bootstrapToken(bootstrap), `{"name":"studio-west","description":"edited"}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update group status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	got := decodeResourceGroup(t, updated)
+	if got.ID != group.ID || got.Name != "studio-west" || got.Description != "edited" || got.Builtin {
+		t.Fatalf("updated group = %+v", got)
+	}
+	if filtered := env.listGroups(t, bootstrap, "west"); !resourceGroupNamed(filtered, "studio-west") {
+		t.Fatalf("q=west missed updated group: %+v", filtered)
+	}
+
 	readerToken := env.login(t, "reader", password)
 	visible := env.do(t, http.MethodGet, "/api/access/resource-groups", sessionToken(readerToken), "")
 	if visible.Code != http.StatusOK {
 		t.Fatalf("reader list groups status=%d body=%s", visible.Code, visible.Body.String())
 	}
-	if !resourceGroupNamed(decodeResourceGroups(t, visible), "studio") {
+	if !resourceGroupNamed(decodeResourceGroups(t, visible), "studio-west") {
 		t.Fatalf("reader did not see granted group: %s", visible.Body.String())
 	}
 
@@ -1103,6 +1133,28 @@ func TestAccessResourceGroupOwnerContract(t *testing.T) {
 	if deniedBind.Code != http.StatusForbidden || decodeMap(t, deniedBind)["code"] != "permission_denied" {
 		t.Fatalf("reader bind status=%d body=%s", deniedBind.Code, deniedBind.Body.String())
 	}
+	deniedUpdate := env.do(t, http.MethodPut, env.groupPath(group.ID), sessionToken(readerToken), `{"description":"nope"}`)
+	if deniedUpdate.Code != http.StatusForbidden || decodeMap(t, deniedUpdate)["code"] != "permission_denied" {
+		t.Fatalf("reader update status=%d body=%s", deniedUpdate.Code, deniedUpdate.Body.String())
+	}
+	deniedDelete := env.do(t, http.MethodDelete, env.groupPath(group.ID), sessionToken(readerToken), "")
+	if deniedDelete.Code != http.StatusForbidden || decodeMap(t, deniedDelete)["code"] != "permission_denied" {
+		t.Fatalf("reader delete status=%d body=%s", deniedDelete.Code, deniedDelete.Body.String())
+	}
+	deniedUnbind := env.do(t, http.MethodDelete, "/api/access/resource-bindings", sessionToken(readerToken), `{
+		"resource_kind":"agent","resource_id":"studio-edge"
+	}`)
+	if deniedUnbind.Code != http.StatusForbidden || decodeMap(t, deniedUnbind)["code"] != "permission_denied" {
+		t.Fatalf("reader unbind status=%d body=%s", deniedUnbind.Code, deniedUnbind.Body.String())
+	}
+
+	blocked := env.do(t, http.MethodDelete, env.groupPath(group.ID), bootstrapToken(bootstrap), "")
+	details := assertResourceGroupInUse(t, blocked, 1, 1)
+	assertDependencyGrant(t, details, "user", readerUser.ID, group.ID)
+	assertDependencyBinding(t, details, "agent", "studio-edge", group.ID)
+	if env.getGroup(t, bootstrap, group.ID).Name != "studio-west" {
+		t.Fatal("in-use delete removed or mutated group")
+	}
 
 	revoked := env.do(t, http.MethodDelete, "/api/access/resource-group-grants", bootstrapToken(bootstrap), `{
 		"subject_kind":"user","subject_id":"`+readerUser.ID+`","resource_group_id":"`+group.ID+`"
@@ -1117,34 +1169,69 @@ func TestAccessResourceGroupOwnerContract(t *testing.T) {
 	if hidden.Code != http.StatusOK {
 		t.Fatalf("reader list after revoke status=%d body=%s", hidden.Code, hidden.Body.String())
 	}
-	if resourceGroupNamed(decodeResourceGroups(t, hidden), "studio") {
+	if resourceGroupNamed(decodeResourceGroups(t, hidden), "studio-west") {
 		t.Fatalf("reader still saw revoked group: %s", hidden.Body.String())
 	}
 
-	updated, err := env.store.UpdateResourceGroup(t.Context(), group.ID, "studio-west", "edited")
-	if err != nil {
-		t.Fatal(err)
+	blockedBinding := env.do(t, http.MethodDelete, env.groupPath(group.ID), bootstrapToken(bootstrap), "")
+	assertResourceGroupInUse(t, blockedBinding, 0, 1)
+
+	unbound := env.do(t, http.MethodDelete, "/api/access/resource-bindings", bootstrapToken(bootstrap), `{
+		"resource_kind":"agent","resource_id":"studio-edge"
+	}`)
+	if unbound.Code != http.StatusOK {
+		t.Fatalf("unbind status=%d body=%s", unbound.Code, unbound.Body.String())
 	}
-	if updated.Name != "studio-west" || updated.Description != "edited" {
-		t.Fatalf("store update = %+v", updated)
+	fallback := env.listCatalog(t, bootstrap, "agent", "studio")
+	if item, ok := catalogItem(fallback, "agent", "studio-edge"); !ok || item.ResourceGroupID != authz.DefaultResourceGroup {
+		t.Fatalf("unbind fallback catalog = %+v", fallback)
 	}
-	if err := env.store.DeleteResourceGroup(t.Context(), group.ID); !errors.Is(err, storage.ErrResourceGroupHasDependencies) {
-		t.Fatalf("delete with binding error = %v", err)
+	afterUnbind := env.getGroup(t, bootstrap, group.ID)
+	if afterUnbind.ResourceCount != 0 || catalogContains(afterUnbind.Members["agent"], "agent", "studio-edge") {
+		t.Fatalf("group still listed unbound member: %+v", afterUnbind)
 	}
-	if err := env.store.UnbindResource(t.Context(), "agent", "studio-edge"); err != nil {
-		t.Fatal(err)
+	readerCatalog := env.do(t, http.MethodGet, "/api/access/resources?kind=agent", sessionToken(readerToken), "")
+	if readerCatalog.Code != http.StatusOK {
+		t.Fatalf("reader catalog after unbind status=%d body=%s", readerCatalog.Code, readerCatalog.Body.String())
 	}
-	if groupID, err := env.store.ResolveResourceGroupID(t.Context(), "agent", "studio-edge"); err != nil || groupID != authz.DefaultResourceGroup {
-		t.Fatalf("unbind fallback = %q err=%v", groupID, err)
+	if item, ok := catalogItem(decodeResources(t, readerCatalog), "agent", "studio-edge"); !ok || item.ResourceGroupID != authz.DefaultResourceGroup {
+		t.Fatalf("reader catalog after unbind = %s", readerCatalog.Body.String())
 	}
-	if err := env.store.DeleteResourceGroup(t.Context(), group.ID); err != nil {
-		t.Fatal(err)
+
+	deleted := env.do(t, http.MethodDelete, env.groupPath(group.ID), bootstrapToken(bootstrap), "")
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete unused group status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	missing := env.do(t, http.MethodGet, env.groupPath(group.ID), bootstrapToken(bootstrap), "")
+	if missing.Code != http.StatusNotFound || decodeMap(t, missing)["code"] != "not_found" {
+		t.Fatalf("deleted group get status=%d body=%s", missing.Code, missing.Body.String())
 	}
 	if resourceGroupNamed(env.listGroups(t, bootstrap, ""), "studio-west") {
 		t.Fatal("deleted group still listed")
 	}
-	if err := env.store.DeleteResourceGroup(t.Context(), authz.DefaultResourceGroup); !errors.Is(err, storage.ErrBuiltinResourceGroup) {
-		t.Fatalf("delete default error = %v", err)
+
+	protected := env.do(t, http.MethodDelete, env.groupPath(authz.DefaultResourceGroup), bootstrapToken(bootstrap), "")
+	if protected.Code != http.StatusConflict {
+		t.Fatalf("delete default status=%d body=%s", protected.Code, protected.Body.String())
+	}
+	protectedBody := decodeMap(t, protected)
+	if protectedBody["code"] != "resource_group_protected" {
+		t.Fatalf("delete default code=%v body=%s", protectedBody["code"], protected.Body.String())
+	}
+	if details, _ := protectedBody["details"].(map[string]any); details["reason"] != "builtin" || details["id"] != authz.DefaultResourceGroup {
+		t.Fatalf("delete default details=%v body=%s", protectedBody["details"], protected.Body.String())
+	}
+	renameDefault := env.do(t, http.MethodPut, env.groupPath(authz.DefaultResourceGroup), bootstrapToken(bootstrap), `{"name":"renamed-default"}`)
+	if renameDefault.Code != http.StatusConflict || decodeMap(t, renameDefault)["code"] != "resource_group_protected" {
+		t.Fatalf("rename default status=%d body=%s", renameDefault.Code, renameDefault.Body.String())
+	}
+	describeDefault := env.do(t, http.MethodPut, env.groupPath(authz.DefaultResourceGroup), bootstrapToken(bootstrap), `{"description":"fallback display"}`)
+	if describeDefault.Code != http.StatusOK {
+		t.Fatalf("describe default status=%d body=%s", describeDefault.Code, describeDefault.Body.String())
+	}
+	described := decodeResourceGroup(t, describeDefault)
+	if described.ID != authz.DefaultResourceGroup || described.Name != authz.DefaultResourceGroup || !described.Builtin || described.Description != "fallback display" {
+		t.Fatalf("default after description update = %+v", described)
 	}
 
 	events := env.do(t, http.MethodGet, "/api/access/audit-events?limit=100", bootstrapToken(bootstrap), "")
@@ -1152,7 +1239,15 @@ func TestAccessResourceGroupOwnerContract(t *testing.T) {
 		t.Fatalf("audit status=%d body=%s", events.Code, events.Body.String())
 	}
 	body := events.Body.String()
-	for _, action := range []string{"access.resource_group.create", "access.resource_group.grant", "access.resource_group.revoke", "access.resource.move"} {
+	for _, action := range []string{
+		"access.resource_group.create",
+		"access.resource_group.grant",
+		"access.resource_group.revoke",
+		"access.resource.move",
+		"access.resource_group.update",
+		"access.resource_group.delete",
+		"access.resource.unbind",
+	} {
 		if !strings.Contains(body, action) {
 			t.Fatalf("audit missing %s: %s", action, body)
 		}
@@ -1174,6 +1269,12 @@ type resourceGroupDTO struct {
 	ResourceCount int64  `json:"resource_count"`
 }
 
+type resourceGroupDetailDTO struct {
+	resourceGroupDTO
+	Grants  []storage.ResourceGroupGrantRow          `json:"grants"`
+	Members map[string][]storage.ResourceCatalogItem `json:"members"`
+}
+
 func newResourceGroupHTTP(t *testing.T) resourceGroupHTTP {
 	t.Helper()
 	store := newHTTPAuthzStore(t)
@@ -1193,6 +1294,8 @@ func newResourceGroupHTTP(t *testing.T) resourceGroupHTTP {
 	mux.Handle("/api/auth/me", deps.requirePanelToken(http.HandlerFunc(deps.handleMe)))
 	mux.Handle("/api/access/users", deps.requirePanelToken(http.HandlerFunc(deps.handleAccessUsers)))
 	mux.Handle("/api/access/resource-groups", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceGroups)))
+	mux.Handle("/api/access/resource-groups/{id}", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceGroup)))
+	mux.Handle("/api/access/resources", deps.requirePanelToken(http.HandlerFunc(deps.handleResources)))
 	mux.Handle("/api/access/resource-group-grants", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceGroupGrants)))
 	mux.Handle("/api/access/resource-bindings", deps.requirePanelToken(http.HandlerFunc(deps.handleResourceBindings)))
 	mux.Handle("/api/access/audit-events", deps.requirePanelToken(http.HandlerFunc(deps.handleAuditEvents)))
@@ -1237,6 +1340,39 @@ func (env resourceGroupHTTP) login(t *testing.T, username, password string) stri
 	return payload.Session.Token
 }
 
+func (env resourceGroupHTTP) groupPath(id string) string {
+	return "/api/access/resource-groups/" + url.PathEscape(id)
+}
+
+func (env resourceGroupHTTP) getGroup(t *testing.T, token, id string) resourceGroupDetailDTO {
+	t.Helper()
+	rec := env.do(t, http.MethodGet, env.groupPath(id), bootstrapToken(token), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get group %s status=%d body=%s", id, rec.Code, rec.Body.String())
+	}
+	return decodeResourceGroupDetail(t, rec)
+}
+
+func (env resourceGroupHTTP) listCatalog(t *testing.T, token, kind, q string) []storage.ResourceCatalogItem {
+	t.Helper()
+	path := "/api/access/resources"
+	query := url.Values{}
+	if strings.TrimSpace(kind) != "" {
+		query.Set("kind", kind)
+	}
+	if strings.TrimSpace(q) != "" {
+		query.Set("q", q)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	rec := env.do(t, http.MethodGet, path, bootstrapToken(token), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list resources status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	return decodeResources(t, rec)
+}
+
 func (env resourceGroupHTTP) listGroups(t *testing.T, token, q string) []resourceGroupDTO {
 	t.Helper()
 	path := "/api/access/resource-groups"
@@ -1276,6 +1412,28 @@ func decodeResourceGroup(t *testing.T, rec *httptest.ResponseRecorder) resourceG
 	return payload.ResourceGroup
 }
 
+func decodeResourceGroupDetail(t *testing.T, rec *httptest.ResponseRecorder) resourceGroupDetailDTO {
+	t.Helper()
+	var payload struct {
+		ResourceGroup resourceGroupDetailDTO `json:"resource_group"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode group detail %s: %v", rec.Body.String(), err)
+	}
+	return payload.ResourceGroup
+}
+
+func decodeResources(t *testing.T, rec *httptest.ResponseRecorder) []storage.ResourceCatalogItem {
+	t.Helper()
+	var payload struct {
+		Resources []storage.ResourceCatalogItem `json:"resources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode resources %s: %v", rec.Body.String(), err)
+	}
+	return payload.Resources
+}
+
 func decodeResourceGroups(t *testing.T, rec *httptest.ResponseRecorder) []resourceGroupDTO {
 	t.Helper()
 	var payload struct {
@@ -1307,10 +1465,67 @@ func countMatchingGrants(grants []storage.ResourceGroupGrantRow, subjectKind, su
 }
 
 func catalogContains(items []storage.ResourceCatalogItem, kind, id string) bool {
+	_, ok := catalogItem(items, kind, id)
+	return ok
+}
+
+func catalogItem(items []storage.ResourceCatalogItem, kind, id string) (storage.ResourceCatalogItem, bool) {
 	for _, item := range items {
 		if item.Kind == kind && item.ID == id {
-			return true
+			return item, true
 		}
 	}
-	return false
+	return storage.ResourceCatalogItem{}, false
+}
+
+func assertResourceGroupInUse(t *testing.T, rec *httptest.ResponseRecorder, wantGrants, wantBindings int) map[string]any {
+	t.Helper()
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete in-use status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeMap(t, rec)
+	if body["code"] != "resource_group_in_use" {
+		t.Fatalf("delete in-use code=%v body=%s", body["code"], rec.Body.String())
+	}
+	details, _ := body["details"].(map[string]any)
+	if details == nil {
+		t.Fatalf("delete in-use missing details: %s", rec.Body.String())
+	}
+	grants, _ := details["grants"].([]any)
+	bindings, _ := details["bindings"].([]any)
+	if len(grants) != wantGrants || len(bindings) != wantBindings {
+		t.Fatalf("dependency classes grants=%d bindings=%d body=%s", len(grants), len(bindings), rec.Body.String())
+	}
+	return details
+}
+
+func assertDependencyGrant(t *testing.T, details map[string]any, subjectKind, subjectID, groupID string) {
+	t.Helper()
+	for _, raw := range anyMaps(details["grants"]) {
+		if raw["subject_kind"] == subjectKind && raw["subject_id"] == subjectID && raw["resource_group_id"] == groupID {
+			return
+		}
+	}
+	t.Fatalf("missing grant dependency %s/%s/%s in %#v", subjectKind, subjectID, groupID, details["grants"])
+}
+
+func assertDependencyBinding(t *testing.T, details map[string]any, kind, id, groupID string) {
+	t.Helper()
+	for _, raw := range anyMaps(details["bindings"]) {
+		if raw["resource_kind"] == kind && raw["resource_id"] == id && raw["resource_group_id"] == groupID {
+			return
+		}
+	}
+	t.Fatalf("missing binding dependency %s/%s/%s in %#v", kind, id, groupID, details["bindings"])
+}
+
+func anyMaps(value any) []map[string]any {
+	items, _ := value.([]any)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if raw, ok := item.(map[string]any); ok {
+			out = append(out, raw)
+		}
+	}
+	return out
 }
