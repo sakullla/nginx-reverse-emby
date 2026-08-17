@@ -1,0 +1,28 @@
+workflow_id: 2026-08-18-SDK节点地址与双栈监听句柄
+requirement_ref: C:\Users\12976\IdeaProjects\nginx-reverse-emby-2026-08-18-ss-sdk-handles\docs\requirements\2026-08-18-SDK节点地址与双栈监听句柄.md
+requirement_version: sha256:5cf7e043b791e332adbe05ba0ab017e3c4ee95d1f586d8907c08e394c7303239
+requirement_ids: [R1, R2, R3]
+requirement_revision: 1
+revision_fence: null
+status: active
+stages:
+  exploration: completed
+  solution: completed
+  plan: completed
+  execution: locked
+  delivery: locked
+gates:
+  solution: confirmed
+  execution: pending
+execution_preference: ""
+implementation_base_ref: ""
+tasks:
+  - id: sdk-node-and-listen-handles
+    status: pending
+    task_run_ref: task-runs/sdk-node-and-listen-handles-run.md
+    recipe_digest: sha256:fa10fedb3744605edea50402f2630cb39bac31b7e742cec08f45b9abc3be63bb
+    requirement_revision: 1
+    review_base_ref: ""
+blocker: null
+delivery:
+  status: locked
