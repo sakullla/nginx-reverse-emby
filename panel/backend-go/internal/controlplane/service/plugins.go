@@ -1600,6 +1600,21 @@ func (s *PluginService) ensurePublishedInstance(ctx context.Context, request Plu
 	} else if ok {
 		return existing, nil
 	}
+	if request.RuleID > 0 {
+		return PluginInstanceDetail{}, fmt.Errorf("%w: published entry %d requires an instance that already targets agent %s", ErrInvalidArgument, request.RuleID, agentID)
+	}
+	if existing, ok, err := s.readyPublishedInstanceOnAgent(ctx, request, agentID); err != nil {
+		return PluginInstanceDetail{}, err
+	} else if ok {
+		return existing, nil
+	}
+	pinned, err := s.instancePinnedToOtherPublishedAgent(ctx, request, agentID)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	if pinned {
+		request.InstanceID = ""
+	}
 	request.PublishDesiredEnabled = true
 	request.Bindings = nil
 	return s.ConfigureMutation(ctx, request)
@@ -1617,6 +1632,31 @@ func (s *PluginService) publishedInstanceReady(ctx context.Context, request Plug
 	if !found || row.PluginID != request.PluginID {
 		return PluginInstanceDetail{}, false, nil
 	}
+	return s.publishedInstanceRowReady(ctx, request, row, agentID)
+}
+
+func (s *PluginService) readyPublishedInstanceOnAgent(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, bool, error) {
+	rows, err := s.store.ListPluginInstances(ctx, request.PluginID)
+	if err != nil {
+		return PluginInstanceDetail{}, false, err
+	}
+	requestedID := strings.TrimSpace(request.InstanceID)
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) == requestedID {
+			continue
+		}
+		detail, ok, err := s.publishedInstanceRowReady(ctx, request, row, agentID)
+		if err != nil {
+			return PluginInstanceDetail{}, false, err
+		}
+		if ok {
+			return detail, true, nil
+		}
+	}
+	return PluginInstanceDetail{}, false, nil
+}
+
+func (s *PluginService) publishedInstanceRowReady(ctx context.Context, request PluginConfigureRequest, row storage.PluginInstanceRow, agentID string) (PluginInstanceDetail, bool, error) {
 	installed, err := s.installedPlugin(ctx, request.PluginID)
 	if err != nil {
 		return PluginInstanceDetail{}, false, err
@@ -1646,6 +1686,83 @@ func (s *PluginService) publishedInstanceReady(ctx context.Context, request Plug
 		return PluginInstanceDetail{}, false, ErrPluginReadProjection
 	}
 	return details[0], true, nil
+}
+
+func (s *PluginService) instancePinnedToOtherPublishedAgent(ctx context.Context, request PluginConfigureRequest, agentID string) (bool, error) {
+	instanceID := strings.TrimSpace(request.InstanceID)
+	if instanceID == "" {
+		return false, nil
+	}
+	row, found, err := s.store.GetPluginInstance(ctx, instanceID)
+	if err != nil {
+		return false, err
+	}
+	if !found || row.PluginID != request.PluginID {
+		return false, nil
+	}
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return false, err
+	}
+	targets, err := pluginPublishInstanceTargets(row, defaultTargetID)
+	if err != nil {
+		return false, err
+	}
+	if len(targets) == 1 && strings.TrimSpace(targets[0]) == agentID {
+		return false, nil
+	}
+	return s.instanceHasPublishedHTTPRuleOnOtherAgent(ctx, row, agentID)
+}
+
+func (s *PluginService) instanceHasPublishedHTTPRuleOnOtherAgent(ctx context.Context, row storage.PluginInstanceRow, agentID string) (bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{row})
+	if err != nil {
+		return false, err
+	}
+	if len(details) == 1 {
+		for _, binding := range details[0].Bindings {
+			if binding.Consumer.Kind != storage.PluginDependencyConsumerHTTPRule {
+				continue
+			}
+			if target := strings.TrimSpace(binding.TargetAgentID); target != "" && target != agentID {
+				return true, nil
+			}
+		}
+	}
+	store, ok := s.store.(pluginPublishedEntryStore)
+	if !ok {
+		return false, nil
+	}
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return false, err
+	}
+	targets, err := pluginPublishInstanceTargets(row, defaultTargetID)
+	if err != nil {
+		return false, err
+	}
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" || target == agentID {
+			continue
+		}
+		if _, exists := seen[target]; exists {
+			continue
+		}
+		seen[target] = struct{}{}
+		rules, listErr := store.ListHTTPRules(ctx, target)
+		if listErr != nil {
+			return false, listErr
+		}
+		for _, rule := range rules {
+			if pluginRuleBacksInstance(httpRuleFromRow(rule), row.ID) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (s *PluginService) sanitizeUnsupportedHTTPRuleBindings(ctx context.Context, pluginID, instanceID, actorID string) error {

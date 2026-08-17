@@ -272,6 +272,90 @@ func TestPluginPublishUpdatesOriginalRuleAndCreatesIndependentDomain(t *testing.
 	}
 }
 
+func TestPluginPublishSecondNodeKeepsOriginalInstanceAndEntry(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	addPluginPublishAgent(t, fixture.store, "edge-b")
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instanceID := "provider-1"
+	firstInstance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, instanceID, "https://emby.example.com", 0))
+	if err != nil {
+		t.Fatalf("first PublishMutation() error = %v", err)
+	}
+	completePublishedConfigure(t, fixture)
+	first := mustPluginPublishRule(t, fixture.store, "local", 0)
+	if firstInstance.ID == "" {
+		t.Fatal("first publish returned an empty instance id")
+	}
+
+	fields := pluginPublishFields(fixture.pluginID, firstInstance.ID, "https://emby-edge.example.com", 0)
+	fields["Targets"] = []string{"edge-b"}
+	secondInstance, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("second-node PublishMutation() error = %v", err)
+	}
+	if secondInstance.ID == "" || secondInstance.ID == firstInstance.ID {
+		t.Fatalf("second-node instance = %+v, want a new instance", secondInstance)
+	}
+	if len(secondInstance.Targets) != 1 || secondInstance.Targets[0] != "edge-b" {
+		t.Fatalf("second-node instance targets = %v, want [edge-b]", secondInstance.Targets)
+	}
+
+	original := mustPluginInstanceByID(t, fixture.store, firstInstance.ID)
+	if targets := instanceTargets(t, original); len(targets) != 1 || targets[0] != "local" {
+		t.Fatalf("original instance targets = %v, want [local]", targets)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
+	assertPluginPublishRuleCount(t, fixture.store, "edge-b", 1)
+	if stored := mustPluginPublishRule(t, fixture.store, "local", 0); stored.ID != first.ID || stored.FrontendURL != "https://emby.example.com" {
+		t.Fatalf("original rule = %+v, want id %d on local", stored, first.ID)
+	}
+	assertPluginProviderBackend(t, mustPluginPublishRule(t, fixture.store, "local", 0), firstInstance.ID, "default")
+	second := mustPluginPublishRule(t, fixture.store, "edge-b", 0)
+	if second.FrontendURL != "https://emby-edge.example.com" || !second.Enabled {
+		t.Fatalf("second-node rule = %+v", second)
+	}
+	assertPluginProviderBackend(t, second, secondInstance.ID, "default")
+
+	entries := publishedEntriesFromState(t, fixture, "local")
+	if len(entries) != 2 {
+		t.Fatalf("published_entries = %+v, want both original and second-node entries", entries)
+	}
+	if !containsPublishedEntry(entries, first.ID, "local", "https://emby.example.com") {
+		t.Fatalf("published_entries = %+v, missing original local entry", entries)
+	}
+	if !containsPublishedEntry(entries, second.ID, "edge-b", "https://emby-edge.example.com") {
+		t.Fatalf("published_entries = %+v, missing second-node entry", entries)
+	}
+	if !containsHTTPRuleBindingDetail(t, firstInstanceFromDetail(t, fixture, firstInstance.ID), first.ID, "local") {
+		t.Fatalf("original instance projection missing http_rule %d on local", first.ID)
+	}
+	if !containsHTTPRuleBindingDetail(t, secondInstance, second.ID, "edge-b") {
+		t.Fatalf("second instance projection missing http_rule %d on edge-b", second.ID)
+	}
+
+	instances, err := fixture.store.ListPluginInstances(t.Context(), fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 2 {
+		t.Fatalf("instances = %+v, want original plus one new node instance", instances)
+	}
+
+	fields["RuleID"] = first.ID
+	fields["Targets"] = []string{"edge-b"}
+	fields["FrontendURL"] = "https://emby-moved.example.com"
+	if _, err := callPluginPublish(t, fixture.service, ctx, fields); err == nil {
+		t.Fatal("updating the original rule via a different node was accepted")
+	}
+	if stored := mustPluginPublishRule(t, fixture.store, "local", 0); stored.ID != first.ID || stored.FrontendURL != "https://emby.example.com" {
+		t.Fatalf("rejected retarget update mutated original rule = %+v", stored)
+	}
+	if targets := instanceTargets(t, mustPluginInstanceByID(t, fixture.store, firstInstance.ID)); len(targets) != 1 || targets[0] != "local" {
+		t.Fatalf("rejected retarget update mutated original instance targets = %v", targets)
+	}
+}
+
 func TestPluginPublishSurvivesCompleteConfigureAndBlocksDeleteInstance(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginPublishFixture(t, true)
@@ -768,6 +852,52 @@ func mustPluginInstance(t *testing.T, store *storage.GormStore, pluginID string)
 		t.Fatalf("instances = %+v, want exactly one", instances)
 	}
 	return instances[0]
+}
+
+func mustPluginInstanceByID(t *testing.T, store *storage.GormStore, instanceID string) storage.PluginInstanceRow {
+	t.Helper()
+	instance, found, err := store.GetPluginInstance(t.Context(), instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatalf("plugin instance %s is not found", instanceID)
+	}
+	return instance
+}
+
+func addPluginPublishAgent(t *testing.T, store *storage.GormStore, agentID string) {
+	t.Helper()
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: agentID, Name: agentID, Version: "1.0.0", Platform: runtime.GOOS + "-" + runtime.GOARCH,
+		CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func containsPublishedEntry(entries []pluginPublishedEntryView, ruleID int, agentID, frontendURL string) bool {
+	for _, entry := range entries {
+		if entry.RuleID == ruleID && entry.AgentID == agentID && entry.FrontendURL == frontendURL && entry.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func firstInstanceFromDetail(t *testing.T, fixture pluginPublishHarness, instanceID string) PluginInstanceDetail {
+	t.Helper()
+	detail, err := fixture.service.Detail(t.Context(), fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, instance := range detail.Instances {
+		if instance.ID == instanceID {
+			return instance
+		}
+	}
+	t.Fatalf("detail instances = %+v, missing %s", detail.Instances, instanceID)
+	return PluginInstanceDetail{}
 }
 
 func instanceTargets(t *testing.T, instance storage.PluginInstanceRow) []string {
