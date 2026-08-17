@@ -357,8 +357,10 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLocalApply)))
 		mux.Handle(prefix+"/version-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicies)))
 		mux.Handle(prefix+"/version-policies/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicy)))
-		mux.Handle(prefix+"/cloudflare-dns", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCloudflareDNS)))
-		mux.Handle(prefix+"/cloudflare-dns/", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCloudflareDNS)))
+		mux.Handle(prefix+"/plugin-ui-routes", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUIRoutes)))
+		mux.Handle(prefix+"/plugin-resource-groups", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginResourceGroups)))
+		mux.Handle(prefix+"/plugins/{routeID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUI)))
+		mux.Handle(prefix+"/plugins/", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUI)))
 	}
 	mux.Handle("/", resolved.staticHandler())
 	handler := resolved.withMutationContext(mux)

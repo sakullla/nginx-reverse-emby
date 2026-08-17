@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import BottomNav from '../components/layout/BottomNav.vue'
 import RuleDetailPage from './RuleDetailPage.vue'
 
@@ -36,6 +36,10 @@ vi.mock('../hooks/useRules', () => ({
   useRules: () => ({ data: { value: rulesData } }),
   useCreateRule: () => ({ mutateAsync: vi.fn() }),
   useUpdateRule: () => ({ mutateAsync: updateRule })
+}))
+
+vi.mock('../hooks/usePluginUIRoutes', () => ({
+  usePluginUIRoutes: () => ({ routes: ref([]) })
 }))
 
 vi.mock('../components/QuickAgentSelect.vue', () => ({
@@ -88,7 +92,7 @@ describe('RuleDetailPage', () => {
       '/l4',
       '/relay-listeners',
       '/agents',
-      '/cloudflare-dns',
+      '/resource-groups',
       '/settings'
     ])
 

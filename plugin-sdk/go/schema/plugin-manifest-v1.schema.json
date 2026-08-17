@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sakullla/nginx-reverse-emby/plugin-sdk/schema/plugin-manifest-v1.schema.json",
+  "title": "NRE Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "version", "name", "compatibility", "runtime",
+    "artifacts", "extension_points", "permissions", "config_schema",
+    "resource_budget", "failure_policy", "signature", "cleanup"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$", "maxLength": 190},
+    "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$", "maxLength": 64},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "compatibility": {"$ref": "#/$defs/compatibility"},
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/artifact"}},
+    "extension_points": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"enum": ["http.request", "http.response", "http.backend-provider", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route", "resource.group"]}},
+    "http_backend_providers": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/http_backend_provider"}},
+    "permissions": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/permission"}},
+    "config_schema": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "ui_schema": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "assets": {"type": "array", "maxItems": 2048, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2048}},
+    "resource_budget": {"$ref": "#/$defs/resource_budget"},
+    "failure_policy": {"$ref": "#/$defs/failure_policy"},
+    "signature": {"$ref": "#/$defs/signature"},
+    "migrations": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/migration"}},
+    "cleanup": {"$ref": "#/$defs/cleanup"},
+    "ui_route_id": {"type": "string"},
+    "resource_group_id": {"type": "string"},
+    "metadata": {"type": "object", "additionalProperties": {"type": "string"}}
+  },
+  "$defs": {
+    "compatibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host", "agent"],
+      "properties": {"host": {"type": "string", "minLength": 1}, "agent": {"type": "string", "minLength": 1}}
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "abi", "host_scope", "entry"],
+      "properties": {
+        "kind": {"enum": ["wasm-policy", "rpc-service"]},
+        "abi": {"enum": ["nre:policy/v1", "nre:rpc/v1"]},
+        "host_scope": {"enum": ["agent", "control-plane"]},
+        "entry": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "policy_kind": {"enum": ["ip", "rate", "waf"]}
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "size", "mode"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^artifacts/", "maxLength": 2048},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "size": {"type": "integer", "minimum": 1, "maximum": 134217728},
+        "mode": {"enum": ["wasm", "executable"]},
+        "goos": {"enum": ["linux", "windows", "darwin", "freebsd"]},
+        "goarch": {"enum": ["amd64", "arm64"]}
+      }
+    },
+    "permission_name": {"enum": ["agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "http.outbound", "l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage", "container.compose", "http.rule", "ui.dynamic", "dns.manage", "policy.atomic-state", "policy.monotonic-clock", "policy.trusted-source", "service.revocable-resource-handle", "ui.dynamic-actions"]},
+    "http_backend_provider": {
+      "type": "object", "additionalProperties": false, "required": ["id", "display_name"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 64},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "permission": {
+      "oneOf": [
+        {"$ref": "#/$defs/permission_name"},
+        {
+          "type": "object", "additionalProperties": false, "required": ["name"],
+          "properties": {
+            "name": {"$ref": "#/$defs/permission_name"},
+            "resource": {"type": "string", "maxLength": 512, "not": {"const": "*"}}
+          }
+        }
+      ]
+    },
+    "resource_budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["timeout_ms", "memory_bytes", "concurrency", "input_bytes", "output_bytes"],
+      "properties": {
+        "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
+        "memory_bytes": {"type": "integer", "minimum": 65536, "maximum": 4294967296},
+        "concurrency": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "input_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "output_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "cpu_millis": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "restarts": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    },
+    "failure_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["on_error", "on_budget", "restart", "core_fallback"],
+      "properties": {
+        "on_error": {"enum": ["fail-open", "fail-closed", "degraded"]},
+        "on_budget": {"enum": ["fail-open", "fail-closed"]},
+        "restart": {"enum": ["never", "on-failure"]},
+        "core_fallback": {"const": "preserve"}
+      }
+    },
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["algorithm", "key_id", "file"],
+      "properties": {"algorithm": {"const": "ed25519"}, "key_id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"}, "file": {"type": "string", "minLength": 1}}
+    },
+    "migration": {
+      "type": "object", "additionalProperties": false, "required": ["from", "to", "file"],
+      "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "file": {"type": "string", "pattern": "^migrations/.+\\.json$"}}
+    },
+    "cleanup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["instances", "config", "owned_data", "grants", "shared_refs", "audit_events"],
+      "properties": {
+        "instances": {"enum": ["delete", "retain"]},
+        "config": {"enum": ["delete", "retain"]},
+        "owned_data": {"enum": ["delete", "retain"]},
+        "grants": {"enum": ["delete", "retain"]},
+        "shared_refs": {"const": "retain"},
+        "audit_events": {"const": "retain"}
+      }
+    }
+  }
+}

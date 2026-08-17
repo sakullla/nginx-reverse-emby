@@ -29,16 +29,25 @@
           </button>
           <Transition name="nav-group">
             <div v-show="isGroupOpen(item.label)" class="nav-group__children">
-              <RouterLink
-                v-for="child in item.children"
-                :key="child.to"
-                :to="child.to"
-                class="sidebar__nav-item sidebar__nav-item--child"
-                :class="{ 'sidebar__nav-item--child-active': isChildActive(child) }"
-              >
-                <component :is="child.icon" />
-                <span>{{ child.label }}</span>
-              </RouterLink>
+              <template v-for="child in item.children" :key="child.href || child.to">
+                <a
+                  v-if="child.href"
+                  :href="child.href"
+                  class="sidebar__nav-item sidebar__nav-item--child"
+                >
+                  <component :is="child.icon" />
+                  <span>{{ child.label }}</span>
+                </a>
+                <RouterLink
+                  v-else
+                  :to="child.to"
+                  class="sidebar__nav-item sidebar__nav-item--child"
+                  :class="{ 'sidebar__nav-item--child-active': isChildActive(child) }"
+                >
+                  <component :is="child.icon" />
+                  <span>{{ child.label }}</span>
+                </RouterLink>
+              </template>
             </div>
           </Transition>
         </div>
@@ -63,16 +72,25 @@
             <component :is="item.icon" />
           </div>
           <div class="sidebar__hover-popup">
-            <RouterLink
-              v-for="child in item.children"
-              :key="child.to"
-              :to="child.to"
-              class="sidebar__hover-popup__item"
-              :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
-            >
-              <component :is="child.icon" />
-              <span>{{ child.label }}</span>
-            </RouterLink>
+            <template v-for="child in item.children" :key="child.href || child.to">
+              <a
+                v-if="child.href"
+                :href="child.href"
+                class="sidebar__hover-popup__item"
+              >
+                <component :is="child.icon" />
+                <span>{{ child.label }}</span>
+              </a>
+              <RouterLink
+                v-else
+                :to="child.to"
+                class="sidebar__hover-popup__item"
+                :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
+              >
+                <component :is="child.icon" />
+                <span>{{ child.label }}</span>
+              </RouterLink>
+            </template>
           </div>
         </div>
       </template>
@@ -83,6 +101,7 @@
 <script setup>
 import { ref, computed, h, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { pluginChildrenForGroup, usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 
 // --- Icon components ---
 const makeIcon = (paths) => () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, paths.map(d => h('path', { d })))
@@ -102,13 +121,16 @@ const icons = {
   lock: makeIcon(['M3 11h18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z', 'M7 11V7a5 5 0 0 1 10 0v4']),
   key: makeIcon(['M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4']),
   relay: makeIcon(['M8 12h8', 'M6 8h12', 'M10 16h4']),
+  groups: makeIconMixed([{ tag: 'rect', attrs: { x: '3', y: '3', width: '7', height: '7', rx: '1' } }, { tag: 'rect', attrs: { x: '14', y: '3', width: '7', height: '7', rx: '1' } }, { tag: 'rect', attrs: { x: '3', y: '14', width: '7', height: '7', rx: '1' } }, { tag: 'rect', attrs: { x: '14', y: '14', width: '7', height: '7', rx: '1' } }]),
   monitor: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('rect', { x: '2', y: '3', width: '20', height: '14', rx: '2' }), h('line', { x1: '8', y1: '21', x2: '16', y2: '21' }), h('line', { x1: '12', y1: '17', x2: '12', y2: '21' })]),
   settings: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
   infra: makeIconMixed([{ tag: 'rect', attrs: { x: '2', y: '2', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'rect', attrs: { x: '2', y: '14', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'line', attrs: { x1: '6', y1: '6', x2: '6.01', y2: '6' } }, { tag: 'line', attrs: { x1: '6', y1: '18', x2: '6.01', y2: '18' } }]),
 }
 
 // --- Nav config ---
-const navItems = [
+const { routes: pluginUIRoutes } = usePluginUIRoutes()
+
+const navItems = computed(() => [
   { type: 'item', label: '首页', to: '/', icon: icons.home, activeMatch: (name) => name === 'dashboard' },
   {
     type: 'group', label: '流量管理', icon: icons.traffic,
@@ -121,13 +143,14 @@ const navItems = [
     type: 'group', label: '基础设施', icon: icons.infra,
     children: [
       { label: '证书管理', to: '/certs', icon: icons.lock },
-      { label: '域名 Token', to: '/cloudflare-dns', icon: icons.key },
+      ...pluginChildrenForGroup(pluginUIRoutes.value, '基础设施').map((child) => ({ ...child, icon: icons.key })),
       { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
       { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
     ],
   },
+  { type: 'item', label: '资源组', to: '/resource-groups', icon: icons.groups },
   { type: 'item', label: '设置', to: '/settings', icon: icons.settings },
-]
+])
 
 const route = useRoute()
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
@@ -155,7 +178,7 @@ function toggleCollapse() {
 }
 
 function openActiveGroups() {
-  for (const item of navItems) {
+  for (const item of navItems.value) {
     if (item.type === 'group' && isGroupActive(item) && !isGroupOpen(item.label)) {
       openGroups.value.add(item.label)
     }

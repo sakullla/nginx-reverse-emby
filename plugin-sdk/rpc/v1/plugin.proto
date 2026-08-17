@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package nre.plugin.rpc.v1;
+
+option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/rpcv1";
+
+// Runtime results carry exactly one success or error field. Hosts reject a
+// missing result, conflicting wire fields, false readiness, and unspecified or
+// unknown error codes before applying lifecycle state.
+enum RuntimeErrorCode {
+  RUNTIME_ERROR_CODE_UNSPECIFIED = 0;
+  RUNTIME_ERROR_CODE_INVALID_ARGUMENT = 1;
+  RUNTIME_ERROR_CODE_PERMISSION_DENIED = 2;
+  RUNTIME_ERROR_CODE_RESOURCE_EXHAUSTED = 3;
+  RUNTIME_ERROR_CODE_DEADLINE_EXCEEDED = 4;
+  RUNTIME_ERROR_CODE_UNAVAILABLE = 5;
+  RUNTIME_ERROR_CODE_INCOMPATIBLE_ABI = 6;
+  RUNTIME_ERROR_CODE_INTERNAL = 7;
+}
+
+service PluginRuntime {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Prepare(LifecycleRequest) returns (LifecycleResponse);
+  rpc Activate(LifecycleRequest) returns (LifecycleResponse);
+  // PlanAction lets a guest request bounded typed operations against opaque
+  // host resource handles before the durable action side effect executes.
+  rpc PlanAction(ActionRequest) returns (ActionPlanResponse);
+  rpc InvokeAction(ActionRequest) returns (ActionResponse);
+  // QueryAction is the recovery half of InvokeAction. Implementations MUST
+  // durably claim operation_id before applying a side effect and replay the
+  // exact committed result. A lost InvokeAction response is therefore resolved
+  // without re-entering the action.
+  rpc QueryAction(ActionQueryRequest) returns (ActionResponse);
+  rpc Stop(LifecycleRequest) returns (LifecycleResponse);
+}
+
+message HandshakeRequest {
+  string abi = 1;
+  string plugin_id = 2;
+  string plugin_version = 3;
+  string package_digest = 4;
+  string artifact_digest = 5;
+  repeated string granted_scopes = 6;
+  string generation = 7;
+  // required_features are additive protocol extensions which the guest must
+  // explicitly acknowledge before the host may activate this generation.
+  repeated string required_features = 8;
+}
+
+message HandshakeResponse {
+  string abi = 1;
+  repeated string capabilities = 2;
+  repeated string features = 3;
+}
+
+message LifecycleRequest {
+  string generation = 1;
+  bytes config = 2;
+}
+
+message LifecycleResponse {
+  oneof result {
+    LifecycleSuccess success = 1;
+    RuntimeError error = 2;
+  }
+}
+
+message LifecycleSuccess {
+  bool ready = 1;
+}
+
+message ActionRequest {
+  string generation = 1;
+  string action_id = 2;
+  string target_kind = 3;
+  string target_id = 4;
+  string operation_id = 5;
+  // resource_handle is an opaque, revocable host authority. When set, raw
+  // target_kind/target_id MUST be empty and the guest must not infer them.
+  string resource_handle = 6;
+  repeated ResourceResult resource_results = 7;
+}
+
+enum ResourceOperation {
+  RESOURCE_OPERATION_UNSPECIFIED = 0;
+  RESOURCE_OPERATION_INSPECT = 1;
+  RESOURCE_OPERATION_PROBE = 2;
+  RESOURCE_OPERATION_TRAFFIC_SUMMARY = 3;
+  RESOURCE_OPERATION_DNS_APPLY = 4;
+  RESOURCE_OPERATION_DOCKER_REQUEST = 5;
+}
+
+message ResourceCall {
+  string request_id = 1;
+  string resource_handle = 2;
+  ResourceOperation operation = 3;
+  bytes input = 4;
+}
+
+message ResourceResult {
+  string request_id = 1;
+  oneof result {
+    bytes value = 2;
+    RuntimeError error = 3;
+  }
+}
+
+message ActionPlanResponse {
+  repeated ResourceCall calls = 1;
+  RuntimeError error = 2;
+}
+
+message ActionResponse {
+  // The operation identity is top-level so success, failure, pending, and
+  // missing query results are all bound to the same durable guest operation.
+  string operation_id = 3;
+  oneof result {
+    ActionSuccess success = 1;
+    RuntimeError error = 2;
+    ActionPending pending = 4;
+    ActionMissing missing = 5;
+  }
+}
+
+message ActionSuccess {
+  bool accepted = 1;
+}
+
+message ActionPending {}
+
+message ActionMissing {}
+
+message ActionQueryRequest {
+  string generation = 1;
+  string operation_id = 2;
+}
+
+message RuntimeError {
+  RuntimeErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+}

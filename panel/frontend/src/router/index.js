@@ -54,12 +54,6 @@ const routes = [
         meta: { title: '证书管理' }
       },
       {
-        path: 'cloudflare-dns',
-        name: 'cloudflare-dns',
-        component: () => import('../pages/CloudflareDnsPage.vue'),
-        meta: { title: '域名 Token' }
-      },
-      {
         path: 'relay-listeners',
         name: 'relay-listeners',
         component: () => import('../pages/RelayListenersPage.vue'),
@@ -70,6 +64,12 @@ const routes = [
         name: 'versions',
         component: () => import('../pages/VersionsPage.vue'),
         meta: { title: '版本策略' }
+      },
+      {
+        path: 'resource-groups',
+        name: 'resource-groups',
+        component: () => import('../pages/ResourceGroupsPage.vue'),
+        meta: { title: '资源组' }
       },
       {
         path: 'settings',

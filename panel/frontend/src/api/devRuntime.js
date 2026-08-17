@@ -70,11 +70,4 @@ export {
   fetchDashboardAttention
 } from './devMocks/index.js'
 
-export {
-  fetchCloudflareDnsMappings,
-  fetchCloudflareDnsMapping,
-  createCloudflareDnsMapping,
-  renameCloudflareDnsMapping,
-  rotateCloudflareDnsMapping,
-  deleteCloudflareDnsMapping
-} from './runtime.js'
+export { fetchPluginUIRoutes, fetchPluginResourceGroups } from './runtime.js'

@@ -1,13 +1,12 @@
-// Package pluginhost is the control-plane adapter for the delivered
-// cloudflare-dns plugin. Token mappings stay in the plugin; this package
-// only asks ResolveToken and owns the host-side environment fallback.
+// Package pluginhost mounts plugin-declared UI and resource groups, and
+// adapts cloudflare-dns ResolveToken for ACME/DDNS. Token mappings stay
+// in the plugin; this package owns the host-side environment fallback.
 package pluginhost
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -34,9 +33,8 @@ type TokenLookup interface {
 }
 
 type cloudflareDNSHost struct {
-	mu      sync.RWMutex
-	lookup  TokenLookup
-	handler http.Handler
+	mu     sync.RWMutex
+	lookup TokenLookup
 }
 
 var defaultCloudflareDNSHost cloudflareDNSHost
@@ -56,18 +54,6 @@ func CloudflareDNSLookup() TokenLookup {
 // CloudflareDNSAvailable reports whether a cloudflare-dns lookup handle is installed.
 func CloudflareDNSAvailable() bool {
 	return CloudflareDNSLookup() != nil
-}
-
-func SetCloudflareDNSHandler(handler http.Handler) {
-	defaultCloudflareDNSHost.mu.Lock()
-	defer defaultCloudflareDNSHost.mu.Unlock()
-	defaultCloudflareDNSHost.handler = handler
-}
-
-func CloudflareDNSHandler() http.Handler {
-	defaultCloudflareDNSHost.mu.RLock()
-	defer defaultCloudflareDNSHost.mu.RUnlock()
-	return defaultCloudflareDNSHost.handler
 }
 
 func CloudflareDNSAPIToken() string {

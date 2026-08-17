@@ -34,15 +34,23 @@
 
 <script setup>
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { verifyToken } from '../api'
 import { useAuthState } from '../context/useAuthState'
 
 const router = useRouter()
+const route = useRoute()
 const { setToken } = useAuthState()
 const tokenInput = ref('')
 const loading = ref(false)
 const error = ref('')
+
+function safeReturnPath(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    return null
+  }
+  return value
+}
 
 async function handleLogin() {
   const token = tokenInput.value.trim()
@@ -56,7 +64,12 @@ async function handleLogin() {
     if (valid) {
       localStorage.setItem('panel_token', token)
       setToken(token)
-      router.push({ name: 'dashboard' })
+      const next = safeReturnPath(route.query.return)
+      if (next && next.startsWith('/panel-api/')) {
+        window.location.assign(next)
+        return
+      }
+      await router.push(next || { name: 'dashboard' })
     } else {
       error.value = '令牌无效'
     }
