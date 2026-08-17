@@ -33,9 +33,8 @@ const editingRuleID = ref(0)
 
 const httpBackendDeclared = computed(() => {
   if (props.hasHTTPBackend) return true
-  const pkg = props.packageDetail
-  const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
-  return Array.isArray(providers) && providers.some((provider) => String(provider?.id || provider || '').trim())
+  if (props.intent !== 'publish') return false
+  return packageDeclaresHTTPBackend(props.packageDetail)
 })
 const instanceTargets = computed(() => [...new Set((props.instance?.targets || []).map((target) => String(target || '').trim()).filter(Boolean))])
 const instanceEntries = computed(() => (Array.isArray(props.publishedEntries) ? props.publishedEntries : []).filter((entry) => {
@@ -104,6 +103,42 @@ function entryStatus(entry) {
   return entry.accessible ? '可访问' : '已发布但还不能访问'
 }
 
+function packageDeclaresHTTPBackend(pkg) {
+  if (!pkg || typeof pkg !== 'object') return false
+  const manifest = pkg.manifest && typeof pkg.manifest === 'object' ? pkg.manifest : pkg
+  const providers = manifest.http_backend_providers || pkg.http_backend_providers
+  return Array.isArray(providers) && providers.some((provider) => String(provider?.id || provider || '').trim())
+}
+
+function packageExtensionPoints(pkg) {
+  if (!pkg || typeof pkg !== 'object') return []
+  const manifest = pkg.manifest && typeof pkg.manifest === 'object' ? pkg.manifest : {}
+  const raw = manifest.extension_points || pkg.extension_points
+  if (!Array.isArray(raw)) return []
+  return raw.map((point) => String(point || '').trim()).filter(Boolean)
+}
+
+// Configure can only persist bindings the package owns. Publish overlays
+// plugin_provider HTTP rules as http_rule projections that http.backend-provider cannot store.
+function persistableConfigureBindings(instance, pkg, httpBackendHint) {
+  const bindings = Array.isArray(instance?.bindings) ? instance.bindings : []
+  const points = packageExtensionPoints(pkg)
+  const canOwnHTTPRule = points.includes('http.request') || points.includes('http.response')
+  const dropProjectedHTTPRule = (httpBackendHint || packageDeclaresHTTPBackend(pkg)) && !canOwnHTTPRule
+  return bindings
+    .filter((binding) => {
+      if (!binding?.consumer) return false
+      const kind = String(binding.consumer.kind || '').trim()
+      if (kind === 'http_rule' && dropProjectedHTTPRule) return false
+      if (kind === 'l4_rule' && points.length && !points.includes('l4.accept')) return false
+      return true
+    })
+    .map((binding) => ({
+      consumer: { kind: binding.consumer.kind, id: binding.consumer.id },
+      target_agent_id: binding.target_agent_id
+    }))
+}
+
 function resetPublishForm() {
   error.value = ''
   const preferred = props.intent === 'publish' ? null : instanceEntries.value[0]
@@ -140,10 +175,7 @@ async function save(payload) {
       resource_group_id: instance.resource_group_id,
       targets: instance.targets,
       policy_chains: instance.policy_chains || [],
-      bindings: (instance.bindings || []).map((binding) => ({
-        consumer: { kind: binding.consumer.kind, id: binding.consumer.id },
-        target_agent_id: binding.target_agent_id
-      })),
+      bindings: persistableConfigureBindings(instance, props.packageDetail, props.hasHTTPBackend),
       config: stripReadOnlyConfigValues(props.configSchema, payload.config),
       secret_replacements: payload.secret_replacements || {}
     })

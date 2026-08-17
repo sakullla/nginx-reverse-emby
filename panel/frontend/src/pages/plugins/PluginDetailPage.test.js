@@ -319,6 +319,18 @@ describe('PluginDetailPage', () => {
     })
   })
 
+  it('omits projected http_rule bindings when saving config after HTTP publish', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail())
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
+      instance_id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [],
+      bindings: [], config: { mode: 'block' }, secret_replacements: {}
+    })
+  })
+
   it('deploys a non-HTTP plugin to exactly one selected node', async () => {
     mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
     const wrapper = await mountPage(undeployedDetail())

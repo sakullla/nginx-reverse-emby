@@ -367,6 +367,34 @@ describe('PluginDetailPage production API projection', () => {
       config: { mode: 'block' }
     }), { timeout: 0 })
   })
+
+  it('does not write projected http_rule bindings back through configure after HTTP publish', async () => {
+    mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['default'] }
+    mocks.post.mockResolvedValue({ data: { result: {} } })
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance({
+        bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }]
+      })],
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://media.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    }))
+
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
+      instance_id: 'rpc.plugin-default',
+      bindings: [],
+      config: { mode: 'block' }
+    }), { timeout: 0 })
+  })
 })
 
 describe('PluginDetailPage task-center production API projection', () => {

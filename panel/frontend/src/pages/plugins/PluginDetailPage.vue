@@ -728,6 +728,7 @@ async function retryAgent(status) {
         :config="formConfig"
         :secret-fields="selectedSecretFields"
         :config-schema="detail.package?.config_schema || null"
+        :package-detail="detail.package"
         :can-write="canWrite"
         @saved="handleConfigSaved"
         @refreshed="handleConfigRefreshed"
