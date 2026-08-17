@@ -13,42 +13,38 @@ const loading = ref(true)
 const error = ref('')
 const plugins = ref([])
 const searchQuery = ref('')
-const lifecycleFilter = ref('')
+const taskFilter = ref('')
 
-const lifecycleOptions = [
+const taskStatusOptions = [
   { value: '', label: '全部' },
-  { value: 'active', label: '生效中' },
-  { value: 'degraded', label: '已降级' },
-  { value: 'disabled', label: '已停用' },
-  { value: 'upgrading', label: '升级中' },
-  { value: 'applying', label: '应用中' },
-  { value: 'rolling_back', label: '回滚中' }
+  { value: 'undeployed', label: '尚未部署' },
+  { value: 'unpublished', label: '待发布' },
+  { value: 'available', label: '已可用' },
+  { value: 'abnormal', label: '异常' }
 ]
 
 const filterFields = [
-  { key: 'lifecycle', label: '生命周期', type: 'chip', options: lifecycleOptions }
+  { key: 'task', label: '任务状态', type: 'chip', options: taskStatusOptions }
 ]
 
-const filterValues = computed(() => ({ lifecycle: lifecycleFilter.value }))
+const filterValues = computed(() => ({ task: taskFilter.value }))
 
 function onFilterUpdate({ key, value }) {
-  if (key === 'lifecycle') lifecycleFilter.value = String(value ?? '')
+  if (key === 'task') taskFilter.value = String(value ?? '')
 }
 
 function pluginName(detail) {
   return String(detail.package?.manifest?.name || detail.plugin?.plugin_id || '')
 }
 
-function lifecycleTone(lifecycle) {
-  if (lifecycle === 'active') return 'success'
-  if (lifecycle === 'degraded') return 'danger'
-  if (lifecycle === 'disabled') return 'neutral'
-  return 'warning'
+function hasHTTPBackend(detail) {
+  const pkg = detail?.package
+  const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
+  return Array.isArray(providers) && providers.some((provider) => String(provider?.id || '').trim())
 }
 
-function lifecycleLabel(lifecycle) {
-  const hit = lifecycleOptions.find((option) => option.value === lifecycle)
-  return hit ? hit.label : (lifecycle || '未知')
+function publishedEntriesOf(detail) {
+  return Array.isArray(detail?.published_entries) ? detail.published_entries : []
 }
 
 function abnormalAgentCount(detail) {
@@ -57,29 +53,65 @@ function abnormalAgentCount(detail) {
   ).length
 }
 
+function pluginTaskStatus(detail) {
+  if (!(detail.instances || []).length) return 'undeployed'
+  // Pending publish only applies when the installed package declares an HTTP backend.
+  if (hasHTTPBackend(detail) && !publishedEntriesOf(detail).length) return 'unpublished'
+  const entries = publishedEntriesOf(detail)
+  const reachable = entries.some((entry) => entry.enabled && entry.accessible)
+  if (
+    (hasHTTPBackend(detail) && entries.length && !reachable)
+    || abnormalAgentCount(detail) > 0
+    || detail.plugin?.current_lifecycle === 'degraded'
+  ) {
+    return 'abnormal'
+  }
+  return 'available'
+}
+
+function taskStatusLabel(status) {
+  const hit = taskStatusOptions.find((option) => option.value === status)
+  return hit ? hit.label : (status || '未知')
+}
+
+function taskStatusTone(status) {
+  if (status === 'available') return 'success'
+  if (status === 'abnormal') return 'danger'
+  if (status === 'unpublished') return 'warning'
+  return 'neutral'
+}
+
 function sourceLabel(detail) {
   return detail.plugin?.active_source_kind === 'official' ? '官方来源' : '非官方来源'
 }
 
-function deploymentLabel(detail) {
-  const count = (detail.instances || []).length
-  return count ? `已部署 ${count} 个实例` : '尚未部署'
+function publishedEntryLabel(detail) {
+  const entries = publishedEntriesOf(detail)
+  const ready = entries.find((entry) => entry.enabled && entry.accessible) || entries[0]
+  return ready?.frontend_url || ''
 }
 
-function nodeStatusLabel(detail) {
-  if (!(detail.instances || []).length) return '等待部署'
-  const abnormal = abnormalAgentCount(detail)
-  return abnormal ? `${abnormal} 个节点异常` : '节点正常'
+function nextStepLabel(detail) {
+  switch (pluginTaskStatus(detail)) {
+    case 'undeployed':
+      return '下一步：打开详情开始部署'
+    case 'unpublished':
+      return '下一步：打开详情填写入口域名'
+    case 'abnormal':
+      return '下一步：打开详情查看原因'
+    default:
+      return hasHTTPBackend(detail) ? '已可使用，打开详情查看入口' : '已部署到节点，打开详情查看状态'
+  }
 }
 
 const filteredPlugins = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
-  const lifecycle = lifecycleFilter.value
+  const task = taskFilter.value
   return plugins.value.filter((detail) => {
     const name = pluginName(detail).toLowerCase()
     const id = String(detail.plugin?.plugin_id || '').toLowerCase()
     if (q && !name.includes(q) && !id.includes(q)) return false
-    if (lifecycle && detail.plugin?.current_lifecycle !== lifecycle) return false
+    if (task && pluginTaskStatus(detail) !== task) return false
     return true
   })
 })
@@ -107,7 +139,7 @@ async function load() {
     <header class="page-header">
       <div class="page-header__left">
         <h1 class="page-title">已安装插件</h1>
-        <p class="page-subtitle">查看已安装插件，并进入详情部署或打开配置。尚未部署的插件也会出现在这里。</p>
+        <p class="page-subtitle">看每个插件还差部署、发布还是已经能用。点卡片进入详情做下一步；尚未部署的也会列在这里。</p>
       </div>
       <div class="page-header__right">
         <RouterLink class="btn btn-primary" to="/plugins/marketplace">打开插件市场</RouterLink>
@@ -135,9 +167,17 @@ async function load() {
       <EmptyState title="读取失败" :description="error" />
     </div>
 
-    <EmptyState v-else-if="!plugins.length" title="暂无插件" description="当前还没有已安装的插件。可先到市场安装官方插件。" />
+    <EmptyState
+      v-else-if="!plugins.length"
+      title="还没有已安装的插件"
+      description="下一步：到插件市场安装一个插件，装好后回到这里继续部署。"
+    >
+      <template #action>
+        <RouterLink class="btn btn-primary" to="/plugins/marketplace">去插件市场安装</RouterLink>
+      </template>
+    </EmptyState>
 
-    <EmptyState v-else-if="!filteredPlugins.length" title="没有匹配的插件" description="尝试调整搜索或筛选条件。" />
+    <EmptyState v-else-if="!filteredPlugins.length" title="没有匹配的插件" description="下一步：试试全部任务状态，或换一个搜索词。" />
 
     <section v-else class="plugin-grid" aria-label="已安装插件">
       <RouterLink
@@ -146,20 +186,31 @@ async function load() {
         :to="`/plugins/${encodeURIComponent(detail.plugin.plugin_id)}`"
         class="plugin-card-link"
       >
-        <BaseListCard :status="lifecycleTone(detail.plugin.current_lifecycle)" :clickable="false">
+        <BaseListCard :status="taskStatusTone(pluginTaskStatus(detail))" :clickable="false">
           <template #header-left>
             <strong class="plugin-card__name">{{ pluginName(detail) }}</strong>
-            <BaseBadge :tone="lifecycleTone(detail.plugin.current_lifecycle)" dot>
-              {{ lifecycleLabel(detail.plugin.current_lifecycle) }}
+            <BaseBadge
+              :tone="taskStatusTone(pluginTaskStatus(detail))"
+              :data-test="`plugin-task-status-${pluginTaskStatus(detail)}`"
+              dot
+            >
+              {{ taskStatusLabel(pluginTaskStatus(detail)) }}
             </BaseBadge>
           </template>
           <template #header-right>
             <span class="plugin-card__version">{{ detail.package.version }}</span>
           </template>
           <p class="plugin-card__meta">{{ sourceLabel(detail) }} · {{ detail.package.version }}</p>
+          <p class="plugin-card__next" data-test="plugin-next-step">{{ nextStepLabel(detail) }}</p>
           <dl class="plugin-card__facts">
-            <div><dt>部署</dt><dd>{{ deploymentLabel(detail) }}</dd></div>
-            <div><dt>节点</dt><dd>{{ nodeStatusLabel(detail) }}</dd></div>
+            <div>
+              <dt>任务</dt>
+              <dd>{{ taskStatusLabel(pluginTaskStatus(detail)) }}</dd>
+            </div>
+            <div>
+              <dt>{{ publishedEntryLabel(detail) ? '入口' : '来源' }}</dt>
+              <dd>{{ publishedEntryLabel(detail) || sourceLabel(detail) }}</dd>
+            </div>
           </dl>
         </BaseListCard>
       </RouterLink>
@@ -231,11 +282,18 @@ async function load() {
   overflow-wrap: anywhere;
 }
 
+.plugin-card__next {
+  margin: 0.35rem 0 0;
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
 .plugin-card__facts {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.5rem 0.75rem;
-  margin: 0;
+  margin: 0.5rem 0 0;
 }
 
 .plugin-card__facts dt {

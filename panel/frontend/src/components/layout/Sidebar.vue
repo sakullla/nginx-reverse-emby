@@ -34,11 +34,17 @@
                 :key="child.to"
                 :to="child.to"
                 class="sidebar__nav-item sidebar__nav-item--child"
-                :class="{ 'sidebar__nav-item--child-active': isChildActive(child) }"
+                :class="{
+                  'sidebar__nav-item--child-active': isChildActive(child),
+                  'sidebar__nav-item--advanced': child.advanced,
+                }"
+                :title="child.title || child.label"
+                :aria-label="navItemAriaLabel(child)"
                 :aria-current="isChildActive(child) ? 'page' : undefined"
               >
                 <component :is="child.icon" />
                 <span>{{ child.label }}</span>
+                <span v-if="child.advanced" class="sidebar__nav-badge">高级</span>
               </RouterLink>
             </div>
           </Transition>
@@ -69,11 +75,17 @@
               :key="child.to"
               :to="child.to"
               class="sidebar__hover-popup__item"
-              :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
+              :class="{
+                'sidebar__hover-popup__item--active': isChildActive(child),
+                'sidebar__hover-popup__item--advanced': child.advanced,
+              }"
+              :title="child.title || child.label"
+              :aria-label="navItemAriaLabel(child)"
               :aria-current="isChildActive(child) ? 'page' : undefined"
             >
               <component :is="child.icon" />
               <span>{{ child.label }}</span>
+              <span v-if="child.advanced" class="sidebar__nav-badge">高级</span>
             </RouterLink>
           </div>
         </div>
@@ -146,9 +158,28 @@ const navItems = computed(() => {
     {
       type: 'group', label: '插件', icon: icons.plugin,
       children: [
-        { label: '插件市场', to: '/plugins/marketplace', icon: icons.plugin, activeMatch: (name) => name === 'plugin-marketplace' },
-        { label: '已安装插件', to: '/plugins', icon: icons.plugin, activeMatch: (name) => name === 'plugins' || name === 'plugin-detail' },
-        { label: '插件仓库', to: '/plugins/repositories', icon: icons.plugin, activeMatch: (name) => name === 'plugin-repositories' },
+        {
+          label: '插件市场',
+          title: '浏览并安装插件，安装后继续部署或发布',
+          to: '/plugins/marketplace',
+          icon: icons.plugin,
+          activeMatch: (name) => name === 'plugin-marketplace',
+        },
+        {
+          label: '已安装插件',
+          title: '查看尚未部署、待发布、已可用或异常',
+          to: '/plugins',
+          icon: icons.plugin,
+          activeMatch: (name) => name === 'plugins' || name === 'plugin-detail',
+        },
+        {
+          label: '插件仓库',
+          title: '高级：管理来源与刷新，不会卸载已装插件',
+          to: '/plugins/repositories',
+          icon: icons.plugin,
+          advanced: true,
+          activeMatch: (name) => name === 'plugin-repositories',
+        },
       ],
     },
   ]
@@ -175,6 +206,9 @@ const openGroups = ref(new Set(JSON.parse(localStorage.getItem('sidebar_open_gro
 
 function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : isPathActive(item.to) }
 function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : isPathActive(child.to) }
+function navItemAriaLabel(item) {
+  return item.title && item.title !== item.label ? `${item.label}，${item.title}` : item.label
+}
 function isGroupOpen(label) { return openGroups.value.has(label) }
 function isGroupActive(group) { return group.children.some(c => isChildActive(c)) }
 
@@ -356,6 +390,22 @@ watch(() => route.path, openActiveGroups)
   border-radius: 0 2px 2px 0;
 }
 
+.sidebar__nav-item--advanced:not(.sidebar__nav-item--child-active) {
+  color: var(--color-text-tertiary);
+}
+
+.sidebar__nav-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-md);
+  padding: 0.125rem 0.375rem;
+}
+
 /* Nav group */
 .nav-group {
   display: flex;
@@ -527,5 +577,9 @@ watch(() => route.path, openActiveGroups)
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   font-weight: 600;
+}
+
+.sidebar__hover-popup__item--advanced:not(.sidebar__hover-popup__item--active) {
+  color: var(--color-text-tertiary);
 }
 </style>

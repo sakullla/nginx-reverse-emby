@@ -3,10 +3,12 @@
     <header class="page-header">
       <div class="page-header__left">
         <RouterLink to="/plugins/marketplace" class="back-link">← 插件市场</RouterLink>
+        <p class="repository-advanced-label">高级入口 · 来源管理</p>
         <h1 class="page-title">插件仓库</h1>
-        <p class="page-subtitle">管理插件市场和插件包的来源，查看最近刷新是否成功。</p>
+        <p class="page-subtitle">这里只管理市场和插件包从哪里来，不是安装或发布的起点。下一步：查看最近刷新是否成功，或新增仓库源；安装官方插件请先去市场。</p>
       </div>
       <div class="page-header__right">
+        <RouterLink class="btn btn-secondary" to="/plugins/marketplace">去市场安装</RouterLink>
         <button class="btn btn-primary" type="button" @click="openCreate">新增仓库源</button>
       </div>
     </header>
@@ -17,9 +19,12 @@
     </div>
 
     <div v-else-if="loadError && !sources.length" role="alert">
-      <EmptyState title="读取失败" :description="loadError">
+      <EmptyState title="读取失败" :description="`${loadError} 下一步：重试读取仓库源，或先去市场安装官方插件。`">
         <template #action>
-          <button class="btn btn-secondary" type="button" @click="loadSources">重试</button>
+          <div class="repository-empty-actions">
+            <button class="btn btn-secondary" type="button" @click="loadSources">重试</button>
+            <RouterLink class="btn btn-secondary" to="/plugins/marketplace">去市场安装</RouterLink>
+          </div>
         </template>
       </EmptyState>
     </div>
@@ -27,16 +32,27 @@
     <template v-else>
       <p v-if="error" class="repository-alert repository-alert--error" role="alert">{{ error }}</p>
 
-      <section class="repository-workspace" aria-label="插件仓库源">
+      <EmptyState
+        v-if="!sources.length"
+        title="还没有仓库源"
+        description="下一步：新增一个市场索引或插件包来源。安装官方插件不必从这里开始，请先去市场。"
+      >
+        <template #action>
+          <div class="repository-empty-actions">
+            <button class="btn btn-primary" type="button" @click="openCreate">新增仓库源</button>
+            <RouterLink class="btn btn-secondary" to="/plugins/marketplace">去市场安装</RouterLink>
+          </div>
+        </template>
+      </EmptyState>
+
+      <section v-else class="repository-workspace" aria-label="插件仓库源">
         <aside class="repository-list">
           <div class="repository-list__heading">
             <strong>仓库源</strong>
             <span>{{ sources.length }}</span>
           </div>
-          <p v-if="!sources.length" class="repository-list__empty">尚未配置仓库源</p>
           <button
             v-for="source in sources"
-            v-else
             :key="source.id"
             type="button"
             :class="['repository-list__item', { 'repository-list__item--active': selectedId === source.id }]"
@@ -151,17 +167,18 @@
                 <code>{{ entry.sha256 }}</code>
               </div>
             </div>
-            <p v-else class="repository-packages__empty">当前快照没有可用包</p>
+            <p v-else class="repository-packages__empty">当前快照没有可用包。下一步：立即刷新该来源，成功后再去市场安装。</p>
           </section>
 
           <p class="repository-detail__notice">
             删除仓库源只会停止从该 Git 来源继续发现或刷新内容，不会卸载已经安装的插件。
+            <RouterLink to="/plugins">到已安装列表继续部署或发布</RouterLink>
           </p>
         </div>
 
         <div v-else class="repository-detail repository-detail--empty">
-          <strong>选择一个仓库源查看详情</strong>
-          <p>可以新增市场索引或单插件仓库源。</p>
+          <strong>选择一个仓库源查看刷新是否成功</strong>
+          <p>下一步：确认来源可用后再去市场安装，或新增一个来源。</p>
         </div>
       </section>
 
@@ -381,6 +398,19 @@ function formatDate(value) {
 }
 .back-link:hover { color: var(--color-primary); }
 
+.repository-advanced-label {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.repository-empty-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .repository-workspace {
   min-height: 520px;
   display: grid;
@@ -455,6 +485,8 @@ function formatDate(value) {
 .repository-package-row code { overflow-wrap: anywhere; color: var(--color-text-secondary); font-size: var(--text-xs); }
 .repository-packages__empty { margin: var(--space-3) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .repository-detail__notice { margin: var(--space-5) 0 0; color: var(--color-text-muted); font-size: var(--text-xs); }
+.repository-detail__notice a { color: var(--color-primary); text-decoration: none; }
+.repository-detail__notice a:hover { text-decoration: underline; }
 
 .repository-alert { display: flex; gap: var(--space-2); margin: 0 0 var(--space-4); padding: var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); }
 .repository-alert--error { background: var(--color-danger-subtle); color: var(--color-danger); }

@@ -25,6 +25,35 @@ const installedPlugin = computed(() => installed.value.find((item) => item.plugi
 const isUpgrade = computed(() => installedPlugin.value && installedPlugin.value.active_package_digest !== selected.value?.plugin.sha256)
 const requiredPermissions = computed(() => detail.value?.permissions || [])
 const alreadyInstalled = computed(() => !!installedPlugin.value && !isUpgrade.value)
+const selectedPluginID = computed(() => String(selected.value?.plugin.id || '').trim())
+const selectedDetailPath = computed(() => selectedPluginID.value ? `/plugins/${encodeURIComponent(selectedPluginID.value)}` : '')
+const hasHTTPBackend = computed(() => {
+  const pkg = detail.value
+  const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
+  return Array.isArray(providers) && providers.some((provider) => String(provider?.id || '').trim())
+})
+const pluginPurpose = computed(() => {
+  const description = sanitizePluginText(detail.value?.manifest?.description || '').trim()
+  if (description) return description
+  return hasHTTPBackend.value
+    ? '安装后把插件部署到一个节点，再填写一条入口域名即可发布。'
+    : '安装后把插件部署到一个节点即可在该节点上使用。'
+})
+const nextStepHint = computed(() => {
+  if (alreadyInstalled.value) {
+    return hasHTTPBackend.value
+      ? '当前版本已安装。下一步：打开详情继续部署，或在已部署后发布域名。'
+      : '当前版本已安装。下一步：打开详情继续部署。'
+  }
+  if (isUpgrade.value) {
+    return hasHTTPBackend.value
+      ? '升级后会进入详情。下一步：部署到一个节点并发布域名。'
+      : '升级后会进入详情。下一步：部署到一个节点。'
+  }
+  return hasHTTPBackend.value
+    ? '安装后会进入详情。下一步：部署到一个节点并填写入口域名发布。'
+    : '安装后会进入详情。下一步：部署到一个节点。'
+})
 
 onMounted(load)
 
@@ -118,10 +147,10 @@ async function applyPackage() {
       <div class="page-header__left">
         <RouterLink to="/plugins" class="back-link">← 已安装插件</RouterLink>
         <h1 class="page-title">插件市场</h1>
-        <p class="page-subtitle">浏览已验证的插件，安装或升级后会进入详情继续部署。</p>
+        <p class="page-subtitle">选一个插件安装或升级。成功后会进入详情，下一步是部署；提供访问入口的插件还要发布域名。</p>
       </div>
       <div class="page-header__right">
-        <RouterLink class="btn btn-secondary" to="/plugins/repositories">管理仓库源</RouterLink>
+        <RouterLink class="btn btn-secondary" to="/plugins/repositories">高级：管理仓库源</RouterLink>
       </div>
     </header>
 
@@ -131,10 +160,18 @@ async function applyPackage() {
     </div>
 
     <div v-else-if="!packages.length && error" role="alert">
-      <EmptyState title="读取失败" :description="error" />
+      <EmptyState title="读取失败" :description="`${error} 下一步：重试读取市场，或先去已安装列表查看已有插件。`">
+        <template #action>
+          <button class="btn btn-secondary" type="button" @click="load">重试</button>
+        </template>
+      </EmptyState>
     </div>
 
-    <EmptyState v-else-if="!packages.length" icon="🧩" title="暂无插件" description="当前市场快照没有可用插件。" />
+    <EmptyState v-else-if="!packages.length" icon="🧩" title="暂无插件" description="当前市场没有可安装的插件。下一步：到仓库检查来源是否刷新成功。">
+      <template #action>
+        <RouterLink class="btn btn-secondary" to="/plugins/repositories">打开插件仓库</RouterLink>
+      </template>
+    </EmptyState>
 
     <template v-else>
       <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
@@ -155,9 +192,18 @@ async function applyPackage() {
                 <p class="marketplace-primary__source">{{ source.kind === 'official' ? '官方来源' : '非官方来源' }}</p>
                 <h2>{{ detail.manifest?.name || selected?.plugin.name || selected?.plugin.id }}</h2>
                 <p>{{ selected?.plugin.version }} · {{ installedStatus(selected) }}</p>
+                <p class="marketplace-primary__purpose">{{ pluginPurpose }}</p>
+                <p class="marketplace-primary__next" data-test="marketplace-next-step">{{ nextStepHint }}</p>
               </div>
               <div class="permission-review__actions">
-                <button class="btn btn-primary" type="button" :disabled="alreadyInstalled" @click="openConfirm">
+                <RouterLink
+                  v-if="alreadyInstalled && selectedDetailPath"
+                  class="btn btn-primary"
+                  :to="selectedDetailPath"
+                >
+                  打开详情
+                </RouterLink>
+                <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled" @click="openConfirm">
                   {{ isUpgrade ? '升级插件' : '安装插件' }}
                 </button>
               </div>
@@ -177,7 +223,7 @@ async function applyPackage() {
               </section>
             </details>
           </template>
-          <EmptyState v-else icon="🧩" title="选择插件查看详情" description="从左侧列表选择一个插件查看宿主验证详情。" />
+          <EmptyState v-else icon="🧩" title="选择插件查看说明" description="下一步：从左侧选一个插件，先看它做什么，再决定是否安装。" />
         </div>
       </section>
 
@@ -194,6 +240,7 @@ async function applyPackage() {
           <ul v-if="requiredPermissions.length" class="permission-list">
             <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
           </ul>
+          <p class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
           <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
         </div>
         <template #footer>
@@ -277,6 +324,8 @@ async function applyPackage() {
 .marketplace-primary h2 { margin: var(--space-1) 0 0; }
 .marketplace-primary p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .marketplace-primary__source { color: var(--color-text-secondary); font-size: var(--text-xs); }
+.marketplace-primary__purpose { color: var(--color-text-secondary); }
+.marketplace-primary__next { color: var(--color-text-primary); }
 .marketplace-technical { display: grid; gap: var(--space-4); }
 .marketplace-technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .permission-review {
@@ -310,6 +359,7 @@ async function applyPackage() {
 
 .confirm-permissions { display: grid; gap: var(--space-3); }
 .confirm-permissions p { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
+.confirm-next { color: var(--color-text-primary); }
 .confirm-risk { color: var(--color-warning); }
 
 @media (max-width: 800px) {

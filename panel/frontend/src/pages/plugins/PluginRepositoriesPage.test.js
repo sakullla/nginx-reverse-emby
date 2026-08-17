@@ -102,9 +102,24 @@ describe('PluginRepositoriesPage', () => {
   it('renders the shared page header with a back link and primary action', async () => {
     await mountPage()
     expect(wrapper.find('.page-title').text()).toBe('插件仓库')
+    expect(wrapper.find('.repository-advanced-label').text()).toContain('高级入口')
     expect(wrapper.find('.page-subtitle').text()).toContain('最近刷新')
+    expect(wrapper.find('.page-subtitle').text()).toContain('不是安装或发布的起点')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins/marketplace')
+    expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/marketplace')
+    expect(wrapper.find('.page-header__right a').text()).toContain('去市场安装')
     expect(buttonByText('新增仓库源').classes()).toContain('btn-primary')
+  })
+
+  it('uses next-step empty copy and keeps the market as the install path', async () => {
+    fetchRepositorySources.mockResolvedValueOnce([])
+    await mountPage()
+
+    expect(wrapper.text()).toContain('还没有仓库源')
+    expect(wrapper.text()).toContain('下一步')
+    expect(wrapper.text()).toContain('请先去市场')
+    expect(wrapper.findAll('a').some((link) => link.attributes('href') === '/plugins/marketplace')).toBe(true)
+    expect(buttonByText('新增仓库源').exists()).toBe(true)
   })
 
   it('shows purpose, configured ref, full resolved OID, provenance risk and current state', async () => {
@@ -143,7 +158,9 @@ describe('PluginRepositoriesPage', () => {
 
     expect(wrapper.text()).toContain('读取失败')
     expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.text()).toContain('下一步')
     expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(wrapper.find('[role="alert"] a').attributes('href')).toBe('/plugins/marketplace')
   })
 
   it('routes action errors through the unified alert channel', async () => {
@@ -209,8 +226,12 @@ describe('PluginRepositoriesPage', () => {
     await mountPage()
     await buttonByText('删除源').trigger('click')
 
+    expect(wrapper.find('.repository-detail__notice').text()).toContain('不会卸载已经安装的插件')
+    expect(wrapper.find('.repository-detail__notice').text()).toContain('停止从该 Git 来源继续发现或刷新内容')
+    expect(wrapper.find('.repository-detail__notice a').attributes('href')).toBe('/plugins')
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     expect(wrapper.find('.delete-dialog-message').text()).toContain('不会卸载已经安装的插件')
+    expect(wrapper.find('.delete-dialog-message').text()).toContain('将停止从该仓库源继续发现和刷新内容')
     await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
 

@@ -65,14 +65,21 @@ beforeEach(() => {
   mocks.push.mockReset()
 })
 
+function nextStep(wrapper) {
+  return wrapper.find('[data-test="marketplace-next-step"]').text()
+}
+
 describe('PluginMarketplacePage', () => {
   it('renders the shared page header with a back link and repository action', async () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('.page-title').text()).toBe('插件市场')
     expect(wrapper.find('.page-subtitle').text()).toContain('部署')
+    expect(wrapper.find('.page-subtitle').text()).toContain('下一步')
+    expect(wrapper.find('.page-subtitle').text()).toContain('发布')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins')
     expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/repositories')
+    expect(wrapper.find('.page-header__right a').text()).toContain('高级')
   })
 
   it('shows a spinner while loading', () => {
@@ -87,6 +94,7 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('读取失败')
     expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.text()).toContain('下一步')
   })
 
   it('shows an empty state when the market has no packages', async () => {
@@ -94,6 +102,8 @@ describe('PluginMarketplacePage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.text()).toContain('暂无插件')
+    expect(wrapper.text()).toContain('下一步')
+    expect(wrapper.find('a[href="/plugins/repositories"]').exists()).toBe(true)
   })
 
   it('shows signed package facts and confirms permissions through a modal', async () => {
@@ -102,6 +112,9 @@ describe('PluginMarketplacePage', () => {
 
     expect(wrapper.text()).toContain('非官方来源')
     expect(wrapper.text()).toContain('未安装')
+    expect(wrapper.text()).toContain('安装后把插件部署到一个节点即可在该节点上使用。')
+    expect(nextStep(wrapper)).toContain('下一步：部署到一个节点')
+    expect(nextStep(wrapper)).not.toContain('发布域名')
     expect(buttonByText(wrapper, '安装插件')).toBeTruthy()
     expect(wrapper.find('.marketplace-technical').exists()).toBe(true)
     expect(wrapper.find('.marketplace-technical').element.open).toBeFalsy()
@@ -124,6 +137,8 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.find('.modal-stub').exists()).toBe(true)
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
     expect(wrapper.find('.modal-stub').text()).toContain('http.inspect')
+    expect(wrapper.find('.modal-stub').text()).toContain('我已复核非官方来源')
+    expect(wrapper.find('[data-test="marketplace-confirm-next"]').text()).toContain('下一步：部署到一个节点')
 
     const confirm = buttonByText(wrapper, '确认安装')
     await confirm.trigger('click')
@@ -144,8 +159,12 @@ describe('PluginMarketplacePage', () => {
 
     const upgrade = buttonByText(wrapper, '升级插件')
     expect(upgrade).toBeTruthy()
+    expect(nextStep(wrapper)).toContain('升级后会进入详情')
+    expect(nextStep(wrapper)).toContain('下一步：部署到一个节点')
+    expect(nextStep(wrapper)).not.toContain('发布域名')
     await upgrade.trigger('click')
     expect(wrapper.find('.modal-title').text()).toBe('确认升级插件')
+    expect(wrapper.find('[data-test="marketplace-confirm-next"]').text()).toContain('下一步：部署到一个节点')
 
     const confirm = buttonByText(wrapper, '确认升级')
     await confirm.trigger('click')
@@ -164,11 +183,52 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('当前版本已安装')
+    expect(nextStep(wrapper)).toContain('打开详情继续部署')
+    expect(wrapper.find(`a[href="/plugins/${encodeURIComponent(entry.id)}"]`).exists()).toBe(true)
     const install = buttonByText(wrapper, '安装插件')
     expect(install.attributes('disabled')).toBeDefined()
     await install.trigger('click')
     expect(wrapper.find('.modal-stub').exists()).toBe(false)
     expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('previews publish as the next step when the package declares an HTTP backend', async () => {
+    mocks.fetchPluginPackageDetail.mockResolvedValue({
+      ...packageDetail,
+      manifest: {
+        ...packageDetail.manifest,
+        description: '把站点流量交给这个插件处理。',
+        http_backend_providers: [{ id: 'default', display_name: 'Default' }]
+      }
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('把站点流量交给这个插件处理。')
+    expect(nextStep(wrapper)).toContain('发布')
+    expect(nextStep(wrapper)).toContain('入口域名')
+
+    await buttonByText(wrapper, '安装插件').trigger('click')
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    expect(wrapper.find('[data-test="marketplace-confirm-next"]').text()).toContain('发布')
+    expect(wrapper.find('.modal-stub').text()).toContain('http.inspect')
+  })
+
+  it('points an already-installed HTTP backend package at publish as the next detail step', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: entry.sha256 }])
+    mocks.fetchPluginPackageDetail.mockResolvedValue({
+      ...packageDetail,
+      manifest: {
+        ...packageDetail.manifest,
+        http_backend_providers: [{ id: 'default', display_name: 'Default' }]
+      }
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(nextStep(wrapper)).toContain('打开详情继续部署')
+    expect(nextStep(wrapper)).toContain('发布域名')
+    expect(wrapper.find(`a[href="/plugins/${encodeURIComponent(entry.id)}"]`).text()).toContain('打开详情')
   })
 
   it('stays on the market and does not navigate when install fails', async () => {
