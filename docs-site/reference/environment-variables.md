@@ -11,7 +11,7 @@
 | 设置公网访问地址 | `NRE_PUBLIC_URL` |
 | 设置 HTTP 临时随机面板入口 | `NRE_PANEL_PUBLIC_PATH` |
 | 切换数据库 | `NRE_DATABASE_DRIVER` + `NRE_DATABASE_DSN` |
-| 开启 Cloudflare DNS 验证 | `ACME_DNS_PROVIDER=cf` + `CF_TOKEN` |
+| 开启 Cloudflare DNS 验证 | `ACME_DNS_PROVIDER=cf` +（`CF_TOKEN` 或按域名映射） |
 | 使用外部内部-PKI master key | `NRE_PKI_MASTER_KEY_FILE` |
 | 关闭流量统计 | `NRE_TRAFFIC_STATS_ENABLED=false` |
 | Agent 注册令牌 | `MASTER_REGISTER_TOKEN` |
@@ -71,14 +71,14 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
-| `ACME_DNS_PROVIDER` | 空 | DNS 验证提供商。目前支持 `cf`（Cloudflare）。设置为 `cf` 并提供有效令牌以启用 DNS-01。 |
-| `CLOUDFLARE_DNS_API_TOKEN`（别名 `CF_DNS_API_TOKEN`、`CF_TOKEN`、`CF_Token`） | 空 | 用于 DNS-01 验证的 Cloudflare API 令牌。 |
+| `ACME_DNS_PROVIDER` | 空 | DNS 验证提供商。目前支持 `cf`（Cloudflare）。设置为 `cf`，并提供环境变量令牌或 `cloudflare-dns` 域名映射以启用 DNS-01。 |
+| `CLOUDFLARE_DNS_API_TOKEN`（别名 `CF_DNS_API_TOKEN`、`CF_TOKEN`、`CF_Token`） | 空 | 全局 Cloudflare API 令牌，只在按域名解析未命中映射时作为 DNS-01 / DDNS 兜底。 |
 | `CLOUDFLARE_ZONE_API_TOKEN`（别名 `CF_ZONE_API_TOKEN`） | 空 | 可选的 Cloudflare 区域令牌。 |
 | `NRE_ACME_EMAIL` | 空 | ACME 账户注册用的电子邮件地址。 |
 | `NRE_ACME_DIRECTORY_URL` | Let's Encrypt 生产环境 | ACME 目录 URL。 |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 检查证书续期的频率。 |
 
-只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。新手建议使用 Cloudflare API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
+`ACME_DNS_PROVIDER=cf` 且存在环境变量令牌 **或** 已安装的 `cloudflare-dns` 映射时，DNS-01 才会启用。全局令牌只在解析未命中时作为兜底；某个域名既无映射又无环境变量令牌时该次操作失败。新手建议使用 Cloudflare API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
 
 ---
 
