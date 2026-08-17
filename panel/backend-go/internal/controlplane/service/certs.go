@@ -1379,7 +1379,7 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 	}
 
 	issuer := s.renewalIssuer
-	if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
+	if issuer == nil && s.cfg.ManagedCloudflareDNSReady() {
 		issuer = newMasterCFDNSManagedCertificateIssuer()
 	}
 	if issuer == nil {
@@ -2050,13 +2050,14 @@ func (s *certificateService) scheduleManagedCertificateIssue(ctx context.Context
 }
 
 // managedCertificateIssuerAvailable reports whether a master_cf_dns issuer can be constructed
-// for this service: an injected renewal issuer, or the env-configured Cloudflare DNS issuer when
-// ManagedDNSCertificatesEnabled. Used to fail-fast at submit time instead of after dispatch.
+// for this service: an injected renewal issuer, or the Cloudflare DNS issuer when
+// ACME DNS-01 is ready (environment Token or an installed plugin). Used to fail-fast
+// at submit time instead of after dispatch.
 func (s *certificateService) managedCertificateIssuerAvailable() bool {
 	if s.renewalIssuer != nil {
 		return true
 	}
-	return s.cfg.ManagedDNSCertificatesEnabled && newMasterCFDNSManagedCertificateIssuer() != nil
+	return s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil
 }
 
 // ManagedCertificateBackgroundSigner returns the background issuance function injected into the

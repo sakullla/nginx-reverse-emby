@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -272,6 +273,111 @@ func TestDDNSUpsertsEveryConfiguredDomainOnce(t *testing.T) {
 	}
 	if status := store.status("a1"); status.Status != "ok" {
 		t.Fatalf("expected status=ok, got %+v", status)
+	}
+}
+
+func TestDDNSResolvesTokenPerDomainWithoutMixingEnv(t *testing.T) {
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: true,
+		Domain:  "www.example.com, other.test",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	cfg := enabledDDNSConfig()
+	cfg.DDNS.Token = "token-b"
+	svc := NewDDNSService(cfg, store, cf, func() time.Time { return time.Unix(1700, 0) })
+	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
+		if domain == "www.example.com" {
+			return "token-a", nil
+		}
+		return "token-b", nil
+	}
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	if got := cf.callCount(); got != 2 {
+		t.Fatalf("expected 2 Cloudflare calls, got %d", got)
+	}
+	if cf.calls[0].fqdn != "www.example.com" || cf.calls[0].token != "token-a" {
+		t.Fatalf("mapped domain call = %+v, want token-a", cf.calls[0])
+	}
+	if cf.calls[1].fqdn != "other.test" || cf.calls[1].token != "token-b" {
+		t.Fatalf("unmapped domain call = %+v, want token-b", cf.calls[1])
+	}
+}
+
+func TestDDNSFailsWhenDomainHasNoToken(t *testing.T) {
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: true,
+		Domain:  "missing.example",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	cfg := enabledDDNSConfig()
+	cfg.DDNS.Token = ""
+	svc := NewDDNSService(cfg, store, cf, func() time.Time { return time.Unix(1700, 0) })
+	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
+		return "", fmt.Errorf("%w: %s", pluginhost.ErrTokenUnavailable, domain)
+	}
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("expected no Cloudflare call, got %d", got)
+	}
+	status := store.status("a1")
+	if status.Status != "error" || !strings.Contains(status.LastError, "missing.example") {
+		t.Fatalf("status = %+v, want error naming missing.example", status)
+	}
+}
+
+func TestDDNSUpsertUsesHostResolveEntry(t *testing.T) {
+	pluginhost.SetCloudflareDNSLookup(staticTokenLookup{tokens: map[string]string{
+		"www.example.com": "token-a",
+	}})
+	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: true,
+		Domain:  "www.example.com, other.test",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	cfg := enabledDDNSConfig()
+	cfg.DDNS.Token = "token-b"
+	svc := NewDDNSService(cfg, store, cf, func() time.Time { return time.Unix(1700, 0) })
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	if got := cf.callCount(); got != 2 {
+		t.Fatalf("expected 2 Cloudflare calls, got %d: %+v", got, cf.calls)
+	}
+	if cf.calls[0].token != "token-a" || cf.calls[1].token != "token-b" {
+		t.Fatalf("tokens = (%q, %q), want mapped then env fallback", cf.calls[0].token, cf.calls[1].token)
+	}
+}
+
+func TestDDNSMappedUnavailableDoesNotUseEnvToken(t *testing.T) {
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: true,
+		Domain:  "example.com",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	cfg := enabledDDNSConfig()
+	cfg.DDNS.Token = "token-b"
+	svc := NewDDNSService(cfg, store, cf, time.Now)
+	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
+		return "", fmt.Errorf("%w: %s", pluginhost.ErrMappedTokenUnavailable, domain)
+	}
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("mapped unavailable must not call Cloudflare, got %d", got)
+	}
+	status := store.status("a1")
+	if status.Status != "error" || !strings.Contains(status.LastError, "example.com") {
+		t.Fatalf("status = %+v, want mapped-token error for example.com", status)
 	}
 }
 

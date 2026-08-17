@@ -1201,7 +1201,7 @@ func (s *ruleService) prepareAutoManagedDNSCertificateIssues(originalRows []stor
 }
 
 func (s *ruleService) autoManagedDNSIssuerAvailable() bool {
-	return s.cfg.ManagedDNSCertificatesEnabled && newMasterCFDNSManagedCertificateIssuer() != nil
+	return s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil
 }
 
 func (s *ruleService) cleanupUnusedManagedCertificatesForAgent(
@@ -1257,7 +1257,7 @@ func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
 		}
 		return "local_http01", nil
 	}
-	if s.cfg.ManagedDNSCertificatesEnabled {
+	if s.cfg.ManagedCloudflareDNSReady() {
 		return "master_cf_dns", nil
 	}
 	if agentHasCapability(capabilities, "local_acme") {

@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 )
 
 func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
@@ -42,8 +44,11 @@ func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
 			if !ok || issuer == nil {
 				t.Fatalf("newMasterCFDNSManagedCertificateIssuer() = %T, want concrete issuer", issuer)
 			}
-			if issuer.cfToken != "dns-token-canary" || issuer.cfZoneToken != "zone-token-canary" {
-				t.Fatalf("token scope = (%q, %q)", issuer.cfToken, issuer.cfZoneToken)
+			if issuer.cfZoneToken != "zone-token-canary" {
+				t.Fatalf("zone token = %q, want zone-token-canary", issuer.cfZoneToken)
+			}
+			if issuer.resolveToken == nil {
+				t.Fatal("constructor did not bind ResolveCloudflareDNSToken")
 			}
 			if issuer.dataDir != dataDir || issuer.directoryURL != "https://ca.example/directory" || issuer.email != "ops@example.com" {
 				t.Fatalf("issuer config = dataDir %q, directory %q, email %q", issuer.dataDir, issuer.directoryURL, issuer.email)
@@ -51,6 +56,7 @@ func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
 		})
 	}
 
+	pluginhost.SetCloudflareDNSLookup(nil)
 	for _, key := range append(append([]string(nil), dnsAliases...), zoneAliases...) {
 		t.Setenv(key, "")
 	}
@@ -59,15 +65,170 @@ func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
 	}
 }
 
-func TestMasterCFDNSConstructorFallsBackToDNSAPITokenForZoneScope(t *testing.T) {
+func TestMasterCFDNSConstructorAllowsPluginWithoutEnvToken(t *testing.T) {
+	for _, key := range []string{"CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token", "CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN"} {
+		t.Setenv(key, "")
+	}
+	pluginhost.SetCloudflareDNSLookup(staticTokenLookup{tokens: map[string]string{"example.com": "mapped-a"}})
+	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+	if issuer := newMasterCFDNSManagedCertificateIssuer(); issuer == nil {
+		t.Fatal("issuer with plugin and no env token = nil")
+	}
+}
+
+func TestMasterCFDNSConstructorLeavesZoneTokenEmptyForIssueTimeFallback(t *testing.T) {
 	for _, key := range []string{"CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token", "CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN"} {
 		t.Setenv(key, "")
 	}
 	t.Setenv("CF_TOKEN", "shared-token-canary")
 	issuer := newMasterCFDNSManagedCertificateIssuer().(*masterCFDNSManagedCertificateIssuer)
-	if issuer.cfToken != "shared-token-canary" || issuer.cfZoneToken != issuer.cfToken {
-		t.Fatalf("fallback token scope = (%q, %q)", issuer.cfToken, issuer.cfZoneToken)
+	if issuer.cfZoneToken != "" {
+		t.Fatalf("zone token = %q, want empty so Issue uses the resolved DNS token", issuer.cfZoneToken)
 	}
+}
+
+func TestMasterCFDNSIssueUsesHostResolveEntry(t *testing.T) {
+	pluginhost.SetCloudflareDNSLookup(staticTokenLookup{tokens: map[string]string{
+		"www.example.com": "token-a",
+	}})
+	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
+	t.Setenv("CF_DNS_API_TOKEN", "")
+	t.Setenv("CF_TOKEN", "token-b")
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	var gotDNS []string
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: "https://ca.example/directory",
+		dataDir:      t.TempDir(),
+		engine:       &fakeMasterACMEEngine{now: now},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		newSolver: func(_ masterACMEStateStore, dnsToken, _ string) (acmeflow.ChallengeSolver, error) {
+			gotDNS = append(gotDNS, dnsToken)
+			return fakeMasterDNS01Solver{}, nil
+		},
+		now: func() time.Time { return now },
+	}
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "www.example.com"}); err != nil {
+		t.Fatalf("Issue(mapped) error = %v", err)
+	}
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "other.test"}); err != nil {
+		t.Fatalf("Issue(fallback) error = %v", err)
+	}
+	if len(gotDNS) != 2 || gotDNS[0] != "token-a" || gotDNS[1] != "token-b" {
+		t.Fatalf("resolved tokens = %v, want [token-a token-b]", gotDNS)
+	}
+}
+
+func TestMasterCFDNSIssueUsesMappedTokenNotEnvironment(t *testing.T) {
+	t.Setenv("CF_TOKEN", "token-b")
+	t.Setenv("CLOUDFLARE_ZONE_API_TOKEN", "zone-env")
+	var gotDNS, gotZone string
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: "https://ca.example/directory",
+		email:        "ops@example.com",
+		cfZoneToken:  "zone-env",
+		dataDir:      t.TempDir(),
+		engine:       &fakeMasterACMEEngine{now: now},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		newSolver: func(_ masterACMEStateStore, dnsToken, zoneToken string) (acmeflow.ChallengeSolver, error) {
+			gotDNS, gotZone = dnsToken, zoneToken
+			return fakeMasterDNS01Solver{}, nil
+		},
+		resolveToken: func(_ context.Context, domain string) (string, error) {
+			if domain == "www.example.com" {
+				return "token-a", nil
+			}
+			return pluginhost.ResolveCloudflareDNSToken(context.Background(), domain)
+		},
+		now: func() time.Time { return now },
+	}
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "www.example.com", IssuerMode: "master_cf_dns"}); err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if gotDNS != "token-a" || gotZone != "zone-env" {
+		t.Fatalf("solver tokens = (%q, %q), want mapped DNS token-a and env zone", gotDNS, gotZone)
+	}
+}
+
+func TestMasterCFDNSIssueFallsBackZoneTokenToResolvedDNSToken(t *testing.T) {
+	var gotDNS, gotZone string
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: "https://ca.example/directory",
+		email:        "ops@example.com",
+		dataDir:      t.TempDir(),
+		engine:       &fakeMasterACMEEngine{now: now},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		newSolver: func(_ masterACMEStateStore, dnsToken, zoneToken string) (acmeflow.ChallengeSolver, error) {
+			gotDNS, gotZone = dnsToken, zoneToken
+			return fakeMasterDNS01Solver{}, nil
+		},
+		resolveToken: func(context.Context, string) (string, error) { return "resolved-dns", nil },
+		now:          func() time.Time { return now },
+	}
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "other.test"}); err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if gotDNS != "resolved-dns" || gotZone != "resolved-dns" {
+		t.Fatalf("solver tokens = (%q, %q), want resolved DNS for both", gotDNS, gotZone)
+	}
+}
+
+func TestMasterCFDNSIssueFailsWhenDomainHasNoToken(t *testing.T) {
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		openState: func(string) (masterACMEStateStore, error) {
+			t.Fatal("state must not open when token resolve fails")
+			return nil, errors.New("unused")
+		},
+		resolveToken: func(context.Context, string) (string, error) {
+			return "", fmt.Errorf("%w: missing.example", pluginhost.ErrTokenUnavailable)
+		},
+	}
+	_, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "missing.example"})
+	if err == nil || !errors.Is(err, pluginhost.ErrTokenUnavailable) {
+		t.Fatalf("Issue() err = %v, want token unavailable", err)
+	}
+	if !strings.Contains(err.Error(), "missing.example") {
+		t.Fatalf("Issue() err = %v, want domain in message", err)
+	}
+}
+
+func TestMasterCFDNSIssueFailsWhenMappedTokenUnavailable(t *testing.T) {
+	t.Setenv("CF_TOKEN", "token-b")
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		openState: func(string) (masterACMEStateStore, error) {
+			t.Fatal("state must not open when mapped token is unavailable")
+			return nil, errors.New("unused")
+		},
+		resolveToken: func(context.Context, string) (string, error) {
+			return "", fmt.Errorf("%w: example.com", pluginhost.ErrMappedTokenUnavailable)
+		},
+	}
+	_, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "example.com"})
+	if err == nil || !errors.Is(err, pluginhost.ErrMappedTokenUnavailable) {
+		t.Fatalf("Issue() err = %v, want mapped token unavailable", err)
+	}
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Fatalf("Issue() err = %v, want domain in message", err)
+	}
+}
+
+type staticTokenLookup struct {
+	tokens map[string]string
+}
+
+func (s staticTokenLookup) ResolveToken(_ context.Context, domain string) (string, error) {
+	if token, ok := s.tokens[domain]; ok {
+		return token, nil
+	}
+	return "", pluginhost.ErrMappingMiss
 }
 
 func TestMasterCFDNSContextErrorsStayTypedWithoutOpeningState(t *testing.T) {
@@ -94,6 +255,7 @@ func TestMasterCFDNSContextErrorsStayTypedWithoutOpeningState(t *testing.T) {
 }
 
 func TestMasterCFDNSConcurrentIssuersSerializeAccountLifecycle(t *testing.T) {
+	t.Setenv("CF_TOKEN", "concurrent-token")
 	now := time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC)
 	dataDir := t.TempDir()
 	firstStateOpened := make(chan struct{})
@@ -121,7 +283,7 @@ func TestMasterCFDNSConcurrentIssuersSerializeAccountLifecycle(t *testing.T) {
 			dataDir:      dataDir,
 			engine:       engine,
 			openState:    openState,
-			newSolver: func(masterACMEStateStore) (acmeflow.ChallengeSolver, error) {
+			newSolver: func(masterACMEStateStore, string, string) (acmeflow.ChallengeSolver, error) {
 				return fakeMasterDNS01Solver{}, nil
 			},
 			now: func() time.Time { return now },
@@ -186,17 +348,18 @@ func TestMasterCFDNSIssueRecoversAccountAndRotatesCertificateKeys(t *testing.T) 
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
 	engine := &fakeMasterACMEEngine{crashFirst: true, now: now}
 	dataDir := t.TempDir()
+	t.Setenv("CF_TOKEN", "dns-token-canary")
+	t.Setenv("CLOUDFLARE_ZONE_API_TOKEN", "zone-token-canary")
 	issuer := &masterCFDNSManagedCertificateIssuer{
 		directoryURL: "https://ca.example/directory",
 		email:        "ops@example.com",
-		cfToken:      "dns-token-canary",
 		cfZoneToken:  "zone-token-canary",
 		dataDir:      dataDir,
 		engine:       engine,
 		openState: func(dataDir string) (masterACMEStateStore, error) {
 			return openMasterACMEAccountStore(dataDir)
 		},
-		newSolver: func(masterACMEStateStore) (acmeflow.ChallengeSolver, error) {
+		newSolver: func(masterACMEStateStore, string, string) (acmeflow.ChallengeSolver, error) {
 			return fakeMasterDNS01Solver{}, nil
 		},
 		now: func() time.Time { return now },
@@ -249,7 +412,7 @@ func TestMasterCFDNSIssueRecoversAccountAndRotatesCertificateKeys(t *testing.T) 
 	if len(engine.successfulCertificateKeys) != 2 || bytes.Equal(engine.successfulCertificateKeys[0], engine.successfulCertificateKeys[1]) {
 		t.Fatal("fake engine did not observe certificate-key rotation")
 	}
-	assertDirectoryDoesNotContain(t, filepath.Join(dataDir, "acme", "master"), issuer.cfToken, issuer.cfZoneToken, fakeMasterCrashCanary)
+	assertDirectoryDoesNotContain(t, filepath.Join(dataDir, "acme", "master"), "dns-token-canary", "zone-token-canary", fakeMasterCrashCanary)
 }
 
 func TestMasterCFDNSIssueReconcilesCompletedChallengeIntents(t *testing.T) {
@@ -283,10 +446,11 @@ func TestMasterCFDNSIssueReconcilesCompletedChallengeIntents(t *testing.T) {
 		openState: func(dataDir string) (masterACMEStateStore, error) {
 			return openMasterACMEAccountStore(dataDir)
 		},
-		newSolver: func(masterACMEStateStore) (acmeflow.ChallengeSolver, error) {
+		newSolver: func(masterACMEStateStore, string, string) (acmeflow.ChallengeSolver, error) {
 			return fakeMasterDNS01Solver{}, nil
 		},
-		now: func() time.Time { return now },
+		resolveToken: func(context.Context, string) (string, error) { return "intent-token", nil },
+		now:          func() time.Time { return now },
 	}
 	if _, err := issuer.Issue(context.Background(), ManagedCertificate{ID: 82, Domain: "example.com", IssuerMode: "master_cf_dns"}); err != nil {
 		t.Fatalf("Issue() error = %v", err)

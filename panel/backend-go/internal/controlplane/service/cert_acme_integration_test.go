@@ -51,10 +51,11 @@ func TestIntegrationManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.
 	}
 	propagation := &integrationDNSPropagation{provider: provider}
 	realEngine := &integrationMasterACMEEngine{client: integrationACMEHTTPClient(t)}
+	t.Setenv("CF_TOKEN", integrationDNSAPIToken)
+	t.Setenv("CLOUDFLARE_ZONE_API_TOKEN", integrationZoneAPIToken)
 	issuer := &masterCFDNSManagedCertificateIssuer{
 		directoryURL: directoryURL,
 		email:        "integration@example.com",
-		cfToken:      integrationDNSAPIToken,
 		cfZoneToken:  integrationZoneAPIToken,
 		dataDir:      dataDir,
 		engine:       realEngine,
@@ -63,7 +64,7 @@ func TestIntegrationManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.
 		},
 		now: time.Now,
 	}
-	issuer.newSolver = func(state masterACMEStateStore) (masterACMESolver, error) {
+	issuer.newSolver = func(state masterACMEStateStore, _, _ string) (masterACMESolver, error) {
 		return cloudflare.NewDNS01Solver(cloudflare.DNS01Config{
 			Client:      client,
 			Propagation: propagation,

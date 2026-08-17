@@ -1,10 +1,19 @@
 package config
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 )
+
+type stubCloudflareLookup struct{}
+
+func (stubCloudflareLookup) ResolveToken(context.Context, string) (string, error) {
+	return "", pluginhost.ErrMappingMiss
+}
 
 func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
 	t.Setenv("NRE_CONTROL_PLANE_ADDR", "0.0.0.0:8080")
@@ -423,7 +432,48 @@ func TestLoadFromEnvManagedDNSCertificatesDisabledWithoutCompleteCloudflareConfi
 			if cfg.ManagedDNSCertificatesEnabled {
 				t.Fatalf("ManagedDNSCertificatesEnabled = true, want false")
 			}
+			if tc.name == "missing token" && cfg.DDNS.Enabled {
+				t.Fatalf("DDNS.Enabled = true without token or plugin, want false")
+			}
 		})
+	}
+}
+
+func TestLoadFromEnvEnablesCloudflareWhenPluginAvailableWithoutToken(t *testing.T) {
+	pluginhost.SetCloudflareDNSLookup(stubCloudflareLookup{})
+	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("ACME_DNS_PROVIDER", "cf")
+	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
+	t.Setenv("CF_DNS_API_TOKEN", "")
+	t.Setenv("CF_TOKEN", "")
+	t.Setenv("CF_Token", "")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.ACMEDNSProvider != "cf" {
+		t.Fatalf("ACMEDNSProvider = %q, want cf", cfg.ACMEDNSProvider)
+	}
+	if !cfg.ManagedDNSCertificatesEnabled || !cfg.DDNS.Enabled {
+		t.Fatalf("plugin-only enablement = certs %v ddns %v, want true true", cfg.ManagedDNSCertificatesEnabled, cfg.DDNS.Enabled)
+	}
+	if cfg.DDNS.Token != "" {
+		t.Fatalf("DDNS.Token = %q, want empty env fallback", cfg.DDNS.Token)
+	}
+}
+
+func TestManagedCloudflareDNSReadyRechecksInstalledPlugin(t *testing.T) {
+	cfg := Config{ACMEDNSProvider: "cf"}
+	if cfg.ManagedCloudflareDNSReady() || cfg.DDNSReady() {
+		t.Fatal("ready flags true without token or plugin")
+	}
+	pluginhost.SetCloudflareDNSLookup(stubCloudflareLookup{})
+	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+	if !cfg.ManagedCloudflareDNSReady() || !cfg.DDNSReady() {
+		t.Fatal("ready flags false after plugin install")
 	}
 }
 
