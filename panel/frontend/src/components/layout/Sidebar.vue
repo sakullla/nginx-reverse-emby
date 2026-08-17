@@ -35,6 +35,7 @@
                 :to="child.to"
                 class="sidebar__nav-item sidebar__nav-item--child"
                 :class="{ 'sidebar__nav-item--child-active': isChildActive(child) }"
+                :aria-current="isChildActive(child) ? 'page' : undefined"
               >
                 <component :is="child.icon" />
                 <span>{{ child.label }}</span>
@@ -59,7 +60,7 @@
         </RouterLink>
 
         <div v-else class="sidebar__nav-icon-wrap">
-          <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }">
+          <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }" :title="item.label">
             <component :is="item.icon" />
           </div>
           <div class="sidebar__hover-popup">
@@ -69,6 +70,7 @@
               :to="child.to"
               class="sidebar__hover-popup__item"
               :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
+              :aria-current="isChildActive(child) ? 'page' : undefined"
             >
               <component :is="child.icon" />
               <span>{{ child.label }}</span>
@@ -83,7 +85,7 @@
 <script setup>
 import { ref, computed, h, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { useAccessControl } from '../../context/useAccessControl'
+import { isAccessManagementChildActive, useAccessControl } from '../../context/useAccessControl'
 
 // --- Icon components ---
 const makeIcon = (paths) => () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, paths.map(d => h('path', { d })))
@@ -106,10 +108,21 @@ const icons = {
   settings: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
   infra: makeIconMixed([{ tag: 'rect', attrs: { x: '2', y: '2', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'rect', attrs: { x: '2', y: '14', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'line', attrs: { x1: '6', y1: '6', x2: '6.01', y2: '6' } }, { tag: 'line', attrs: { x1: '6', y1: '18', x2: '6.01', y2: '18' } }]),
   plugin: makeIcon(['M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z']),
-  access: makeIconMixed([{ tag: 'circle', attrs: { cx: '12', cy: '8', r: '4' } }, { tag: 'path', attrs: { d: 'M4 20c0-4 3.6-7 8-7s8 3 8 7' } }]),
+  users: makeIconMixed([
+    { tag: 'path', attrs: { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' } },
+    { tag: 'circle', attrs: { cx: '9', cy: '7', r: '4' } },
+    { tag: 'path', attrs: { d: 'M22 21v-2a4 4 0 0 0-3-3.87' } },
+    { tag: 'path', attrs: { d: 'M16 3.13a4 4 0 0 1 0 7.75' } },
+  ]),
+  folder: makeIcon(['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z']),
 }
 
-const { can, refreshActor } = useAccessControl()
+const { refreshActor, visibleAccessManagement } = useAccessControl()
+const route = useRoute()
+
+function isPathActive(to) {
+  return Boolean(to) && (route.path === to || route.path.startsWith(`${to}/`))
+}
 
 // --- Nav config ---
 const navItems = computed(() => {
@@ -139,25 +152,29 @@ const navItems = computed(() => {
       ],
     },
   ]
-  if (can('resource.read') || can('*')) {
+  const accessGroup = visibleAccessManagement.value
+  if (accessGroup?.children?.length) {
     items.push({
-      type: 'item',
-      label: '资源组',
-      to: '/access/resource-groups',
-      icon: icons.access,
-      activeMatch: (name) => name === 'access-resource-groups'
+      type: 'group',
+      label: accessGroup.label,
+      icon: icons.users,
+      children: accessGroup.children.map((child) => ({
+        label: child.label,
+        to: child.path,
+        icon: child.id === 'users' ? icons.users : icons.folder,
+        activeMatch: () => isAccessManagementChildActive(child, route)
+      }))
     })
   }
   items.push({ type: 'item', label: '设置', to: '/settings', icon: icons.settings })
   return items
 })
 
-const route = useRoute()
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 const openGroups = ref(new Set(JSON.parse(localStorage.getItem('sidebar_open_groups') || '[]')))
 
-function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : route.path === item.to }
-function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : route.path === child.to }
+function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : isPathActive(item.to) }
+function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : isPathActive(child.to) }
 function isGroupOpen(label) { return openGroups.value.has(label) }
 function isGroupActive(group) { return group.children.some(c => isChildActive(c)) }
 

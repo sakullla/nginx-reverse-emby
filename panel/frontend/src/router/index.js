@@ -110,6 +110,12 @@ const routes = [
         meta: { title: '访问与安全' }
       },
       {
+        path: 'access/users',
+        name: 'access-users',
+        component: () => import('../pages/access/UsersPage.vue'),
+        meta: { title: '用户管理' }
+      },
+      {
         path: 'access/resource-groups',
         name: 'access-resource-groups',
         component: () => import('../pages/access/ResourceGroupsPage.vue'),

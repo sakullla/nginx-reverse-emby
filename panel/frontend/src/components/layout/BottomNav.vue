@@ -28,25 +28,45 @@
       </svg>
       <span>更多</span>
       <div v-if="moreOpen" class="more-dropdown">
-        <RouterLink to="/l4" class="more-dropdown__item" @click.stop="moreOpen = false">
+        <RouterLink to="/l4" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/l4') }" :aria-current="isMoreItemActive('/l4') ? 'page' : undefined" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
           </svg>
           L4 规则
         </RouterLink>
-        <RouterLink to="/relay-listeners" class="more-dropdown__item" @click.stop="moreOpen = false">
+        <RouterLink to="/relay-listeners" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/relay-listeners') }" :aria-current="isMoreItemActive('/relay-listeners') ? 'page' : undefined" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
           </svg>
           Relay 监听器
         </RouterLink>
-        <RouterLink to="/agents" class="more-dropdown__item" @click.stop="moreOpen = false">
+        <RouterLink to="/agents" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/agents') }" :aria-current="isMoreItemActive('/agents') ? 'page' : undefined" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
           </svg>
           节点管理
         </RouterLink>
-        <RouterLink to="/settings" class="more-dropdown__item" @click.stop="moreOpen = false">
+        <RouterLink
+          v-for="item in accessNavItems"
+          :key="item.path"
+          :to="item.path"
+          class="more-dropdown__item"
+          :class="{ 'more-dropdown__item--active': isAccessItemActive(item) }"
+          :aria-current="isAccessItemActive(item) ? 'page' : undefined"
+          @click.stop="moreOpen = false"
+        >
+          <svg v-if="item.id === 'users'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          {{ item.label }}
+        </RouterLink>
+        <RouterLink to="/settings" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/settings') }" :aria-current="isMoreItemActive('/settings') ? 'page' : undefined" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1z"/>
@@ -61,16 +81,29 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { isAccessManagementChildActive, useAccessControl } from '../../context/useAccessControl'
 
 const route = useRoute()
 const moreOpen = ref(false)
 const moreRef = ref(null)
+const { refreshActor, visibleAccessManagement } = useAccessControl()
+
+function isMoreItemActive(to) {
+  return Boolean(to) && (route.path === to || route.path.startsWith(`${to}/`))
+}
+
+function isAccessItemActive(item) {
+  return isAccessManagementChildActive(item, route)
+}
+
+const accessNavItems = computed(() => visibleAccessManagement.value?.children || [])
 
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
   route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/agents') ||
-  route.path.startsWith('/settings')
+  route.path.startsWith('/settings') ||
+  accessNavItems.value.some((item) => isAccessItemActive(item))
 )
 
 function handleClickOutside(e) {
@@ -80,6 +113,7 @@ function handleClickOutside(e) {
 }
 
 onMounted(() => {
+  refreshActor().catch(() => undefined)
   document.addEventListener('mousedown', handleClickOutside)
   document.addEventListener('touchstart', handleClickOutside)
 })
@@ -183,11 +217,17 @@ onUnmounted(() => {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
 }
+.more-dropdown__item--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
 .more-dropdown__item svg {
   flex-shrink: 0;
   color: var(--color-text-secondary);
 }
-.more-dropdown__item:hover svg {
+.more-dropdown__item:hover svg,
+.more-dropdown__item--active svg {
   color: var(--color-primary);
 }
 </style>

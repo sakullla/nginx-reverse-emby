@@ -14,6 +14,7 @@ onCredentialIdentityChange(() => {
   loadError.value = null
 })
 
+// Overview cards only. Sidebar and mobile consume accessManagementNavigation.
 export const accessNavigation = Object.freeze([
   { id: 'users', label: '用户', permission: 'access.manage' },
   { id: 'roles', label: '角色', permission: 'access.manage' },
@@ -22,6 +23,80 @@ export const accessNavigation = Object.freeze([
   { id: 'secrets', label: '凭据', permission: 'secret.metadata.read' },
   { id: 'audit', label: '审计', permission: 'audit.read' }
 ])
+
+// Sidebar/mobile group. Omit the group when no child is visible. No roles/quotas/secrets/audit.
+export const accessManagementNavigation = Object.freeze({
+  id: 'users-and-resources',
+  label: '用户与资源管理',
+  children: Object.freeze([
+    {
+      id: 'users',
+      label: '用户管理',
+      permission: 'access.manage',
+      path: '/access/users',
+      routeName: 'access-users'
+    },
+    {
+      id: 'resource-groups',
+      label: '资源组管理',
+      permission: 'resource.read',
+      path: '/access/resource-groups',
+      routeName: 'access-resource-groups'
+    }
+  ])
+})
+
+export const MIN_PASSWORD_LENGTH = 10
+
+export function actorHasPermission(actor, permission) {
+  const permissions = new Set(actor?.permissions || [])
+  return permissions.has('*') || permissions.has(permission)
+}
+
+export function visibleAccessManagementNavForActor(actor) {
+  const children = accessManagementNavigation.children.filter((item) => actorHasPermission(actor, item.permission))
+  if (!children.length) return null
+  return { ...accessManagementNavigation, children }
+}
+
+export function isAccessManagementChildActive(item, route) {
+  if (!item || !route) return false
+  if (item.routeName && route.name === item.routeName) return true
+  return Boolean(item.path) && route.path === item.path
+}
+
+export function isBootstrapActor(actor) {
+  return Boolean(actor?.bootstrap)
+}
+
+export function canChangeOwnPassword(actor) {
+  return Boolean(actor) && !isBootstrapActor(actor)
+}
+
+export function shouldShowFirstAdminSetup(actor, users) {
+  if (!actorHasPermission(actor, 'access.manage')) return false
+  return !Array.isArray(users) || users.length === 0
+}
+
+export function shouldPromptLeaveBootstrap(actor, users) {
+  return isBootstrapActor(actor) && Array.isArray(users) && users.length > 0
+}
+
+export function validateOwnPasswordChange(input = {}) {
+  if (!canChangeOwnPassword(input.actor)) {
+    return { ok: false, code: 'permission_denied', fields: {} }
+  }
+  const fields = {}
+  const current = String(input.current_password ?? '')
+  const next = String(input.new_password ?? '')
+  const confirm = input.confirm_password
+  if (!current) fields.current_password = 'current password is required'
+  if (next.length < MIN_PASSWORD_LENGTH) {
+    fields.new_password = `password must be at least ${MIN_PASSWORD_LENGTH} characters`
+  }
+  if (confirm !== undefined && confirm !== next) fields.confirm_password = 'passwords do not match'
+  return Object.keys(fields).length ? { ok: false, fields } : { ok: true, fields: {} }
+}
 
 export function filterPluginDetailForActor(detail, currentActor) {
   if (!detail || typeof detail !== 'object') return null
@@ -62,6 +137,9 @@ export function useAccessControl() {
   const can = (permission) => permissionSet.value.has('*') || permissionSet.value.has(permission)
   const canAccessGroup = (groupID) => can('*') || (actor.value?.visible_resource_groups || []).includes(groupID)
   const visibleNavigation = computed(() => accessNavigation.filter((item) => can(item.permission)))
+  const visibleAccessManagement = computed(() => visibleAccessManagementNavForActor(actor.value))
+  const isBootstrap = computed(() => isBootstrapActor(actor.value))
+  const canChangePassword = computed(() => canChangeOwnPassword(actor.value))
 
   async function refreshActor() {
     const request = ++actorRequest
@@ -97,6 +175,9 @@ export function useAccessControl() {
     can,
     canAccessGroup,
     visibleNavigation,
+    visibleAccessManagement,
+    isBootstrap,
+    canChangePassword,
     refreshActor,
     clearActor
   }
