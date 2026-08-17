@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { configurePlugin, enablePlugin } from '../../api/plugins'
+import { configurePlugin, enablePlugin, publishPlugin } from '../../api/plugins'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
 import { pickDefaultResourceGroupID, resourceGroupDisplayName } from '../../context/useAccessControl'
 import BaseModal from '../base/BaseModal.vue'
@@ -17,34 +17,118 @@ const props = defineProps({
   document: { type: Object, required: true },
   formEmpty: { type: Boolean, default: false },
   desiredLifecycle: { type: String, default: '' },
-  currentLifecycle: { type: String, default: '' }
+  currentLifecycle: { type: String, default: '' },
+  declaresHTTPBackend: { type: Boolean, required: false },
+  packageDetail: { type: Object, default: null },
+  instance: { type: Object, default: null },
+  publishedEntry: { type: Object, default: null },
+  intent: { type: String, default: '' },
+  canSubmit: { type: Boolean, default: true }
 })
 const emit = defineEmits(['update:modelValue', 'deployed'])
 
 const busy = ref(false)
 const error = ref('')
-const deployment = reactive({ resourceGroupID: '', targets: [] })
+const deployment = reactive({ resourceGroupID: '', target: '', host: '', https: true })
 
+const hasHTTPBackend = computed(() => {
+  if (props.declaresHTTPBackend === true) return true
+  if (props.declaresHTTPBackend === false) return false
+  return packageDeclaresHTTPBackend(props.packageDetail)
+})
+const publishedRuleID = computed(() => {
+  const ruleID = Number(props.publishedEntry?.rule_id)
+  return Number.isInteger(ruleID) && ruleID > 0 ? ruleID : 0
+})
+const mode = computed(() => {
+  if (props.intent === 'deploy' || props.intent === 'publish' || props.intent === 'update') return props.intent
+  if (publishedRuleID.value) return 'update'
+  if (props.instance?.id && hasHTTPBackend.value) return 'publish'
+  return 'deploy'
+})
 const sortedAgents = computed(() => [...props.agents].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
-const allAgentsSelected = computed(() => sortedAgents.value.length > 0 && sortedAgents.value.every((agent) => deployment.targets.includes(agent.id)))
+const selectedAgent = computed(() => sortedAgents.value.find((agent) => agent.id === deployment.target) || null)
+const submitLabel = computed(() => {
+  if (busy.value) return hasHTTPBackend.value ? '发布中…' : '部署中…'
+  return hasHTTPBackend.value ? '发布到域名' : '部署'
+})
+const modalTitle = computed(() => {
+  if (mode.value === 'update') return '修改入口域名'
+  if (mode.value === 'publish') return '发布到域名'
+  return hasHTTPBackend.value ? '部署并发布' : '部署插件实例'
+})
+const modalSubtitle = computed(() => {
+  if (mode.value === 'update') return '更新已发布入口的域名或是否 HTTPS，不会新建入口。'
+  if (mode.value === 'publish') return '填写一条入口域名，把已部署的插件发布到所选节点。'
+  if (hasHTTPBackend.value) return '选择一个节点并填写入口域名，一次完成部署和发布。'
+  return '选择资源组和一个节点，把插件部署到当前身份可见的范围。'
+})
+const showConfig = computed(() => mode.value === 'deploy' && !props.formEmpty)
+const lockedScope = computed(() => mode.value === 'update')
 const blocker = computed(() => {
   if (!props.resourceGroups.length) return '当前身份没有可见的资源组，无法部署。'
   if (!sortedAgents.value.length) return '当前没有可选择的节点。'
-  if (!deployment.targets.length) return '请至少选择一个节点后再部署。'
+  if (!deployment.target) return '请选择一个节点。'
+  if (hasHTTPBackend.value && !normalizeHost(deployment.host)) return '请填写一条入口域名。'
   return ''
 })
+const submitDocument = computed(() => ({
+  ...(props.document || {}),
+  title: props.document?.title || '插件配置',
+  actions: [{ type: 'submit', id: 'deploy', label: submitLabel.value }]
+}))
 
 watch(() => props.modelValue, (open) => {
   if (!open) return
-  error.value = ''
-  if (!props.resourceGroups.some((group) => group.id === deployment.resourceGroupID)) {
-    deployment.resourceGroupID = pickDefaultResourceGroupID(props.resourceGroups)
-  }
-  if (!deployment.targets.length && props.agents.length === 1) deployment.targets = [props.agents[0].id]
+  resetForm()
 })
 
-function toggleAllAgents() {
-  deployment.targets = allAgentsSelected.value ? [] : sortedAgents.value.map((agent) => agent.id)
+function packageDeclaresHTTPBackend(pkg) {
+  if (!pkg || typeof pkg !== 'object') return false
+  const manifest = pkg.manifest && typeof pkg.manifest === 'object' ? pkg.manifest : pkg
+  const providers = manifest.http_backend_providers || pkg.http_backend_providers
+  if (!Array.isArray(providers) || !providers.length) return false
+  const extensions = manifest.extension_points || pkg.extension_points
+  if (!Array.isArray(extensions) || !extensions.length) return true
+  return extensions.includes('http.backend-provider')
+}
+
+function parseFrontendURL(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return { host: '', https: true }
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`)
+    return { host: url.host, https: url.protocol !== 'http:' }
+  } catch {
+    return { host: raw.replace(/^https?:\/\//i, ''), https: !/^http:\/\//i.test(raw) }
+  }
+}
+
+function normalizeHost(value) {
+  return parseFrontendURL(value).host.replace(/\s+/g, '')
+}
+
+function buildFrontendURL(host, https) {
+  const normalized = normalizeHost(host)
+  if (!normalized) return ''
+  return `${https ? 'https' : 'http'}://${normalized}`
+}
+
+function resetForm() {
+  error.value = ''
+  const instance = props.instance
+  const published = mode.value === 'update' ? parseFrontendURL(props.publishedEntry?.frontend_url) : { host: '', https: true }
+  const preferredTarget = String((mode.value === 'update' ? props.publishedEntry?.agent_id : '') || instance?.targets?.[0] || '').trim()
+  const visibleTarget = sortedAgents.value.some((agent) => agent.id === preferredTarget)
+    ? preferredTarget
+    : (sortedAgents.value.length === 1 ? sortedAgents.value[0].id : '')
+  const preferredGroup = String(instance?.resource_group_id || '').trim()
+  deployment.resourceGroupID = props.resourceGroups.some((group) => group.id === preferredGroup)
+    ? preferredGroup
+    : pickDefaultResourceGroupID(props.resourceGroups)
+  deployment.target = visibleTarget
+  deployment.host = published.host
+  deployment.https = published.host ? published.https : true
 }
 
 function defaultInstanceID() {
@@ -60,38 +144,72 @@ function defaultInstanceID() {
   return first
 }
 
+function resolveInstanceID() {
+  const existing = String(props.instance?.id || '').trim()
+  if (mode.value !== 'deploy') return existing
+  return existing || defaultInstanceID()
+}
+
+function resolveConfig(payload) {
+  if (payload?.config) return stripReadOnlyConfigValues(props.configSchema, payload.config)
+  if (props.instance?.config) return stripReadOnlyConfigValues(props.configSchema, props.instance.config)
+  return mode.value === 'deploy' ? {} : undefined
+}
+
+function selectAgent(agentID) {
+  if (!props.canSubmit || lockedScope.value || busy.value) return
+  deployment.target = agentID
+}
+
 async function deploy(payload) {
-  if (busy.value) return
+  if (busy.value || !props.canSubmit) return
   error.value = ''
-  const instanceID = defaultInstanceID()
+  const instanceID = resolveInstanceID()
   const resourceGroupID = String(deployment.resourceGroupID || '').trim()
-  const targets = [...new Set(deployment.targets.map((target) => String(target).trim()).filter(Boolean))]
+  const target = String(deployment.target || '').trim()
+  const frontendURL = hasHTTPBackend.value ? buildFrontendURL(deployment.host, deployment.https) : ''
+  if (mode.value !== 'deploy' && !instanceID) {
+    error.value = '缺少已部署实例，无法发布入口。'
+    return
+  }
   if (!props.resourceGroups.some((group) => group.id === resourceGroupID)) {
     error.value = props.resourceGroups.length ? '请选择一个可见的资源组。' : '当前身份没有可见的资源组，无法部署。'
     return
   }
-  if (!targets.length) {
-    error.value = '请至少选择一个节点后再部署。'
+  if (!target) {
+    error.value = '请选择一个节点。'
     return
   }
+  if (hasHTTPBackend.value && !frontendURL) {
+    error.value = '请填写一条入口域名。'
+    return
+  }
+  const request = {
+    instance_id: instanceID,
+    resource_group_id: resourceGroupID,
+    targets: [target],
+    policy_chains: Array.isArray(props.instance?.policy_chains) ? props.instance.policy_chains : [],
+    secret_replacements: payload?.secret_replacements || {}
+  }
+  const config = resolveConfig(payload)
+  if (config !== undefined) request.config = config
   busy.value = true
   let configured = false
   try {
-    const created = await configurePlugin(props.pluginId, {
-      instance_id: instanceID,
-      resource_group_id: resourceGroupID,
-      targets,
-      policy_chains: [],
-      bindings: [],
-      config: stripReadOnlyConfigValues(props.configSchema, payload.config),
-      secret_replacements: payload.secret_replacements || {}
-    })
+    if (hasHTTPBackend.value) {
+      if (mode.value === 'update' && publishedRuleID.value) request.rule_id = publishedRuleID.value
+      const published = await publishPlugin(props.pluginId, { ...request, frontend_url: frontendURL })
+      emit('deployed', published?.instance?.id || published?.id || instanceID)
+      emit('update:modelValue', false)
+      return
+    }
+    const created = await configurePlugin(props.pluginId, { ...request, bindings: [] })
     configured = true
     if (props.desiredLifecycle !== 'enabled' && props.currentLifecycle !== 'active') await enablePlugin(props.pluginId)
     emit('deployed', created?.id || instanceID)
     emit('update:modelValue', false)
   } catch (cause) {
-    const message = sanitizePluginText(cause?.message || '部署插件实例失败')
+    const message = sanitizePluginText(cause?.message || (hasHTTPBackend.value ? '发布插件入口失败' : '部署插件实例失败'))
     error.value = configured ? `配置已提交，但启用失败：${message}` : message
   } finally {
     busy.value = false
@@ -102,34 +220,46 @@ async function deploy(payload) {
 <template>
   <BaseModal
     :model-value="modelValue"
-    title="部署插件实例"
-    subtitle="选择资源组和节点，把插件部署到当前身份可见的范围。"
+    :title="modalTitle"
+    :subtitle="modalSubtitle"
     size="lg"
     :close-on-click-modal="false"
     data-test="plugin-deploy-modal"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <section class="plugin-deployment" aria-label="部署插件实例">
+    <section class="plugin-deployment" :aria-label="modalTitle">
       <div class="plugin-deployment__metadata">
         <label>
           <span>资源组</span>
-          <select v-model="deployment.resourceGroupID" data-test="deployment-resource-group" :disabled="!resourceGroups.length">
+          <select
+            v-model="deployment.resourceGroupID"
+            data-test="deployment-resource-group"
+            :disabled="!resourceGroups.length || !canSubmit || lockedScope || busy"
+          >
             <option v-if="!resourceGroups.length" value="">暂无可见资源组</option>
             <option v-for="group in resourceGroups" :key="group.id" :value="group.id">{{ resourceGroupDisplayName(group) }}</option>
           </select>
         </label>
       </div>
       <fieldset class="plugin-deployment__agents">
-        <legend>部署节点</legend>
-        <div class="plugin-deployment__agent-actions">
-          <span>已选择 {{ deployment.targets.length }} / {{ sortedAgents.length }}</span>
-          <button class="btn btn-secondary btn-sm" type="button" :disabled="!sortedAgents.length" @click="toggleAllAgents">
-            {{ allAgentsSelected ? '清空选择' : '选择全部' }}
-          </button>
-        </div>
+        <legend>选择一个节点</legend>
+        <p class="plugin-deployment__agent-hint">一次只部署到一个节点。</p>
         <div v-if="sortedAgents.length" class="plugin-deployment__agent-grid">
-          <label v-for="agent in sortedAgents" :key="agent.id" class="plugin-deployment__agent" :class="{ 'plugin-deployment__agent--selected': deployment.targets.includes(agent.id) }">
-            <input v-model="deployment.targets" type="checkbox" :value="agent.id">
+          <label
+            v-for="agent in sortedAgents"
+            :key="agent.id"
+            class="plugin-deployment__agent"
+            :class="{ 'plugin-deployment__agent--selected': deployment.target === agent.id }"
+          >
+            <input
+              v-model="deployment.target"
+              type="radio"
+              name="plugin-deployment-target"
+              :value="agent.id"
+              data-test="deployment-agent"
+              :disabled="!canSubmit || lockedScope || busy"
+              @change="selectAgent(agent.id)"
+            >
             <span>
               <strong>{{ agent.name || agent.id }}</strong>
               <small>{{ getAgentStatusLabel(getAgentStatus(agent)) }}</small>
@@ -137,20 +267,49 @@ async function deploy(payload) {
           </label>
         </div>
         <p v-else class="plugin-deployment__empty">当前没有可选择的节点。</p>
+        <p v-if="lockedScope && selectedAgent" class="plugin-deployment__empty">将更新节点 {{ selectedAgent.name || selectedAgent.id }} 上的原入口。</p>
       </fieldset>
+      <fieldset v-if="hasHTTPBackend" class="plugin-deployment__entry">
+        <legend>入口域名</legend>
+        <div class="plugin-deployment__entry-fields">
+          <label>
+            <span>域名</span>
+            <input
+              v-model="deployment.host"
+              type="text"
+              data-test="deployment-domain"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="例如 media.example.com"
+              :disabled="!canSubmit || busy"
+            >
+          </label>
+          <label class="plugin-deployment__https">
+            <input v-model="deployment.https" type="checkbox" data-test="deployment-https" :disabled="!canSubmit || busy">
+            <span>使用 HTTPS</span>
+          </label>
+        </div>
+        <p class="plugin-deployment__empty">HTTPS 开启后按该入口申请托管证书。</p>
+      </fieldset>
+      <p v-if="!canSubmit" class="plugin-deployment__readonly">当前身份只能查看下一步，不能提交。</p>
       <p v-if="error || blocker" class="plugin-alert" role="alert">{{ error || blocker }}</p>
-      <div v-if="formEmpty" class="plugin-deployment__empty-config">
-        <p class="plugin-config-empty">此插件没有需要先填写的配置，可直接部署。</p>
-        <button class="btn btn-primary" type="button" :disabled="busy || !!blocker" @click="deploy({ config: {}, secret_replacements: {} })">
-          {{ busy ? '部署中…' : '部署' }}
+      <div v-if="formEmpty && mode === 'deploy'" class="plugin-deployment__empty-config">
+        <p class="plugin-config-empty">此插件没有需要先填写的配置，可直接{{ hasHTTPBackend ? '发布到域名' : '部署' }}。</p>
+        <button class="btn btn-primary" type="button" :disabled="busy || !!blocker || !canSubmit" @click="deploy({ config: {}, secret_replacements: {} })">
+          {{ submitLabel }}
+        </button>
+      </div>
+      <div v-else-if="!showConfig" class="plugin-deployment__empty-config">
+        <button class="btn btn-primary" type="button" :disabled="busy || !!blocker || !canSubmit" @click="deploy({ config: instance?.config || {}, secret_replacements: {} })">
+          {{ submitLabel }}
         </button>
       </div>
       <PluginDeclarativeUI
         v-else
-        :document="document"
+        :document="submitDocument"
         :config="{}"
         :secret-fields="[]"
-        :saving="busy || !!blocker"
+        :saving="busy || !!blocker || !canSubmit"
         :can-configure="true"
         :can-act="false"
         @submit="deploy"
@@ -161,13 +320,13 @@ async function deploy(payload) {
 
 <style scoped>
 .plugin-deployment { display: grid; gap: var(--space-5); min-width: 0; }
-.plugin-deployment__metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
-.plugin-deployment__metadata label { display: grid; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
-.plugin-deployment__metadata select { min-width: 0; padding: .6rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }
-.plugin-deployment__metadata select:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
-.plugin-deployment__agents { display: grid; gap: var(--space-3); min-width: 0; margin: 0; padding: 0; border: 0; }
-.plugin-deployment__agents legend { margin-bottom: var(--space-2); color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
-.plugin-deployment__agent-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.plugin-deployment__metadata { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+.plugin-deployment__metadata label, .plugin-deployment__entry-fields label { display: grid; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
+.plugin-deployment__metadata select, .plugin-deployment__entry-fields input[type="text"] { min-width: 0; padding: .6rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }
+.plugin-deployment__metadata select:focus-visible, .plugin-deployment__entry-fields input[type="text"]:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
+.plugin-deployment__agents, .plugin-deployment__entry { display: grid; gap: var(--space-3); min-width: 0; margin: 0; padding: 0; border: 0; }
+.plugin-deployment__agents legend, .plugin-deployment__entry legend { margin-bottom: var(--space-2); color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
+.plugin-deployment__agent-hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .plugin-deployment__agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space-3); }
 .plugin-deployment__agent {
   display: flex; align-items: start; gap: var(--space-3); padding: var(--space-3);
@@ -180,15 +339,18 @@ async function deploy(payload) {
 .plugin-deployment__agent input { margin-top: .2rem; accent-color: var(--color-primary); }
 .plugin-deployment__agent span { min-width: 0; display: grid; gap: 2px; }
 .plugin-deployment__agent strong, .plugin-deployment__agent small { overflow-wrap: anywhere; }
-.plugin-deployment__agent small, .plugin-deployment__empty { color: var(--color-text-muted); }
-.plugin-deployment__empty { margin: 0; font-size: var(--text-sm); }
+.plugin-deployment__agent small, .plugin-deployment__empty, .plugin-deployment__readonly { color: var(--color-text-muted); }
+.plugin-deployment__empty, .plugin-deployment__readonly { margin: 0; font-size: var(--text-sm); }
+.plugin-deployment__entry-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); align-items: end; }
+.plugin-deployment__https { display: flex !important; align-items: center; gap: var(--space-2); min-height: 2.6rem; }
+.plugin-deployment__https input { accent-color: var(--color-primary); }
 .plugin-deployment__empty-config { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .plugin-deployment__empty-config p { margin: 0; }
 .plugin-alert { margin: 0; color: var(--color-danger); font-size: var(--text-sm); }
 .plugin-config-empty { color: var(--color-text-muted); font-size: var(--text-xs); }
 
 @media (max-width: 640px) {
-  .plugin-deployment__metadata { grid-template-columns: 1fr; }
+  .plugin-deployment__entry-fields { grid-template-columns: 1fr; }
   .plugin-deployment__empty-config { align-items: stretch; flex-direction: column; }
 }
 </style>

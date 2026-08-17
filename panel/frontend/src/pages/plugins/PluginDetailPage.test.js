@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import PluginDetailPage from './PluginDetailPage.vue'
 
 const mocks = vi.hoisted(() => ({
-  fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(),
+  fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(), publishPlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(), deletePluginInstance: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(),
   fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
@@ -14,6 +14,7 @@ vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
 vi.mock('../../api/access', () => ({ fetchResourceGroups: mocks.fetchResourceGroups }))
 vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
+  publishPlugin: mocks.publishPlugin,
   enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin, deletePluginInstance: mocks.deletePluginInstance,
   invokePluginDynamicAction: mocks.invokePluginDynamicAction, fetchPluginLogs: mocks.fetchPluginLogs
 }))
@@ -46,18 +47,101 @@ vi.mock('../../components/base/BaseModal.vue', () => ({
   }
 }))
 
+function makeInstance(overrides = {}) {
+  return {
+    id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [],
+    bindings: [{ consumer: { kind: 'http_rule', id: '1', resource_group_id: 'group-a', version: 'a'.repeat(64) }, target_agent_id: 'edge-a' }],
+    config: { mode: 'observe' }, config_version: 1, current_state: 'active',
+    ...overrides
+  }
+}
+
 function makeDetail(overrides = {}) {
   return {
     plugin: { plugin_id: 'official.waf', current_lifecycle: 'active', state_version: 2, active_source_kind: 'official', active_source_risk_label: 'official' },
     package: { version: '1.0.0', manifest: { id: 'official.waf', name: 'WAF' }, runtime: { kind: 'wasm-policy', abi: 'nre:policy/v1' }, artifacts: [], permissions: [], permission_diff: { added: [], removed: [] }, config_schema: { type: 'object', properties: { mode: { type: 'string', title: '模式' } } } },
-    instances: [{ id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [{ consumer: { kind: 'http_rule', id: '1', resource_group_id: 'group-a', version: 'a'.repeat(64) }, target_agent_id: 'edge-a' }], config: { mode: 'observe' }, config_version: 1, current_state: 'active' }],
+    instances: [makeInstance()],
+    published_entries: [],
     agent_statuses: [],
     ...overrides
   }
 }
 
+function withHTTPBackend(detail, providers = [{ id: 'default', display_name: 'Default' }]) {
+  return {
+    ...detail,
+    package: {
+      ...detail.package,
+      manifest: { ...detail.package.manifest, http_backend_providers: providers }
+    }
+  }
+}
+
+function undeployedDetail(overrides = {}) {
+  return makeDetail({
+    plugin: { ...makeDetail().plugin, current_lifecycle: 'disabled', desired_lifecycle: 'disabled', ...(overrides.plugin || {}) },
+    instances: [],
+    published_entries: [],
+    agent_statuses: [],
+    ...overrides
+  })
+}
+
+function unpublishedHTTPDetail(overrides = {}) {
+  return withHTTPBackend(makeDetail({
+    instances: [makeInstance({ bindings: [] })],
+    published_entries: [],
+    ...overrides
+  }))
+}
+
+function publishedHTTPDetail(overrides = {}) {
+  const entry = {
+    rule_id: 12,
+    agent_id: 'edge-a',
+    frontend_url: 'https://media.example.com',
+    enabled: true,
+    accessible: true,
+    ...(overrides.entry || {})
+  }
+  const rest = { ...overrides }
+  delete rest.entry
+  return withHTTPBackend(makeDetail({
+    instances: [makeInstance({ bindings: [{ consumer: { kind: 'http_rule', id: String(entry.rule_id) }, target_agent_id: entry.agent_id }] })],
+    published_entries: [entry],
+    ...rest
+  }))
+}
+
 function buttonByText(wrapper, text) {
   return wrapper.findAll('button').find((button) => button.text() === text)
+}
+
+function pagePrimaryButtons(wrapper) {
+  return wrapper.findAll('button.btn-primary').filter((button) => {
+    const modal = button.element.closest('[data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub')
+    return !modal && button.isVisible()
+  })
+}
+
+function taskGuide(wrapper) {
+  const modal = wrapper.find('[data-test="plugin-deploy-modal"]')
+  if (modal.exists()) return modal
+  const guide = wrapper.find('[data-test="plugin-task-guide"]')
+  if (guide.exists()) return guide
+  return wrapper
+}
+
+async function openGuide(wrapper, actionText = '开始部署') {
+  const existing = taskGuide(wrapper)
+  if (existing !== wrapper && (existing.attributes('data-test') === 'plugin-deploy-modal' || existing.attributes('data-test') === 'plugin-task-guide')) {
+    return existing
+  }
+  const button = buttonByText(wrapper, actionText) || wrapper.find('[data-test="plugin-task-primary"]')
+  expect(button && (button.exists?.() ?? true)).toBeTruthy()
+  await button.trigger('click')
+  await flushPromises()
+  return wrapper.get('[data-test="plugin-deploy-modal"]')
 }
 
 function deployModal(wrapper) {
@@ -72,9 +156,55 @@ function modalButton(modal, text) {
   return modal.findAll('button').find((button) => button.text() === text)
 }
 
-async function openDeployModal(wrapper) {
-  await buttonByText(wrapper, '部署').trigger('click')
-  return wrapper.get('[data-test="plugin-deploy-modal"]')
+function guideSubmit(guide) {
+  return ['发布到域名', '保存入口', '开始部署', '部署并发布', '发布', '部署']
+    .map((label) => buttonByText(guide, label))
+    .find(Boolean) || guide.find('[data-test="plugin-task-primary"]')
+}
+
+function findControl(root, testIds) {
+  for (const id of testIds) {
+    const node = root.find(`[data-test="${id}"]`)
+    if (!node.exists()) continue
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(node.element.tagName)) return node
+    const inner = node.find('input, select, textarea')
+    return inner.exists() ? inner : node
+  }
+  return null
+}
+
+async function selectTarget(guide, agentId) {
+  const named = findControl(guide, ['plugin-guide-target', 'deployment-target', 'deployment-agent', 'plugin-deploy-target'])
+  if (named && named.element.tagName === 'SELECT') {
+    await named.setValue(agentId)
+    return
+  }
+  const match = guide.findAll('[data-test="plugin-guide-target"], [data-test="deployment-agent"], input[type="radio"], .plugin-deployment__agent input')
+    .find((input) => input.element.value === agentId)
+  if (!match) throw new Error(`deployment target ${agentId} was not rendered`)
+  if (match.element.type === 'checkbox' || match.element.type === 'radio') await match.setChecked(true)
+  else await match.setValue(agentId)
+}
+
+async function fillDomain(guide, { host, https = true }) {
+  const hostNode = findControl(guide, ['plugin-guide-domain', 'deployment-frontend-host', 'deployment-domain', 'plugin-publish-domain'])
+  const urlNode = findControl(guide, ['deployment-frontend-url', 'plugin-publish-frontend-url'])
+  const httpsNode = findControl(guide, ['plugin-guide-https', 'deployment-https', 'plugin-publish-https'])
+  if (hostNode) await hostNode.setValue(host)
+  else if (urlNode) await urlNode.setValue(`${https ? 'https' : 'http'}://${host}`)
+  else throw new Error('entry domain field was not rendered')
+  if (!httpsNode) {
+    if (urlNode) return
+    throw new Error('HTTPS field was not rendered')
+  }
+  if (httpsNode.element.tagName === 'SELECT') await httpsNode.setValue(https ? 'https' : 'http')
+  else if (httpsNode.element.type === 'checkbox' || httpsNode.element.type === 'radio') await httpsNode.setChecked(https)
+  else await httpsNode.setValue(https)
+}
+
+function expectNoProviderOrRuleDetour(wrapper) {
+  expect(wrapper.text()).not.toContain('到 HTTP 规则添加')
+  expect(wrapper.text()).not.toContain('选择插件提供商')
 }
 
 async function openConfigModal(wrapper) {
@@ -86,6 +216,7 @@ beforeEach(() => {
   mocks.fetchPluginDetail.mockReset().mockResolvedValue(makeDetail())
   mocks.fetchPluginOperations.mockReset().mockResolvedValue([{ id: 'op', kind: 'configure', status: 'failed', error: 'token=raw-token', agent_results: {} }])
   mocks.configurePlugin.mockReset().mockResolvedValue({})
+  mocks.publishPlugin.mockReset().mockResolvedValue({ instance: { id: 'official.waf-default' }, published_entries: [] })
   mocks.enablePlugin.mockReset().mockResolvedValue({})
   mocks.disablePlugin.mockReset().mockResolvedValue({})
   mocks.rollbackPlugin.mockReset().mockResolvedValue({})
@@ -148,20 +279,23 @@ describe('PluginDetailPage', () => {
     )
   })
 
-  it('renders the shared page header with a primary action and a danger uninstall', async () => {
-    const wrapper = await mountPage()
+  it('shows start-deploy as the first-screen primary action when the plugin is not deployed', async () => {
+    const wrapper = await mountPage(undeployedDetail())
     expect(wrapper.find('.page-header').exists()).toBe(true)
     expect(wrapper.find('.page-title').text()).toBe('WAF')
-    expect(buttonByText(wrapper, '启用').classes()).toContain('btn-primary')
-    expect(buttonByText(wrapper, '停用').classes()).toContain('btn-secondary')
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
+    expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
+    expect(buttonByText(wrapper, '启用')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(wrapper, '回滚')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(wrapper, '导出脱敏诊断')?.classes() || []).not.toContain('btn-primary')
     expect(buttonByText(wrapper, '卸载').classes()).toContain('btn-danger')
   })
 
   it('switches instances with BaseTabs instead of a native select', async () => {
     const detail = makeDetail()
     detail.instances = [
-      { id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [], config: { mode: 'observe' }, config_version: 1, current_state: 'active' },
-      { id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], policy_chains: [], bindings: [], config: { mode: 'block' }, config_version: 2, current_state: 'active' }
+      makeInstance({ id: 'waf-a', resource_group_id: 'group-a', bindings: [], config: { mode: 'observe' } }),
+      makeInstance({ id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], bindings: [], config: { mode: 'block' }, config_version: 2 })
     ]
     const wrapper = await mountPage(detail)
     const tablist = wrapper.find('[role="tablist"]')
@@ -185,39 +319,176 @@ describe('PluginDetailPage', () => {
     })
   })
 
-  it('creates, configures, and enables a new instance for multiple selected agents', async () => {
-    const detail = makeDetail({
-      plugin: { ...makeDetail().plugin, current_lifecycle: 'disabled', desired_lifecycle: 'disabled' },
-      instances: []
-    })
+  it('deploys a non-HTTP plugin to exactly one selected node', async () => {
     mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
-    const wrapper = await mountPage(detail)
-
+    const wrapper = await mountPage(undeployedDetail())
     expect(deployModal(wrapper).exists()).toBe(false)
-    const modal = await openDeployModal(wrapper)
-    expect(modal.find('[aria-label="部署插件实例"]').exists()).toBe(true)
-    expect(modal.find('[data-test="deployment-instance-id"]').exists()).toBe(false)
-    const groupSelect = modal.get('[data-test="deployment-resource-group"]')
+    const guide = await openGuide(wrapper)
+
+    expect(findControl(guide, ['plugin-guide-domain', 'deployment-frontend-host', 'deployment-domain'])).toBeNull()
+    expect(findControl(guide, ['plugin-guide-https', 'deployment-https'])).toBeNull()
+    expect(guide.text()).not.toContain('选择全部')
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
+    const groupSelect = findControl(guide, ['plugin-guide-resource-group', 'deployment-resource-group'])
+    expect(groupSelect).toBeTruthy()
     expect(groupSelect.element.tagName).toBe('SELECT')
     expect(groupSelect.element.value).toBe('default')
-    const targetInputs = modal.findAll('.plugin-deployment__agent input[type="checkbox"]')
-    await targetInputs[0].setValue(true)
-    await targetInputs[1].setValue(true)
-    await modal.get('.declarative-field input[type="text"]').setValue('block')
-    await modalButton(modal, '部署').trigger('click')
+    await selectTarget(guide, 'edge-a')
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
     await flushPromises()
 
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', {
       instance_id: 'official.waf-default',
       resource_group_id: 'default',
-      targets: ['edge-a', 'edge-b'],
+      targets: ['edge-a'],
       policy_chains: [],
       bindings: [],
       config: { mode: 'block' },
       secret_replacements: {}
     })
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
     expect(mocks.enablePlugin).toHaveBeenCalledWith('official.waf')
-    expect(deployModal(wrapper).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('还没发布域名')
+  })
+
+  it('publishes an HTTP-backend plugin with one node, one domain, and HTTPS from the same guide', async () => {
+    mocks.publishPlugin.mockResolvedValue({
+      instance: { id: 'official.waf-default' },
+      published_entries: [{ rule_id: 12, agent_id: 'edge-a', frontend_url: 'https://media.example.com', enabled: true, accessible: true }]
+    })
+    const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
+    const guide = await openGuide(wrapper)
+    expect(guide.text()).not.toContain('选择全部')
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
+    expectNoProviderOrRuleDetour(guide)
+    await selectTarget(guide, 'edge-a')
+    await fillDomain(guide, { host: 'media.example.com', https: true })
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+
+    expect(mocks.publishPlugin).toHaveBeenCalledTimes(1)
+    expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      instance_id: 'official.waf-default',
+      resource_group_id: 'default',
+      targets: ['edge-a'],
+      policy_chains: [],
+      frontend_url: 'https://media.example.com',
+      config: { mode: 'block' }
+    }))
+    expect(mocks.publishPlugin.mock.calls[0][1]).not.toHaveProperty('provider_id')
+    expect(mocks.publishPlugin.mock.calls[0][1]).not.toHaveProperty('rule_id')
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(mocks.enablePlugin).not.toHaveBeenCalled()
+  })
+
+  it('keeps the HTTP publish submit disabled until a node and domain are present', async () => {
+    const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
+    const guide = await openGuide(wrapper)
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    expect(guideSubmit(guide).attributes('disabled')).toBeDefined()
+    await selectTarget(guide, 'edge-a')
+    expect(guideSubmit(guide).attributes('disabled')).toBeDefined()
+    await fillDomain(guide, { host: 'media.example.com', https: false })
+    expect(guideSubmit(guide).attributes('disabled')).toBeUndefined()
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      targets: ['edge-a'],
+      frontend_url: 'http://media.example.com'
+    }))
+  })
+
+  it('prompts for a domain when an HTTP-backend plugin is deployed but unpublished', async () => {
+    const wrapper = await mountPage(unpublishedHTTPDetail())
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toMatch(/还差发布|还没发布域名/)
+    expect(wrapper.text()).toContain('还差发布')
+    expect(wrapper.text()).not.toContain('已可用')
+    expect(pagePrimaryButtons(wrapper).some((button) => button.text() === '发布到域名')).toBe(true)
+    const guide = await openGuide(wrapper, '发布到域名')
+    expect(findControl(guide, ['plugin-guide-domain', 'deployment-frontend-host', 'deployment-domain'])).toBeTruthy()
+    expect(findControl(guide, ['plugin-guide-https', 'deployment-https'])).toBeTruthy()
+    expectNoProviderOrRuleDetour(wrapper)
+  })
+
+  it('does not treat a deployed non-HTTP plugin as waiting to publish a domain', async () => {
+    const wrapper = await mountPage(makeDetail({ instances: [makeInstance({ bindings: [] })], published_entries: [] }))
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('已部署')
+    expect(wrapper.text()).not.toMatch(/还差发布|还没发布域名/)
+    expect(buttonByText(wrapper, '发布到域名')).toBeUndefined()
+    expect(wrapper.find('[data-test="plugin-guide-domain"]').exists()).toBe(false)
+  })
+
+  it('still shows undeployed or unpublished after leaving the guide without submitting', async () => {
+    const undeployed = await mountPage(withHTTPBackend(undeployedDetail()))
+    const deployGuide = await openGuide(undeployed)
+    await selectTarget(deployGuide, 'edge-a')
+    await fillDomain(deployGuide, { host: 'draft.example.com' })
+    undeployed.unmount()
+
+    const againUndeployed = await mountPage(withHTTPBackend(undeployedDetail()))
+    expect(againUndeployed.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
+    expect(againUndeployed.text()).not.toContain('已可用')
+    expect(buttonByText(againUndeployed, '开始部署')).toBeTruthy()
+
+    const unpublished = await mountPage(unpublishedHTTPDetail())
+    const publishGuide = await openGuide(unpublished, '发布到域名')
+    await fillDomain(publishGuide, { host: 'draft.example.com' })
+    unpublished.unmount()
+
+    const againUnpublished = await mountPage(unpublishedHTTPDetail())
+    expect(againUnpublished.get('[data-test="plugin-task-status"]').text()).toMatch(/还差发布|还没发布域名/)
+    expect(againUnpublished.text()).not.toContain('已可用')
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+  })
+
+  it('shows the published entry and updates the original rule from the detail page', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail())
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('已可用')
+    expect(wrapper.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
+    expectNoProviderOrRuleDetour(wrapper)
+
+    await buttonByText(wrapper, '修改入口').trigger('click')
+    await flushPromises()
+    const guide = taskGuide(wrapper)
+    await fillDomain(guide, { host: 'media-v2.example.com', https: true })
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      rule_id: 12,
+      targets: ['edge-a'],
+      frontend_url: 'https://media-v2.example.com'
+    }))
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+  })
+
+  it('publishes another domain as a separate entry without requiring the rules page', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail())
+    await buttonByText(wrapper, '再发布一条域名').trigger('click')
+    await flushPromises()
+    const guide = taskGuide(wrapper)
+    await selectTarget(guide, 'edge-b')
+    await fillDomain(guide, { host: 'alt.example.com', https: true })
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      targets: ['edge-b'],
+      frontend_url: 'https://alt.example.com'
+    }))
+    expect(mocks.publishPlugin.mock.calls[0][1]).not.toHaveProperty('rule_id')
+    expectNoProviderOrRuleDetour(guide)
+  })
+
+  it('marks a published entry that is not yet reachable instead of calling it available', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail({
+      entry: { accessible: false, enabled: true, frontend_url: 'https://media.example.com' }
+    }))
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('已发布但还不能访问')
+    expect(wrapper.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
+    expect(wrapper.get('[data-test="plugin-published-entry"]').text()).toContain('还不能访问')
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).not.toContain('已可用')
   })
 
   it('confirms uninstall through DeleteConfirmDialog and navigates away', async () => {
@@ -235,8 +506,8 @@ describe('PluginDetailPage', () => {
   it('confirms deletion of only the selected deployment instance', async () => {
     const wrapper = await mountPage(makeDetail({
       instances: [
-        { id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [], config: { mode: 'observe' }, config_version: 1, current_state: 'active' },
-        { id: 'waf-b', resource_group_id: 'group-a', targets: ['edge-b'], policy_chains: [], bindings: [], config: { mode: 'block' }, config_version: 1, current_state: 'active' }
+        makeInstance({ bindings: [] }),
+        makeInstance({ id: 'waf-b', targets: ['edge-b'], bindings: [], config: { mode: 'block' } })
       ]
     }))
     await buttonByText(wrapper, '删除实例').trigger('click')
@@ -264,6 +535,25 @@ describe('PluginDetailPage', () => {
     expect(mocks.disablePlugin).toHaveBeenCalledWith('official.waf')
   })
 
+  it('cancels dangerous lifecycle actions without writing', async () => {
+    const detail = makeDetail()
+    detail.plugin.rollback_package_digest = 'sha256:rollback-digest'
+    const wrapper = await mountPage(detail)
+
+    await buttonByText(wrapper, '停用').trigger('click')
+    await wrapper.find('.delete-dialog-cancel').trigger('click')
+    expect(mocks.disablePlugin).not.toHaveBeenCalled()
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(false)
+
+    await buttonByText(wrapper, '回滚').trigger('click')
+    await wrapper.find('.delete-dialog-cancel').trigger('click')
+    expect(mocks.rollbackPlugin).not.toHaveBeenCalled()
+
+    await buttonByText(wrapper, '删除实例').trigger('click')
+    await wrapper.find('.delete-dialog-cancel').trigger('click')
+    expect(mocks.deletePluginInstance).not.toHaveBeenCalled()
+  })
+
   it('requires confirmation before rolling back', async () => {
     const detail = makeDetail()
     detail.plugin.rollback_package_digest = 'sha256:rollback-digest'
@@ -277,19 +567,27 @@ describe('PluginDetailPage', () => {
     expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', [])
   })
 
+  it('keeps enable, diagnostics, logs, timeline, and technical details in the secondary area', async () => {
+    const wrapper = await mountPage(undeployedDetail())
+    expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
+    expect(buttonByText(wrapper, '启用')).toBeTruthy()
+    expect(buttonByText(wrapper, '停用')).toBeTruthy()
+    expect(buttonByText(wrapper, '回滚')).toBeTruthy()
+    expect(buttonByText(wrapper, '导出脱敏诊断')).toBeTruthy()
+    expect(wrapper.find('.plugin-technical').exists()).toBe(true)
+    expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
+    expect(wrapper.text()).toMatch(/逐 Agent 状态/)
+    expect(wrapper.text()).toMatch(/运行日志|操作时间线|生命周期/)
+  })
+
   it('submits the selected visible resource group and does not require an instance id field', async () => {
-    const detail = makeDetail({
-      plugin: { ...makeDetail().plugin, current_lifecycle: 'disabled', desired_lifecycle: 'disabled' },
-      instances: []
-    })
     mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
-    const wrapper = await mountPage(detail)
-    const modal = await openDeployModal(wrapper)
-    await modal.get('[data-test="deployment-resource-group"]').setValue('team')
-    const targetInputs = modal.findAll('.plugin-deployment__agent input[type="checkbox"]')
-    await targetInputs[0].setValue(true)
-    await modal.get('.declarative-field input[type="text"]').setValue('block')
-    await modalButton(modal, '部署').trigger('click')
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    await findControl(guide, ['plugin-guide-resource-group', 'deployment-resource-group']).setValue('team')
+    await selectTarget(guide, 'edge-a')
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       instance_id: 'official.waf-default',
@@ -300,22 +598,22 @@ describe('PluginDetailPage', () => {
     }))
   })
 
-  it('keeps an installed plugin with no visible instances and opens the deploy modal on demand', async () => {
-    const wrapper = await mountPage(makeDetail({ instances: [], agent_statuses: [] }))
-    expect(wrapper.text()).toContain('尚未部署')
+  it('keeps an installed plugin with no visible instances and opens the deploy guide on demand', async () => {
+    const wrapper = await mountPage(undeployedDetail({ instances: [], agent_statuses: [] }))
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
     expect(deployModal(wrapper).exists()).toBe(false)
     expect(wrapper.find('.plugin-technical').exists()).toBe(true)
     expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
-    const modal = await openDeployModal(wrapper)
-    expect(modal.find('[aria-label="部署插件实例"]').exists()).toBe(true)
+    const modal = await openGuide(wrapper)
+    expect(modal.exists()).toBe(true)
   })
 
   it('shows only instances from groups the current actor can see', async () => {
     mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
     const detail = makeDetail()
     detail.instances = [
-      { id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [], bindings: [], config: { mode: 'observe' }, config_version: 1, current_state: 'active' },
-      { id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], policy_chains: [], bindings: [], config: { mode: 'block' }, config_version: 2, current_state: 'active' }
+      makeInstance({ bindings: [], config: { mode: 'observe' } }),
+      makeInstance({ id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], bindings: [], config: { mode: 'block' }, config_version: 2 })
     ]
     const wrapper = await mountPage(detail)
     expect(wrapper.text()).toContain('waf-a · group-a')
@@ -326,11 +624,15 @@ describe('PluginDetailPage', () => {
   it('blocks deploy when no visible resource group or agent is selected', async () => {
     mocks.fetchResourceGroups.mockResolvedValue([])
     mocks.fetchAgents.mockResolvedValue([])
-    const wrapper = await mountPage(makeDetail({ instances: [] }))
-    const modal = await openDeployModal(wrapper)
-    expect(modal.text()).toContain('当前身份没有可见的资源组，无法部署。')
-    expect(modalButton(modal, '部署').attributes('disabled')).toBeDefined()
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    expect(guide.text()).toContain('当前身份没有可见的资源组，无法部署。')
+    expect(guideSubmit(guide).attributes('disabled')).toBeDefined()
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('当前身份没有可见的资源组，无法部署。')
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
   })
 
   it('lets a resource writer save a schema fallback form without declarative UI', async () => {
@@ -379,6 +681,30 @@ describe('PluginDetailPage', () => {
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
   })
 
+  it('lets a readonly actor see the next task without submitting deploy or publish', async () => {
+    mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
+    const undeployed = await mountPage(withHTTPBackend(undeployedDetail()))
+    expect(undeployed.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
+    expect(undeployed.text()).toContain('当前身份可以看懂下一步，但不能提交部署或发布')
+    const start = buttonByText(undeployed, '开始部署')
+    if (start) {
+      expect(start.attributes('disabled')).toBeDefined()
+      await start.trigger('click')
+    }
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+
+    const unpublished = await mountPage(unpublishedHTTPDetail())
+    expect(unpublished.get('[data-test="plugin-task-status"]').text()).toMatch(/还差发布|还没发布域名/)
+    expect(unpublished.text()).toContain('当前身份可以看懂下一步，但不能提交部署或发布')
+    const publish = buttonByText(unpublished, '发布到域名')
+    if (publish) {
+      expect(publish.attributes('disabled')).toBeDefined()
+      await publish.trigger('click')
+    }
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+  })
+
   it('does not call configurePlugin when visible schema validation fails', async () => {
     const detail = makeDetail({
       package: {
@@ -400,10 +726,9 @@ describe('PluginDetailPage', () => {
           }
         }
       },
-      instances: [{
-        ...makeDetail().instances[0],
+      instances: [makeInstance({
         config: { mode: 'X', port: 0, sources: [{ host: 'a' }] }
-      }]
+      })]
     })
     const wrapper = await mountPage(detail)
     const modal = await openConfigModal(wrapper)
@@ -430,10 +755,9 @@ describe('PluginDetailPage', () => {
           }
         }
       },
-      instances: [{
-        ...makeDetail().instances[0],
+      instances: [makeInstance({
         config: { credentials: { region: 'us' }, sources: [{ host: 'a.example' }] }
-      }]
+      })]
     })
     const wrapper = await mountPage(detail)
     const modal = await openConfigModal(wrapper)

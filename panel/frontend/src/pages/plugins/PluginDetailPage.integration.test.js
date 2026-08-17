@@ -29,7 +29,7 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
     name: 'DeleteConfirmDialog',
     props: ['show', 'title', 'message', 'name', 'confirmText', 'loading'],
     emits: ['confirm', 'cancel'],
-    template: '<div v-if="show" class="delete-dialog-stub"><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button></div>'
+    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
   }
 }))
 vi.mock('../../components/base/BaseModal.vue', () => ({
@@ -41,6 +41,10 @@ vi.mock('../../components/base/BaseModal.vue', () => ({
   }
 }))
 
+function buttonByText(wrapper, text) {
+  return wrapper.findAll('button').find((button) => button.text() === text)
+}
+
 function configModal(wrapper) {
   return wrapper.find('[data-test="plugin-instance-config-modal"]')
 }
@@ -48,6 +52,164 @@ function configModal(wrapper) {
 async function openConfigModal(wrapper) {
   await wrapper.findAll('button').find((button) => button.text() === '编辑配置').trigger('click')
   return wrapper.get('[data-test="plugin-instance-config-modal"]')
+}
+
+function pagePrimaryButtons(wrapper) {
+  return wrapper.findAll('button.btn-primary').filter((button) => {
+    const modal = button.element.closest('[data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub')
+    return !modal && button.isVisible()
+  })
+}
+
+function taskGuide(wrapper) {
+  const guide = wrapper.find('[data-test="plugin-task-guide"]')
+  if (guide.exists()) return guide
+  const modal = wrapper.find('[data-test="plugin-deploy-modal"]')
+  if (modal.exists()) return modal
+  return wrapper
+}
+
+function publishedSurface(wrapper) {
+  const single = wrapper.find('[data-test="plugin-published-entry"]')
+  if (single.exists()) return single
+  return wrapper.find('[data-test="plugin-published-entries"]')
+}
+
+function findControl(root, testIds, labelPattern) {
+  for (const id of testIds) {
+    const node = root.find(`[data-test="${id}"]`)
+    if (!node.exists()) continue
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(node.element.tagName)) return node
+    const inner = node.find('input, select, textarea')
+    return inner.exists() ? inner : node
+  }
+  if (!labelPattern) return null
+  const label = root.findAll('label').find((node) => labelPattern.test(node.text()))
+  if (!label) return null
+  const inner = label.find('input, select, textarea')
+  return inner.exists() ? inner : null
+}
+
+async function chooseTarget(guide, agentId) {
+  const named = findControl(guide, ['plugin-guide-target', 'deployment-target', 'plugin-deploy-target'])
+  if (named && named.element.tagName === 'SELECT') {
+    await named.setValue(agentId)
+    return
+  }
+  const match = guide.findAll('[data-test="plugin-guide-target"], [data-test="deployment-agent"], input[type="radio"], .plugin-deployment__agent input, .plugin-guide__agent input').find((input) => input.element.value === agentId)
+  if (!match) throw new Error(`deployment target ${agentId} was not rendered`)
+  if (match.element.type === 'checkbox' || match.element.type === 'radio') await match.setValue(true)
+  else await match.setValue(agentId)
+}
+
+async function fillPublishedEntry(guide, host, https) {
+  const hostNode = findControl(guide, ['plugin-guide-domain', 'deployment-domain', 'deployment-frontend-host', 'plugin-publish-domain'], /入口域名|^域名$/)
+  const urlNode = findControl(guide, ['deployment-frontend-url', 'plugin-publish-frontend-url'], /访问地址|frontend/)
+  const httpsNode = findControl(guide, ['plugin-guide-https', 'deployment-https', 'plugin-publish-https'], /HTTPS|https/)
+  if (hostNode) await hostNode.setValue(host)
+  else if (urlNode) await urlNode.setValue(`${https ? 'https' : 'http'}://${host}`)
+  else throw new Error('entry domain field was not rendered')
+  if (!httpsNode) {
+    if (urlNode) return
+    throw new Error('HTTPS field was not rendered')
+  }
+  if (httpsNode.element.tagName === 'SELECT') {
+    const options = Array.from(httpsNode.element.options || []).map((option) => option.value)
+    if (options.some((value) => String(value).includes('://'))) await httpsNode.setValue(https ? 'https://' : 'http://')
+    else await httpsNode.setValue(https ? 'https' : 'http')
+    return
+  }
+  if (httpsNode.element.type === 'checkbox' || httpsNode.element.type === 'radio') await httpsNode.setValue(https)
+  else await httpsNode.setValue(https)
+}
+
+function guideSubmitButton(guide) {
+  const named = guide.find('[data-test="plugin-task-primary"]')
+  if (named.exists()) return named
+  return ['发布到域名', '部署并发布', '保存入口', '发布', '开始部署', '部署']
+    .map((label) => buttonByText(guide, label))
+    .find(Boolean) || guide.find('button.btn-primary')
+}
+
+function writePaths() {
+  return mocks.post.mock.calls.map((call) => String(call[0] || ''))
+}
+
+function httpBackendManifest(overrides = {}) {
+  return {
+    id: 'rpc.plugin',
+    name: 'RPC Plugin',
+    description: '把媒体站发布到一个节点',
+    extension_points: ['http.backend-provider'],
+    http_backend_providers: [{ id: 'default', display_name: 'Default' }],
+    ...overrides
+  }
+}
+
+function productionDetail(overrides = {}) {
+  return {
+    plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'disabled', desired_lifecycle: 'disabled', active_source_kind: 'official' },
+    package: {
+      manifest: httpBackendManifest(),
+      runtime: { kind: 'rpc-service' },
+      artifacts: [],
+      permissions: [],
+      permission_diff: { added: [], removed: [] },
+      config_schema: { type: 'object', properties: { mode: { type: 'string', title: '模式' } } }
+    },
+    instances: [],
+    agent_statuses: [],
+    published_entries: [],
+    ...overrides
+  }
+}
+
+function deployedInstance(overrides = {}) {
+  return {
+    id: 'rpc.plugin-default',
+    resource_group_id: 'default',
+    targets: ['edge-a'],
+    policy_chains: [],
+    bindings: [],
+    config: { mode: 'observe' },
+    config_version: 1,
+    current_state: 'active',
+    ...overrides
+  }
+}
+
+function stubReads(detail) {
+  mocks.get.mockImplementation(async (path) => {
+    if (path.endsWith('/operations')) {
+      return { data: { operations: [{ id: 'op-audit', kind: 'configure', status: 'succeeded', actor_id: 'admin', created_at: '2026-08-17T00:00:00Z' }] } }
+    }
+    if (path.includes('/access/resource-groups')) {
+      return { data: { resource_groups: [{ id: 'default', name: '默认组' }, { id: 'group-a', name: '组 A' }] } }
+    }
+    if (path.includes('/logs')) return { data: { entries: [{ created_at: '2026-08-17T00:00:00Z', agent_id: 'edge-a', message: 'ready' }], next_cursor: '' } }
+    return { data: detail }
+  })
+}
+
+async function mountDetail(detail) {
+  stubReads(detail)
+  mocks.fetchAgents.mockResolvedValue([
+    { id: 'edge-a', name: 'Edge A', status: 'online' },
+    { id: 'edge-b', name: 'Edge B', status: 'online' }
+  ])
+  const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+  await flushPromises()
+  return wrapper
+}
+
+async function openTaskGuide(wrapper, actionLabel) {
+  const existing = wrapper.find('[data-test="plugin-task-guide"]')
+  if (existing.exists() && ['开始部署', '发布到域名'].includes(actionLabel)) return existing
+  const button = buttonByText(wrapper, actionLabel)
+  if (!button) throw new Error(`${actionLabel} was not rendered`)
+  await button.trigger('click')
+  await flushPromises()
+  return taskGuide(wrapper)
 }
 
 describe('PluginDetailPage production API projection', () => {
@@ -204,5 +366,277 @@ describe('PluginDetailPage production API projection', () => {
       resource_group_id: 'group-a',
       config: { mode: 'block' }
     }), { timeout: 0 })
+  })
+})
+
+describe('PluginDetailPage task-center production API projection', () => {
+  beforeEach(() => {
+    mocks.get.mockReset()
+    mocks.post.mockReset()
+    mocks.fetchAgents.mockReset()
+    mocks.refreshActor.mockReset()
+    mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
+  })
+
+  it('keeps 开始部署 as the first-screen primary action before anything is deployed', async () => {
+    const wrapper = await mountDetail(productionDetail())
+    expect(wrapper.text()).toContain('还没部署')
+    expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
+    expect(buttonByText(wrapper, '启用')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(wrapper, '回滚')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(wrapper, '导出脱敏诊断')?.classes() || []).not.toContain('btn-primary')
+  })
+
+  it('prompts to finish publishing only when an HTTP backend is already deployed', async () => {
+    const unpublished = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance()]
+    }))
+    expect(unpublished.text()).toContain('还没发布域名')
+    expect(pagePrimaryButtons(unpublished).some((button) => button.text() === '发布到域名')).toBe(true)
+    unpublished.unmount()
+
+    const noHttp = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      package: {
+        ...productionDetail().package,
+        manifest: { id: 'rpc.plugin', name: 'RPC Plugin' }
+      },
+      instances: [deployedInstance()]
+    }))
+    expect(noHttp.text()).toContain('已部署')
+    expect(noHttp.text()).not.toContain('还没发布域名')
+    expect(buttonByText(noHttp, '发布到域名')).toBeUndefined()
+  })
+
+  it('guides exactly one node plus a required domain and HTTPS without a rules-page detour', async () => {
+    const wrapper = await mountDetail(productionDetail())
+    const guide = await openTaskGuide(wrapper, '开始部署')
+    expect(guide.text()).not.toContain('到 HTTP 规则添加')
+    expect(guide.text()).not.toContain('选择插件提供商')
+    expect(guide.text()).not.toContain('选择全部')
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]')).toHaveLength(0)
+    expect(guide.find('[data-test="plugin-guide-domain"], [data-test="deployment-domain"], [data-test="deployment-frontend-host"]').exists()).toBe(true)
+    expect(guide.find('[data-test="plugin-guide-https"], [data-test="deployment-https"]').exists()).toBe(true)
+    expect(guideSubmitButton(guide).attributes('disabled')).toBeDefined()
+
+    await chooseTarget(guide, 'edge-a')
+    expect(guideSubmitButton(guide).attributes('disabled')).toBeDefined()
+    await fillPublishedEntry(guide, 'media.example.com', true)
+    expect(guideSubmitButton(guide).attributes('disabled')).toBeUndefined()
+    const checked = guide.findAll('input[type="radio"]:checked, input[type="checkbox"]:checked').filter((input) => ['edge-a', 'edge-b'].includes(input.element.value))
+    if (checked.length) expect(checked).toHaveLength(1)
+  })
+
+  it('publishes one node and one enabled HTTP entry through the real plugin adapter', async () => {
+    const published = {
+      rule_id: 12,
+      agent_id: 'edge-a',
+      frontend_url: 'https://media.example.com',
+      enabled: true,
+      accessible: true
+    }
+    mocks.post.mockResolvedValue({
+      data: {
+        result: {
+          instance: { ...deployedInstance(), bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }] },
+          published_entries: [published]
+        }
+      }
+    })
+    const wrapper = await mountDetail(productionDetail())
+    const guide = await openTaskGuide(wrapper, '开始部署')
+    await chooseTarget(guide, 'edge-a')
+    await fillPublishedEntry(guide, 'media.example.com', true)
+    const mode = guide.find('.declarative-field input[type="text"]')
+    if (mode.exists()) await mode.setValue('observe')
+    await guideSubmitButton(guide).trigger('click')
+    await flushPromises()
+
+    expect(writePaths()).toEqual(['/plugins/rpc.plugin/publish'])
+    expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/publish', expect.objectContaining({
+      targets: ['edge-a'],
+      frontend_url: 'https://media.example.com'
+    }), { timeout: 0 })
+    const body = mocks.post.mock.calls[0][1]
+    expect(body).not.toHaveProperty('provider_id')
+    expect(body).not.toHaveProperty('backends')
+    expect(body).not.toHaveProperty('rule_id')
+    expect(writePaths().some((path) => path.includes('/rules') || path.endsWith('/configure'))).toBe(false)
+  })
+
+  it('stays undeployed or unpublished after leaving mid-guide and shows the published host once complete', async () => {
+    const undeployed = await mountDetail(productionDetail())
+    await openTaskGuide(undeployed, '开始部署')
+    undeployed.unmount()
+    const reopened = await mountDetail(productionDetail())
+    expect(reopened.text()).toContain('还没部署')
+    expect(reopened.text()).not.toContain('已可用')
+    reopened.unmount()
+
+    const unpublished = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance()]
+    }))
+    expect(unpublished.text()).toContain('还没发布域名')
+    expect(unpublished.text()).not.toContain('已可用')
+    unpublished.unmount()
+
+    const published = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance({
+        bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }]
+      })],
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://user:secret@media.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    }))
+    expect(publishedSurface(published).text()).toContain('https://user:[REDACTED]@media.example.com')
+    expect(published.text()).toContain('已可用')
+    expect(published.html()).not.toContain('user:secret@media.example.com')
+  })
+
+  it('updates the original published entry through plugin publish instead of the rules page', async () => {
+    mocks.post.mockResolvedValue({
+      data: {
+        result: {
+          published_entries: [{
+            rule_id: 12,
+            agent_id: 'edge-a',
+            frontend_url: 'https://media-v2.example.com',
+            enabled: true,
+            accessible: true
+          }]
+        }
+      }
+    })
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance({
+        bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }]
+      })],
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://media.example.com',
+        enabled: true,
+        accessible: false
+      }]
+    }))
+    expect(wrapper.text()).toContain('已发布但还不能访问')
+    expect(publishedSurface(wrapper).text()).toContain('https://media.example.com')
+
+    const guide = await openTaskGuide(wrapper, '修改入口')
+    await fillPublishedEntry(guide, 'media-v2.example.com', true)
+    await guideSubmitButton(guide).trigger('click')
+    await flushPromises()
+
+    expect(writePaths()).toEqual(['/plugins/rpc.plugin/publish'])
+    expect(mocks.post.mock.calls[0][1]).toEqual(expect.objectContaining({
+      rule_id: 12,
+      targets: ['edge-a'],
+      frontend_url: 'https://media-v2.example.com'
+    }))
+    expect(writePaths().some((path) => path.includes('/rules'))).toBe(false)
+  })
+
+  it('publishes another domain as a separate plugin-side entry', async () => {
+    mocks.post.mockResolvedValue({
+      data: {
+        result: {
+          published_entries: [{
+            rule_id: 13,
+            agent_id: 'edge-b',
+            frontend_url: 'https://alt.example.com',
+            enabled: true,
+            accessible: true
+          }]
+        }
+      }
+    })
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance({
+        bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }]
+      })],
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://media.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    }))
+    const extraLabel = buttonByText(wrapper, '发布另一域名') ? '发布另一域名' : '再发布一条域名'
+    const guide = await openTaskGuide(wrapper, extraLabel)
+    await chooseTarget(guide, 'edge-b')
+    await fillPublishedEntry(guide, 'alt.example.com', true)
+    await guideSubmitButton(guide).trigger('click')
+    await flushPromises()
+    expect(writePaths()).toEqual(['/plugins/rpc.plugin/publish'])
+    expect(mocks.post.mock.calls[0][1]).toEqual(expect.objectContaining({
+      targets: ['edge-b'],
+      frontend_url: 'https://alt.example.com'
+    }))
+    expect(mocks.post.mock.calls[0][1]).not.toHaveProperty('rule_id')
+  })
+
+  it('keeps lifecycle, diagnostics, logs, and timeline reachable and blocks readonly submits', async () => {
+    const wrapper = await mountDetail(productionDetail({
+      plugin: {
+        plugin_id: 'rpc.plugin',
+        current_lifecycle: 'active',
+        rollback_package_digest: 'sha256:rollback',
+        active_source_kind: 'official'
+      },
+      instances: [deployedInstance()],
+      agent_statuses: [{
+        instance_id: 'rpc.plugin-default',
+        agent_id: 'edge-a',
+        target_scope: 'active',
+        runtime_state: 'failed',
+        desired_revision: 2,
+        target_revision: 2,
+        current_revision: 1,
+        operation_kind: 'configure',
+        operation_status: 'failed'
+      }]
+    }))
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没发布域名')
+    expect(buttonByText(wrapper, '发布到域名')).toBeTruthy()
+    expect(buttonByText(wrapper, '启用')).toBeTruthy()
+    expect(buttonByText(wrapper, '停用')).toBeTruthy()
+    expect(buttonByText(wrapper, '回滚')).toBeTruthy()
+    expect(buttonByText(wrapper, '卸载')).toBeTruthy()
+    expect(buttonByText(wrapper, '导出脱敏诊断')).toBeTruthy()
+    expect(wrapper.text()).toContain('edge-a')
+    expect(wrapper.text()).toContain('ready')
+    expect(wrapper.text()).toContain('configure')
+    expect(wrapper.find('.plugin-technical').exists()).toBe(true)
+
+    await buttonByText(wrapper, '停用').trigger('click')
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
+    await wrapper.find('.delete-dialog-cancel').trigger('click')
+    await flushPromises()
+    expect(mocks.post).not.toHaveBeenCalled()
+    wrapper.unmount()
+
+    mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['default'] }
+    const readonlyPage = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance()]
+    }))
+    expect(readonlyPage.text()).toContain('还没发布域名')
+    const publish = buttonByText(readonlyPage, '发布到域名')
+    if (publish) {
+      expect(publish.attributes('disabled')).toBeDefined()
+      await publish.trigger('click')
+    }
+    expect(configModal(readonlyPage).exists()).toBe(false)
+    expect(mocks.post).not.toHaveBeenCalled()
   })
 })
