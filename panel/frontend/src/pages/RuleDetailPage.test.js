@@ -88,6 +88,7 @@ describe('RuleDetailPage', () => {
       '/l4',
       '/relay-listeners',
       '/agents',
+      '/cloudflare-dns',
       '/settings'
     ])
 

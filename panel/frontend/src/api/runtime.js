@@ -698,3 +698,70 @@ export async function fetchDashboardAttention() {
   const { data } = await api.get('/dashboard/attention')
   return data
 }
+
+const cloudflareDNSBase = '/cloudflare-dns'
+
+function normalizeCloudflareDnsMapping(row = {}) {
+  return {
+    suffix: String(row.suffix || ''),
+    configured: row.configured === true,
+    updated_at: Number(row.updated_at) || 0
+  }
+}
+
+function normalizeCloudflareDnsAccess(access = {}) {
+  return {
+    can_read: access.can_read !== false,
+    can_write: access.can_write !== false,
+    can_rotate: access.can_rotate !== false
+  }
+}
+
+export async function fetchCloudflareDnsMappings() {
+  const { data } = await api.get(`${cloudflareDNSBase}/api/mappings`)
+  const mappings = Array.isArray(data?.mappings) ? data.mappings.map(normalizeCloudflareDnsMapping) : []
+  return {
+    mappings,
+    access: normalizeCloudflareDnsAccess(data?.access)
+  }
+}
+
+export async function fetchCloudflareDnsMapping(suffix) {
+  const encoded = encodeURIComponent(String(suffix || '').trim())
+  const { data } = await api.get(`${cloudflareDNSBase}/api/mappings/${encoded}`)
+  return normalizeCloudflareDnsMapping(data?.mapping || {})
+}
+
+export async function createCloudflareDnsMapping({ suffix, token }) {
+  const { data } = await api.post(`${cloudflareDNSBase}/api/mappings`, {
+    suffix: String(suffix || '').trim(),
+    token: String(token || '')
+  })
+  return normalizeCloudflareDnsMapping(data?.mapping || { suffix })
+}
+
+export async function renameCloudflareDnsMapping(suffix, nextSuffix) {
+  const current = String(suffix || '').trim()
+  const { data } = await api.post(`${cloudflareDNSBase}/api/mappings/${encodeURIComponent(current)}/rename`, {
+    suffix: String(nextSuffix || '').trim(),
+    confirm: current
+  })
+  return normalizeCloudflareDnsMapping(data?.mapping || { suffix: nextSuffix })
+}
+
+export async function rotateCloudflareDnsMapping(suffix, token) {
+  const current = String(suffix || '').trim()
+  const { data } = await api.post(`${cloudflareDNSBase}/api/mappings/${encodeURIComponent(current)}/rotate`, {
+    token: String(token || ''),
+    confirm: current
+  })
+  return normalizeCloudflareDnsMapping(data?.mapping || { suffix: current, configured: true })
+}
+
+export async function deleteCloudflareDnsMapping(suffix) {
+  const current = String(suffix || '').trim()
+  const { data } = await api.post(`${cloudflareDNSBase}/api/mappings/${encodeURIComponent(current)}/delete`, {
+    confirm: current
+  })
+  return { suffix: String(data?.suffix || current) }
+}
