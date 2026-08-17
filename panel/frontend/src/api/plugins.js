@@ -13,6 +13,28 @@ function pluginPath(pluginID, suffix = '') {
   return `${pluginRoot}/${identity(pluginID, 'plugin id')}${suffix}`
 }
 
+function projectPublishedEntry(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+  const ruleID = Number(entry.rule_id)
+  const agentID = String(entry.agent_id || '').trim()
+  const frontendURL = String(entry.frontend_url || '').trim()
+  if (!Number.isInteger(ruleID) || ruleID <= 0 || !agentID || !frontendURL) return null
+  return {
+    rule_id: ruleID,
+    agent_id: agentID,
+    frontend_url: frontendURL,
+    enabled: entry.enabled === true,
+    accessible: entry.accessible === true
+  }
+}
+
+function projectPluginPublishedEntries(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const raw = Array.isArray(value.published_entries) ? value.published_entries : []
+  value.published_entries = raw.map(projectPublishedEntry).filter(Boolean)
+  return value
+}
+
 export async function fetchPlugins() {
   const { data } = await api.get(pluginRoot)
   return Array.isArray(data?.plugins) ? data.plugins.map((item) => redactPluginProjection(item)) : []
@@ -20,7 +42,7 @@ export async function fetchPlugins() {
 
 export async function fetchPluginDetail(pluginID) {
   const { data } = await api.get(pluginPath(pluginID), longRunningRequest)
-  return redactPluginProjection(data)
+  return projectPluginPublishedEntries(redactPluginProjection(data))
 }
 
 export async function fetchPluginOperations(pluginID) {
@@ -39,16 +61,25 @@ export async function installPlugin(selection) {
 }
 
 export async function runPluginAction(pluginID, action, payload = {}) {
-  const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall'])
+  const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall', 'publish'])
   if (!allowed.has(action)) throw new Error('plugin action is invalid')
   const { data } = await api.post(pluginPath(pluginID, `/${action}`), payload, longRunningRequest)
-  return redactPluginProjection(data?.result)
+  return projectPluginPublishedEntries(redactPluginProjection(data?.result))
 }
 
 export const enablePlugin = (pluginID) => runPluginAction(pluginID, 'enable')
 export const disablePlugin = (pluginID) => runPluginAction(pluginID, 'disable')
 export const rollbackPlugin = (pluginID, confirmedPermissions = []) => runPluginAction(pluginID, 'rollback', { confirmed_permissions: confirmedPermissions })
 export const configurePlugin = (pluginID, payload) => runPluginAction(pluginID, 'configure', payload)
+export async function publishPlugin(pluginID, payload) {
+  const request = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+  const targets = Array.isArray(request.targets)
+    ? [...new Set(request.targets.map((target) => String(target || '').trim()).filter(Boolean))]
+    : []
+  if (targets.length !== 1) throw new Error('exactly one target is required')
+  if (!String(request.frontend_url || '').trim()) throw new Error('frontend url is required')
+  return runPluginAction(pluginID, 'publish', payload)
+}
 export const upgradePlugin = (pluginID, selection) => runPluginAction(pluginID, 'upgrade', selection)
 export const uninstallPlugin = (pluginID) => runPluginAction(pluginID, 'uninstall', { drained: true })
 

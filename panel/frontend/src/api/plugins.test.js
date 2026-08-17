@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchPluginLogs, invokePluginDynamicAction } from './plugins'
+import { fetchPluginDetail, fetchPluginLogs, invokePluginDynamicAction, publishPlugin } from './plugins'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('./client', () => ({ api: mocks, longRunningRequest: { timeout: 0 } }))
@@ -22,5 +22,70 @@ describe('plugin dynamic action and log API', () => {
     const page = await fetchPluginLogs('official.rpc', 'instance-a', { agentID: 'edge-a', cursor: 'cursor', limit: 25 })
     expect(mocks.get).toHaveBeenCalledWith('/plugins/official.rpc/instances/instance-a/logs', { params: { agent_id: 'edge-a', cursor: 'cursor', limit: 25 } })
     expect(page.entries[0].message).toBe('token=[REDACTED]')
+  })
+})
+
+describe('plugin publish projection', () => {
+  beforeEach(() => { mocks.get.mockReset(); mocks.post.mockReset() })
+
+  it('returns the published entry projection from one plugin-side submit', async () => {
+    mocks.post.mockResolvedValue({
+      data: {
+        result: {
+          published_entries: [{
+            rule_id: 12,
+            agent_id: 'edge-a',
+            frontend_url: 'https://user:secret@edge.example.com',
+            enabled: true,
+            accessible: false
+          }]
+        }
+      }
+    })
+
+    const result = await publishPlugin('official.waf', {
+      instance_id: 'official.waf-default',
+      resource_group_id: 'rg-1',
+      targets: ['edge-a'],
+      policy_chains: [],
+      frontend_url: 'https://edge.example.com'
+    })
+
+    expect(mocks.post).toHaveBeenCalledTimes(1)
+    expect(mocks.post.mock.calls[0][0]).toBe('/plugins/official.waf/publish')
+    expect(result.published_entries).toEqual([{
+      rule_id: 12,
+      agent_id: 'edge-a',
+      frontend_url: 'https://user:[REDACTED]@edge.example.com',
+      enabled: true,
+      accessible: false
+    }])
+  })
+
+  it('keeps published entry identity fields on plugin detail', async () => {
+    mocks.get.mockResolvedValue({
+      data: {
+        published_entries: [{
+          rule_id: 12,
+          agent_id: 'edge-a',
+          frontend_url: 'https://edge.example.com',
+          enabled: false,
+          accessible: false
+        }],
+        instances: [{
+          bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }]
+        }]
+      }
+    })
+
+    const detail = await fetchPluginDetail('official.waf')
+    expect(detail.published_entries[0]).toMatchObject({
+      rule_id: 12,
+      agent_id: 'edge-a',
+      frontend_url: 'https://edge.example.com',
+      enabled: false,
+      accessible: false
+    })
+    expect(detail.instances[0].bindings[0].consumer).toEqual({ kind: 'http_rule', id: '12' })
   })
 })

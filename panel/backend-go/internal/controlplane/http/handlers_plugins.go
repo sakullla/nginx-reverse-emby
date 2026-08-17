@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -425,7 +426,12 @@ func (d Dependencies) handlePlugin(w http.ResponseWriter, r *http.Request) {
 		writePluginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, detail)
+	entries, err := d.publishedPluginEntries(r.Context(), detail)
+	if err != nil {
+		writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pluginDetailView{PluginDetail: detail, PublishedEntries: entries})
 }
 
 func (d Dependencies) handlePluginOperations(w http.ResponseWriter, r *http.Request) {
@@ -572,6 +578,9 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 			result = map[string]any{"uninstalled": err == nil}
 			status = http.StatusOK
 		}
+	case "publish":
+		d.handlePluginPublish(w, r)
+		return
 	default:
 		writeJSON(w, http.StatusNotFound, errorPayload("plugin action not found"))
 		return
@@ -585,6 +594,284 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, status, map[string]any{"result": result})
+}
+
+func (d Dependencies) handlePluginPublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+		return
+	}
+	var input struct {
+		InstanceID         string                                  `json:"instance_id"`
+		ResourceGroupID    string                                  `json:"resource_group_id"`
+		Targets            any                                     `json:"targets"`
+		PolicyChains       *[]string                               `json:"policy_chains"`
+		Bindings           *[]storage.PluginInstanceBindingRequest `json:"bindings"`
+		Config             json.RawMessage                         `json:"config"`
+		SecretReplacements map[string]json.RawMessage              `json:"secret_replacements,omitempty"`
+		FrontendURL        string                                  `json:"frontend_url"`
+		RuleID             *int                                    `json:"rule_id"`
+	}
+	if err := decodeStrictPluginJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		return
+	}
+	if input.PolicyChains == nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("policy_chains is required"))
+		return
+	}
+	frontendURL := strings.TrimSpace(input.FrontendURL)
+	if frontendURL == "" {
+		writeJSON(w, http.StatusBadRequest, errorPayload("frontend_url is required"))
+		return
+	}
+	if _, err := pluginPublishTargetIDs(input.Targets); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		return
+	}
+	ruleID := 0
+	if input.RuleID != nil {
+		if *input.RuleID <= 0 {
+			writeJSON(w, http.StatusBadRequest, errorPayload("rule_id must be a positive rule id"))
+			return
+		}
+		ruleID = *input.RuleID
+	}
+	var actor authz.Actor
+	if current, haveActor := actorFromRequest(r); haveActor {
+		actor = current
+	}
+	request := service.PluginConfigureRequest{
+		PluginID:              r.PathValue("id"),
+		InstanceID:            input.InstanceID,
+		ResourceGroupID:       input.ResourceGroupID,
+		Targets:               input.Targets,
+		PolicyChains:          input.PolicyChains,
+		Bindings:              input.Bindings,
+		Config:                input.Config,
+		SecretReplacements:    input.SecretReplacements,
+		ActorID:               pluginActorID(r),
+		Actor:                 actor,
+		PublishDesiredEnabled: true,
+	}
+	publisher, ok := d.PluginService.(PluginPublishAPI)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin publish is unavailable"))
+		return
+	}
+	instance, rule, err := publisher.PublishMutation(r.Context(), request, frontendURL, ruleID)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidArgument) {
+			writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		} else {
+			writePluginError(w, err)
+		}
+		return
+	}
+	entries := []pluginPublishedEntry{}
+	if rule.ID > 0 {
+		entries = []pluginPublishedEntry{pluginPublishedEntryFromRule(rule, pluginEntryReachable(instance, nil, rule))}
+	}
+	if projected, projectErr := d.publishedPluginEntries(r.Context(), service.PluginDetail{Instances: []service.PluginInstanceDetail{instance}}); projectErr == nil && len(projected) > 0 {
+		entries = projected
+	}
+	result := pluginPublishResult{Instance: instance, PublishedEntries: entries}
+	if rule.ID > 0 {
+		copied := rule
+		result.Rule = &copied
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"result": result})
+}
+
+type pluginDetailView struct {
+	service.PluginDetail
+	PublishedEntries []pluginPublishedEntry `json:"published_entries"`
+}
+
+type pluginPublishResult struct {
+	Instance         service.PluginInstanceDetail `json:"instance"`
+	Rule             *service.HTTPRule            `json:"rule,omitempty"`
+	PublishedEntries []pluginPublishedEntry       `json:"published_entries"`
+}
+
+type pluginPublishedEntry struct {
+	RuleID      int    `json:"rule_id"`
+	AgentID     string `json:"agent_id"`
+	FrontendURL string `json:"frontend_url"`
+	Enabled     bool   `json:"enabled"`
+	Accessible  bool   `json:"accessible"`
+}
+
+func pluginPublishTargetIDs(targets any) ([]string, error) {
+	if targets == nil {
+		return nil, fmt.Errorf("%w: publish requires exactly one target agent", service.ErrInvalidArgument)
+	}
+	raw, err := json.Marshal(targets)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid plugin targets", service.ErrInvalidArgument)
+	}
+	var ids []string
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil, fmt.Errorf("%w: plugin targets must be an array of agent IDs", service.ErrInvalidArgument)
+	}
+	cleaned := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+	if len(cleaned) != 1 {
+		return nil, fmt.Errorf("%w: publish requires exactly one target agent", service.ErrInvalidArgument)
+	}
+	return cleaned, nil
+}
+
+func (d Dependencies) publishedPluginEntries(ctx context.Context, detail service.PluginDetail) ([]pluginPublishedEntry, error) {
+	instanceIDs := make(map[string]service.PluginInstanceDetail, len(detail.Instances))
+	agentIDs := make(map[string]struct{})
+	for _, instance := range detail.Instances {
+		if id := strings.TrimSpace(instance.ID); id != "" {
+			instanceIDs[id] = instance
+		}
+		for _, target := range instance.Targets {
+			if id := strings.TrimSpace(target); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		for _, target := range instance.PendingTargets {
+			if id := strings.TrimSpace(target); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		for _, binding := range instance.Bindings {
+			if id := strings.TrimSpace(binding.TargetAgentID); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+	}
+	if d.RuleService == nil || len(instanceIDs) == 0 {
+		return []pluginPublishedEntry{}, nil
+	}
+	seen := make(map[string]struct{})
+	entries := make([]pluginPublishedEntry, 0)
+	for agentID := range agentIDs {
+		rules, err := d.RuleService.List(ctx, agentID)
+		if err != nil {
+			if errors.Is(err, service.ErrAgentNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		rules, err = d.filterHTTPRules(ctx, rules)
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range rules {
+			instance, ok := pluginRulePublishedInstance(rule, instanceIDs)
+			if !ok {
+				continue
+			}
+			key := rule.AgentID + ":" + strconv.Itoa(rule.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			entries = append(entries, pluginPublishedEntryFromRule(rule, pluginEntryReachable(instance, detail.AgentStatuses, rule)))
+		}
+	}
+	for _, instance := range instanceIDs {
+		for _, binding := range instance.Bindings {
+			if !strings.EqualFold(strings.TrimSpace(binding.Consumer.Kind), storage.PluginDependencyConsumerHTTPRule) {
+				continue
+			}
+			ruleID, err := strconv.Atoi(strings.TrimSpace(binding.Consumer.ID))
+			if err != nil || ruleID <= 0 {
+				continue
+			}
+			agentID := strings.TrimSpace(binding.TargetAgentID)
+			if agentID == "" {
+				continue
+			}
+			key := agentID + ":" + strconv.Itoa(ruleID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			rule, err := d.RuleService.Get(ctx, agentID, ruleID)
+			if err != nil {
+				if errors.Is(err, service.ErrRuleNotFound) || errors.Is(err, service.ErrAgentNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			filtered, err := d.filterHTTPRules(ctx, []service.HTTPRule{rule})
+			if err != nil {
+				return nil, err
+			}
+			if len(filtered) == 0 {
+				continue
+			}
+			seen[key] = struct{}{}
+			entries = append(entries, pluginPublishedEntryFromRule(filtered[0], pluginEntryReachable(instance, detail.AgentStatuses, filtered[0])))
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].AgentID != entries[j].AgentID {
+			return entries[i].AgentID < entries[j].AgentID
+		}
+		return entries[i].RuleID < entries[j].RuleID
+	})
+	return entries, nil
+}
+
+func pluginRulePublishedInstance(rule service.HTTPRule, instances map[string]service.PluginInstanceDetail) (service.PluginInstanceDetail, bool) {
+	for _, backend := range rule.Backends {
+		if backend.PluginProvider == nil {
+			continue
+		}
+		instance, ok := instances[strings.TrimSpace(backend.PluginProvider.InstanceID)]
+		if ok {
+			return instance, true
+		}
+	}
+	return service.PluginInstanceDetail{}, false
+}
+
+func pluginPublishedEntryFromRule(rule service.HTTPRule, accessible bool) pluginPublishedEntry {
+	return pluginPublishedEntry{
+		RuleID:      rule.ID,
+		AgentID:     rule.AgentID,
+		FrontendURL: rule.FrontendURL,
+		Enabled:     rule.Enabled,
+		Accessible:  accessible,
+	}
+}
+
+func pluginEntryReachable(instance service.PluginInstanceDetail, statuses []service.PluginAgentStatus, rule service.HTTPRule) bool {
+	if !rule.Enabled {
+		return false
+	}
+	agentID := strings.TrimSpace(rule.AgentID)
+	if agentID == "" {
+		return false
+	}
+	for _, status := range statuses {
+		if strings.TrimSpace(status.InstanceID) == strings.TrimSpace(instance.ID) && strings.TrimSpace(status.AgentID) == agentID {
+			return status.Available
+		}
+	}
+	for _, target := range instance.Targets {
+		if strings.TrimSpace(target) == agentID {
+			return instance.DesiredEnabled && strings.EqualFold(strings.TrimSpace(instance.CurrentState), "active")
+		}
+	}
+	return false
 }
 
 func (d Dependencies) resolveHTTPPluginPackage(r *http.Request, input pluginPackageSelection) (service.PluginPackageCandidate, string, error) {
@@ -630,7 +917,7 @@ func pluginActorID(r *http.Request) string {
 func writePluginError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, service.ErrPluginNotInstalled), errors.Is(err, service.ErrPluginInstanceNotFound), errors.Is(err, service.ErrMarketplaceSourceNotFound), errors.Is(err, service.ErrMarketplaceEntryNotFound):
+	case errors.Is(err, service.ErrPluginNotInstalled), errors.Is(err, service.ErrPluginInstanceNotFound), errors.Is(err, service.ErrMarketplaceSourceNotFound), errors.Is(err, service.ErrMarketplaceEntryNotFound), errors.Is(err, service.ErrRuleNotFound), errors.Is(err, service.ErrAgentNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, service.ErrPluginPermissionConfirmation), errors.Is(err, service.ErrPluginRiskConfirmation), errors.Is(err, service.ErrPluginResourceAuthorization), errors.Is(err, service.ErrMutationPrincipalRequired):
 		status = http.StatusForbidden

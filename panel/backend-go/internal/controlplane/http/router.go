@@ -164,6 +164,10 @@ type PluginAPI interface {
 	Operations(context.Context, string) ([]service.PluginOperationDetail, error)
 }
 
+type PluginPublishAPI interface {
+	PublishMutation(context.Context, service.PluginConfigureRequest, string, int) (service.PluginInstanceDetail, service.HTTPRule, error)
+}
+
 type AgentPluginArtifactService interface {
 	ResolveAgentPluginArtifact(context.Context, string, int64, string, string) (service.AgentPluginArtifact, error)
 }
@@ -480,6 +484,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			if resolved.PluginCapabilityService != nil {
 				mux.Handle(prefix+"/plugins/{id}/instances/{instance}/actions/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginDynamicAction)))
 			}
+			mux.Handle(prefix+"/plugins/{id}/publish", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginPublish)))
 			mux.Handle(prefix+"/plugins/{id}/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginAction)))
 		}
 	}

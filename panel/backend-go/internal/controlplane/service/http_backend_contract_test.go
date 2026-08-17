@@ -3,10 +3,27 @@
 package service
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -87,5 +104,669 @@ func TestNormalizeHTTPBackendsEnforcesProviderIDByteLimit(t *testing.T) {
 				t.Fatalf("normalizeHTTPBackends() error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestRuleServiceCreateStillRequiresReadyHTTPBackendProvider(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local", Name: "local", Platform: runtime.GOOS + "-" + runtime.GOARCH}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	frontend := "https://rules.example.com"
+	enabled := true
+	backends := []HTTPRuleBackend{{
+		Kind:           pluginsdk.HTTPBackendKindPluginProvider,
+		PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: "provider-1", ProviderID: "default"},
+	}}
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	_, err := svc.Create(ctx, "local", HTTPRuleInput{FrontendURL: &frontend, Backends: &backends, Enabled: &enabled})
+	if err == nil {
+		t.Fatal("rule-page Create accepted a plugin provider without a ready generation")
+	}
+	if leftover, listErr := store.ListHTTPRules(t.Context(), "local"); listErr != nil || len(leftover) != 0 {
+		t.Fatalf("unready provider leaked rules=%+v err=%v", leftover, listErr)
+	}
+}
+
+func TestPluginPublishWritesSingleEnabledHTTPRuleWithoutLiveCatalog(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instanceID := "provider-1"
+	published, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, instanceID, "https://emby.example.com", 0))
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
+	stored := mustPluginPublishRule(t, fixture.store, "local", 0)
+	if !stored.Enabled || stored.FrontendURL != "https://emby.example.com" {
+		t.Fatalf("published rule = %+v", stored)
+	}
+	assertPluginProviderBackend(t, stored, published.ID, "default")
+	if certs, err := fixture.store.ListManagedCertificates(t.Context()); err != nil {
+		t.Fatal(err)
+	} else if len(certs) == 0 {
+		t.Fatal("https frontend_url did not trigger the managed certificate path")
+	}
+	entries := publishedEntriesFromState(t, fixture, "local")
+	if len(entries) != 1 || entries[0].RuleID != stored.ID || entries[0].AgentID != "local" || entries[0].FrontendURL != "https://emby.example.com" || !entries[0].Enabled {
+		t.Fatalf("published_entries = %+v", entries)
+	}
+	instance := mustPluginInstance(t, fixture.store, fixture.pluginID)
+	if !containsHTTPRuleBinding(instance, stored.ID, "local") {
+		t.Fatalf("instance bindings = %s, want http_rule %d on local", instance.BindingsJSON, stored.ID)
+	}
+	if instance.DesiredEnabled != true || len(instanceTargets(t, instance)) != 1 || instanceTargets(t, instance)[0] != "local" {
+		t.Fatalf("published instance = %+v", instance)
+	}
+
+	frontend := "https://rules-page.example.com"
+	enabled := true
+	backends := []HTTPRuleBackend{{
+		Kind:           pluginsdk.HTTPBackendKindPluginProvider,
+		PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: instance.ID, ProviderID: "default"},
+	}}
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, fixture.store)
+	if _, err := rules.Create(ctx, "local", HTTPRuleInput{FrontendURL: &frontend, Backends: &backends, Enabled: &enabled}); err == nil {
+		t.Fatal("rule-page Create accepted a plugin provider without a ready generation after publish")
+	}
+}
+
+func TestPluginPublishRejectsNonHTTPBackendAndLeavesRulesUnchanged(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, false)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	_, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "https://emby.example.com", 0))
+	if err == nil {
+		t.Fatal("PublishMutation accepted a package without an HTTP backend")
+	}
+	if !errors.Is(err, ErrInvalidArgument) && !strings.Contains(err.Error(), "HTTP") && !strings.Contains(err.Error(), "http") {
+		t.Fatalf("PublishMutation() error = %v, want HTTP backend rejection", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 0)
+	instances, err := fixture.store.ListPluginInstances(t.Context(), fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("rejected publish wrote instances = %+v", instances)
+	}
+}
+
+func TestPluginPublishRejectsMultipleTargetsOrMissingDomain(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		fields map[string]any
+	}{
+		{name: "multiple targets", fields: map[string]any{"Targets": []string{"local", "edge-b"}, "FrontendURL": "https://emby.example.com"}},
+		{name: "missing domain", fields: map[string]any{"Targets": []string{"local"}, "FrontendURL": ""}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newPluginPublishFixture(t, true)
+			ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+			fields := pluginPublishFields(fixture.pluginID, "provider-1", "https://emby.example.com", 0)
+			for key, value := range test.fields {
+				fields[key] = value
+			}
+			_, err := callPluginPublish(t, fixture.service, ctx, fields)
+			if err == nil {
+				t.Fatal("PublishMutation accepted an invalid publish request")
+			}
+			assertPluginPublishRuleCount(t, fixture.store, "local", 0)
+			instances, listErr := fixture.store.ListPluginInstances(t.Context(), fixture.pluginID)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if len(instances) != 0 {
+				t.Fatalf("invalid publish mutated instances = %+v", instances)
+			}
+		})
+	}
+}
+
+func TestPluginPublishUpdatesOriginalRuleAndCreatesIndependentDomain(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instanceID := "provider-1"
+	fields := pluginPublishFields(fixture.pluginID, instanceID, "https://emby.example.com", 0)
+	firstInstance, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("first PublishMutation() error = %v", err)
+	}
+	first := mustPluginPublishRule(t, fixture.store, "local", 0)
+	fields["RuleID"] = first.ID
+	fields["FrontendURL"] = "https://emby-updated.example.com"
+	if _, err := callPluginPublish(t, fixture.service, ctx, fields); err != nil {
+		t.Fatalf("update PublishMutation() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
+	if updated := mustPluginPublishRule(t, fixture.store, "local", 0); updated.ID != first.ID || updated.FrontendURL != "https://emby-updated.example.com" {
+		t.Fatalf("updated rule = %+v, want id %d and new frontend_url", updated, first.ID)
+	}
+
+	delete(fields, "RuleID")
+	fields["FrontendURL"] = "https://emby-second.example.com"
+	if _, err := callPluginPublish(t, fixture.service, ctx, fields); err != nil {
+		t.Fatalf("second-domain PublishMutation() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 2)
+	second := mustPluginPublishRule(t, fixture.store, "local", 1)
+	if second.ID == first.ID || second.FrontendURL != "https://emby-second.example.com" || !second.Enabled {
+		t.Fatalf("second published rule = %+v", second)
+	}
+	assertPluginProviderBackend(t, second, firstInstance.ID, "default")
+	entries := publishedEntriesFromState(t, fixture, "local")
+	if len(entries) != 2 {
+		t.Fatalf("published_entries = %+v", entries)
+	}
+}
+
+type pluginPublishHarness struct {
+	pluginID string
+	store    *storage.GormStore
+	service  *PluginService
+}
+
+func newPluginPublishFixture(t *testing.T, httpBackend bool) pluginPublishHarness {
+	t.Helper()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "local", Name: "local", Version: "1.0.0", Platform: runtime.GOOS + "-" + runtime.GOARCH,
+		CapabilitiesJSON: `["package_manifest_v1"]`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 6, 0, 0, 0, time.UTC)
+	if err := store.UpsertBuiltinResourceGroup(t.Context(), storage.ResourceGroupRow{
+		ID: "default", Name: "default", Description: "default", Builtin: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(t.TempDir(), "plugins", "packages")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(cacheRoot) })
+	pluginID := "official.publish"
+	if !httpBackend {
+		pluginID = "official.waf"
+	}
+	seed := seedInstalledPublishPackage(t, store, cacheRoot, pluginID, httpBackend)
+	svc := NewPluginServiceWithValidator(store, seed.validator, cacheRoot)
+	svc.ConfigureRevisionMutations(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	return pluginPublishHarness{pluginID: pluginID, store: store, service: svc}
+}
+
+type seededPublishPackage struct {
+	validator *plugins.Validator
+}
+
+func seedInstalledPublishPackage(t *testing.T, store *storage.GormStore, cacheRoot, pluginID string, httpBackend bool) seededPublishPackage {
+	t.Helper()
+	key := publishFixtureSigningKey()
+	publicKey := base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{
+		HostVersion:         "0.0.0-dev",
+		TrustedSigners:      map[string]ed25519.PublicKey{"test-fixture": key.Public().(ed25519.PublicKey)},
+		TrustedSignerPolicy: plugins.TrustedSignerPolicyExact,
+		TargetGOOS:          runtime.GOOS,
+		TargetGOARCH:        runtime.GOARCH,
+	})
+	root := writePublishPackage(t, pluginID, httpBackend, key)
+	validated, err := validator.ValidatePackage(root, plugins.PackageExpectation{
+		ID: pluginID, Version: "1.0.0", SignatureKeyID: "test-fixture",
+	})
+	if err != nil {
+		t.Fatalf("ValidatePackage() error = %v", err)
+	}
+	trust := marketplace.SignatureTrust{
+		SourceID: "publish-fixture", SourceKind: marketplace.SourceKindCustom,
+		KeyID: "test-fixture", PublicKey: publicKey, Fingerprint: fingerprint,
+	}
+	cachePath, err := marketplace.ImportVerifiedPackage(cacheRoot, validated, validator, trust)
+	if err != nil {
+		t.Fatalf("ImportVerifiedPackage() error = %v", err)
+	}
+	now := time.Date(2026, 8, 17, 6, 0, 0, 0, time.UTC)
+	manifestJSON, err := json.Marshal(validated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaJSON, err := json.Marshal(validated.ConfigSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupJSON, err := json.Marshal(validated.Manifest.Cleanup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := storage.PluginPackageRow{
+		Digest: validated.Digest, PluginID: pluginID, Version: "1.0.0",
+		SourceID: trust.SourceID, SourceKind: trust.SourceKind, SignatureKeyID: trust.KeyID,
+		SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint,
+		CachePath: cachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON),
+		VerifiedAt: now,
+	}
+	row.Identity = storage.PluginPackageIdentity(validated.Digest, trust.SourceID, trust.Fingerprint)
+	packageRow, artifacts, err := storage.ProjectPluginPackage(row, validated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := storage.PluginOperationRow{
+		ID: "op-install-" + pluginID, PluginID: pluginID, Kind: "install", Status: "succeeded",
+		TargetPackageDigest: validated.Digest, TargetPackageIdentity: packageRow.Identity,
+		TargetSignatureKeyID: trust.KeyID, TargetSignaturePublicKey: trust.PublicKey,
+		TargetSignatureFingerprint: trust.Fingerprint, ActorID: "admin", AgentResultsJSON: `[]`,
+		SourceID: trust.SourceID, SourceKind: trust.SourceKind, CreatedAt: now, CompletedAt: &now,
+	}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		t.Fatal(err)
+	}
+	installed := storage.InstalledPluginRow{
+		PluginID: pluginID, ActivePackageDigest: validated.Digest, ActivePackageIdentity: packageRow.Identity,
+		RuntimeKind: validated.Manifest.Runtime.Kind, RuntimeABI: validated.Manifest.Runtime.ABI,
+		HostScope: validated.Manifest.Runtime.HostScope, ActiveSourceID: trust.SourceID,
+		ActiveSourceKind: trust.SourceKind, ActiveSignatureKeyID: trust.KeyID,
+		ActiveSignaturePublicKey: trust.PublicKey, ActiveSignatureFingerprint: trust.Fingerprint,
+		DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: string(cleanupJSON),
+		LastOperationID: operation.ID, StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+	}
+	if err := store.InstallPlugin(t.Context(), storage.PluginInstallTransaction{
+		Package: packageRow, Artifacts: artifacts, Installed: installed, Operation: operation,
+		Audit: storage.AuditEventRow{
+			ID: "audit-install-" + pluginID, ActorID: "admin", Action: "plugin.install",
+			TargetKind: "plugin", TargetID: pluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now,
+		},
+	}); err != nil {
+		t.Fatalf("InstallPlugin() error = %v", err)
+	}
+	return seededPublishPackage{validator: validator}
+}
+
+func writePublishPackage(t *testing.T, pluginID string, httpBackend bool, key ed25519.PrivateKey) string {
+	t.Helper()
+	root := t.TempDir()
+	schema := `{"type":"object","additionalProperties":false}`
+	writePublishFile(t, root, plugins.ConfigSchemaFile, schema)
+	if httpBackend {
+		artifact, dest := publishRPCArtifact(t, root)
+		sum := sha256.Sum256(artifact)
+		writePublishFile(t, root, plugins.PackageManifestFile, fmtPublishRPCManifest(pluginID, dest, hex.EncodeToString(sum[:]), int64(len(artifact))))
+	} else {
+		artifact := publishWASMArtifact(t)
+		sum := sha256.Sum256(artifact)
+		writePublishBytes(t, root, "artifacts/policy.wasm", artifact)
+		writePublishFile(t, root, plugins.PackageManifestFile, fmtPublishWASMManifest(pluginID, hex.EncodeToString(sum[:]), int64(len(artifact))))
+	}
+	digest, err := plugins.ComputePackageDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePublishFile(t, root, plugins.PackageDigestFile, digest+"\n")
+	writePublishFile(t, root, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte(digest)))+"\n")
+	return root
+}
+
+func publishRPCArtifact(t *testing.T, root string) ([]byte, string) {
+	t.Helper()
+	source := publishRPCArtifactSource(t)
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "plugin"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dest := "artifacts/" + runtime.GOOS + "-" + runtime.GOARCH + "/" + name
+	writePublishBytes(t, root, dest, data)
+	return data, dest
+}
+
+func publishRPCArtifactSource(t *testing.T) string {
+	t.Helper()
+	candidates := []string{"true", "sleep"}
+	if runtime.GOOS == "windows" {
+		candidates = []string{filepath.Join(os.Getenv("SystemRoot"), "System32", "where.exe"), filepath.Join(os.Getenv("SystemRoot"), "System32", "hostname.exe")}
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			return candidate
+		}
+	}
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+func publishWASMArtifact(t *testing.T) []byte {
+	t.Helper()
+	name := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex")
+	encoded, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return artifact
+}
+
+func fmtPublishRPCManifest(pluginID, artifactPath, digest string, size int64) string {
+	return fmt.Sprintf(`schema_version: 1
+id: %s
+version: 1.0.0
+name: Publish HTTP
+compatibility:
+  host: "*"
+  agent: "*"
+runtime:
+  kind: rpc-service
+  abi: nre:rpc/v1
+  host_scope: agent
+  entry: plugin
+artifacts:
+  - path: %s
+    sha256: %s
+    size: %d
+    mode: executable
+    goos: %s
+    goarch: %s
+extension_points: [http.backend-provider]
+http_backend_providers:
+  - {id: default, display_name: Default}
+permissions: [http.outbound]
+config_schema: config.schema.json
+resource_budget:
+  timeout_ms: 2000
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 4096
+  cpu_millis: 100
+  restarts: 1
+failure_policy:
+  on_error: fail-open
+  on_budget: fail-open
+  restart: on-failure
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
+cleanup:
+  instances: delete
+  config: delete
+  owned_data: delete
+  grants: delete
+  shared_refs: retain
+  audit_events: retain
+`, pluginID, artifactPath, digest, size, runtime.GOOS, runtime.GOARCH)
+}
+
+func fmtPublishWASMManifest(pluginID, digest string, size int64) string {
+	return fmt.Sprintf(`schema_version: 1
+id: %s
+version: 1.0.0
+name: WAF
+compatibility:
+  host: "*"
+  agent: "*"
+runtime:
+  kind: wasm-policy
+  abi: nre:policy/v1
+  host_scope: agent
+  entry: artifacts/policy.wasm
+  policy_kind: waf
+artifacts:
+  - path: artifacts/policy.wasm
+    sha256: %s
+    size: %d
+    mode: wasm
+extension_points: [http.request]
+permissions: [http.inspect]
+config_schema: config.schema.json
+resource_budget:
+  timeout_ms: 2
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 4096
+failure_policy:
+  on_error: fail-open
+  on_budget: fail-open
+  restart: never
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
+cleanup:
+  instances: delete
+  config: delete
+  owned_data: delete
+  grants: delete
+  shared_refs: retain
+  audit_events: retain
+`, pluginID, digest, size)
+}
+
+func writePublishFile(t *testing.T, root, name, value string) {
+	t.Helper()
+	writePublishBytes(t, root, name, []byte(value))
+}
+
+func writePublishBytes(t *testing.T, root, name string, value []byte) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, value, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func publishFixtureSigningKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("nre-plugin-publish-contract-fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func pluginPublishAdmin() authz.Actor {
+	return authz.Actor{ID: "admin", Username: "admin", Permissions: []string{authz.PermissionSystemAdmin, authz.PermissionAll}}
+}
+
+func pluginPublishFields(pluginID, instanceID, frontendURL string, ruleID int) map[string]any {
+	fields := map[string]any{
+		"PluginID":        pluginID,
+		"InstanceID":      instanceID,
+		"ResourceGroupID": "default",
+		"Targets":         []string{"local"},
+		"PolicyChains":    []string{},
+		"Config":          json.RawMessage(`{}`),
+		"FrontendURL":     frontendURL,
+		"ActorID":         "admin",
+		"Actor":           pluginPublishAdmin(),
+	}
+	if ruleID > 0 {
+		fields["RuleID"] = ruleID
+	}
+	return fields
+}
+
+func callPluginPublish(t *testing.T, svc *PluginService, ctx context.Context, fields map[string]any) (PluginInstanceDetail, error) {
+	t.Helper()
+	chains := []string{}
+	if raw, ok := fields["PolicyChains"].([]string); ok {
+		chains = raw
+	}
+	pluginID, _ := fields["PluginID"].(string)
+	instanceID, _ := fields["InstanceID"].(string)
+	resourceGroupID, _ := fields["ResourceGroupID"].(string)
+	frontendURL, _ := fields["FrontendURL"].(string)
+	actorID, _ := fields["ActorID"].(string)
+	actor, _ := fields["Actor"].(authz.Actor)
+	configPayload, _ := fields["Config"].(json.RawMessage)
+	if len(configPayload) == 0 {
+		configPayload = json.RawMessage(`{}`)
+	}
+	ruleID, _ := fields["RuleID"].(int)
+	instance, _, err := svc.PublishMutation(ctx, PluginConfigureRequest{
+		PluginID:              pluginID,
+		InstanceID:            instanceID,
+		ResourceGroupID:       resourceGroupID,
+		Targets:               fields["Targets"],
+		PolicyChains:          &chains,
+		Config:                configPayload,
+		FrontendURL:           frontendURL,
+		RuleID:                ruleID,
+		ActorID:               actorID,
+		Actor:                 actor,
+		PublishDesiredEnabled: true,
+	}, frontendURL, ruleID)
+	return instance, err
+}
+
+func publishedEntriesFromState(t *testing.T, fixture pluginPublishHarness, agentID string) []pluginPublishedEntryView {
+	t.Helper()
+	if detail, err := fixture.service.Detail(t.Context(), fixture.pluginID); err == nil {
+		if entries := publishedEntriesFromDetail(t, detail); len(entries) > 0 {
+			return entries
+		}
+	}
+	instance := mustPluginInstance(t, fixture.store, fixture.pluginID)
+	rules, err := fixture.store.ListHTTPRules(t.Context(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make([]pluginPublishedEntryView, 0, len(rules))
+	for _, rule := range rules {
+		if !containsHTTPRuleBinding(instance, rule.ID, agentID) {
+			continue
+		}
+		result = append(result, pluginPublishedEntryView{
+			RuleID: rule.ID, AgentID: agentID, FrontendURL: rule.FrontendURL, Enabled: rule.Enabled,
+		})
+	}
+	return result
+}
+
+type pluginPublishedEntryView struct {
+	RuleID      int
+	AgentID     string
+	FrontendURL string
+	Enabled     bool
+	Accessible  bool
+}
+
+func publishedEntriesFromDetail(t *testing.T, detail PluginDetail) []pluginPublishedEntryView {
+	t.Helper()
+	wire, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		PublishedEntries []struct {
+			RuleID      int    `json:"rule_id"`
+			AgentID     string `json:"agent_id"`
+			FrontendURL string `json:"frontend_url"`
+			Enabled     bool   `json:"enabled"`
+			Accessible  bool   `json:"accessible"`
+		} `json:"published_entries"`
+	}
+	if err := json.Unmarshal(wire, &payload); err != nil {
+		t.Fatal(err)
+	}
+	result := make([]pluginPublishedEntryView, 0, len(payload.PublishedEntries))
+	for _, entry := range payload.PublishedEntries {
+		result = append(result, pluginPublishedEntryView{
+			RuleID: entry.RuleID, AgentID: entry.AgentID, FrontendURL: entry.FrontendURL,
+			Enabled: entry.Enabled, Accessible: entry.Accessible,
+		})
+	}
+	return result
+}
+
+func mustPluginInstance(t *testing.T, store *storage.GormStore, pluginID string) storage.PluginInstanceRow {
+	t.Helper()
+	instances, err := store.ListPluginInstances(t.Context(), pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("instances = %+v, want exactly one", instances)
+	}
+	return instances[0]
+}
+
+func instanceTargets(t *testing.T, instance storage.PluginInstanceRow) []string {
+	t.Helper()
+	var targets []string
+	if err := json.Unmarshal([]byte(instance.TargetJSON), &targets); err != nil {
+		t.Fatalf("instance targets %s: %v", instance.TargetJSON, err)
+	}
+	return targets
+}
+
+func containsHTTPRuleBinding(instance storage.PluginInstanceRow, ruleID int, agentID string) bool {
+	bindings, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	if err != nil {
+		return false
+	}
+	wantID := strconv.Itoa(ruleID)
+	for _, binding := range bindings {
+		if binding.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule && binding.Consumer.ID == wantID && binding.TargetAgentID == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func assertPluginPublishRuleCount(t *testing.T, store *storage.GormStore, agentID string, want int) {
+	t.Helper()
+	rules, err := store.ListHTTPRules(t.Context(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != want {
+		t.Fatalf("HTTP rules = %+v, want %d", rules, want)
+	}
+}
+
+func mustPluginPublishRule(t *testing.T, store *storage.GormStore, agentID string, index int) storage.HTTPRuleRow {
+	t.Helper()
+	rules, err := store.ListHTTPRules(t.Context(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index < 0 || index >= len(rules) {
+		t.Fatalf("HTTP rules = %+v, missing index %d", rules, index)
+	}
+	return rules[index]
+}
+
+func assertPluginProviderBackend(t *testing.T, rule storage.HTTPRuleRow, instanceID, providerID string) {
+	t.Helper()
+	var backends []HTTPRuleBackend
+	if err := json.Unmarshal([]byte(rule.BackendsJSON), &backends); err != nil {
+		t.Fatalf("backends %s: %v", rule.BackendsJSON, err)
+	}
+	if len(backends) != 1 || backends[0].Kind != pluginsdk.HTTPBackendKindPluginProvider || backends[0].PluginProvider == nil {
+		t.Fatalf("backends = %s, want one plugin_provider", rule.BackendsJSON)
+	}
+	if backends[0].PluginProvider.InstanceID != instanceID || backends[0].PluginProvider.ProviderID != providerID {
+		t.Fatalf("plugin_provider = %+v, want instance %s provider %s", backends[0].PluginProvider, instanceID, providerID)
 	}
 }

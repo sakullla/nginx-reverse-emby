@@ -13,8 +13,11 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -63,16 +66,19 @@ type PluginInstallRequest struct {
 }
 
 type PluginConfigureRequest struct {
-	PluginID           string
-	InstanceID         string
-	ResourceGroupID    string
-	Targets            any
-	PolicyChains       *[]string
-	Bindings           *[]storage.PluginInstanceBindingRequest
-	Config             json.RawMessage
-	SecretReplacements map[string]json.RawMessage
-	ActorID            string
-	Actor              authz.Actor
+	PluginID              string
+	InstanceID            string
+	ResourceGroupID       string
+	Targets               any
+	PolicyChains          *[]string
+	Bindings              *[]storage.PluginInstanceBindingRequest
+	Config                json.RawMessage
+	SecretReplacements    map[string]json.RawMessage
+	FrontendURL           string
+	RuleID                int
+	ActorID               string
+	Actor                 authz.Actor
+	PublishDesiredEnabled bool `json:"-"`
 }
 
 type PluginDeleteInstanceRequest struct {
@@ -269,12 +275,21 @@ type PluginOperationScopeDetail struct {
 	ResourceGroupID string `json:"resource_group_id"`
 }
 
+type PluginPublishedEntry struct {
+	RuleID      int    `json:"rule_id"`
+	AgentID     string `json:"agent_id"`
+	FrontendURL string `json:"frontend_url"`
+	Enabled     bool   `json:"enabled"`
+	Accessible  bool   `json:"accessible"`
+}
+
 type PluginDetail struct {
-	Plugin        PluginSummary          `json:"plugin"`
-	Package       PluginPackageDetail    `json:"package"`
-	Instances     []PluginInstanceDetail `json:"instances"`
-	Grants        []PluginGrantDetail    `json:"grants"`
-	AgentStatuses []PluginAgentStatus    `json:"agent_statuses"`
+	Plugin           PluginSummary          `json:"plugin"`
+	Package          PluginPackageDetail    `json:"package"`
+	Instances        []PluginInstanceDetail `json:"instances"`
+	Grants           []PluginGrantDetail    `json:"grants"`
+	AgentStatuses    []PluginAgentStatus    `json:"agent_statuses"`
+	PublishedEntries []PluginPublishedEntry `json:"published_entries"`
 }
 
 // PluginApplyResult is supplied only by the trusted revision/Agent reporting
@@ -318,15 +333,16 @@ type pluginDependencyConsumerStore interface {
 }
 
 type PluginService struct {
-	store            pluginLifecycleStore
-	validator        *plugins.Validator
-	cacheRoot        string
-	now              func() time.Time
-	cfg              config.Config
-	mutationExecutor *revision.Executor
-	revisionMutation bool
-	revisionNumbers  map[string]int64
-	secretVault      *secrets.Vault
+	store             pluginLifecycleStore
+	validator         *plugins.Validator
+	cacheRoot         string
+	now               func() time.Time
+	cfg               config.Config
+	mutationExecutor  *revision.Executor
+	revisionMutation  bool
+	revisionNumbers   map[string]int64
+	secretVault       *secrets.Vault
+	postCommitActions *[]func()
 }
 
 func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
@@ -432,7 +448,11 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	return PluginDetail{Plugin: pluginSummary(installed), Package: packageDetail, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses}, nil
+	publishedEntries, err := s.pluginPublishedEntries(ctx, instanceDetails)
+	if err != nil {
+		return PluginDetail{}, err
+	}
+	return PluginDetail{Plugin: pluginSummary(installed), Package: packageDetail, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses, PublishedEntries: publishedEntries}, nil
 }
 
 func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPackageCandidate, pluginID string) (PluginPackageDetail, error) {
@@ -597,6 +617,49 @@ func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginCon
 	return prospective, nil
 }
 
+func (s *PluginService) PublishMutation(ctx context.Context, request PluginConfigureRequest, frontendURL string, ruleID int) (PluginInstanceDetail, HTTPRule, error) {
+	request.PluginID = strings.TrimSpace(request.PluginID)
+	frontendURL = strings.TrimSpace(frontendURL)
+	if request.PluginID == "" {
+		return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: plugin identity is required", ErrInvalidArgument)
+	}
+	if frontendURL == "" {
+		return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: frontend_url is required", ErrInvalidArgument)
+	}
+	if ruleID < 0 {
+		return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: rule_id must be a positive rule id", ErrInvalidArgument)
+	}
+	if _, err := pluginPublishRequestTargets(request.Targets); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	if strings.TrimSpace(string(request.Config)) == "" {
+		request.Config = json.RawMessage(`{}`)
+	}
+	if _, err := s.pluginHTTPBackendProviderID(ctx, request.PluginID); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	request.PublishDesiredEnabled = true
+	request.FrontendURL = frontendURL
+	request.RuleID = ruleID
+	if s.mutationExecutor != nil && !s.revisionMutation {
+		var instance PluginInstanceDetail
+		var rule HTTPRule
+		postCommit := make([]func(), 0)
+		err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.publish", request, &request, func(txService *PluginService, mutationCtx context.Context) error {
+			txService.postCommitActions = &postCommit
+			var mutateErr error
+			instance, rule, mutateErr = txService.publish(mutationCtx, request, frontendURL, ruleID)
+			return mutateErr
+		})
+		if err != nil {
+			return PluginInstanceDetail{}, HTTPRule{}, err
+		}
+		runConfigPostCommitActions(postCommit)
+		return instance, rule, nil
+	}
+	return s.publish(ctx, request, frontendURL, ruleID)
+}
+
 func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request PluginDeleteInstanceRequest) error {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.DeleteInstance(ctx, request)
@@ -680,7 +743,8 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &PluginService{
 				store: tx, validator: s.validator, cacheRoot: s.cacheRoot, now: s.now, cfg: s.cfg,
-				revisionMutation: true, revisionNumbers: revisions,
+				revisionMutation: true, revisionNumbers: revisions, secretVault: s.secretVault,
+				postCommitActions: s.postCommitActions,
 			}
 			return mutate(txService, ctx)
 		},
@@ -1458,7 +1522,13 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	instance.PendingBindingsJSON = bindingsJSON
 	instance.PendingVersion = version
 	instance.PendingOperationID = operation.ID
-	instance.DesiredEnabled = installed.DesiredLifecycle == "enabled"
+	if request.PublishDesiredEnabled {
+		installed.DesiredLifecycle = "enabled"
+		if installed.CurrentLifecycle == "" || installed.CurrentLifecycle == "disabled" {
+			installed.CurrentLifecycle = "active"
+		}
+	}
+	instance.DesiredEnabled = installed.DesiredLifecycle == "enabled" || request.PublishDesiredEnabled
 	instance.CurrentState = "applying"
 	instance.UpdatedAt = now
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
@@ -1476,6 +1546,432 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 		*prospective = details[0]
 	}
 	return instance, err
+}
+
+func (s *PluginService) publish(ctx context.Context, request PluginConfigureRequest, frontendURL string, ruleID int) (PluginInstanceDetail, HTTPRule, error) {
+	agentID, err := pluginPublishRequestTargets(request.Targets)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	providerID, err := s.pluginHTTPBackendProviderID(ctx, request.PluginID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	if err := s.ensurePluginPublishGrants(ctx, request.PluginID, request.ActorID); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	instance, err := s.ensurePublishedInstance(ctx, request, agentID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	rules, err := s.pluginPublishRuleService()
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	var rule HTTPRule
+	if ruleID > 0 {
+		current, getErr := rules.Get(ctx, agentID, ruleID)
+		if getErr != nil {
+			return PluginInstanceDetail{}, HTTPRule{}, getErr
+		}
+		if !pluginRuleBacksInstance(current, instance.ID) {
+			return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: rule %d is not a published entry for instance %s", ErrInvalidArgument, ruleID, instance.ID)
+		}
+		rule, err = rules.Update(ctx, agentID, ruleID, pluginPublishFrontendURLInput(frontendURL))
+	} else {
+		rule, err = rules.Create(ctx, agentID, pluginPublishHTTPRuleInput(frontendURL, instance.ID, providerID))
+	}
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	instance, err = s.attachHTTPRuleBinding(ctx, request.PluginID, instance.ID, agentID, rule.ID, request.ActorID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	return instance, rule, nil
+}
+
+func (s *PluginService) ensurePublishedInstance(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, error) {
+	if existing, ok, err := s.publishedInstanceReady(ctx, request, agentID); err != nil {
+		return PluginInstanceDetail{}, err
+	} else if ok {
+		return existing, nil
+	}
+	request.PublishDesiredEnabled = true
+	request.Bindings = nil
+	return s.ConfigureMutation(ctx, request)
+}
+
+func (s *PluginService) publishedInstanceReady(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, bool, error) {
+	instanceID := strings.TrimSpace(request.InstanceID)
+	if instanceID == "" {
+		return PluginInstanceDetail{}, false, nil
+	}
+	row, found, err := s.store.GetPluginInstance(ctx, instanceID)
+	if err != nil {
+		return PluginInstanceDetail{}, false, err
+	}
+	if !found || row.PluginID != request.PluginID {
+		return PluginInstanceDetail{}, false, nil
+	}
+	installed, err := s.installedPlugin(ctx, request.PluginID)
+	if err != nil {
+		return PluginInstanceDetail{}, false, err
+	}
+	if installed.DesiredLifecycle != "enabled" || !row.DesiredEnabled {
+		return PluginInstanceDetail{}, false, nil
+	}
+	if strings.TrimSpace(request.ResourceGroupID) != "" && strings.TrimSpace(row.ResourceGroupID) != strings.TrimSpace(request.ResourceGroupID) {
+		return PluginInstanceDetail{}, false, nil
+	}
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return PluginInstanceDetail{}, false, err
+	}
+	targets, err := pluginPublishInstanceTargets(row, defaultTargetID)
+	if err != nil {
+		return PluginInstanceDetail{}, false, err
+	}
+	if len(targets) != 1 || targets[0] != agentID {
+		return PluginInstanceDetail{}, false, nil
+	}
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{row})
+	if err != nil {
+		return PluginInstanceDetail{}, false, err
+	}
+	if len(details) != 1 {
+		return PluginInstanceDetail{}, false, ErrPluginReadProjection
+	}
+	return details[0], true, nil
+}
+
+func (s *PluginService) attachHTTPRuleBinding(ctx context.Context, pluginID, instanceID, agentID string, ruleID int, actorID string) (PluginInstanceDetail, error) {
+	instance, found, err := s.store.GetPluginInstance(ctx, instanceID)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	if !found || instance.PluginID != pluginID {
+		return PluginInstanceDetail{}, ErrPluginInstanceNotFound
+	}
+	installed, err := s.installedPlugin(ctx, pluginID)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	consumerID := strconv.Itoa(ruleID)
+	active, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	alreadyBound := false
+	for _, existing := range active {
+		if existing.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule && existing.Consumer.ID == consumerID && existing.TargetAgentID == agentID {
+			alreadyBound = true
+			break
+		}
+	}
+	if alreadyBound {
+		details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance})
+		if err != nil {
+			return PluginInstanceDetail{}, err
+		}
+		return details[0], nil
+	}
+	consumerStore, ok := s.store.(pluginDependencyConsumerStore)
+	if !ok {
+		return PluginInstanceDetail{}, errors.New("plugin binding ownership resolver is unavailable")
+	}
+	resourceGroupID := strings.TrimSpace(instance.ResourceGroupID)
+	if pendingGroup := strings.TrimSpace(instance.PendingResourceGroupID); pendingGroup != "" {
+		resourceGroupID = pendingGroup
+	}
+	requests := append(storage.PluginInstanceBindingRequests(active), storage.PluginInstanceBindingRequest{
+		Consumer:      storage.PluginInstanceBindingConsumer{Kind: storage.PluginDependencyConsumerHTTPRule, ID: consumerID},
+		TargetAgentID: agentID,
+	})
+	resolvedActive, err := consumerStore.ResolvePluginInstanceBindingRequests(ctx, requests, resourceGroupID)
+	if err != nil {
+		return PluginInstanceDetail{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	instance.BindingsJSON, err = storage.EncodePluginInstanceBindings(resolvedActive)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	now := s.now()
+	instance.UpdatedAt = now
+	installed.UpdatedAt = now
+	// A publish may already have a pending configure operation bound to ctx.
+	// Binding attachment must use a distinct operation identity.
+	operation := s.operation(context.Background(), pluginID, "publish", installed.ActivePackageDigest, actorID)
+	if actor, ok := storage.QuotaActorFromContext(ctx); ok {
+		operation.ActorID, operation.SessionID = actor.UserID, actor.SessionID
+		if strings.TrimSpace(actor.CorrelationID) != "" {
+			operation.CorrelationID = actor.CorrelationID
+		}
+	}
+	if err := bindInstalledActiveOperation(&operation, installed); err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	operation.InstanceID = instance.ID
+	operation.ResourceGroupID = instance.ResourceGroupID
+	operation.Status, operation.CompletedAt = "succeeded", &now
+	if err := s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
+		PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, ReplaceInstance: &instance, Operation: operation,
+		Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now),
+	}); err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance})
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	return details[0], nil
+}
+
+func (s *PluginService) pluginPublishRuleService() (*ruleService, error) {
+	store, ok := s.store.(ruleStore)
+	if !ok {
+		return nil, fmt.Errorf("%w: HTTP rule store is unavailable", ErrInvalidArgument)
+	}
+	return &ruleService{
+		cfg:                    s.cfg,
+		store:                  store,
+		mutationExecutor:       s.mutationExecutor,
+		revisionMutation:       s.revisionMutation,
+		revisionNumbers:        s.revisionNumbers,
+		postCommitActions:      s.postCommitActions,
+		pluginPublishAdmission: true,
+	}, nil
+}
+
+func (s *PluginService) ensurePluginPublishGrants(ctx context.Context, pluginID, actorID string) error {
+	grants, err := s.store.ListPluginGrants(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	if len(grants) > 0 {
+		return nil
+	}
+	installed, err := s.installedPlugin(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	packageRow, ok, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: active plugin package is unavailable", ErrInvalidArgument)
+	}
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return fmt.Errorf("%w: plugin manifest is invalid", ErrInvalidArgument)
+	}
+	now := s.now()
+	operation := s.operation(context.Background(), pluginID, "publish", installed.ActivePackageDigest, actorID)
+	if actor, ok := storage.QuotaActorFromContext(ctx); ok {
+		operation.ActorID, operation.SessionID = actor.UserID, actor.SessionID
+		if strings.TrimSpace(actor.CorrelationID) != "" {
+			operation.CorrelationID = actor.CorrelationID
+		}
+	}
+	if err := bindInstalledActiveOperation(&operation, installed); err != nil {
+		return err
+	}
+	operation.Status, operation.CompletedAt = "succeeded", &now
+	installed.UpdatedAt = now
+	return s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
+		PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &installed, ReplaceGrants: grantRows(pluginID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, actorID, now),
+		Operation: operation, Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now),
+	})
+}
+
+func (s *PluginService) pluginHTTPBackendProviderID(ctx context.Context, pluginID string) (string, error) {
+	installed, err := s.installedPlugin(ctx, pluginID)
+	if err != nil {
+		return "", err
+	}
+	packageRow, ok, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: active plugin package is unavailable", ErrInvalidArgument)
+	}
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return "", fmt.Errorf("%w: plugin manifest is invalid", ErrInvalidArgument)
+	}
+	if len(manifest.HTTPBackendProviders) == 0 || !slicesContains(manifest.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) {
+		return "", fmt.Errorf("%w: plugin does not declare an HTTP backend", ErrInvalidArgument)
+	}
+	providerID := strings.TrimSpace(manifest.HTTPBackendProviders[0].ID)
+	if providerID == "" {
+		return "", fmt.Errorf("%w: plugin does not declare an HTTP backend", ErrInvalidArgument)
+	}
+	return providerID, nil
+}
+
+func pluginPublishRequestTargets(targets any) (string, error) {
+	if targets == nil {
+		return "", fmt.Errorf("%w: publish requires exactly one target agent", ErrInvalidArgument)
+	}
+	raw, err := json.Marshal(targets)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid plugin targets", ErrInvalidArgument)
+	}
+	var ids []string
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return "", fmt.Errorf("%w: plugin targets must be an array of agent IDs", ErrInvalidArgument)
+	}
+	cleaned := make([]string, 0, 1)
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+	if len(cleaned) != 1 {
+		return "", fmt.Errorf("%w: publish requires exactly one target agent", ErrInvalidArgument)
+	}
+	return cleaned[0], nil
+}
+
+type pluginPublishedEntryStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+}
+
+func (s *PluginService) pluginPublishedEntries(ctx context.Context, instances []PluginInstanceDetail) ([]PluginPublishedEntry, error) {
+	if len(instances) == 0 {
+		return []PluginPublishedEntry{}, nil
+	}
+	store, ok := s.store.(pluginPublishedEntryStore)
+	if !ok {
+		return []PluginPublishedEntry{}, nil
+	}
+	byID := make(map[string]PluginInstanceDetail, len(instances))
+	agentIDs := make(map[string]struct{})
+	for _, instance := range instances {
+		if id := strings.TrimSpace(instance.ID); id != "" {
+			byID[id] = instance
+		}
+		for _, target := range instance.Targets {
+			if id := strings.TrimSpace(target); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		for _, target := range instance.PendingTargets {
+			if id := strings.TrimSpace(target); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		for _, binding := range instance.Bindings {
+			if id := strings.TrimSpace(binding.TargetAgentID); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+	}
+	if len(agentIDs) == 0 {
+		agents, err := store.ListAgents(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, agent := range agents {
+			if id := strings.TrimSpace(agent.ID); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		if localID, err := s.defaultPluginTargetID(ctx); err == nil && strings.TrimSpace(localID) != "" {
+			agentIDs[strings.TrimSpace(localID)] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{})
+	entries := make([]PluginPublishedEntry, 0)
+	for agentID := range agentIDs {
+		rows, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			rule := httpRuleFromRow(row)
+			instance, matched := pluginPublishedInstance(rule, byID)
+			if !matched {
+				continue
+			}
+			key := strings.TrimSpace(rule.AgentID) + ":" + strconv.Itoa(rule.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			entries = append(entries, PluginPublishedEntry{
+				RuleID: rule.ID, AgentID: rule.AgentID, FrontendURL: rule.FrontendURL,
+				Enabled: rule.Enabled, Accessible: pluginPublishedEntryAccessible(instance, rule),
+			})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].AgentID != entries[j].AgentID {
+			return entries[i].AgentID < entries[j].AgentID
+		}
+		return entries[i].RuleID < entries[j].RuleID
+	})
+	return entries, nil
+}
+
+func pluginPublishedInstance(rule HTTPRule, instances map[string]PluginInstanceDetail) (PluginInstanceDetail, bool) {
+	for _, backend := range rule.Backends {
+		if backend.PluginProvider == nil {
+			continue
+		}
+		instance, ok := instances[strings.TrimSpace(backend.PluginProvider.InstanceID)]
+		if ok {
+			return instance, true
+		}
+	}
+	return PluginInstanceDetail{}, false
+}
+
+func pluginPublishedEntryAccessible(instance PluginInstanceDetail, rule HTTPRule) bool {
+	if !rule.Enabled || !instance.DesiredEnabled || !strings.EqualFold(strings.TrimSpace(instance.CurrentState), "active") {
+		return false
+	}
+	agentID := strings.TrimSpace(rule.AgentID)
+	for _, target := range instance.Targets {
+		if strings.TrimSpace(target) == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginRuleBacksInstance(rule HTTPRule, instanceID string) bool {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return false
+	}
+	for _, backend := range rule.Backends {
+		if backend.PluginProvider != nil && strings.TrimSpace(backend.PluginProvider.InstanceID) == instanceID {
+			return true
+		}
+	}
+	return false
+}
+
+func slicesContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *PluginService) CompleteConfigure(ctx context.Context, applyResult PluginApplyResult) (storage.PluginInstanceRow, error) {

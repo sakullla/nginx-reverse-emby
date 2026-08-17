@@ -67,3 +67,152 @@ describe('plugin administration API', () => {
     expect(get).toHaveBeenCalledWith('/plugins/team%2Fplugin', longRunningRequest)
   })
 })
+
+const publishedEntry = {
+  rule_id: 7,
+  agent_id: 'edge-a',
+  frontend_url: 'https://media.example.com',
+  enabled: true,
+  accessible: true
+}
+
+const publishPayload = {
+  instance_id: 'official.waf-default',
+  resource_group_id: 'rg-1',
+  targets: ['edge-a'],
+  policy_chains: [],
+  frontend_url: 'https://media.example.com',
+  config: { mode: 'safe' },
+  secret_replacements: {}
+}
+
+describe('plugin publish API', () => {
+  beforeEach(() => {
+    del.mockReset()
+    get.mockReset()
+    post.mockReset()
+  })
+
+  it('publishes one node and one enabled HTTP entry in a single plugin POST', async () => {
+    post.mockResolvedValue({
+      data: {
+        result: {
+          instance: {
+            id: 'official.waf-default',
+            targets: ['edge-a'],
+            desired_enabled: true,
+            bindings: [{ consumer: { kind: 'http_rule', id: '7' }, target_agent_id: 'edge-a' }]
+          },
+          published_entries: [publishedEntry]
+        }
+      }
+    })
+
+    const result = await plugins.publishPlugin('official.waf', publishPayload)
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/plugins/official.waf/publish', publishPayload, longRunningRequest)
+    const body = post.mock.calls[0][1]
+    expect(body.targets).toEqual(['edge-a'])
+    expect(body.frontend_url).toBe('https://media.example.com')
+    expect(body).not.toHaveProperty('provider_id')
+    expect(body).not.toHaveProperty('backends')
+    expect(body).not.toHaveProperty('rule_id')
+    expect(result.published_entries).toEqual([publishedEntry])
+    expect(result.instance.bindings).toEqual([
+      { consumer: { kind: 'http_rule', id: '7' }, target_agent_id: 'edge-a' }
+    ])
+  })
+
+  it('updates an existing published entry by original rule id only', async () => {
+    post.mockResolvedValue({
+      data: {
+        result: {
+          published_entries: [{ ...publishedEntry, frontend_url: 'https://media-v2.example.com' }]
+        }
+      }
+    })
+
+    await plugins.publishPlugin('official.waf', {
+      ...publishPayload,
+      frontend_url: 'https://media-v2.example.com',
+      rule_id: 7
+    })
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][0]).toBe('/plugins/official.waf/publish')
+    expect(post.mock.calls[0][1].rule_id).toBe(7)
+    expect(post.mock.calls[0][1].frontend_url).toBe('https://media-v2.example.com')
+    expect(post.mock.calls[0][1].targets).toEqual(['edge-a'])
+  })
+
+  it('publishes another domain without a rule id so a separate entry can be created', async () => {
+    post.mockResolvedValue({ data: { result: { published_entries: [{ ...publishedEntry, rule_id: 8, frontend_url: 'https://alt.example.com' }] } } })
+
+    await plugins.publishPlugin('official.waf', {
+      ...publishPayload,
+      frontend_url: 'https://alt.example.com'
+    })
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][1]).not.toHaveProperty('rule_id')
+    expect(post.mock.calls[0][1].frontend_url).toBe('https://alt.example.com')
+  })
+
+  it('rejects multiple targets or a missing domain before any write', async () => {
+    await expect(plugins.publishPlugin('official.waf', { ...publishPayload, targets: ['edge-a', 'edge-b'] }))
+      .rejects.toThrow('exactly one target is required')
+    await expect(plugins.publishPlugin('official.waf', { ...publishPayload, targets: [] }))
+      .rejects.toThrow('exactly one target is required')
+    await expect(plugins.publishPlugin('official.waf', { ...publishPayload, frontend_url: '   ' }))
+      .rejects.toThrow('frontend url is required')
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('does not fall back to configure or rule-page writes when publish is rejected', async () => {
+    post.mockRejectedValue(new Error('plugin does not declare an HTTP backend'))
+
+    await expect(plugins.publishPlugin('official.rpc', {
+      ...publishPayload,
+      instance_id: 'official.rpc-default'
+    })).rejects.toThrow('plugin does not declare an HTTP backend')
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][0]).toBe('/plugins/official.rpc/publish')
+    expect(post.mock.calls.some((call) => String(call[0]).includes('/rules') || String(call[0]).endsWith('/configure'))).toBe(false)
+  })
+
+  it('projects published entries and http_rule bindings from plugin detail', async () => {
+    get.mockResolvedValue({
+      data: {
+        plugin: { plugin_id: 'team/plugin' },
+        published_entries: [{
+          rule_id: 7,
+          agent_id: 'edge-a',
+          frontend_url: 'https://user:secret@media.example.com',
+          enabled: true,
+          accessible: false
+        }],
+        instances: [{
+          id: 'team-plugin-default',
+          bindings: [{ consumer: { kind: 'http_rule', id: '7' }, target_agent_id: 'edge-a' }],
+          config: { mode: 'safe' },
+          secret_fields: []
+        }]
+      }
+    })
+
+    const detail = await plugins.fetchPluginDetail('team/plugin')
+    expect(get).toHaveBeenCalledWith('/plugins/team%2Fplugin', longRunningRequest)
+    expect(detail.published_entries).toEqual([{
+      rule_id: 7,
+      agent_id: 'edge-a',
+      frontend_url: 'https://user:[REDACTED]@media.example.com',
+      enabled: true,
+      accessible: false
+    }])
+    expect(detail.instances[0].bindings).toEqual([
+      { consumer: { kind: 'http_rule', id: '7' }, target_agent_id: 'edge-a' }
+    ])
+  })
+})

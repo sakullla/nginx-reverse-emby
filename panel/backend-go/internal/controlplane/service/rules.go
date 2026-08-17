@@ -268,13 +268,14 @@ func consumeResourceQuota(ctx context.Context, store any, resourceKind, resource
 }
 
 type ruleService struct {
-	cfg               config.Config
-	store             ruleStore
-	localApplyTrigger func(context.Context) error
-	mutationExecutor  *revision.Executor
-	revisionMutation  bool
-	revisionNumbers   map[string]int64
-	postCommitActions *[]func()
+	cfg                    config.Config
+	store                  ruleStore
+	localApplyTrigger      func(context.Context) error
+	mutationExecutor       *revision.Executor
+	revisionMutation       bool
+	revisionNumbers        map[string]int64
+	postCommitActions      *[]func()
+	pluginPublishAdmission bool
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
@@ -803,6 +804,19 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 	for _, certID := range autoManagedDNSIssueIDs {
 		certID := certID
 		s.runAfterRevisionCommit(func() { ManagedCertificateDispatcher().Submit(certID) })
+	}
+	dropped := make([]string, 0)
+	nextIDs := make(map[string]struct{})
+	for _, instanceID := range pluginProviderInstanceIDs(rule) {
+		nextIDs[instanceID] = struct{}{}
+	}
+	for _, instanceID := range pluginProviderInstanceIDs(current) {
+		if _, keep := nextIDs[instanceID]; !keep {
+			dropped = append(dropped, instanceID)
+		}
+	}
+	if err := s.dropHTTPRulePluginBindings(ctx, resolvedID, rule.ID, dropped); err != nil {
+		return rollbackPostSave(err)
 	}
 	return rule, nil
 }
@@ -1933,6 +1947,27 @@ type httpBackendProviderAdmissionStore interface {
 	GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
 }
 
+func pluginPublishHTTPRuleInput(frontendURL, instanceID, providerID string) HTTPRuleInput {
+	enabled := true
+	frontend := strings.TrimSpace(frontendURL)
+	return HTTPRuleInput{
+		FrontendURL: &frontend,
+		Enabled:     &enabled,
+		Backends: &[]HTTPRuleBackend{{
+			Kind: pluginsdk.HTTPBackendKindPluginProvider,
+			PluginProvider: &pluginsdk.HTTPPluginProviderRef{
+				InstanceID: strings.TrimSpace(instanceID),
+				ProviderID: strings.TrimSpace(providerID),
+			},
+		}},
+	}
+}
+
+func pluginPublishFrontendURLInput(frontendURL string) HTTPRuleInput {
+	frontend := strings.TrimSpace(frontendURL)
+	return HTTPRuleInput{FrontendURL: &frontend}
+}
+
 func (s *ruleService) validateHTTPBackendProviders(ctx context.Context, agentID string, backends []HTTPRuleBackend) error {
 	hasProvider := false
 	for _, backend := range backends {
@@ -1943,6 +1978,9 @@ func (s *ruleService) validateHTTPBackendProviders(ctx context.Context, agentID 
 	}
 	if !hasProvider {
 		return nil
+	}
+	if s != nil && s.pluginPublishAdmission {
+		return s.validateHTTPBackendProvidersForPluginPublish(ctx, agentID, backends)
 	}
 	providerStore, ok := s.store.(httpBackendProviderAdmissionStore)
 	if !ok {
@@ -2005,6 +2043,194 @@ func (s *ruleService) validateHTTPBackendProviders(ctx context.Context, agentID 
 		}
 		if !found || status.State != "active" || status.GenerationID != generation.ID {
 			return fmt.Errorf("%w: plugin provider instance %q has no ready generation", ErrInvalidArgument, ref.InstanceID)
+		}
+	}
+	return nil
+}
+
+type pluginPublishAdmissionStore interface {
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error)
+	GetPluginPackage(context.Context, string) (storage.PluginPackageRow, bool, error)
+	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
+}
+
+func (s *ruleService) validateHTTPBackendProvidersForPluginPublish(ctx context.Context, agentID string, backends []HTTPRuleBackend) error {
+	providerStore, ok := s.store.(pluginPublishAdmissionStore)
+	if !ok {
+		return fmt.Errorf("%w: plugin publish admission is unavailable", ErrInvalidArgument)
+	}
+	defaultTargetID := ""
+	if s != nil {
+		defaultTargetID = strings.TrimSpace(s.cfg.LocalAgentID)
+	}
+	for _, backend := range backends {
+		if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+			continue
+		}
+		ref := backend.PluginProvider
+		if err := authorizeReferencedResource(ctx, s.store, "plugin_instance", ref.InstanceID); err != nil {
+			return err
+		}
+		instance, found, err := providerStore.GetPluginInstance(ctx, ref.InstanceID)
+		if err != nil {
+			return err
+		}
+		if !found || !instance.DesiredEnabled {
+			return fmt.Errorf("%w: plugin provider instance %q is not desired-enabled", ErrInvalidArgument, ref.InstanceID)
+		}
+		targets, err := pluginPublishInstanceTargets(instance, defaultTargetID)
+		if err != nil {
+			return fmt.Errorf("%w: plugin provider instance %q targets are invalid", ErrInvalidArgument, ref.InstanceID)
+		}
+		if !slices.Contains(targets, strings.TrimSpace(agentID)) {
+			return fmt.Errorf("%w: plugin provider instance %q does not target Agent %q", ErrInvalidArgument, ref.InstanceID, agentID)
+		}
+		installed, found, err := providerStore.GetInstalledPlugin(ctx, instance.PluginID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: plugin provider instance %q is not installed", ErrInvalidArgument, ref.InstanceID)
+		}
+		var packageRow storage.PluginPackageRow
+		if strings.TrimSpace(installed.ActivePackageIdentity) != "" {
+			packageRow, found, err = providerStore.GetPluginPackageByIdentity(ctx, installed.ActivePackageIdentity)
+		} else {
+			packageRow, found, err = providerStore.GetPluginPackage(ctx, installed.ActivePackageDigest)
+		}
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: plugin provider package is unavailable", ErrInvalidArgument)
+		}
+		var manifest pluginsdk.Manifest
+		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+			return fmt.Errorf("%w: plugin provider manifest is invalid", ErrInvalidArgument)
+		}
+		if !pluginManifestDeclaresHTTPProvider(manifest, ref.ProviderID) {
+			return fmt.Errorf("%w: plugin provider %q is not declared by instance %q", ErrInvalidArgument, ref.ProviderID, ref.InstanceID)
+		}
+	}
+	return nil
+}
+
+func pluginPublishInstanceTargets(instance storage.PluginInstanceRow, defaultTargetID string) ([]string, error) {
+	raw := json.RawMessage(instance.TargetJSON)
+	if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+		raw = json.RawMessage(instance.PendingTargetJSON)
+	}
+	return pluginTargetIDs(raw, defaultTargetID)
+}
+
+func pluginManifestDeclaresHTTPProvider(manifest pluginsdk.Manifest, providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" || len(manifest.HTTPBackendProviders) == 0 {
+		return false
+	}
+	if !slices.Contains(manifest.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) {
+		return false
+	}
+	for _, descriptor := range manifest.HTTPBackendProviders {
+		if strings.TrimSpace(descriptor.ID) == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginProviderInstanceIDs(rule HTTPRule) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, backend := range rule.Backends {
+		if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+			continue
+		}
+		instanceID := strings.TrimSpace(backend.PluginProvider.InstanceID)
+		if instanceID == "" {
+			continue
+		}
+		if _, exists := seen[instanceID]; exists {
+			continue
+		}
+		seen[instanceID] = struct{}{}
+		ids = append(ids, instanceID)
+	}
+	return ids
+}
+
+type pluginBindingSyncStore interface {
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error)
+	ApplyPluginMutation(context.Context, storage.PluginMutation) error
+}
+
+func (s *ruleService) dropHTTPRulePluginBindings(ctx context.Context, agentID string, ruleID int, instanceIDs []string) error {
+	if ruleID <= 0 || len(instanceIDs) == 0 {
+		return nil
+	}
+	store, ok := s.store.(pluginBindingSyncStore)
+	if !ok {
+		return nil
+	}
+	consumerID := strconv.Itoa(ruleID)
+	agentID = strings.TrimSpace(agentID)
+	for _, instanceID := range instanceIDs {
+		instance, found, err := store.GetPluginInstance(ctx, instanceID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		changed := false
+		for _, field := range []*string{&instance.BindingsJSON, &instance.PendingBindingsJSON, &instance.RollbackBindingsJSON} {
+			bindings, err := storage.CanonicalPluginInstanceBindings(*field)
+			if err != nil {
+				return err
+			}
+			filtered := bindings[:0]
+			for _, binding := range bindings {
+				if binding.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule && binding.Consumer.ID == consumerID && binding.TargetAgentID == agentID {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, binding)
+			}
+			encoded, err := storage.EncodePluginInstanceBindings(filtered)
+			if err != nil {
+				return err
+			}
+			*field = encoded
+		}
+		if !changed {
+			continue
+		}
+		installed, found, err := store.GetInstalledPlugin(ctx, instance.PluginID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		now := time.Now().UTC()
+		instance.UpdatedAt = now
+		installed.UpdatedAt = now
+		operation := storage.PluginOperationRow{
+			ID: lifecycleID("pluginop"), PluginID: instance.PluginID, InstanceID: instance.ID,
+			Kind: "publish", Status: "succeeded", TargetPackageDigest: installed.ActivePackageDigest,
+			AgentResultsJSON: "{}", ActorID: "system", CompletedAt: &now, CreatedAt: now,
+		}
+		if err := bindInstalledActiveOperation(&operation, installed); err != nil {
+			return err
+		}
+		if err := store.ApplyPluginMutation(ctx, storage.PluginMutation{
+			PluginID: instance.PluginID, ExpectedActive: installed.ActivePackageDigest,
+			ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance,
+			Operation: operation, Audit: pluginLifecycleAudit(operation, operation.ActorID, "accepted", "", now),
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
