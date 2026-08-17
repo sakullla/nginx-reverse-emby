@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   changePassword,
   fetchAuditEvents,
@@ -18,6 +19,7 @@ const managedPagePaths = {
   'resource-groups': '/access/resource-groups'
 }
 
+const router = useRouter()
 const { actor, can, refreshActor, visibleNavigation } = useAccessControl()
 const loading = ref(true)
 const error = ref(null)
@@ -102,6 +104,7 @@ async function submitOwnPassword() {
     passwordForm.new_password = ''
     passwordForm.confirm_password = ''
     passwordNotice.value = '密码已更新，请使用新密码重新登录。'
+    await router.replace({ name: 'login' })
   } catch (cause) {
     passwordError.value = cause?.message || '修改密码失败'
     passwordFields.value = cause?.fields && typeof cause.fields === 'object' ? { ...cause.fields } : {}

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   fetchAuditEvents: vi.fn(),
   changePassword: vi.fn(),
   refreshActor: vi.fn(),
+  replace: vi.fn(),
   can: vi.fn(),
   actor: { value: null },
   visibleNavigation: { value: [] }
@@ -40,6 +41,14 @@ vi.mock('../../context/useAccessControl', async (original) => {
       refreshActor: mocks.refreshActor,
       visibleNavigation: mocks.visibleNavigation
     })
+  }
+})
+
+vi.mock('vue-router', async (original) => {
+  const actual = await original()
+  return {
+    ...actual,
+    useRouter: () => ({ replace: mocks.replace })
   }
 })
 
@@ -102,6 +111,7 @@ describe('access overview compatibility', () => {
     mocks.fetchSecrets.mockReset().mockResolvedValue([])
     mocks.fetchAuditEvents.mockReset().mockResolvedValue([])
     mocks.changePassword.mockReset().mockResolvedValue({ ok: true })
+    mocks.replace.mockReset()
     mocks.refreshActor.mockReset().mockResolvedValue({})
     mocks.can.mockReset().mockImplementation((permission) => permission === 'access.manage' || permission === 'resource.read')
     mocks.actor.value = {
@@ -133,6 +143,10 @@ describe('access overview compatibility', () => {
   })
 
   it('lets an account session complete a password change and hides it for bootstrap actors', async () => {
+    mocks.changePassword.mockImplementation(async () => {
+      mocks.actor.value = null
+      return { ok: true }
+    })
     const wrapper = mountOverview()
     await flushPromises()
 
@@ -141,6 +155,7 @@ describe('access overview compatibility', () => {
     await wrapper.get('#access-confirm-password').setValue('mismatch-password')
     await wrapper.get('form[aria-label="修改密码"]').trigger('submit')
     expect(mocks.changePassword).not.toHaveBeenCalled()
+    expect(mocks.replace).not.toHaveBeenCalled()
 
     await wrapper.get('#access-confirm-password').setValue('new-correct-horse')
     await wrapper.get('form[aria-label="修改密码"]').trigger('submit')
@@ -149,7 +164,7 @@ describe('access overview compatibility', () => {
       current_password: 'correct-horse-battery',
       new_password: 'new-correct-horse'
     })
-    expect(wrapper.text()).toContain('请使用新密码重新登录')
+    expect(mocks.replace).toHaveBeenCalledWith({ name: 'login' })
 
     mocks.actor.value = { id: 'bootstrap', bootstrap: true, permissions: ['*'] }
     const bootstrap = mountOverview()
