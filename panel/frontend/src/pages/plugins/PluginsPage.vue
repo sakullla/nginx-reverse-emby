@@ -43,8 +43,27 @@ function hasHTTPBackend(detail) {
   return Array.isArray(providers) && providers.some((provider) => String(provider?.id || '').trim())
 }
 
+function actorIsAdmin() {
+  return (actor.value?.permissions || []).includes('*')
+}
+
+// Same actor-visible projection as PluginDetailPage: admin keeps all; otherwise
+// only entries for remaining instance targets/bindings, or none if no instances remain.
 function publishedEntriesOf(detail) {
-  return Array.isArray(detail?.published_entries) ? detail.published_entries : []
+  const entries = Array.isArray(detail?.published_entries) ? detail.published_entries : []
+  if (actorIsAdmin()) return entries
+  const instances = detail?.instances || []
+  if (!instances.length) return []
+  const visibleAgents = new Set()
+  for (const instance of instances) {
+    for (const target of instance.targets || []) {
+      if (target) visibleAgents.add(target)
+    }
+    for (const binding of instance.bindings || []) {
+      if (binding?.target_agent_id) visibleAgents.add(binding.target_agent_id)
+    }
+  }
+  return entries.filter((entry) => visibleAgents.has(entry.agent_id))
 }
 
 function abnormalAgentCount(detail) {
@@ -164,7 +183,14 @@ async function load() {
     </div>
 
     <div v-else-if="error" role="alert">
-      <EmptyState title="读取失败" :description="error" />
+      <EmptyState title="读取失败" :description="`${error} 下一步：重试读取已安装列表，或先去插件市场安装。`">
+        <template #action>
+          <div class="plugins-empty-actions">
+            <button class="btn btn-secondary" type="button" @click="load">重试</button>
+            <RouterLink class="btn btn-secondary" to="/plugins/marketplace">去插件市场</RouterLink>
+          </div>
+        </template>
+      </EmptyState>
     </div>
 
     <EmptyState
@@ -220,6 +246,13 @@ async function load() {
 
 <style scoped>
 .plugins-page { max-width: 1180px; margin: 0 auto; }
+
+.plugins-empty-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
 
 .plugins-page__loading {
   display: flex;

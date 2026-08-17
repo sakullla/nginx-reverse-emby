@@ -2,11 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginsPage from './PluginsPage.vue'
 
-const mocks = vi.hoisted(() => ({ fetchPlugins: vi.fn(), fetchPluginDetail: vi.fn(), refreshActor: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  fetchPlugins: vi.fn(),
+  fetchPluginDetail: vi.fn(),
+  refreshActor: vi.fn(),
+  actor: { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
+}))
 vi.mock('../../api/plugins', () => ({ fetchPlugins: mocks.fetchPlugins, fetchPluginDetail: mocks.fetchPluginDetail }))
 vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
-  return { ...actual, useAccessControl: () => ({ actor: { value: { permissions: ['resource.read'], visible_resource_groups: ['group-a'] } }, refreshActor: mocks.refreshActor }) }
+  return {
+    ...actual,
+    useAccessControl: () => ({
+      actor: { get value() { return mocks.actor } },
+      refreshActor: mocks.refreshActor
+    })
+  }
 })
 
 const mountedWrappers = []
@@ -27,7 +38,7 @@ function detail(id, group, overrides = {}) {
       ...(overrides.package || {}),
       manifest: { name: id, ...((overrides.package && overrides.package.manifest) || {}) }
     },
-    instances: overrides.instances !== undefined ? overrides.instances : [{ id: `${id}-instance`, resource_group_id: group }],
+    instances: overrides.instances !== undefined ? overrides.instances : [{ id: `${id}-instance`, resource_group_id: group, targets: ['edge-a'] }],
     agent_statuses: overrides.agent_statuses !== undefined ? overrides.agent_statuses : [{ instance_id: `${id}-instance`, runtime_state: 'active' }],
     published_entries: overrides.published_entries || []
   }
@@ -64,6 +75,7 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
   mocks.fetchPlugins.mockReset().mockResolvedValue([{ plugin_id: 'visible' }, { plugin_id: 'foreign' }])
   mocks.fetchPluginDetail.mockReset().mockImplementation(async (id) => id === 'visible' ? detail(id, 'group-a') : detail(id, 'group-b'))
   mocks.refreshActor.mockReset()
@@ -120,6 +132,9 @@ describe('PluginsPage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('读取失败')
     expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.text()).toContain('下一步：重试读取已安装列表')
+    expect(wrapper.find('[role="alert"] a').attributes('href')).toBe('/plugins/marketplace')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('重试'))).toBe(true)
   })
 
   it('shows an empty state that points to the marketplace', async () => {
@@ -185,6 +200,72 @@ describe('PluginsPage', () => {
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
     expect(wrapper.text()).not.toContain('待发布')
     expect(wrapper.text()).toContain('已部署到节点，打开详情查看状态')
+  })
+
+  it('does not show hidden-group published entries when no instances remain visible', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'foreign' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('foreign', 'group-b', {
+      published_entries: [{
+        rule_id: 22,
+        agent_id: 'edge-b',
+        frontend_url: 'https://hidden-group.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[data-test="plugin-task-status-undeployed"]').text()).toBe('尚未部署')
+    expect(wrapper.text()).toContain('下一步：打开详情开始部署')
+    expect(wrapper.text()).not.toContain('https://hidden-group.example.com')
+    expect(wrapper.text()).not.toContain('已可用')
+    expect(wrapper.text()).not.toContain('待发布')
+  })
+
+  it('does not let another group entry mark a visible unpublished instance as available', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'split' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('split', 'group-a', {
+      instances: [
+        { id: 'split-visible', resource_group_id: 'group-a', targets: ['edge-a'], bindings: [] },
+        { id: 'split-hidden', resource_group_id: 'group-b', targets: ['edge-b'], bindings: [{ target_agent_id: 'edge-b' }] }
+      ],
+      agent_statuses: [
+        { instance_id: 'split-visible', runtime_state: 'active' },
+        { instance_id: 'split-hidden', runtime_state: 'active' }
+      ],
+      published_entries: [{
+        rule_id: 21,
+        agent_id: 'edge-b',
+        frontend_url: 'https://other-group.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').text()).toBe('待发布')
+    expect(wrapper.text()).toContain('下一步：打开详情填写入口域名')
+    expect(wrapper.text()).not.toContain('https://other-group.example.com')
+    expect(wrapper.text()).not.toContain('已可用')
+  })
+
+  it('keeps every published entry for an admin actor', async () => {
+    mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-b', {
+      instances: [{ id: 'ready-instance', resource_group_id: 'group-b', targets: ['edge-b'] }],
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-b',
+        frontend_url: 'https://admin-visible.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
+    expect(wrapper.text()).toContain('https://admin-visible.example.com')
   })
 
   it('marks failed node runtimes as abnormal even without a published entry', async () => {
