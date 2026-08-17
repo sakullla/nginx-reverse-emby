@@ -215,4 +215,18 @@ describe('plugin publish API', () => {
       { consumer: { kind: 'http_rule', id: '7' }, target_agent_id: 'edge-a' }
     ])
   })
+
+  it('keeps published entries when instance bindings are derived rather than persisted', async () => {
+    get.mockResolvedValue({
+      data: {
+        plugin: { plugin_id: 'official.waf' },
+        published_entries: [publishedEntry],
+        instances: [{ id: 'official.waf-default', bindings: [] }]
+      }
+    })
+
+    const detail = await plugins.fetchPluginDetail('official.waf')
+    expect(detail.published_entries).toEqual([publishedEntry])
+    expect(detail.instances[0].bindings).toEqual([])
+  })
 })

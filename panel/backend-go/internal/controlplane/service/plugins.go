@@ -1228,12 +1228,12 @@ func (s *PluginService) DeleteInstance(ctx context.Context, request PluginDelete
 	if err := ensureNoPendingOperation(installed); err != nil {
 		return s.recordFailure(ctx, operation, request.ActorID, err)
 	}
-	bindings, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	consumers, err := s.pluginInstanceConsumerCount(ctx, instance)
 	if err != nil {
-		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginReadProjection)
+		return s.recordFailure(ctx, operation, request.ActorID, err)
 	}
-	if len(bindings) > 0 {
-		return s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: instance %s is still used by %d bound rule(s)", storage.ErrPluginDependencyConsumerInUse, instance.ID, len(bindings)))
+	if consumers > 0 {
+		return s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: instance %s is still used by %d bound rule(s)", storage.ErrPluginDependencyConsumerInUse, instance.ID, consumers))
 	}
 	now := s.now()
 	operation.InstanceID, operation.ResourceGroupID = instance.ID, instance.ResourceGroupID
@@ -1584,7 +1584,10 @@ func (s *PluginService) publish(ctx context.Context, request PluginConfigureRequ
 	if err != nil {
 		return PluginInstanceDetail{}, HTTPRule{}, err
 	}
-	instance, err = s.attachHTTPRuleBinding(ctx, request.PluginID, instance.ID, agentID, rule.ID, request.ActorID)
+	if err := s.sanitizeUnsupportedHTTPRuleBindings(ctx, request.PluginID, instance.ID, request.ActorID); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	instance, err = s.projectInstanceWithPublishedBindings(ctx, request.PluginID, instance.ID)
 	if err != nil {
 		return PluginInstanceDetail{}, HTTPRule{}, err
 	}
@@ -1645,62 +1648,58 @@ func (s *PluginService) publishedInstanceReady(ctx context.Context, request Plug
 	return details[0], true, nil
 }
 
-func (s *PluginService) attachHTTPRuleBinding(ctx context.Context, pluginID, instanceID, agentID string, ruleID int, actorID string) (PluginInstanceDetail, error) {
+func (s *PluginService) sanitizeUnsupportedHTTPRuleBindings(ctx context.Context, pluginID, instanceID, actorID string) error {
 	instance, found, err := s.store.GetPluginInstance(ctx, instanceID)
 	if err != nil {
-		return PluginInstanceDetail{}, err
+		return err
 	}
 	if !found || instance.PluginID != pluginID {
-		return PluginInstanceDetail{}, ErrPluginInstanceNotFound
+		return ErrPluginInstanceNotFound
 	}
 	installed, err := s.installedPlugin(ctx, pluginID)
 	if err != nil {
-		return PluginInstanceDetail{}, err
+		return err
 	}
-	consumerID := strconv.Itoa(ruleID)
-	active, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	packageRow, ok, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
 	if err != nil {
-		return PluginInstanceDetail{}, err
+		return err
 	}
-	alreadyBound := false
-	for _, existing := range active {
-		if existing.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule && existing.Consumer.ID == consumerID && existing.TargetAgentID == agentID {
-			alreadyBound = true
-			break
-		}
-	}
-	if alreadyBound {
-		details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance})
-		if err != nil {
-			return PluginInstanceDetail{}, err
-		}
-		return details[0], nil
-	}
-	consumerStore, ok := s.store.(pluginDependencyConsumerStore)
 	if !ok {
-		return PluginInstanceDetail{}, errors.New("plugin binding ownership resolver is unavailable")
+		return fmt.Errorf("%w: active plugin package is unavailable", ErrInvalidArgument)
 	}
-	resourceGroupID := strings.TrimSpace(instance.ResourceGroupID)
-	if pendingGroup := strings.TrimSpace(instance.PendingResourceGroupID); pendingGroup != "" {
-		resourceGroupID = pendingGroup
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return fmt.Errorf("%w: plugin manifest is invalid", ErrInvalidArgument)
 	}
-	requests := append(storage.PluginInstanceBindingRequests(active), storage.PluginInstanceBindingRequest{
-		Consumer:      storage.PluginInstanceBindingConsumer{Kind: storage.PluginDependencyConsumerHTTPRule, ID: consumerID},
-		TargetAgentID: agentID,
-	})
-	resolvedActive, err := consumerStore.ResolvePluginInstanceBindingRequests(ctx, requests, resourceGroupID)
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
 	if err != nil {
-		return PluginInstanceDetail{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		return err
 	}
-	instance.BindingsJSON, err = storage.EncodePluginInstanceBindings(resolvedActive)
+	targetJSON := instance.TargetJSON
+	if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+		targetJSON = instance.PendingTargetJSON
+	}
+	targetIDs, err := pluginTargetIDs(json.RawMessage(targetJSON), defaultTargetID)
 	if err != nil {
-		return PluginInstanceDetail{}, err
+		return err
+	}
+	changed := false
+	for _, field := range []*string{&instance.BindingsJSON, &instance.PendingBindingsJSON, &instance.RollbackBindingsJSON} {
+		next, fieldChanged, filterErr := filterOwnedPluginBindings(*field, targetIDs, manifest.ExtensionPoints)
+		if filterErr != nil {
+			return filterErr
+		}
+		if fieldChanged {
+			*field = next
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
 	}
 	now := s.now()
 	instance.UpdatedAt = now
 	installed.UpdatedAt = now
-	// A publish may already have a pending configure operation bound to ctx.
-	// Binding attachment must use a distinct operation identity.
 	operation := s.operation(context.Background(), pluginID, "publish", installed.ActivePackageDigest, actorID)
 	if actor, ok := storage.QuotaActorFromContext(ctx); ok {
 		operation.ActorID, operation.SessionID = actor.UserID, actor.SessionID
@@ -1709,23 +1708,55 @@ func (s *PluginService) attachHTTPRuleBinding(ctx context.Context, pluginID, ins
 		}
 	}
 	if err := bindInstalledActiveOperation(&operation, installed); err != nil {
-		return PluginInstanceDetail{}, err
+		return err
 	}
 	operation.InstanceID = instance.ID
 	operation.ResourceGroupID = instance.ResourceGroupID
 	operation.Status, operation.CompletedAt = "succeeded", &now
-	if err := s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
+	return s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
 		PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
 		Installed: &installed, ReplaceInstance: &instance, Operation: operation,
 		Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now),
-	}); err != nil {
+	})
+}
+
+func (s *PluginService) projectInstanceWithPublishedBindings(ctx context.Context, pluginID, instanceID string) (PluginInstanceDetail, error) {
+	instance, found, err := s.store.GetPluginInstance(ctx, instanceID)
+	if err != nil {
 		return PluginInstanceDetail{}, err
+	}
+	if !found || instance.PluginID != pluginID {
+		return PluginInstanceDetail{}, ErrPluginInstanceNotFound
 	}
 	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance})
 	if err != nil {
 		return PluginInstanceDetail{}, err
 	}
+	if len(details) != 1 {
+		return PluginInstanceDetail{}, ErrPluginReadProjection
+	}
 	return details[0], nil
+}
+
+func filterOwnedPluginBindings(raw string, targetIDs, extensionPoints []string) (string, bool, error) {
+	bindings, err := storage.CanonicalPluginInstanceBindings(raw)
+	if err != nil {
+		return "", false, err
+	}
+	kept := bindings[:0]
+	changed := false
+	for _, binding := range bindings {
+		if err := storage.ValidatePluginInstanceBindingScope([]storage.PluginInstanceBinding{binding}, targetIDs, extensionPoints); err != nil {
+			changed = true
+			continue
+		}
+		kept = append(kept, binding)
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	encoded, err := storage.EncodePluginInstanceBindings(kept)
+	return encoded, true, err
 }
 
 func (s *PluginService) pluginPublishRuleService() (*ruleService, error) {
@@ -1847,6 +1878,129 @@ func pluginPublishRequestTargets(targets any) (string, error) {
 type pluginPublishedEntryStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+}
+
+func (s *PluginService) pluginInstanceConsumerCount(ctx context.Context, instance storage.PluginInstanceRow) (int, error) {
+	bindings, err := storage.CanonicalPluginInstanceBindings(instance.BindingsJSON)
+	if err != nil {
+		return 0, ErrPluginReadProjection
+	}
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance})
+	if err != nil {
+		return 0, err
+	}
+	if len(details) != 1 {
+		return 0, ErrPluginReadProjection
+	}
+	seen := make(map[string]struct{}, len(bindings)+len(details[0].Bindings))
+	for _, binding := range append(append([]storage.PluginInstanceBinding{}, bindings...), details[0].Bindings...) {
+		key := binding.Consumer.Kind + "\x00" + binding.Consumer.ID + "\x00" + binding.TargetAgentID
+		if strings.TrimSpace(binding.Consumer.Kind) == "" || strings.TrimSpace(binding.Consumer.ID) == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	return len(seen), nil
+}
+
+func (s *PluginService) overlayPublishedHTTPRuleBindings(ctx context.Context, details []PluginInstanceDetail) ([]PluginInstanceDetail, error) {
+	if len(details) == 0 {
+		return details, nil
+	}
+	published, err := s.publishedHTTPRuleBindings(ctx, details)
+	if err != nil {
+		return nil, err
+	}
+	if len(published) == 0 {
+		return details, nil
+	}
+	for index := range details {
+		details[index].Bindings = mergePluginInstanceBindings(details[index].Bindings, published[details[index].ID])
+	}
+	return details, nil
+}
+
+func (s *PluginService) publishedHTTPRuleBindings(ctx context.Context, instances []PluginInstanceDetail) (map[string][]storage.PluginInstanceBinding, error) {
+	result := make(map[string][]storage.PluginInstanceBinding, len(instances))
+	if len(instances) == 0 {
+		return result, nil
+	}
+	store, ok := s.store.(pluginPublishedEntryStore)
+	if !ok {
+		return result, nil
+	}
+	byID := make(map[string]PluginInstanceDetail, len(instances))
+	agentIDs := make(map[string]struct{})
+	for _, instance := range instances {
+		if id := strings.TrimSpace(instance.ID); id != "" {
+			byID[id] = instance
+		}
+		for _, target := range instance.Targets {
+			if id := strings.TrimSpace(target); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		for _, target := range instance.PendingTargets {
+			if id := strings.TrimSpace(target); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+	}
+	if len(agentIDs) == 0 {
+		agents, err := store.ListAgents(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, agent := range agents {
+			if id := strings.TrimSpace(agent.ID); id != "" {
+				agentIDs[id] = struct{}{}
+			}
+		}
+		if localID, err := s.defaultPluginTargetID(ctx); err == nil && strings.TrimSpace(localID) != "" {
+			agentIDs[strings.TrimSpace(localID)] = struct{}{}
+		}
+	}
+	for agentID := range agentIDs {
+		rows, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			rule := httpRuleFromRow(row)
+			instance, matched := pluginPublishedInstance(rule, byID)
+			if !matched {
+				continue
+			}
+			result[instance.ID] = append(result[instance.ID], storage.PluginInstanceBinding{
+				Consumer:      storage.PluginDependencyConsumer{Kind: storage.PluginDependencyConsumerHTTPRule, ID: strconv.Itoa(rule.ID)},
+				TargetAgentID: rule.AgentID,
+			})
+		}
+	}
+	return result, nil
+}
+
+func mergePluginInstanceBindings(existing, extra []storage.PluginInstanceBinding) []storage.PluginInstanceBinding {
+	result := make([]storage.PluginInstanceBinding, 0, len(existing)+len(extra))
+	seen := make(map[string]struct{}, len(existing)+len(extra))
+	for _, binding := range append(append([]storage.PluginInstanceBinding{}, existing...), extra...) {
+		key := binding.Consumer.Kind + "\x00" + binding.Consumer.ID + "\x00" + binding.TargetAgentID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, binding)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].TargetAgentID != result[j].TargetAgentID {
+			return result[i].TargetAgentID < result[j].TargetAgentID
+		}
+		if result[i].Consumer.Kind != result[j].Consumer.Kind {
+			return result[i].Consumer.Kind < result[j].Consumer.Kind
+		}
+		return result[i].Consumer.ID < result[j].Consumer.ID
+	})
+	return result
 }
 
 func (s *PluginService) pluginPublishedEntries(ctx context.Context, instances []PluginInstanceDetail) ([]PluginPublishedEntry, error) {
@@ -3167,7 +3321,7 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 		}
 		result = append(result, detail)
 	}
-	return result, nil
+	return s.overlayPublishedHTTPRuleBindings(ctx, result)
 }
 
 func pluginGrantDetails(rows []storage.PluginGrantRow) []PluginGrantDetail {

@@ -88,4 +88,29 @@ describe('plugin publish projection', () => {
     })
     expect(detail.instances[0].bindings[0].consumer).toEqual({ kind: 'http_rule', id: '12' })
   })
+
+  it('keeps published entries when instance bindings are derived rather than persisted', async () => {
+    mocks.get.mockResolvedValue({
+      data: {
+        published_entries: [{
+          rule_id: 12,
+          agent_id: 'edge-a',
+          frontend_url: 'https://edge.example.com',
+          enabled: true,
+          accessible: false
+        }],
+        instances: [{ bindings: [] }]
+      }
+    })
+
+    const detail = await fetchPluginDetail('official.waf')
+    expect(detail.published_entries[0]).toMatchObject({
+      rule_id: 12,
+      agent_id: 'edge-a',
+      frontend_url: 'https://edge.example.com',
+      enabled: true,
+      accessible: false
+    })
+    expect(detail.instances[0].bindings).toEqual([])
+  })
 })

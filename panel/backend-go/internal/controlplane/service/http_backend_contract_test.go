@@ -155,8 +155,11 @@ func TestPluginPublishWritesSingleEnabledHTTPRuleWithoutLiveCatalog(t *testing.T
 		t.Fatalf("published_entries = %+v", entries)
 	}
 	instance := mustPluginInstance(t, fixture.store, fixture.pluginID)
-	if !containsHTTPRuleBinding(instance, stored.ID, "local") {
-		t.Fatalf("instance bindings = %s, want http_rule %d on local", instance.BindingsJSON, stored.ID)
+	if containsHTTPRuleBinding(instance, stored.ID, "local") {
+		t.Fatalf("persisted bindings = %s, http.backend-provider must not store http_rule", instance.BindingsJSON)
+	}
+	if !containsHTTPRuleBindingDetail(t, published, stored.ID, "local") {
+		t.Fatalf("projected bindings = %+v, want http_rule %d on local", published.Bindings, stored.ID)
 	}
 	if instance.DesiredEnabled != true || len(instanceTargets(t, instance)) != 1 || instanceTargets(t, instance)[0] != "local" {
 		t.Fatalf("published instance = %+v", instance)
@@ -263,6 +266,62 @@ func TestPluginPublishUpdatesOriginalRuleAndCreatesIndependentDomain(t *testing.
 	entries := publishedEntriesFromState(t, fixture, "local")
 	if len(entries) != 2 {
 		t.Fatalf("published_entries = %+v", entries)
+	}
+	if containsHTTPRuleBinding(mustPluginInstance(t, fixture.store, fixture.pluginID), first.ID, "local") {
+		t.Fatal("updated publish persisted an http_rule binding that http.backend-provider cannot own")
+	}
+}
+
+func TestPluginPublishSurvivesCompleteConfigureAndBlocksDeleteInstance(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instanceID := "provider-1"
+	fields := pluginPublishFields(fixture.pluginID, instanceID, "https://emby.example.com", 0)
+	if _, err := callPluginPublish(t, fixture.service, ctx, fields); err != nil {
+		t.Fatalf("first PublishMutation() error = %v", err)
+	}
+	completePublishedConfigure(t, fixture)
+	first := mustPluginPublishRule(t, fixture.store, "local", 0)
+	fields["RuleID"] = first.ID
+	fields["FrontendURL"] = "https://emby-updated.example.com"
+	updated, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("update after CompleteConfigure() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
+	if stored := mustPluginPublishRule(t, fixture.store, "local", 0); stored.ID != first.ID || stored.FrontendURL != "https://emby-updated.example.com" {
+		t.Fatalf("updated rule = %+v, want id %d and new frontend_url", stored, first.ID)
+	}
+	if !containsHTTPRuleBindingDetail(t, updated, first.ID, "local") {
+		t.Fatalf("projected bindings after update = %+v, want http_rule %d", updated.Bindings, first.ID)
+	}
+
+	delete(fields, "RuleID")
+	fields["FrontendURL"] = "https://emby-second.example.com"
+	if _, err := callPluginPublish(t, fixture.service, ctx, fields); err != nil {
+		t.Fatalf("second-domain after CompleteConfigure() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 2)
+	second := mustPluginPublishRule(t, fixture.store, "local", 1)
+	instance := mustPluginInstance(t, fixture.store, fixture.pluginID)
+	if containsHTTPRuleBinding(instance, first.ID, "local") || containsHTTPRuleBinding(instance, second.ID, "local") {
+		t.Fatalf("persisted bindings = %s after applied republish", instance.BindingsJSON)
+	}
+	if err := fixture.service.DeleteInstanceMutation(ctx, PluginDeleteInstanceRequest{
+		PluginID: fixture.pluginID, InstanceID: instance.ID, ActorID: "admin", Actor: pluginPublishAdmin(),
+	}); !errors.Is(err, storage.ErrPluginDependencyConsumerInUse) {
+		t.Fatalf("DeleteInstance() error = %v, want %v", err, storage.ErrPluginDependencyConsumerInUse)
+	}
+
+	if err := fixture.store.SaveHTTPRules(ctx, "local", nil); err != nil {
+		t.Fatal(err)
+	}
+	instance = mustPluginInstance(t, fixture.store, fixture.pluginID)
+	if err := fixture.service.DeleteInstanceMutation(ctx, PluginDeleteInstanceRequest{
+		PluginID: fixture.pluginID, InstanceID: instance.ID, ActorID: "admin", Actor: pluginPublishAdmin(),
+	}); err != nil {
+		t.Fatalf("DeleteInstance() after published rules were removed = %v", err)
 	}
 }
 
@@ -653,7 +712,7 @@ func publishedEntriesFromState(t *testing.T, fixture pluginPublishHarness, agent
 	}
 	result := make([]pluginPublishedEntryView, 0, len(rules))
 	for _, rule := range rules {
-		if !containsHTTPRuleBinding(instance, rule.ID, agentID) {
+		if !pluginRuleBacksInstance(httpRuleFromRow(rule), instance.ID) {
 			continue
 		}
 		result = append(result, pluginPublishedEntryView{
@@ -718,6 +777,36 @@ func instanceTargets(t *testing.T, instance storage.PluginInstanceRow) []string 
 		t.Fatalf("instance targets %s: %v", instance.TargetJSON, err)
 	}
 	return targets
+}
+
+func completePublishedConfigure(t *testing.T, fixture pluginPublishHarness) {
+	t.Helper()
+	instance := mustPluginInstance(t, fixture.store, fixture.pluginID)
+	if instance.PendingOperationID == "" || instance.PendingVersion == 0 {
+		return
+	}
+	installed, ok, err := fixture.store.GetInstalledPlugin(t.Context(), fixture.pluginID)
+	if err != nil || !ok {
+		t.Fatalf("GetInstalledPlugin() ok=%v err=%v", ok, err)
+	}
+	if _, err := fixture.service.CompleteConfigure(t.Context(), PluginApplyResult{
+		PluginID: fixture.pluginID, InstanceID: instance.ID, OperationID: instance.PendingOperationID,
+		TargetRevision: installed.PendingRevision, TargetDigest: installed.PendingTargetDigest,
+		ConfigVersion: instance.PendingVersion, ActorID: "admin", Applied: true, AgentResults: map[string]any{},
+	}); err != nil {
+		t.Fatalf("CompleteConfigure() error = %v", err)
+	}
+}
+
+func containsHTTPRuleBindingDetail(t *testing.T, instance PluginInstanceDetail, ruleID int, agentID string) bool {
+	t.Helper()
+	wantID := strconv.Itoa(ruleID)
+	for _, binding := range instance.Bindings {
+		if binding.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule && binding.Consumer.ID == wantID && binding.TargetAgentID == agentID {
+			return true
+		}
+	}
+	return false
 }
 
 func containsHTTPRuleBinding(instance storage.PluginInstanceRow, ruleID int, agentID string) bool {

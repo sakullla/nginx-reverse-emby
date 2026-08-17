@@ -971,6 +971,9 @@ func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) 
 		})
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID)
+	if err := s.dropHTTPRulePluginBindings(ctx, resolvedID, deleted.ID, pluginProviderInstanceIDs(deleted)); err != nil {
+		return rollbackPostSave(err)
+	}
 	return deleted, nil
 }
 
