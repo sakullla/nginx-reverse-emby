@@ -31,18 +31,22 @@
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
 ```
 
-脚本会创建目录、生成随机 token、启动服务，并在结束时打印**访问地址**和 **Panel token**（登录密码）。
+脚本会创建目录、生成随机 token、启动服务，并在结束时打印**访问地址**和 **Panel token**（`API_TOKEN` / `NRE_PANEL_TOKEN` bootstrap 应急访问令牌，不是普通账号密码）。
 
 交互通常只需两步：
 
 1. **面板域名**：DNS 已指向本机则填入；直接回车 = 临时 HTTP
 2. **Cloudflare Token**（可选）：粘贴后自动 DNS-01 申请证书；回车跳过则用 HTTP-01
 
-把脚本输出的地址和 token 保存好。临时 HTTP 的随机路径只能降低被扫到的概率，**不能替代强密码和 HTTPS**。
+把脚本输出的地址和 token 保存好。临时 HTTP 的随机路径只能降低被扫到的概率，**不能替代 HTTPS 和足够长的随机令牌**。
 
-### 2. 登录并添加第一条规则
+### 2. 登录并创建首个管理员
 
-用脚本输出的地址打开面板，输入 Panel token 登录。
+用脚本输出的地址打开面板，输入 Panel token 登录。全新部署只强制现有 token，不提供默认用户名或密码环境变量。
+
+令牌登录后进入 **用户与资源管理 → 用户管理**。空列表会提示创建具有 `administrator` 角色的首个管理员（密码至少 10 个字符）。创建成功后退出令牌身份，再用账号密码登录。令牌登录不会自动关闭，仍可用于应急访问。
+
+### 3. 添加第一条规则
 
 进入 **流量管理 → HTTP 规则**，选择节点后添加规则。普通服务填写后端地址；已安装的加速源等插件可以直接选择“插件提供商”，不需要填写插件端口或额外参数。
 
@@ -74,7 +78,7 @@ openssl rand -hex 32
 
 ```yaml
 environment:
-  API_TOKEN: <面板登录密码>
+  API_TOKEN: <面板 bootstrap 令牌>
   MASTER_REGISTER_TOKEN: <远程节点注册令牌>
   PANEL_VAULT_MASTER_KEY: <64 位随机 hex>
   PANEL_VAULT_KEY_ID: primary
@@ -101,7 +105,7 @@ docker compose up -d
 ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
 ```
 
-浏览器打开 `http://127.0.0.1:8080`，用 `API_TOKEN` 登录。
+浏览器打开 `http://127.0.0.1:8080`，用 `API_TOKEN` 令牌登录，再按上面的步骤进入用户管理创建首个管理员。
 
 也可用 `.env` 管理配置，参考 [`.env.example`](.env.example)。**不要把真实 token、证书或私钥提交到仓库。**
 
@@ -131,6 +135,14 @@ CI / 已知全部参数时：
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | \
   sh -s -- --public-url https://panel.example.com --cf-token YOUR_CF_TOKEN --yes --non-interactive
 ```
+
+## 用户与资源管理
+
+侧栏一级菜单 **用户与资源管理** 只有两个子项：**用户管理**（需要 `access.manage`）和 **资源组管理**（需要 `resource.read`）。没有可见子项时该一级会隐藏。只读身份能看自己可见的组，但看不到授权、移动、解绑或删除。
+
+- 账号密码至少 10 个字符；用户名创建后不可改，也没有用户删除入口。
+- 内置 `default` 资源组不可删除，也不能改它的 builtin 身份。
+- 删除自定义组前必须先清掉授权和显式资源绑定；仍有依赖时会按类别列出阻塞对象。解绑后资源回落到 `default`，业务配置不变。
 
 ## 加入更多节点
 
