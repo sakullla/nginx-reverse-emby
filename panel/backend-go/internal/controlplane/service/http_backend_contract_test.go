@@ -356,6 +356,58 @@ func TestPluginPublishSecondNodeKeepsOriginalInstanceAndEntry(t *testing.T) {
 	}
 }
 
+func TestPluginPublishUpdatesSecondNodeEntryFromOriginalInstanceID(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	addPluginPublishAgent(t, fixture.store, "edge-b")
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	firstInstance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "https://emby.example.com", 0))
+	if err != nil {
+		t.Fatalf("first PublishMutation() error = %v", err)
+	}
+	completePublishedConfigure(t, fixture)
+	first := mustPluginPublishRule(t, fixture.store, "local", 0)
+
+	fields := pluginPublishFields(fixture.pluginID, firstInstance.ID, "https://emby-edge.example.com", 0)
+	fields["Targets"] = []string{"edge-b"}
+	secondInstance, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("second-node PublishMutation() error = %v", err)
+	}
+	second := mustPluginPublishRule(t, fixture.store, "edge-b", 0)
+
+	fields = pluginPublishFields(fixture.pluginID, firstInstance.ID, "https://emby-edge-v2.example.com", second.ID)
+	fields["Targets"] = []string{"edge-b"}
+	updated, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("update second-node entry via original instance_id error = %v", err)
+	}
+	if updated.ID != secondInstance.ID {
+		t.Fatalf("updated instance = %+v, want backing instance %s", updated, secondInstance.ID)
+	}
+	if stored := mustPluginPublishRule(t, fixture.store, "edge-b", 0); stored.ID != second.ID || stored.FrontendURL != "https://emby-edge-v2.example.com" {
+		t.Fatalf("updated second-node rule = %+v, want id %d and new frontend_url", stored, second.ID)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "edge-b", 1)
+	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
+	if stored := mustPluginPublishRule(t, fixture.store, "local", 0); stored.ID != first.ID || stored.FrontendURL != "https://emby.example.com" {
+		t.Fatalf("original rule = %+v, want unchanged local entry", stored)
+	}
+	if targets := instanceTargets(t, mustPluginInstanceByID(t, fixture.store, firstInstance.ID)); len(targets) != 1 || targets[0] != "local" {
+		t.Fatalf("original instance targets = %v, want [local]", targets)
+	}
+	if targets := instanceTargets(t, mustPluginInstanceByID(t, fixture.store, secondInstance.ID)); len(targets) != 1 || targets[0] != "edge-b" {
+		t.Fatalf("second instance targets = %v, want [edge-b]", targets)
+	}
+	entries := publishedEntriesFromState(t, fixture, "local")
+	if !containsPublishedEntry(entries, first.ID, "local", "https://emby.example.com") {
+		t.Fatalf("published_entries = %+v, missing original local entry", entries)
+	}
+	if !containsPublishedEntry(entries, second.ID, "edge-b", "https://emby-edge-v2.example.com") {
+		t.Fatalf("published_entries = %+v, missing updated second-node entry", entries)
+	}
+}
+
 func TestPluginPublishSurvivesCompleteConfigureAndBlocksDeleteInstance(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginPublishFixture(t, true)

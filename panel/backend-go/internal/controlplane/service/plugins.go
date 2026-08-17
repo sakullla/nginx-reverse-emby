@@ -757,6 +757,21 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 	if err != nil {
 		return nil, err
 	}
+	if configure != nil && configure.PublishDesiredEnabled {
+		payload, err := json.Marshal(configure.Targets)
+		if err != nil {
+			return nil, err
+		}
+		requested, err := pluginTargetIDs(payload, defaultTargetID)
+		if err != nil {
+			return nil, err
+		}
+		ids := uniqueAgentIDs(requested)
+		if len(ids) == 0 {
+			ids = []string{defaultTargetID}
+		}
+		return ids, nil
+	}
 	instances, err := s.store.ListPluginInstances(ctx, pluginID)
 	if err != nil {
 		return nil, err
@@ -1595,13 +1610,13 @@ func (s *PluginService) publish(ctx context.Context, request PluginConfigureRequ
 }
 
 func (s *PluginService) ensurePublishedInstance(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, error) {
+	if request.RuleID > 0 {
+		return s.publishedInstanceForRule(ctx, request, agentID)
+	}
 	if existing, ok, err := s.publishedInstanceReady(ctx, request, agentID); err != nil {
 		return PluginInstanceDetail{}, err
 	} else if ok {
 		return existing, nil
-	}
-	if request.RuleID > 0 {
-		return PluginInstanceDetail{}, fmt.Errorf("%w: published entry %d requires an instance that already targets agent %s", ErrInvalidArgument, request.RuleID, agentID)
 	}
 	if existing, ok, err := s.readyPublishedInstanceOnAgent(ctx, request, agentID); err != nil {
 		return PluginInstanceDetail{}, err
@@ -1618,6 +1633,36 @@ func (s *PluginService) ensurePublishedInstance(ctx context.Context, request Plu
 	request.PublishDesiredEnabled = true
 	request.Bindings = nil
 	return s.ConfigureMutation(ctx, request)
+}
+
+func (s *PluginService) publishedInstanceForRule(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, error) {
+	rules, err := s.pluginPublishRuleService()
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	current, err := rules.Get(ctx, agentID, request.RuleID)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	instanceIDs := pluginProviderInstanceIDs(current)
+	if len(instanceIDs) != 1 {
+		return PluginInstanceDetail{}, fmt.Errorf("%w: rule %d is not a published plugin_provider entry", ErrInvalidArgument, request.RuleID)
+	}
+	row, found, err := s.store.GetPluginInstance(ctx, instanceIDs[0])
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	if !found || row.PluginID != request.PluginID {
+		return PluginInstanceDetail{}, fmt.Errorf("%w: rule %d is not a published plugin_provider entry", ErrInvalidArgument, request.RuleID)
+	}
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{row})
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	if len(details) != 1 {
+		return PluginInstanceDetail{}, ErrPluginReadProjection
+	}
+	return details[0], nil
 }
 
 func (s *PluginService) publishedInstanceReady(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, bool, error) {
