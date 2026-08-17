@@ -13,10 +13,10 @@ import (
 // BindHost may be a wildcard; share host is selected from NodeAddresses, never
 // from the wildcard itself.
 type DualStackListenBinding struct {
-	Port     int
-	BindHost string
-	TCP      bool
-	UDP      bool
+	Port     int    `json:"port"`
+	BindHost string `json:"bind_host,omitempty"`
+	TCP      bool   `json:"tcp"`
+	UDP      bool   `json:"udp"`
 }
 
 func (binding DualStackListenBinding) Validate() error {

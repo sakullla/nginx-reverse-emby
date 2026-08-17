@@ -16,9 +16,9 @@ const (
 // Plugins must not probe a public IP or write DDNS; they only consume this
 // snapshot. DDNS is the configured agent.ddns_domain when present.
 type NodeAddresses struct {
-	DDNS string
-	IPv4 string
-	IPv6 string
+	DDNS string `json:"ddns_domain,omitempty"`
+	IPv4 string `json:"ipv4,omitempty"`
+	IPv6 string `json:"ipv6,omitempty"`
 }
 
 // NodeAddressSource is a Host-owned handle that returns the current snapshot
