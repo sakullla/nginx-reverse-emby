@@ -18,7 +18,7 @@
     "compatibility": {"$ref": "#/$defs/compatibility"},
     "runtime": {"$ref": "#/$defs/runtime"},
     "artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/artifact"}},
-    "extension_points": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"enum": ["http.request", "http.response", "http.backend-provider", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route"]}},
+    "extension_points": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"enum": ["http.request", "http.response", "http.backend-provider", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route", "resource.group"]}},
     "http_backend_providers": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/http_backend_provider"}},
     "permissions": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/permission"}},
     "config_schema": {"type": "string", "minLength": 1, "maxLength": 2048},
@@ -30,6 +30,7 @@
     "migrations": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/migration"}},
     "cleanup": {"$ref": "#/$defs/cleanup"},
     "ui_route_id": {"type": "string"},
+    "resource_group_id": {"type": "string"},
     "metadata": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "$defs": {

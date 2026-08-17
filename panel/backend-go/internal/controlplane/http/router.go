@@ -467,6 +467,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLocalApply)))
 		mux.Handle(prefix+"/version-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicies)))
 		mux.Handle(prefix+"/version-policies/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicy)))
+		mux.Handle(prefix+"/plugin-ui-routes", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUIRoutes)))
+		mux.Handle(prefix+"/plugin-resource-groups", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginResourceGroups)))
+		mux.Handle(prefix+"/plugins/", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUI)))
 		if resolved.MarketplaceService != nil {
 			mux.Handle(prefix+"/marketplace/sources", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceSources)))
 			mux.Handle(prefix+"/marketplace/sources/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceSource)))

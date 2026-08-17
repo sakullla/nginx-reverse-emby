@@ -14,11 +14,26 @@ const (
 
 // NodeAddresses is the Host projection of one Agent's public identity.
 // Plugins must not probe a public IP or write DDNS; they only consume this
-// snapshot. DDNS is the configured agent.ddns_domain when present.
+// snapshot.
+//
+// DDNS is the configured agent.ddns_domain. IPv4/IPv6 are the addresses the
+// Agent already reports on heartbeat (LastSeenIPv4/LastSeenIPv6), the same
+// values the control plane publishes to Cloudflare when DDNS is enabled.
 type NodeAddresses struct {
 	DDNS string `json:"ddns_domain,omitempty"`
 	IPv4 string `json:"ipv4,omitempty"`
 	IPv6 string `json:"ipv6,omitempty"`
+}
+
+// NodeAddressesFromHeartbeat builds the snapshot Host should inject.
+// ddnsDomain is the configured DDNS name; lastSeenIPv4/lastSeenIPv6 are the
+// heartbeat-reported addresses, not a second probe.
+func NodeAddressesFromHeartbeat(ddnsDomain, lastSeenIPv4, lastSeenIPv6 string) NodeAddresses {
+	return NodeAddresses{
+		DDNS: strings.TrimSpace(ddnsDomain),
+		IPv4: strings.TrimSpace(lastSeenIPv4),
+		IPv6: strings.TrimSpace(lastSeenIPv6),
+	}
 }
 
 // NodeAddressSource is a Host-owned handle that returns the current snapshot

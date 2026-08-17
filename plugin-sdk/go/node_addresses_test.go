@@ -2,6 +2,21 @@ package pluginsdk
 
 import "testing"
 
+func TestNodeAddressesFromHeartbeatUsesReportedIPs(t *testing.T) {
+	got := NodeAddressesFromHeartbeat(" ss.example.com ", " 203.0.113.10 ", " 2001:db8::1 ")
+	if got.DDNS != "ss.example.com" || got.IPv4 != "203.0.113.10" || got.IPv6 != "2001:db8::1" {
+		t.Fatalf("got %#v", got)
+	}
+	host, source, ok := got.SelectShareHost()
+	if !ok || host != "ss.example.com" || source != ShareHostSourceDDNS {
+		t.Fatalf("got host=%q source=%q ok=%v", host, source, ok)
+	}
+	host, source, ok = NodeAddressesFromHeartbeat("", "203.0.113.10", "2001:db8::1").SelectShareHost()
+	if !ok || host != "203.0.113.10" || source != ShareHostSourceIPv4 {
+		t.Fatalf("fallback host=%q source=%q ok=%v", host, source, ok)
+	}
+}
+
 func TestSelectShareHostPrefersDDNSThenIPv4ThenIPv6(t *testing.T) {
 	host, source, ok := (NodeAddresses{DDNS: "ss.example.com", IPv4: "203.0.113.10", IPv6: "2001:db8::1"}).SelectShareHost()
 	if !ok || host != "ss.example.com" || source != ShareHostSourceDDNS {

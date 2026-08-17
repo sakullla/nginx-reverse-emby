@@ -8,6 +8,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestPluginManifestSchemaV1DeclaresResourceGroup(t *testing.T) {
+	schema := string(PluginManifestSchemaV1())
+	if !strings.Contains(schema, `"resource.group"`) {
+		t.Fatal("manifest schema omits resource.group extension point")
+	}
+	if !strings.Contains(schema, `"resource_group_id"`) {
+		t.Fatal("manifest schema omits resource_group_id")
+	}
+	data := []byte("resource_group_id: cloudflare-dns\n")
+	var manifest Manifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ResourceGroupID != "cloudflare-dns" {
+		t.Fatalf("resource_group_id = %q", manifest.ResourceGroupID)
+	}
+}
+
 func TestPluginManifestSchemaV1IsEmbeddedAndImmutable(t *testing.T) {
 	first := PluginManifestSchemaV1()
 	var schema map[string]any
