@@ -322,6 +322,9 @@ describe('PluginDetailPage', () => {
   it('omits projected http_rule bindings when saving config after HTTP publish', async () => {
     const wrapper = await mountPage(publishedHTTPDetail())
     const modal = await openConfigModal(wrapper)
+    expect(modal.find('[data-test="plugin-publish-needed"]').exists()).toBe(false)
+    expect(modal.text()).not.toContain('还差发布')
+    expect(modal.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
     await modal.get('.declarative-field input[type="text"]').setValue('block')
     await modalButton(modal, '保存配置').trigger('click')
     await flushPromises()
@@ -329,6 +332,7 @@ describe('PluginDetailPage', () => {
       instance_id: 'waf-a', resource_group_id: 'group-a', targets: ['edge-a'], policy_chains: [],
       bindings: [], config: { mode: 'block' }, secret_replacements: {}
     })
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
   })
 
   it('deploys a non-HTTP plugin to exactly one selected node', async () => {
@@ -644,6 +648,31 @@ describe('PluginDetailPage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('当前身份没有可见的资源组，无法部署。')
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+  })
+
+  it('does not let a resource writer submit publish or reopen the published entry form', async () => {
+    mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['group-a'] }
+    const unpublished = await mountPage(unpublishedHTTPDetail())
+    expect(unpublished.get('[data-test="plugin-task-status"]').text()).toMatch(/还差发布|还没发布域名/)
+    expect(unpublished.text()).toContain('当前身份可以看懂下一步，但不能提交部署或发布')
+    const publish = buttonByText(unpublished, '发布到域名')
+    expect(publish.attributes('disabled')).toBeDefined()
+    await publish.trigger('click')
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+    unpublished.unmount()
+
+    const published = await mountPage(publishedHTTPDetail())
+    expect(published.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
+    expect(buttonByText(published, '修改入口')).toBeUndefined()
+    expect(buttonByText(published, '再发布一条域名')).toBeUndefined()
+    const modal = await openConfigModal(published)
+    expect(modal.find('[data-test="plugin-publish-needed"]').exists()).toBe(false)
+    expect(modal.find('[data-test="plugin-publish-submit"]').exists()).toBe(false)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modalButton(modal, '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalled()
     expect(mocks.publishPlugin).not.toHaveBeenCalled()
   })
 

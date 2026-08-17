@@ -386,6 +386,10 @@ describe('PluginDetailPage production API projection', () => {
     }))
 
     const modal = await openConfigModal(wrapper)
+    expect(modal.find('[data-test="plugin-publish-needed"]').exists()).toBe(false)
+    expect(modal.text()).not.toContain('还差发布')
+    expect(modal.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
+    expect(modal.find('[data-test="plugin-publish-submit"]').exists()).toBe(false)
     await modal.get('.declarative-field input[type="text"]').setValue('block')
     await modal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
     await flushPromises()
@@ -394,6 +398,7 @@ describe('PluginDetailPage production API projection', () => {
       bindings: [],
       config: { mode: 'block' }
     }), { timeout: 0 })
+    expect(writePaths()).toEqual(['/plugins/rpc.plugin/configure'])
   })
 })
 

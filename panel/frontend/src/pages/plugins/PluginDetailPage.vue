@@ -164,7 +164,7 @@ const taskHint = computed(() => {
       return ''
   }
 })
-const canSubmitGuide = computed(() => taskState.value === 'undeployed' ? admin.value : canWrite.value)
+const canSubmitGuide = computed(() => admin.value)
 const sortedAgents = computed(() => [...agents.value].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
 const showDomainFields = computed(() => hasHTTPBackend.value && (
   taskState.value === 'undeployed'
@@ -328,7 +328,7 @@ async function handleDeployed(instanceID) {
 }
 
 function startEditEntry(entry) {
-  if (!canWrite.value) return
+  if (!admin.value) return
   const parsed = parseFrontendURL(entry.frontend_url)
   guide.domain = parsed.domain
   guide.https = parsed.https
@@ -339,7 +339,7 @@ function startEditEntry(entry) {
 }
 
 function startExtraDomain() {
-  if (!canWrite.value) return
+  if (!admin.value) return
   guide.editingRuleID = 0
   guide.extraDomainOpen = true
   guide.domain = ''
@@ -550,7 +550,7 @@ async function retryAgent(status) {
             <span>{{ entry.accessible ? '可访问' : '还不能访问' }}</span>
             <span>节点 {{ entry.agent_id }}</span>
             <button
-              v-if="canWrite"
+              v-if="admin"
               class="btn btn-secondary btn-sm"
               type="button"
               :disabled="!!busy || guideBusy"
@@ -560,7 +560,7 @@ async function retryAgent(status) {
             </button>
           </article>
           <button
-            v-if="canWrite && hasHTTPBackend"
+            v-if="admin && hasHTTPBackend"
             class="btn btn-secondary btn-sm"
             type="button"
             :disabled="!!busy || guideBusy"
@@ -729,7 +729,11 @@ async function retryAgent(status) {
         :secret-fields="selectedSecretFields"
         :config-schema="detail.package?.config_schema || null"
         :package-detail="detail.package"
+        :hasHTTPBackend="hasHTTPBackend"
+        :published-entries="publishedEntries"
+        :agents="agents"
         :can-write="canWrite"
+        :can-publish="admin"
         @saved="handleConfigSaved"
         @refreshed="handleConfigRefreshed"
       />

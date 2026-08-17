@@ -14,6 +14,7 @@ const props = defineProps({
   secretFields: { type: Array, default: () => [] },
   configSchema: { type: Object, default: null },
   canWrite: { type: Boolean, default: false },
+  canPublish: { type: Boolean, default: false },
   hasHTTPBackend: { type: Boolean, default: false },
   packageDetail: { type: Object, default: null },
   publishedEntries: { type: Array, default: () => [] },
@@ -33,7 +34,6 @@ const editingRuleID = ref(0)
 
 const httpBackendDeclared = computed(() => {
   if (props.hasHTTPBackend) return true
-  if (props.intent !== 'publish') return false
   return packageDeclaresHTTPBackend(props.packageDetail)
 })
 const instanceTargets = computed(() => [...new Set((props.instance?.targets || []).map((target) => String(target || '').trim()).filter(Boolean))])
@@ -189,7 +189,7 @@ async function save(payload) {
 }
 
 async function publish() {
-  if (!props.canWrite || !props.instance || !httpBackendDeclared.value || publishBusy.value) return
+  if (!props.canPublish || !props.instance || !httpBackendDeclared.value || publishBusy.value) return
   const blocker = publishBlocked.value
   if (blocker) {
     error.value = blocker
@@ -252,7 +252,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
         <p v-if="needsPublish" class="plugin-next-step" data-test="plugin-publish-needed">
           还差发布：填写一条入口域名后，就能用这个地址访问。
         </p>
-        <p v-else-if="!canWrite" class="plugin-next-step">当前身份只能查看下一步，不能提交发布或改入口。</p>
+        <p v-else-if="!canPublish" class="plugin-next-step">当前身份只能查看下一步，不能提交发布或改入口。</p>
 
         <ul v-if="instanceEntries.length" class="plugin-published-entries" data-test="plugin-published-entries">
           <li v-for="entry in instanceEntries" :key="`${entry.agent_id}:${entry.rule_id}`" class="plugin-published-entry" data-test="plugin-published-entry">
@@ -261,7 +261,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
               <small>{{ agentLabel(entry.agent_id) }} · {{ entry.frontend_url.startsWith('https:') ? 'HTTPS' : 'HTTP' }} · {{ entryStatus(entry) }}</small>
             </div>
             <button
-              v-if="canWrite"
+              v-if="canPublish"
               class="btn btn-secondary btn-sm"
               type="button"
               :disabled="publishBusy"
@@ -276,7 +276,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
           <fieldset v-if="instanceTargets.length > 1 && editingRuleID <= 0" class="plugin-publish__targets">
             <legend>发布节点</legend>
             <label v-for="target in instanceTargets" :key="target" class="plugin-publish__target" :class="{ 'plugin-publish__target--selected': publishTarget === target }">
-              <input v-model="publishTarget" type="radio" name="plugin-publish-target" :value="target" :disabled="!canWrite || publishBusy">
+              <input v-model="publishTarget" type="radio" name="plugin-publish-target" :value="target" :disabled="!canPublish || publishBusy">
               <span>{{ agentLabel(target) }}</span>
             </label>
           </fieldset>
@@ -290,17 +290,17 @@ async function runDynamicAction({ action, target_id, confirmed }) {
               autocomplete="off"
               placeholder="例如 media.example.com"
               data-test="plugin-publish-domain"
-              :disabled="!canWrite || publishBusy"
+              :disabled="!canPublish || publishBusy"
             >
           </label>
           <label class="plugin-publish__https">
-            <input v-model="publishHTTPS" type="checkbox" data-test="plugin-publish-https" :disabled="!canWrite || publishBusy">
+            <input v-model="publishHTTPS" type="checkbox" data-test="plugin-publish-https" :disabled="!canPublish || publishBusy">
             <span>使用 HTTPS</span>
           </label>
 
           <div class="plugin-publish__actions">
             <button
-              v-if="canWrite"
+              v-if="canPublish"
               class="btn btn-primary"
               type="button"
               data-test="plugin-publish-submit"
@@ -310,7 +310,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
               {{ publishSubmitLabel }}
             </button>
             <button
-              v-if="canWrite && instanceEntries.length"
+              v-if="canPublish && instanceEntries.length"
               class="btn btn-secondary"
               type="button"
               data-test="plugin-publish-another"
