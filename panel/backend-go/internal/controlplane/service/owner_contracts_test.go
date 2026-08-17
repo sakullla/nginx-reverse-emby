@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -213,6 +215,80 @@ func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 	}
 	if store.status("a1").Status != "disabled" {
 		t.Fatalf("status = %+v", store.status("a1"))
+	}
+}
+
+func TestDDNSResolvesTokenPerDomainWithoutMixingEnv(t *testing.T) {
+	raw, _ := json.Marshal(storage.DDNSConfig{
+		Enabled: true, Domain: "www.example.com, other.test",
+		IPv4: storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	})
+	cf := &fakeCFClient{}
+	store := &fakeDDNSStore{rows: map[string]storage.AgentRow{
+		"a1": {ID: "a1", DdnsConfigJSON: string(raw), LastSeenIPv4: "203.0.113.10"},
+	}}
+	svc := NewDDNSService(config.Config{DDNS: config.DDNSRuntimeConfig{Enabled: true, Token: "token-b", TTL: 120}}, store, cf, func() time.Time { return time.Unix(1700, 0) })
+	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
+		if domain == "www.example.com" {
+			return "token-a", nil
+		}
+		return "token-b", nil
+	}
+	svc.reconcileAgent(context.Background(), "a1")
+	if cf.calls != 2 {
+		t.Fatalf("Cloudflare calls = %d, want 2", cf.calls)
+	}
+	if len(cf.recorded) != 2 || cf.recorded[0].fqdn != "www.example.com" || cf.recorded[0].token != "token-a" {
+		t.Fatalf("mapped domain call = %+v, want token-a", cf.recorded)
+	}
+	if cf.recorded[1].fqdn != "other.test" || cf.recorded[1].token != "token-b" {
+		t.Fatalf("unmapped domain call = %+v, want token-b", cf.recorded[1])
+	}
+}
+
+func TestDDNSFailsWhenDomainHasNoToken(t *testing.T) {
+	raw, _ := json.Marshal(storage.DDNSConfig{
+		Enabled: true, Domain: "missing.example",
+		IPv4: storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	})
+	cf := &fakeCFClient{}
+	store := &fakeDDNSStore{rows: map[string]storage.AgentRow{
+		"a1": {ID: "a1", DdnsConfigJSON: string(raw), LastSeenIPv4: "203.0.113.10"},
+	}}
+	svc := NewDDNSService(config.Config{DDNS: config.DDNSRuntimeConfig{Enabled: true, TTL: 120}}, store, cf, func() time.Time { return time.Unix(1700, 0) })
+	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
+		return "", fmt.Errorf("%w: %s", pluginhost.ErrTokenUnavailable, domain)
+	}
+	svc.reconcileAgent(context.Background(), "a1")
+	if cf.calls != 0 {
+		t.Fatalf("Cloudflare calls = %d, want 0", cf.calls)
+	}
+	status := store.status("a1")
+	if status.Status != "error" || !strings.Contains(status.LastError, "missing.example") {
+		t.Fatalf("status = %+v, want error naming missing.example", status)
+	}
+}
+
+func TestDDNSMappedUnavailableDoesNotUseEnvToken(t *testing.T) {
+	raw, _ := json.Marshal(storage.DDNSConfig{
+		Enabled: true, Domain: "example.com",
+		IPv4: storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	})
+	cf := &fakeCFClient{}
+	store := &fakeDDNSStore{rows: map[string]storage.AgentRow{
+		"a1": {ID: "a1", DdnsConfigJSON: string(raw), LastSeenIPv4: "203.0.113.10"},
+	}}
+	svc := NewDDNSService(config.Config{DDNS: config.DDNSRuntimeConfig{Enabled: true, Token: "token-b", TTL: 120}}, store, cf, time.Now)
+	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
+		return "", fmt.Errorf("%w: %s", pluginhost.ErrMappedTokenUnavailable, domain)
+	}
+	svc.reconcileAgent(context.Background(), "a1")
+	if cf.calls != 0 {
+		t.Fatalf("mapped unavailable must not call Cloudflare, got %d", cf.calls)
+	}
+	status := store.status("a1")
+	if status.Status != "error" || !strings.Contains(status.LastError, "example.com") {
+		t.Fatalf("status = %+v, want mapped-token error for example.com", status)
 	}
 }
 
@@ -646,9 +722,18 @@ func (f *fakeDDNSStore) status(id string) storage.DdnsStatus {
 	return status
 }
 
-type fakeCFClient struct{ calls int }
+type fakeCFCall struct {
+	token string
+	fqdn  string
+}
 
-func (c *fakeCFClient) EnsureRecord(context.Context, string, string, string, string, int) (cloudflareRecordOutcome, error) {
+type fakeCFClient struct {
+	calls    int
+	recorded []fakeCFCall
+}
+
+func (c *fakeCFClient) EnsureRecord(_ context.Context, token, fqdn, _, _ string, _ int) (cloudflareRecordOutcome, error) {
 	c.calls++
+	c.recorded = append(c.recorded, fakeCFCall{token: token, fqdn: fqdn})
 	return cloudflareRecordOutcome{}, nil
 }

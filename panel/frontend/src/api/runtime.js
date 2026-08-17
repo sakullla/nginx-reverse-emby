@@ -715,3 +715,31 @@ export async function fetchDashboardAttention() {
   const { data } = await api.get('/dashboard/attention')
   return data
 }
+
+export async function fetchPluginUIRoutes() {
+  const { data } = await api.get('/plugin-ui-routes')
+  return Array.isArray(data?.routes)
+    ? data.routes.map((route) => ({
+      id: String(route?.id || ''),
+      label: String(route?.label || route?.id || ''),
+      group: String(route?.group || ''),
+      href: String(route?.href || '')
+    })).filter((route) => route.id && route.href)
+    : []
+}
+
+export async function fetchPluginResourceGroups() {
+  const { data } = await api.get('/plugin-resource-groups')
+  return Array.isArray(data?.groups)
+    ? data.groups.map((group) => ({
+      id: String(group?.id || ''),
+      plugin_id: String(group?.plugin_id || ''),
+      ref: String(group?.ref || ''),
+      label: String(group?.label || group?.id || ''),
+      description: String(group?.description || ''),
+      status: String(group?.status || ''),
+      ui_route_id: String(group?.ui_route_id || ''),
+      ui_href: String(group?.ui_href || '')
+    })).filter((group) => group.id && group.ref)
+    : []
+}

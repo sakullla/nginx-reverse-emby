@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+const panelTokenCookie = "nre_panel_token"
 
 func (d Dependencies) isPanelAuthorized(r *http.Request) bool {
 	_, err := d.authenticatePanelRequest(r)
@@ -23,6 +26,10 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, err := d.authenticatePanelRequest(r)
 		if err != nil {
+			if shouldRedirectPluginPageToLogin(r) {
+				http.Redirect(w, r, d.panelLoginLocation(r), http.StatusFound)
+				return
+			}
 			if errors.Is(err, authz.ErrUnauthorized) || errors.Is(err, authz.ErrInvalidCredentials) {
 				writeJSON(w, http.StatusUnauthorized, errorPayloadCode("authentication_required", "Unauthorized: invalid or missing session credential"))
 			} else {
@@ -100,7 +107,7 @@ func (d Dependencies) authenticatePanelRequest(r *http.Request) (authz.Actor, er
 		return d.AccessManager.AuthenticateSession(r.Context(), sessionToken)
 	}
 	bootstrapEnabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("PANEL_BOOTSTRAP_TOKEN_ENABLED")), "false")
-	if bootstrapEnabled && d.Config.PanelToken != "" && tokenMatches(d.Config.PanelToken, r.Header.Get("X-Panel-Token")) {
+	if bootstrapEnabled && d.Config.PanelToken != "" && tokenMatches(d.Config.PanelToken, presentedPanelToken(r)) {
 		actor := authz.BootstrapActor()
 		if d.AccessManager != nil {
 			if err := d.AccessManager.Audit(r.Context(), actor, "auth.bootstrap", "api", r.URL.Path, "", "success", "", nil); err != nil {
@@ -179,6 +186,40 @@ func (d Dependencies) requestResource(method, path string) (string, string, bool
 		return kind, parts[1], true
 	}
 	return "", "", false
+}
+
+func presentedPanelToken(r *http.Request) string {
+	if token := strings.TrimSpace(r.Header.Get("X-Panel-Token")); token != "" {
+		return token
+	}
+	cookie, err := r.Cookie(panelTokenCookie)
+	if err != nil {
+		return ""
+	}
+	presented, decodeErr := url.QueryUnescape(cookie.Value)
+	if decodeErr != nil {
+		return cookie.Value
+	}
+	return presented
+}
+
+func shouldRedirectPluginPageToLogin(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if !isPluginUIPage(r.URL.Path) {
+		return false
+	}
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "application/json") && !strings.Contains(accept, "text/html") {
+		return false
+	}
+	return true
+}
+
+func (d Dependencies) panelLoginLocation(r *http.Request) string {
+	base := strings.TrimRight(strings.TrimSpace(d.Config.PanelPublicPath), "/")
+	return base + "/login?return=" + url.QueryEscape(r.URL.RequestURI())
 }
 
 func (d Dependencies) isRegisterAuthorized(r *http.Request, registerToken string) bool {

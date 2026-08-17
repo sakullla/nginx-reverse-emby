@@ -66,6 +66,25 @@
           </svg>
           {{ item.label }}
         </RouterLink>
+        <a
+          v-for="pluginRoute in pluginUIRoutes"
+          :key="pluginRoute.id"
+          :href="pluginRoute.href"
+          class="more-dropdown__item"
+          @click.stop="moreOpen = false"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+          </svg>
+          {{ pluginRoute.label }}
+        </a>
+        <RouterLink to="/resource-groups" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/resource-groups') }" :aria-current="isMoreItemActive('/resource-groups') ? 'page' : undefined" @click.stop="moreOpen = false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+          </svg>
+          插件资源组
+        </RouterLink>
         <RouterLink to="/settings" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/settings') }" :aria-current="isMoreItemActive('/settings') ? 'page' : undefined" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
@@ -82,11 +101,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { isAccessManagementChildActive, useAccessControl } from '../../context/useAccessControl'
+import { usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 
 const route = useRoute()
 const moreOpen = ref(false)
 const moreRef = ref(null)
 const { refreshActor, visibleAccessManagement } = useAccessControl()
+const { routes: pluginUIRoutes } = usePluginUIRoutes()
 
 function isMoreItemActive(to) {
   return Boolean(to) && (route.path === to || route.path.startsWith(`${to}/`))
@@ -102,6 +123,7 @@ const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
   route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/agents') ||
+  route.path.startsWith('/resource-groups') ||
   route.path.startsWith('/settings') ||
   accessNavItems.value.some((item) => isAccessItemActive(item))
 )

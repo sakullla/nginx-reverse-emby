@@ -98,6 +98,12 @@ const routes = [
         meta: { title: '插件详情' }
       },
       {
+        path: 'resource-groups',
+        name: 'resource-groups',
+        component: () => import('../pages/ResourceGroupsPage.vue'),
+        meta: { title: '插件资源组' }
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('../pages/SettingsPage.vue'),
