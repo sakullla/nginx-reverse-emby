@@ -7,6 +7,7 @@ import {
   sanitizePluginText,
   schemaToUIComponents,
   collectDeclarativeConstraintErrors,
+  stripHostInjectedConfigValues,
   stripReadOnlyConfigValues,
   stripWriteOnlyConfigValues
 } from './pluginSecurity'
@@ -196,6 +197,70 @@ describe('plugin UI security boundary', () => {
       { pointer: '/labels', message: '此项为必填' }
     ])
     expect(collectDeclarativeConstraintErrors(components, { mode: 'a', flags: ['x'], labels: { k: 'v' } })).toEqual([])
+  })
+
+  it('strips hostInjected values from form models and submit payloads', () => {
+    const schema = {
+      type: 'object',
+      required: ['generation', 'mode', 'upstreams'],
+      properties: {
+        generation: { type: 'string', hostInjected: true },
+        secret_ref: { type: 'string', hostInjected: true },
+        resource_group_ref: { type: 'string', hostInjected: true },
+        mode: { type: 'string' },
+        leftover: { type: 'string', hostInjected: false },
+        mislabelled: { type: 'string', hostInjected: 'true' },
+        token: { type: 'string', writeOnly: true },
+        status: { type: 'string', readOnly: true },
+        apps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'image', 'generation'],
+            properties: {
+              id: { type: 'string', hostInjected: true },
+              image: { type: 'string' },
+              generation: { type: 'string', hostInjected: true },
+              secret_refs: { type: 'array', hostInjected: true, items: { type: 'string' } }
+            }
+          }
+        }
+      }
+    }
+    const config = {
+      generation: 'rpc-id-1',
+      secret_ref: 'vault:secret',
+      resource_group_ref: 'rg-1',
+      mode: 'observe',
+      leftover: 'keep-false',
+      mislabelled: 'keep-string-true',
+      token: 'plaintext-token',
+      status: 'broker-owned',
+      apps: [{ id: 'app-1', image: 'nginx', generation: 'rpc-id-1', secret_refs: ['vault:a'] }]
+    }
+    const withoutHost = {
+      mode: 'observe',
+      leftover: 'keep-false',
+      mislabelled: 'keep-string-true',
+      token: 'plaintext-token',
+      status: 'broker-owned',
+      apps: [{ image: 'nginx' }]
+    }
+    expect(stripHostInjectedConfigValues(schema, config)).toEqual(withoutHost)
+    expect(stripWriteOnlyConfigValues(schema, config)).toEqual({
+      mode: 'observe',
+      leftover: 'keep-false',
+      mislabelled: 'keep-string-true',
+      status: 'broker-owned',
+      apps: [{ image: 'nginx' }]
+    })
+    expect(stripReadOnlyConfigValues(schema, config)).toEqual({
+      mode: 'observe',
+      leftover: 'keep-false',
+      mislabelled: 'keep-string-true',
+      token: 'plaintext-token',
+      apps: [{ image: 'nginx' }]
+    })
   })
 
   it('strips writeOnly plaintext from config while keeping public values', () => {

@@ -329,18 +329,28 @@ function stripAnnotationConfigValue(schema, value, annotation) {
   return value
 }
 
-// Remove writeOnly plaintext from a config value before it reaches the
-// declarative renderer, so secret plaintext can never be echoed back in the
-// submit payload. Secrets travel exclusively via secret_replacements.
-export function stripWriteOnlyConfigValues(schema, config) {
-  return stripAnnotationConfigValue(schema, config, 'writeOnly')
+function stripAnnotationConfigValues(schema, config, annotations) {
+  return annotations.reduce((current, annotation) => stripAnnotationConfigValue(schema, current, annotation), config)
 }
 
-// Remove readOnly (broker-owned, display-only) values from a config value
-// before it is persisted through a configure operation, so the server's
-// readOnly rejection never fires for values the client merely echoed back.
+// Remove hostInjected values so a later configure/publish does not echo a
+// stored generation (or other host-written key) and skip host reinjection.
+export function stripHostInjectedConfigValues(schema, config) {
+  return stripAnnotationConfigValue(schema, config, 'hostInjected')
+}
+
+// Remove writeOnly plaintext and hostInjected values before the config reaches
+// the declarative renderer. Secrets travel via secret_replacements; host-written
+// keys stay off the fill-in model so submit cannot echo them.
+export function stripWriteOnlyConfigValues(schema, config) {
+  return stripAnnotationConfigValues(schema, config, ['writeOnly', 'hostInjected'])
+}
+
+// Remove readOnly and hostInjected values before a configure/publish persist.
+// That keeps broker-owned display values from being rejected and lets the host
+// reinject generation for this RPC instead of keeping the echoed previous ID.
 export function stripReadOnlyConfigValues(schema, config) {
-  return stripAnnotationConfigValue(schema, config, 'readOnly')
+  return stripAnnotationConfigValues(schema, config, ['readOnly', 'hostInjected'])
 }
 
 export function safePluginExport(detail, operations) {
