@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,16 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+// pluginHostInjectedSource is the existing host identity written into schema
+// hostInjected properties. Callers must not invent a second identity set.
+type pluginHostInjectedSource struct {
+	Generation       string
+	ResourceGroupRef string
+	SecretRef        string
+	SecretRefs       []string
+	Handles          []storage.PluginInstanceSecretHandle
+}
+
 // PluginSecretFieldState is the only read projection for schema writeOnly
 // values. The value itself never crosses the control-plane API boundary.
 type PluginSecretFieldState struct {
@@ -19,7 +31,7 @@ type PluginSecretFieldState struct {
 	Present bool   `json:"present"`
 }
 
-func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested json.RawMessage, currentHandles []storage.PluginInstanceSecretHandle, replacements map[string]json.RawMessage) (json.RawMessage, map[string]json.RawMessage, []storage.PluginInstanceSecretHandle, error) {
+func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested json.RawMessage, currentHandles []storage.PluginInstanceSecretHandle, replacements map[string]json.RawMessage, host ...pluginHostInjectedSource) (json.RawMessage, map[string]json.RawMessage, []storage.PluginInstanceSecretHandle, error) {
 	var value any
 	decoder := json.NewDecoder(strings.NewReader(string(requested)))
 	decoder.UseNumber()
@@ -79,6 +91,10 @@ func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested
 			return nil, nil, nil, fmt.Errorf("%w: array structure for retained secret %q changed; explicitly clear or replace it", ErrInvalidArgument, pointer)
 		}
 	}
+	public, err = pluginApplyMissingHostInjected(schema, public, current, "", pluginHostSource(currentHandles, host...))
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	encoded, err := json.Marshal(public)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
@@ -89,6 +105,191 @@ func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested
 	}
 	sort.Slice(retained, func(i, j int) bool { return retained[i].Pointer < retained[j].Pointer })
 	return encoded, prepared, retained, nil
+}
+
+func pluginHostSource(handles []storage.PluginInstanceSecretHandle, host ...pluginHostInjectedSource) pluginHostInjectedSource {
+	source := pluginHostInjectedSource{Handles: handles}
+	if len(host) == 0 {
+		return source
+	}
+	source.Generation = host[0].Generation
+	source.ResourceGroupRef = host[0].ResourceGroupRef
+	source.SecretRef = host[0].SecretRef
+	source.SecretRefs = host[0].SecretRefs
+	if len(host[0].Handles) > 0 {
+		source.Handles = host[0].Handles
+	}
+	return source
+}
+
+// pluginApplyMissingHostInjected writes host values only for named properties
+// marked hostInjected that the submitted document omitted. Unmarked keys are
+// never filled, including well-known names, and present user keys stay as-is.
+func pluginApplyMissingHostInjected(schema map[string]any, requested, current any, pointer string, host pluginHostInjectedSource) (any, error) {
+	if requested == nil {
+		if _, ok := schema["properties"].(map[string]any); ok {
+			requested = map[string]any{}
+		} else {
+			return requested, nil
+		}
+	}
+	switch typed := requested.(type) {
+	case map[string]any:
+		currentObject, _ := current.(map[string]any)
+		if currentObject == nil {
+			currentObject = map[string]any{}
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		keys := make([]string, 0, len(properties))
+		for key := range properties {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			childSchema, _ := properties[key].(map[string]any)
+			if childSchema == nil {
+				continue
+			}
+			childPointer := pointer + "/" + strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
+			if child, exists := typed[key]; exists {
+				injected, err := pluginApplyMissingHostInjected(childSchema, child, currentObject[key], childPointer, host)
+				if err != nil {
+					return nil, err
+				}
+				typed[key] = injected
+				continue
+			}
+			if hostInjected, _ := childSchema["hostInjected"].(bool); !hostInjected {
+				continue
+			}
+			value, ok := pluginResolveHostInjectedValue(key, childPointer, currentObject[key], typed, host)
+			if ok {
+				typed[key] = value
+			}
+		}
+		return typed, nil
+	case []any:
+		itemSchema, _ := schema["items"].(map[string]any)
+		if itemSchema == nil {
+			return typed, nil
+		}
+		currentItems, _ := current.([]any)
+		for index, child := range typed {
+			currentChild := pluginHostArrayItemCurrent(currentItems, child)
+			injected, err := pluginApplyMissingHostInjected(itemSchema, child, currentChild, pointer+"/"+strconv.Itoa(index), host)
+			if err != nil {
+				return nil, err
+			}
+			typed[index] = injected
+		}
+		return typed, nil
+	default:
+		return requested, nil
+	}
+}
+
+func pluginHostArrayItemCurrent(currentItems []any, requested any) any {
+	requestedObject, ok := requested.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var fallback any
+	for _, item := range currentItems {
+		currentObject, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if pluginArrayItemIdentityEqual(currentObject, requestedObject) {
+			return currentObject
+		}
+		if pluginHostItemUserIdentityEqual(currentObject, requestedObject) {
+			fallback = currentObject
+		}
+	}
+	return fallback
+}
+
+func pluginHostItemUserIdentityEqual(current, requested map[string]any) bool {
+	matched := false
+	for _, key := range []string{"image", "rule_ref", "key", "name"} {
+		currentValue, currentFound := current[key]
+		requestedValue, requestedFound := requested[key]
+		if !currentFound && !requestedFound {
+			continue
+		}
+		if !currentFound || !requestedFound || !reflect.DeepEqual(currentValue, requestedValue) {
+			return false
+		}
+		matched = true
+	}
+	return matched
+}
+
+func pluginResolveHostInjectedValue(name, pointer string, current any, parent map[string]any, host pluginHostInjectedSource) (any, bool) {
+	if text, ok := current.(string); ok && text == "" {
+		current = nil
+	}
+	if current != nil {
+		return current, true
+	}
+	switch name {
+	case "generation":
+		if host.Generation != "" {
+			return host.Generation, true
+		}
+	case "resource_group_ref":
+		if host.ResourceGroupRef != "" {
+			return host.ResourceGroupRef, true
+		}
+	case "secret_ref":
+		if host.SecretRef != "" {
+			return host.SecretRef, true
+		}
+		if id := pluginHandleID(host.Handles, pointer); id != "" {
+			return id, true
+		}
+	case "secret_refs":
+		if host.SecretRefs != nil {
+			refs := make([]any, len(host.SecretRefs))
+			for index, ref := range host.SecretRefs {
+				refs[index] = ref
+			}
+			return refs, true
+		}
+	case "id":
+		return pluginStableHostItemID(parent), true
+	}
+	return nil, false
+}
+
+func pluginHandleID(handles []storage.PluginInstanceSecretHandle, pointer string) string {
+	for _, handle := range handles {
+		if handle.Pointer == pointer && handle.ID != "" {
+			return handle.ID
+		}
+	}
+	return ""
+}
+
+func pluginStableHostItemID(item map[string]any) string {
+	keys := make([]string, 0, len(item))
+	for key := range item {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var builder strings.Builder
+	for _, key := range keys {
+		encoded, err := json.Marshal(item[key])
+		if err != nil {
+			continue
+		}
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.Write(encoded)
+		builder.WriteByte('\n')
+	}
+	sum := sha256.Sum256([]byte(builder.String()))
+	return "h" + hex.EncodeToString(sum[:8])
 }
 
 func pluginArraySecretPointerStable(current, requested any, pointer string) bool {

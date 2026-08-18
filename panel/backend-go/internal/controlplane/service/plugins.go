@@ -1209,6 +1209,224 @@ func pluginDefaultJSONArray(value string) string {
 	return value
 }
 
+type pluginConfigureInjectSource struct {
+	Generation       string
+	ResourceGroupRef string
+	SecretRef        string
+	Handles          []storage.PluginInstanceSecretHandle
+}
+
+func pluginConfigureInjectSourceFrom(manifest plugins.Manifest, instanceID, operationID string, handles []storage.PluginInstanceSecretHandle) pluginConfigureInjectSource {
+	source := pluginConfigureInjectSource{
+		Generation: strings.TrimSpace(operationID),
+		SecretRef:  strings.TrimSpace(instanceID),
+		Handles:    handles,
+	}
+	if manifest.Metadata != nil {
+		source.ResourceGroupRef = strings.TrimSpace(manifest.Metadata["resource.group.ref"])
+	}
+	for _, handle := range handles {
+		if handle.Pointer == "/secret_ref" && handle.ID != "" {
+			source.SecretRef = handle.ID
+			break
+		}
+	}
+	return source
+}
+
+// pluginConfigureInjectMissingHost writes existing host identities only for
+// schema properties marked hostInjected that the submitted document omitted.
+func pluginConfigureInjectMissingHost(schema map[string]any, submitted, current any, source pluginConfigureInjectSource) error {
+	return pluginConfigureInjectNode(schema, submitted, current, "", source)
+}
+
+func pluginConfigureInjectNode(schema map[string]any, submitted, current any, pointer string, source pluginConfigureInjectSource) error {
+	switch typed := submitted.(type) {
+	case map[string]any:
+		properties, _ := schema["properties"].(map[string]any)
+		if properties == nil {
+			return nil
+		}
+		currentObject, _ := current.(map[string]any)
+		keys := make([]string, 0, len(properties))
+		for key := range properties {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			childSchema, _ := properties[key].(map[string]any)
+			if childSchema == nil {
+				continue
+			}
+			childPointer := pointer + "/" + strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
+			childCurrent := currentObject[key]
+			if _, exists := typed[key]; !exists {
+				injected, err := pluginsdk.ConfigSchemaHostInjected(childSchema)
+				if err != nil {
+					return err
+				}
+				if !injected {
+					continue
+				}
+				if value, ok := pluginConfigureInjectValue(key, childSchema, childCurrent, typed, childPointer, source); ok {
+					typed[key] = value
+				}
+				continue
+			}
+			if err := pluginConfigureInjectNode(childSchema, typed[key], childCurrent, childPointer, source); err != nil {
+				return err
+			}
+		}
+	case []any:
+		itemSchema, _ := schema["items"].(map[string]any)
+		if itemSchema == nil {
+			return nil
+		}
+		currentItems, _ := current.([]any)
+		for index, item := range typed {
+			if err := pluginConfigureInjectNode(itemSchema, item, pluginConfigureCurrentItem(item, currentItems), pointer+"/"+strconv.Itoa(index), source); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func pluginConfigureInjectValue(name string, schema map[string]any, current any, parent map[string]any, pointer string, source pluginConfigureInjectSource) (any, bool) {
+	if pluginConfigureReusable(schema, current) {
+		return current, true
+	}
+	typeName, _ := schema["type"].(string)
+	switch name {
+	case "generation":
+		if (typeName == "string" || typeName == "") && source.Generation != "" {
+			return source.Generation, true
+		}
+	case "resource_group_ref":
+		if (typeName == "string" || typeName == "") && source.ResourceGroupRef != "" {
+			return source.ResourceGroupRef, true
+		}
+		return nil, false
+	case "secret_ref":
+		if typeName == "string" || typeName == "" {
+			if source.SecretRef != "" {
+				return source.SecretRef, true
+			}
+			for _, handle := range source.Handles {
+				if handle.ID != "" && (handle.Pointer == pointer || strings.HasPrefix(handle.Pointer, pointer+"/")) {
+					return handle.ID, true
+				}
+			}
+		}
+	case "secret_refs":
+		if typeName == "array" || typeName == "" {
+			refs := make([]any, 0)
+			seen := map[string]struct{}{}
+			prefix := pointer + "/"
+			for _, handle := range source.Handles {
+				if handle.ID == "" || handle.Pointer != pointer && !strings.HasPrefix(handle.Pointer, prefix) {
+					continue
+				}
+				if _, exists := seen[handle.ID]; exists {
+					continue
+				}
+				seen[handle.ID] = struct{}{}
+				refs = append(refs, handle.ID)
+			}
+			return refs, true
+		}
+	case "id":
+		if typeName == "string" || typeName == "" {
+			if value := pluginConfigureDerivedID(parent); value != "" {
+				return value, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func pluginConfigureReusable(schema map[string]any, current any) bool {
+	if current == nil {
+		return false
+	}
+	typeName, _ := schema["type"].(string)
+	switch typeName {
+	case "string":
+		text, ok := current.(string)
+		return ok && text != ""
+	case "array":
+		_, ok := current.([]any)
+		return ok
+	default:
+		if text, ok := current.(string); ok {
+			return text != ""
+		}
+		_, isArray := current.([]any)
+		return isArray
+	}
+}
+
+func pluginConfigureDerivedID(submitted map[string]any) string {
+	keys := make([]string, 0, len(submitted))
+	for key := range submitted {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var builder strings.Builder
+	for _, key := range keys {
+		encoded, err := json.Marshal(submitted[key])
+		if err != nil {
+			continue
+		}
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.Write(encoded)
+		builder.WriteByte('\n')
+	}
+	if builder.Len() == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(builder.String()))
+	return "h" + hex.EncodeToString(sum[:8])
+}
+
+func pluginConfigureCurrentItem(item any, currentItems []any) any {
+	itemObject, ok := item.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var fallback any
+	for _, current := range currentItems {
+		currentObject, ok := current.(map[string]any)
+		if !ok {
+			continue
+		}
+		if pluginArrayItemIdentityEqual(currentObject, itemObject) {
+			return currentObject
+		}
+		if pluginConfigureSameUserIdentity(currentObject, itemObject) {
+			fallback = currentObject
+		}
+	}
+	return fallback
+}
+
+func pluginConfigureSameUserIdentity(current, submitted map[string]any) bool {
+	matched := false
+	for _, key := range []string{"image", "rule_ref", "key", "name"} {
+		currentValue, currentFound := current[key]
+		submittedValue, submittedFound := submitted[key]
+		if !currentFound && !submittedFound {
+			continue
+		}
+		if !currentFound || !submittedFound || !reflect.DeepEqual(currentValue, submittedValue) {
+			return false
+		}
+		matched = true
+	}
+	return matched
+}
+
 func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRequest) (storage.PluginInstanceRow, error) {
 	return s.configureWithProspectiveDetail(ctx, request, nil)
 }
@@ -1440,6 +1658,13 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 		if err := valueDecoder.Decode(&value); err != nil || pluginSetJSONPointer(materialized, pointer, value) != nil {
 			return storage.PluginInstanceRow{}, ErrInvalidArgument
 		}
+	}
+	currentValue, err := pluginConfigValue(currentConfig)
+	if err != nil {
+		return storage.PluginInstanceRow{}, ErrPluginReadProjection
+	}
+	if err := pluginConfigureInjectMissingHost(schema, materialized, currentValue, pluginConfigureInjectSourceFrom(manifest, request.InstanceID, operation.ID, retainedHandles)); err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	materializedConfig, err := json.Marshal(materialized)
 	if err != nil || plugins.ValidateConfig(schema, materializedConfig) != nil {
