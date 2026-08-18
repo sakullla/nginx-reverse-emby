@@ -12,16 +12,18 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 // pluginHostInjectedSource is the existing host identity written into schema
 // hostInjected properties. Callers must not invent a second identity set.
 type pluginHostInjectedSource struct {
-	Generation       string
-	ResourceGroupRef string
-	SecretRef        string
-	SecretRefs       []string
-	Handles          []storage.PluginInstanceSecretHandle
+	Generation        string
+	ResourceGroupRef  string
+	SecretRef         string
+	SecretRefs        []string
+	Handles           []storage.PluginInstanceSecretHandle
+	ResolveGeneration func(public any) (string, error)
 }
 
 // PluginSecretFieldState is the only read projection for schema writeOnly
@@ -91,9 +93,21 @@ func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested
 			return nil, nil, nil, fmt.Errorf("%w: array structure for retained secret %q changed; explicitly clear or replace it", ErrInvalidArgument, pointer)
 		}
 	}
-	public, err = pluginApplyMissingHostInjected(schema, public, current, "", pluginHostSource(currentHandles, host...))
+	source := pluginHostSource(currentHandles, host...)
+	public, err = pluginApplyMissingHostInjected(schema, public, current, "", source)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if source.Generation == "" && source.ResolveGeneration != nil {
+		source.Generation, err = source.ResolveGeneration(public)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		source.ResolveGeneration = nil
+		public, err = pluginApplyMissingHostInjected(schema, public, current, "", source)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	encoded, err := json.Marshal(public)
 	if err != nil {
@@ -116,6 +130,7 @@ func pluginHostSource(handles []storage.PluginInstanceSecretHandle, host ...plug
 	source.ResourceGroupRef = host[0].ResourceGroupRef
 	source.SecretRef = host[0].SecretRef
 	source.SecretRefs = host[0].SecretRefs
+	source.ResolveGeneration = host[0].ResolveGeneration
 	if len(host[0].Handles) > 0 {
 		source.Handles = host[0].Handles
 	}
@@ -159,7 +174,11 @@ func pluginApplyMissingHostInjected(schema map[string]any, requested, current an
 				typed[key] = injected
 				continue
 			}
-			if hostInjected, _ := childSchema["hostInjected"].(bool); !hostInjected {
+			hostInjected, err := pluginsdk.ConfigSchemaHostInjected(childSchema)
+			if err != nil {
+				return nil, err
+			}
+			if !hostInjected {
 				continue
 			}
 			value, ok := pluginResolveHostInjectedValue(key, childPointer, currentObject[key], typed, host)
