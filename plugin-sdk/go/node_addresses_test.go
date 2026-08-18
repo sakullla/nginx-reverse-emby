@@ -35,6 +35,7 @@ func TestSelectShareHostPrefersDDNSThenIPv4ThenIPv6(t *testing.T) {
 func TestSelectShareHostRejectsWildcardLoopbackAndEmpty(t *testing.T) {
 	for _, addresses := range []NodeAddresses{
 		{DDNS: "0.0.0.0", IPv4: "127.0.0.1", IPv6: "::1"},
+		{DDNS: "0.0.0.0.", IPv4: "127.0.0.1.", IPv6: "::1."},
 		{DDNS: "::", IPv4: "localhost"},
 		{},
 	} {

@@ -64,6 +64,7 @@ func ShareableHost(value string) (string, bool) {
 	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") && len(value) > 2 {
 		value = value[1 : len(value)-1]
 	}
+	value = strings.TrimSuffix(value, ".")
 	if value == "" {
 		return "", false
 	}
@@ -73,8 +74,7 @@ func ShareableHost(value string) (string, bool) {
 		}
 		return ip.String(), true
 	}
-	value = strings.TrimSuffix(value, ".")
-	if value == "" || strings.EqualFold(value, "localhost") || strings.HasSuffix(strings.ToLower(value), ".localhost") {
+	if strings.EqualFold(value, "localhost") || strings.HasSuffix(strings.ToLower(value), ".localhost") {
 		return "", false
 	}
 	if strings.Contains(value, "://") || strings.ContainsAny(value, " /\\?#@:[]%\x00\r\n\t") || len(value) > 253 {
