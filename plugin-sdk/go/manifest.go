@@ -9,11 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	PluginManifestSchemaVersion = 1
-	ExtensionUIRoute            = "ui.route"
-	ExtensionResourceGroup      = "resource.group"
-)
+const PluginManifestSchemaVersion = 1
 
 //go:embed schema/plugin-manifest-v1.schema.json
 var pluginManifestSchemaV1 []byte
@@ -53,7 +49,6 @@ type Manifest struct {
 	Migrations           []Migration                     `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	Cleanup              CleanupPolicy                   `yaml:"cleanup" json:"cleanup"`
 	UIRouteID            string                          `yaml:"ui_route_id,omitempty" json:"ui_route_id,omitempty"`
-	ResourceGroupID      string                          `yaml:"resource_group_id,omitempty" json:"resource_group_id,omitempty"`
 	Metadata             map[string]string               `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 

@@ -23,21 +23,6 @@ export function onCredentialIdentityChange(listener) {
   return () => identityChangeListeners.delete(listener)
 }
 
-const panelTokenCookie = 'nre_panel_token'
-
-function syncPanelTokenCookie(token) {
-  if (typeof document === 'undefined') return
-  if (token) {
-    document.cookie = `${panelTokenCookie}=${encodeURIComponent(token)}; Path=/panel-api; SameSite=Strict`
-    return
-  }
-  document.cookie = `${panelTokenCookie}=; Path=/panel-api; Max-Age=0; SameSite=Strict`
-}
-
-if (authToken.value) {
-  syncPanelTokenCookie(authToken.value)
-}
-
 export function getStoredAuthToken() {
   if (authToken.value) return authToken.value
   if (typeof localStorage === 'undefined') return null
@@ -49,17 +34,12 @@ export function setAuthToken(token) {
   const changed = authToken.value !== normalized
   authToken.value = normalized
   if (changed) notifyIdentityChange()
-  if (typeof localStorage === 'undefined') {
-    syncPanelTokenCookie(normalized)
-    return
-  }
+  if (typeof localStorage === 'undefined') return
   if (normalized) {
     localStorage.setItem('panel_token', normalized)
-    syncPanelTokenCookie(normalized)
     return
   }
   localStorage.removeItem('panel_token')
-  syncPanelTokenCookie(null)
 }
 
 export function clearAuthToken() {

@@ -43,14 +43,14 @@ Relay 的 tunnel identity、内部 CA、轮转和撤销属于另一安全域，�
 - 需要通配符证书（`*.example.com`）
 - 给内网域名签发证书
 
-在控制面设置 `ACME_DNS_PROVIDER=cf`。签发和续期会按证书域名向统一解析入口取 Token：已为该域配置的 `cloudflare-dns` 映射优先；未命中时才使用环境变量全局 Token。
+在控制面的环境变量中配置：
 
 ```ini
 ACME_DNS_PROVIDER=cf
 CF_TOKEN=your-cloudflare-api-token
 ```
 
-`ACME_DNS_PROVIDER=cf` 且存在环境变量 Token **或** 已安装并可提供映射的 `cloudflare-dns` 插件时，DNS-01 才会启用。某个域名既无映射又无环境变量 Token 时，该次签发或续期失败。
+两个变量都配置且非空时，DNS-01 才会启用。
 
 ### 获取 Cloudflare API Token
 
@@ -69,7 +69,7 @@ CF_TOKEN=your-cloudflare-api-token
 
 ![Cloudflare API Token 权限](/screenshots/cloudflare-token-permissions.png)
 
-环境变量全局 Token 只在解析未命中时作为兜底。支持多种名称，按优先级依次尝试：`CLOUDFLARE_DNS_API_TOKEN` > `CF_DNS_API_TOKEN` > `CF_TOKEN` > `CF_Token`。填任意一个即可，同时设置了多个时优先级高的生效。映射命中时不会再混用这份全局 Token。
+Token 支持多种环境变量名，按优先级依次尝试：`CLOUDFLARE_DNS_API_TOKEN` > `CF_DNS_API_TOKEN` > `CF_TOKEN` > `CF_Token`。填任意一个即可，同时设置了多个时优先级高的生效。
 
 ::: warning Token 安全
 CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更多安全建议见 [安全最佳实践](../reference/security.md)。
@@ -95,7 +95,7 @@ CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更
 
 Let's Encrypt 证书有效期 90 天。控制面每 24 小时检查一次，对临近到期的证书自动续期。
 
-DNS-01 续期需要该域名解析到的 Token（映射或环境变量兜底）持续有效。Token 过期会导致续期失败。
+DNS-01 续期需要 CF_TOKEN 持续有效。Token 过期会导致续期失败。
 
 ## HTTP/3
 

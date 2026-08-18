@@ -14,7 +14,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow/cloudflare"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -29,18 +28,28 @@ type masterACMESolver = acmeflow.ChallengeSolver
 type masterCFDNSManagedCertificateIssuer struct {
 	directoryURL string
 	email        string
+	cfToken      string
 	cfZoneToken  string
 	dataDir      string
 	engine       masterACMEEngine
 	openState    func(string) (masterACMEStateStore, error)
-	newSolver    func(masterACMEStateStore, string, string) (masterACMESolver, error)
-	resolveToken func(context.Context, string) (string, error)
+	newSolver    func(masterACMEStateStore) (masterACMESolver, error)
 	now          func() time.Time
 }
 
 func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
-	if pluginhost.CloudflareDNSAPIToken() == "" && !pluginhost.CloudflareDNSAvailable() {
+	token := firstNonEmptyEnv(
+		"CLOUDFLARE_DNS_API_TOKEN",
+		"CF_DNS_API_TOKEN",
+		"CF_TOKEN",
+		"CF_Token",
+	)
+	if token == "" {
 		return nil
+	}
+	zoneToken := firstNonEmptyEnv("CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN")
+	if zoneToken == "" {
+		zoneToken = token
 	}
 	directoryURL := strings.TrimSpace(os.Getenv("NRE_ACME_DIRECTORY_URL"))
 	if directoryURL == "" {
@@ -55,17 +64,17 @@ func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
 	issuer := &masterCFDNSManagedCertificateIssuer{
 		directoryURL: directoryURL,
 		email:        strings.TrimSpace(os.Getenv("NRE_ACME_EMAIL")),
-		cfZoneToken:  firstNonEmptyEnv("CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN"),
+		cfToken:      token,
+		cfZoneToken:  zoneToken,
 		dataDir:      dataDir,
 		engine:       acmeflow.Engine{},
 		openState: func(dataDir string) (masterACMEStateStore, error) {
 			return openMasterACMEAccountStore(dataDir)
 		},
-		resolveToken: pluginhost.ResolveCloudflareDNSToken,
-		now:          time.Now,
+		now: time.Now,
 	}
-	issuer.newSolver = func(state masterACMEStateStore, dnsToken, zoneToken string) (masterACMESolver, error) {
-		return newMasterCFDNSSolver(dnsToken, zoneToken, state)
+	issuer.newSolver = func(state masterACMEStateStore) (masterACMESolver, error) {
+		return newMasterCFDNSSolver(issuer.cfToken, issuer.cfZoneToken, state)
 	}
 	return issuer
 }
@@ -90,14 +99,6 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 	if domain == "" {
 		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, errors.New("managed certificate domain is empty"))
 	}
-	dnsToken, err := i.tokenForDomain(ctx, domain)
-	if err != nil {
-		return managedCertificateRenewalResult{}, err
-	}
-	zoneToken := strings.TrimSpace(i.cfZoneToken)
-	if zoneToken == "" {
-		zoneToken = dnsToken
-	}
 	releaseAccount, err := acquireMasterACMEAccountLifecycle(ctx, i.dataDir, i.directoryURL, i.email)
 	if err != nil {
 		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_account_wait", acmeflow.CategoryAccount, err)
@@ -121,11 +122,11 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 
 	newSolver := i.newSolver
 	if newSolver == nil {
-		newSolver = func(state masterACMEStateStore, dnsToken, zoneToken string) (masterACMESolver, error) {
-			return newMasterCFDNSSolver(dnsToken, zoneToken, state)
+		newSolver = func(state masterACMEStateStore) (masterACMESolver, error) {
+			return newMasterCFDNSSolver(i.cfToken, i.cfZoneToken, state)
 		}
 	}
-	solver, err := newSolver(state, dnsToken, zoneToken)
+	solver, err := newSolver(state)
 	if err != nil {
 		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_solver_create", acmeflow.CategoryChallenge, err)
 	}
@@ -184,14 +185,6 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 		},
 		Material: material,
 	}, nil
-}
-
-func (i *masterCFDNSManagedCertificateIssuer) tokenForDomain(ctx context.Context, domain string) (string, error) {
-	resolve := i.resolveToken
-	if resolve == nil {
-		resolve = pluginhost.ResolveCloudflareDNSToken
-	}
-	return resolve(ctx, domain)
 }
 
 func newMasterCFDNSSolver(token, zoneToken string, intents cloudflare.ChallengeIntentStore) (masterACMESolver, error) {

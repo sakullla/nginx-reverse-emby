@@ -27,7 +27,7 @@ var newManagedCertificateRenewalIssuer = newMasterCFDNSManagedCertificateIssuer
 
 func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 	issuer := s.renewalIssuer
-	if issuer == nil && s.cfg.ManagedCloudflareDNSReady() {
+	if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
 		issuer = newManagedCertificateRenewalIssuer()
 	}
 	if issuer == nil {

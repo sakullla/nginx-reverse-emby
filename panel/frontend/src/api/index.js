@@ -75,5 +75,3 @@ export const cleanupTraffic = (...args) => loadImplementation().then((m) => m.cl
 export const fetchTrafficOverview = (...args) => loadImplementation().then((m) => m.fetchTrafficOverview(...args))
 export const fetchTrafficAggregate = (...args) => loadImplementation().then((m) => m.fetchTrafficAggregate(...args))
 export const fetchDashboardAttention = (...args) => loadImplementation().then((m) => m.fetchDashboardAttention(...args))
-export const fetchPluginUIRoutes = (...args) => loadImplementation().then((m) => m.fetchPluginUIRoutes(...args))
-export const fetchPluginResourceGroups = (...args) => loadImplementation().then((m) => m.fetchPluginResourceGroups(...args))

@@ -61,13 +61,12 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { verifyToken } from '../api'
 import { login } from '../api/access'
 import { useAuthState } from '../context/useAuthState'
 
 const router = useRouter()
-const route = useRoute()
 const { clearCredentials, setToken } = useAuthState()
 const mode = ref('account')
 const username = ref('')
@@ -80,13 +79,6 @@ const submitDisabled = computed(() => loading.value || (
     ? !username.value.trim() || !password.value
     : !tokenInput.value.trim()
 ))
-
-function safeReturnPath(value) {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
-    return null
-  }
-  return value
-}
 
 async function handleLogin() {
   if (submitDisabled.value) return
@@ -107,12 +99,7 @@ async function handleLogin() {
       }
       setToken(token)
     }
-    const next = safeReturnPath(typeof route.query.return === 'string' ? route.query.return : '')
-    if (next && next.startsWith('/panel-api/')) {
-      window.location.assign(next)
-      return
-    }
-    await router.push(next || { name: 'dashboard' })
+    await router.push({ name: 'dashboard' })
   } catch (e) {
     error.value = e?.response?.data?.message || e.message || '登录失败'
   } finally {
