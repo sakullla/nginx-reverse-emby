@@ -1209,13 +1209,16 @@ func pluginDefaultJSONArray(value string) string {
 	return value
 }
 
-func pluginConfigureHostSource(manifest plugins.Manifest, packageRow storage.PluginPackageRow, request PluginConfigureRequest, operation storage.PluginOperationRow, currentConfig json.RawMessage, currentHandles []storage.PluginInstanceSecretHandle) pluginHostInjectedSource {
+func (s *PluginService) pluginConfigureHostSource(ctx context.Context, schema map[string]any, manifest plugins.Manifest, packageRow storage.PluginPackageRow, installed storage.InstalledPluginRow, request PluginConfigureRequest, operation storage.PluginOperationRow, currentConfig json.RawMessage, currentHandles []storage.PluginInstanceSecretHandle, targetIDs []string, exists bool, instance storage.PluginInstanceRow) (pluginHostInjectedSource, []storage.PluginSecretWrite, error) {
 	source := pluginHostInjectedSource{Handles: currentHandles}
 	if manifest.Metadata != nil {
 		source.ResourceGroupRef = strings.TrimSpace(manifest.Metadata["resource.group.ref"])
 	}
+	currentObject := pluginConfigObjectValue(currentConfig)
 	if id := pluginHandleID(currentHandles, "/secret_ref"); id != "" {
 		source.SecretRef = id
+	} else if ref := pluginConfigString(currentObject, "secret_ref"); ref != "" {
+		source.SecretRef = ref
 	}
 	refs := make([]string, 0)
 	for _, handle := range currentHandles {
@@ -1226,47 +1229,164 @@ func pluginConfigureHostSource(manifest plugins.Manifest, packageRow storage.Plu
 	}
 	if len(refs) > 0 {
 		source.SecretRefs = refs
+	} else if pluginNamedPropertyHostInjected(schema, "secret_refs") {
+		source.SecretRefs = []string{}
 	}
-	if current, err := pluginConfigValue(currentConfig); err == nil {
-		if object, ok := current.(map[string]any); ok {
-			if generation, ok := object["generation"].(string); ok {
-				source.Generation = strings.TrimSpace(generation)
-			}
-		}
-	}
-	if source.Generation != "" {
-		return source
+	writes, err := s.pluginBindHostSecretRef(schema, request, operation, &source)
+	if err != nil {
+		return pluginHostInjectedSource{}, nil, err
 	}
 	source.ResolveGeneration = func(public any) (string, error) {
-		return pluginProspectiveGenerationID(packageRow, manifest, request.InstanceID, operation, request.ResourceGroupID, public, currentHandles)
+		return s.pluginLifecycleGenerationID(ctx, installed, packageRow, manifest, request, operation, public, currentHandles, targetIDs, exists, instance)
 	}
-	return source
+	return source, writes, nil
 }
 
-func pluginProspectiveGenerationID(packageRow storage.PluginPackageRow, manifest plugins.Manifest, instanceID string, operation storage.PluginOperationRow, resourceGroupID string, public any, handles []storage.PluginInstanceSecretHandle) (string, error) {
+func (s *PluginService) pluginBindHostSecretRef(schema map[string]any, request PluginConfigureRequest, operation storage.PluginOperationRow, source *pluginHostInjectedSource) ([]storage.PluginSecretWrite, error) {
+	if source == nil || !pluginNamedPropertyHostInjected(schema, "secret_ref") || pluginRawObjectHasKey(request.Config, "secret_ref") || strings.TrimSpace(source.SecretRef) != "" {
+		return nil, nil
+	}
+	if s.secretVault == nil {
+		return nil, errors.New("plugin secret vault is unavailable")
+	}
+	vaultOp := secrets.OperationContext{ActorID: request.ActorID, CorrelationID: operation.CorrelationID, ResourceGroupID: request.ResourceGroupID}
+	payload, err := json.Marshal(map[string]string{"instance_id": request.InstanceID})
+	if err != nil {
+		return nil, fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
+	}
+	prepared, err := s.secretVault.PreparePluginSecret(vaultOp, "plugin-host-"+request.InstanceID+"-secret-ref", "plugin-config:"+request.InstanceID+":/secret_ref", string(payload))
+	if err != nil {
+		return nil, err
+	}
+	source.SecretRef = prepared.Metadata.ID
+	return []storage.PluginSecretWrite{{Secret: prepared.Secret, Version: prepared.Version, Audit: prepared.Audit}}, nil
+}
+
+func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, installed storage.InstalledPluginRow, packageRow storage.PluginPackageRow, manifest plugins.Manifest, request PluginConfigureRequest, operation storage.PluginOperationRow, public any, handles []storage.PluginInstanceSecretHandle, targetIDs []string, exists bool, instance storage.PluginInstanceRow) (string, error) {
 	encoded, err := json.Marshal(public)
 	if err != nil {
 		return "", fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
+	}
+	version := uint64(1)
+	if exists {
+		version = instance.ConfigVersion + 1
+		if instance.PendingVersion >= version {
+			version = instance.PendingVersion + 1
+		}
 	}
 	secretHandles := make([]storage.PluginGenerationSecretHandle, 0, len(handles))
 	for _, handle := range handles {
 		secretHandles = append(secretHandles, storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose})
 	}
-	targetKind, targetID := "agent", strings.TrimSpace(operation.PluginID)
+	grants, err := s.controlPlaneGenerationGrants(ctx, installed, packageRow)
+	if err != nil {
+		return "", err
+	}
+	artifacts, err := s.storedArtifacts(ctx, packageRow.Identity, packageRow.Digest)
+	if err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(manifest.Runtime.HostScope) == "control-plane" {
-		targetKind, targetID = "control-plane", "control-plane"
+		artifact, err := pluginSelectControlPlaneGenerationArtifact(artifacts, manifest)
+		if err != nil {
+			return "", err
+		}
+		generation := storage.PluginGeneration{
+			InstanceID: request.InstanceID, OperationID: operation.ID, PluginID: manifest.ID, PluginVersion: manifest.Version, PackageDigest: packageRow.Digest,
+			Runtime:         storage.PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
+			Artifact:        pluginGenerationArtifact(artifact, packageRow),
+			ExtensionPoints: manifest.ExtensionPoints, ConfigVersion: version, Config: encoded, Grants: grants, SecretHandles: secretHandles,
+			ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
+			Target:         storage.PluginGenerationTarget{Kind: "control-plane", ID: "control-plane", ResourceGroupID: request.ResourceGroupID, Version: version},
+			FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
+		}
+		return storage.PluginGenerationIdentity(generation)
+	}
+	agentID := ""
+	if len(targetIDs) > 0 {
+		agentID = strings.TrimSpace(targetIDs[0])
+	}
+	if agentID == "" {
+		return "", fmt.Errorf("%w: plugin generation target is required", ErrInvalidArgument)
+	}
+	platform, err := s.pluginGenerationTargetPlatform(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	artifact, err := pluginSelectAgentGenerationArtifact(artifacts, manifest, platform)
+	if err != nil {
+		return "", err
+	}
+	features := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		features = append(features, grant.Name)
 	}
 	generation := storage.PluginGeneration{
-		InstanceID: instanceID, OperationID: operation.ID, PluginID: manifest.ID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
-		Runtime:              storage.PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
+		OperationID: operation.ID, InstanceID: request.InstanceID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
+		Artifact:             pluginGenerationArtifact(artifact, packageRow),
+		Runtime:              storage.PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: artifact.Path},
 		ExtensionPoints:      manifest.ExtensionPoints,
+		RequiredFeatures:     pluginsdk.RequiredRPCFeatures(features),
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
-		Config:               encoded, SecretHandles: secretHandles,
+		ConfigVersion:        version, Config: encoded, Grants: grants, SecretHandles: secretHandles,
 		ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
-		Target:         storage.PluginGenerationTarget{Kind: targetKind, ID: targetID, ResourceGroupID: resourceGroupID},
+		Target:         storage.PluginGenerationTarget{Kind: "agent", ID: agentID, ResourceGroupID: request.ResourceGroupID, Version: version},
 		FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
 	}
 	return storage.PluginGenerationIdentity(generation)
+}
+
+func (s *PluginService) pluginGenerationTargetPlatform(ctx context.Context, agentID string) (string, error) {
+	agents, err := s.authoritativePluginAgents(ctx)
+	if err != nil {
+		return "", err
+	}
+	if agent, ok := agents[agentID]; ok {
+		if platform := strings.TrimSpace(agent.Platform); platform != "" {
+			return platform, nil
+		}
+	}
+	return runtime.GOOS + "-" + runtime.GOARCH, nil
+}
+
+func pluginSelectControlPlaneGenerationArtifact(artifacts []storage.PluginArtifactRow, manifest plugins.Manifest) (storage.PluginArtifactRow, error) {
+	for _, artifact := range artifacts {
+		if controlPlaneRuntimeArtifactMatches(artifact, manifest) {
+			return artifact, nil
+		}
+	}
+	return storage.PluginArtifactRow{}, errors.New("control-plane plugin runtime artifact is unavailable for this platform")
+}
+
+func pluginSelectAgentGenerationArtifact(artifacts []storage.PluginArtifactRow, manifest plugins.Manifest, platform string) (storage.PluginArtifactRow, error) {
+	goos, goarch := "", ""
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(platform)), "-", 2)
+	if len(parts) == 2 {
+		goos, goarch = parts[0], parts[1]
+	}
+	for _, artifact := range artifacts {
+		if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope {
+			continue
+		}
+		artifactPath := path.Clean(strings.TrimSpace(artifact.Path))
+		entry := strings.TrimSpace(manifest.Runtime.Entry)
+		if artifactPath != path.Clean(entry) && strings.TrimSuffix(path.Base(artifactPath), ".exe") != entry {
+			continue
+		}
+		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
+			continue
+		}
+		return artifact, nil
+	}
+	return storage.PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", storage.ErrPluginGenerationConflict, platform)
+}
+
+func pluginGenerationArtifact(artifact storage.PluginArtifactRow, packageRow storage.PluginPackageRow) storage.PluginGenerationArtifact {
+	return storage.PluginGenerationArtifact{
+		ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256,
+		SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH,
+		SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint,
+	}
 }
 
 func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRequest) (storage.PluginInstanceRow, error) {
@@ -1455,7 +1575,11 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if !exists || strings.TrimSpace(string(currentConfig)) == "" {
 		currentConfig = json.RawMessage(`{}`)
 	}
-	publicConfig, replacements, retainedHandles, err := pluginPrepareBrokeredConfig(schema, currentConfig, request.Config, currentHandles, request.SecretReplacements, pluginConfigureHostSource(manifest, packageRow, request, operation, currentConfig, currentHandles))
+	hostSource, hostSecretWrites, err := s.pluginConfigureHostSource(ctx, schema, manifest, packageRow, installed, request, operation, currentConfig, currentHandles, targetIDs, exists, instance)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	publicConfig, replacements, retainedHandles, err := pluginPrepareBrokeredConfig(schema, currentConfig, request.Config, currentHandles, request.SecretReplacements, hostSource)
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}
@@ -1481,7 +1605,8 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 			return storage.PluginInstanceRow{}, ErrPluginReadProjection
 		}
 	}
-	secretWrites := make([]storage.PluginSecretWrite, 0, len(replacements))
+	secretWrites := make([]storage.PluginSecretWrite, 0, len(replacements)+len(hostSecretWrites))
+	secretWrites = append(secretWrites, hostSecretWrites...)
 	for pointer, raw := range replacements {
 		if s.secretVault == nil {
 			return storage.PluginInstanceRow{}, errors.New("plugin secret vault is unavailable")

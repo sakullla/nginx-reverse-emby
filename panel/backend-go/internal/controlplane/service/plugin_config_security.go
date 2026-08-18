@@ -121,6 +121,39 @@ func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested
 	return encoded, prepared, retained, nil
 }
 
+func pluginNamedPropertyHostInjected(schema map[string]any, name string) bool {
+	properties, _ := schema["properties"].(map[string]any)
+	child, _ := properties[name].(map[string]any)
+	if child == nil {
+		return false
+	}
+	injected, err := pluginsdk.ConfigSchemaHostInjected(child)
+	return err == nil && injected
+}
+
+func pluginConfigObjectValue(raw json.RawMessage) map[string]any {
+	value, err := pluginConfigValue(raw)
+	if err != nil {
+		return map[string]any{}
+	}
+	object, _ := value.(map[string]any)
+	if object == nil {
+		return map[string]any{}
+	}
+	return object
+}
+
+func pluginConfigString(object map[string]any, key string) string {
+	text, _ := object[key].(string)
+	return strings.TrimSpace(text)
+}
+
+func pluginRawObjectHasKey(raw json.RawMessage, key string) bool {
+	object := pluginConfigObjectValue(raw)
+	_, exists := object[key]
+	return exists
+}
+
 func pluginHostSource(handles []storage.PluginInstanceSecretHandle, host ...pluginHostInjectedSource) pluginHostInjectedSource {
 	source := pluginHostInjectedSource{Handles: handles}
 	if len(host) == 0 {
