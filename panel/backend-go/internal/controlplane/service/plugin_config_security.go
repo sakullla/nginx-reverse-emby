@@ -119,6 +119,56 @@ func pluginNamedPropertyHostInjected(schema map[string]any, name string) bool {
 	return err == nil && injected
 }
 
+// pluginHasMissingHostInjectedNamed reports whether any named property with
+// the given name is hostInjected and omitted from an existing object or array
+// item. Missing containers are not invented, matching pluginApplyMissingHostInjected.
+func pluginHasMissingHostInjectedNamed(schema map[string]any, requested any, name string) bool {
+	if requested == nil {
+		if _, ok := schema["properties"].(map[string]any); ok {
+			requested = map[string]any{}
+		} else {
+			return false
+		}
+	}
+	switch typed := requested.(type) {
+	case map[string]any:
+		properties, _ := schema["properties"].(map[string]any)
+		for key, raw := range properties {
+			childSchema, _ := raw.(map[string]any)
+			if childSchema == nil {
+				continue
+			}
+			if child, exists := typed[key]; exists {
+				if pluginHasMissingHostInjectedNamed(childSchema, child, name) {
+					return true
+				}
+				continue
+			}
+			if key != name {
+				continue
+			}
+			injected, err := pluginsdk.ConfigSchemaHostInjected(childSchema)
+			if err == nil && injected {
+				return true
+			}
+		}
+		return false
+	case []any:
+		itemSchema, _ := schema["items"].(map[string]any)
+		if itemSchema == nil {
+			return false
+		}
+		for _, child := range typed {
+			if pluginHasMissingHostInjectedNamed(itemSchema, child, name) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 func pluginConfigObjectValue(raw json.RawMessage) map[string]any {
 	value, err := pluginConfigValue(raw)
 	if err != nil {

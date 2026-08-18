@@ -46,6 +46,52 @@ const unmarkedGenerationSchema = `{
   }
 }`
 
+const nestedHostInjectedConfigSchema = `{
+  "type":"object",
+  "additionalProperties":false,
+  "required":["apps"],
+  "properties":{
+    "apps":{
+      "type":"array",
+      "minItems":1,
+      "items":{
+        "type":"object",
+        "additionalProperties":false,
+        "required":["id","image","rule_ref","generation"],
+        "properties":{
+          "id":{"type":"string","minLength":1,"hostInjected":true},
+          "image":{"type":"string","minLength":1,"maxLength":512},
+          "rule_ref":{"type":"string","minLength":1,"maxLength":128},
+          "generation":{"type":"string","minLength":1,"maxLength":128,"hostInjected":true},
+          "secret_refs":{"type":"array","hostInjected":true,"items":{"type":"string"}},
+          "auto_update":{"type":"boolean"}
+        }
+      }
+    }
+  }
+}`
+
+const nestedUnmarkedGenerationSchema = `{
+  "type":"object",
+  "additionalProperties":false,
+  "required":["apps"],
+  "properties":{
+    "apps":{
+      "type":"array",
+      "minItems":1,
+      "items":{
+        "type":"object",
+        "additionalProperties":false,
+        "required":["image","generation"],
+        "properties":{
+          "image":{"type":"string","minLength":1},
+          "generation":{"type":"string","minLength":1}
+        }
+      }
+    }
+  }
+}`
+
 func TestPluginConfigureInjectsHostInjectedKeysThenValidates(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginHostInjectedFixture(t, "official.host-injected", hostInjectedConfigSchema, false)
@@ -152,6 +198,88 @@ func TestPluginPublishKeepsSubmittedUserFields(t *testing.T) {
 	if got["resource_group_ref"] != "resource-group/injected" {
 		t.Fatalf("missing hostInjected resource_group_ref: %+v", got)
 	}
+}
+
+func TestPluginConfigureInjectsNestedHostInjectedKeysThenValidates(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginHostInjectedFixture(t, "official.host-nested", nestedHostInjectedConfigSchema, false)
+	instance, err := fixture.service.ConfigureMutation(WithSystemMutationPrincipal(context.Background(), "system:owner"), pluginHostInjectedConfigureRequest(fixture.pluginID, "instance-nested", json.RawMessage(`{"apps":[{"image":"nginx:latest","rule_ref":"rule-1","auto_update":true}]}`)))
+	if err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	got := pluginHostInjectedPendingObject(t, instance)
+	app, generation := pluginHostInjectedApp(t, got)
+	if app["image"] != "nginx:latest" || app["rule_ref"] != "rule-1" || app["auto_update"] != true {
+		t.Fatalf("user fields changed: %+v", app)
+	}
+	if generation == "" {
+		t.Fatalf("nested hostInjected generation was not written: %+v", got)
+	}
+	if id, _ := app["id"].(string); id == "" {
+		t.Fatalf("nested hostInjected id was not written: %+v", app)
+	}
+	if err := plugins.ValidateConfig(fixture.schema, mustPluginJSON(t, got)); err != nil {
+		t.Fatalf("injected nested config failed ValidateConfig: %v", err)
+	}
+	assertInjectedGenerationMatchesLifecycle(t, fixture, instance.ID, generation)
+}
+
+func TestPluginConfigureDoesNotGuessNestedUnmarkedRequiredNames(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginHostInjectedFixture(t, "official.host-nested-unmarked", nestedUnmarkedGenerationSchema, false)
+	_, err := fixture.service.ConfigureMutation(WithSystemMutationPrincipal(context.Background(), "system:owner"), pluginHostInjectedConfigureRequest(fixture.pluginID, "instance-nested-unmarked", json.RawMessage(`{"apps":[{"image":"nginx:latest"}]}`)))
+	if err == nil {
+		t.Fatal("ConfigureMutation filled unmarked nested required generation by name")
+	}
+	if !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("ConfigureMutation() error = %v, want missing unmarked nested generation", err)
+	}
+}
+
+func TestPluginConfigureKeepsNestedSubmittedUserFields(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginHostInjectedFixture(t, "official.host-nested-keep", nestedHostInjectedConfigSchema, false)
+	instance, err := fixture.service.ConfigureMutation(WithSystemMutationPrincipal(context.Background(), "system:owner"), pluginHostInjectedConfigureRequest(fixture.pluginID, "instance-nested-keep", json.RawMessage(`{"apps":[{"image":"nginx:latest","rule_ref":"rule-1","auto_update":true,"generation":"user-generation"}]}`)))
+	if err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	got := pluginHostInjectedPendingObject(t, instance)
+	app, generation := pluginHostInjectedApp(t, got)
+	if app["image"] != "nginx:latest" || app["rule_ref"] != "rule-1" || app["auto_update"] != true || generation != "user-generation" {
+		t.Fatalf("submitted nested fields were overwritten: %+v", app)
+	}
+}
+
+func TestPluginPublishInjectsNestedHostInjectedKeysThenValidates(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginHostInjectedFixture(t, "official.host-publish-nested", nestedHostInjectedConfigSchema, true)
+	instance, err := callPluginPublish(t, fixture.service, WithSystemMutationPrincipal(context.Background(), "system:owner"), map[string]any{
+		"PluginID":        fixture.pluginID,
+		"InstanceID":      "instance-publish-nested",
+		"ResourceGroupID": "default",
+		"Targets":         []string{"local"},
+		"PolicyChains":    []string{},
+		"Config":          json.RawMessage(`{"apps":[{"image":"nginx:latest","rule_ref":"rule-1","auto_update":false}]}`),
+		"FrontendURL":     "https://emby.example.com",
+		"ActorID":         "admin",
+		"Actor":           pluginPublishAdmin(),
+	})
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	got := pluginHostInjectedPendingObject(t, instance)
+	app, generation := pluginHostInjectedApp(t, got)
+	if app["image"] != "nginx:latest" || app["rule_ref"] != "rule-1" || app["auto_update"] != false {
+		t.Fatalf("published nested user fields changed: %+v", app)
+	}
+	if generation == "" {
+		t.Fatalf("publish did not inject nested hostInjected generation: %+v", got)
+	}
+	if err := plugins.ValidateConfig(fixture.schema, mustPluginJSON(t, got)); err != nil {
+		t.Fatalf("published nested config failed ValidateConfig: %v", err)
+	}
+	assertInjectedGenerationMatchesLifecycle(t, fixture, instance.ID, generation)
+	assertInjectedGenerationMatchesRPC(t, fixture, instance.ID, generation)
 }
 
 func TestPluginPublishInjectsHostInjectedKeysThenValidates(t *testing.T) {
@@ -409,6 +537,20 @@ func pluginHostInjectedConfigureRequest(pluginID, instanceID string, config json
 		Targets: []string{"local"}, PolicyChains: &chains, Config: config,
 		ActorID: "admin", Actor: pluginPublishAdmin(),
 	}
+}
+
+func pluginHostInjectedApp(t *testing.T, got map[string]any) (map[string]any, string) {
+	t.Helper()
+	apps, _ := got["apps"].([]any)
+	if len(apps) == 0 {
+		t.Fatalf("apps missing: %+v", got)
+	}
+	app, _ := apps[0].(map[string]any)
+	if app == nil {
+		t.Fatalf("apps[0] is not an object: %+v", got)
+	}
+	generation, _ := app["generation"].(string)
+	return app, generation
 }
 
 func pluginHostInjectedPendingObject(t *testing.T, instance PluginInstanceDetail) map[string]any {

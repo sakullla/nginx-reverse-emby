@@ -1260,12 +1260,12 @@ func (s *PluginService) pluginBindHostSecretRef(schema map[string]any, request P
 }
 
 func (s *PluginService) pluginInjectLifecycleGeneration(ctx context.Context, schema map[string]any, publicConfig json.RawMessage, materialized any, currentConfig json.RawMessage, installed storage.InstalledPluginRow, packageRow storage.PluginPackageRow, manifest plugins.Manifest, request PluginConfigureRequest, operation storage.PluginOperationRow, handles []storage.PluginInstanceSecretHandle, targetIDs []string, exists bool, instance storage.PluginInstanceRow) (json.RawMessage, any, error) {
-	if !pluginNamedPropertyHostInjected(schema, "generation") || pluginRawObjectHasKey(publicConfig, "generation") {
-		return publicConfig, materialized, nil
-	}
 	public, err := pluginConfigValue(publicConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
+	}
+	if !pluginHasMissingHostInjectedNamed(schema, public, "generation") {
+		return publicConfig, materialized, nil
 	}
 	generationID, err := s.pluginLifecycleGenerationID(ctx, installed, packageRow, manifest, request, operation, public, handles, targetIDs, exists, instance)
 	if err != nil {
