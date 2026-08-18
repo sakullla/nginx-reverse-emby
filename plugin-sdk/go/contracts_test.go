@@ -120,6 +120,51 @@ func TestPolicyV1HostFunctionSignaturesHaveIndependentBackingArrays(t *testing.T
 	}
 }
 
+func TestConfigSchemaHostInjectedKeywordAndSemanticsAreStable(t *testing.T) {
+	if ConfigSchemaKeywordHostInjected != "hostInjected" || ConfigSchemaKeywordReadOnly != "readOnly" || ConfigSchemaKeywordWriteOnly != "writeOnly" {
+		t.Fatal("config schema annotation keywords changed")
+	}
+
+	injected, err := ConfigSchemaHostInjected(map[string]any{"type": "string", ConfigSchemaKeywordHostInjected: true})
+	if err != nil || !injected {
+		t.Fatalf("hostInjected named property is no longer host-written: injected=%t err=%v", injected, err)
+	}
+	unmarked, err := ConfigSchemaHostInjected(map[string]any{"type": "string"})
+	if err != nil || unmarked {
+		t.Fatalf("unmarked schema is no longer treated as fill-form: injected=%t err=%v", unmarked, err)
+	}
+	explicitFalse, err := ConfigSchemaHostInjected(map[string]any{ConfigSchemaKeywordHostInjected: false})
+	if err != nil || explicitFalse {
+		t.Fatalf("explicit false hostInjected changed: injected=%t err=%v", explicitFalse, err)
+	}
+	if _, err := ConfigSchemaHostInjected(map[string]any{ConfigSchemaKeywordHostInjected: "yes"}); err == nil {
+		t.Fatal("non-boolean hostInjected was accepted")
+	}
+
+	named := map[string]any{"type": "string", ConfigSchemaKeywordHostInjected: true}
+	if err := ValidateConfigSchemaHostInjected(named, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfigSchemaHostInjected(map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}}}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfigSchemaHostInjected(map[string]any{"type": "string", ConfigSchemaKeywordWriteOnly: true}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfigSchemaHostInjected(named, true, false); err == nil {
+		t.Fatal("root hostInjected was accepted")
+	}
+	if err := ValidateConfigSchemaHostInjected(named, false, false); err == nil {
+		t.Fatal("hostInjected on a non-named property was accepted")
+	}
+	if err := ValidateConfigSchemaHostInjected(map[string]any{ConfigSchemaKeywordHostInjected: true, ConfigSchemaKeywordWriteOnly: true}, false, true); err == nil {
+		t.Fatal("hostInjected and writeOnly both true was accepted")
+	}
+	if err := ValidateConfigSchemaHostInjected(map[string]any{ConfigSchemaKeywordHostInjected: true, ConfigSchemaKeywordReadOnly: true}, false, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func sameWASMSignature(left, right WASMFunctionSignature) bool {
 	if len(left.Parameters) != len(right.Parameters) || len(left.Results) != len(right.Results) {
 		return false

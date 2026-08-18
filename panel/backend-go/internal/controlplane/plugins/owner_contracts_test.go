@@ -110,6 +110,83 @@ func TestValidatorRuntimeConfigExactNumericConstraints(t *testing.T) {
 	}
 }
 
+func TestConfigSchemaVocabularyAcceptsHostInjectedAndRejectsWriteOnlyConflict(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"mode":{"type":"string"},"generation":{"type":"string","hostInjected":true},"apps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","hostInjected":true},"name":{"type":"string"}},"required":["id","name"]}}},"required":["mode","generation"],"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"mode":"strict","generation":"gen-1","apps":[{"id":"app-1","name":"web"}]}`)); err != nil {
+		t.Fatalf("hostInjected schema = %v", err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"mode":"strict"}`)); err == nil || !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("required hostInjected field error = %v", err)
+	}
+
+	falseFlag, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"mode":{"type":"string","hostInjected":false}},"required":["mode"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(falseFlag, json.RawMessage(`{"mode":"strict"}`)); err != nil {
+		t.Fatalf("hostInjected false = %v", err)
+	}
+
+	conflict, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"token":{"type":"string","writeOnly":true,"hostInjected":true}},"required":["token"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(conflict, json.RawMessage(`{"token":"secret"}`)); err == nil || !strings.Contains(err.Error(), "hostInjected") || !strings.Contains(err.Error(), "writeOnly") {
+		t.Fatalf("hostInjected+writeOnly error = %v", err)
+	}
+
+	rootInjected, err := DecodeConfigSchema([]byte(`{"type":"object","hostInjected":true,"properties":{"mode":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(rootInjected, json.RawMessage(`{"mode":"strict"}`)); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Fatalf("root hostInjected error = %v", err)
+	}
+
+	itemsInjected, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string","hostInjected":true}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(itemsInjected, json.RawMessage(`{"tags":["a"]}`)); err == nil || !strings.Contains(err.Error(), "named object properties") {
+		t.Fatalf("items hostInjected error = %v", err)
+	}
+
+	notBool, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"generation":{"type":"string","hostInjected":"yes"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(notBool, json.RawMessage(`{"generation":"g"}`)); err == nil || !strings.Contains(err.Error(), "hostInjected must be boolean") {
+		t.Fatalf("non-boolean hostInjected error = %v", err)
+	}
+
+	unmarked, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(unmarked, json.RawMessage(`{"mode":"strict"}`)); err != nil {
+		t.Fatalf("unmarked schema = %v", err)
+	}
+	if err := ValidateConfig(unmarked, json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("unmarked required error = %v", err)
+	}
+
+	root := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"},"generation":{"type":"string","hostInjected":true}},"required":["mode","generation"],"additionalProperties":false}`)
+	refreshOwnerPackage(t, root)
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package with hostInjected schema = %v", err)
+	}
+	properties, _ := got.ConfigSchema["properties"].(map[string]any)
+	generation, _ := properties["generation"].(map[string]any)
+	if injected, _ := generation["hostInjected"].(bool); !injected {
+		t.Fatalf("validated schema lost hostInjected: %+v", got.ConfigSchema)
+	}
+}
+
 func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	t.Parallel()
 	assertCode := func(t *testing.T, err error, code string) {

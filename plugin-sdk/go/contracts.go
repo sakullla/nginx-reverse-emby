@@ -610,3 +610,57 @@ func (response LifecycleResponse) Validate() error {
 	}
 	return nil
 }
+
+// Config schema boolean annotations are host-accepted JSON Schema keywords on
+// plugin config.schema.json nodes. They sit beside the draft subset.
+const (
+	ConfigSchemaKeywordReadOnly     = "readOnly"
+	ConfigSchemaKeywordWriteOnly    = "writeOnly"
+	ConfigSchemaKeywordHostInjected = "hostInjected"
+)
+
+// ConfigSchemaHostInjected reports whether a named property is written by the
+// host and omitted from fill-in UI. A missing keyword is false so unmarked
+// schemas keep current behavior.
+func ConfigSchemaHostInjected(schema map[string]any) (bool, error) {
+	return configSchemaBooleanAnnotation(schema, ConfigSchemaKeywordHostInjected)
+}
+
+// ValidateConfigSchemaHostInjected accepts a hostInjected boolean only on a
+// named object property. The root, items nodes, and a true writeOnly sibling
+// are rejected. Unmarked nodes are accepted unchanged.
+func ValidateConfigSchemaHostInjected(schema map[string]any, root, namedObjectProperty bool) error {
+	hostInjected, err := ConfigSchemaHostInjected(schema)
+	if err != nil {
+		return err
+	}
+	if !hostInjected {
+		return nil
+	}
+	if root {
+		return errors.New("root config schema cannot be hostInjected")
+	}
+	if !namedObjectProperty {
+		return errors.New("hostInjected is only valid on named object properties")
+	}
+	writeOnly, err := configSchemaBooleanAnnotation(schema, ConfigSchemaKeywordWriteOnly)
+	if err != nil {
+		return err
+	}
+	if writeOnly {
+		return errors.New("hostInjected and writeOnly cannot both be true")
+	}
+	return nil
+}
+
+func configSchemaBooleanAnnotation(schema map[string]any, keyword string) (bool, error) {
+	value, ok := schema[keyword]
+	if !ok {
+		return false, nil
+	}
+	boolean, valid := value.(bool)
+	if !valid {
+		return false, fmt.Errorf("%s must be boolean", keyword)
+	}
+	return boolean, nil
+}

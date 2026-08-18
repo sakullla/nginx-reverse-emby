@@ -1551,7 +1551,7 @@ func rejectReadOnlyConfigValue(schema map[string]any, value any, pointer string)
 }
 
 func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) error {
-	allowed := map[string]bool{"$schema": true, "type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true}
+	allowed := map[string]bool{"$schema": true, "type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true, "hostInjected": true}
 	for keyword := range schema {
 		if !allowed[keyword] {
 			return fmt.Errorf("unsupported JSON Schema keyword %q", keyword)
@@ -1675,6 +1675,19 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 	}
 	if readOnly && writeOnly {
 		return errors.New("readOnly and writeOnly cannot both be true")
+	}
+	hostInjected, err := schemaBooleanAnnotation(schema, "hostInjected")
+	if err != nil {
+		return err
+	}
+	if root && hostInjected {
+		return errors.New("root config schema cannot be hostInjected")
+	}
+	if hostInjected && !namedObjectProperty {
+		return errors.New("hostInjected is only valid on named object properties")
+	}
+	if hostInjected && writeOnly {
+		return errors.New("hostInjected and writeOnly cannot both be true")
 	}
 	// writeOnly values are accepted only through the control-plane broker; the
 	// ordinary config document and read DTO never carry their plaintext.
