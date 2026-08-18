@@ -95,6 +95,92 @@ describe('plugin UI security boundary', () => {
     expect(components[6]).toMatchObject({ type: 'section', id: 'fixed' })
   })
 
+  it('omits hostInjected properties, keeps unmarked strings as text, and uses textarea for long strings', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      required: ['generation', 'mode', 'upstreams'],
+      properties: {
+        generation: { type: 'string', hostInjected: true, title: 'Generation' },
+        secret_ref: { type: 'string', hostInjected: true },
+        resource_group_ref: { type: 'string', hostInjected: true },
+        mode: { type: 'string', title: '模式' },
+        note: { type: 'string', maxLength: 512 },
+        leftover: { type: 'string', hostInjected: false },
+        mislabelled: { type: 'string', hostInjected: 'true' },
+        upstreams: { type: 'string', title: '上游', maxLength: 16384, description: '按行填写，留空使用默认上游。' }
+      }
+    })
+    expect(components.map((component) => component.id)).toEqual(['mode', 'note', 'leftover', 'mislabelled', 'upstreams'])
+    expect(components[0]).toMatchObject({ type: 'text', binding: '/mode', required: true })
+    expect(components[1]).toMatchObject({ type: 'text', binding: '/note', max_length: 512 })
+    expect(components[2]).toMatchObject({ type: 'text', binding: '/leftover' })
+    expect(components[3]).toMatchObject({ type: 'text', binding: '/mislabelled' })
+    expect(components[4]).toMatchObject({
+      type: 'textarea',
+      binding: '/upstreams',
+      required: true,
+      max_length: 16384,
+      label: '上游',
+      description: '按行填写，留空使用默认上游。'
+    })
+  })
+
+  it('synthesizes rule_ref as a select that can bind visible host HTTP rules', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      required: ['rule_ref'],
+      properties: {
+        image: { type: 'string', title: '镜像', maxLength: 512 },
+        rule_ref: { type: 'string', title: '规则', minLength: 1, maxLength: 128 },
+        rule_reference: { type: 'string', title: '其它引用' }
+      }
+    })
+    expect(components.map((component) => component.id)).toEqual(['image', 'rule_ref', 'rule_reference'])
+    expect(components[0]).toMatchObject({ type: 'text', binding: '/image', max_length: 512 })
+    expect(components[2]).toMatchObject({ type: 'text', binding: '/rule_reference' })
+    const ruleRef = components[1]
+    expect(ruleRef).toMatchObject({ type: 'select', id: 'rule_ref', label: '规则', binding: '/rule_ref', required: true, options_source: 'http_rule' })
+    expect(Array.isArray(ruleRef.options)).toBe(true)
+    const visibleHttpRules = [
+      { value: 'https://media.example.com', label: 'media' },
+      { value: 'https://tv.example.com', label: 'tv' }
+    ]
+    ruleRef.options = visibleHttpRules
+    expect(ruleRef).toMatchObject({ type: 'select', binding: '/rule_ref', options: visibleHttpRules })
+  })
+
+  it('omits nested hostInjected properties and synthesizes nested rule_ref as a host HTTP rule select', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        generation: { type: 'string' },
+        apps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'image', 'rule_ref', 'generation'],
+            properties: {
+              id: { type: 'string', hostInjected: true },
+              image: { type: 'string', title: '镜像', maxLength: 512 },
+              rule_ref: { type: 'string', title: '规则', minLength: 1, maxLength: 128 },
+              generation: { type: 'string', hostInjected: true },
+              secret_refs: { type: 'array', hostInjected: true, items: { type: 'string' } },
+              auto_update: { type: 'boolean', title: '自动更新' }
+            }
+          }
+        }
+      }
+    })
+    expect(components.map((component) => component.id)).toEqual(['generation', 'apps'])
+    expect(components[0]).toMatchObject({ type: 'text', binding: '/generation' })
+    expect(components[1].type).toBe('array')
+    expect(components[1].children.map((child) => child.id)).toEqual(['image', 'rule_ref', 'auto_update'])
+    expect(components[1].children[0]).toMatchObject({ type: 'text', binding: '/image', max_length: 512, required: true })
+    expect(components[1].children[1]).toMatchObject({ type: 'select', binding: '/rule_ref', required: true, label: '规则', options_source: 'http_rule' })
+    expect(Array.isArray(components[1].children[1].options)).toBe(true)
+    expect(components[1].children[2]).toMatchObject({ type: 'toggle', binding: '/auto_update' })
+  })
+
   it('collects constraint errors through grid containers and new component types', () => {
     const components = [
       { type: 'grid', id: 'pair', columns: 2, children: [

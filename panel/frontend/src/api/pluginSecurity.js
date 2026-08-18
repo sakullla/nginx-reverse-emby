@@ -128,6 +128,8 @@ function schemaEnumOptions(field) {
 
 function synthesizeComponent(name, field, pointerPrefix, required) {
   if (!field || typeof field !== 'object' || Array.isArray(field)) return []
+  // hostInjected properties are written by the host and stay off the fill-in UI.
+  if (field.hostInjected === true) return []
   if (field.$ref || field.contentMediaType === 'text/html') return []
   const pointer = `${pointerPrefix}/${escapePointerToken(name)}`
   const identity = {
@@ -186,6 +188,12 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
     }
     case 'string': {
       if (field.writeOnly === true) return [{ type: 'secret', ...identity, ...annotation, binding: pointer, required }]
+      if (name === 'rule_ref') {
+        // The page binds visible HTTP-rule options; never fall back to a text box.
+        const component = { type: 'select', ...identity, ...annotation, binding: pointer, required, options: [], options_source: 'http_rule' }
+        if (field.default !== undefined) component.default = field.default
+        return [component]
+      }
       if (Array.isArray(field.enum) && field.enum.length) {
         // Short string enums read better as a radio group; long ones stay a select.
         const allStrings = field.enum.every((item) => typeof item === 'string')
@@ -194,7 +202,8 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
         if (field.default !== undefined) component.default = field.default
         return [component]
       }
-      const component = { type: 'text', ...identity, ...annotation, binding: pointer, required }
+      const kind = Number.isFinite(field.maxLength) && field.maxLength > 512 ? 'textarea' : 'text'
+      const component = { type: kind, ...identity, ...annotation, binding: pointer, required }
       if (Number.isFinite(field.minLength)) component.min_length = field.minLength
       if (Number.isFinite(field.maxLength)) component.max_length = field.maxLength
       if (typeof field.pattern === 'string') component.pattern = field.pattern
