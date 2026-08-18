@@ -268,7 +268,9 @@ func pluginResolveHostInjectedValue(name, pointer string, current any, parent ma
 	if text, ok := current.(string); ok && text == "" {
 		current = nil
 	}
-	if current != nil {
+	// generation is this RPC's identity. Reusing a stored echo would skip
+	// inject and diverge from BuildPluginGeneration / LoadAgentPluginGenerations.
+	if current != nil && name != "generation" {
 		return current, true
 	}
 	switch name {

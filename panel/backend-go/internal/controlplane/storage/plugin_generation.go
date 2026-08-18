@@ -137,7 +137,7 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 			return nil, err
 		}
 		for _, instance := range targetedInstances {
-			generation, err := buildPluginGeneration(plugin, instance, packageRow, manifest, artifact, grants, agentID)
+			generation, err := BuildPluginGeneration(plugin, instance, packageRow, manifest, artifact, grants, agentID)
 			if err != nil {
 				return nil, err
 			}
@@ -203,7 +203,7 @@ func (s *GormStore) loadPluginGenerationGrants(ctx context.Context, plugin Insta
 	return grants, nil
 }
 
-func buildPluginGeneration(installed InstalledPluginRow, instance PluginInstanceRow, packageRow PluginPackageRow, manifest plugins.Manifest, artifact PluginArtifactRow, grants []PluginGenerationGrant, agentID string) (PluginGeneration, error) {
+func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstanceRow, packageRow PluginPackageRow, manifest plugins.Manifest, artifact PluginArtifactRow, grants []PluginGenerationGrant, agentID string) (PluginGeneration, error) {
 	config := instance.ConfigJSON
 	configVersion := instance.ConfigVersion
 	resourceGroupID := instance.ResourceGroupID
@@ -298,6 +298,42 @@ func decodePluginGenerationList[T any](raw string) ([]T, error) {
 	return result, nil
 }
 
+func stripPluginConfigGenerationKeys(raw json.RawMessage) json.RawMessage {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return raw
+	}
+	encoded, err := json.Marshal(stripPluginConfigGenerationValue(value))
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func stripPluginConfigGenerationValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if key == "generation" {
+				continue
+			}
+			out[key] = stripPluginConfigGenerationValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for index, child := range typed {
+			out[index] = stripPluginConfigGenerationValue(child)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
 func canonicalPluginGenerationJSON(raw json.RawMessage, requireObject bool) (json.RawMessage, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		if requireObject {
@@ -390,6 +426,12 @@ func PluginGenerationIdentity(generation PluginGeneration) (string, error) {
 	generation.Revision = 0
 	canonicalizePluginGeneration(&generation, false)
 	config, err := canonicalPluginGenerationJSON(generation.Config, true)
+	if err != nil {
+		return "", err
+	}
+	// Config may echo the lifecycle generation after host injection. The
+	// identity must stay stable before and after that echo is written.
+	config, err = canonicalPluginGenerationJSON(stripPluginConfigGenerationKeys(config), true)
 	if err != nil {
 		return "", err
 	}

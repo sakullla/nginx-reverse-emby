@@ -1365,27 +1365,11 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 	if err != nil {
 		return "", err
 	}
-	secretHandles := make([]storage.PluginGenerationSecretHandle, 0, len(handles))
-	for _, handle := range handles {
-		secretHandles = append(secretHandles, storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose})
+	generation, err := storage.BuildPluginGeneration(prospectiveInstalled, prospectiveInstance, packageRow, manifest, artifact, grants, agentID)
+	if err != nil {
+		return "", err
 	}
-	features := make([]string, 0, len(grants))
-	for _, grant := range grants {
-		features = append(features, grant.Name)
-	}
-	generation := storage.PluginGeneration{
-		OperationID: operation.ID, InstanceID: request.InstanceID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
-		Artifact:             pluginGenerationArtifact(artifact, packageRow),
-		Runtime:              storage.PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: artifact.Path},
-		ExtensionPoints:      manifest.ExtensionPoints,
-		RequiredFeatures:     pluginsdk.RequiredRPCFeatures(features),
-		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
-		ConfigVersion:        version, Config: encoded, Grants: grants, SecretHandles: secretHandles,
-		ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
-		Target:         storage.PluginGenerationTarget{Kind: "agent", ID: agentID, ResourceGroupID: request.ResourceGroupID, Version: version},
-		FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
-	}
-	return storage.PluginGenerationIdentity(generation)
+	return generation.ID, nil
 }
 
 func (s *PluginService) pluginGenerationTargetPlatform(ctx context.Context, agentID string) (string, error) {
