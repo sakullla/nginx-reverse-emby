@@ -18,12 +18,11 @@ import (
 // pluginHostInjectedSource is the existing host identity written into schema
 // hostInjected properties. Callers must not invent a second identity set.
 type pluginHostInjectedSource struct {
-	Generation        string
-	ResourceGroupRef  string
-	SecretRef         string
-	SecretRefs        []string
-	Handles           []storage.PluginInstanceSecretHandle
-	ResolveGeneration func(public any) (string, error)
+	Generation       string
+	ResourceGroupRef string
+	SecretRef        string
+	SecretRefs       []string
+	Handles          []storage.PluginInstanceSecretHandle
 }
 
 // PluginSecretFieldState is the only read projection for schema writeOnly
@@ -98,17 +97,6 @@ func pluginPrepareBrokeredConfig(schema map[string]any, currentConfig, requested
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if source.Generation == "" && source.ResolveGeneration != nil {
-		source.Generation, err = source.ResolveGeneration(public)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		source.ResolveGeneration = nil
-		public, err = pluginApplyMissingHostInjected(schema, public, current, "", source)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-	}
 	encoded, err := json.Marshal(public)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
@@ -163,7 +151,6 @@ func pluginHostSource(handles []storage.PluginInstanceSecretHandle, host ...plug
 	source.ResourceGroupRef = host[0].ResourceGroupRef
 	source.SecretRef = host[0].SecretRef
 	source.SecretRefs = host[0].SecretRefs
-	source.ResolveGeneration = host[0].ResolveGeneration
 	if len(host[0].Handles) > 0 {
 		source.Handles = host[0].Handles
 	}
