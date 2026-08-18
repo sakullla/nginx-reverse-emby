@@ -6,11 +6,17 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   fetchAgents: vi.fn(),
+  fetchRules: vi.fn(),
+  fetchHttpRulesPage: vi.fn(),
   refreshActor: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
 vi.mock('../../api/client', () => ({ api: { get: mocks.get, post: mocks.post }, longRunningRequest: { timeout: 0 } }))
-vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
+vi.mock('../../api', () => ({
+  fetchAgents: mocks.fetchAgents,
+  fetchRules: mocks.fetchRules,
+  fetchHttpRulesPage: mocks.fetchHttpRulesPage
+}))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'rpc.plugin' } }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
 vi.mock('../../context/useAccessControl', async (original) => {
@@ -37,7 +43,7 @@ vi.mock('../../components/base/BaseModal.vue', () => ({
     name: 'BaseModal',
     props: ['modelValue', 'title', 'subtitle', 'size', 'showFooter', 'closeOnClickModal', 'dataTest'],
     emits: ['update:modelValue', 'confirm'],
-    template: '<div v-if="modelValue" class="base-modal-stub" :data-test="dataTest"><slot /><slot name="footer" /></div>'
+    template: '<div v-if="modelValue" class="base-modal-stub" :data-test="dataTest"><button type="button" class="modal__close" data-test="modal-close" @click="$emit(\'update:modelValue\', false)">关闭</button><slot /><slot name="footer" /></div>'
   }
 }))
 
@@ -54,11 +60,67 @@ async function openConfigModal(wrapper) {
   return wrapper.get('[data-test="plugin-instance-config-modal"]')
 }
 
+const OPS_ACTION_LABELS = ['启用', '停用', '回滚', '卸载', '导出脱敏诊断']
+const OPS_SECTION_PATTERNS = [/逐 Agent 状态/, /运行日志/, /生命周期操作与审计|操作时间线|审计/]
+
+function isOverlay(element) {
+  return Boolean(element.closest('[data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub'))
+}
+
+function isInMore(element) {
+  return Boolean(element.closest('[data-test="plugin-more"]'))
+}
+
 function pagePrimaryButtons(wrapper) {
   return wrapper.findAll('button.btn-primary').filter((button) => {
-    const modal = button.element.closest('[data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub')
-    return !modal && button.isVisible()
+    return !isOverlay(button.element) && !isInMore(button.element) && button.isVisible()
   })
+}
+
+function mainPathButtons(wrapper) {
+  return wrapper.findAll('button').filter((button) => !isOverlay(button.element) && !isInMore(button.element))
+}
+
+function mainPathText(wrapper) {
+  const parts = []
+  const header = wrapper.find('.page-header')
+  if (header.exists()) parts.push(header.text())
+  const task = wrapper.find('[data-test="plugin-task-center"]')
+  if (task.exists()) parts.push(task.text())
+  for (const section of wrapper.findAll('.plugin-section')) {
+    if (!isInMore(section.element) && !isOverlay(section.element)) parts.push(section.text())
+  }
+  return parts.join('\n')
+}
+
+function morePanel(wrapper) {
+  return wrapper.find('[data-test="plugin-more"]')
+}
+
+async function openMore(wrapper) {
+  const panel = morePanel(wrapper)
+  expect(panel.exists()).toBe(true)
+  if (!panel.element.open) {
+    const summary = panel.find('summary')
+    if (summary.exists()) await summary.trigger('click')
+    else panel.element.open = true
+  }
+  return panel
+}
+
+function moreButton(wrapper, text) {
+  return morePanel(wrapper).findAll('button').find((button) => button.text() === text)
+}
+
+function mainPathConfigFields(wrapper) {
+  return wrapper.findAll('.declarative-field, .declarative-ui').filter((node) => !isOverlay(node.element) && !isInMore(node.element))
+}
+
+function visibleHttpRules() {
+  return [
+    { id: 21, name: 'media', frontend: 'https://media.example.com', frontend_url: 'https://media.example.com', agent_id: 'edge-a', enabled: true },
+    { id: 22, name: 'tv', frontend: 'https://tv.example.com', frontend_url: 'https://tv.example.com', agent_id: 'edge-b', enabled: true }
+  ]
 }
 
 function taskGuide(wrapper) {
@@ -186,6 +248,9 @@ function stubReads(detail) {
     if (path.includes('/access/resource-groups')) {
       return { data: { resource_groups: [{ id: 'default', name: '默认组' }, { id: 'group-a', name: '组 A' }] } }
     }
+    if (path.includes('/http-rules') || /\/agents\/[^/]+\/rules$/.test(String(path))) {
+      return { data: { items: visibleHttpRules(), rules: visibleHttpRules() } }
+    }
     if (path.includes('/logs')) return { data: { entries: [{ created_at: '2026-08-17T00:00:00Z', agent_id: 'edge-a', message: 'ready' }], next_cursor: '' } }
     return { data: detail }
   })
@@ -197,6 +262,8 @@ async function mountDetail(detail) {
     { id: 'edge-a', name: 'Edge A', status: 'online' },
     { id: 'edge-b', name: 'Edge B', status: 'online' }
   ])
+  mocks.fetchRules.mockResolvedValue(visibleHttpRules())
+  mocks.fetchHttpRulesPage.mockResolvedValue({ items: visibleHttpRules(), total: 2 })
   const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
   await flushPromises()
   return wrapper
@@ -217,8 +284,12 @@ describe('PluginDetailPage production API projection', () => {
     mocks.get.mockReset()
     mocks.post.mockReset()
     mocks.fetchAgents.mockReset()
+    mocks.fetchRules.mockReset()
+    mocks.fetchHttpRulesPage.mockReset()
     mocks.refreshActor.mockReset()
     mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
+    mocks.fetchRules.mockResolvedValue(visibleHttpRules())
+    mocks.fetchHttpRulesPage.mockResolvedValue({ items: visibleHttpRules(), total: 2 })
   })
 
   it('keeps schema and handle metadata through the real API adapter', async () => {
@@ -407,17 +478,36 @@ describe('PluginDetailPage task-center production API projection', () => {
     mocks.get.mockReset()
     mocks.post.mockReset()
     mocks.fetchAgents.mockReset()
+    mocks.fetchRules.mockReset()
+    mocks.fetchHttpRulesPage.mockReset()
     mocks.refreshActor.mockReset()
     mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
+    mocks.fetchRules.mockResolvedValue(visibleHttpRules())
+    mocks.fetchHttpRulesPage.mockResolvedValue({ items: visibleHttpRules(), total: 2 })
   })
 
   it('keeps 开始部署 as the first-screen primary action before anything is deployed', async () => {
     const wrapper = await mountDetail(productionDetail())
-    expect(wrapper.text()).toContain('还没部署')
+    expect(wrapper.find('.plugin-task__purpose').text()).toContain('把媒体站发布到一个节点')
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
-    expect(buttonByText(wrapper, '启用')?.classes() || []).not.toContain('btn-primary')
-    expect(buttonByText(wrapper, '回滚')?.classes() || []).not.toContain('btn-primary')
-    expect(buttonByText(wrapper, '导出脱敏诊断')?.classes() || []).not.toContain('btn-primary')
+    expect(mainPathConfigFields(wrapper)).toHaveLength(0)
+    expect(wrapper.find('[data-test="plugin-deploy-modal"]').exists()).toBe(false)
+    expect(mainPathButtons(wrapper).map((button) => button.text()).filter((text) => OPS_ACTION_LABELS.includes(text))).toEqual([])
+    for (const pattern of OPS_SECTION_PATTERNS) {
+      expect(mainPathText(wrapper)).not.toMatch(pattern)
+    }
+
+    await buttonByText(wrapper, '开始部署').trigger('click')
+    await flushPromises()
+    const modal = wrapper.get('[data-test="plugin-deploy-modal"]')
+    expect(modal.exists()).toBe(true)
+    expect(findControl(modal, ['plugin-guide-resource-group', 'deployment-resource-group'])).toBeTruthy()
+    expect(modal.text()).toContain('默认组')
+    expect(modal.text()).toContain('组 A')
+    expect(modal.text()).toContain('Edge A')
+    expect(modal.text()).toContain('Edge B')
+    expect(mainPathConfigFields(wrapper)).toHaveLength(0)
   })
 
   it('prompts to finish publishing only when an HTTP backend is already deployed', async () => {
@@ -618,7 +708,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(mocks.post.mock.calls[0][1]).not.toHaveProperty('rule_id')
   })
 
-  it('keeps lifecycle, diagnostics, logs, and timeline reachable and blocks readonly submits', async () => {
+  it('keeps lifecycle, diagnostics, logs, and timeline only inside 更多', async () => {
     const wrapper = await mountDetail(productionDetail({
       plugin: {
         plugin_id: 'rpc.plugin',
@@ -641,17 +731,26 @@ describe('PluginDetailPage task-center production API projection', () => {
     }))
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没发布域名')
     expect(buttonByText(wrapper, '发布到域名')).toBeTruthy()
-    expect(buttonByText(wrapper, '启用')).toBeTruthy()
-    expect(buttonByText(wrapper, '停用')).toBeTruthy()
-    expect(buttonByText(wrapper, '回滚')).toBeTruthy()
-    expect(buttonByText(wrapper, '卸载')).toBeTruthy()
-    expect(buttonByText(wrapper, '导出脱敏诊断')).toBeTruthy()
-    expect(wrapper.text()).toContain('edge-a')
-    expect(wrapper.text()).toContain('ready')
-    expect(wrapper.text()).toContain('configure')
-    expect(wrapper.find('.plugin-technical').exists()).toBe(true)
+    expect(mainPathConfigFields(wrapper)).toHaveLength(0)
+    expect(mainPathButtons(wrapper).map((button) => button.text()).filter((text) => OPS_ACTION_LABELS.includes(text))).toEqual([])
+    for (const pattern of OPS_SECTION_PATTERNS) {
+      expect(mainPathText(wrapper)).not.toMatch(pattern)
+    }
 
-    await buttonByText(wrapper, '停用').trigger('click')
+    const more = await openMore(wrapper)
+    expect(more.get('summary').text()).toBe('更多')
+    for (const label of OPS_ACTION_LABELS) {
+      expect(moreButton(wrapper, label)).toBeTruthy()
+    }
+    expect(more.text()).toContain('逐 Agent 状态')
+    expect(more.text()).toMatch(/运行日志/)
+    expect(more.text()).toMatch(/生命周期操作与审计|操作时间线|审计/)
+    expect(more.text()).toContain('edge-a')
+    expect(more.text()).toContain('ready')
+    expect(more.text()).toContain('configure')
+    expect(more.find('.plugin-technical').exists()).toBe(true)
+
+    await moreButton(wrapper, '停用').trigger('click')
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     await wrapper.find('.delete-dialog-cancel').trigger('click')
     await flushPromises()
@@ -664,6 +763,7 @@ describe('PluginDetailPage task-center production API projection', () => {
       instances: [deployedInstance()]
     }))
     expect(readonlyPage.text()).toContain('还没发布域名')
+    expect(mainPathConfigFields(readonlyPage)).toHaveLength(0)
     const publish = buttonByText(readonlyPage, '发布到域名')
     if (publish) {
       expect(publish.attributes('disabled')).toBeDefined()
@@ -671,5 +771,81 @@ describe('PluginDetailPage task-center production API projection', () => {
     }
     expect(configModal(readonlyPage).exists()).toBe(false)
     expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('edits deployed config only in the modal and does not write when the modal is cancelled', async () => {
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance({ config: { mode: 'observe' } })]
+    }))
+    expect(mainPathConfigFields(wrapper)).toHaveLength(0)
+    expect(configModal(wrapper).exists()).toBe(false)
+
+    const modal = await openConfigModal(wrapper)
+    const input = modal.get('.declarative-field input[type="text"]')
+    expect(input.element.value).toBe('observe')
+    await input.setValue('block')
+    await modal.get('[data-test="modal-close"]').trigger('click')
+    await flushPromises()
+
+    expect(configModal(wrapper).exists()).toBe(false)
+    expect(mainPathConfigFields(wrapper)).toHaveLength(0)
+    expect(mocks.post).not.toHaveBeenCalled()
+    expect(writePaths()).toEqual([])
+  })
+
+  it('lets the deploy and publish modal pick a visible node and resource group', async () => {
+    const wrapper = await mountDetail(productionDetail())
+    const guide = await openTaskGuide(wrapper, '开始部署')
+    const groupSelect = findControl(guide, ['plugin-guide-resource-group', 'deployment-resource-group'])
+    expect(groupSelect).toBeTruthy()
+    expect(groupSelect.element.tagName).toBe('SELECT')
+    const groupValues = Array.from(groupSelect.element.options || []).map((option) => option.value)
+    expect(groupValues).toEqual(['default', 'group-a'])
+    expect(guide.text()).toContain('默认组')
+    expect(guide.text()).toContain('组 A')
+    expect(guide.text()).toContain('Edge A')
+    expect(guide.text()).toContain('Edge B')
+    expect(guide.text()).not.toContain('edge-hidden')
+    await chooseTarget(guide, 'edge-a')
+    await groupSelect.setValue('group-a')
+    expect(groupSelect.element.value).toBe('group-a')
+  })
+
+  it('binds the rule_ref select in the config modal to visible HTTP rules', async () => {
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      package: {
+        ...productionDetail().package,
+        config_schema: {
+          type: 'object',
+          required: ['rule_ref'],
+          properties: {
+            mode: { type: 'string', title: '模式' },
+            rule_ref: { type: 'string', title: '规则', minLength: 1, maxLength: 128 }
+          }
+        }
+      },
+      instances: [deployedInstance({ config: { mode: 'observe' } })]
+    }))
+    const modal = await openConfigModal(wrapper)
+    await flushPromises()
+    const ruleField = modal.findAll('.declarative-field').find((field) => field.text().includes('规则'))
+    expect(ruleField).toBeTruthy()
+    expect(ruleField.find('select').exists()).toBe(true)
+    expect(ruleField.find('input[type="text"]').exists()).toBe(false)
+    const optionValues = Array.from(ruleField.get('select').element.options || []).map((option) => option.value)
+    const optionText = Array.from(ruleField.get('select').element.options || []).map((option) => `${option.value} ${option.text}`).join(' ')
+    expect(optionValues).toEqual(['https://media.example.com', 'https://tv.example.com'])
+    expect(optionText).toMatch(/media/)
+    expect(optionText).toMatch(/tv/)
+    expect(optionText).not.toContain('hidden-internal')
+    expect(optionText).not.toContain('edge-hidden')
+    await ruleField.get('select').setValue('https://media.example.com')
+    await modal.findAll('button').find((button) => button.text() === '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/plugins/rpc.plugin/configure', expect.objectContaining({
+      config: expect.objectContaining({ rule_ref: 'https://media.example.com' })
+    }), { timeout: 0 })
   })
 })

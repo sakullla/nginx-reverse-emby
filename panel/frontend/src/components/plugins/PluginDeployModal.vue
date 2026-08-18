@@ -1,5 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
+import * as hostApi from '../../api'
 import { configurePlugin, enablePlugin, publishPlugin } from '../../api/plugins'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
 import { pickDefaultResourceGroupID, resourceGroupDisplayName } from '../../context/useAccessControl'
@@ -23,12 +24,15 @@ const props = defineProps({
   instance: { type: Object, default: null },
   publishedEntry: { type: Object, default: null },
   intent: { type: String, default: '' },
-  canSubmit: { type: Boolean, default: true }
+  canSubmit: { type: Boolean, default: true },
+  httpRules: { type: Array, default: null }
 })
 const emit = defineEmits(['update:modelValue', 'deployed'])
 
 const busy = ref(false)
 const error = ref('')
+const httpRulesLoading = ref(false)
+const loadedHttpRules = ref([])
 const deployment = reactive({ resourceGroupID: '', target: '', host: '', https: true })
 
 const hasHTTPBackend = computed(() => {
@@ -65,23 +69,148 @@ const modalSubtitle = computed(() => {
 })
 const showConfig = computed(() => mode.value === 'deploy' && !props.formEmpty)
 const lockedScope = computed(() => mode.value === 'update')
+const needsHttpRuleOptions = computed(() => documentNeedsHttpRuleOptions(props.document))
+const visibleHttpRuleOptions = computed(() => httpRuleSelectOptions(
+  Array.isArray(props.httpRules) ? props.httpRules : loadedHttpRules.value
+))
 const blocker = computed(() => {
   if (!props.resourceGroups.length) return '当前身份没有可见的资源组，无法部署。'
   if (!sortedAgents.value.length) return '当前没有可选择的节点。'
   if (!deployment.target) return '请选择一个节点。'
   if (hasHTTPBackend.value && !normalizeHost(deployment.host)) return '请填写一条入口域名。'
+  if (needsHttpRuleOptions.value && !httpRulesLoading.value && !visibleHttpRuleOptions.value.length) {
+    return '当前身份没有可见的 HTTP 规则，无法绑定规则。'
+  }
   return ''
 })
-const submitDocument = computed(() => ({
+const submitDisabled = computed(() => busy.value || httpRulesLoading.value || !!blocker.value || !props.canSubmit)
+const submitDocument = computed(() => bindHttpRuleOptions({
   ...(props.document || {}),
   title: props.document?.title || '插件配置',
   actions: [{ type: 'submit', id: 'deploy', label: submitLabel.value }]
-}))
+}, visibleHttpRuleOptions.value))
 
 watch(() => props.modelValue, (open) => {
   if (!open) return
   resetForm()
+  void loadVisibleHttpRules()
 })
+
+function walkUIComponents(components, visit) {
+  for (const component of components || []) {
+    if (!component || typeof component !== 'object' || Array.isArray(component)) continue
+    visit(component)
+    if (Array.isArray(component.children)) walkUIComponents(component.children, visit)
+  }
+}
+
+function documentNeedsHttpRuleOptions(document) {
+  let needed = false
+  walkUIComponents(document?.components, (component) => {
+    if (component.options_source === 'http_rule') needed = true
+  })
+  return needed
+}
+
+function bindHttpRuleOptions(document, options) {
+  const next = JSON.parse(JSON.stringify(document || {}))
+  walkUIComponents(next.components, (component) => {
+    if (component.options_source !== 'http_rule') return
+    component.type = 'select'
+    component.options = options
+  })
+  return next
+}
+
+function httpRuleOptionValue(rule) {
+  if (rule.value != null) return String(rule.value).trim()
+  const frontend = String(rule.frontend_url || '').trim()
+  if (frontend && frontend.length <= 128) return frontend
+  const id = String(rule.id ?? '').trim()
+  const agentID = String(rule.agent_id || rule.agentId || '').trim()
+  const compact = agentID && id ? `${agentID}:${id}` : id
+  return compact.length <= 128 ? compact : ''
+}
+
+function httpRuleOptionLabel(rule, value) {
+  if (rule.label != null && String(rule.label).trim()) return String(rule.label).trim()
+  const named = String(rule.name || '').trim()
+  if (named) return named
+  const tag = Array.isArray(rule.tags) ? String(rule.tags[0] || '').trim() : ''
+  if (tag) return tag
+  const frontend = String(rule.frontend_url || '').trim()
+  if (frontend) {
+    try { return new URL(frontend).host || frontend } catch { return frontend.replace(/^https?:\/\//i, '') }
+  }
+  const agentName = String(rule.agent_name || rule.agentName || '').trim()
+  if (agentName) return `${agentName} · ${value}`
+  return value
+}
+
+function httpRuleSelectOptions(rules) {
+  const seen = new Set()
+  const options = []
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    if (!rule || typeof rule !== 'object') continue
+    const value = httpRuleOptionValue(rule)
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    options.push({ value, label: httpRuleOptionLabel(rule, value) })
+  }
+  return options
+}
+
+function hostApiFn(name) {
+  try {
+    const fn = hostApi[name]
+    return typeof fn === 'function' ? fn : null
+  } catch {
+    return null
+  }
+}
+
+async function fetchVisibleHttpRules(agentIds) {
+  const fetchPage = hostApiFn('fetchHttpRulesPage')
+  if (fetchPage) {
+    const collected = []
+    let page = 1
+    const pageSize = 100
+    while (page <= 5) {
+      const result = await fetchPage({ agentFilter: '__all__', page, pageSize })
+      const items = Array.isArray(result?.items) ? result.items : (Array.isArray(result) ? result : [])
+      collected.push(...items)
+      const total = Number(result?.total)
+      if (!Number.isFinite(total) || collected.length >= total || items.length < pageSize) break
+      page += 1
+    }
+    return collected
+  }
+  const fetchGrouped = hostApiFn('fetchAllAgentsRules')
+  if (fetchGrouped && agentIds.length) {
+    const groups = await fetchGrouped(agentIds)
+    return (Array.isArray(groups) ? groups : []).flatMap((group) => {
+      const agentID = group?.agentId || group?.agent_id || ''
+      return (Array.isArray(group?.rules) ? group.rules : []).map((rule) => ({
+        ...rule,
+        agent_id: rule?.agent_id || agentID
+      }))
+    })
+  }
+  return []
+}
+
+async function loadVisibleHttpRules() {
+  loadedHttpRules.value = []
+  if (!documentNeedsHttpRuleOptions(props.document) || Array.isArray(props.httpRules)) return
+  httpRulesLoading.value = true
+  try {
+    loadedHttpRules.value = await fetchVisibleHttpRules(sortedAgents.value.map((agent) => agent.id))
+  } catch {
+    loadedHttpRules.value = []
+  } finally {
+    httpRulesLoading.value = false
+  }
+}
 
 function packageDeclaresHTTPBackend(pkg) {
   if (!pkg || typeof pkg !== 'object') return false
@@ -162,8 +291,12 @@ function selectAgent(agentID) {
 }
 
 async function deploy(payload) {
-  if (busy.value || !props.canSubmit) return
+  if (busy.value || httpRulesLoading.value || !props.canSubmit) return
   error.value = ''
+  if (blocker.value) {
+    error.value = blocker.value
+    return
+  }
   const instanceID = resolveInstanceID()
   const resourceGroupID = String(deployment.resourceGroupID || '').trim()
   const target = String(deployment.target || '').trim()
@@ -224,6 +357,7 @@ async function deploy(payload) {
     :subtitle="modalSubtitle"
     size="lg"
     :close-on-click-modal="false"
+    :show-footer="true"
     data-test="plugin-deploy-modal"
     @update:model-value="emit('update:modelValue', $event)"
   >
@@ -295,12 +429,12 @@ async function deploy(payload) {
       <p v-if="error || blocker" class="plugin-alert" role="alert">{{ error || blocker }}</p>
       <div v-if="formEmpty && mode === 'deploy'" class="plugin-deployment__empty-config">
         <p class="plugin-config-empty">此插件没有需要先填写的配置，可直接{{ hasHTTPBackend ? '发布到域名' : '部署' }}。</p>
-        <button class="btn btn-primary" type="button" :disabled="busy || !!blocker || !canSubmit" @click="deploy({ config: {}, secret_replacements: {} })">
+        <button class="btn btn-primary" type="button" :disabled="submitDisabled" @click="deploy({ config: {}, secret_replacements: {} })">
           {{ submitLabel }}
         </button>
       </div>
       <div v-else-if="!showConfig" class="plugin-deployment__empty-config">
-        <button class="btn btn-primary" type="button" :disabled="busy || !!blocker || !canSubmit" @click="deploy({ config: instance?.config || {}, secret_replacements: {} })">
+        <button class="btn btn-primary" type="button" :disabled="submitDisabled" @click="deploy({ config: instance?.config || {}, secret_replacements: {} })">
           {{ submitLabel }}
         </button>
       </div>
@@ -309,12 +443,23 @@ async function deploy(payload) {
         :document="submitDocument"
         :config="{}"
         :secret-fields="[]"
-        :saving="busy || !!blocker || !canSubmit"
+        :saving="submitDisabled"
         :can-configure="true"
         :can-act="false"
         @submit="deploy"
       />
     </section>
+    <template #footer>
+      <button
+        class="btn btn-secondary"
+        type="button"
+        data-test="plugin-modal-cancel"
+        :disabled="busy"
+        @click="emit('update:modelValue', false)"
+      >
+        取消
+      </button>
+    </template>
   </BaseModal>
 </template>
 

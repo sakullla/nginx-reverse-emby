@@ -5,12 +5,16 @@ import PluginDetailPage from './PluginDetailPage.vue'
 const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(), publishPlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(), deletePluginInstance: vi.fn(),
-  invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(),
-  fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
+  invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(), fetchHttpRulesPage: vi.fn(),
+  fetchAllAgentsRules: vi.fn(), fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' } }), useRouter: () => ({ push: mocks.push }) }))
-vi.mock('../../api', () => ({ fetchAgents: mocks.fetchAgents }))
+vi.mock('../../api', () => ({
+  fetchAgents: mocks.fetchAgents,
+  fetchHttpRulesPage: mocks.fetchHttpRulesPage,
+  fetchAllAgentsRules: mocks.fetchAllAgentsRules
+}))
 vi.mock('../../api/access', () => ({ fetchResourceGroups: mocks.fetchResourceGroups }))
 vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
@@ -43,7 +47,7 @@ vi.mock('../../components/base/BaseModal.vue', () => ({
     name: 'BaseModal',
     props: ['modelValue', 'title', 'subtitle', 'size', 'showFooter', 'closeOnClickModal', 'dataTest'],
     emits: ['update:modelValue', 'confirm'],
-    template: '<div v-if="modelValue" class="base-modal-stub" :data-test="dataTest"><slot /><slot name="footer" /></div>'
+    template: '<div v-if="modelValue" class="base-modal-stub" :data-test="dataTest"><button type="button" class="base-modal-close" data-test="plugin-modal-cancel" @click="$emit(\'update:modelValue\', false)">取消</button><slot /><slot name="footer" /></div>'
   }
 }))
 
@@ -212,6 +216,51 @@ async function openConfigModal(wrapper) {
   return wrapper.get('[data-test="plugin-instance-config-modal"]')
 }
 
+const opsLabels = ['启用', '停用', '回滚', '卸载', '导出脱敏诊断']
+
+function morePanel(wrapper) {
+  return wrapper.find('[data-test="plugin-more"]')
+}
+
+async function openMore(wrapper) {
+  const panel = wrapper.get('[data-test="plugin-more"]')
+  panel.element.open = true
+  await flushPromises()
+  return panel
+}
+
+function firstScreenRoot(wrapper) {
+  const clone = wrapper.element.cloneNode(true)
+  clone.querySelectorAll('[data-test="plugin-more"], [data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub').forEach((node) => node.remove())
+  return clone
+}
+
+function firstScreenText(wrapper) {
+  return firstScreenRoot(wrapper).textContent || ''
+}
+
+function firstScreenButtons(wrapper) {
+  return wrapper.findAll('button').filter((button) => {
+    const hidden = button.element.closest('[data-test="plugin-more"], [data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub')
+    return !hidden && button.isVisible()
+  })
+}
+
+function expectOpsOnlyInMore(wrapper) {
+  const screen = firstScreenText(wrapper)
+  for (const label of opsLabels) {
+    expect(firstScreenButtons(wrapper).some((button) => button.text() === label)).toBe(false)
+  }
+  expect(screen).not.toContain('导出脱敏诊断')
+  expect(screen).not.toMatch(/逐 Agent 状态/)
+  expect(screen).not.toMatch(/运行日志/)
+  expect(screen).not.toMatch(/生命周期操作与审计|操作时间线/)
+  const more = morePanel(wrapper)
+  expect(more.exists()).toBe(true)
+  expect(more.get('summary').text()).toBe('更多')
+  expect(more.element.open).toBeFalsy()
+}
+
 beforeEach(() => {
   mocks.fetchPluginDetail.mockReset().mockResolvedValue(makeDetail())
   mocks.fetchPluginOperations.mockReset().mockResolvedValue([{ id: 'op', kind: 'configure', status: 'failed', error: 'token=raw-token', agent_results: {} }])
@@ -232,6 +281,8 @@ beforeEach(() => {
     { id: 'default', name: '默认组' },
     { id: 'team', name: '团队组' }
   ])
+  mocks.fetchHttpRulesPage.mockReset().mockResolvedValue({ items: [], total: 0 })
+  mocks.fetchAllAgentsRules.mockReset().mockResolvedValue([])
   mocks.retryRevision.mockReset().mockResolvedValue({})
   mocks.push.mockReset()
   mocks.refreshActor.mockReset()
@@ -271,7 +322,9 @@ describe('PluginDetailPage', () => {
       desired_revision: 1, target_revision: 2, current_revision: 1, operation_kind: 'configure', operation_status: 'failed'
     }] })
     const wrapper = await mountPage(detail)
-    await buttonByText(wrapper, '重试此 Agent revision').trigger('click')
+    expect(firstScreenButtons(wrapper).some((button) => button.text() === '重试此 Agent revision')).toBe(false)
+    const more = await openMore(wrapper)
+    await buttonByText(more, '重试此 Agent revision').trigger('click')
     await flushPromises()
     expect(mocks.retryRevision).toHaveBeenCalledWith(
       expect.objectContaining({ agent_id: 'edge-a', desired_revision: 2 }),
@@ -284,11 +337,16 @@ describe('PluginDetailPage', () => {
     expect(wrapper.find('.page-header').exists()).toBe(true)
     expect(wrapper.find('.page-title').text()).toBe('WAF')
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
+    expect(wrapper.get('.plugin-task__purpose').text()).toContain('把插件部署到一个节点后即可在该节点上使用')
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
-    expect(buttonByText(wrapper, '启用')?.classes() || []).not.toContain('btn-primary')
-    expect(buttonByText(wrapper, '回滚')?.classes() || []).not.toContain('btn-primary')
-    expect(buttonByText(wrapper, '导出脱敏诊断')?.classes() || []).not.toContain('btn-primary')
-    expect(buttonByText(wrapper, '卸载').classes()).toContain('btn-danger')
+    expect(firstScreenText(wrapper)).not.toContain('模式')
+    expect(wrapper.find('[data-test="plugin-task-center"] .declarative-field').exists()).toBe(false)
+    expectOpsOnlyInMore(wrapper)
+    const more = await openMore(wrapper)
+    expect(buttonByText(more, '启用')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(more, '回滚')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(more, '导出脱敏诊断')?.classes() || []).not.toContain('btn-primary')
+    expect(buttonByText(more, '卸载').classes()).toContain('btn-danger')
   })
 
   it('switches instances with BaseTabs instead of a native select', async () => {
@@ -309,6 +367,8 @@ describe('PluginDetailPage', () => {
     const wrapper = await mountPage()
     expect(wrapper.text()).not.toContain('raw-token')
     expect(configModal(wrapper).exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-task-center"] .declarative-field').exists()).toBe(false)
+    expect(wrapper.find('.instance-facts .declarative-field').exists()).toBe(false)
     const modal = await openConfigModal(wrapper)
     await modal.get('.declarative-field input[type="text"]').setValue('block')
     await modalButton(modal, '保存配置').trigger('click')
@@ -511,7 +571,9 @@ describe('PluginDetailPage', () => {
     const detail = makeDetail()
     detail.plugin.current_lifecycle = 'disabled'
     const wrapper = await mountPage(detail)
-    await buttonByText(wrapper, '卸载').trigger('click')
+    expectOpsOnlyInMore(wrapper)
+    const more = await openMore(wrapper)
+    await buttonByText(more, '卸载').trigger('click')
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
@@ -537,12 +599,14 @@ describe('PluginDetailPage', () => {
 
   it('enables immediately but gates disable behind DeleteConfirmDialog', async () => {
     const wrapper = await mountPage()
+    const more = await openMore(wrapper)
 
-    await buttonByText(wrapper, '启用').trigger('click')
+    await buttonByText(more, '启用').trigger('click')
     await flushPromises()
     expect(mocks.enablePlugin).toHaveBeenCalledWith('official.waf')
 
-    await buttonByText(wrapper, '停用').trigger('click')
+    const moreAfterEnable = await openMore(wrapper)
+    await buttonByText(moreAfterEnable, '停用').trigger('click')
     expect(mocks.disablePlugin).not.toHaveBeenCalled()
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     expect(wrapper.find('.delete-dialog-title').text()).toBe('确认停用插件')
@@ -556,12 +620,13 @@ describe('PluginDetailPage', () => {
     detail.plugin.rollback_package_digest = 'sha256:rollback-digest'
     const wrapper = await mountPage(detail)
 
-    await buttonByText(wrapper, '停用').trigger('click')
+    const more = await openMore(wrapper)
+    await buttonByText(more, '停用').trigger('click')
     await wrapper.find('.delete-dialog-cancel').trigger('click')
     expect(mocks.disablePlugin).not.toHaveBeenCalled()
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(false)
 
-    await buttonByText(wrapper, '回滚').trigger('click')
+    await buttonByText(more, '回滚').trigger('click')
     await wrapper.find('.delete-dialog-cancel').trigger('click')
     expect(mocks.rollbackPlugin).not.toHaveBeenCalled()
 
@@ -575,7 +640,8 @@ describe('PluginDetailPage', () => {
     detail.plugin.rollback_package_digest = 'sha256:rollback-digest'
     const wrapper = await mountPage(detail)
 
-    await buttonByText(wrapper, '回滚').trigger('click')
+    const more = await openMore(wrapper)
+    await buttonByText(more, '回滚').trigger('click')
     expect(mocks.rollbackPlugin).not.toHaveBeenCalled()
     expect(wrapper.find('.delete-dialog-title').text()).toBe('确认回滚插件')
     await wrapper.find('.delete-dialog-confirm').trigger('click')
@@ -583,17 +649,17 @@ describe('PluginDetailPage', () => {
     expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', [])
   })
 
-  it('keeps enable, diagnostics, logs, timeline, and technical details in the secondary area', async () => {
+  it('keeps enable, diagnostics, logs, timeline, and technical details only in 更多', async () => {
     const wrapper = await mountPage(undeployedDetail())
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
-    expect(buttonByText(wrapper, '启用')).toBeTruthy()
-    expect(buttonByText(wrapper, '停用')).toBeTruthy()
-    expect(buttonByText(wrapper, '回滚')).toBeTruthy()
-    expect(buttonByText(wrapper, '导出脱敏诊断')).toBeTruthy()
-    expect(wrapper.find('.plugin-technical').exists()).toBe(true)
-    expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
-    expect(wrapper.text()).toMatch(/逐 Agent 状态/)
-    expect(wrapper.text()).toMatch(/运行日志|操作时间线|生命周期/)
+    expectOpsOnlyInMore(wrapper)
+    const more = await openMore(wrapper)
+    for (const label of opsLabels) {
+      expect(buttonByText(more, label)).toBeTruthy()
+    }
+    expect(more.find('.plugin-technical').exists()).toBe(true)
+    expect(more.text()).toMatch(/逐 Agent 状态/)
+    expect(more.text()).toMatch(/运行日志|操作时间线|生命周期/)
   })
 
   it('submits the selected visible resource group and does not require an instance id field', async () => {
@@ -618,10 +684,11 @@ describe('PluginDetailPage', () => {
     const wrapper = await mountPage(undeployedDetail({ instances: [], agent_statuses: [] }))
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
     expect(deployModal(wrapper).exists()).toBe(false)
-    expect(wrapper.find('.plugin-technical').exists()).toBe(true)
-    expect(wrapper.find('.plugin-technical').element.open).toBeFalsy()
+    expectOpsOnlyInMore(wrapper)
+    expect(morePanel(wrapper).find('.plugin-technical').exists()).toBe(true)
     const modal = await openGuide(wrapper)
     expect(modal.exists()).toBe(true)
+    expect(modal.attributes('data-test')).toBe('plugin-deploy-modal')
   })
 
   it('shows only instances from groups the current actor can see', async () => {
@@ -811,5 +878,147 @@ describe('PluginDetailPage', () => {
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       config: { credentials: { region: 'eu' }, sources: [{ host: 'a.example' }, { host: 'b.example' }] }
     }))
+  })
+
+  it('opens the undeployed primary action into the deploy modal instead of an inline config form', async () => {
+    const wrapper = await mountPage(undeployedDetail())
+    expect(deployModal(wrapper).exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-task-guide"]').exists()).toBe(false)
+    expect(wrapper.find('.declarative-field').exists()).toBe(false)
+    expect(firstScreenText(wrapper)).toContain('把插件部署到一个节点后即可在该节点上使用')
+    expect(firstScreenText(wrapper)).toContain('还没部署')
+
+    const guide = await openGuide(wrapper)
+    expect(guide.attributes('data-test')).toBe('plugin-deploy-modal')
+    expect(guide.find('.declarative-field input[type="text"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="plugin-task-center"] .declarative-field').exists()).toBe(false)
+  })
+
+  it('does not write when the instance config modal is cancelled after editing', async () => {
+    const wrapper = await mountPage()
+    expect(wrapper.find('.instance-facts .declarative-field').exists()).toBe(false)
+    const modal = await openConfigModal(wrapper)
+    await modal.get('.declarative-field input[type="text"]').setValue('block')
+    await modal.get('[data-test="plugin-modal-cancel"]').trigger('click')
+    await flushPromises()
+    expect(configModal(wrapper).exists()).toBe(false)
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+  })
+
+  it('does not write when the deploy modal is cancelled', async () => {
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    await selectTarget(guide, 'edge-a')
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guide.get('[data-test="plugin-modal-cancel"]').trigger('click')
+    await flushPromises()
+    expect(deployModal(wrapper).exists()).toBe(false)
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+    expect(mocks.enablePlugin).not.toHaveBeenCalled()
+  })
+
+  it('limits deploy pickers to visible resource groups and agents', async () => {
+    mocks.actor = { permissions: ['resource.write'], visible_resource_groups: ['team'] }
+    mocks.fetchResourceGroups.mockResolvedValue([
+      { id: 'default', name: '默认组' },
+      { id: 'team', name: '团队组' },
+      { id: 'hidden', name: '隐藏组' }
+    ])
+    const writerPage = await mountPage(undeployedDetail())
+    expect(writerPage.text()).toContain('当前身份可以看懂下一步，但不能提交部署或发布')
+    expect(buttonByText(writerPage, '开始部署')?.attributes('disabled') || 'missing').not.toBeUndefined()
+    writerPage.unmount()
+
+    mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    const groupSelect = findControl(guide, ['plugin-guide-resource-group', 'deployment-resource-group'])
+    expect(groupSelect).toBeTruthy()
+    expect(Array.from(groupSelect.element.options).map((option) => option.value)).toEqual(['default', 'team', 'hidden'])
+    const targets = guide.findAll('[data-test="plugin-guide-target"], [data-test="deployment-agent"]')
+    expect(targets.map((input) => input.element.value).sort()).toEqual(['edge-a', 'edge-b'])
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
+    expect(guide.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
+  })
+
+  it('renders rule_ref as a select of host HTTP rules and blocks an empty required value', async () => {
+    const schema = {
+      type: 'object',
+      required: ['rule_ref'],
+      properties: {
+        rule_ref: { type: 'string', title: '规则', minLength: 1, maxLength: 128 },
+        note: { type: 'string', title: '备注' }
+      }
+    }
+    const visibleRules = [
+      { id: 12, frontend_url: 'https://media.example.com', name: 'media', agent_id: 'edge-a', agent_name: 'Edge A' },
+      { id: 13, frontend_url: 'https://tv.example.com', name: 'tv', agent_id: 'edge-b', agent_name: 'Edge B' }
+    ]
+    mocks.fetchHttpRulesPage.mockResolvedValue({ items: visibleRules, total: 2 })
+
+    const undeployed = await mountPage(undeployedDetail({
+      package: { ...makeDetail().package, config_schema: schema }
+    }))
+    const deploy = await openGuide(undeployed)
+    await flushPromises()
+    const deployRule = deploy.findAll('.declarative-field').find((field) => field.text().includes('规则'))
+    expect(deployRule).toBeTruthy()
+    expect(deployRule.find('select').exists()).toBe(true)
+    expect(deployRule.find('input[type="text"]').exists()).toBe(false)
+    expect(Array.from(deployRule.get('select').element.options).map((option) => option.value)).toEqual([
+      'https://media.example.com',
+      'https://tv.example.com'
+    ])
+    undeployed.unmount()
+
+    const empty = await mountPage(makeDetail({
+      package: { ...makeDetail().package, config_schema: schema },
+      instances: [makeInstance({ config: {} })]
+    }))
+    mocks.fetchHttpRulesPage.mockResolvedValue({ items: [], total: 0 })
+    const emptyModal = await openConfigModal(empty)
+    await flushPromises()
+    expect(emptyModal.text()).toMatch(/当前没有可见的 HTTP 规则/)
+    await modalButton(emptyModal, '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).not.toHaveBeenCalled()
+    empty.unmount()
+
+    mocks.fetchHttpRulesPage.mockResolvedValue({ items: visibleRules, total: 2 })
+    const wrapper = await mountPage(makeDetail({
+      package: { ...makeDetail().package, config_schema: schema },
+      instances: [makeInstance({ config: {} })]
+    }))
+    const modal = await openConfigModal(wrapper)
+    await flushPromises()
+    const ruleField = modal.findAll('.declarative-field').find((field) => field.text().includes('规则'))
+    expect(ruleField).toBeTruthy()
+    expect(ruleField.find('select').exists()).toBe(true)
+    expect(ruleField.find('input[type="text"]').exists()).toBe(false)
+    expect(Array.from(ruleField.get('select').element.options).map((option) => option.value)).toEqual([
+      'https://media.example.com',
+      'https://tv.example.com'
+    ])
+    await ruleField.get('select').setValue('https://media.example.com')
+    await modalButton(modal, '保存配置').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      config: expect.objectContaining({ rule_ref: 'https://media.example.com' })
+    }))
+  })
+
+  it('keeps ops off the first screen after the plugin is already deployed', async () => {
+    const wrapper = await mountPage()
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('已部署')
+    expect(firstScreenButtons(wrapper).some((button) => button.text() === '编辑配置')).toBe(true)
+    expect(wrapper.find('[data-test="plugin-task-center"] .declarative-field').exists()).toBe(false)
+    expectOpsOnlyInMore(wrapper)
+    const more = await openMore(wrapper)
+    expect(more.text()).toContain('逐 Agent 状态')
+    expect(more.text()).toMatch(/运行日志/)
+    expect(more.text()).toMatch(/生命周期操作与审计/)
+    expect(buttonByText(more, '导出脱敏诊断')).toBeTruthy()
   })
 })

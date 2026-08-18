@@ -1,6 +1,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { fetchAllAgentsRules, fetchHttpRulesPage } from '../../api'
 import { configurePlugin, invokePluginDynamicAction, publishPlugin } from '../../api/plugins'
+import { resolvePointer } from '../../api/pluginCondition'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
 import BaseModal from '../base/BaseModal.vue'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
@@ -19,6 +21,7 @@ const props = defineProps({
   packageDetail: { type: Object, default: null },
   publishedEntries: { type: Array, default: () => [] },
   agents: { type: Array, default: () => [] },
+  httpRules: { type: Array, default: null },
   intent: { type: String, default: 'configure' }
 })
 const emit = defineEmits(['update:modelValue', 'saved', 'refreshed'])
@@ -31,6 +34,7 @@ const publishHost = ref('')
 const publishHTTPS = ref(true)
 const publishTarget = ref('')
 const editingRuleID = ref(0)
+const loadedHttpRules = ref([])
 
 const httpBackendDeclared = computed(() => {
   if (props.hasHTTPBackend) return true
@@ -69,9 +73,25 @@ const publishBlocked = computed(() => {
   if (!String(publishHost.value || '').trim()) return '请填写一条入口域名。'
   return ''
 })
+const needsHttpRuleOptions = computed(() => documentNeedsHttpRuleOptions(props.document))
+const visibleHttpRuleOptions = computed(() => mergeRuleOptions(
+  httpRuleSelectOptions(Array.isArray(props.httpRules) ? props.httpRules : loadedHttpRules.value),
+  collectBoundHttpRuleValues(props.document?.components, props.config).map((value) => ({ value, label: value }))
+))
+const boundDocument = computed(() => bindHttpRuleOptions(props.document || {}, visibleHttpRuleOptions.value))
+const httpRuleBlocker = computed(() => {
+  if (!needsHttpRuleOptions.value) return ''
+  if (httpRuleSelectOptions(Array.isArray(props.httpRules) ? props.httpRules : loadedHttpRules.value).length) return ''
+  return '当前没有可见的 HTTP 规则。'
+})
 
 watch(() => props.modelValue, (open) => {
-  if (open) resetPublishForm()
+  if (!open) {
+    loadedHttpRules.value = []
+    return
+  }
+  resetPublishForm()
+  void loadVisibleHttpRules()
 })
 
 function parseFrontendURL(value) {
@@ -116,6 +136,156 @@ function packageExtensionPoints(pkg) {
   const raw = manifest.extension_points || pkg.extension_points
   if (!Array.isArray(raw)) return []
   return raw.map((point) => String(point || '').trim()).filter(Boolean)
+}
+
+function walkUIComponents(components, visit) {
+  for (const component of components || []) {
+    if (!component || typeof component !== 'object' || Array.isArray(component)) continue
+    visit(component)
+    if (Array.isArray(component.children)) walkUIComponents(component.children, visit)
+  }
+}
+
+function documentNeedsHttpRuleOptions(document) {
+  let needed = false
+  walkUIComponents(document?.components, (component) => {
+    if (component.options_source === 'http_rule') needed = true
+  })
+  return needed
+}
+
+function documentHasRequiredHttpRule(components) {
+  let required = false
+  walkUIComponents(components, (component) => {
+    if (component.options_source === 'http_rule' && component.required) required = true
+  })
+  return required
+}
+
+function collectBoundHttpRuleValues(components, model, base = '', acc = []) {
+  for (const component of components || []) {
+    if (!component || typeof component !== 'object') continue
+    const pointer = base + (component.binding || '')
+    if (component.options_source === 'http_rule') {
+      const current = resolvePointer(model, pointer)
+      if (typeof current === 'string' && current.trim()) acc.push(current.trim())
+    }
+    if (component.type === 'array') {
+      const items = resolvePointer(model, pointer)
+      if (Array.isArray(items) && Array.isArray(component.children)) {
+        items.forEach((_, index) => collectBoundHttpRuleValues(component.children, model, `${pointer}/${index}`, acc))
+      }
+    } else if (Array.isArray(component.children)) {
+      collectBoundHttpRuleValues(component.children, model, base, acc)
+    }
+  }
+  return acc
+}
+
+function httpRuleOptionValue(rule) {
+  if (rule.value != null) return String(rule.value).trim()
+  const frontend = String(rule.frontend_url || '').trim()
+  if (frontend && frontend.length <= 128) return frontend
+  const id = String(rule.id ?? '').trim()
+  const agentID = String(rule.agent_id || rule.agentId || '').trim()
+  const compact = agentID && id ? `${agentID}:${id}` : id
+  return compact.length <= 128 ? compact : ''
+}
+
+function httpRuleOptionLabel(rule, value) {
+  if (rule.label != null && String(rule.label).trim()) return String(rule.label).trim()
+  const named = String(rule.name || '').trim()
+  if (named) return named
+  const tag = Array.isArray(rule.tags) ? String(rule.tags[0] || '').trim() : ''
+  if (tag) return tag
+  const frontend = String(rule.frontend_url || '').trim()
+  if (frontend) {
+    try { return new URL(frontend).host || frontend } catch { return frontend.replace(/^https?:\/\//i, '') }
+  }
+  const agentName = String(rule.agent_name || rule.agentName || '').trim()
+  if (agentName) return `${agentName} · ${value}`
+  return value
+}
+
+function httpRuleSelectOptions(rules) {
+  const seen = new Set()
+  const options = []
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    if (!rule || typeof rule !== 'object') continue
+    const value = httpRuleOptionValue(rule)
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    options.push({ value, label: httpRuleOptionLabel(rule, value) })
+  }
+  return options
+}
+
+function mergeRuleOptions(primary, extras) {
+  const seen = new Set()
+  const options = []
+  for (const option of [...primary, ...extras]) {
+    const value = String(option?.value || '').trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    options.push({ value, label: String(option.label || value) })
+  }
+  return options
+}
+
+function bindHttpRuleOptions(document, options) {
+  const next = JSON.parse(JSON.stringify(document || {}))
+  walkUIComponents(next.components, (component) => {
+    if (component.options_source !== 'http_rule') return
+    component.type = 'select'
+    component.options = options
+  })
+  return next
+}
+
+async function fetchVisibleHttpRules(agentIds) {
+  if (typeof fetchHttpRulesPage === 'function') {
+    const collected = []
+    let page = 1
+    const pageSize = 100
+    while (page <= 5) {
+      const result = await fetchHttpRulesPage({ agentFilter: '__all__', page, pageSize })
+      const items = Array.isArray(result?.items)
+        ? result.items
+        : (Array.isArray(result?.rules) ? result.rules : (Array.isArray(result) ? result : []))
+      collected.push(...items)
+      const total = Number(result?.total)
+      if (!Number.isFinite(total) || collected.length >= total || items.length < pageSize) break
+      page += 1
+    }
+    return collected
+  }
+  if (typeof fetchAllAgentsRules === 'function' && agentIds.length) {
+    const groups = await fetchAllAgentsRules(agentIds)
+    return (Array.isArray(groups) ? groups : []).flatMap((group) => {
+      const agentID = group?.agentId || group?.agent_id || ''
+      return (Array.isArray(group?.rules) ? group.rules : []).map((rule) => ({
+        ...rule,
+        agent_id: rule?.agent_id || agentID
+      }))
+    })
+  }
+  return []
+}
+
+async function loadVisibleHttpRules() {
+  loadedHttpRules.value = []
+  if (!documentNeedsHttpRuleOptions(props.document) || Array.isArray(props.httpRules)) return
+  try {
+    loadedHttpRules.value = await fetchVisibleHttpRules((props.agents || []).map((agent) => agent.id).filter(Boolean))
+  } catch {
+    loadedHttpRules.value = []
+  }
+}
+
+function closeWithoutSaving() {
+  if (busy.value || publishBusy.value || actionBusy.value) return
+  error.value = ''
+  emit('update:modelValue', false)
 }
 
 // Configure can only persist bindings the package owns. Publish overlays
@@ -166,6 +336,11 @@ function startNewPublish() {
 
 async function save(payload) {
   if (!props.canWrite || !props.instance || busy.value) return
+  if (httpRuleBlocker.value && documentHasRequiredHttpRule(props.document?.components)
+    && !collectBoundHttpRuleValues(props.document?.components, payload?.config).length) {
+    error.value = httpRuleBlocker.value
+    return
+  }
   busy.value = true
   error.value = ''
   try {
@@ -241,12 +416,14 @@ async function runDynamicAction({ action, target_id, confirmed }) {
     :title="modalTitle"
     :subtitle="modalSubtitle"
     size="lg"
+    :show-footer="true"
     :close-on-click-modal="false"
     data-test="plugin-instance-config-modal"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <section class="plugin-instance-config" :aria-label="httpBackendDeclared && (intent === 'publish' || needsPublish) ? '发布到域名' : '编辑实例配置'">
       <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
+      <p v-else-if="httpRuleBlocker" class="plugin-alert" role="alert" data-test="plugin-http-rule-empty">{{ httpRuleBlocker }}</p>
 
       <section v-if="httpBackendDeclared" class="plugin-publish" aria-label="入口域名">
         <p v-if="needsPublish" class="plugin-next-step" data-test="plugin-publish-needed">
@@ -325,7 +502,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 
       <PluginDeclarativeUI
         v-if="instance"
-        :document="document"
+        :document="boundDocument"
         :config="config"
         :secret-fields="secretFields"
         :saving="busy"
@@ -336,6 +513,17 @@ async function runDynamicAction({ action, target_id, confirmed }) {
         @dynamic="runDynamicAction"
       />
     </section>
+    <template #footer>
+      <button
+        class="btn btn-secondary"
+        type="button"
+        data-test="plugin-modal-cancel"
+        :disabled="busy || publishBusy || actionBusy"
+        @click="closeWithoutSaving"
+      >
+        取消
+      </button>
+    </template>
   </BaseModal>
 </template>
 
