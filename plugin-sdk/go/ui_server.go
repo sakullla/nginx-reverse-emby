@@ -27,7 +27,7 @@ func ServePluginUI(ctx context.Context, handler http.Handler) error {
 	if !ok || network != "unix" || strings.TrimSpace(address) == "" {
 		return errors.New("plugin UI private unix endpoint is required")
 	}
-	cookieFile := strings.TrimSpace(os.Getenv("NRE_PLUGIN_COOKIE_FILE"))
+	cookieFile := strings.TrimSpace(os.Getenv(EnvPluginCookieFile))
 	credential, err := os.ReadFile(cookieFile)
 	if err != nil || strings.TrimSpace(string(credential)) == "" {
 		return fmt.Errorf("read plugin UI credential: %w", err)
