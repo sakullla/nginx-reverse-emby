@@ -67,6 +67,35 @@ older action guests before cutover. Under that feature, `PlanAction` requests
 bounded typed operations against opaque handles, and `InvokeAction` receives
 only bounded results—never raw resource identity, sockets, or credentials.
 
+## Go rpc-service quick start
+
+SDK 0.7.4 owns the private Unix listener, cookie authentication, dynamic
+protobuf transport, and feature acknowledgement. A plugin declares its public
+surface once and delegates the handshake instead of copying the wire protocol:
+
+```go
+var declaration = pluginsdk.RPCPluginDeclaration{
+	PluginID:             "example-plugin",
+	PluginVersion:        "1.0.0",
+	RequiredCapabilities: []string{"event.emit"},
+	SupportedFeatures:    []string{pluginsdk.RPCFeatureDurableActionsV1},
+}
+
+func (p *Plugin) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	return pluginsdk.NegotiateRPCHandshake(declaration, request)
+}
+
+func main() {
+	if err := pluginsdk.ServeRPCPlugin(context.Background(), plugin); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+The plugin implements only `RPCLifecycle` (`Handshake`, `Prepare`, `Activate`,
+and `Stop`). It must not read `NRE_PLUGIN_ENDPOINT`, load the cookie file,
+register gRPC descriptors, or manually mirror `RequiredFeatures`.
+
 `go.Manifest` and `go/schema/plugin-manifest-v1.schema.json` are the canonical
 structural `plugin.yaml v1` contract for publishers and hosts. Each package
 still owns the `config.schema.json` referenced by its manifest and may provide
