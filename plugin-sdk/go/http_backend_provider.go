@@ -134,12 +134,10 @@ func ValidateHTTPBackendProviderDescriptors(descriptors []HTTPBackendProviderDes
 func ValidateHTTPBackendProviderManifest(manifest Manifest) error {
 	hasExtension := slices.Contains(manifest.ExtensionPoints, ExtensionHTTPBackendProvider)
 	hasDescriptors := len(manifest.HTTPBackendProviders) > 0
-	hasOutboundDeclaration := false
 	hasUnscopedOutbound := false
 	hasScopedOutbound := false
 	for _, permission := range manifest.Permissions {
 		if permission.Name == PermissionHTTPOutbound {
-			hasOutboundDeclaration = true
 			if permission.Resource == "" {
 				hasUnscopedOutbound = true
 			} else {
@@ -147,7 +145,7 @@ func ValidateHTTPBackendProviderManifest(manifest Manifest) error {
 			}
 		}
 	}
-	if !hasExtension && !hasDescriptors && !hasOutboundDeclaration {
+	if !hasExtension && !hasDescriptors {
 		return nil
 	}
 	if !hasExtension || !hasDescriptors || manifest.Runtime.Kind != RuntimeRPCService || manifest.Runtime.ABI != RPCABIV1 || manifest.Runtime.HostScope != HostScopeAgent {
@@ -159,7 +157,7 @@ func ValidateHTTPBackendProviderManifest(manifest Manifest) error {
 	if !hasUnscopedOutbound || hasScopedOutbound {
 		return errors.New("HTTP backend providers require the internal http.outbound permission")
 	}
-	if !slices.Contains(RequiredRPCFeatures([]string{PermissionHTTPOutbound}), RPCFeatureHTTPBackendProviderV1) {
+	if !slices.Contains(RequiredRPCFeaturesForExtensions([]string{PermissionHTTPOutbound}, manifest.ExtensionPoints), RPCFeatureHTTPBackendProviderV1) {
 		return errors.New("HTTP backend provider RPC feature projection is unavailable")
 	}
 	return nil

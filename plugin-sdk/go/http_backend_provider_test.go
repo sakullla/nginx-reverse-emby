@@ -93,8 +93,8 @@ func TestValidateHTTPBackendProviderManifestRequiresIndivisibleContract(t *testi
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := Manifest{Permissions: permissions}
-			if err := ValidateHTTPBackendProviderManifest(candidate); err == nil {
-				t.Fatal("partial provider permission contract was accepted")
+			if err := ValidateHTTPBackendProviderManifest(candidate); err != nil {
+				t.Fatalf("general outbound permission was treated as a provider contract: %v", err)
 			}
 		})
 	}

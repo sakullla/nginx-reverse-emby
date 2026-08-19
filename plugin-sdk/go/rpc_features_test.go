@@ -20,3 +20,13 @@ func TestRequiredRPCFeaturesGateDurableActionsWithoutBreakingLegacyGuests(t *tes
 		t.Fatal("expected an unrequested feature to be rejected")
 	}
 }
+
+func TestHTTPOutboundOnlyRequiresProviderFeatureForProviderExtension(t *testing.T) {
+	if features := RequiredRPCFeatures([]string{PermissionHTTPOutbound}); len(features) != 0 {
+		t.Fatalf("general outbound features = %#v", features)
+	}
+	features := RequiredRPCFeaturesForExtensions([]string{PermissionHTTPOutbound}, []string{ExtensionHTTPBackendProvider})
+	if len(features) != 1 || features[0] != RPCFeatureHTTPBackendProviderV1 {
+		t.Fatalf("provider features = %#v", features)
+	}
+}

@@ -16,7 +16,18 @@ func RequiredRPCFeatures(scopes []string) []string {
 		switch HostCapability(strings.TrimSpace(scope)) {
 		case CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityUIDynamic:
 			features = appendRPCFeature(features, RPCFeatureDurableActionsV1)
-		case CapabilityHTTPOutbound:
+		}
+	}
+	return features
+}
+
+// RequiredRPCFeaturesForExtensions adds protocol features owned by extension
+// points. Permissions authorize effects; they do not classify a plugin as a
+// provider of an unrelated RPC surface.
+func RequiredRPCFeaturesForExtensions(scopes, extensionPoints []string) []string {
+	features := RequiredRPCFeatures(scopes)
+	for _, extensionPoint := range extensionPoints {
+		if strings.TrimSpace(extensionPoint) == ExtensionHTTPBackendProvider {
 			features = appendRPCFeature(features, RPCFeatureHTTPBackendProviderV1)
 		}
 	}
