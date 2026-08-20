@@ -276,6 +276,7 @@ type ruleService struct {
 	revisionNumbers        map[string]int64
 	postCommitActions      *[]func()
 	pluginPublishAdmission bool
+	dnsTokenProviderReady  func() bool
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
@@ -284,6 +285,10 @@ func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
 
 func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {
 	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+func (s *ruleService) SetDNSTokenProviderReady(ready func() bool) {
+	s.dnsTokenProviderReady = ready
 }
 
 func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {
@@ -1309,7 +1314,7 @@ func (s *ruleService) prepareAutoManagedDNSCertificateIssues(originalRows []stor
 }
 
 func (s *ruleService) autoManagedDNSIssuerAvailable() bool {
-	return s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil
+	return (s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || (s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil)
 }
 
 func (s *ruleService) cleanupUnusedManagedCertificatesForAgent(
@@ -1365,7 +1370,7 @@ func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
 		}
 		return "local_http01", nil
 	}
-	if s.cfg.ManagedCloudflareDNSReady() {
+	if (s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || s.cfg.ManagedCloudflareDNSReady() {
 		return "master_cf_dns", nil
 	}
 	if agentHasCapability(capabilities, "local_acme") {

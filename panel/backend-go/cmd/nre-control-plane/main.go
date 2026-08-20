@@ -92,20 +92,23 @@ var runControlPlaneFromEnv = func() error {
 		return err
 	}
 	service.ManagedCertificateDispatcher().SetBaseContext(ctx)
-	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 	startTrafficCleanupLoop(ctx, cfg, nil)
 	startRevisionRetentionLoop(ctx, cfg, nil)
 
-	application, err := newControlPlaneApp(cfg, nil)
+	var dnsTokenResolver *service.PluginDNSTokenResolver
+	application, err := newControlPlaneApp(cfg, nil, func(resolver *service.PluginDNSTokenResolver) {
+		dnsTokenResolver = resolver
+	})
 	if err != nil {
 		return err
 	}
+	startManagedCertificateAutoRenewLoop(ctx, cfg, nil, dnsTokenResolver)
 	// Wire the background signer before startup recovery so re-dispatched "issuing" certificates
 	// have a real sign function (otherwise Submit is a safe no-op). Each issuance opens a fresh
 	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
-	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSigner(cfg, func() (storage.Store, error) {
+	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSignerWithDNSTokenResolver(cfg, func() (storage.Store, error) {
 		return openConfiguredStore(cfg)
-	}, nil))
+	}, nil, dnsTokenResolver.Resolve))
 	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
@@ -325,7 +328,8 @@ func databaseDriverUsesSQLite(driver string) bool {
 	return driver == "" || driver == "sqlite"
 }
 
-var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Config) error {
+var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Config, resolver *service.PluginDNSTokenResolver) error {
+	ctx = service.WithSystemMutationPrincipal(ctx, "system:managed-certificate-renewal")
 	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return err
@@ -334,7 +338,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 		_ = store.Close()
 	}()
 
-	return service.NewCertificateService(cfg, store).RunRenewalPass(ctx)
+	return service.NewCertificateServiceWithDNSTokenResolver(cfg, store, resolver.Resolve).RunRenewalPass(ctx)
 }
 
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
@@ -342,7 +346,7 @@ var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
 var revisionRetentionInterval = 24 * time.Hour
 
-func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
+func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger, resolver *service.PluginDNSTokenResolver) {
 	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
 		return
 	}
@@ -358,7 +362,7 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 		case <-ctx.Done():
 			return
 		case <-initialTimer.C:
-			if err := runManagedCertificateRenewalPass(ctx, cfg); err != nil {
+			if err := runManagedCertificateRenewalPass(ctx, cfg, resolver); err != nil {
 				logger.Printf("[cert] initial auto renew cycle failed: %v", err)
 			}
 		}
@@ -370,7 +374,7 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := runManagedCertificateRenewalPass(ctx, cfg); err != nil {
+				if err := runManagedCertificateRenewalPass(ctx, cfg, resolver); err != nil {
 					logger.Printf("[cert] managed certificate auto renew cycle failed: %v", err)
 				}
 			}
@@ -379,6 +383,7 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 }
 
 var runManagedCertificateIssuanceRecovery = func(ctx context.Context, cfg config.Config) (int, error) {
+	ctx = service.WithSystemMutationPrincipal(ctx, "system:managed-certificate-recovery")
 	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return 0, err
@@ -521,7 +526,7 @@ func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *
 	return done
 }
 
-func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {
+func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResolver func(*service.PluginDNSTokenResolver)) (*app.App, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -540,6 +545,10 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		_ = serviceStore.Close()
 		return nil, err
 	}
+	dnsTokenResolver := service.NewPluginDNSTokenResolver(rpcProcessHost, cfg.DDNS.Token)
+	if bindDNSTokenResolver != nil {
+		bindDNSTokenResolver(dnsTokenResolver)
+	}
 
 	systemSvc := service.NewSystemService(cfg, serviceStore)
 	agentSvc := service.NewAgentService(cfg, serviceStore)
@@ -551,14 +560,18 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	trafficSvc := service.NewTrafficService(trafficCfg, serviceStore)
 	agentSvc.SetTrafficService(trafficSvc)
 	ddnsSvc := service.NewDDNSService(cfg, serviceStore, nil, nil)
+	ddnsSvc.SetTokenResolver(dnsTokenResolver.Resolve, dnsTokenResolver.Ready)
 	agentSvc.SetDDNSReconciler(ddnsSvc)
 	revisionReconciler := service.NewRevisionReconciler(agentSvc.RevisionAPI(), logger)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
+	ruleSvc.SetDNSTokenProviderReady(func() bool {
+		return cfg.ManagedDNSCertificatesEnabled && dnsTokenResolver.Ready()
+	})
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
 	versionSvc := service.NewVersionPolicyService(serviceStore)
 	egressSvc := service.NewEgressProfileServiceWithConfig(cfg, serviceStore)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
-	certSvc := service.NewCertificateService(cfg, serviceStore)
+	certSvc := service.NewCertificateServiceWithDNSTokenResolver(cfg, serviceStore, dnsTokenResolver.Resolve)
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 	pkiProxy := service.NewDegradedPKIService(service.ErrPKIRuntimeUnavailable)
 	pkiSupervisor := newControlPlanePKISupervisor(cfg, serviceStore, taskSvc, relaySvc, pkiProxy, logger)

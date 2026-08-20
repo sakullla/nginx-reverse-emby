@@ -42,6 +42,15 @@ func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
 	if dnsToken == "" {
 		return nil
 	}
+	return newMasterCFDNSManagedCertificateIssuerWithResolver(func(context.Context, string) (string, error) {
+		return dnsToken, nil
+	})
+}
+
+func newMasterCFDNSManagedCertificateIssuerWithResolver(resolve func(context.Context, string) (string, error)) managedCertificateRenewalIssuer {
+	if resolve == nil {
+		return nil
+	}
 	directoryURL := strings.TrimSpace(os.Getenv("NRE_ACME_DIRECTORY_URL"))
 	if directoryURL == "" {
 		directoryURL = defaultMasterACMEDirectoryURL
@@ -61,7 +70,7 @@ func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
 		openState: func(dataDir string) (masterACMEStateStore, error) {
 			return openMasterACMEAccountStore(dataDir)
 		},
-		resolveToken: func(context.Context, string) (string, error) { return dnsToken, nil },
+		resolveToken: resolve,
 		now:          time.Now,
 	}
 	issuer.newSolver = func(state masterACMEStateStore, dnsToken, zoneToken string) (masterACMESolver, error) {

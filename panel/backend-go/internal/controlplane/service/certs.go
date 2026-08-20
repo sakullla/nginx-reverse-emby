@@ -245,6 +245,13 @@ func NewCertificateService(cfg config.Config, store storage.Store) *certificateS
 	return newCertificateServiceWithRenewal(cfg, store, nil)
 }
 
+func NewCertificateServiceWithDNSTokenResolver(cfg config.Config, store storage.Store, resolve func(context.Context, string) (string, error)) *certificateService {
+	if !cfg.ManagedDNSCertificatesEnabled {
+		return newCertificateServiceWithRenewal(cfg, store, nil)
+	}
+	return newCertificateServiceWithRenewal(cfg, store, newMasterCFDNSManagedCertificateIssuerWithResolver(resolve))
+}
+
 func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
 	generationStore, _ := store.(storage.ManagedCertificateGenerationStore)
 	return &certificateService{
@@ -2140,10 +2147,19 @@ func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (sto
 	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, nil, localApplyTrigger)
 }
 
+func ManagedCertificateBackgroundSignerWithDNSTokenResolver(cfg config.Config, openStore func() (storage.Store, error), localApplyTrigger func(context.Context) error, resolve func(context.Context, string) (string, error)) managedCertificateSignFunc {
+	var issuer managedCertificateRenewalIssuer
+	if cfg.ManagedDNSCertificatesEnabled {
+		issuer = newMasterCFDNSManagedCertificateIssuerWithResolver(resolve)
+	}
+	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, issuer, localApplyTrigger)
+}
+
 // managedCertificateBackgroundSignerWithIssuer is the testable core: tests inject a fake issuer
 // while production passes nil so the Cloudflare DNS issuer is built from cfg on demand.
 func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore func() (storage.Store, error), issuer managedCertificateRenewalIssuer, localApplyTrigger func(context.Context) error) managedCertificateSignFunc {
 	return func(ctx context.Context, certID int) error {
+		ctx = WithSystemMutationPrincipal(ctx, "system:managed-certificate-issuer")
 		store, err := openStore()
 		if err != nil {
 			return err

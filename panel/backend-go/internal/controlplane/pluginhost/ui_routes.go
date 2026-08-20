@@ -10,6 +10,7 @@ import (
 const (
 	extensionUIRoute       = "ui.route"
 	extensionResourceGroup = "resource.group"
+	extensionDNSProvider   = "dns.provider"
 	pluginUIPrefix         = "/plugins/"
 	panelAPIPrefix         = "/panel-api"
 )

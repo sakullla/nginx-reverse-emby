@@ -31,11 +31,12 @@ type ddnsStore interface {
 // heartbeats have gone quiet. This struct never persists, logs, or dispatches
 // a credential (R7).
 type DDNSService struct {
-	cfg          config.Config
-	store        ddnsStore
-	cf           cloudflareDNSClient
-	now          func() time.Time
-	resolveToken func(context.Context, string) (string, error)
+	cfg           config.Config
+	store         ddnsStore
+	cf            cloudflareDNSClient
+	now           func() time.Time
+	resolveToken  func(context.Context, string) (string, error)
+	resolverReady func() bool
 
 	dispatcher *ddnsDispatcher
 
@@ -49,6 +50,17 @@ type DDNSService struct {
 	// drive the loop on a millisecond timescale without sleeping for 30s.
 	sweepInitialDelay time.Duration
 	sweepInterval     time.Duration
+}
+
+// SetTokenResolver wires a dynamic dns.provider token source. ready is checked
+// at reconcile time so providers activated after startup become available
+// without restarting the control plane.
+func (s *DDNSService) SetTokenResolver(resolve func(context.Context, string) (string, error), ready func() bool) {
+	if s == nil {
+		return
+	}
+	s.resolveToken = resolve
+	s.resolverReady = ready
 }
 
 // NewDDNSService constructs a reconciler that uses cf to upsert Cloudflare
@@ -190,7 +202,8 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 
 	// Disabled master (no env fallback and no plugin): record the reason and
 	// stop. A specific domain can still fail later if that name has no Token.
-	if !s.cfg.DDNSReady() {
+	resolverReady := s.resolveToken != nil && (s.resolverReady == nil || s.resolverReady())
+	if !s.cfg.DDNSReady() && !resolverReady {
 		if prior.Status != "disabled" {
 			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "disabled", LastError: "cloudflare token not configured"})
 		}

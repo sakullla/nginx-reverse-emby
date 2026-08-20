@@ -91,9 +91,6 @@ type DDNSRuntimeConfig struct {
 // ManagedCloudflareDNSReady is true when ACME DNS-01 may be attempted with
 // explicitly configured Cloudflare credentials.
 func (c Config) ManagedCloudflareDNSReady() bool {
-	if c.ManagedDNSCertificatesEnabled {
-		return true
-	}
 	return strings.EqualFold(strings.TrimSpace(c.ACMEDNSProvider), "cf") && strings.TrimSpace(c.DDNS.Token) != ""
 }
 
@@ -487,7 +484,10 @@ func LoadFromEnv() (Config, error) {
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
 	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ACMEDNSProvider = acmeDNSProvider
-	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
+	// Selecting the provider enables the background lifecycle. Credential
+	// readiness is evaluated dynamically because a dns.provider plugin may be
+	// activated after process startup without an environment fallback token.
+	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf")
 
 	// DDNS.Token is an environment-only snapshot.
 	cfg.DDNS.Token = cfToken

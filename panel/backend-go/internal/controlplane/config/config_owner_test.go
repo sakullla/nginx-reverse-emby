@@ -77,3 +77,22 @@ func TestCloudflareReadinessRequiresConfiguredToken(t *testing.T) {
 		t.Fatal("ready flags false with configured credentials")
 	}
 }
+
+func TestCloudflareProviderSelectionEnablesPluginBackedLifecycleWithoutEnvToken(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("ACME_DNS_PROVIDER", "cf")
+	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
+	t.Setenv("CF_DNS_API_TOKEN", "")
+	t.Setenv("CF_TOKEN", "")
+	t.Setenv("CF_Token", "")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ManagedDNSCertificatesEnabled {
+		t.Fatal("selected Cloudflare provider did not enable the managed certificate lifecycle")
+	}
+	if cfg.ManagedCloudflareDNSReady() {
+		t.Fatal("environment readiness must remain false without an environment token")
+	}
+}
