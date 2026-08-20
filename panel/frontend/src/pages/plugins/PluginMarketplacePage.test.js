@@ -31,7 +31,14 @@ vi.mock('../../components/base/BaseModal.vue', () => ({
 }))
 
 const source = { id: 'community', kind: 'custom', risk_label: 'untrusted', purpose: 'market' }
-const entry = { id: 'official.waf', name: 'WAF', version: '1.2.0', sha256: 'a'.repeat(64), runtime: { kind: 'wasm-policy' } }
+const entry = {
+  id: 'official.waf', name: 'WAF', version: '1.2.0', sha256: 'a'.repeat(64),
+  runtime: { kind: 'wasm-policy', abi: 'nre:policy/v1', host_scope: 'agent' },
+  compatibility: { host: '*', agent: '*' },
+  capabilities: ['http.waf'],
+  artifacts: [{ sha256: 'b'.repeat(64), size: 42 }],
+  signature_key_id: 'community-release'
+}
 const packageDetail = {
   digest: entry.sha256,
   version: entry.version,
@@ -126,6 +133,40 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.text()).not.toContain('未命名插件')
   })
 
+  it('opens catalog details without resolving or downloading the package', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await openFirstPackage(wrapper)
+    expect(wrapper.find('.modal-title').text()).toBe('WAF')
+    expect(wrapper.text()).toContain('市场快照只展示已签名的索引信息')
+    expect(mocks.fetchPluginPackageDetail).not.toHaveBeenCalled()
+  })
+
+  it('opens confirm immediately and keeps install disabled while package detail is loading', async () => {
+    let resolveDetail
+    mocks.fetchPluginPackageDetail.mockReturnValue(new Promise((resolve) => { resolveDetail = resolve }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    expect(wrapper.get('[data-test="marketplace-detail-loading"]').text()).toContain('正在读取签名包详情')
+    expect(buttonByText(wrapper, '读取中…').attributes('disabled')).toBeDefined()
+    resolveDetail(packageDetail)
+    await flushPromises()
+    expect(wrapper.find('[data-test="marketplace-detail-loading"]').exists()).toBe(false)
+    expect(buttonByText(wrapper, '确认安装').attributes('disabled')).toBeUndefined()
+  })
+
+  it('explains a package-detail timeout on the confirm dialog', async () => {
+    mocks.fetchPluginPackageDetail.mockRejectedValue(Object.assign(new Error('timeout of 180000ms exceeded'), { code: 'ECONNABORTED' }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('读取插件包超时')
+    expect(buttonByText(wrapper, '确认安装').attributes('disabled')).toBeDefined()
+  })
+
   it('installs from the card action without requiring a second inspect click', async () => {
     const wrapper = mountPage()
     await flushPromises()
@@ -141,6 +182,7 @@ describe('PluginMarketplacePage', () => {
     await action.trigger('click')
     await flushPromises()
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    expect(mocks.fetchPluginPackageDetail).toHaveBeenCalledTimes(1)
     await buttonByText(wrapper, '确认安装').trigger('click')
     await flushPromises()
     expect(mocks.installPlugin).toHaveBeenCalled()
@@ -195,6 +237,7 @@ describe('PluginMarketplacePage', () => {
     expect(install.attributes('disabled')).toBeUndefined()
 
     await install.trigger('click')
+    await flushPromises()
     expect(wrapper.find('.modal-stub').exists()).toBe(true)
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
     expect(wrapper.find('.modal-stub').text()).toContain('http.inspect')
@@ -225,6 +268,7 @@ describe('PluginMarketplacePage', () => {
     expect(nextStep(wrapper)).toContain('下一步：部署到一个节点')
     expect(nextStep(wrapper)).not.toContain('发布域名')
     await upgrade.trigger('click')
+    await flushPromises()
     expect(wrapper.find('.modal-title').text()).toBe('确认升级插件')
     expect(wrapper.find('[data-test="marketplace-confirm-next"]').text()).toContain('下一步：部署到一个节点')
 
@@ -256,6 +300,10 @@ describe('PluginMarketplacePage', () => {
   })
 
   it('previews publish as the next step when the package declares an HTTP backend', async () => {
+    mocks.fetchRepositoryContents.mockResolvedValue({
+      entries: [{ ...entry, description: '把站点流量交给这个插件处理。', capabilities: ['http.backend-provider'] }],
+      directPlugin: null
+    })
     mocks.fetchPluginPackageDetail.mockResolvedValue({
       ...packageDetail,
       manifest: {
@@ -280,6 +328,10 @@ describe('PluginMarketplacePage', () => {
 
   it('points an already-installed HTTP backend package at publish as the next detail step', async () => {
     mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: entry.sha256 }])
+    mocks.fetchRepositoryContents.mockResolvedValue({
+      entries: [{ ...entry, capabilities: ['http.backend-provider'] }],
+      directPlugin: null
+    })
     mocks.fetchPluginPackageDetail.mockResolvedValue({
       ...packageDetail,
       manifest: {
@@ -302,6 +354,7 @@ describe('PluginMarketplacePage', () => {
     await openFirstPackage(wrapper)
     expect(wrapper.find('.modal-title').text()).toBe('WAF')
     await buttonByText(wrapper, '安装插件').trigger('click')
+    await flushPromises()
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
     await buttonByText(wrapper, '取消').trigger('click')
     expect(wrapper.find('.modal-title').text()).toBe('WAF')
@@ -313,6 +366,7 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await openFirstPackage(wrapper)
     await buttonByText(wrapper, '安装插件').trigger('click')
+    await flushPromises()
     await buttonByText(wrapper, '确认安装').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="marketplace-action-error"]').text()).toBe('source rejected')

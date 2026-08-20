@@ -63,7 +63,7 @@ function artifactLabel(artifact) {
           </dl>
         </section>
 
-        <section class="package-summary__group">
+        <section v-if="!detail.catalog_only" class="package-summary__group">
           <h3>资源预算</h3>
           <dl class="package-summary__facts">
             <div><dt>超时预算</dt><dd>{{ detail.resource_budget?.timeout_ms || 0 }} ms</dd></div>
@@ -77,10 +77,10 @@ function artifactLabel(artifact) {
       <div class="package-summary__section">
         <h3>平台制品与 checksum</h3>
         <p v-if="!(detail.artifacts || []).length" class="package-summary__empty">没有随包发布的平台制品。</p>
-        <div v-for="artifact in detail.artifacts || []" :key="artifact.path" class="artifact-row">
+        <div v-for="artifact in detail.artifacts || []" :key="artifact.path || artifact.sha256" class="artifact-row">
           <div class="artifact-row__meta">
-            <span>{{ artifactLabel(artifact) }} · {{ artifact.mode }}</span>
-            <small>{{ artifact.path }} · {{ bytes(artifact.size) }}</small>
+            <span>{{ artifactLabel(artifact) }}<template v-if="artifact.mode"> · {{ artifact.mode }}</template></span>
+            <small><template v-if="artifact.path">{{ artifact.path }} · </template>{{ bytes(artifact.size) }}</small>
           </div>
           <code>{{ artifact.sha256 }}</code>
         </div>
@@ -88,7 +88,8 @@ function artifactLabel(artifact) {
 
       <div class="package-summary__section">
         <h3>权限差异</h3>
-        <p v-if="!(detail.permission_diff?.added || []).length && !(detail.permission_diff?.removed || []).length">相对当前授权无变化</p>
+        <p v-if="detail.catalog_only">安装或升级前校验完整包后显示。</p>
+        <p v-else-if="!(detail.permission_diff?.added || []).length && !(detail.permission_diff?.removed || []).length">相对当前授权无变化</p>
         <div v-else class="package-summary__permissions">
           <p v-for="permission in detail.permission_diff?.added || []" :key="`add-${permission}`" class="permission-added">+ {{ permission }}</p>
           <p v-for="permission in detail.permission_diff?.removed || []" :key="`remove-${permission}`" class="permission-removed">− {{ permission }}</p>

@@ -50,8 +50,10 @@ export async function fetchPluginOperations(pluginID) {
   return Array.isArray(data?.operations) ? data.operations.map((item) => redactPluginProjection(item)) : []
 }
 
+export const PLUGIN_PACKAGE_DETAIL_TIMEOUT_MS = 180000
+
 export async function fetchPluginPackageDetail(selection) {
-  const { data } = await api.post(`${pluginRoot}/package-detail`, selection, longRunningRequest)
+  const { data } = await api.post(`${pluginRoot}/package-detail`, selection, { timeout: PLUGIN_PACKAGE_DETAIL_TIMEOUT_MS })
   return redactPluginProjection(data?.package || {})
 }
 

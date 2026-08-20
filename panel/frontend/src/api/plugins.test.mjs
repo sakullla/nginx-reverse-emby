@@ -34,7 +34,7 @@ describe('plugin administration API', () => {
     expect(get).toHaveBeenNthCalledWith(2, '/plugins/official.waf', longRunningRequest)
     expect(get).toHaveBeenNthCalledWith(3, '/plugins/official.waf/operations')
     expect(post.mock.calls).toEqual([
-      ['/plugins/package-detail', expect.any(Object), longRunningRequest],
+      ['/plugins/package-detail', expect.any(Object), { timeout: plugins.PLUGIN_PACKAGE_DETAIL_TIMEOUT_MS }],
       ['/plugins/install', expect.any(Object), longRunningRequest],
       ['/plugins/official.waf/enable', {}, longRunningRequest]
     ])

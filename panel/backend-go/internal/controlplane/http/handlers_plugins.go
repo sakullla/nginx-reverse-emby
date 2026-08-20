@@ -889,7 +889,7 @@ func pluginEntryReachable(instance service.PluginInstanceDetail, statuses []serv
 }
 
 func (d Dependencies) resolveHTTPPluginPackage(r *http.Request, input pluginPackageSelection) (service.PluginPackageCandidate, string, error) {
-	resolveCtx, cancel := pluginPackageResolutionContext(r.Context(), d.Config.MarketplaceRefreshTimeout)
+	resolveCtx, cancel := pluginPackageResolutionContext(r.Context(), service.DefaultPluginPackageResolutionTimeout)
 	defer cancel()
 	source, err := d.MarketplaceService.Source(resolveCtx, input.SourceID)
 	if err != nil {
@@ -901,7 +901,7 @@ func (d Dependencies) resolveHTTPPluginPackage(r *http.Request, input pluginPack
 
 func pluginPackageResolutionContext(requestCtx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
-		timeout = service.DefaultMarketplaceRefreshTimeout
+		timeout = service.DefaultPluginPackageResolutionTimeout
 	}
 	return context.WithTimeout(context.WithoutCancel(requestCtx), timeout)
 }

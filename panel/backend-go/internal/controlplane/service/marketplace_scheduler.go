@@ -39,6 +39,11 @@ type MarketplaceScheduler struct {
 // legitimately take minutes, so the cap is deliberately generous.
 const DefaultMarketplaceRefreshTimeout = 30 * time.Minute
 
+// DefaultPluginPackageResolutionTimeout bounds one interactive package
+// resolve/download (inspect or install). Refresh can take half an hour; a
+// single blob must fail faster so the marketplace download button is not stuck.
+const DefaultPluginPackageResolutionTimeout = 5 * time.Minute
+
 func NewMarketplaceScheduler(service marketplaceSchedulerService, prepare func(context.Context, marketplace.Source) (context.Context, error), interval time.Duration) (*MarketplaceScheduler, error) {
 	return NewMarketplaceSchedulerWithSourceTimeout(service, prepare, interval, DefaultMarketplaceRefreshTimeout)
 }

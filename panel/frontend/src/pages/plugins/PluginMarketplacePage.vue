@@ -16,17 +16,20 @@ const router = useRouter()
 
 const loading = ref(true)
 const actionBusy = ref(false)
+const detailLoading = ref(false)
 const error = ref('')
 const actionError = ref('')
 const packages = ref([])
 const installed = ref([])
 const selected = ref(null)
 const detail = ref(null)
+const detailPrepared = ref(false)
 const confirmVisible = ref(false)
 const inspectVisible = ref(false)
 const confirmFromInspect = ref(false)
 const query = ref('')
 const searchInputRef = ref(null)
+const packageDetailCache = new Map()
 
 const source = computed(() => selected.value?.source || {})
 const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
@@ -38,7 +41,9 @@ const selectedDetailPath = computed(() => selectedPluginID.value ? `/plugins/${e
 const hasHTTPBackend = computed(() => {
   const pkg = detail.value
   const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
-  return Array.isArray(providers) && providers.some((provider) => String(provider?.id || '').trim())
+  const extensions = pkg?.manifest?.extension_points || []
+  return (Array.isArray(providers) && providers.some((provider) => String(provider?.id || '').trim()))
+    || (Array.isArray(extensions) && extensions.includes('http.backend-provider'))
 })
 const pluginPurpose = computed(() => {
   const description = sanitizePluginText(detail.value?.manifest?.description || '').trim()
@@ -142,32 +147,74 @@ function applyPreviewPackages() {
 }
 
 function previewPackageDetail(item) {
+  const plugin = item?.plugin || {}
   return {
-    digest: item?.plugin?.sha256,
-    version: item?.plugin?.version,
-    permissions: [],
+    catalog_only: true,
+    digest: plugin.sha256,
+    version: plugin.version,
+    runtime: plugin.runtime || {},
+    artifacts: plugin.artifacts || [],
+    signature: { key_id: plugin.signature_key_id || '' },
     manifest: {
-      id: item?.plugin?.id,
-      name: item?.plugin?.name,
-      description: item?.plugin?.description || pluginTitle(item),
+      id: plugin.id,
+      name: plugin.name,
+      description: plugin.description || '',
+      compatibility: plugin.compatibility || {},
+      extension_points: plugin.capabilities || [],
     },
   }
 }
 
-async function selectPackage(item) {
+function packageDetailKey(item) {
+  return `${item?.source?.id || ''}:${item?.plugin?.sha256 || ''}:${item?.plugin?.version || ''}`
+}
+
+async function cachedPackageDetail(item) {
+  const key = packageDetailKey(item)
+  if (packageDetailCache.has(key)) return await packageDetailCache.get(key)
+  const pending = fetchPluginPackageDetail({
+    source_id: item?.source?.id,
+    plugin_id: item?.plugin?.id,
+    version: item?.plugin?.version,
+    digest: item?.plugin?.sha256
+  })
+  packageDetailCache.set(key, pending)
+  try {
+    const resolved = await pending
+    packageDetailCache.set(key, resolved)
+    return resolved
+  } catch (error) {
+    packageDetailCache.delete(key)
+    throw error
+  }
+}
+
+function selectPackage(item) {
   selected.value = item
-  detail.value = null
+  detail.value = previewPackageDetail(item)
+  detailPrepared.value = false
   confirmVisible.value = false
   inspectVisible.value = true
   error.value = ''
   actionError.value = ''
+}
+
+async function preparePackageDetail(item) {
+  detailLoading.value = true
+  actionError.value = ''
   try {
-    detail.value = await fetchPluginPackageDetail(packageSelection())
+    detail.value = await cachedPackageDetail(item)
+    detailPrepared.value = true
+    return true
   } catch (cause) {
     detail.value = previewPackageDetail(item)
-    if (!packages.value.some((entry) => entry.plugin?.sha256?.startsWith('preview-'))) {
+    detailPrepared.value = false
+    if (!String(item?.plugin?.sha256 || '').startsWith('preview-')) {
       actionError.value = humanLoadError(cause, '读取签名包详情失败')
     }
+    return false
+  } finally {
+    detailLoading.value = false
   }
 }
 
@@ -235,6 +282,9 @@ function statusTone(item) {
 
 function humanLoadError(cause, fallback) {
   const raw = sanitizePluginText(cause?.message || fallback)
+  if (/timeout|timed out|exceeded|econnaborted/i.test(raw)) {
+    return '读取插件包超时。安装前需要下载并校验签名包，请检查出站网络或 HTTP 代理后重试。'
+  }
   if (/status code 5\d\d|network error|failed to fetch/i.test(raw)) {
     return '暂时连不上服务，请稍后重试。'
   }
@@ -253,10 +303,9 @@ function cardActionLabel(item) {
 }
 
 async function startCardAction(item) {
-  if (!item?.plugin?.id || actionBusy.value) return
+  if (!item?.plugin?.id || actionBusy.value || detailLoading.value) return
   selected.value = item
   inspectVisible.value = false
-  confirmVisible.value = false
   confirmFromInspect.value = false
   error.value = ''
   actionError.value = ''
@@ -265,27 +314,18 @@ async function startCardAction(item) {
     await router.push(`/plugins/${encodeURIComponent(item.plugin.id)}`)
     return
   }
-  try {
-    detail.value = await fetchPluginPackageDetail({
-      source_id: item.source?.id,
-      plugin_id: item.plugin.id,
-      version: item.plugin.version,
-      digest: item.plugin.sha256
-    })
-  } catch (cause) {
-    detail.value = previewPackageDetail(item)
-    if (!String(item.plugin?.sha256 || '').startsWith('preview-')) {
-      actionError.value = humanLoadError(cause, '读取签名包详情失败')
-    }
-  }
+  detail.value = previewPackageDetail(item)
+  detailPrepared.value = false
   confirmVisible.value = true
+  await preparePackageDetail(item)
 }
 
-function openConfirm() {
-  if (alreadyInstalled.value) return
+async function openConfirm() {
+  if (alreadyInstalled.value || detailLoading.value) return
   confirmFromInspect.value = true
   inspectVisible.value = false
   confirmVisible.value = true
+  if (!detailPrepared.value) await preparePackageDetail(selected.value)
 }
 
 function cancelConfirm() {
@@ -304,7 +344,7 @@ function onConfirmVisible(open) {
 }
 
 async function applyPackage() {
-  if (!selected.value || actionBusy.value) return
+  if (!selected.value || actionBusy.value || detailLoading.value || actionError.value) return
   actionBusy.value = true
   actionError.value = ''
   try {
@@ -410,12 +450,15 @@ async function applyPackage() {
             </BaseBadge>
             <BaseIconButton
               :tone="installedStatus(item) === '已安装' ? 'default' : 'primary'"
-              :title="cardActionLabel(item)"
+              :title="detailLoading && isSelected(item) ? '正在读取签名包…' : cardActionLabel(item)"
               :data-test="`marketplace-card-action-${item.plugin.id}`"
-              :disabled="actionBusy && isSelected(item)"
+              :disabled="(actionBusy || detailLoading) && isSelected(item)"
               @click="startCardAction(item)"
             >
-              <svg v-if="installedStatus(item) === '已安装'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <svg v-if="detailLoading && isSelected(item)" class="marketplace-card__spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M12 3a9 9 0 1 1-9 9" />
+              </svg>
+              <svg v-else-if="installedStatus(item) === '已安装'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M9 18l6-6-6-6" />
               </svg>
               <svg v-else-if="installedStatus(item) === '可升级'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -453,7 +496,8 @@ async function applyPackage() {
           <PluginRiskNotices :package-detail="detail" :source="source" />
           <section class="permission-review">
             <h3>精确权限确认</h3>
-            <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
+            <p v-if="!detailPrepared">市场快照只展示已签名的索引信息；点击安装或升级后，会校验完整包并显示精确权限。</p>
+            <p v-else-if="!requiredPermissions.length">此包未请求宿主能力。</p>
             <ul v-else class="permission-list">
               <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
             </ul>
@@ -463,7 +507,7 @@ async function applyPackage() {
             <PluginPackageSummary :detail="detail" :source="source" :show-identity="false" :collapsible="false" />
           </details>
         </div>
-        <p v-else class="plugin-marketplace-empty">正在读取签名包详情…</p>
+        <p v-else class="plugin-marketplace-empty">正在读取市场元数据…</p>
         <template #footer>
           <button class="btn btn-secondary" type="button" @click="closeInspect">关闭</button>
           <RouterLink
@@ -473,8 +517,8 @@ async function applyPackage() {
           >
             打开详情
           </RouterLink>
-          <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled" @click="openConfirm">
-            {{ isUpgrade ? '升级插件' : '安装插件' }}
+          <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled || detailLoading" @click="openConfirm">
+            {{ detailLoading ? '读取中…' : isUpgrade ? '升级插件' : '安装插件' }}
           </button>
         </template>
       </BaseModal>
@@ -490,18 +534,21 @@ async function applyPackage() {
       >
         <div class="confirm-permissions">
           <p v-if="actionError" class="plugin-alert" role="alert" data-test="marketplace-action-error">{{ actionError }}</p>
-          <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
-          <p v-else>此包未请求宿主能力。</p>
-          <ul v-if="requiredPermissions.length" class="permission-list">
-            <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
-          </ul>
-          <p class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
-          <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
+          <p v-if="detailLoading" data-test="marketplace-detail-loading">正在读取签名包详情…官方包首次安装会先下载并校验。</p>
+          <template v-else>
+            <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
+            <p v-else>此包未请求宿主能力。</p>
+            <ul v-if="requiredPermissions.length" class="permission-list">
+              <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
+            </ul>
+            <p class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
+            <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
+          </template>
         </div>
         <template #footer>
           <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="cancelConfirm">取消</button>
-          <button class="btn btn-primary" type="button" :disabled="actionBusy" @click="applyPackage">
-            {{ actionBusy ? '提交中…' : isUpgrade ? '确认升级' : '确认安装' }}
+          <button class="btn btn-primary" type="button" :disabled="actionBusy || detailLoading || !!actionError" @click="applyPackage">
+            {{ actionBusy ? '提交中…' : detailLoading ? '读取中…' : isUpgrade ? '确认升级' : '确认安装' }}
           </button>
         </template>
       </BaseModal>
@@ -617,6 +664,14 @@ async function applyPackage() {
   gap: 0.5rem;
   padding-top: 0.45rem;
   border-top: 1px solid var(--color-border-subtle);
+}
+
+.marketplace-card__spinner {
+  animation: marketplace-spin 0.8s linear infinite;
+}
+
+@keyframes marketplace-spin {
+  to { transform: rotate(360deg); }
 }
 
 .plugin-marketplace-detail {
