@@ -401,6 +401,9 @@ func TestLastAdministratorProtection(t *testing.T) {
 	if _, err := manager.DisableUser(ctx, admin.ID, true); !errors.Is(err, authz.ErrLastAdministrator) {
 		t.Fatalf("DisableUser(last admin) error = %v, want last administrator", err)
 	}
+	if err := manager.DeleteUser(ctx, admin.ID); !errors.Is(err, authz.ErrLastAdministrator) {
+		t.Fatalf("DeleteUser(last admin) error = %v, want last administrator", err)
+	}
 	if _, err := manager.SetUserRoles(ctx, admin.ID, []string{authz.RoleOperator}); !errors.Is(err, authz.ErrLastAdministrator) {
 		t.Fatalf("SetUserRoles(last admin) error = %v, want last administrator", err)
 	}
@@ -428,8 +431,11 @@ func TestLastAdministratorProtection(t *testing.T) {
 	if _, err := manager.DisableUser(ctx, second.ID, true); !errors.Is(err, authz.ErrLastAdministrator) {
 		t.Fatalf("DisableUser(remaining admin) error = %v, want last administrator", err)
 	}
-	if _, err := manager.DisableUser(ctx, operator.ID, true); err != nil {
-		t.Fatalf("DisableUser(operator) error = %v", err)
+	if err := manager.DeleteUser(ctx, operator.ID); err != nil {
+		t.Fatalf("DeleteUser(operator) error = %v", err)
+	}
+	if _, err := manager.GetUser(ctx, operator.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("GetUser(deleted operator) error = %v, want not found", err)
 	}
 
 	starRole, err := manager.CreateRole(ctx, "star-admin", "", []string{authz.PermissionAll})

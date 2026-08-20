@@ -54,7 +54,7 @@ describe('AccessOverview resource group entry', () => {
     })
     await flushPromises()
     const link = wrapper.get('a.access-card-link')
-    expect(link.text()).toBe('资源组')
+    expect(link.text()).toContain('资源组')
     expect(link.attributes('href')).toBe('/access/resource-groups')
   })
 })

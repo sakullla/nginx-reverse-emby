@@ -198,6 +198,35 @@ func TestPluginLifecycleReconcilerWaitsForEveryExactAgentReport(t *testing.T) {
 	}
 }
 
+func TestPluginLifecycleReconcilerClosesOperationWhenControlPlaneActivationFails(t *testing.T) {
+	t.Parallel()
+	activationErr := errors.New("canonical plugin handshake failed")
+	completion := &lifecycleCompletionRecorder{plan: controlPlanePluginRuntimePlan{
+		Controlled: true,
+		Candidates: []pluginhost.Candidate{{InstanceID: "instance"}},
+	}}
+	reconciler, err := NewPluginLifecycleReconciler(&lifecycleReconcileStore{}, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciler.SetControlPlaneRuntime(&failingPluginControlPlaneRuntime{err: activationErr})
+	operation := storage.PluginOperationRow{ID: "operation", PluginID: "plugin", Kind: "upgrade"}
+	agentResults := map[string]any{"local": map[string]any{"state": "applied"}}
+	if err := reconciler.completeTrustedRevisionOperation(t.Context(), operation, true, agentResults); err != nil {
+		t.Fatalf("completeTrustedRevisionOperation() error = %v", err)
+	}
+	if completion.kind != "trusted-upgrade" || completion.result.Applied {
+		t.Fatalf("completion = %+v", completion)
+	}
+	if completion.agentResults["local"] == nil {
+		t.Fatal("existing Agent result was not preserved")
+	}
+	runtimeResult, ok := completion.agentResults["control-plane-runtime"].(map[string]any)
+	if !ok || runtimeResult["state"] != "failed" || runtimeResult["safe_detail"] != activationErr.Error() {
+		t.Fatalf("runtime failure result = %#v", completion.agentResults["control-plane-runtime"])
+	}
+}
+
 func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{}
@@ -247,6 +276,7 @@ func TestDDNSResolvesTokenPerDomainWithoutMixingEnv(t *testing.T) {
 }
 
 func TestDDNSFailsWhenDomainHasNoToken(t *testing.T) {
+	errTokenUnavailable := errors.New("DNS API token unavailable")
 	raw, _ := json.Marshal(storage.DDNSConfig{
 		Enabled: true, Domain: "missing.example",
 		IPv4: storage.DDNSFamily{Enabled: true, Source: "public_api"},
@@ -257,7 +287,7 @@ func TestDDNSFailsWhenDomainHasNoToken(t *testing.T) {
 	}}
 	svc := NewDDNSService(config.Config{DDNS: config.DDNSRuntimeConfig{Enabled: true, TTL: 120}}, store, cf, func() time.Time { return time.Unix(1700, 0) })
 	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
-		return "", fmt.Errorf("%w: %s", pluginhost.ErrTokenUnavailable, domain)
+		return "", fmt.Errorf("%w: %s", errTokenUnavailable, domain)
 	}
 	svc.reconcileAgent(context.Background(), "a1")
 	if cf.calls != 0 {
@@ -270,6 +300,7 @@ func TestDDNSFailsWhenDomainHasNoToken(t *testing.T) {
 }
 
 func TestDDNSMappedUnavailableDoesNotUseEnvToken(t *testing.T) {
+	errCredentialUnavailable := errors.New("mapped credential unavailable")
 	raw, _ := json.Marshal(storage.DDNSConfig{
 		Enabled: true, Domain: "example.com",
 		IPv4: storage.DDNSFamily{Enabled: true, Source: "public_api"},
@@ -280,7 +311,7 @@ func TestDDNSMappedUnavailableDoesNotUseEnvToken(t *testing.T) {
 	}}
 	svc := NewDDNSService(config.Config{DDNS: config.DDNSRuntimeConfig{Enabled: true, Token: "token-b", TTL: 120}}, store, cf, time.Now)
 	svc.resolveToken = func(_ context.Context, domain string) (string, error) {
-		return "", fmt.Errorf("%w: %s", pluginhost.ErrMappedTokenUnavailable, domain)
+		return "", fmt.Errorf("%w: %s", errCredentialUnavailable, domain)
 	}
 	svc.reconcileAgent(context.Background(), "a1")
 	if cf.calls != 0 {
@@ -671,8 +702,10 @@ func (s *lifecycleReconcileStore) GetPluginOperation(context.Context, string) (s
 }
 
 type lifecycleCompletionRecorder struct {
-	kind   string
-	result PluginApplyResult
+	kind         string
+	result       PluginApplyResult
+	plan         controlPlanePluginRuntimePlan
+	agentResults map[string]any
 }
 
 func (r *lifecycleCompletionRecorder) CompleteLifecycleApply(_ context.Context, result PluginApplyResult) (storage.InstalledPluginRow, error) {
@@ -691,11 +724,24 @@ func (r *lifecycleCompletionRecorder) CompleteRollback(_ context.Context, result
 	r.kind, r.result = "rollback", result
 	return storage.InstalledPluginRow{}, nil
 }
-func (r *lifecycleCompletionRecorder) CompleteTrustedRevisionOperation(_ context.Context, operation storage.PluginOperationRow, applied bool, _ any) error {
+func (r *lifecycleCompletionRecorder) CompleteTrustedRevisionOperation(_ context.Context, operation storage.PluginOperationRow, applied bool, agentResults any) error {
 	r.kind = "trusted-" + operation.Kind
 	r.result = PluginApplyResult{PluginID: operation.PluginID, Applied: applied}
+	r.agentResults, _ = agentResults.(map[string]any)
 	return nil
 }
+
+func (r *lifecycleCompletionRecorder) controlPlaneRuntimePlan(context.Context, storage.PluginOperationRow) (controlPlanePluginRuntimePlan, error) {
+	return r.plan, nil
+}
+
+type failingPluginControlPlaneRuntime struct{ err error }
+
+func (r *failingPluginControlPlaneRuntime) ActivateBatch(context.Context, []pluginhost.Candidate) ([]*pluginhost.Instance, error) {
+	return nil, r.err
+}
+func (*failingPluginControlPlaneRuntime) ActiveGeneration(string) (string, bool) { return "", false }
+func (*failingPluginControlPlaneRuntime) Stop(context.Context, string) error     { return nil }
 
 type fakeDDNSStore struct {
 	rows map[string]storage.AgentRow

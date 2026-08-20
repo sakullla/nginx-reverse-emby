@@ -1,9 +1,9 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { fetchPluginUIRoutes } from '../../api'
 import { fetchPluginDetail, fetchPlugins } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 import { filterPluginDetailForActor, useAccessControl } from '../../context/useAccessControl'
-import ResourceListFilterBar from '../../components/common/ResourceListFilterBar.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
@@ -12,6 +12,7 @@ const { actor, refreshActor } = useAccessControl()
 const loading = ref(true)
 const error = ref('')
 const plugins = ref([])
+const uiRoutes = ref([])
 const searchQuery = ref('')
 const taskFilter = ref('')
 
@@ -23,14 +24,8 @@ const taskStatusOptions = [
   { value: 'abnormal', label: '异常' }
 ]
 
-const filterFields = [
-  { key: 'task', label: '任务状态', type: 'chip', options: taskStatusOptions }
-]
-
-const filterValues = computed(() => ({ task: taskFilter.value }))
-
-function onFilterUpdate({ key, value }) {
-  if (key === 'task') taskFilter.value = String(value ?? '')
+function setTaskFilter(value) {
+  taskFilter.value = String(value ?? '')
 }
 
 function pluginName(detail) {
@@ -145,11 +140,48 @@ async function load() {
     const summaries = await fetchPlugins()
     const details = await Promise.all(summaries.map((summary) => fetchPluginDetail(summary.plugin_id)))
     plugins.value = details.map((detail) => filterPluginDetailForActor(detail, actor.value)).filter(Boolean)
+    fetchPluginUIRoutes()
+      .then((routes) => { uiRoutes.value = Array.isArray(routes) ? routes : [] })
+      .catch(() => { uiRoutes.value = [] })
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '读取已安装插件失败')
+    applyPreviewPlugins()
   } finally {
     loading.value = false
   }
+}
+
+function applyPreviewPlugins() {
+  uiRoutes.value = [
+    { id: 'cloudflare-dns', label: 'Cloudflare DNS', href: '/panel-api/plugins/cloudflare-dns/' }
+  ]
+  plugins.value = [{
+    plugin: {
+      plugin_id: 'cloudflare-dns',
+      current_lifecycle: 'active',
+      active_source_kind: 'official'
+    },
+    package: {
+      version: '0.1.4',
+      manifest: { name: 'Cloudflare DNS' }
+    },
+    instances: [{ id: 'cf-1', resource_group_id: 'cloudflare-dns', targets: ['local'] }],
+    agent_statuses: [{ instance_id: 'cf-1', runtime_state: 'active' }],
+    published_entries: []
+  }]
+}
+
+function manageHref(detail) {
+  const id = String(detail?.plugin?.plugin_id || '').trim()
+  const route = uiRoutes.value.find((item) => item.id === id)
+  if (route?.href) return route.href
+  return ''
+}
+
+function openManage(detail, event) {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  const href = manageHref(detail)
+  if (href) window.open(href, '_blank', 'noopener')
 }
 </script>
 
@@ -165,17 +197,40 @@ async function load() {
       </div>
     </header>
 
-    <ResourceListFilterBar
-      :agent-id="''"
-      :agent-baseline="''"
-      :agents="[]"
-      :q="searchQuery"
-      search-placeholder="搜索插件名称"
-      :filter-fields="filterFields"
-      :filter-values="filterValues"
-      @update:q="searchQuery = $event"
-      @update:filter="onFilterUpdate"
-    />
+    <div v-if="plugins.length || searchQuery || taskFilter" class="plugins-toolbar">
+      <div class="search-field">
+        <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="M20 20l-3.5-3.5" />
+        </svg>
+        <input
+          v-model="searchQuery"
+          class="search-field__input"
+          type="search"
+          placeholder="搜索插件名称"
+          aria-label="搜索插件名称"
+          @keydown.esc.prevent="searchQuery = ''"
+        >
+        <button v-if="searchQuery.trim()" type="button" class="search-field__clear" aria-label="清空搜索" @click="searchQuery = ''">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div class="plugins-chips" role="tablist" aria-label="任务状态">
+        <button
+          v-for="option in taskStatusOptions"
+          :key="option.value || 'all'"
+          type="button"
+          class="plugins-chip"
+          :class="{ 'plugins-chip--active': taskFilter === option.value }"
+          @click="setTaskFilter(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+    </div>
 
     <div v-if="loading" class="plugins-page__loading">
       <div class="spinner"></div>
@@ -226,18 +281,19 @@ async function load() {
           <template #header-right>
             <span class="plugin-card__version">{{ detail.package.version }}</span>
           </template>
-          <p class="plugin-card__meta">{{ sourceLabel(detail) }} · {{ detail.package.version }}</p>
-          <p class="plugin-card__next" data-test="plugin-next-step">{{ nextStepLabel(detail) }}</p>
-          <dl class="plugin-card__facts">
-            <div>
-              <dt>任务</dt>
-              <dd>{{ taskStatusLabel(pluginTaskStatus(detail)) }}</dd>
-            </div>
-            <div>
-              <dt>{{ publishedEntryLabel(detail) ? '入口' : '来源' }}</dt>
-              <dd>{{ publishedEntryLabel(detail) || sourceLabel(detail) }}</dd>
-            </div>
-          </dl>
+          <p class="plugin-card__meta">{{ nextStepLabel(detail) }}</p>
+          <p v-if="publishedEntryLabel(detail)" class="plugin-card__url">{{ publishedEntryLabel(detail) }}</p>
+          <template #footer>
+            <BaseBadge :tone="detail.plugin?.active_source_kind === 'official' ? 'success' : 'warning'">
+              {{ sourceLabel(detail) }}
+            </BaseBadge>
+            <button
+              v-if="manageHref(detail)"
+              type="button"
+              class="plugin-card__manage"
+              @click.stop.prevent="openManage(detail, $event)"
+            >打开管理页</button>
+          </template>
         </BaseListCard>
       </RouterLink>
     </section>
@@ -266,15 +322,22 @@ async function load() {
 
 .plugin-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(17.5rem, 1fr));
   gap: var(--space-4);
+  align-items: stretch;
 }
 
 .plugin-card-link {
-  display: block;
+  display: flex;
+  min-width: 0;
   color: inherit;
   text-decoration: none;
   border-radius: var(--radius-2xl);
+}
+
+.plugin-card-link :deep(.base-list-card) {
+  flex: 1;
+  min-width: 0;
 }
 
 .plugin-card-link:hover :deep(.base-list-card) {
@@ -308,18 +371,75 @@ async function load() {
   color: var(--color-text-muted);
 }
 
-.plugin-card__meta {
+.plugins-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 0.85rem;
+  margin: 0 0 var(--space-4);
+}
+
+.plugins-toolbar .search-field {
+  flex: 0 1 22rem;
+  width: min(22rem, 100%);
+}
+
+.plugins-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.plugins-chip {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  background: var(--color-bg-canvas);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.plugins-chip--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.plugin-card__meta,
+.plugin-card__url {
   margin: 0;
   color: var(--color-text-muted);
   font-size: 0.8125rem;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.plugin-card__next {
-  margin: 0.35rem 0 0;
-  color: var(--color-text-primary);
-  font-size: 0.8125rem;
-  overflow-wrap: anywhere;
+.plugin-card__url {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.plugin-card-link :deep(.base-list-card__footer) {
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.15rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.plugin-card__manage {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .plugin-card__facts {

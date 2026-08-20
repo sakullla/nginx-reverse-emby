@@ -18,7 +18,7 @@
           </div>
           <div class="backup-card__titles">
             <strong>导出加密备份</strong>
-            <span>生成可下载的受保护 archive，请离线保存口令</span>
+            <span>下载加密备份文件，请把口令记在安全的地方</span>
           </div>
         </div>
 
@@ -67,7 +67,7 @@
           </div>
           <div class="backup-card__titles">
             <strong>导入受保护备份</strong>
-            <span>会替换当前 SQLite 目标状态，请先建立回滚点</span>
+            <span>会覆盖当前内部证书数据，导入前请先留一份备份</span>
           </div>
         </div>
 

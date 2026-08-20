@@ -95,6 +95,7 @@ type Store interface {
 	CreateUser(context.Context, storage.UserRow) error
 	CreateUserWithRoleBindings(context.Context, storage.UserRow, []storage.RoleBindingRow) error
 	SaveUser(context.Context, storage.UserRow) error
+	DeleteUser(context.Context, string) error
 	GetUser(context.Context, string) (storage.UserRow, error)
 	GetUserByUsername(context.Context, string) (storage.UserRow, error)
 	ListUsers(context.Context) ([]storage.UserRow, error)
@@ -509,6 +510,19 @@ func (m *Manager) DisableUser(ctx context.Context, userID string, disabled bool)
 		return err
 	})
 	return user, err
+}
+
+func (m *Manager) DeleteUser(ctx context.Context, userID string) error {
+	return m.transaction(ctx, func(tx *Manager) error {
+		if _, err := tx.GetUser(ctx, userID); err != nil {
+			return err
+		}
+		disabled := true
+		if err := tx.guardLastAdministrator(ctx, userID, nil, &disabled); err != nil {
+			return err
+		}
+		return tx.store.DeleteUser(ctx, userID)
+	})
 }
 
 func (m *Manager) applyUserDisabled(ctx context.Context, userID string, disabled bool) (User, error) {
@@ -1510,7 +1524,7 @@ func (m *Manager) guardLastAdministrator(ctx context.Context, userID string, nex
 	if current == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: cannot disable or demote the last sign-in capable full administrator", ErrLastAdministrator)
+	return fmt.Errorf("%w: cannot disable, delete or demote the last sign-in capable full administrator", ErrLastAdministrator)
 }
 
 func (m *Manager) countEnabledFullAdministratorsAfter(ctx context.Context, userID string, nextRoles []string, nextDisabled *bool) (int, error) {

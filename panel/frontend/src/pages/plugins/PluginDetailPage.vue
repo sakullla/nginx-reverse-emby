@@ -251,7 +251,7 @@ async function load({ background = false } = {}) {
       ? previousInstanceID
       : visibleDetail.instances[0]?.id || ''
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '读取插件详情失败')
+    error.value = humanLoadError(cause, '读取插件详情失败')
   } finally {
     refreshInFlight = false
     if (!background) loading.value = false
@@ -370,6 +370,14 @@ function exportSafeDiagnostics() {
   URL.revokeObjectURL(url)
 }
 
+function humanLoadError(cause, fallback) {
+  const raw = sanitizePluginText(cause?.message || fallback || '').trim()
+  if (/status code 5\d\d|network error|failed to fetch|502/i.test(raw)) {
+    return '暂时连不上服务，请稍后重试。'
+  }
+  return raw || fallback || '读取失败'
+}
+
 async function retryAgent(status) {
   if (!admin.value || retryingAgent.value) return
   retryingAgent.value = status.agent_id
@@ -395,7 +403,14 @@ async function retryAgent(status) {
     </div>
 
     <div v-else-if="error && !detail" role="alert">
-      <EmptyState title="读取失败" :description="error" />
+      <EmptyState title="读取失败" :description="error">
+        <template #action>
+          <div class="plugin-detail-empty-actions">
+            <button class="btn btn-secondary" type="button" @click="load()">重试</button>
+            <RouterLink class="btn btn-secondary" to="/plugins">返回已安装插件</RouterLink>
+          </div>
+        </template>
+      </EmptyState>
     </div>
 
     <template v-else-if="detail">
@@ -495,22 +510,68 @@ async function retryAgent(status) {
 
       <details class="plugin-ops" data-test="plugin-more">
         <summary>更多</summary>
-        <div class="plugin-detail-actions">
-          <button class="btn btn-secondary" type="button" @click="exportSafeDiagnostics">导出脱敏诊断</button>
-          <template v-if="admin">
-            <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('enable')">启用</button>
-            <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('disable')">停用</button>
-            <button class="btn btn-secondary" type="button" :disabled="!!busy || !detail.plugin.rollback_package_digest" @click="handleLifecycleAction('rollback')">回滚</button>
-            <button class="btn btn-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="handleLifecycleAction('uninstall')">卸载</button>
-          </template>
+        <div class="plugin-ops__stack">
+          <section class="plugin-ops-panel">
+            <header class="plugin-ops-panel__head">
+              <div>
+                <h2>管理操作</h2>
+                <p>启用、停用、回滚，或导出脱敏诊断。卸载前必须先停用。</p>
+              </div>
+            </header>
+            <div class="plugin-detail-actions">
+              <button class="btn btn-secondary" type="button" @click="exportSafeDiagnostics">导出脱敏诊断</button>
+              <template v-if="admin">
+                <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('enable')">启用</button>
+                <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('disable')">停用</button>
+                <button class="btn btn-secondary" type="button" :disabled="!!busy || !detail.plugin.rollback_package_digest" @click="handleLifecycleAction('rollback')">回滚</button>
+                <button class="btn btn-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="handleLifecycleAction('uninstall')">卸载</button>
+              </template>
+            </div>
+          </section>
+
+          <div class="plugin-technical">
+            <section class="plugin-ops-panel">
+              <header class="plugin-ops-panel__head">
+                <div>
+                  <h2>插件包与风险</h2>
+                  <p>签名、预算、权限差异，以及安装与运行边界。</p>
+                </div>
+              </header>
+              <PluginPackageSummary :detail="detail.package" :source="source" :show-identity="false" :collapsible="false" />
+              <PluginRiskNotices :package-detail="detail.package" :source="source" />
+            </section>
+          </div>
+
+          <section class="plugin-ops-panel">
+            <header class="plugin-ops-panel__head">
+              <div>
+                <h2>逐 Agent 状态、预算与故障</h2>
+                <p>查看每个节点的 revision 与故障；失败时可重试。</p>
+              </div>
+            </header>
+            <PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" />
+          </section>
+
+          <section v-if="selectedInstance" class="plugin-ops-panel">
+            <header class="plugin-ops-panel__head">
+              <div>
+                <h2>实例 / Agent 运行日志</h2>
+                <p>最近 5 条宿主持久化日志，按时间从新到旧。</p>
+              </div>
+            </header>
+            <PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="selectedInstance.targets || []" />
+          </section>
+
+          <section class="plugin-ops-panel">
+            <header class="plugin-ops-panel__head">
+              <div>
+                <h2>生命周期操作与审计</h2>
+                <p>最近 5 条操作记录，失败项会保留脱敏后的原因。</p>
+              </div>
+            </header>
+            <PluginOperationTimeline :operations="operations" />
+          </section>
         </div>
-        <div class="plugin-technical">
-          <PluginPackageSummary :detail="detail.package" :source="source" />
-          <PluginRiskNotices :package-detail="detail.package" :source="source" />
-        </div>
-        <section class="plugin-section"><h2>逐 Agent 状态、预算与故障</h2><PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" /></section>
-        <section v-if="selectedInstance" class="plugin-section"><h2>实例 / Agent 运行日志</h2><PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="selectedInstance.targets || []" /></section>
-        <section class="plugin-section"><h2>生命周期操作与审计</h2><PluginOperationTimeline :operations="operations" /></section>
       </details>
 
       <PluginDeployModal
@@ -578,6 +639,13 @@ async function retryAgent(status) {
   color: var(--color-text-muted);
 }
 
+.plugin-detail-empty-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .back-link {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
@@ -588,9 +656,74 @@ async function retryAgent(status) {
 .plugin-detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 .plugin-alert { color: var(--color-danger); }
-.plugin-technical,
-.plugin-ops { display: grid; gap: var(--space-4); }
-.plugin-ops summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
+.plugin-technical { display: grid; gap: var(--space-4); min-width: 0; }
+.plugin-ops {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+.plugin-ops > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0.9rem 1.05rem;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+.plugin-ops > summary::-webkit-details-marker { display: none; }
+.plugin-ops > summary::after {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--color-text-tertiary);
+  border-bottom: 2px solid var(--color-text-tertiary);
+  transform: rotate(45deg);
+  transition: transform 160ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+}
+.plugin-ops[open] > summary {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.plugin-ops[open] > summary::after {
+  transform: rotate(225deg);
+}
+.plugin-ops__stack {
+  display: grid;
+  gap: var(--space-4);
+  padding: 1rem 1.05rem 1.15rem;
+}
+.plugin-ops-panel {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--color-bg-canvas) 55%, var(--color-bg-surface));
+}
+.plugin-ops-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.plugin-ops-panel__head h2 {
+  margin: 0;
+  font-size: 0.9375rem;
+  letter-spacing: -0.01em;
+}
+.plugin-ops-panel__head p {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
 .plugin-config-empty { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); }
 
 .plugin-task {
@@ -629,5 +762,9 @@ async function retryAgent(status) {
   .plugin-section-heading { align-items: stretch; flex-direction: column; }
   .plugin-section-heading .btn { width: 100%; }
   .instance-actions { margin-left: 0; }
+  .plugin-ops > summary,
+  .plugin-ops__stack { padding-left: 0.85rem; padding-right: 0.85rem; }
+  .plugin-ops-panel { padding: 0.8rem 0.85rem; }
+  .plugin-detail-actions .btn { flex: 1 1 auto; }
 }
 </style>

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const (
@@ -27,6 +29,8 @@ const (
 
 type controlAttemptSecurity struct {
 	endpoint            Endpoint
+	uiEndpoint          Endpoint
+	hostEndpoint        Endpoint
 	endpointDirectory   string
 	credentialDirectory string
 	guestEndpoint       string
@@ -105,18 +109,26 @@ func provisionControlAttemptSecurityWithOps(runtimeDirectory string, endpoint En
 	guestEndpoint := ""
 	if strings.EqualFold(endpoint.Network, "unix") {
 		socketName := "r-" + endpoint.Cookie[:16] + ".sock"
+		uiSocketName := "u-" + endpoint.Cookie[:16] + ".sock"
+		hostSocketName := "h-" + endpoint.Cookie[:16] + ".sock"
 		endpoint.Address = filepath.Join(endpointDirectory, socketName)
+		security.uiEndpoint = Endpoint{Network: "unix", Address: filepath.Join(endpointDirectory, uiSocketName), Cookie: endpoint.Cookie}
+		security.hostEndpoint = Endpoint{Network: "unix", Address: filepath.Join(endpointDirectory, hostSocketName), Cookie: endpoint.Cookie}
 		if runtime.GOOS == "linux" {
 			endpointHandle, err = os.Open(endpointDirectory)
 			if err != nil {
 				return security, err
 			}
 			endpoint.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+			security.uiEndpoint.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), uiSocketName)
+			security.hostEndpoint.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), hostSocketName)
 		} else if runtime.GOOS != "windows" && len(endpoint.Address) >= 104 {
 			return security, errors.New("control-plane plugin managed unix endpoint path is too long")
 		}
 		guestEndpoint = controlGuestEndpointDirectory + "/" + socketName
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT=unix:"+endpoint.Address)
+		environment = append(environment, pluginsdk.EnvPluginUIEndpoint+"=unix:"+security.uiEndpoint.Address)
+		environment = append(environment, pluginsdk.EnvPluginHostEndpoint+"=unix:"+security.hostEndpoint.Address)
 	} else {
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+endpoint.Network+":"+endpoint.Address)
 	}

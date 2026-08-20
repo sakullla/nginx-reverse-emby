@@ -46,7 +46,8 @@ const (
 	ExtensionDNSProvider         SandboxExtensionPoint = "dns.provider"
 	ExtensionContainerProvider   SandboxExtensionPoint = "container.provider"
 	ExtensionTunnelProvider      SandboxExtensionPoint = "tunnel.provider"
-	ExtensionUIRoute             SandboxExtensionPoint = "ui.route"
+	ExtensionUIRoute             SandboxExtensionPoint = SandboxExtensionPoint(pluginsdk.ExtensionUIRoute)
+	ExtensionResourceGroup       SandboxExtensionPoint = SandboxExtensionPoint(pluginsdk.ExtensionResourceGroup)
 )
 
 type ManifestResourceBudget struct {
@@ -180,7 +181,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 func knownSandboxExtension(value SandboxExtensionPoint) bool {
 	switch value {
 	case ExtensionHTTPRequest, ExtensionHTTPResponse, ExtensionHTTPBackendProvider, ExtensionL4Accept, ExtensionPolicyProvider,
-		ExtensionDNSProvider, ExtensionContainerProvider, ExtensionTunnelProvider, ExtensionUIRoute:
+		ExtensionDNSProvider, ExtensionContainerProvider, ExtensionTunnelProvider, ExtensionUIRoute, ExtensionResourceGroup:
 		return true
 	default:
 		return false

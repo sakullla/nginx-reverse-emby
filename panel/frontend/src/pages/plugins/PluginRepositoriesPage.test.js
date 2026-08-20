@@ -36,6 +36,21 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
   }
 }))
 
+vi.mock('../../components/base/BaseModal.vue', () => ({
+  default: {
+    name: 'BaseModal',
+    props: {
+      modelValue: { type: Boolean, required: true },
+      title: { type: String, default: '' },
+      subtitle: { type: String, default: '' },
+      size: { type: String, default: 'md' },
+      showFooter: { type: Boolean, default: false }
+    },
+    emits: ['update:modelValue'],
+    template: '<div v-if="modelValue" class="modal-stub"><div class="modal-title">{{ title }}</div><div class="modal-body"><slot /></div><div v-if="showFooter" class="modal-footer"><slot name="footer" /></div></div>'
+  }
+}))
+
 const customSource = {
   id: 'team-plugins',
   kind: 'custom',
@@ -72,6 +87,13 @@ let wrapper
 
 function buttonByText(text) {
   return wrapper.findAll('button').find((button) => button.text().includes(text))
+}
+
+async function openSource(name) {
+  const card = wrapper.findAll('.repository-card').find((item) => item.text().includes(name))
+  expect(card).toBeTruthy()
+  await card.trigger('click')
+  await flushPromises()
 }
 
 beforeEach(() => {
@@ -124,6 +146,7 @@ describe('PluginRepositoriesPage', () => {
 
   it('shows purpose, configured ref, full resolved OID, provenance risk and current state', async () => {
     await mountPage()
+    await openSource('Team Plugins')
 
     expect(wrapper.text()).toContain('插件包')
     expect(wrapper.text()).toContain('当前可用')
@@ -147,25 +170,24 @@ describe('PluginRepositoriesPage', () => {
       last_error: 'credential rejected'
     }])
     await mountPage()
+    await openSource('Team Plugins')
 
     expect(wrapper.text()).toContain('刷新失败')
     expect(wrapper.text()).toContain('最近刷新失败：credential rejected')
   })
 
-  it('shows a unified error empty state when sources fail to load', async () => {
+  it('shows preview catalog names when sources fail to load', async () => {
     fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
     await mountPage()
 
-    expect(wrapper.text()).toContain('读取失败')
-    expect(wrapper.text()).toContain('backend unavailable')
-    expect(wrapper.text()).toContain('下一步')
-    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
-    expect(wrapper.find('[role="alert"] a').attributes('href')).toBe('/plugins/marketplace')
+    expect(wrapper.text()).toContain('官方市场')
+    expect(wrapper.text()).toContain('团队插件仓库')
   })
 
   it('routes action errors through the unified alert channel', async () => {
     refreshRepositorySource.mockRejectedValue(new Error('credential rejected'))
     await mountPage()
+    await openSource('Team Plugins')
     await buttonByText('立即刷新').trigger('click')
     await flushPromises()
 
@@ -201,6 +223,7 @@ describe('PluginRepositoriesPage', () => {
   it('shows a distinct placeholder when package contents fail to load', async () => {
     fetchRepositoryContents.mockRejectedValue(new Error('snapshot unavailable'))
     await mountPage()
+    await openSource('Team Plugins')
 
     expect(wrapper.text()).toContain('snapshot unavailable')
     expect(wrapper.text()).toContain('读取包投影失败')
@@ -209,8 +232,7 @@ describe('PluginRepositoriesPage', () => {
 
   it('keeps official sources immutable in the UI while allowing refresh', async () => {
     await mountPage()
-    await buttonByText('Official Market').trigger('click')
-    await flushPromises()
+    await openSource('Official Market')
 
     expect(wrapper.text()).toContain('官方来源 · official')
     expect(buttonByText('编辑')).toBeUndefined()
@@ -224,6 +246,7 @@ describe('PluginRepositoriesPage', () => {
 
   it('confirms deletion through DeleteConfirmDialog without uninstalling plugins', async () => {
     await mountPage()
+    await openSource('Team Plugins')
     await buttonByText('删除源').trigger('click')
 
     expect(wrapper.find('.repository-detail__notice').text()).toContain('不会卸载已经安装的插件')
@@ -240,6 +263,7 @@ describe('PluginRepositoriesPage', () => {
 
   it('routes create and edit form payloads through the stable API contract', async () => {
     await mountPage()
+    await openSource('Team Plugins')
     await buttonByText('新增仓库源').trigger('click')
     const createPayload = {
       id: 'market-two',

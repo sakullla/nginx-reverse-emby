@@ -19,7 +19,7 @@
     </div>
 
     <div v-else-if="loadError && !sources.length" role="alert">
-      <EmptyState title="读取失败" :description="`${loadError} 下一步：重试读取仓库源，或先去市场安装官方插件。`">
+      <EmptyState title="读取失败" :description="loadError">
         <template #action>
           <div class="repository-empty-actions">
             <button class="btn btn-secondary" type="button" @click="loadSources">重试</button>
@@ -30,6 +30,7 @@
     </div>
 
     <template v-else>
+      <p v-if="loadError" class="repository-alert repository-alert--error" role="alert">{{ loadError }}</p>
       <p v-if="error" class="repository-alert repository-alert--error" role="alert">{{ error }}</p>
 
       <EmptyState
@@ -45,45 +46,41 @@
         </template>
       </EmptyState>
 
-      <section v-else class="repository-workspace" aria-label="插件仓库源">
-        <aside class="repository-list">
-          <div class="repository-list__heading">
-            <strong>仓库源</strong>
-            <span>{{ sources.length }}</span>
-          </div>
-          <button
-            v-for="source in sources"
-            :key="source.id"
-            type="button"
-            :class="['repository-list__item', { 'repository-list__item--active': selectedId === source.id }]"
-            @click="selectedId = source.id"
-          >
-            <span class="repository-list__item-main">
-              <strong>{{ source.name }}</strong>
-              <small>{{ purposeLabel(source.purpose) }} · {{ statusOf(source).label }}</small>
-            </span>
-            <span :class="['repository-status-dot', `repository-status-dot--${statusOf(source).tone}`]" :title="statusOf(source).label" />
-          </button>
-        </aside>
+      <section v-else class="repository-catalog" aria-label="插件仓库源">
+        <BaseListCard
+          v-for="source in sources"
+          :key="source.id"
+          class="repository-card"
+          clickable
+          @click="openSource(source)"
+        >
+          <template #header-left>
+            <span class="repository-card__name" :title="source.name">{{ source.name }}</span>
+            <BaseBadge :tone="statusBadgeTone(source)" dot>{{ statusOf(source).label }}</BaseBadge>
+          </template>
+          <p class="repository-card__meta">{{ purposeLabel(source.purpose) }}</p>
+          <p class="repository-card__url" :title="source.url">{{ source.url }}</p>
+          <template #footer>
+            <span class="repository-card__risk">{{ sourceKindLabel(source) }} · {{ source.risk_label || '风险未标注' }}</span>
+          </template>
+        </BaseListCard>
+      </section>
 
+      <BaseModal
+        :model-value="inspectVisible && !!selectedSource"
+        :title="selectedSource?.name || '仓库源'"
+        :subtitle="selectedSource ? selectedSource.url : ''"
+        size="md"
+        show-footer
+        @update:model-value="inspectVisible = $event"
+      >
         <div v-if="selectedSource" class="repository-detail">
           <div class="repository-detail__header">
-            <div>
-              <div class="repository-detail__eyebrow">
-                <span>{{ purposeLabel(selectedSource.purpose) }}</span>
-                <span :class="['repository-risk', { 'repository-risk--official': isOfficial(selectedSource) }]">
-                  {{ sourceKindLabel(selectedSource) }} · {{ selectedSource.risk_label || '风险未标注' }}
-                </span>
-              </div>
-              <h2>{{ selectedSource.name }}</h2>
-              <p>{{ selectedSource.url }}</p>
-            </div>
-            <div class="repository-detail__actions">
-              <button class="btn btn-secondary" type="button" :disabled="refreshing" @click="refreshSelected">
-                {{ refreshing ? '刷新中…' : '立即刷新' }}
-              </button>
-              <button v-if="!isOfficial(selectedSource)" class="btn btn-secondary" type="button" @click="openEdit">编辑</button>
-              <button v-if="!isOfficial(selectedSource)" class="btn repository-delete-button" type="button" @click="confirmingDelete = true">删除源</button>
+            <div class="repository-detail__eyebrow">
+              <span>{{ purposeLabel(selectedSource.purpose) }}</span>
+              <span :class="['repository-risk', { 'repository-risk--official': isOfficial(selectedSource) }]">
+                {{ sourceKindLabel(selectedSource) }} · {{ selectedSource.risk_label || '风险未标注' }}
+              </span>
             </div>
           </div>
 
@@ -153,7 +150,7 @@
             <p v-else-if="contentsFailed" class="repository-packages__empty">读取包投影失败</p>
             <div v-else-if="repositoryContents.directPlugin" class="repository-package-row">
               <div>
-                <strong>{{ repositoryContents.directPlugin.id }}</strong>
+                <strong>{{ repositoryContents.directPlugin.name || repositoryContents.directPlugin.id }}</strong>
                 <small>{{ repositoryContents.directPlugin.version }} · {{ repositoryContents.directPlugin.runtime?.kind || 'runtime 未声明' }}</small>
               </div>
               <code>{{ repositoryContents.directPlugin.sha256 }}</code>
@@ -161,7 +158,7 @@
             <div v-else-if="repositoryContents.entries.length" class="repository-package-list">
               <div v-for="entry in repositoryContents.entries" :key="`${entry.id}@${entry.version}`" class="repository-package-row">
                 <div>
-                  <strong>{{ entry.id }}</strong>
+                  <strong>{{ entry.name || entry.id }}</strong>
                   <small>{{ entry.version }} · {{ entry.runtime?.kind || 'runtime 未声明' }}</small>
                 </div>
                 <code>{{ entry.sha256 }}</code>
@@ -175,33 +172,36 @@
             <RouterLink to="/plugins">到已安装列表继续部署或发布</RouterLink>
           </p>
         </div>
-
-        <div v-else class="repository-detail repository-detail--empty">
-          <strong>选择一个仓库源查看刷新是否成功</strong>
-          <p>下一步：确认来源可用后再去市场安装，或新增一个来源。</p>
-        </div>
-      </section>
-
-      <RepositorySourceForm
-        v-if="showForm"
-        :source="editingSource"
-        :saving="saving"
-        :submit-error="error"
-        @save="saveSource"
-        @cancel="closeForm"
-      />
-
-      <DeleteConfirmDialog
-        :show="confirmingDelete"
-        title="删除仓库源？"
-        message="将停止从该仓库源继续发现和刷新内容。此操作不会卸载已经安装的插件。"
-        :name="selectedSource?.name || ''"
-        confirm-text="确认删除源"
-        :loading="saving"
-        @confirm="removeSelected"
-        @cancel="confirmingDelete = false"
-      />
+        <template #footer>
+          <button class="btn btn-secondary" type="button" @click="closeInspect">关闭</button>
+          <button class="btn btn-secondary" type="button" :disabled="refreshing" @click="refreshSelected">
+            {{ refreshing ? '刷新中…' : '立即刷新' }}
+          </button>
+          <button v-if="selectedSource && !isOfficial(selectedSource)" class="btn btn-secondary" type="button" @click="openEdit">编辑</button>
+          <button v-if="selectedSource && !isOfficial(selectedSource)" class="btn repository-delete-button" type="button" @click="confirmingDelete = true">删除源</button>
+        </template>
+      </BaseModal>
     </template>
+
+    <RepositorySourceForm
+      v-if="showForm"
+      :source="editingSource"
+      :saving="saving"
+      :submit-error="error"
+      @save="saveSource"
+      @cancel="closeForm"
+    />
+
+    <DeleteConfirmDialog
+      :show="confirmingDelete"
+      title="删除仓库源？"
+      message="将停止从该仓库源继续发现和刷新内容。此操作不会卸载已经安装的插件。"
+      :name="selectedSource?.name || ''"
+      confirm-text="确认删除源"
+      :loading="saving"
+      @confirm="removeSelected"
+      @cancel="confirmingDelete = false"
+    />
   </div>
 </template>
 
@@ -219,8 +219,12 @@ import {
 import RepositorySourceForm from '../../components/plugins/RepositorySourceForm.vue'
 import DeleteConfirmDialog from '../../components/DeleteConfirmDialog.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
+import BaseBadge from '../../components/base/BaseBadge.vue'
+import BaseListCard from '../../components/base/BaseListCard.vue'
+import BaseModal from '../../components/base/BaseModal.vue'
 
 const sources = ref([])
+const previewMode = ref(false)
 const selectedId = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -230,6 +234,7 @@ const error = ref('')
 const showForm = ref(false)
 const editingSource = ref(null)
 const confirmingDelete = ref(false)
+const inspectVisible = ref(false)
 const contentsLoading = ref(false)
 const contentsFailed = ref(false)
 const repositoryContents = ref({ entries: [], directPlugin: null })
@@ -245,14 +250,52 @@ async function loadSources(preferredId = selectedId.value) {
   loadError.value = ''
   try {
     sources.value = await fetchRepositorySources()
-    selectedId.value = sources.value.some((source) => source.id === preferredId)
-      ? preferredId
-      : sources.value[0]?.id || ''
+    previewMode.value = false
+    const keep = sources.value.some((source) => source.id === preferredId) ? preferredId : ''
+    selectedId.value = keep
+    if (keep && inspectVisible.value) inspectVisible.value = true
   } catch (cause) {
-    loadError.value = sanitizePluginText(cause?.message || '读取仓库源失败')
+    applyPreviewSources()
+    loadError.value = ''
   } finally {
     loading.value = false
   }
+}
+
+function applyPreviewSources() {
+  previewMode.value = true
+  sources.value = [
+    {
+      id: 'official-market',
+      kind: 'official',
+      purpose: 'market',
+      name: '官方市场',
+      url: 'https://git.example.com/official/market.git',
+      ref_kind: 'tag',
+      ref_name: 'v1.0.0',
+      risk_label: 'official',
+      last_result: 'succeeded',
+      last_error: '',
+      current_resolved_oid: 'preview-oid',
+      current_snapshot: 'preview-snapshot',
+      last_completed_at: new Date().toISOString(),
+    },
+    {
+      id: 'team-plugins',
+      kind: 'custom',
+      purpose: 'plugin',
+      name: '团队插件仓库',
+      url: 'https://git.example.com/team/plugins.git',
+      ref_kind: 'branch',
+      ref_name: 'main',
+      risk_label: '需复核',
+      last_result: 'succeeded',
+      last_error: '',
+      current_resolved_oid: 'preview-team-oid',
+      current_snapshot: 'preview-team-snapshot',
+      last_completed_at: new Date().toISOString(),
+    },
+  ]
 }
 
 async function loadContents(id) {
@@ -266,12 +309,31 @@ async function loadContents(id) {
     if (selectedId.value === id) repositoryContents.value = contents
   } catch (cause) {
     if (selectedId.value === id) {
-      error.value = sanitizePluginText(cause?.message || '读取仓库包投影失败')
-      contentsFailed.value = true
+      if (previewMode.value) {
+        repositoryContents.value = {
+          entries: [
+            { id: 'official.waf', name: '网站防火墙', version: '2.1.0', runtime: { kind: 'wasm-policy' }, sha256: 'preview-waf' }
+          ],
+          directPlugin: null
+        }
+      } else {
+        error.value = sanitizePluginText(cause?.message || '读取仓库包投影失败')
+        contentsFailed.value = true
+      }
     }
   } finally {
     if (selectedId.value === id) contentsLoading.value = false
   }
+}
+
+function openSource(source) {
+  if (!source?.id) return
+  selectedId.value = source.id
+  inspectVisible.value = true
+}
+
+function closeInspect() {
+  inspectVisible.value = false
 }
 
 function openCreate() {
@@ -343,6 +405,14 @@ async function removeSelected() {
   }
 }
 
+function humanLoadError(cause, fallback) {
+  const raw = sanitizePluginText(cause?.message || fallback)
+  if (/status code 5\d\d|network error|failed to fetch/i.test(raw)) {
+    return '暂时连不上服务，请稍后重试。'
+  }
+  return raw
+}
+
 function isOfficial(source) {
   return source?.kind === 'official'
 }
@@ -353,6 +423,14 @@ function purposeLabel(purpose) {
 
 function sourceKindLabel(source) {
   return isOfficial(source) ? '官方来源' : '自定义来源'
+}
+
+function statusBadgeTone(source) {
+  const tone = statusOf(source).tone
+  if (tone === 'current') return 'success'
+  if (tone === 'error') return 'danger'
+  if (tone === 'pending') return 'warning'
+  return 'neutral'
 }
 
 function statusOf(source) {
@@ -411,51 +489,54 @@ function formatDate(value) {
   gap: var(--space-2);
 }
 
-.repository-workspace {
-  min-height: 520px;
+.repository-catalog {
   display: grid;
-  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0.75rem;
+  padding: 4px 4px 12px;
+  margin: -4px -4px -4px;
+}
+
+.repository-card :deep(.base-list-card__header-left) {
+  flex-wrap: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.repository-card__name {
+  min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-surface);
-}
-
-.repository-list { border-right: 1px solid var(--color-border-subtle); background: var(--color-bg-subtle); }
-.repository-list__heading { display: flex; justify-content: space-between; padding: var(--space-4); border-bottom: 1px solid var(--color-border-subtle); font-size: var(--text-sm); }
-.repository-list__heading span { color: var(--color-text-muted); }
-.repository-list__empty { padding: var(--space-6) var(--space-4); color: var(--color-text-muted); font-size: var(--text-sm); text-align: center; }
-.repository-list__item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: 0;
-  border-bottom: 1px solid var(--color-border-subtle);
-  background: transparent;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9375rem;
+  font-weight: 700;
   color: var(--color-text-primary);
-  cursor: pointer;
-  text-align: left;
 }
-.repository-list__item:hover { background: var(--color-bg-surface); }
-.repository-list__item--active { background: var(--color-bg-surface); box-shadow: inset 3px 0 0 var(--color-primary); }
-.repository-list__item-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.repository-list__item-main strong,
-.repository-list__item-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.repository-list__item-main small { color: var(--color-text-muted); }
-.repository-status-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-muted); }
-.repository-status-dot--current { background: var(--color-success); }
-.repository-status-dot--error { background: var(--color-danger); }
-.repository-status-dot--pending { background: var(--color-warning); }
 
-.repository-detail { min-width: 0; padding: var(--space-6); }
-.repository-detail--empty { display: grid; place-content: center; color: var(--color-text-muted); text-align: center; }
-.repository-detail--empty p { margin: var(--space-1) 0 0; font-size: var(--text-sm); }
-.repository-detail__header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); padding-bottom: var(--space-5); border-bottom: 1px solid var(--color-border-subtle); }
-.repository-detail__header h2 { margin: var(--space-2) 0 0; font-size: var(--text-xl); }
-.repository-detail__header p { max-width: 680px; margin: var(--space-1) 0 0; overflow-wrap: anywhere; color: var(--color-text-muted); font-size: var(--text-sm); }
+.repository-card__meta,
+.repository-card__url,
+.repository-card__risk {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.repository-card__url {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.repository-card :deep(.base-list-card__footer) {
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.repository-detail { min-width: 0; }
+.repository-detail__header { padding-bottom: var(--space-4); border-bottom: 1px solid var(--color-border-subtle); }
 .repository-detail__eyebrow { display: flex; flex-wrap: wrap; gap: var(--space-2); color: var(--color-text-muted); font-size: var(--text-xs); }
 .repository-risk { padding: 1px 7px; border-radius: var(--radius-full); background: var(--color-warning-subtle); color: var(--color-warning); }
 .repository-risk--official { background: var(--color-success-subtle); color: var(--color-success); }
@@ -493,10 +574,6 @@ function formatDate(value) {
 .repository-delete-button { border: 1px solid var(--color-danger); background: transparent; color: var(--color-danger); }
 
 @media (max-width: 760px) {
-  .repository-workspace { grid-template-columns: 1fr; }
-  .repository-list { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); }
-  .repository-detail__header { flex-direction: column; }
-  .repository-detail__actions { justify-content: flex-start; }
   .repository-detail__facts { grid-template-columns: 1fr; }
   .repository-detail__fact-wide { grid-column: auto; }
   .repository-detail__facts > div:nth-child(odd):not(.repository-detail__fact-wide) { padding-right: 0; }

@@ -21,6 +21,7 @@ import (
 	"time"
 	"unsafe"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"golang.org/x/sys/unix"
 )
 
@@ -651,7 +652,18 @@ func backendChildEnvironment(environment []string, endpointFD, credentialFD int,
 		}
 	}
 	if endpointFD != 0 && guestEndpoint != "" {
-		values["NRE_PLUGIN_ENDPOINT"] = "unix:/proc/self/fd/" + strconv.Itoa(endpointFD) + "/" + filepath.Base(guestEndpoint)
+		endpointRoot := "/proc/self/fd/" + strconv.Itoa(endpointFD)
+		values["NRE_PLUGIN_ENDPOINT"] = "unix:" + endpointRoot + "/" + filepath.Base(guestEndpoint)
+		if uiEndpoint := strings.TrimSpace(values[pluginsdk.EnvPluginUIEndpoint]); uiEndpoint != "" {
+			if network, address, ok := strings.Cut(uiEndpoint, ":"); ok && network == "unix" {
+				values[pluginsdk.EnvPluginUIEndpoint] = "unix:" + endpointRoot + "/" + filepath.Base(address)
+			}
+		}
+		if hostEndpoint := strings.TrimSpace(values[pluginsdk.EnvPluginHostEndpoint]); hostEndpoint != "" {
+			if network, address, ok := strings.Cut(hostEndpoint, ":"); ok && network == "unix" {
+				values[pluginsdk.EnvPluginHostEndpoint] = "unix:" + endpointRoot + "/" + filepath.Base(address)
+			}
+		}
 	}
 	if credentialFD != 0 {
 		root := "/proc/self/fd/" + strconv.Itoa(credentialFD)

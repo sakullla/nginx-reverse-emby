@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -274,6 +275,76 @@ func pluginApplyMissingHostInjected(schema map[string]any, requested, current an
 		return typed, nil
 	default:
 		return requested, nil
+	}
+}
+
+func pluginApplyRuntimeGeneration(schema map[string]any, raw json.RawMessage, generation string) (json.RawMessage, error) {
+	if strings.TrimSpace(generation) == "" {
+		return nil, ErrPluginReadProjection
+	}
+	value, err := pluginConfigValue(raw)
+	if err != nil {
+		return nil, ErrPluginReadProjection
+	}
+	value, err = pluginOverrideHostInjectedNamed(schema, value, "generation", generation)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, ErrPluginReadProjection
+	}
+	if err := plugins.ValidateConfig(schema, encoded); err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
+func pluginOverrideHostInjectedNamed(schema map[string]any, value any, name string, replacement any) (any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		properties, _ := schema["properties"].(map[string]any)
+		for key, raw := range properties {
+			childSchema, _ := raw.(map[string]any)
+			if childSchema == nil {
+				continue
+			}
+			if key == name {
+				injected, err := pluginsdk.ConfigSchemaHostInjected(childSchema)
+				if err != nil {
+					return nil, err
+				}
+				if injected {
+					typed[key] = replacement
+					continue
+				}
+			}
+			child, exists := typed[key]
+			if !exists {
+				continue
+			}
+			overridden, err := pluginOverrideHostInjectedNamed(childSchema, child, name, replacement)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = overridden
+		}
+		return typed, nil
+	case []any:
+		itemSchema, _ := schema["items"].(map[string]any)
+		if itemSchema == nil {
+			return typed, nil
+		}
+		for index, child := range typed {
+			overridden, err := pluginOverrideHostInjectedNamed(itemSchema, child, name, replacement)
+			if err != nil {
+				return nil, err
+			}
+			typed[index] = overridden
+		}
+		return typed, nil
+	default:
+		return value, nil
 	}
 }
 

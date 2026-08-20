@@ -11,20 +11,20 @@
     <form class="audit-toolbar" @submit.prevent="$emit('search')">
       <div class="audit-toolbar__grid">
         <label class="audit-field">
-          <span class="audit-field__label">事件类型</span>
+          <span class="audit-field__label">操作</span>
           <input
             :value="filters.type"
             class="audit-field__input"
-            placeholder="revoke / rotate"
+            placeholder="换证 / 撤销"
             @input="update('type', $event.target.value)"
           >
         </label>
         <label class="audit-field">
-          <span class="audit-field__label">Identity ID</span>
+          <span class="audit-field__label">节点或身份</span>
           <input
             :value="filters.identity_id"
-            class="audit-field__input mono"
-            placeholder="identity-…"
+            class="audit-field__input"
+            placeholder="节点名称或身份"
             @input="update('identity_id', $event.target.value)"
           >
         </label>
@@ -33,7 +33,7 @@
           <input
             :value="filters.source"
             class="audit-field__input"
-            placeholder="panel / agent"
+            placeholder="管理端 / 节点"
             @input="update('source', $event.target.value)"
           >
         </label>
@@ -42,7 +42,7 @@
           <input
             :value="filters.result"
             class="audit-field__input"
-            placeholder="success / failed"
+            placeholder="成功 / 失败"
             @input="update('result', $event.target.value)"
           >
         </label>
@@ -57,19 +57,19 @@
       <article v-for="event in events" :key="event.id" data-test="event-row" class="audit-row">
         <div class="audit-row__main">
           <div class="audit-row__title">
-            <strong class="mono">{{ event.type }}</strong>
+            <strong>{{ eventTypeLabel(event.type) }}</strong>
             <PkiStatusBadge
               :status="event.result === 'failed' || event.result === 'rejected' ? 'failed' : 'succeeded'"
-              :label="event.result || '—'"
+              :label="eventResultLabel(event.result)"
             />
           </div>
-          <span class="audit-row__object" :title="event.object_id || ''">
-            {{ event.object_label || [event.object_type_label || event.object_type, event.object_id].filter(Boolean).join(' · ') || '—' }}
+          <span class="audit-row__object" :title="event.object_label || ''">
+            {{ event.object_label || event.object_type_label || '—' }}
           </span>
-          <span v-if="event.reason" class="audit-row__reason">{{ event.reason }}</span>
+          <span v-if="reasonLabel(event.reason)" class="audit-row__reason">{{ reasonLabel(event.reason) }}</span>
         </div>
         <div class="audit-row__meta">
-          <span>{{ event.source }}<template v-if="event.operator_id"> / {{ event.operator_id }}</template></span>
+          <span>{{ sourceLabel(event.source) }}<template v-if="event.operator_id"> · {{ event.operator_id }}</template></span>
           <time>{{ formatDate(event.occurred_at) }}</time>
         </div>
       </article>
@@ -103,6 +103,10 @@ const props = defineProps({
   pageSize: { type: Number, default: 5 },
   total: { type: Number, default: 0 },
   formatDate: { type: Function, required: true },
+  eventTypeLabel: { type: Function, default: (type) => type || '—' },
+  eventResultLabel: { type: Function, default: (result) => result || '—' },
+  sourceLabel: { type: Function, default: (source) => source || '—' },
+  reasonLabel: { type: Function, default: (reason) => reason || '' },
   hideHeader: { type: Boolean, default: false },
 })
 
@@ -157,7 +161,7 @@ function clearFilters() {
 
 .audit-toolbar__grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
   gap: var(--space-3);
   align-items: end;
 }
@@ -216,9 +220,10 @@ function clearFilters() {
 }
 
 .audit-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, auto);
-  gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
@@ -236,8 +241,16 @@ function clearFilters() {
 .audit-row__title {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.audit-row__title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .audit-row__object,
@@ -247,14 +260,27 @@ function clearFilters() {
   font-size: var(--text-xs);
 }
 
+.audit-row__object {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .audit-row__reason {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .audit-row__meta {
-  align-items: flex-end;
-  text-align: right;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
 }
 
 .pki-empty {
@@ -296,16 +322,6 @@ function clearFilters() {
   }
 }
 
-@media (max-width: 1200px) {
-  .audit-toolbar__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .audit-toolbar__actions {
-    grid-column: 1 / -1;
-  }
-}
-
 @media (max-width: 680px) {
   .audit-toolbar {
     padding: var(--space-3);
@@ -327,13 +343,7 @@ function clearFilters() {
   }
 
   .audit-row {
-    grid-template-columns: 1fr;
     padding: var(--space-3);
-  }
-
-  .audit-row__meta {
-    align-items: flex-start;
-    text-align: left;
   }
 }
 </style>

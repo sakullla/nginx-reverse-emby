@@ -134,6 +134,8 @@ watch(
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .pki-section--collapsed {
@@ -241,6 +243,7 @@ watch(
   gap: var(--space-2);
   flex-wrap: wrap;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .pki-section__body--split {

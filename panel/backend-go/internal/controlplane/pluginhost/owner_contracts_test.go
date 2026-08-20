@@ -38,6 +38,19 @@ func TestPluginHostSandboxRequirementAndFailClosedLaunch(t *testing.T) {
 	}
 }
 
+func TestPluginHostSandboxRequirementAllowsResourceGroupExtension(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("b", 64)
+	pkg := validatedSandboxPackage(digest, nil, []string{pluginsdk.ExtensionResourceGroup})
+	requirement, err := SandboxRequirementFromValidatedPackage(pkg)
+	if err != nil {
+		t.Fatalf("resource.group sandbox requirement = %v", err)
+	}
+	if err := requirement.validatePackageDigest(digest); err != nil {
+		t.Fatalf("resource.group package digest binding = %v", err)
+	}
+}
+
 func TestPluginCapabilityAuthorizationMatrix(t *testing.T) {
 	t.Parallel()
 	quota := &capabilityQuotaStub{}

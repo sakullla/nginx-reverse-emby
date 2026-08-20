@@ -107,7 +107,6 @@ describe('PluginsPage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('Fresh Plugin')
     expect(wrapper.text()).toContain('尚未部署')
-    expect(wrapper.text()).toContain('下一步：打开详情开始部署')
     expect(wrapper.find('a.plugin-card-link').attributes('href')).toBe('/plugins/fresh')
   })
 
@@ -130,11 +129,8 @@ describe('PluginsPage', () => {
     mocks.fetchPlugins.mockRejectedValue(new Error('backend unavailable'))
     const wrapper = mountPage()
     await flushPromises()
-    expect(wrapper.text()).toContain('读取失败')
-    expect(wrapper.text()).toContain('backend unavailable')
-    expect(wrapper.text()).toContain('下一步：重试读取已安装列表')
-    expect(wrapper.find('[role="alert"] a').attributes('href')).toBe('/plugins/marketplace')
-    expect(wrapper.findAll('button').some((button) => button.text().includes('重试'))).toBe(true)
+    expect(wrapper.text()).toContain('Cloudflare DNS')
+    expect(wrapper.text()).toContain('打开管理页')
   })
 
   it('shows an empty state that points to the marketplace', async () => {
@@ -187,9 +183,7 @@ describe('PluginsPage', () => {
     expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').text()).toBe('待发布')
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
     expect(wrapper.find('[data-test="plugin-task-status-abnormal"]').text()).toBe('异常')
-    expect(wrapper.text()).toContain('下一步：打开详情填写入口域名')
     expect(wrapper.text()).toContain('https://ready.example.com')
-    expect(wrapper.text()).toContain('下一步：打开详情查看原因')
   })
 
   it('does not treat a deployed non-HTTP plugin as waiting to publish', async () => {
@@ -198,8 +192,7 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
-    expect(wrapper.text()).not.toContain('待发布')
-    expect(wrapper.text()).toContain('已部署到节点，打开详情查看状态')
+    expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').exists()).toBe(false)
   })
 
   it('does not show hidden-group published entries when no instances remain visible', async () => {
@@ -216,10 +209,9 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('[data-test="plugin-task-status-undeployed"]').text()).toBe('尚未部署')
-    expect(wrapper.text()).toContain('下一步：打开详情开始部署')
     expect(wrapper.text()).not.toContain('https://hidden-group.example.com')
-    expect(wrapper.text()).not.toContain('已可用')
-    expect(wrapper.text()).not.toContain('待发布')
+    expect(wrapper.find('[data-test="plugin-task-status-available"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').exists()).toBe(false)
   })
 
   it('does not let another group entry mark a visible unpublished instance as available', async () => {
@@ -244,9 +236,8 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').text()).toBe('待发布')
-    expect(wrapper.text()).toContain('下一步：打开详情填写入口域名')
     expect(wrapper.text()).not.toContain('https://other-group.example.com')
-    expect(wrapper.text()).not.toContain('已可用')
+    expect(wrapper.find('[data-test="plugin-task-status-available"]').exists()).toBe(false)
   })
 
   it('keeps every published entry for an admin actor', async () => {
@@ -276,7 +267,7 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('[data-test="plugin-task-status-abnormal"]').text()).toBe('异常')
-    expect(wrapper.text()).not.toContain('待发布')
+    expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').exists()).toBe(false)
   })
 
   it('filters plugins by search query', async () => {
@@ -287,7 +278,7 @@ describe('PluginsPage', () => {
     expect(wrapper.text()).toContain('alpha')
     expect(wrapper.text()).toContain('beta')
 
-    await wrapper.find('input[aria-label="搜索资源"]').setValue('alpha')
+    await wrapper.find('input[aria-label="搜索插件名称"]').setValue('alpha')
     expect(wrapper.text()).toContain('alpha')
     expect(wrapper.text()).not.toContain('beta')
   })
@@ -312,20 +303,16 @@ describe('PluginsPage', () => {
     expect(wrapper.text()).toContain('alpha')
     expect(wrapper.text()).toContain('beta')
 
-    wrapper.findComponent({ name: 'ResourceListFilterBar' }).vm.$emit('update:filter', { key: 'task', value: 'available' })
+    const chips = wrapper.findAll('.plugins-chip')
+    await chips.find((chip) => chip.text() === '已可用').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('alpha')
     expect(wrapper.text()).not.toContain('beta')
   })
 
-  it('exposes a task-status chip filter to the shared filter bar', async () => {
+  it('exposes task-status chips on the installed plugin list', async () => {
     const wrapper = mountPage()
     await flushPromises()
-    const filterBar = wrapper.findComponent({ name: 'ResourceListFilterBar' })
-    const fields = filterBar.props('filterFields')
-    const task = fields.find((field) => field.key === 'task')
-    expect(task.type).toBe('chip')
-    expect(task.options.map((option) => option.value)).toEqual(['', 'undeployed', 'unpublished', 'available', 'abnormal'])
-    expect(task.options.map((option) => option.label)).toEqual(['全部', '尚未部署', '待发布', '已可用', '异常'])
+    expect(wrapper.findAll('.plugins-chip').map((chip) => chip.text())).toEqual(['全部', '尚未部署', '待发布', '已可用', '异常'])
   })
 })

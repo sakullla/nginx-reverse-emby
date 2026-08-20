@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, useAttrs, useId, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, useAttrs, useId, watch } from 'vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -13,15 +13,14 @@ const props = defineProps({
   placeholder: { type: String, default: '搜索用户名、显示名或角色名' }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:kind', 'select'])
+const emit = defineEmits(['update:modelValue', 'update:kind', 'update:selected', 'select'])
+const DISPLAY_LIMIT = 80
 
 const attrs = useAttrs()
 const instanceId = useId()
-const open = ref(false)
 const searchQuery = ref('')
-const kindFilter = ref(normalizeKind(props.kind))
+const kindFilter = ref(normalizeKind(props.kind) || 'user')
 const highlightedIndex = ref(-1)
-const rootRef = ref(null)
 const searchInputRef = ref(null)
 
 const rootClass = computed(() => attrs.class)
@@ -45,29 +44,33 @@ const catalog = computed(() => {
 
 const selectable = computed(() => catalog.value.filter((item) => !isExcluded(item)))
 
-const displayedSubjects = computed(() => {
+const matchedSubjects = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   if (!query) return selectable.value
   return selectable.value.filter((item) => item.searchText.includes(query))
 })
 
-const selectedSubject = computed(() => {
-  const id = String(props.modelValue || '').trim()
-  if (!id) return null
-  const kind = normalizeKind(props.kind) || kindFilter.value
-  const pool = kind ? (kind === 'role' ? roleSubjects.value : userSubjects.value) : [...userSubjects.value, ...roleSubjects.value]
-  return pool.find((item) => item.id === id) || null
-})
+const displayedSubjects = computed(() => matchedSubjects.value.slice(0, DISPLAY_LIMIT))
+const hiddenSubjectCount = computed(() => Math.max(0, matchedSubjects.value.length - displayedSubjects.value.length))
 
-const selectedLabel = computed(() => {
-  if (selectedSubject.value) return selectedSubject.value.label
-  return props.modelValue ? props.modelValue : emptyLabel(kindFilter.value)
-})
+const allSubjects = computed(() => [...userSubjects.value, ...roleSubjects.value])
+const selectedKeys = ref([])
+const selectedSubjects = computed(() => (
+  selectedKeys.value
+    .map((key) => allSubjects.value.find((item) => subjectKey(item) === key))
+    .filter(Boolean)
+))
+const selectedCount = computed(() => selectedSubjects.value.length)
+const allDisplayedSelected = computed(() => (
+  displayedSubjects.value.length > 0
+  && displayedSubjects.value.every((item) => selectedKeys.value.includes(subjectKey(item)))
+))
 
-const selectedDetail = computed(() => selectedSubject.value?.detail || '')
 const hasSearchQuery = computed(() => searchQuery.value.trim().length > 0)
 const listboxId = computed(() => `${instanceId}-listbox`)
 const emptyMessage = computed(() => {
+  if (kindFilter.value === 'user' && !userSubjects.value.length) return '当前没有可授权的用户'
+  if (kindFilter.value === 'role' && !roleSubjects.value.length) return '当前没有可授权的角色'
   if (!selectable.value.length) return emptyLabel(kindFilter.value)
   if (kindFilter.value === 'role') return '没有匹配的角色'
   if (kindFilter.value === 'user') return '没有匹配的用户'
@@ -75,26 +78,18 @@ const emptyMessage = computed(() => {
 })
 
 watch(() => props.kind, (value) => {
-  kindFilter.value = normalizeKind(value)
+  const kind = normalizeKind(value)
+  if (kind) kindFilter.value = kind
 })
 
-watch([displayedSubjects, open], ([items, isOpen]) => {
-  if (!isOpen) {
-    highlightedIndex.value = -1
-    return
-  }
-  const selected = items.findIndex((item) => isActive(item))
+watch([displayedSubjects], ([items]) => {
+  const selected = items.findIndex((item) => isChecked(item))
   highlightedIndex.value = selected >= 0 ? selected : (items.length ? 0 : -1)
 })
 
-watch(open, async (value) => {
-  if (!value) return
-  await nextTick()
-  searchInputRef.value?.focus?.()
-})
+watch(() => [props.users, props.roles, props.exclude], pruneExcluded, { deep: true })
 
-onMounted(() => document.addEventListener('mousedown', handleClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
+onMounted(() => emitSelected(false))
 
 function normalizeKind(value) {
   const kind = String(value || '').trim().toLowerCase()
@@ -116,7 +111,7 @@ function toUserSubject(user) {
     id,
     label,
     detail,
-    searchText: [displayName, username].filter(Boolean).join(' ').toLowerCase()
+    searchText: [displayName, username, id].filter(Boolean).join(' ').toLowerCase()
   }
 }
 
@@ -130,18 +125,34 @@ function toRoleSubject(role) {
     id,
     label,
     detail: '角色',
-    searchText: name.toLowerCase()
+    searchText: [name, id].filter(Boolean).join(' ').toLowerCase()
   }
+}
+
+function subjectKey(subject) {
+  return `${subject.kind}:${subject.id}`
 }
 
 function isExcluded(subject) {
   return (props.exclude || []).some((item) => {
     if (!item) return false
     if (typeof item === 'string') {
-      return item === `${subject.kind}:${subject.id}` || item === subject.id
+      return item === subjectKey(subject) || item === subject.id
     }
     return item.subject_kind === subject.kind && item.subject_id === subject.id
   })
+}
+
+function pruneExcluded() {
+  if (!selectedKeys.value.length) return
+  if (!allSubjects.value.length) return
+  const next = selectedKeys.value.filter((key) => {
+    const match = allSubjects.value.find((item) => subjectKey(item) === key)
+    return match && !isExcluded(match)
+  })
+  if (next.length === selectedKeys.value.length && next.every((key, index) => key === selectedKeys.value[index])) return
+  selectedKeys.value = next
+  emitSelected(false)
 }
 
 function emptyLabel(kind) {
@@ -154,45 +165,66 @@ function optionId(index) {
   return `${instanceId}-option-${index}`
 }
 
-function isActive(item) {
-  return !!selectedSubject.value
-    && selectedSubject.value.kind === item.kind
-    && selectedSubject.value.id === item.id
+function isChecked(item) {
+  return selectedKeys.value.includes(subjectKey(item))
 }
 
 function setKindFilter(next) {
-  const kind = normalizeKind(next)
+  const kind = normalizeKind(next) || 'user'
   kindFilter.value = kind
   searchQuery.value = ''
-  if (kind && selectedSubject.value && selectedSubject.value.kind !== kind) {
-    emit('update:modelValue', '')
-  }
-  if (kind) emit('update:kind', kind)
+  emit('update:kind', kind)
 }
 
-function selectSubject(subject) {
+function selectedPayload(list = selectedSubjects.value) {
+  return list.map((item) => ({
+    subject_kind: item.kind,
+    subject_id: item.id,
+    label: item.label
+  }))
+}
+
+function emitSelected(announce = true) {
+  const items = selectedPayload()
+  const last = items.at(-1) || null
+  emit('update:selected', items)
+  emit('update:modelValue', last?.subject_id || '')
+  if (last) emit('update:kind', last.subject_kind)
+  if (announce) emit('select', last)
+}
+
+function toggleSubject(subject) {
   if (!subject?.id || props.disabled) return
-  emit('update:kind', subject.kind)
-  emit('update:modelValue', subject.id)
-  emit('select', {
-    subject_kind: subject.kind,
-    subject_id: subject.id,
-    label: subject.label
-  })
-  close()
+  const key = subjectKey(subject)
+  selectedKeys.value = isChecked(subject)
+    ? selectedKeys.value.filter((item) => item !== key)
+    : [...selectedKeys.value, key]
+  emitSelected()
+}
+
+function toggleAllDisplayed() {
+  if (props.disabled || !displayedSubjects.value.length) return
+  if (allDisplayedSelected.value) {
+    const drop = new Set(displayedSubjects.value.map(subjectKey))
+    selectedKeys.value = selectedKeys.value.filter((key) => !drop.has(key))
+  } else {
+    const next = new Set(selectedKeys.value)
+    displayedSubjects.value.forEach((item) => next.add(subjectKey(item)))
+    selectedKeys.value = [...next]
+  }
+  emitSelected()
 }
 
 function selectById(rawId) {
   const id = String(rawId || '').trim()
   if (!id) {
-    emit('update:modelValue', '')
+    selectedKeys.value = []
+    emitSelected()
     return
   }
-  const kind = kindFilter.value
-  const pool = kind ? selectable.value : [...userSubjects.value, ...roleSubjects.value].filter((item) => !isExcluded(item))
-  const match = pool.find((item) => item.id === id)
+  const match = selectable.value.find((item) => item.id === id)
   if (match) {
-    selectSubject(match)
+    if (!isChecked(match)) toggleSubject(match)
     return
   }
   emit('update:modelValue', id)
@@ -207,25 +239,6 @@ function clearSearch() {
   nextTick(() => searchInputRef.value?.focus?.())
 }
 
-function close() {
-  open.value = false
-  searchQuery.value = ''
-  highlightedIndex.value = -1
-}
-
-function toggleOpen() {
-  if (props.disabled) return
-  if (open.value) {
-    close()
-    return
-  }
-  open.value = true
-}
-
-function handleClickOutside(event) {
-  if (rootRef.value && !rootRef.value.contains(event.target)) close()
-}
-
 function moveHighlight(delta) {
   const count = displayedSubjects.value.length
   if (!count) {
@@ -235,18 +248,6 @@ function moveHighlight(delta) {
   const current = highlightedIndex.value
   const next = current < 0 ? (delta > 0 ? 0 : count - 1) : (current + delta + count) % count
   highlightedIndex.value = next
-}
-
-function onTriggerKeydown(event) {
-  if (props.disabled) return
-  if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault()
-    if (!open.value) open.value = true
-    else if (event.key === 'Enter' || event.key === ' ') selectHighlighted()
-  } else if (event.key === 'Escape' && open.value) {
-    event.preventDefault()
-    close()
-  }
 }
 
 function onSearchKeydown(event) {
@@ -262,26 +263,17 @@ function onSearchKeydown(event) {
   }
   if (event.key === 'Enter') {
     event.preventDefault()
-    selectHighlighted()
+    const item = displayedSubjects.value[highlightedIndex.value]
+    if (item) toggleSubject(item)
     return
   }
-  if (event.key === 'Escape') {
+  if (event.key === 'Escape' && hasSearchQuery.value) {
     event.preventDefault()
-    if (hasSearchQuery.value) {
-      clearSearch()
-      return
-    }
-    close()
+    clearSearch()
   }
-}
-
-function selectHighlighted() {
-  const item = displayedSubjects.value[highlightedIndex.value]
-  if (item) selectSubject(item)
 }
 
 const kindOptions = [
-  { value: '', label: '全部' },
   { value: 'user', label: '用户' },
   { value: 'role', label: '角色' }
 ]
@@ -289,10 +281,10 @@ const kindOptions = [
 
 <template>
   <div
-    ref="rootRef"
     class="subject-search-select"
-    :class="[rootClass, { 'subject-search-select--open': open, 'subject-search-select--disabled': disabled }]"
+    :class="[rootClass, { 'subject-search-select--disabled': disabled }]"
     :style="rootStyle"
+    data-test="subject-search"
   >
     <select
       class="subject-search-select__native"
@@ -313,104 +305,106 @@ const kindOptions = [
       </option>
     </select>
 
-    <button
-      type="button"
-      class="subject-search-select__trigger"
-      :disabled="disabled"
-      :aria-expanded="open ? 'true' : 'false'"
-      aria-haspopup="listbox"
-      :aria-controls="listboxId"
-      :aria-label="selectedSubject ? selectedLabel : '选择要授权的用户或角色'"
-      data-test="subject-search-trigger"
-      @click="toggleOpen"
-      @keydown="onTriggerKeydown"
-    >
-      <span class="subject-search-select__value">
-        <span class="subject-search-select__label">{{ selectedLabel }}</span>
-        <small v-if="selectedDetail" class="subject-search-select__detail">{{ selectedDetail }}</small>
-      </span>
-      <svg class="subject-search-select__chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <polyline points="6 9 12 15 18 9" />
+    <div class="subject-search-select__filters" role="tablist" aria-label="主体类型">
+      <button
+        v-for="option in kindOptions"
+        :key="option.value"
+        type="button"
+        class="subject-search-select__filter-btn"
+        :class="{ 'subject-search-select__filter-btn--active': kindFilter === option.value }"
+        :data-test="`subject-kind-${option.value}`"
+        :disabled="disabled"
+        @click="setKindFilter(option.value)"
+      >
+        {{ option.label }}
+      </button>
+    </div>
+
+    <div class="search-field">
+      <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" />
+        <path d="M20 20l-3.5-3.5" />
       </svg>
-    </button>
+      <input
+        ref="searchInputRef"
+        v-model="searchQuery"
+        type="search"
+        class="search-field__input"
+        data-test="subject-search-query"
+        :placeholder="placeholder"
+        :disabled="disabled"
+        aria-label="搜索用户名、显示名或角色名"
+        :aria-controls="listboxId"
+        :aria-activedescendant="highlightedIndex >= 0 ? optionId(highlightedIndex) : undefined"
+        autocomplete="off"
+        @keydown="onSearchKeydown"
+      >
+      <button
+        v-if="hasSearchQuery"
+        type="button"
+        class="search-field__clear"
+        aria-label="清空搜索"
+        @click="clearSearch"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
 
-    <div v-if="open" class="subject-search-select__dropdown">
-      <div class="subject-search-select__search">
-        <div class="subject-search-select__search-shell">
-          <svg class="subject-search-select__search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
-          <input
-            ref="searchInputRef"
-            v-model="searchQuery"
-            type="search"
-            class="subject-search-select__search-input"
-            data-test="subject-search-query"
-            :placeholder="placeholder"
-            aria-label="搜索用户名、显示名或角色名"
-            :aria-controls="listboxId"
-            :aria-activedescendant="highlightedIndex >= 0 ? optionId(highlightedIndex) : undefined"
-            autocomplete="off"
-            @keydown="onSearchKeydown"
-          >
-          <button
-            v-if="hasSearchQuery"
-            type="button"
-            class="subject-search-select__search-clear"
-            aria-label="清空搜索"
-            @click="clearSearch"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      <div class="subject-search-select__filters" role="tablist" aria-label="主体类型">
-        <button
-          v-for="option in kindOptions"
-          :key="option.value || 'all'"
-          type="button"
-          class="subject-search-select__filter-btn"
-          :class="{ 'subject-search-select__filter-btn--active': kindFilter === option.value }"
-          :data-test="`subject-kind-${option.value || 'all'}`"
-          @click="setKindFilter(option.value)"
-        >
-          {{ option.label }}
-        </button>
-      </div>
-
+    <div class="subject-search-select__toolbar">
+      <button
+        type="button"
+        class="subject-search-select__select-all"
+        data-test="subject-select-all"
+        :disabled="disabled || !displayedSubjects.length"
+        @click="toggleAllDisplayed"
+      >
+        {{ allDisplayedSelected ? '取消全选' : '全选当前列表' }}
+      </button>
+      <p class="subject-search-select__count">
+        {{ matchedSubjects.length }} 人
+        <template v-if="selectedCount"> · 已选 {{ selectedCount }}</template>
+        <template v-if="hiddenSubjectCount"> · 显示前 {{ displayedSubjects.length }}，继续搜索可缩小范围</template>
+      </p>
+    </div>
+    <div
+      :id="listboxId"
+      class="subject-search-select__list"
+      role="listbox"
+      aria-multiselectable="true"
+      aria-label="可授权主体"
+    >
       <div
-        :id="listboxId"
-        class="subject-search-select__list"
-        role="listbox"
-        aria-label="可授权主体"
+        v-for="(item, index) in displayedSubjects"
+        :id="optionId(index)"
+        :key="`${item.kind}:${item.id}`"
+        class="subject-search-select__option"
+        :class="{
+          'subject-search-select__option--active': isChecked(item),
+          'subject-search-select__option--highlighted': index === highlightedIndex
+        }"
+        role="option"
+        :aria-selected="isChecked(item) ? 'true' : 'false'"
+        @mouseenter="highlightedIndex = index"
       >
         <button
-          v-for="(item, index) in displayedSubjects"
-          :id="optionId(index)"
-          :key="`${item.kind}:${item.id}`"
           type="button"
-          class="subject-search-select__option"
-          :class="{
-            'subject-search-select__option--active': isActive(item),
-            'subject-search-select__option--highlighted': index === highlightedIndex
-          }"
-          role="option"
-          :aria-selected="isActive(item) ? 'true' : 'false'"
+          class="subject-search-select__option-main"
+          :disabled="disabled"
           :data-test="`subject-option-${item.kind}-${item.id}`"
-          @click="selectSubject(item)"
-          @mouseenter="highlightedIndex = index"
+          @click="toggleSubject(item)"
         >
-          <span class="subject-search-select__option-kind">{{ item.kind === 'role' ? '角色' : '用户' }}</span>
-          <span class="subject-search-select__option-name">{{ item.label }}</span>
-          <span v-if="item.detail" class="subject-search-select__option-detail">{{ item.detail }}</span>
+          <span class="subject-search-select__check" :class="{ 'subject-search-select__check--on': isChecked(item) }" aria-hidden="true"></span>
+          <span class="subject-search-select__avatar" aria-hidden="true">{{ item.label.slice(0, 1) }}</span>
+          <span class="subject-search-select__option-copy">
+            <span class="subject-search-select__option-name">{{ item.label }}</span>
+            <span class="subject-search-select__option-detail">{{ item.kind === 'role' ? '角色' : (item.detail || '用户') }}</span>
+          </span>
         </button>
-        <div v-if="!displayedSubjects.length" class="subject-search-select__empty" data-test="subject-search-empty">
-          {{ emptyMessage }}
-        </div>
+      </div>
+      <div v-if="!displayedSubjects.length" class="subject-search-select__empty" data-test="subject-search-empty">
+        {{ emptyMessage }}
       </div>
     </div>
   </div>
@@ -418,8 +412,9 @@ const kindOptions = [
 
 <style scoped>
 .subject-search-select {
-  position: relative;
-  min-width: 12rem;
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
 }
 
 .subject-search-select--disabled {
@@ -438,176 +433,74 @@ const kindOptions = [
   border: 0;
 }
 
-.subject-search-select__trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  min-height: 2.5rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-canvas);
-  color: var(--color-text-primary);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.subject-search-select__trigger:hover:not(:disabled) {
-  border-color: var(--color-primary);
-}
-
-.subject-search-select__trigger:focus-visible {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-}
-
-.subject-search-select__trigger:disabled {
-  cursor: not-allowed;
-}
-
-.subject-search-select__value {
-  display: grid;
-  flex: 1;
-  min-width: 0;
-  gap: 0.1rem;
-}
-
-.subject-search-select__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.subject-search-select__detail,
-.subject-search-select__option-detail {
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
-}
-
-.subject-search-select__chevron {
-  flex-shrink: 0;
-  color: var(--color-text-muted);
-}
-
-.subject-search-select__dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: var(--z-dropdown);
-  width: min(22rem, 80vw);
-  overflow: hidden;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-surface-raised, var(--color-bg-surface));
-  box-shadow: var(--shadow-xl);
-}
-
-.subject-search-select__search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.subject-search-select__search-shell {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  min-height: 2rem;
-  padding: 0 0.3rem 0 0.55rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-subtle, var(--color-bg-canvas));
-}
-
-.subject-search-select__search-shell:focus-within {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-}
-
-.subject-search-select__search-icon {
-  flex-shrink: 0;
-  color: var(--color-text-muted);
-}
-
-.subject-search-select__search-input {
-  width: 100%;
-  min-width: 0;
-  padding: 0.3rem 0;
-  border: none;
-  background: transparent;
-  color: var(--color-text-primary);
-  font: inherit;
-  font-size: 0.8125rem;
-  outline: none;
-}
-
-.subject-search-select__search-input::-webkit-search-cancel-button {
-  appearance: none;
-}
-
-.subject-search-select__search-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-
-.subject-search-select__search-clear:hover,
-.subject-search-select__search-clear:focus-visible {
-  color: var(--color-text-primary);
-}
-
 .subject-search-select__filters {
   display: flex;
-  gap: 0.25rem;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .subject-search-select__filter-btn {
-  padding: 0.25rem 0.625rem;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--color-bg-subtle, var(--color-bg-canvas));
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  background: var(--color-bg-canvas);
   color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.subject-search-select__filter-btn--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+
+
+.subject-search-select__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.subject-search-select__select-all {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
   font: inherit;
   font-size: 0.75rem;
   cursor: pointer;
 }
 
-.subject-search-select__filter-btn--active {
-  background: var(--color-primary);
-  color: #fff;
+.subject-search-select__select-all:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.subject-search-select__count {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
 }
 
 .subject-search-select__list {
-  max-height: 15rem;
-  padding: 0.25rem;
+  max-height: 16rem;
   overflow-y: auto;
+  padding: 0.1rem 0;
 }
 
 .subject-search-select__option {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   width: 100%;
-  padding: 0.5rem 0.65rem;
-  border: none;
+  padding: 0.15rem 0.2rem 0.15rem 0.2rem;
   border-radius: var(--radius-md);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
 .subject-search-select__option--highlighted,
@@ -617,26 +510,77 @@ const kindOptions = [
 
 .subject-search-select__option--active {
   background: var(--color-primary-subtle);
-  color: var(--color-primary);
 }
 
-.subject-search-select__option-kind {
+.subject-search-select__option-main {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  flex: 1;
+  padding: 0.4rem 0.4rem;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subject-search-select__check {
+  width: 1rem;
+  height: 1rem;
   flex-shrink: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.25rem;
+  background: var(--color-bg-canvas);
+}
+
+.subject-search-select__check--on {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-6'/%3E%3C/svg%3E");
+  background-size: 0.75rem;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.subject-search-select__avatar {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.subject-search-select__option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.05rem;
 }
 
 .subject-search-select__option-name {
-  flex: 1;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.8125rem;
 }
 
+.subject-search-select__option-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
 .subject-search-select__empty {
-  padding: 1rem;
+  padding: 1.1rem 0.75rem;
   color: var(--color-text-muted);
   font-size: 0.8125rem;
   text-align: center;

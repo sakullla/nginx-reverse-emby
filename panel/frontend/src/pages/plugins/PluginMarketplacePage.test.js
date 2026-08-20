@@ -65,6 +65,11 @@ beforeEach(() => {
   mocks.push.mockReset()
 })
 
+async function openFirstPackage(wrapper) {
+  await wrapper.get('.marketplace-card').trigger('click')
+  await flushPromises()
+}
+
 function nextStep(wrapper) {
   return wrapper.find('[data-test="marketplace-next-step"]').text()
 }
@@ -88,13 +93,64 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.find('.plugin-marketplace-page__loading').exists()).toBe(true)
   })
 
-  it('shows an error empty state when the market fails to load', async () => {
+  it('shows preview catalog names when the market fails to load', async () => {
     mocks.fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
     const wrapper = mountPage()
     await flushPromises()
-    expect(wrapper.text()).toContain('读取失败')
-    expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.text()).toContain('Emby 助手')
+    expect(wrapper.text()).toContain('网站防火墙')
+    expect(wrapper.text()).not.toContain('official.emby-helper')
     expect(wrapper.text()).toContain('下一步')
+  })
+
+  it('renders the catalog name from the signed package instead of unnamed fallback', async () => {
+    mocks.fetchRepositoryContents.mockResolvedValue({
+      entries: [{ id: 'cloudflare-dns', name: 'Cloudflare DNS', version: '0.1.5', sha256: 'd'.repeat(64), description: '按域名后缀解析 Cloudflare DNS Token' }],
+      directPlugin: null
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.marketplace-card__name').text()).toBe('Cloudflare DNS')
+    expect(wrapper.text()).not.toContain('未命名插件')
+    expect(wrapper.text()).not.toContain('cloudflare-dns')
+  })
+
+  it('keeps the plugin id when the catalog has not projected a display name', async () => {
+    mocks.fetchRepositoryContents.mockResolvedValue({
+      entries: [{ id: 'accelerator-sources', version: '0.1.0', sha256: 'e'.repeat(64), description: '为零配置发布的自有域名提供 Docker、GitHub 与 Hugging Face 加速' }],
+      directPlugin: null
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('.marketplace-card__name').text()).toBe('accelerator-sources')
+    expect(wrapper.text()).not.toContain('未命名插件')
+  })
+
+  it('installs from the card action without requiring a second inspect click', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    const action = wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`)
+    expect(action.attributes('title')).toBe('安装')
+    expect(action.attributes('aria-label')).toBe('安装')
+    await action.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    await buttonByText(wrapper, '取消').trigger('click')
+    expect(wrapper.find('.modal-stub').exists()).toBe(false)
+    expect(wrapper.find('.modal-title').exists()).toBe(false)
+    await action.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    await buttonByText(wrapper, '确认安装').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).toHaveBeenCalled()
+  })
+
+  it('labels an installed package as open-detail on the card', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: entry.sha256 }])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).attributes('title')).toBe('打开详情')
   })
 
   it('shows an empty state when the market has no packages', async () => {
@@ -109,6 +165,9 @@ describe('PluginMarketplacePage', () => {
   it('shows signed package facts and confirms permissions through a modal', async () => {
     const wrapper = mountPage()
     await flushPromises()
+    expect(wrapper.text()).toContain('WAF')
+    expect(wrapper.text()).toContain('未安装')
+    await openFirstPackage(wrapper)
 
     expect(wrapper.text()).toContain('非官方来源')
     expect(wrapper.text()).toContain('未安装')
@@ -118,6 +177,8 @@ describe('PluginMarketplacePage', () => {
     expect(buttonByText(wrapper, '安装插件')).toBeTruthy()
     expect(wrapper.find('.marketplace-technical').exists()).toBe(true)
     expect(wrapper.find('.marketplace-technical').element.open).toBeFalsy()
+    expect(wrapper.findAll('summary').filter((node) => node.text().trim() === '技术详情')).toHaveLength(1)
+    expect(wrapper.find('.package-summary__identity').exists()).toBe(false)
     expect(wrapper.text()).toContain('wasm-policy')
     expect(wrapper.text()).toContain('nre:policy/v1')
     expect(wrapper.text()).toContain('Package SHA-256')
@@ -156,6 +217,7 @@ describe('PluginMarketplacePage', () => {
     mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
     const wrapper = mountPage()
     await flushPromises()
+    await openFirstPackage(wrapper)
 
     const upgrade = buttonByText(wrapper, '升级插件')
     expect(upgrade).toBeTruthy()
@@ -181,6 +243,7 @@ describe('PluginMarketplacePage', () => {
     mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: entry.sha256 }])
     const wrapper = mountPage()
     await flushPromises()
+    await openFirstPackage(wrapper)
 
     expect(wrapper.text()).toContain('当前版本已安装')
     expect(nextStep(wrapper)).toContain('打开详情继续部署')
@@ -188,7 +251,7 @@ describe('PluginMarketplacePage', () => {
     const install = buttonByText(wrapper, '安装插件')
     expect(install.attributes('disabled')).toBeDefined()
     await install.trigger('click')
-    expect(wrapper.find('.modal-stub').exists()).toBe(false)
+    expect(wrapper.find('.modal-title').text()).not.toBe('确认安装插件')
     expect(mocks.push).not.toHaveBeenCalled()
   })
 
@@ -203,6 +266,7 @@ describe('PluginMarketplacePage', () => {
     })
     const wrapper = mountPage()
     await flushPromises()
+    await openFirstPackage(wrapper)
 
     expect(wrapper.text()).toContain('把站点流量交给这个插件处理。')
     expect(nextStep(wrapper)).toContain('发布')
@@ -225,20 +289,34 @@ describe('PluginMarketplacePage', () => {
     })
     const wrapper = mountPage()
     await flushPromises()
+    await openFirstPackage(wrapper)
 
     expect(nextStep(wrapper)).toContain('打开详情继续部署')
     expect(nextStep(wrapper)).toContain('发布域名')
     expect(wrapper.find(`a[href="/plugins/${encodeURIComponent(entry.id)}"]`).text()).toContain('打开详情')
   })
 
+  it('returns to package inspect when canceling confirm opened from details', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await openFirstPackage(wrapper)
+    expect(wrapper.find('.modal-title').text()).toBe('WAF')
+    await buttonByText(wrapper, '安装插件').trigger('click')
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    await buttonByText(wrapper, '取消').trigger('click')
+    expect(wrapper.find('.modal-title').text()).toBe('WAF')
+  })
+
   it('stays on the market and does not navigate when install fails', async () => {
     mocks.installPlugin.mockRejectedValue(new Error('source rejected'))
     const wrapper = mountPage()
     await flushPromises()
+    await openFirstPackage(wrapper)
     await buttonByText(wrapper, '安装插件').trigger('click')
     await buttonByText(wrapper, '确认安装').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('source rejected')
+    expect(wrapper.find('[data-test="marketplace-action-error"]').text()).toBe('source rejected')
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
     expect(mocks.push).not.toHaveBeenCalled()
   })
 })

@@ -52,7 +52,11 @@ type Candidate struct {
 	RestartWindow                                         time.Duration
 	InitialBackoff                                        time.Duration
 	MaximumBackoff                                        time.Duration
+	Declaration                                           Declaration
+	GrantSelectors                                        map[string][]string
 	endpointDirectory, credentialDirectory, guestEndpoint string
+	uiEndpoint                                            Endpoint
+	hostEndpoint                                          Endpoint
 	sandboxUID                                            int
 	attemptEnvironment                                    []string
 }
@@ -144,6 +148,7 @@ type Host struct {
 	observer       func(RuntimeStatus) error
 	logObserver    func(Candidate, string)
 	observerErrors map[string]error
+	hostResources  HostResourceDispatcher
 }
 
 type RuntimeStatus struct {
@@ -219,6 +224,7 @@ type Instance struct {
 	candidate                  Candidate
 	control                    *runtimeControl
 	securityCleanup            func() error
+	hostResourceCleanup        func() error
 	processCleanup             func() error
 	processCleanupPendingErr   error
 	cleanupMu                  sync.Mutex
@@ -258,6 +264,12 @@ func (h *Host) SetLogObserver(observer func(Candidate, string)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.logObserver = observer
+}
+
+func (h *Host) SetHostResourceDispatcher(dispatcher HostResourceDispatcher) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hostResources = dispatcher
 }
 
 func (h *Host) StatusPersistenceError(instanceID string) error {
@@ -313,6 +325,8 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		candidate.GracePeriod = 5 * time.Second
 	}
 	candidate.Endpoint = security.endpoint
+	candidate.uiEndpoint = security.uiEndpoint
+	candidate.hostEndpoint = security.hostEndpoint
 	candidate.endpointDirectory, candidate.credentialDirectory, candidate.guestEndpoint = security.endpointDirectory, security.credentialDirectory, security.guestEndpoint
 	candidate.sandboxUID = security.sandboxUID
 	candidate.attemptEnvironment = security.environment
@@ -341,6 +355,14 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if instance == nil {
 		return nil, errors.New("control-plane plugin attempt security has no cleanup owner")
 	}
+	h.mu.RLock()
+	hostResources := h.hostResources
+	h.mu.RUnlock()
+	hostResourceCleanup, err := startHostResourceServer(attemptCtx, candidate, hostResources)
+	if err != nil {
+		return nil, err
+	}
+	instance.hostResourceCleanup = hostResourceCleanup
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
@@ -389,7 +411,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	instance.mu.Lock()
 	instance.client, instance.closer = client, closer
 	instance.mu.Unlock()
-	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Identity.Scopes...), Generation: candidate.Identity.Generation, RequiredFeatures: pluginsdk.RequiredRPCFeatures(candidate.Identity.Scopes)}
+	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Grants...), Generation: candidate.Identity.Generation, RequiredFeatures: pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Grants, candidate.Declaration.ExtensionPoints)}
 	response, err := retryControlHandshake(attemptCtx, candidate.Deadline, process, client, handshake)
 	if err != nil {
 		return nil, err
@@ -398,11 +420,24 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		return nil, err
 	}
 	request := pluginsdk.LifecycleRequest{Generation: candidate.Identity.Generation, Config: config}
-	if response, err := client.Prepare(attemptCtx, request); err != nil || response.Validate() != nil {
-		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err, response.Validate())
+	prepareResponse, err := client.Prepare(attemptCtx, request)
+	if err != nil {
+		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err)
 	}
-	if response, err := client.Activate(attemptCtx, request); err != nil || response.Validate() != nil {
-		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err, response.Validate())
+	if err := lifecycleResponseError(prepareResponse); err != nil {
+		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err)
+	}
+	activateResponse, err := client.Activate(attemptCtx, request)
+	if err != nil {
+		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
+	}
+	if err := lifecycleResponseError(activateResponse); err != nil {
+		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
+	}
+	if hasExtension(candidate.Declaration.ExtensionPoints, extensionUIRoute) {
+		if err := waitPluginUIReady(attemptCtx, candidate.uiEndpoint, candidate.Deadline); err != nil {
+			return nil, err
+		}
 	}
 	if err := attemptCtx.Err(); err != nil {
 		return nil, errors.Join(errors.New("control-plane plugin candidate preparation canceled"), err)
@@ -517,6 +552,7 @@ func (p *PreparedPublication) Publish() {
 		entry := p.entries[index]
 		h.notifyOwned(entry.instance, entry.control, false)
 		go h.watch(entry.control, entry.instance)
+		h.publishPluginUI(entry.instance)
 		if entry.previous != nil && entry.previous != entry.instance {
 			go h.cleanupPreviousGeneration(entry)
 		}
@@ -709,10 +745,15 @@ func (h *Host) StopWithResults(ctx context.Context, instanceID string) ([]Termin
 	}
 	if instance != nil && instance.terminated() {
 		h.mu.Lock()
+		removed := false
 		if h.active[instanceID] == instance {
 			delete(h.active, instanceID)
+			removed = true
 		}
 		h.mu.Unlock()
+		if removed {
+			h.unpublishPluginUI(instance)
+		}
 	}
 	for _, candidate := range prepared {
 		stopErr := h.stopPublished(ctx, candidate)
@@ -759,10 +800,15 @@ func (h *Host) CloseWithResults(ctx context.Context) ([]TerminalResult, error) {
 		results = append(results, terminalResult(instance, true))
 		if instance.terminated() {
 			h.mu.Lock()
+			removed := false
 			if h.active[instance.ID] == instance {
 				delete(h.active, instance.ID)
+				removed = true
 			}
 			h.mu.Unlock()
+			if removed {
+				h.unpublishPluginUI(instance)
+			}
 		}
 	}
 	for _, instance := range prepared {
@@ -988,10 +1034,15 @@ func (i *Instance) cleanupSecurity() error {
 	} else if process, ok := i.process.(interface{ Cleanup() error }); ok {
 		processCleanupErr = process.Cleanup()
 	}
+	hostResourceCleanupErr := error(nil)
+	if i.hostResourceCleanup != nil {
+		hostResourceCleanupErr = i.hostResourceCleanup()
+		i.hostResourceCleanup = nil
+	}
 	if i.securityCleanup != nil {
 		credentialCleanupErr = i.securityCleanup()
 	}
-	i.cleanupErr = errors.Join(processCleanupErr, credentialCleanupErr)
+	i.cleanupErr = errors.Join(processCleanupErr, hostResourceCleanupErr, credentialCleanupErr)
 	if i.cleanupErr == nil {
 		i.cleanupDone = true
 	}
@@ -1015,7 +1066,7 @@ func (i *Instance) stopRPC(ctx context.Context) error {
 	go func() {
 		response, err := i.client.Stop(rpcCtx, pluginsdk.LifecycleRequest{Generation: i.Generation})
 		if err == nil {
-			err = response.Validate()
+			err = lifecycleResponseError(response)
 		}
 		result <- err
 	}()

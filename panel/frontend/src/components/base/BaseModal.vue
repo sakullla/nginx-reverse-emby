@@ -53,7 +53,7 @@ const props = defineProps({
   size: {
     type: String,
     default: 'md',
-    validator: (v) => ['md', 'lg', 'xl'].includes(v)
+    validator: (v) => ['sm', 'md', 'lg', 'xl'].includes(v)
   },
   large: { type: Boolean, default: false },
   showFooter: { type: Boolean, default: false },
@@ -118,6 +118,7 @@ onUnmounted(() => {
 .modal-enter-from,
 .modal-leave-to {
   opacity: 0;
+  pointer-events: none;
 }
 
 .modal-enter-active .modal,

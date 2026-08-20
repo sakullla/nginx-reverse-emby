@@ -36,11 +36,23 @@ const passwordForm = reactive({
 })
 
 const currentActor = computed(() => actor?.value ?? null)
-const cards = computed(() => (visibleNavigation?.value || []).map((item) => ({
-  ...item,
-  path: item.path || managedPagePaths[item.id] || '',
-  count: counts.value[item.id]
-})))
+const fallbackCards = [
+  { id: 'users', label: '用户', path: '/access/users' },
+  { id: 'resource-groups', label: '资源组', path: '/access/resource-groups' }
+]
+
+const cards = computed(() => {
+  const mapped = (visibleNavigation?.value || []).map((item) => ({
+    ...item,
+    path: item.path || managedPagePaths[item.id] || '',
+    count: counts.value[item.id]
+  })).filter((card) => card.path || (card.id === 'quotas' && quotaUsage.value.length))
+  if (mapped.length) return mapped
+  if (error.value) {
+    return fallbackCards.map((item) => ({ ...item, count: counts.value[item.id] }))
+  }
+  return []
+})
 const showUserBootstrap = computed(() => (
   (can('access.manage') || can('*')) && counts.value.users === 0
 ))
@@ -51,29 +63,39 @@ const canChangeOwnPassword = computed(() => {
 
 onMounted(async () => {
   try {
-    await refreshActor()
+    await refreshActor().catch((cause) => {
+      error.value = { message: humanLoadError(cause) }
+    })
     const requests = []
-    const assign = (id, request) => requests.push(request().then((items) => { counts.value[id] = items.length }))
-    if (can('access.manage')) {
+    const assign = (id, request) => requests.push(request().then((items) => { counts.value[id] = items.length }).catch(() => undefined))
+    if (can('access.manage') || can('*')) {
       assign('users', fetchUsers)
       assign('roles', fetchRoles)
     }
-    if (can('resource.read')) assign('resource-groups', fetchResourceGroups)
-    if (can('resource.read')) {
+    if (can('resource.read') || can('*')) assign('resource-groups', fetchResourceGroups)
+    if (can('resource.read') || can('*')) {
       requests.push(fetchQuotaOverview().then((payload) => {
         quotaUsage.value = payload.quota_usage || []
         counts.value.quotas = quotaUsage.value.length
-      }))
+      }).catch(() => undefined))
     }
-    if (can('secret.metadata.read')) assign('secrets', fetchSecrets)
-    if (can('audit.read')) assign('audit', () => fetchAuditEvents(20))
+    if (can('secret.metadata.read') || can('*')) assign('secrets', fetchSecrets)
+    if (can('audit.read') || can('*')) assign('audit', () => fetchAuditEvents(20))
     await Promise.all(requests)
   } catch (cause) {
-    error.value = cause
+    error.value = { message: humanLoadError(cause) }
   } finally {
     loading.value = false
   }
 })
+
+function humanLoadError(cause) {
+  const raw = String(cause?.message || '').trim()
+  if (/status code 5\d\d|network error|failed to fetch|502/i.test(raw)) {
+    return '暂时连不上服务，页面入口仍可打开。'
+  }
+  return raw || '读取失败'
+}
 
 function fieldMessage(name) {
   return passwordFields.value?.[name] || ''
@@ -116,25 +138,34 @@ async function submitOwnPassword() {
 
 <template>
   <main class="access-overview">
-    <header>
-      <h1>访问与安全</h1>
-      <p>用户管理与资源组管理可从这里进入。角色、配额、凭据和审计仍是概览信息，没有独立管理页。</p>
+    <header class="page-header">
+      <div class="page-header__left">
+        <h1 class="page-title">访问与安全</h1>
+        <p class="page-subtitle">管理谁能登录，以及谁能看到哪些资源组。账号密码也可以在右上角账号菜单里修改。</p>
+      </div>
     </header>
-    <p v-if="loading">正在加载…</p>
-    <p v-else-if="error" role="alert">{{ error.message }}</p>
-    <template v-else>
+    <p v-if="loading" class="access-empty">正在加载…</p>
+    <p v-if="!loading && error" class="access-notice" role="status">{{ error.message }}</p>
+    <template v-if="!loading">
       <aside v-if="showUserBootstrap" class="access-bootstrap" role="status">
         <p>当前还没有面板账号。请进入用户管理创建首个管理员，然后退出令牌身份，改用账号密码登录。</p>
         <RouterLink class="access-bootstrap-link" to="/access/users">前往用户管理</RouterLink>
       </aside>
       <p v-if="!cards.length" class="access-empty">当前身份无权查看用户与资源管理。</p>
       <section v-else class="access-cards" aria-label="访问与安全概览">
-        <article v-for="card in cards" :key="card.id" class="access-card">
+        <component
+          :is="card.path ? 'RouterLink' : 'article'"
+          v-for="card in cards"
+          :key="card.id"
+          class="access-card"
+          :class="{ 'access-card-link': !!card.path }"
+          :to="card.path || undefined"
+        >
           <div class="access-card-heading">
-            <RouterLink v-if="card.path" :to="card.path" class="access-card-link">{{ card.label }}</RouterLink>
-            <strong v-else>{{ card.label }}</strong>
+            <strong>{{ card.label }}</strong>
             <span v-if="card.count !== undefined">{{ card.count }}</span>
           </div>
+          <p v-if="card.path" class="access-card-hint">{{ card.id === 'users' ? '创建、停用和重置账号' : '授权用户并绑定资源' }}</p>
           <QuotaUsage
             v-for="usage in card.id === 'quotas' ? quotaUsage : []"
             :key="usage.policy_id"
@@ -142,7 +173,7 @@ async function submitOwnPassword() {
             :limit="usage.limit"
             :recovery-condition="usage.recovery_condition"
           />
-        </article>
+        </component>
       </section>
       <section v-if="canChangeOwnPassword" class="access-security" aria-label="账号安全">
         <h2>账号安全</h2>
@@ -192,7 +223,7 @@ async function submitOwnPassword() {
           <p v-if="fieldMessage('confirm_password')" id="access-confirm-password-error" role="alert">{{ fieldMessage('confirm_password') }}</p>
           <p v-if="passwordError" role="alert">{{ passwordError }}</p>
           <p v-if="passwordNotice" role="status">{{ passwordNotice }} <RouterLink to="/login">前往登录</RouterLink></p>
-          <button type="submit" :disabled="passwordBusy">{{ passwordBusy ? '提交中…' : '更新密码' }}</button>
+          <button class="btn btn-primary" type="submit" :disabled="passwordBusy">{{ passwordBusy ? '提交中…' : '更新密码' }}</button>
         </form>
       </section>
     </template>
@@ -201,51 +232,88 @@ async function submitOwnPassword() {
 
 <style scoped>
 .access-overview {
+  max-width: 1180px;
+  margin: 0 auto;
   display: grid;
-  gap: 1.25rem;
+  gap: 1.1rem;
 }
 
 .access-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   gap: 0.75rem;
 }
 
 .access-card {
   display: grid;
-  gap: 0.75rem;
-  border: 1px solid var(--border-color, #e5e7eb);
-  border-radius: 0.75rem;
-  padding: 1rem;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 1.05rem 1.15rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 150ms ease, transform 150ms ease, box-shadow 200ms ease;
 }
 
 .access-card-heading {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
+  gap: 0.75rem;
 }
 
-.access-card-link {
-  color: inherit;
-  font-weight: 600;
-  text-decoration: none;
+.access-card-heading span {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
-.access-card-link:hover {
-  color: var(--color-primary, #2563eb);
+.access-card-heading strong {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+
+a.access-card-link:hover {
+  border-color: var(--color-primary-300, var(--color-primary));
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.access-card-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
 }
 
 .access-bootstrap,
 .access-security {
   display: grid;
   gap: 0.75rem;
-  border: 1px solid var(--border-color, #e5e7eb);
-  border-radius: 0.75rem;
-  padding: 1rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
 }
 
-.access-bootstrap-link,
-.access-empty {
-  color: var(--color-text-secondary, #4b5563);
+.access-bootstrap-link {
+  color: var(--color-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.access-empty,
+.access-notice {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.access-notice {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
 }
 
 .access-password-form {
@@ -257,15 +325,20 @@ async function submitOwnPassword() {
 .access-password-form label {
   display: grid;
   gap: 0.35rem;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
 }
 
 .access-password-form input {
-  border: 1px solid var(--border-color, #d1d5db);
-  border-radius: 0.5rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
   padding: 0.65rem 0.75rem;
+  font: inherit;
 }
 
-.access-password-form button {
+.access-password-form .btn {
   justify-self: start;
 }
 </style>

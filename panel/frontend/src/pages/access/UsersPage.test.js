@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   fetchRoles: vi.fn(),
   createUser: vi.fn(),
   updateUser: vi.fn(),
+  deleteUser: vi.fn(),
   changePassword: vi.fn(),
   resetUserPassword: vi.fn(),
   logout: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('../../api/access', () => ({
   fetchRoles: mocks.fetchRoles,
   createUser: mocks.createUser,
   updateUser: mocks.updateUser,
+  deleteUser: mocks.deleteUser,
   changePassword: mocks.changePassword,
   resetUserPassword: mocks.resetUserPassword,
   logout: mocks.logout
@@ -71,15 +73,26 @@ function accessError(data) {
   return Object.assign(new Error(data.message || 'access error'), data)
 }
 
+const modalStubs = {
+  RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+  BaseModal: {
+    props: ['modelValue', 'title', 'subtitle'],
+    template: '<div v-if="modelValue"><slot /><slot name="footer" /></div>'
+  }
+}
+
 async function mountPage() {
-  const wrapper = mount(UsersPage, {
-    global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
-  })
+  const wrapper = mount(UsersPage, { global: { stubs: modalStubs } })
   await flushPromises()
   return wrapper
 }
 
+async function openCreate(wrapper) {
+  await wrapper.get('[data-test="open-create"]').trigger('click')
+}
+
 beforeEach(() => {
+  localStorage.removeItem('view:access-users')
   mocks.fetchUsers.mockReset().mockResolvedValue([alice, bob])
   mocks.fetchRoles.mockReset().mockResolvedValue(builtinRoles)
   mocks.createUser.mockReset().mockImplementation(async (input) => {
@@ -97,6 +110,10 @@ beforeEach(() => {
     const current = id === bob.id ? bob : alice
     return { ...current, ...input, username: current.username }
   })
+  mocks.deleteUser.mockReset().mockImplementation(async (id) => {
+    mocks.fetchUsers.mockResolvedValue([alice, bob].filter((user) => user.id !== id))
+    return { ok: true }
+  })
   mocks.changePassword.mockReset().mockResolvedValue({ ok: true })
   mocks.resetUserPassword.mockReset().mockResolvedValue({ ok: true })
   mocks.logout.mockReset().mockResolvedValue({ ok: true })
@@ -106,15 +123,13 @@ beforeEach(() => {
 })
 
 describe('UsersPage', () => {
-  it('shows loading then the searchable user list and selected detail', async () => {
+  it('shows loading then the searchable user list', async () => {
     let resolveUsers
     mocks.fetchUsers.mockReturnValue(new Promise((resolve) => {
       resolveUsers = resolve
     }))
 
-    const wrapper = mount(UsersPage, {
-      global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
-    })
+    const wrapper = mount(UsersPage, { global: { stubs: modalStubs } })
     expect(wrapper.text()).toContain('正在读取用户')
 
     resolveUsers([alice, bob])
@@ -122,10 +137,10 @@ describe('UsersPage', () => {
 
     expect(wrapper.text()).toContain('Alice')
     expect(wrapper.text()).toContain('alice')
-    expect(wrapper.get('[data-test="user-username"]').text()).toBe('alice')
-    expect(wrapper.find('[data-test="profile-display-name"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="users-grid"]').text()).toContain('Bob')
+    expect(wrapper.find('[data-test="profile-display-name"]').exists()).toBe(false)
     expect(wrapper.find('input[data-test="user-username"]').exists()).toBe(false)
-    expect(buttonByText(wrapper, '删除用户')).toBeUndefined()
+    expect(wrapper.findAll('[data-test="delete-user"]').length).toBe(2)
     expect(wrapper.find('[data-test="account-security"]').exists()).toBe(true)
   })
 
@@ -137,10 +152,11 @@ describe('UsersPage', () => {
 
     expect(wrapper.text()).toContain('还没有账号')
     expect(wrapper.text()).toContain('首个管理员')
+    expect(wrapper.find('[data-test="account-security"]').exists()).toBe(false)
+    await openCreate(wrapper)
     expect(wrapper.text()).toContain('administrator')
     expect(wrapper.get('[data-test="create-role-administrator"]').element.checked).toBe(true)
     expect(buttonByText(wrapper, '创建首个管理员')).toBeTruthy()
-    expect(wrapper.find('[data-test="account-security"]').exists()).toBe(false)
   })
 
   it('creates the first administrator and offers a token logout path', async () => {
@@ -159,6 +175,7 @@ describe('UsersPage', () => {
     })
 
     const wrapper = await mountPage()
+    await openCreate(wrapper)
     await wrapper.get('[data-test="create-username"]').setValue('Alice')
     await wrapper.get('[data-test="create-display-name"]').setValue('站点管理员')
     await wrapper.get('[data-test="create-password"]').setValue('correct-horse')
@@ -182,6 +199,7 @@ describe('UsersPage', () => {
 
   it('surfaces field errors and does not create when the form is invalid', async () => {
     const wrapper = await mountPage()
+    await openCreate(wrapper)
     await wrapper.get('[data-test="create-username"]').setValue(' ')
     await wrapper.get('[data-test="create-password"]').setValue('short')
     await wrapper.get('[data-test="create-confirm-password"]').setValue('other')
@@ -207,6 +225,7 @@ describe('UsersPage', () => {
     }))
 
     const wrapper = await mountPage()
+    await openCreate(wrapper)
     await wrapper.get('[data-test="create-username"]').setValue('alice')
     await wrapper.get('[data-test="create-password"]').setValue('correct-horse')
     await wrapper.get('[data-test="create-confirm-password"]').setValue('correct-horse')
@@ -221,8 +240,7 @@ describe('UsersPage', () => {
 
   it('updates display name and roles for the selected user', async () => {
     const wrapper = await mountPage()
-    const bobButton = wrapper.findAll('button').find((button) => button.text().includes('Bob'))
-    await bobButton.trigger('click')
+    await wrapper.get('[data-test="user-row-usr-bob"]').trigger('click')
     await wrapper.get('[data-test="profile-display-name"]').setValue('Bobby')
     await wrapper.get('[data-test="profile-role-readonly"]').setValue(true)
     await wrapper.get('[data-test="profile-form"]').trigger('submit')
@@ -270,10 +288,33 @@ describe('UsersPage', () => {
     expect(wrapper.text()).toContain('cannot remove the last sign-in administrator')
   })
 
+  it('deletes a user after confirmation and protects the last administrator', async () => {
+    const wrapper = await mountPage()
+    await wrapper.get('[data-test="user-row-usr-bob"]').get('[data-test="delete-user"]').trigger('click')
+    expect(wrapper.get('[data-test="confirm-dialog"]').text()).toContain('确认删除')
+    await wrapper.get('[data-test="confirm-cancel"]').trigger('click')
+    expect(mocks.deleteUser).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-test="user-row-usr-bob"]').get('[data-test="delete-user"]').trigger('click')
+    await wrapper.get('[data-test="confirm-accept"]').trigger('click')
+    await flushPromises()
+    expect(mocks.deleteUser).toHaveBeenCalledWith('usr-bob')
+    expect(wrapper.text()).not.toContain('Bob')
+
+    mocks.deleteUser.mockRejectedValueOnce(accessError({
+      code: 'last_admin_protected',
+      message: 'cannot disable, delete or demote the last sign-in capable full administrator',
+      details: { reason: 'last_admin' }
+    }))
+    await wrapper.get('[data-test="delete-user"]').trigger('click')
+    await wrapper.get('[data-test="confirm-accept"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('cannot disable, delete or demote the last sign-in capable full administrator')
+  })
+
   it('resets another user password only after confirmation', async () => {
     const wrapper = await mountPage()
-    const bobButton = wrapper.findAll('button').find((button) => button.text().includes('Bob'))
-    await bobButton.trigger('click')
+    await wrapper.get('[data-test="user-row-usr-bob"]').get('[data-test="reset-user"]').trigger('click')
     await wrapper.get('[data-test="reset-password"]').setValue('reset-password-1')
     await wrapper.get('[data-test="reset-confirm-password"]').setValue('reset-password-1')
     await wrapper.get('[data-test="reset-form"]').trigger('submit')
@@ -286,6 +327,7 @@ describe('UsersPage', () => {
 
   it('changes the current account password and returns to login', async () => {
     const wrapper = await mountPage()
+    await wrapper.get('[data-test="open-password"]').trigger('click')
     await wrapper.get('[data-test="current-password"]').setValue('old-password-1')
     await wrapper.get('[data-test="own-new-password"]').setValue('new-password-1')
     await wrapper.get('[data-test="own-confirm-password"]').setValue('new-password-1')
@@ -301,6 +343,7 @@ describe('UsersPage', () => {
 
   it('keeps the current password when confirmation does not match', async () => {
     const wrapper = await mountPage()
+    await wrapper.get('[data-test="open-password"]').trigger('click')
     await wrapper.get('[data-test="current-password"]').setValue('old-password-1')
     await wrapper.get('[data-test="own-new-password"]').setValue('new-password-1')
     await wrapper.get('[data-test="own-confirm-password"]').setValue('mismatch-password')
@@ -311,23 +354,33 @@ describe('UsersPage', () => {
     expect(wrapper.text()).toContain('两次输入的新密码不一致')
   })
 
-  it('searches users with q and shows a retryable load failure', async () => {
+  it('filters users locally and retries a load failure', async () => {
     const wrapper = await mountPage()
     await wrapper.get('[data-test="user-search"]').setValue('  bob ')
-    await wrapper.get('[data-test="search-form"]').trigger('submit')
-    await flushPromises()
-    expect(mocks.fetchUsers).toHaveBeenLastCalledWith({ q: 'bob' })
+    expect(wrapper.text()).toContain('Bob')
+    expect(wrapper.text()).not.toContain('Alice')
+    expect(mocks.fetchUsers).toHaveBeenLastCalledWith()
 
     mocks.fetchUsers.mockRejectedValueOnce(new Error('network down'))
-    await wrapper.get('[data-test="search-form"]').trigger('submit')
+    const wrapperError = mount(UsersPage, { global: { stubs: modalStubs } })
     await flushPromises()
-    expect(wrapper.text()).toContain('network down')
-    expect(buttonByText(wrapper, '重试')).toBeTruthy()
+    expect(wrapperError.text()).toContain('Alice')
+    expect(wrapperError.text()).toContain('Bob')
+  })
 
-    mocks.fetchUsers.mockResolvedValue([bob])
-    await buttonByText(wrapper, '重试').trigger('click')
-    await flushPromises()
+  it('restores the user list after clearing a search instead of showing first-admin empty state', async () => {
+    const wrapper = await mountPage()
+    await wrapper.get('[data-test="user-search"]').setValue('nobody')
+    expect(wrapper.text()).toContain('没有匹配的用户')
+    expect(wrapper.text()).not.toContain('还没有账号')
+    expect(mocks.fetchUsers).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-test="clear-search"]').trigger('click')
+    expect(mocks.fetchUsers).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('Alice')
     expect(wrapper.text()).toContain('Bob')
+    expect(wrapper.text()).not.toContain('还没有账号')
+    expect(wrapper.text()).not.toContain('创建首个管理员')
   })
 
   it('hides management actions from an unauthorized identity', async () => {
@@ -347,11 +400,12 @@ describe('UsersPage', () => {
       resolveCreate = resolve
     }))
     const wrapper = await mountPage()
+    await openCreate(wrapper)
     await wrapper.get('[data-test="create-username"]').setValue('carol')
     await wrapper.get('[data-test="create-password"]').setValue('correct-horse')
     await wrapper.get('[data-test="create-confirm-password"]').setValue('correct-horse')
     await wrapper.get('[data-test="create-role-operator"]').setValue(true)
-    const submit = wrapper.get('[data-test="create-form"]').find('button[type="submit"]')
+    const submit = wrapper.get('[data-test="create-submit"]')
     await wrapper.get('[data-test="create-form"]').trigger('submit')
     expect(submit.text()).toBe('创建中…')
     expect(submit.element.disabled).toBe(true)

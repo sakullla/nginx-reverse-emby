@@ -59,6 +59,15 @@ export function visibleAccessManagementNavForActor(actor) {
   return { ...accessManagementNavigation, children }
 }
 
+export function accessNavForSession(actor) {
+  const visible = visibleAccessManagementNavForActor(actor)
+  if (visible?.children?.length) return visible
+  if (actor) return visible
+  if (typeof localStorage === 'undefined') return null
+  const hasSession = Boolean(localStorage.getItem('panel_session') || localStorage.getItem('panel_token'))
+  return hasSession ? accessManagementNavigation : null
+}
+
 export function isAccessManagementChildActive(item, route) {
   if (!item || !route) return false
   if (item.routeName && route.name === item.routeName) return true
@@ -137,7 +146,7 @@ export function useAccessControl() {
   const can = (permission) => permissionSet.value.has('*') || permissionSet.value.has(permission)
   const canAccessGroup = (groupID) => can('*') || (actor.value?.visible_resource_groups || []).includes(groupID)
   const visibleNavigation = computed(() => accessNavigation.filter((item) => can(item.permission)))
-  const visibleAccessManagement = computed(() => visibleAccessManagementNavForActor(actor.value))
+  const visibleAccessManagement = computed(() => accessNavForSession(actor.value))
   const isBootstrap = computed(() => isBootstrapActor(actor.value))
   const canChangePassword = computed(() => canChangeOwnPassword(actor.value))
 

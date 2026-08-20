@@ -452,6 +452,17 @@ type PluginRuntimeLogRow struct {
 	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
 }
 
+type PluginRuntimeStateRow struct {
+	InstanceID      string    `gorm:"primaryKey;size:64"`
+	Key             string    `gorm:"primaryKey;size:190"`
+	PluginID        string    `gorm:"index;size:190;not null"`
+	ResourceGroupID string    `gorm:"index;size:64;not null"`
+	Value           []byte    `gorm:"type:blob;not null"`
+	UpdatedAt       time.Time `gorm:"not null"`
+}
+
+func (PluginRuntimeStateRow) TableName() string { return "plugin_runtime_state" }
+
 func (PluginRuntimeLogRow) TableName() string { return "plugin_runtime_logs" }
 
 type PluginControlPlaneLogOutboxRow struct {

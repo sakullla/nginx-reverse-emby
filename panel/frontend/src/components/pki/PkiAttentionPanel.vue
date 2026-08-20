@@ -1,7 +1,7 @@
 <template>
   <PkiSection
-    title="告警与进行中操作"
-    description="异常与进行中优先；同状态按最近更新时间倒序，每页最多 5 条。"
+    title="需要处理"
+    description="先看告警，再看正在进行的换证或备份。"
     eyebrow="优先处置"
     tone="attention"
     aria-label="告警与处置"
@@ -41,18 +41,16 @@
             class="pki-alert"
             :class="`pki-alert--${String(alertField(alert, 'level')).toLowerCase()}`"
           >
-            <div class="pki-alert__main">
-              <div class="pki-alert__title">
-                <PkiStatusBadge :status="alertField(alert, 'level')" :label="alertLevelLabel(alertField(alert, 'level'))" dot />
-                <strong>{{ alertKindLabel(alertField(alert, 'kind')) }}</strong>
-              </div>
-              <p class="pki-alert__reason">{{ alertField(alert, 'reason') || '未提供原因' }}</p>
-              <div class="pki-alert__meta">
-                <BaseBadge tone="neutral" subtone="secondary" size="sm">{{ alert.object_type_label || alertField(alert, 'object_type') || 'object' }}</BaseBadge>
-                <span class="pki-alert__object" :title="alertField(alert, 'object_id') || ''">{{ alert.object_label || alertField(alert, 'object_id') || '—' }}</span>
-              </div>
+            <div class="pki-alert__title">
+              <PkiStatusBadge :status="alertField(alert, 'level')" :label="alertLevelLabel(alertField(alert, 'level'))" dot />
+              <strong :title="alertKindLabel(alertField(alert, 'kind'))">{{ alertKindLabel(alertField(alert, 'kind')) }}</strong>
             </div>
-            <time class="pki-alert__time">{{ formatDate(alertField(alert, 'last_seen')) }}</time>
+            <p class="pki-alert__reason">{{ reasonLabel(alertField(alert, 'reason')) || '未提供原因' }}</p>
+            <div class="pki-alert__meta">
+              <BaseBadge tone="neutral" subtone="secondary" size="sm">{{ alert.object_type_label || '相关对象' }}</BaseBadge>
+              <span class="pki-alert__object" :title="alert.object_label || ''">{{ alert.object_label || '—' }}</span>
+              <time class="pki-alert__time">{{ formatDate(alertField(alert, 'last_seen')) }}</time>
+            </div>
           </article>
         </div>
         <div v-else class="pki-empty">
@@ -73,38 +71,38 @@
       <div v-if="operations.length" class="pki-attention__block pki-attention__block--ops">
         <div class="pki-attention__block-head">
           <div>
-            <h3>操作进度</h3>
-            <p>提交后的轮转、撤销、备份等异步结果。</p>
+            <h3>进行中</h3>
+            <p>换证、轮转或备份的当前进度。</p>
           </div>
           <BaseBadge tone="primary" size="sm">{{ operationTotal }}</BaseBadge>
         </div>
 
         <div class="pki-stack">
           <article v-for="operation in operations" :key="operation.id" data-test="operation-row" class="pki-op">
-            <div class="pki-op__main">
-              <strong>{{ operationLabel(operation.kind) }}</strong>
-              <span class="mono">{{ operation.target_id || operation.id }}</span>
-            </div>
-            <div class="pki-op__state">
+            <div class="pki-op__top">
+              <div class="pki-op__main">
+                <strong>{{ operationLabel(operation.kind) }}</strong>
+                <span :title="operation.target_id || operation.id">{{ operationTargetLabel(operation) }}</span>
+              </div>
               <PkiStatusBadge :status="operation.state" :label="operationStateLabel(operation.state)" />
-              <span v-if="operation.phase" class="pki-op__phase">{{ operation.phase }}</span>
+            </div>
+            <div v-if="operation.phase || operation.last_error || operationErrors[operation.id]" class="pki-op__state">
+              <span v-if="phaseLabel(operation.phase)" class="pki-op__phase">{{ phaseLabel(operation.phase) }}</span>
               <span v-if="operation.last_error" class="danger-text">{{ operation.last_error }}</span>
-              <span v-if="operationErrors[operation.id]" class="danger-text">
-                状态查询失败（{{ operationErrors[operation.id].status || 'network' }}）：{{ operationErrors[operation.id].message }}
-              </span>
+              <span v-if="operationErrors[operation.id]" class="danger-text">暂时查不到进度，请稍后重试。</span>
             </div>
             <div class="pki-op__actions">
               <button
                 type="button"
                 class="btn btn--secondary btn--sm"
                 @click="$emit('refresh-operation', operation.id)"
-              >查询状态</button>
+              >刷新进度</button>
               <button
                 v-if="operation.terminal || operationErrors[operation.id]?.status === 404"
                 type="button"
                 class="btn btn--ghost btn--sm"
                 @click="$emit('forget-operation', operation.id)"
-              >本机移除</button>
+              >忘掉这条</button>
             </div>
           </article>
         </div>
@@ -142,7 +140,10 @@ defineProps({
   alertLevelLabel: { type: Function, required: true },
   alertKindLabel: { type: Function, required: true },
   operationLabel: { type: Function, required: true },
+  operationTargetLabel: { type: Function, default: (operation) => operation?.target_id || operation?.id || '—' },
   operationStateLabel: { type: Function, required: true },
+  phaseLabel: { type: Function, default: (phase) => phase || '' },
+  reasonLabel: { type: Function, default: (reason) => reason || '' },
   formatDate: { type: Function, required: true },
 })
 
@@ -196,17 +197,14 @@ defineEmits([
 
 .pki-alert,
 .pki-op {
-  display: grid;
-  gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
   background: color-mix(in srgb, var(--color-bg-subtle) 40%, var(--color-bg-surface));
-}
-
-.pki-alert {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
 }
 
 .pki-alert--critical,
@@ -219,21 +217,27 @@ defineEmits([
   border-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border-default));
 }
 
-.pki-alert__main,
-.pki-op__main,
-.pki-op__state,
-.pki-op__actions {
+.pki-alert__title,
+.pki-op__top {
   display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .pki-alert__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  justify-content: flex-start;
   flex-wrap: wrap;
+}
+
+.pki-alert__title strong,
+.pki-op__main strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
 }
 
 .pki-alert__reason {
@@ -241,6 +245,10 @@ defineEmits([
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
 }
 
 .pki-alert__meta {
@@ -254,36 +262,48 @@ defineEmits([
 
 .pki-alert__object {
   min-width: 0;
+  flex: 1 1 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--color-text-secondary);
-  word-break: break-word;
 }
 
 .pki-alert__time {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   white-space: nowrap;
+  margin-left: auto;
 }
 
-.pki-op {
-  grid-template-columns: minmax(140px, 0.9fr) minmax(180px, 1.4fr) auto;
-  align-items: center;
-}
-
-.pki-op__main strong {
-  color: var(--color-text-primary);
+.pki-op__main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
 }
 
 .pki-op__main span,
 .pki-op__phase {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
 }
 
+.pki-op__state {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
 .pki-op__actions {
-  align-items: flex-end;
-  flex-direction: row;
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 0.35rem;
 }
 
@@ -327,20 +347,15 @@ defineEmits([
 .danger-text {
   color: var(--color-danger) !important;
   font-size: var(--text-xs);
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 760px) {
-  .pki-alert,
-  .pki-op {
-    grid-template-columns: 1fr;
+  .pki-alert__time {
+    margin-left: 0;
   }
 
-  .pki-op__actions {
-    justify-content: flex-start;
-  }
-
-  .pki-op__actions .btn,
-  .pki-section :deep(.pki-section__actions .btn) {
+  .pki-op__actions .btn {
     min-height: 2.25rem;
   }
 }

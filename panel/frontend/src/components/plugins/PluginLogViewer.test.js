@@ -8,23 +8,21 @@ vi.mock('../../api/plugins', () => ({ fetchPluginLogs: mocks.fetchPluginLogs }))
 describe('PluginLogViewer', () => {
   beforeEach(() => mocks.fetchPluginLogs.mockReset())
 
-  it('filters, paginates and shows host truncation without credentials', async () => {
+  it('filters and shows only five newest host logs without credentials', async () => {
     mocks.fetchPluginLogs
-      .mockResolvedValueOnce({ entries: [{ agent_id: 'edge-a', level: 'warning', message: 'token=[REDACTED]', truncated: true, created_at: '2026-08-11T00:00:00Z' }], next_cursor: 'cursor-2' })
-      .mockResolvedValueOnce({ entries: [{ agent_id: 'edge-a', level: 'info', message: 'older', truncated: false, created_at: '2026-08-10T00:00:00Z' }], next_cursor: '' })
+      .mockResolvedValueOnce({ entries: Array.from({ length: 7 }, (_, index) => ({ agent_id: 'edge-a', level: index ? 'info' : 'warning', message: index ? `log-${index + 1}` : 'token=[REDACTED]', truncated: index === 0, created_at: `2026-08-${String(index + 1).padStart(2, '0')}T00:00:00Z` })), next_cursor: 'cursor-2' })
       .mockResolvedValueOnce({ entries: [], next_cursor: '' })
     const wrapper = mount(PluginLogViewer, { props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: ['edge-a'] } })
     await flushPromises()
-    expect(wrapper.text()).toContain('token=[REDACTED]')
-    expect(wrapper.text()).toContain('已截断')
+    expect(mocks.fetchPluginLogs).toHaveBeenCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: '', cursor: '', limit: 5 }))
+    expect(wrapper.findAll('li')).toHaveLength(5)
+    expect(wrapper.findAll('li')[0].text()).toContain('log-7')
+    expect(wrapper.text()).not.toContain('token=[REDACTED]')
     expect(wrapper.text()).not.toContain('plaintext-credential')
-    await wrapper.get('button').trigger('click')
-    await flushPromises()
-		expect(mocks.fetchPluginLogs).toHaveBeenNthCalledWith(2, 'official.rpc', 'rpc-a', expect.objectContaining({ agentID: '', cursor: 'cursor-2', limit: 50 }))
-    expect(wrapper.text()).toContain('older')
+    expect(wrapper.find('button').exists()).toBe(false)
     await wrapper.get('select').setValue('edge-a')
     await flushPromises()
-		expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 50 }))
+		expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 5 }))
 	})
 
 	it('discards a deferred stale response after the selected instance changes', async () => {

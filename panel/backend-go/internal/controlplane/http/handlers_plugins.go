@@ -518,11 +518,16 @@ func (d Dependencies) handlePluginInstance(w http.ResponseWriter, r *http.Reques
 }
 
 func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request) {
+	action := r.PathValue("action")
+	if !isPluginLifecycleAction(action) {
+		d.handlePluginUI(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	pluginID, action, actorID := r.PathValue("id"), r.PathValue("action"), pluginActorID(r)
+	pluginID, actorID := r.PathValue("id"), pluginActorID(r)
 	var result any
 	var err error
 	status := http.StatusAccepted
@@ -594,6 +599,15 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, status, map[string]any{"result": result})
+}
+
+func isPluginLifecycleAction(action string) bool {
+	switch action {
+	case "enable", "disable", "rollback", "configure", "upgrade", "uninstall", "publish":
+		return true
+	default:
+		return false
+	}
 }
 
 func (d Dependencies) handlePluginPublish(w http.ResponseWriter, r *http.Request) {
@@ -875,12 +889,21 @@ func pluginEntryReachable(instance service.PluginInstanceDetail, statuses []serv
 }
 
 func (d Dependencies) resolveHTTPPluginPackage(r *http.Request, input pluginPackageSelection) (service.PluginPackageCandidate, string, error) {
-	source, err := d.MarketplaceService.Source(r.Context(), input.SourceID)
+	resolveCtx, cancel := pluginPackageResolutionContext(r.Context(), d.Config.MarketplaceRefreshTimeout)
+	defer cancel()
+	source, err := d.MarketplaceService.Source(resolveCtx, input.SourceID)
 	if err != nil {
 		return service.PluginPackageCandidate{}, "", err
 	}
-	candidate, err := d.MarketplaceService.ResolvePackage(r.Context(), input.SourceID, input.PluginID, input.Version, input.Digest)
+	candidate, err := d.MarketplaceService.ResolvePackage(resolveCtx, input.SourceID, input.PluginID, input.Version, input.Digest)
 	return candidate, source.Kind, err
+}
+
+func pluginPackageResolutionContext(requestCtx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = service.DefaultMarketplaceRefreshTimeout
+	}
+	return context.WithTimeout(context.WithoutCancel(requestCtx), timeout)
 }
 
 func decodeStrictPluginJSON(r *http.Request, target any) error {

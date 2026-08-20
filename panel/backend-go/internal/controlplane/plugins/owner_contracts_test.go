@@ -187,6 +187,18 @@ func TestConfigSchemaVocabularyAcceptsHostInjectedAndRejectsWriteOnlyConflict(t 
 	}
 }
 
+func TestValidatePackageAllowsResourceGroupExtension(t *testing.T) {
+	t.Parallel()
+
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "extension_points: [http.request]", "extension_points: [http.request, resource.group]", 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	if _, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("package with resource.group extension = %v", err)
+	}
+}
+
 func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	t.Parallel()
 	assertCode := func(t *testing.T, err error, code string) {

@@ -408,9 +408,30 @@ func TestAccessUserAccountOwnerContract(t *testing.T) {
 	if usernameWrite.Code != http.StatusBadRequest {
 		t.Fatalf("put username status=%d body=%s", usernameWrite.Code, usernameWrite.Body.String())
 	}
-	deleted := env.do(t, http.MethodDelete, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), "")
-	if deleted.Code != http.StatusMethodNotAllowed {
+	temp := env.do(t, http.MethodPost, "/api/access/users", bootstrapToken(bootstrap), `{
+		"username":"TempUser",
+		"display_name":"Temp",
+		"password":"`+password+`",
+		"role_ids":["readonly"]
+	}`)
+	if temp.Code != http.StatusCreated {
+		t.Fatalf("create temp user status=%d body=%s", temp.Code, temp.Body.String())
+	}
+	tempUser := decodeUser(t, temp)
+	deleted := env.do(t, http.MethodDelete, "/api/access/users/"+tempUser.ID, bootstrapToken(bootstrap), "")
+	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete user status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	if rec := env.do(t, http.MethodGet, "/api/access/users/"+tempUser.ID, bootstrapToken(bootstrap), ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted user status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	lastAdminDelete := env.do(t, http.MethodDelete, "/api/access/users/"+alice.ID, bootstrapToken(bootstrap), "")
+	if lastAdminDelete.Code != http.StatusConflict {
+		t.Fatalf("delete last admin status=%d body=%s", lastAdminDelete.Code, lastAdminDelete.Body.String())
+	}
+	lastAdminDeleteBody := decodeMap(t, lastAdminDelete)
+	if code, _ := lastAdminDeleteBody["code"].(string); code != "last_admin_protected" && code != "last_administrator_protected" {
+		t.Fatalf("delete last admin code=%q body=%s", code, lastAdminDelete.Body.String())
 	}
 
 	roles := env.do(t, http.MethodPut, "/api/access/users/"+ops.ID, bootstrapToken(bootstrap), `{"role_ids":["readonly"]}`)

@@ -3,12 +3,9 @@
 package config
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 )
 
 func requiredTokens(t *testing.T) {
@@ -70,45 +67,13 @@ func TestLoadFromEnvSupportsLegacyAliases(t *testing.T) {
 	}
 }
 
-type stubCloudflareLookup struct{}
-
-func (stubCloudflareLookup) ResolveToken(context.Context, string) (string, error) {
-	return "", pluginhost.ErrMappingMiss
-}
-
-func TestLoadFromEnvEnablesCloudflareWhenPluginAvailableWithoutToken(t *testing.T) {
-	pluginhost.SetCloudflareDNSLookup(stubCloudflareLookup{})
-	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
-	requiredTokens(t)
-	t.Setenv("ACME_DNS_PROVIDER", "cf")
-	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
-	t.Setenv("CF_DNS_API_TOKEN", "")
-	t.Setenv("CF_TOKEN", "")
-	t.Setenv("CF_Token", "")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.ACMEDNSProvider != "cf" {
-		t.Fatalf("ACMEDNSProvider = %q, want cf", cfg.ACMEDNSProvider)
-	}
-	if !cfg.ManagedDNSCertificatesEnabled || !cfg.DDNS.Enabled {
-		t.Fatalf("plugin-only enablement = certs %v ddns %v, want true true", cfg.ManagedDNSCertificatesEnabled, cfg.DDNS.Enabled)
-	}
-	if cfg.DDNS.Token != "" {
-		t.Fatalf("DDNS.Token = %q, want empty env fallback", cfg.DDNS.Token)
-	}
-}
-
-func TestManagedCloudflareDNSReadyRechecksInstalledPlugin(t *testing.T) {
+func TestCloudflareReadinessRequiresConfiguredToken(t *testing.T) {
 	cfg := Config{ACMEDNSProvider: "cf"}
 	if cfg.ManagedCloudflareDNSReady() || cfg.DDNSReady() {
-		t.Fatal("ready flags true without token or plugin")
+		t.Fatal("ready flags true without configured credentials")
 	}
-	pluginhost.SetCloudflareDNSLookup(stubCloudflareLookup{})
-	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+	cfg.DDNS.Token = "configured-token"
 	if !cfg.ManagedCloudflareDNSReady() || !cfg.DDNSReady() {
-		t.Fatal("ready flags false after plugin install")
+		t.Fatal("ready flags false with configured credentials")
 	}
 }

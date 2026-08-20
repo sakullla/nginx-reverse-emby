@@ -180,7 +180,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 		options.AllowedExtensionPoints = []string{
 			"http.request", "http.response", "l4.accept", "policy.provider", "dns.provider",
 			pluginsdk.ExtensionHTTPBackendProvider,
-			"container.provider", "tunnel.provider", "ui.route",
+			"container.provider", "tunnel.provider", pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup,
 		}
 	}
 	if len(options.SupportedABIs) == 0 {

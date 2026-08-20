@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -151,7 +153,9 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 			// a package-level 404.
 			return MarketplaceCatalog{Source: source}, nil
 		}
-		return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
+		catalog := MarketplaceCatalog{Source: source, Snapshot: snapshot}
+		s.projectCatalogDisplayNames(ctx, &catalog)
+		return catalog, nil
 	}
 	source, err := s.Source(ctx, sourceID)
 	if err != nil {
@@ -172,7 +176,177 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 	if source.ConfigRevision != latest.ConfigRevision || source.CurrentSnapshot != latest.CurrentSnapshot || source.RefKind != latest.RefKind || source.RefName != latest.RefName || !strings.EqualFold(source.CurrentResolvedOID, latest.CurrentResolvedOID) || snapshot.ID != latest.CurrentSnapshot || snapshot.SourceRevision != latest.ConfigRevision || snapshot.RefKind != latest.RefKind || snapshot.RefName != latest.RefName || !strings.EqualFold(snapshot.Commit, latest.CurrentResolvedOID) {
 		return MarketplaceCatalog{}, storage.ErrMarketplaceCatalogStale
 	}
-	return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
+	catalog := MarketplaceCatalog{Source: source, Snapshot: snapshot}
+	s.projectCatalogDisplayNames(ctx, &catalog)
+	return catalog, nil
+}
+
+func (s *MarketplaceService) projectCatalogDisplayNames(ctx context.Context, catalog *MarketplaceCatalog) {
+	if catalog == nil {
+		return
+	}
+	projectCatalogDisplayNames(&catalog.Snapshot, s.pluginPackageNameSources(ctx, catalog.Snapshot), s.cacheRoot)
+}
+
+func (s *MarketplaceService) pluginPackageNameSources(ctx context.Context, snapshot marketplace.Snapshot) []storage.PluginPackageRow {
+	if lister, ok := s.store.(interface {
+		ListPluginPackages(context.Context) ([]storage.PluginPackageRow, error)
+	}); ok {
+		rows, err := lister.ListPluginPackages(ctx)
+		if err != nil {
+			return nil
+		}
+		return rows
+	}
+	getter, ok := s.store.(interface {
+		GetPluginPackage(context.Context, string) (storage.PluginPackageRow, bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	rows := make([]storage.PluginPackageRow, 0)
+	add := func(digest string) {
+		digest = strings.ToLower(strings.TrimSpace(digest))
+		if digest == "" {
+			return
+		}
+		if _, exists := seen[digest]; exists {
+			return
+		}
+		seen[digest] = struct{}{}
+		row, found, err := getter.GetPluginPackage(ctx, digest)
+		if err != nil || !found {
+			return
+		}
+		rows = append(rows, row)
+	}
+	for _, entry := range snapshot.Entries {
+		add(entry.PackageSHA256)
+	}
+	if snapshot.DirectPlugin != nil {
+		add(snapshot.DirectPlugin.PackageSHA256)
+	}
+	return rows
+}
+
+func projectCatalogDisplayNames(snapshot *marketplace.Snapshot, packages []storage.PluginPackageRow, cacheRoot string) {
+	if snapshot == nil {
+		return
+	}
+	names := pluginPackageDisplayNames(packages)
+	for index := range snapshot.Entries {
+		if name := catalogEntryDisplayName(snapshot.Entries[index].Name, snapshot.Entries[index].ID, snapshot.Entries[index].Version, snapshot.Entries[index].PackageSHA256, names, cacheRoot); name != "" {
+			snapshot.Entries[index].Name = name
+		}
+	}
+	if snapshot.DirectPlugin == nil {
+		return
+	}
+	if name := catalogEntryDisplayName(snapshot.DirectPlugin.Name, snapshot.DirectPlugin.ID, snapshot.DirectPlugin.Version, snapshot.DirectPlugin.PackageSHA256, names, cacheRoot); name != "" {
+		snapshot.DirectPlugin.Name = name
+	}
+}
+
+func pluginPackageDisplayNames(packages []storage.PluginPackageRow) map[string]string {
+	names := make(map[string]string, len(packages)*3)
+	for _, row := range packages {
+		name := pluginPackageManifestName(row.ManifestJSON)
+		if name == "" {
+			name = pluginYAMLDisplayName(row.CachePath)
+		}
+		if name == "" {
+			continue
+		}
+		if digest := strings.ToLower(strings.TrimSpace(row.Digest)); digest != "" {
+			names["digest:"+digest] = name
+		}
+		pluginID := strings.TrimSpace(row.PluginID)
+		if pluginID == "" {
+			continue
+		}
+		names["id:"+pluginID+"\x00"+strings.TrimSpace(row.Version)] = name
+		if _, exists := names["id:"+pluginID]; !exists {
+			names["id:"+pluginID] = name
+		}
+	}
+	return names
+}
+
+func catalogEntryDisplayName(current, pluginID, version, digest string, names map[string]string, cacheRoot string) string {
+	if name := strings.TrimSpace(current); name != "" {
+		return name
+	}
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if digest != "" {
+		if name := strings.TrimSpace(names["digest:"+digest]); name != "" {
+			return name
+		}
+		if name := pluginYAMLDisplayNameFromCache(cacheRoot, digest); name != "" {
+			return name
+		}
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return ""
+	}
+	if name := strings.TrimSpace(names["id:"+pluginID+"\x00"+strings.TrimSpace(version)]); name != "" {
+		return name
+	}
+	return strings.TrimSpace(names["id:"+pluginID])
+}
+
+func pluginPackageManifestName(manifestJSON string) string {
+	var manifest struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(manifestJSON), &manifest); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(manifest.Name)
+}
+
+func pluginYAMLDisplayNameFromCache(cacheRoot, digest string) string {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if strings.TrimSpace(cacheRoot) == "" || digest == "" {
+		return ""
+	}
+	if path, err := marketplace.CachePath(cacheRoot, digest); err == nil {
+		if name := pluginYAMLDisplayName(path); name != "" {
+			return name
+		}
+	}
+	entries, err := os.ReadDir(cacheRoot)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if name := pluginYAMLDisplayName(filepath.Join(cacheRoot, entry.Name(), digest)); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func pluginYAMLDisplayName(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(root, "plugin.yaml"))
+	if err != nil {
+		return ""
+	}
+	var manifest struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(manifest.Name)
 }
 
 func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remoteURL, branchName, credentialRef string, interval time.Duration, signer marketplace.SourceSigner) (marketplace.Source, error) {

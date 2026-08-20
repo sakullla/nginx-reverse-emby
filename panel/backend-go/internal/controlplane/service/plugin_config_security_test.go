@@ -124,6 +124,47 @@ func TestPluginConfigureInjectsHostInjectedKeysThenValidates(t *testing.T) {
 	assertInjectedGenerationMatchesLifecycle(t, fixture, instance.ID, generation)
 }
 
+func TestPluginApplyRuntimeGenerationOverridesOnlyDeclaredHostFields(t *testing.T) {
+	t.Parallel()
+	topSchema, err := plugins.DecodeConfigSchema([]byte(hostInjectedConfigSchema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	topRaw := json.RawMessage(`{"mode":"strict","generation":"stored-generation","secret_ref":"secret-ref","resource_group_ref":"resource-group/main"}`)
+	topUpdated, err := pluginApplyRuntimeGeneration(topSchema, topRaw, "runtime-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(topUpdated, &top); err != nil {
+		t.Fatal(err)
+	}
+	if top["generation"] != "runtime-generation" || top["resource_group_ref"] != "resource-group/main" || top["secret_ref"] != "secret-ref" {
+		t.Fatalf("top-level runtime generation override changed unrelated fields: %+v", top)
+	}
+
+	nestedSchema, err := plugins.DecodeConfigSchema([]byte(nestedHostInjectedConfigSchema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedRaw := json.RawMessage(`{"apps":[{"id":"host-id","image":"nginx:latest","rule_ref":"rule-1","auto_update":true,"generation":"stored-generation","secret_refs":[]}]}`)
+	nestedUpdated, err := pluginApplyRuntimeGeneration(nestedSchema, nestedRaw, "runtime-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(nestedUpdated, &got); err != nil {
+		t.Fatal(err)
+	}
+	app, nested := pluginHostInjectedApp(t, got)
+	if nested != "runtime-generation" {
+		t.Fatalf("runtime generation was not applied recursively: %+v", got)
+	}
+	if app["id"] != "host-id" || app["image"] != "nginx:latest" {
+		t.Fatalf("unrelated host and user fields changed: %+v", app)
+	}
+}
+
 func TestPluginConfigureDoesNotGuessUnmarkedRequiredNames(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginHostInjectedFixture(t, "official.host-unmarked", unmarkedGenerationSchema, false)

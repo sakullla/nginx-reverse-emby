@@ -11,6 +11,15 @@ vi.mock('../hooks/usePluginResourceGroups', () => ({
   usePluginResourceGroups: () => ({ groups, loading, error })
 }))
 
+vi.mock('../components/base/BaseModal.vue', () => ({
+  default: {
+    name: 'BaseModal',
+    props: ['modelValue', 'title', 'subtitle', 'showFooter'],
+    emits: ['update:modelValue'],
+    template: '<div v-if="modelValue" class="modal-stub"><h3>{{ title }}</h3><slot /><slot name="footer" /></div>'
+  }
+}))
+
 describe('ResourceGroupsPage', () => {
   beforeEach(() => {
     groups.value = []
@@ -44,7 +53,7 @@ describe('ResourceGroupsPage', () => {
     const manage = page.find('a[href="/panel-api/plugins/cloudflare-dns/"]')
     expect(manage.exists()).toBe(true)
     await page.find('.resource-group-card').trigger('click')
-    expect(page.text()).toContain('用户绑定尚未接入')
+    expect(page.text()).toContain('资源组管理')
     page.unmount()
   })
 

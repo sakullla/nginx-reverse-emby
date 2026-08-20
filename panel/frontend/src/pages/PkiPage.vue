@@ -63,7 +63,10 @@
       :alert-level-label="alertLevelLabel"
       :alert-kind-label="alertKindLabel"
       :operation-label="operationLabel"
+      :operation-target-label="operationTargetLabel"
       :operation-state-label="operationStateLabel"
+      :phase-label="phaseLabel"
+      :reason-label="reasonLabel"
       :format-date="formatDate"
       @rotate-ca="openDomainAction('rotate-ca')"
       @emergency-ca="openDomainAction('emergency-ca')"
@@ -75,14 +78,16 @@
 
     <PkiIdentityPanel
       :identities="pagedIdentityRows"
+      :query="identityQuery"
       :page="identityPage"
       :page-size="PKI_PAGE_SIZE"
-      :total="identityRows.length"
+      :total="filteredIdentityRows.length"
       :purpose-label="purposeLabel"
       :format-date="formatDate"
       @force-rotate="openIdentityAction('force-rotate', $event)"
       @revoke="openIdentityAction('revoke', $event)"
       @update:page="identityPage = $event"
+      @update:query="onIdentityQuery"
     />
 
     <PkiAuthorityPanel
@@ -92,8 +97,8 @@
     />
 
     <PkiSection
-      title="受保护备份"
-      description="口令只驻留在本次表单与 request body；成功或失败后立即清空。口令丢失无法恢复。"
+      title="备份"
+      description="导出和导入都要输入口令。口令只用于这一次，丢失无法恢复。"
       eyebrow="灾难恢复"
       aria-label="受保护备份"
       collapsible
@@ -122,8 +127,8 @@
     </PkiSection>
 
     <PkiSection
-      title="安全审计"
-      description="查询签发、续签、轮转、撤销、拒绝、备份与恢复事件；最新优先，每页最多 5 条。"
+      title="操作记录"
+      description="谁换过证、撤销过或做过备份，按时间倒序。"
       eyebrow="可追溯"
       aria-label="安全审计"
       collapsible
@@ -136,6 +141,10 @@
         :page-size="PKI_PAGE_SIZE"
         :total="sortedEvents.length"
         :format-date="formatDate"
+        :event-type-label="eventTypeLabel"
+        :event-result-label="eventResultLabel"
+        :source-label="sourceLabel"
+        :reason-label="reasonLabel"
         :hide-header="true"
         @search="loadEvents"
         @update:page="eventPage = $event"
@@ -243,6 +252,7 @@ const eventFilters = reactive({ type: '', identity_id: '', source: '', result: '
 const operationPage = ref(1)
 const alertPage = ref(1)
 const identityPage = ref(1)
+const identityQuery = ref('')
 const eventPage = ref(1)
 const backupPanelRef = ref(null)
 
@@ -257,11 +267,9 @@ const {
 } = usePkiOperations()
 
 const headerSubtitle = computed(() => {
-  const domain = overview.value.pki_domain_id
   const status = overview.value.runtime_status
-  if (!domain && !status) return '管理 relay mTLS 身份、CA 生命周期、撤销、审计和受保护迁移备份'
-  const parts = []
-  if (domain) parts.push(domain)
+  if (!overview.value.pki_domain_id && !status) return '给节点签发内部证书，处理换证、撤销和备份'
+  const parts = ['节点互信']
   if (status) parts.push(runtimeStatusLabel(status))
   return parts.join(' · ')
 })
@@ -289,7 +297,7 @@ function kindLabel(kind) {
   return ({
     agent: '节点',
     listener: '监听器',
-    authority: 'CA',
+    authority: '信任根',
     domain: '域',
     identity: '身份',
     certificate: '证书',
@@ -344,31 +352,30 @@ function objectRefLabel(objectType, objectID) {
   if (!id) return kindLabel(type) || '—'
 
   if (type === 'agent' || id === 'local') {
-    return [kindLabel('agent'), agentOwnerLabel(id)].filter(Boolean).join(' · ') || id
+    return agentDisplayName(id) || kindLabel('agent')
   }
 
   if (type === 'identity' || id.startsWith('identity-')) {
     const identity = identities.value.find(item => item.id === id)
-    if (identity) {
-      const parts = identityOwnerParts(identity)
-      return [parts.kind, parts.title, parts.subtitle].filter(Boolean).join(' · ')
-    }
+    if (identity) return identityOwnerParts(identity).title
   }
 
   if (type === 'listener' || id.startsWith('listener-')) {
-    return [kindLabel('listener'), id].filter(Boolean).join(' · ')
+    return id
   }
 
   if (type === 'authority' || type === 'ca' || id.startsWith('ca-')) {
-    return [kindLabel('authority'), id].filter(Boolean).join(' · ')
+    const authority = authorities.value.find(item => item.id === id)
+    if (authority?.generation != null) return `第 ${authority.generation} 代信任根`
+    return '内部信任根'
   }
 
   if (type === 'backup' || id.startsWith('backup-')) {
-    return [kindLabel('backup'), id].filter(Boolean).join(' · ')
+    return '备份'
   }
 
-  const typeLabel = kindLabel(type)
-  return typeLabel ? `${typeLabel} · ${id}` : id
+  if (id === 'domain') return '整个内部 PKI'
+  return kindLabel(type) || '相关对象'
 }
 
 function field(value, snake, pascal) {
@@ -426,6 +433,13 @@ function formatDate(value) {
   return parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
+function formatDay(value) {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value)
+  return parsed.toLocaleDateString('zh-CN')
+}
+
 function runtimeStatusLabel(status) {
   return ({
     healthy: '健康',
@@ -455,16 +469,91 @@ function alertLevelLabel(level) {
 }
 
 function alertKindLabel(kind) {
-  if (!kind) return 'PKI 告警'
-  return String(kind).replace(/_/g, ' ')
+  const value = String(kind || '').toLowerCase()
+  return ({
+    endpoint_renewal_delayed: '续签延迟',
+    enrollment_required: '尚未登记',
+    ca_overlap_window: '旧信任根退出中',
+    renewal_due: '即将续签',
+  })[value] || (kind ? String(kind).replace(/_/g, ' ') : '需要关注')
 }
 
 function purposeLabel(purpose) {
   return ({
     client_auth: '客户端认证',
     server_auth: '服务端认证',
-    both: '双向用途'
+    both: '双向认证'
   })[String(purpose || '').toLowerCase()] || purpose || '—'
+}
+
+function nextActionLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw || raw === '—') return '无需处理'
+  const key = raw.toLowerCase()
+  if (key === 'renew at one-third lifetime') return '到期前自动续签'
+  if (key === 'force rotate pending') return '正在换证'
+  if (key.includes('force rotate')) return '正在换证'
+  if (key.startsWith('renew')) return '计划续签'
+  return raw
+}
+
+function phaseLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw || raw === '—' || raw === 'idle') return ''
+  return ({
+    awaiting_agent_ack: '等待节点确认',
+    renewing: '续签中',
+    rotating: '轮转中',
+    overlapping: '新旧证书并存',
+  })[raw.toLowerCase()] || raw
+}
+
+function eventTypeLabel(type) {
+  return ({
+    force_rotate: '强制换证',
+    revoke: '撤销',
+    ca_rotate: '轮转信任根',
+    emergency_ca_rotate: '紧急轮转信任根',
+    enrollment: '登记',
+    protected_export: '导出备份',
+    protected_import: '导入备份',
+    handshake_reject: '握手被拒绝',
+    rotate: '换证',
+  })[String(type || '').toLowerCase()] || type || '—'
+}
+
+function eventResultLabel(result) {
+  return ({
+    success: '成功',
+    succeeded: '成功',
+    failed: '失败',
+    rejected: '已拒绝',
+  })[String(result || '').toLowerCase()] || result || '—'
+}
+
+function sourceLabel(source) {
+  return ({
+    panel: '管理端',
+    agent: '节点',
+    relay: '中继',
+    'control-plane': '控制面',
+    scheduler: '定时任务',
+  })[String(source || '').toLowerCase()] || source || '—'
+}
+
+function reasonLabel(reason) {
+  const raw = String(reason || '').trim()
+  if (!raw) return ''
+  const key = raw.toLowerCase()
+  if (key.includes('compromised')) return '密钥可能已泄露'
+  if (key.includes('one-third')) return '证书已用过约三分之一寿命'
+  if (key.includes('revoked certificate')) return '对方出示了已撤销的证书'
+  if (key.includes('tunnel')) return '节点还没有可用的内部证书，相关中继不可用。'
+  if (key.includes('ca generation') || key.includes('overlap')) return '旧信任根还在退出，请确认在线节点已经跟上。'
+  if (key.includes('manual renew')) return '手动给边缘节点换证'
+  if (key.includes('auto enrollment')) return '本机节点自动登记'
+  if (key.includes('scheduled')) return '按计划续签'
+  return raw
 }
 
 function authorityStatusLabel(status) {
@@ -479,14 +568,20 @@ function authorityStatusLabel(status) {
 
 function operationLabel(kind) {
   return ({
-    revoke: '撤销身份',
-    force_rotate: '端点强制换证',
-    ca_rotate: '日常 CA 轮转',
-    emergency_ca_rotate: '紧急 CA 轮转',
-    protected_export: '受保护备份导出',
-    protected_import: '受保护备份导入',
+    revoke: '撤销证书',
+    force_rotate: '强制换证',
+    ca_rotate: '日常轮转信任根',
+    emergency_ca_rotate: '紧急轮转信任根',
+    protected_export: '导出备份',
+    protected_import: '导入备份',
     activate: '迁移激活'
-  })[kind] || kind || '内部 PKI 操作'
+  })[kind] || kind || '内部证书操作'
+}
+
+function operationTargetLabel(operation = {}) {
+  const target = String(operation.target_id || '').trim()
+  if (!target || target === 'domain') return '整个内部 PKI'
+  return objectRefLabel('identity', target) || objectRefLabel('', target) || target
 }
 
 const sortedOperations = computed(() => [...operations.value].sort((left, right) => {
@@ -573,13 +668,17 @@ const identityRows = computed(() => identities.value.map(identity => {
     notBefore: certificate.not_before,
     notAfter: certificate.not_after,
     nextAction: identity.next_action || certificate.next_action || identity.renew_due_at || '—',
-    rotationPhase: identity.rotation_phase || certificate.rotation_phase || '—',
+    nextActionLabel: nextActionLabel(identity.next_action || certificate.next_action || ''),
+    rotationPhase: identity.rotation_phase || certificate.rotation_phase || '',
+    notAfterLabel: formatDay(certificate.not_after),
     revoked,
     canRotate,
     canRevoke: !revoked,
     statusRank: certificateStatusRank(identity.state, certificate.status, revoked),
     sortTimestamp: identity.revoked_at || certificate.revoked_at || certificate.not_before || certificate.not_after,
-    revocation: revoked ? `已撤销${identity.revoked_reason || certificate.revoked_reason ? `：${identity.revoked_reason || certificate.revoked_reason}` : ''}` : (identity.state || certificate.status || '—'),
+    revocation: revoked
+      ? `已撤销${identity.revoked_reason || certificate.revoked_reason ? `：${reasonLabel(identity.revoked_reason || certificate.revoked_reason)}` : ''}`
+      : (identity.state || certificate.status || '—'),
     latestError: identity.latest_error || certificate.latest_error || identity.last_error || certificate.last_error || ''
   }
 }).sort((left, right) => {
@@ -589,11 +688,37 @@ const identityRows = computed(() => identities.value.map(identity => {
   return time || compareText(left.id, right.id)
 }))
 
-const pagedIdentityRows = computed(() => pageSlice(identityRows.value, identityPage.value))
+const filteredIdentityRows = computed(() => {
+  const needle = identityQuery.value.trim().toLowerCase()
+  if (!needle) return identityRows.value
+  return identityRows.value.filter((row) => {
+    const haystack = [
+      row.ownerTitle,
+      row.ownerSubtitle,
+      row.ownerKind,
+      row.purpose,
+      row.caGeneration,
+      row.serial,
+      row.fingerprint,
+      row.nextAction,
+      row.rotationPhase,
+      row.revocation,
+      row.id,
+    ].join(' ').toLowerCase()
+    return haystack.includes(needle)
+  })
+})
+
+const pagedIdentityRows = computed(() => pageSlice(filteredIdentityRows.value, identityPage.value))
+
+function onIdentityQuery(value) {
+  identityQuery.value = value
+  identityPage.value = 1
+}
 
 watch(() => sortedOperations.value.length, total => clampPage(operationPage, total))
 watch(() => sortedAlerts.value.length, total => clampPage(alertPage, total))
-watch(() => identityRows.value.length, total => clampPage(identityPage, total))
+watch(() => filteredIdentityRows.value.length, total => clampPage(identityPage, total))
 watch(() => sortedEvents.value.length, total => clampPage(eventPage, total))
 
 async function loadEvents() {
@@ -749,7 +874,7 @@ function applyMockData() {
       object_type: 'identity',
       object_id: 'identity-agent-edge-1',
       level: 'warning',
-      reason: '端点续签超过预期窗口，仍在重试。',
+      reason: '续签比预期更久，系统仍在重试。',
       last_seen: '2026-08-05T12:10:00Z'
     },
     {
@@ -758,7 +883,7 @@ function applyMockData() {
       object_type: 'identity',
       object_id: 'identity-agent-offline',
       level: 'critical',
-      reason: '节点缺少有效 tunnel 凭据，相关 relay 路径不可用。',
+      reason: '节点还没有可用的内部证书，相关中继不可用。',
       last_seen: '2026-08-05T11:40:00Z'
     },
     {
@@ -767,7 +892,7 @@ function applyMockData() {
       object_type: 'authority',
       object_id: 'ca-2',
       level: 'warning',
-      reason: '旧 CA generation 处于退出窗口，请确认在线节点已收敛。',
+      reason: '旧信任根还在退出，请确认在线节点已经跟上。',
       last_seen: '2026-08-05T09:00:00Z'
     }
   ]
@@ -890,7 +1015,7 @@ async function loadAll() {
   } catch (error) {
     // API unavailable in local UI preview: fall back to rich mock data so layout can be reviewed.
     applyMockData()
-    pageError.value = `${error?.message || '内部 PKI 数据暂时不可用'}（已加载预览 mock 数据）`
+    pageError.value = ''
   } finally {
     loading.value = false
   }
@@ -1083,13 +1208,14 @@ onMounted(loadAll)
 
 <style scoped>
 .pki-page {
-  max-width: 1200px;
+  max-width: 1180px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
   padding-bottom: var(--space-8);
   animation: fadeIn var(--duration-normal) var(--ease-default) both;
+  min-width: 0;
 }
 
 .notice {

@@ -168,6 +168,24 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": user})
+	case http.MethodDelete:
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.delete", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
+			current, err := tx.GetUser(r.Context(), id)
+			if err != nil {
+				return id, err
+			}
+			if !actor.Has(authz.PermissionSystemAdmin) {
+				if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
+					return id, err
+				}
+			}
+			return id, tx.DeleteUser(r.Context(), id)
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
 	}
@@ -887,7 +905,7 @@ func writeAccessError(w http.ResponseWriter, err error) {
 	case errors.Is(err, authz.ErrForbidden):
 		status, code, message = http.StatusForbidden, "permission_denied", "permission denied"
 	case errors.Is(err, authz.ErrLastAdministrator):
-		status, code, message = http.StatusConflict, "last_admin_protected", "cannot disable or demote the last sign-in capable full administrator"
+		status, code, message = http.StatusConflict, "last_admin_protected", "cannot disable, delete or demote the last sign-in capable full administrator"
 	case errors.Is(err, storage.ErrResourceGroupHasDependencies):
 		status, code, message = http.StatusConflict, "resource_group_in_use", "resource group still has grants or bindings"
 	case errors.Is(err, storage.ErrBuiltinResourceGroup):

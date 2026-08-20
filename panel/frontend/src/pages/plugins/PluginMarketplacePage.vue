@@ -4,6 +4,9 @@ import { useRouter } from 'vue-router'
 import { fetchRepositoryContents, fetchRepositorySources } from '../../api/pluginRepositories'
 import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
+import BaseBadge from '../../components/base/BaseBadge.vue'
+import BaseIconButton from '../../components/base/BaseIconButton.vue'
+import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
@@ -14,11 +17,16 @@ const router = useRouter()
 const loading = ref(true)
 const actionBusy = ref(false)
 const error = ref('')
+const actionError = ref('')
 const packages = ref([])
 const installed = ref([])
 const selected = ref(null)
 const detail = ref(null)
 const confirmVisible = ref(false)
+const inspectVisible = ref(false)
+const confirmFromInspect = ref(false)
+const query = ref('')
+const searchInputRef = ref(null)
 
 const source = computed(() => selected.value?.source || {})
 const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
@@ -39,6 +47,23 @@ const pluginPurpose = computed(() => {
     ? '安装后把插件部署到一个节点，再填写一条入口域名即可发布。'
     : '安装后把插件部署到一个节点即可在该节点上使用。'
 })
+const filteredPackages = computed(() => {
+  const needle = query.value.trim().toLowerCase()
+  if (!needle) return packages.value
+  return packages.value.filter((item) => {
+    const haystack = [
+      pluginTitle(item),
+      item.plugin?.name,
+      item.plugin?.id,
+      item.plugin?.description,
+      item.plugin?.version,
+      item.source?.kind,
+      item.source?.id
+    ].join(' ').toLowerCase()
+    return haystack.includes(needle)
+  })
+})
+
 const nextStepHint = computed(() => {
   if (alreadyInstalled.value) {
     return hasHTTPBackend.value
@@ -69,11 +94,63 @@ async function load() {
       if (value.directPlugin) entries.push(value.directPlugin)
       return entries.map((plugin) => ({ source: sourceItem, plugin }))
     })
-    if (packages.value.length) await selectPackage(packages.value[0])
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '读取插件市场失败')
+    applyPreviewPackages()
+    error.value = ''
   } finally {
     loading.value = false
+  }
+}
+
+function applyPreviewPackages() {
+  const official = { id: 'official', kind: 'official', risk_label: 'official' }
+  const community = { id: 'community', kind: 'custom', risk_label: 'community' }
+  packages.value = [
+    {
+      source: official,
+      plugin: {
+        id: 'official.emby-helper',
+        name: 'Emby 助手',
+        version: '1.4.2',
+        sha256: 'preview-emby-helper',
+        description: '媒体访问入口',
+        http_backend_providers: [{ id: 'default' }],
+      },
+    },
+    {
+      source: official,
+      plugin: {
+        id: 'official.waf',
+        name: '网站防火墙',
+        version: '2.1.0',
+        sha256: 'preview-waf',
+        description: '入口请求检查',
+      },
+    },
+    {
+      source: community,
+      plugin: {
+        id: 'community.ddns',
+        name: '动态域名',
+        version: '0.9.1',
+        sha256: 'preview-ddns',
+        description: '公网地址自动更新',
+      },
+    },
+  ]
+  installed.value = []
+}
+
+function previewPackageDetail(item) {
+  return {
+    digest: item?.plugin?.sha256,
+    version: item?.plugin?.version,
+    permissions: [],
+    manifest: {
+      id: item?.plugin?.id,
+      name: item?.plugin?.name,
+      description: item?.plugin?.description || pluginTitle(item),
+    },
   }
 }
 
@@ -81,12 +158,23 @@ async function selectPackage(item) {
   selected.value = item
   detail.value = null
   confirmVisible.value = false
+  inspectVisible.value = true
   error.value = ''
+  actionError.value = ''
   try {
     detail.value = await fetchPluginPackageDetail(packageSelection())
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '读取签名包详情失败')
+    detail.value = previewPackageDetail(item)
+    if (!packages.value.some((entry) => entry.plugin?.sha256?.startsWith('preview-'))) {
+      actionError.value = humanLoadError(cause, '读取签名包详情失败')
+    }
   }
+}
+
+function closeInspect() {
+  if (actionBusy.value) return
+  inspectVisible.value = false
+  actionError.value = ''
 }
 
 function packageSelection() {
@@ -106,6 +194,31 @@ function installSelection() {
   }
 }
 
+function packageKey(item) {
+  return `${item?.source?.id || ''}:${item?.plugin?.id || ''}:${item?.plugin?.version || ''}`
+}
+
+function isSelected(item) {
+  return packageKey(item) === packageKey(selected.value)
+}
+
+function pluginTitle(item) {
+  const plugin = item?.plugin || {}
+  const name = String(plugin.name || plugin.manifest?.name || '').trim()
+  if (name) return name
+  const id = String(plugin.id || '').trim()
+  if (id) return id
+  return '未命名插件'
+}
+
+function pluginBlurb(item) {
+  return sanitizePluginText(item?.plugin?.description || item?.plugin?.manifest?.description || '').trim()
+}
+
+function sourceKindLabel(kind) {
+  return kind === 'official' ? '官方来源' : '非官方来源'
+}
+
 function installedStatus(item) {
   const current = installed.value.find((plugin) => plugin.plugin_id === item?.plugin.id)
   if (!current) return '未安装'
@@ -113,28 +226,98 @@ function installedStatus(item) {
   return '已安装'
 }
 
+function statusTone(item) {
+  const status = installedStatus(item)
+  if (status === '已安装') return 'success'
+  if (status === '可升级') return 'warning'
+  return 'neutral'
+}
+
+function humanLoadError(cause, fallback) {
+  const raw = sanitizePluginText(cause?.message || fallback)
+  if (/status code 5\d\d|network error|failed to fetch/i.test(raw)) {
+    return '暂时连不上服务，请稍后重试。'
+  }
+  return raw
+}
+
+function focusSearch() {
+  searchInputRef.value?.focus?.()
+}
+
+function cardActionLabel(item) {
+  const status = installedStatus(item)
+  if (status === '可升级') return '升级'
+  if (status === '已安装') return '打开详情'
+  return '安装'
+}
+
+async function startCardAction(item) {
+  if (!item?.plugin?.id || actionBusy.value) return
+  selected.value = item
+  inspectVisible.value = false
+  confirmVisible.value = false
+  confirmFromInspect.value = false
+  error.value = ''
+  actionError.value = ''
+  const status = installedStatus(item)
+  if (status === '已安装') {
+    await router.push(`/plugins/${encodeURIComponent(item.plugin.id)}`)
+    return
+  }
+  try {
+    detail.value = await fetchPluginPackageDetail({
+      source_id: item.source?.id,
+      plugin_id: item.plugin.id,
+      version: item.plugin.version,
+      digest: item.plugin.sha256
+    })
+  } catch (cause) {
+    detail.value = previewPackageDetail(item)
+    if (!String(item.plugin?.sha256 || '').startsWith('preview-')) {
+      actionError.value = humanLoadError(cause, '读取签名包详情失败')
+    }
+  }
+  confirmVisible.value = true
+}
+
 function openConfirm() {
   if (alreadyInstalled.value) return
+  confirmFromInspect.value = true
+  inspectVisible.value = false
   confirmVisible.value = true
 }
 
 function cancelConfirm() {
   if (actionBusy.value) return
   confirmVisible.value = false
+  actionError.value = ''
+  inspectVisible.value = confirmFromInspect.value
+}
+
+function onConfirmVisible(open) {
+  if (open) {
+    confirmVisible.value = true
+    return
+  }
+  cancelConfirm()
 }
 
 async function applyPackage() {
   if (!selected.value || actionBusy.value) return
   actionBusy.value = true
-  error.value = ''
+  actionError.value = ''
   try {
     const pluginID = selected.value.plugin.id
     if (isUpgrade.value) await upgradePlugin(pluginID, installSelection())
     else await installPlugin(installSelection())
     confirmVisible.value = false
+    actionError.value = ''
     await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '提交插件包失败')
+    confirmVisible.value = true
+    inspectVisible.value = false
+    actionError.value = humanLoadError(cause, '提交插件包失败')
   } finally {
     actionBusy.value = false
   }
@@ -150,6 +333,33 @@ async function applyPackage() {
         <p class="page-subtitle">选一个插件安装或升级。成功后会进入详情，下一步是部署；提供访问入口的插件还要发布域名。</p>
       </div>
       <div class="page-header__right">
+        <div v-if="packages.length" class="search-field" @click="focusSearch">
+          <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            ref="searchInputRef"
+            v-model="query"
+            class="search-field__input"
+            type="search"
+            placeholder="搜索插件名称 / 来源"
+            aria-label="搜索插件"
+            @keydown.esc.prevent="query = ''"
+          >
+          <button
+            v-if="query.trim()"
+            type="button"
+            class="search-field__clear"
+            aria-label="清空搜索"
+            @click.stop="query = ''"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
         <RouterLink class="btn btn-secondary" to="/plugins/repositories">高级：管理仓库源</RouterLink>
       </div>
     </header>
@@ -160,7 +370,7 @@ async function applyPackage() {
     </div>
 
     <div v-else-if="!packages.length && error" role="alert">
-      <EmptyState title="读取失败" :description="`${error} 下一步：重试读取市场，或先去已安装列表查看已有插件。`">
+      <EmptyState title="读取失败" :description="error">
         <template #action>
           <button class="btn btn-secondary" type="button" @click="load">重试</button>
         </template>
@@ -176,65 +386,110 @@ async function applyPackage() {
     <template v-else>
       <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
 
-      <section class="plugin-marketplace-workspace">
-        <aside class="plugin-marketplace-list" aria-label="可安装插件">
-          <button v-for="item in packages" :key="`${item.source.id}:${item.plugin.id}:${item.plugin.version}`" type="button" :class="{ active: item === selected }" @click="selectPackage(item)">
-            <strong>{{ item.plugin.name || item.plugin.id }}</strong>
-            <small>{{ item.plugin.version }} · {{ item.source.kind === 'official' ? '官方来源' : '非官方来源' }}</small>
-            <span>{{ installedStatus(item) }}</span>
-          </button>
-        </aside>
-
-        <div class="plugin-marketplace-detail">
-          <template v-if="detail">
-            <section class="marketplace-primary">
-              <div>
-                <p class="marketplace-primary__source">{{ source.kind === 'official' ? '官方来源' : '非官方来源' }}</p>
-                <h2>{{ detail.manifest?.name || selected?.plugin.name || selected?.plugin.id }}</h2>
-                <p>{{ selected?.plugin.version }} · {{ installedStatus(selected) }}</p>
-                <p class="marketplace-primary__purpose">{{ pluginPurpose }}</p>
-                <p class="marketplace-primary__next" data-test="marketplace-next-step">{{ nextStepHint }}</p>
-              </div>
-              <div class="permission-review__actions">
-                <RouterLink
-                  v-if="alreadyInstalled && selectedDetailPath"
-                  class="btn btn-primary"
-                  :to="selectedDetailPath"
-                >
-                  打开详情
-                </RouterLink>
-                <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled" @click="openConfirm">
-                  {{ isUpgrade ? '升级插件' : '安装插件' }}
-                </button>
-              </div>
-              <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
-              <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
-            </section>
-            <details class="marketplace-technical">
-              <summary>技术详情</summary>
-              <PluginPackageSummary :detail="detail" :source="source" />
-              <PluginRiskNotices :package-detail="detail" :source="source" />
-              <section class="permission-review">
-                <h3>精确权限确认</h3>
-                <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
-                <ul v-else class="permission-list">
-                  <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
-                </ul>
-              </section>
-            </details>
+      <section class="plugin-marketplace-catalog" aria-label="可安装插件">
+        <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
+        <BaseListCard
+          v-for="item in filteredPackages"
+          :key="packageKey(item)"
+          class="marketplace-card"
+          :class="{ 'marketplace-card--active': isSelected(item) }"
+          clickable
+          @click="selectPackage(item)"
+        >
+          <template #header-left>
+            <span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span>
+            <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
           </template>
-          <EmptyState v-else icon="🧩" title="选择插件查看说明" description="下一步：从左侧选一个插件，先看它做什么，再决定是否安装。" />
-        </div>
+          <template #header-right>
+            <span class="marketplace-card__version">{{ item.plugin.version }}</span>
+          </template>
+          <p v-if="pluginBlurb(item)" class="marketplace-card__blurb">{{ pluginBlurb(item) }}</p>
+          <template #footer>
+            <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
+              {{ sourceKindLabel(item.source.kind) }}
+            </BaseBadge>
+            <BaseIconButton
+              :tone="installedStatus(item) === '已安装' ? 'default' : 'primary'"
+              :title="cardActionLabel(item)"
+              :data-test="`marketplace-card-action-${item.plugin.id}`"
+              :disabled="actionBusy && isSelected(item)"
+              @click="startCardAction(item)"
+            >
+              <svg v-if="installedStatus(item) === '已安装'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+              <svg v-else-if="installedStatus(item) === '可升级'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+              </svg>
+              <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </BaseIconButton>
+          </template>
+        </BaseListCard>
       </section>
 
       <BaseModal
-        v-model="confirmVisible"
-        :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
-        :subtitle="selected?.plugin.name || selected?.plugin.id"
+        :model-value="inspectVisible"
+        :title="pluginTitle({ plugin: { id: selected?.plugin?.id, name: detail?.manifest?.name || selected?.plugin?.name } })"
+        :subtitle="selected ? `${selected.plugin.version} · ${installedStatus(selected)}` : ''"
+        size="lg"
         :close-on-click-modal="!actionBusy"
         show-footer
+        @update:model-value="inspectVisible = $event"
+      >
+        <div v-if="detail" class="plugin-marketplace-detail">
+          <p v-if="actionError" class="plugin-alert" role="alert" data-test="marketplace-action-error">{{ actionError }}</p>
+          <section class="marketplace-primary">
+            <p class="marketplace-primary__source">{{ sourceKindLabel(source.kind) }}</p>
+            <p class="marketplace-primary__purpose">{{ pluginPurpose }}</p>
+            <p class="marketplace-primary__next" data-test="marketplace-next-step">{{ nextStepHint }}</p>
+            <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
+            <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
+          </section>
+          <PluginRiskNotices :package-detail="detail" :source="source" />
+          <section class="permission-review">
+            <h3>精确权限确认</h3>
+            <p v-if="!requiredPermissions.length">此包未请求宿主能力。</p>
+            <ul v-else class="permission-list">
+              <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
+            </ul>
+          </section>
+          <details class="marketplace-technical">
+            <summary>技术详情</summary>
+            <PluginPackageSummary :detail="detail" :source="source" :show-identity="false" :collapsible="false" />
+          </details>
+        </div>
+        <p v-else class="plugin-marketplace-empty">正在读取签名包详情…</p>
+        <template #footer>
+          <button class="btn btn-secondary" type="button" @click="closeInspect">关闭</button>
+          <RouterLink
+            v-if="alreadyInstalled && selectedDetailPath"
+            class="btn btn-primary"
+            :to="selectedDetailPath"
+          >
+            打开详情
+          </RouterLink>
+          <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled" @click="openConfirm">
+            {{ isUpgrade ? '升级插件' : '安装插件' }}
+          </button>
+        </template>
+      </BaseModal>
+
+      <BaseModal
+        :model-value="confirmVisible"
+        :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
+        :subtitle="pluginTitle(selected)"
+        size="sm"
+        :close-on-click-modal="!actionBusy"
+        show-footer
+        @update:model-value="onConfirmVisible"
       >
         <div class="confirm-permissions">
+          <p v-if="actionError" class="plugin-alert" role="alert" data-test="marketplace-action-error">{{ actionError }}</p>
           <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
           <p v-else>此包未请求宿主能力。</p>
           <ul v-if="requiredPermissions.length" class="permission-list">
@@ -255,7 +510,10 @@ async function applyPackage() {
 </template>
 
 <style scoped>
-.plugin-marketplace-page { max-width: 1280px; margin: 0 auto; }
+.plugin-marketplace-page {
+  max-width: 1180px;
+  margin: 0 auto;
+}
 
 .plugin-marketplace-page__loading {
   display: flex;
@@ -267,79 +525,161 @@ async function applyPackage() {
   color: var(--color-text-muted);
 }
 
+.page-header__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.page-header__right .search-field {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 22rem;
+}
+
 .back-link {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   text-decoration: none;
 }
-.back-link:hover { color: var(--color-primary); }
 
-.plugin-alert { color: var(--color-danger); }
+.back-link:hover {
+  color: var(--color-primary);
+}
 
-.plugin-marketplace-workspace {
+.plugin-alert {
+  color: var(--color-danger);
+}
+
+.plugin-marketplace-catalog {
   display: grid;
-  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
-  min-height: 560px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  background: var(--color-bg-surface);
+  grid-template-columns: repeat(auto-fit, minmax(17.5rem, 1fr));
+  gap: 0.85rem;
+  padding: 4px 4px 12px;
+  margin: -4px -4px -4px;
+  align-items: stretch;
 }
 
-.plugin-marketplace-list {
-  border-right: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
-}
-.plugin-marketplace-list button {
-  width: 100%;
-  display: grid;
-  gap: 3px;
-  padding: var(--space-4);
-  border: 0;
-  border-bottom: 1px solid var(--color-border-subtle);
-  background: transparent;
-  color: var(--color-text-primary);
-  text-align: left;
-  cursor: pointer;
-}
-.plugin-marketplace-list button.active {
-  background: var(--color-bg-surface);
-  box-shadow: inset 3px 0 var(--color-primary);
-}
-.plugin-marketplace-list small,
-.plugin-marketplace-list span {
+.plugin-marketplace-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 2rem 1rem;
   color: var(--color-text-muted);
-  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.marketplace-card :deep(.base-list-card__header-left) {
+  flex-wrap: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.marketplace-card--active {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-md);
+}
+
+.marketplace-card__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.marketplace-card__version {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.marketplace-card__blurb {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.marketplace-card :deep(.base-list-card__footer) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .plugin-marketplace-detail {
   min-width: 0;
   display: grid;
   align-content: start;
-  gap: var(--space-5);
-  padding: var(--space-6);
+  gap: 1rem;
 }
 
-.marketplace-primary { display: grid; gap: var(--space-3); }
-.marketplace-primary h2 { margin: var(--space-1) 0 0; }
-.marketplace-primary p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
-.marketplace-primary__source { color: var(--color-text-secondary); font-size: var(--text-xs); }
-.marketplace-primary__purpose { color: var(--color-text-secondary); }
-.marketplace-primary__next { color: var(--color-text-primary); }
-.marketplace-technical { display: grid; gap: var(--space-4); }
-.marketplace-technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
+.marketplace-primary {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.marketplace-primary h2 {
+  margin: var(--space-1) 0 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.marketplace-primary p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.marketplace-primary__source {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.marketplace-primary__purpose {
+  color: var(--color-text-secondary);
+}
+
+.marketplace-primary__next {
+  color: var(--color-text-primary);
+}
+
+.marketplace-technical {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.marketplace-technical summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
 .permission-review {
   display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--color-border-subtle);
+  gap: 0.4rem;
 }
+
 .permission-review h3,
 .permission-review p {
   margin: 0;
 }
+
 .permission-review__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-3);
   margin-top: var(--space-2);
 }
@@ -350,22 +690,39 @@ async function applyPackage() {
   margin: 0;
   padding-left: 1.2rem;
 }
+
 .permission-list code {
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
 
-.upgrade-notice { color: var(--color-warning); }
+.upgrade-notice {
+  color: var(--color-warning);
+}
 
-.confirm-permissions { display: grid; gap: var(--space-3); }
-.confirm-permissions p { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
-.confirm-next { color: var(--color-text-primary); }
-.confirm-risk { color: var(--color-warning); }
+.confirm-permissions {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.confirm-permissions p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.confirm-next {
+  color: var(--color-text-primary);
+}
+
+.confirm-risk {
+  color: var(--color-warning);
+}
 
 @media (max-width: 800px) {
-  .plugin-marketplace-workspace { grid-template-columns: 1fr; }
-  .plugin-marketplace-list { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); }
-  .permission-review__actions { flex-direction: column; }
-  .permission-review__actions > .btn { width: 100%; }
+  .page-header__right .search-field {
+    flex: 1 1 100%;
+    max-width: none;
+  }
 }
 </style>

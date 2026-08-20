@@ -185,6 +185,12 @@ func (s *PluginRuntimeHost) SetCapabilityRevoker(revoker PluginCapabilityGenerat
 	s.stateMu.Unlock()
 }
 
+func (s *PluginRuntimeHost) SetHostResourceDispatcher(dispatcher pluginhost.HostResourceDispatcher) {
+	if s != nil && s.host != nil {
+		s.host.SetHostResourceDispatcher(dispatcher)
+	}
+}
+
 func (s *PluginRuntimeHost) ActiveGeneration(instanceID string) (string, bool) {
 	instance, ok := s.host.Active(instanceID)
 	if !ok || instance == nil || instance.Generation == "" {
@@ -534,6 +540,13 @@ func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
 		if result, ok := s.terminalResult(instanceID, row.ActiveGeneration); ok && result.Terminated {
 			return s.persistTerminalResult(operationCtx, result, false)
 		}
+		_, activeInHost := s.host.Active(instanceID)
+		if stopped, stopErr := stopOrphanedPluginRuntime(operationCtx, s.repository, row, activeInHost); stopped {
+			if stopErr == nil {
+				s.revokeGeneration(instanceID, row.ActiveGeneration)
+			}
+			return stopErr
+		}
 	}
 	results, stopErr := s.host.StopWithResults(operationCtx, instanceID)
 	s.rememberTerminalResults(results)
@@ -696,7 +709,18 @@ func retryRuntimeFailurePersistence(ctx context.Context, repository PluginRuntim
 	return lastErr
 }
 
-func retryRuntimeStopPersistence(ctx context.Context, repository PluginRuntimeRepository, instanceID, generation string) error {
+type pluginRuntimeStopRepository interface {
+	StopPluginRuntime(context.Context, string, string) error
+}
+
+func stopOrphanedPluginRuntime(ctx context.Context, repository pluginRuntimeStopRepository, row storage.PluginRuntimeInstanceRow, activeInHost bool) (bool, error) {
+	if activeInHost || row.InstanceID == "" || row.ActiveGeneration == "" {
+		return false, nil
+	}
+	return true, retryRuntimeStopPersistence(ctx, repository, row.InstanceID, row.ActiveGeneration)
+}
+
+func retryRuntimeStopPersistence(ctx context.Context, repository pluginRuntimeStopRepository, instanceID, generation string) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if lastErr = repository.StopPluginRuntime(ctx, instanceID, generation); lastErr == nil {

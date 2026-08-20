@@ -1,114 +1,112 @@
 <template>
   <PkiSection
-    title="CA generations"
-    description="活动状态优先，仅显示最近 5 个内部信任根。轮转请使用上方「日常 / 紧急 CA 轮转」。"
+    title="内部信任根"
+    description="当前用来给节点签发证书的根。换根请用上方「日常 / 紧急」轮转。"
     eyebrow="信任根"
     aria-label="CA generations"
     collapsible
     storage-key="nre.pki.section.authority"
   >
-    <div class="authority-list">
-      <article
+    <div class="authority-catalog">
+      <BaseListCard
         v-for="authority in authorities"
         :key="authority.id"
         data-test="authority-row"
+        :clickable="false"
         class="authority-card"
+        :status="authorityStatusTone(authority.status)"
       >
-        <div class="authority-card__main">
-          <div class="authority-card__title">
-            <strong>Generation {{ authority.generation }}</strong>
-            <PkiStatusBadge :status="authority.status" :label="authorityStatusLabel(authority.status)" />
-          </div>
-          <span class="mono authority-card__fp" :title="authority.fingerprint_sha256 || ''">
-            {{ authority.fingerprint_sha256 || '—' }}
-          </span>
-        </div>
-        <div class="authority-card__meta">
-          <span class="authority-card__meta-label">有效期至</span>
-          <span>{{ formatDate(authority.not_after) }}</span>
-        </div>
-      </article>
+        <template #header-left>
+          <span class="authority-card__title">第 {{ authority.generation }} 代</span>
+          <PkiStatusBadge :status="authority.status" :label="authorityStatusLabel(authority.status)" />
+        </template>
+        <p class="authority-card__hint">
+          {{ authority.status === 'active' ? '正在给节点签发证书' : '已不再作为主信任根' }}
+        </p>
+        <template #footer>
+          <span class="authority-card__meta">有效至 {{ formatDay(authority.not_after) }}</span>
+        </template>
+      </BaseListCard>
 
       <div v-if="!authorities.length" class="pki-empty">
         <div class="pki-empty__icon" aria-hidden="true">∅</div>
-        <p>暂无 CA 记录。</p>
+        <p>还没有内部信任根。</p>
       </div>
     </div>
   </PkiSection>
 </template>
 
 <script setup>
+import BaseListCard from '../base/BaseListCard.vue'
 import PkiSection from './PkiSection.vue'
 import PkiStatusBadge from './PkiStatusBadge.vue'
 
-defineProps({
+const props = defineProps({
   authorities: { type: Array, default: () => [] },
   authorityStatusLabel: { type: Function, required: true },
   formatDate: { type: Function, required: true },
 })
+
+function authorityStatusTone(status) {
+  const value = String(status || '').toLowerCase()
+  if (value === 'active') return 'success'
+  if (value === 'revoked') return 'danger'
+  if (['retiring', 'prepared'].includes(value)) return 'warning'
+  return 'neutral'
+}
+
+function formatDay(value) {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return props.formatDate(value)
+  return parsed.toLocaleDateString('zh-CN')
+}
 </script>
 
 <style scoped>
-.authority-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.authority-catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16.5rem, 1fr));
+  gap: 0.75rem;
+  padding: 4px;
+  margin: -4px;
 }
 
-.authority-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-xl);
-  background: color-mix(in srgb, var(--color-bg-subtle) 35%, var(--color-bg-surface));
-}
-
-.authority-card__main {
+.authority-card :deep(.base-list-card__header-left) {
+  flex-wrap: nowrap;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  flex: 1;
+}
+
+.authority-card :deep(.base-list-card__footer) {
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .authority-card__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.authority-card__title strong {
-  color: var(--color-text-primary);
-}
-
-.authority-card__fp {
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: min(560px, 70vw);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+}
+
+.authority-card__hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
 }
 
 .authority-card__meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.15rem;
   color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-  flex-shrink: 0;
-}
-
-.authority-card__meta-label {
-  color: var(--color-text-tertiary);
-  font-weight: 600;
+  font-size: 0.75rem;
 }
 
 .pki-empty {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -134,18 +132,9 @@ defineProps({
   font-size: var(--text-sm);
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-@media (max-width: 680px) {
-  .authority-card {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .authority-card__meta {
-    align-items: flex-start;
+@media (max-width: 640px) {
+  .authority-catalog {
+    grid-template-columns: 1fr;
   }
 }
 </style>

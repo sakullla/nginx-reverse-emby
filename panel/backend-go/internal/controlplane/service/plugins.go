@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -326,6 +327,11 @@ type pluginLifecycleStore interface {
 
 type pluginRuntimeStatusStore interface {
 	ListPluginAgentRuntimeStatuses(context.Context, string) ([]storage.PluginAgentRuntimeStatusRow, error)
+}
+
+type pluginControlPlaneRuntimeRecoveryStore interface {
+	GetPluginOperation(context.Context, string) (storage.PluginOperationRow, bool, error)
+	GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error)
 }
 
 type pluginDependencyConsumerStore interface {
@@ -1107,8 +1113,19 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		declared = append(declared, strings.TrimSpace(permission.Name))
 	}
 	granted := make([]string, 0, len(grants))
+	grantSelectors := make(map[string][]string)
 	for _, grant := range grants {
 		granted = append(granted, grant.Name)
+		selector := strings.TrimSpace(grant.ResourceID)
+		if kind := strings.TrimSpace(grant.ResourceKind); kind != "" {
+			selector = kind + ":" + selector
+		}
+		if selector != "" {
+			grantSelectors[grant.Name] = append(grantSelectors[grant.Name], selector)
+		}
+	}
+	for permission := range grantSelectors {
+		sort.Strings(grantSelectors[permission])
 	}
 	sort.Strings(declared)
 	sort.Strings(granted)
@@ -1161,14 +1178,114 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 				if err != nil {
 					return nil, nil, err
 				}
+				materialized, err = pluginApplyRuntimeGeneration(configSchema, materialized, requestedGeneration)
+				if err != nil {
+					return nil, nil, err
+				}
 				exact, err := pluginSecretLogValues(materialized, handles)
 				return append([]byte(nil), materialized...), exact, err
 			}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
-			Deadline: time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
+			GrantSelectors: maps.Clone(grantSelectors),
+			Deadline:       time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
 			Restart: manifest.FailurePolicy.Restart, RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
+			Declaration: pluginhost.Declaration{PluginID: manifest.ID, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...), UIRouteID: manifest.UIRouteID, ResourceGroupID: manifest.ResourceGroupID, Metadata: maps.Clone(manifest.Metadata)},
 		})
 	}
 	return plan, nil
+}
+
+// RecoverControlPlaneRuntimes restores native control-plane plugin processes
+// from their durable active-generation fences after a host restart.
+func (s *PluginService) RecoverControlPlaneRuntimes(ctx context.Context, runtime PluginControlPlaneRuntime) error {
+	if s == nil || runtime == nil {
+		return errors.New("plugin runtime recovery service and runtime are required")
+	}
+	store, ok := s.store.(pluginControlPlaneRuntimeRecoveryStore)
+	if !ok {
+		return errors.New("plugin lifecycle store does not support runtime recovery")
+	}
+	installed, err := s.store.ListInstalledPlugins(ctx)
+	if err != nil {
+		return fmt.Errorf("list installed plugins for runtime recovery: %w", err)
+	}
+	candidates := make([]pluginhost.Candidate, 0)
+	var recoveryErrors []error
+	for _, plugin := range installed {
+		if plugin.DesiredLifecycle != "enabled" || plugin.HostScope != "control-plane" || plugin.RuntimeKind != "rpc-service" {
+			continue
+		}
+		instances, listErr := s.store.ListPluginInstances(ctx, plugin.PluginID)
+		if listErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("list plugin %s instances for runtime recovery: %w", plugin.PluginID, listErr))
+			continue
+		}
+		for _, instance := range instances {
+			if !instance.DesiredEnabled {
+				continue
+			}
+			active, found, readErr := store.GetPluginRuntime(ctx, instance.ID)
+			if readErr != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("read plugin runtime %s for recovery: %w", instance.ID, readErr))
+				continue
+			}
+			if !found || strings.TrimSpace(active.ActiveGeneration) == "" {
+				continue
+			}
+			operation, found, readErr := store.GetPluginOperation(ctx, active.ActiveOperationID)
+			if readErr != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("read plugin runtime %s operation for recovery: %w", instance.ID, readErr))
+				continue
+			}
+			if !found || operation.Status != "succeeded" {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("plugin runtime %s active operation is not a durable success", instance.ID))
+				continue
+			}
+			plan, planErr := s.controlPlaneRuntimePlan(ctx, operation)
+			if planErr != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("plan plugin runtime %s recovery: %w", instance.ID, planErr))
+				continue
+			}
+			candidate, selectErr := controlPlaneRuntimeRecoveryCandidate(active, plan.Candidates)
+			if selectErr != nil {
+				recoveryErrors = append(recoveryErrors, selectErr)
+				continue
+			}
+			if generation, activeInProcess := runtime.ActiveGeneration(instance.ID); activeInProcess && generation == candidate.Identity.Generation {
+				continue
+			}
+			candidates = append(candidates, candidate)
+		}
+	}
+	if len(candidates) == 0 {
+		return errors.Join(recoveryErrors...)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].InstanceID < candidates[j].InstanceID })
+	for _, candidate := range candidates {
+		if _, activateErr := runtime.ActivateBatch(ctx, []pluginhost.Candidate{candidate}); activateErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("restore control-plane plugin runtime %s: %w", candidate.InstanceID, activateErr))
+		}
+	}
+	return errors.Join(recoveryErrors...)
+}
+
+func controlPlaneRuntimeRecoveryCandidate(active storage.PluginRuntimeInstanceRow, candidates []pluginhost.Candidate) (pluginhost.Candidate, error) {
+	for _, candidate := range candidates {
+		if candidate.InstanceID != active.InstanceID {
+			continue
+		}
+		if active.HostScope != "control-plane" ||
+			candidate.Identity.PluginID != active.PluginID ||
+			!strings.EqualFold(candidate.Identity.Generation, active.ActiveGeneration) ||
+			!strings.EqualFold(candidate.Identity.PackageDigest, active.ActivePackageDigest) ||
+			!strings.EqualFold(candidate.Artifact.SHA256, active.ActiveArtifactDigest) ||
+			candidate.OperationID != active.ActiveOperationID ||
+			candidate.ResourceGroupID != active.ActiveResourceGroupID ||
+			candidate.Revision != active.ActiveRevision {
+			return pluginhost.Candidate{}, fmt.Errorf("plugin runtime %s durable active generation differs from its recovery projection", active.InstanceID)
+		}
+		return candidate, nil
+	}
+	return pluginhost.Candidate{}, fmt.Errorf("plugin runtime %s has no recoverable active candidate", active.InstanceID)
 }
 
 func controlPlaneRuntimeArtifactMatches(artifact storage.PluginArtifactRow, manifest plugins.Manifest) bool {

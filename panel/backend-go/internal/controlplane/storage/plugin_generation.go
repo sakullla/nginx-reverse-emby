@@ -232,7 +232,7 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 		Artifact:             PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
 		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: artifact.Path},
 		ExtensionPoints:      canonicalPluginGenerationStrings(manifest.ExtensionPoints),
-		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants)),
+		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants, manifest.ExtensionPoints)),
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
 		ConfigVersion:        configVersion, Config: canonicalConfig, Grants: append([]PluginGenerationGrant(nil), grants...), SecretHandles: secretHandles,
 		ResourceBudget: PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
@@ -247,12 +247,12 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	return generation, nil
 }
 
-func pluginGenerationRequiredFeatures(grants []PluginGenerationGrant) []string {
+func pluginGenerationRequiredFeatures(grants []PluginGenerationGrant, extensionPoints []string) []string {
 	scopes := make([]string, 0, len(grants))
 	for _, grant := range grants {
 		scopes = append(scopes, grant.Name)
 	}
-	return pluginsdk.RequiredRPCFeatures(scopes)
+	return pluginsdk.RequiredRPCFeaturesForExtensions(scopes, extensionPoints)
 }
 
 func splitPluginGrantSelector(selector string) (string, string) {

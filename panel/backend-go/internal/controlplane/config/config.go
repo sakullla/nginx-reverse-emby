@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 )
 
 const (
@@ -77,13 +75,10 @@ type Config struct {
 // upserts Cloudflare A/AAAA records from the IPv4/IPv6 addresses agents report
 // in their heartbeats.
 //
-// SECURITY (R7): Token is the environment-variable fallback only
-// (CLOUDFLARE_DNS_API_TOKEN & aliases). ACME and DDNS resolve the Token for
-// each involved domain through pluginhost.ResolveCloudflareDNSToken; a mapping
-// hit never mixes this value. It is never persisted to the database, never
+// SECURITY (R7): Token is sourced only from environment variables
+// (CLOUDFLARE_DNS_API_TOKEN & aliases). It is never persisted to the database, never
 // included in backups, never exposed via AgentSummary/API responses, and never
-// dispatched to agents. When neither a mapping nor this fallback is available,
-// that domain's operation fails.
+// dispatched to agents.
 type DDNSRuntimeConfig struct {
 	Enabled  bool
 	Token    string
@@ -93,22 +88,18 @@ type DDNSRuntimeConfig struct {
 	TTL      int
 }
 
-// ManagedCloudflareDNSReady is true when ACME DNS-01 may be attempted: the
-// provider is cf and either an environment Token or an installed plugin exists.
+// ManagedCloudflareDNSReady is true when ACME DNS-01 may be attempted with
+// explicitly configured Cloudflare credentials.
 func (c Config) ManagedCloudflareDNSReady() bool {
 	if c.ManagedDNSCertificatesEnabled {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(c.ACMEDNSProvider), "cf") && pluginhost.CloudflareDNSAvailable()
+	return strings.EqualFold(strings.TrimSpace(c.ACMEDNSProvider), "cf") && strings.TrimSpace(c.DDNS.Token) != ""
 }
 
-// DDNSReady is true when DDNS may attempt Cloudflare upserts. A specific
-// domain can still fail if that name has no mapping and no environment Token.
+// DDNSReady is true when DDNS may attempt Cloudflare upserts.
 func (c Config) DDNSReady() bool {
-	if c.DDNS.Enabled || strings.TrimSpace(c.DDNS.Token) != "" {
-		return true
-	}
-	return pluginhost.CloudflareDNSAvailable()
+	return c.DDNS.Enabled || strings.TrimSpace(c.DDNS.Token) != ""
 }
 
 type HTTPTransportConfig struct {
@@ -494,15 +485,13 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
-	cfToken := pluginhost.CloudflareDNSAPIToken()
-	pluginAvailable := pluginhost.CloudflareDNSAvailable()
+	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ACMEDNSProvider = acmeDNSProvider
-	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && (cfToken != "" || pluginAvailable)
+	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
 
-	// DDNS.Token is the env fallback snapshot. Enable when that fallback exists
-	// or the cloudflare-dns plugin can supply a mapping.
+	// DDNS.Token is an environment-only snapshot.
 	cfg.DDNS.Token = cfToken
-	cfg.DDNS.Enabled = cfToken != "" || pluginAvailable
+	cfg.DDNS.Enabled = cfToken != ""
 	cfg.DDNS.APIBase = strings.TrimSpace(firstEnv("NRE_DDNS_API_BASE", "DDNS_API_BASE"))
 	if cfg.DDNS.APIBase == "" {
 		cfg.DDNS.APIBase = "https://api.cloudflare.com/client/v4"

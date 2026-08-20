@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unsafe"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"golang.org/x/sys/unix"
 )
 
@@ -87,6 +88,13 @@ func backendChildEnvironmentForIsolation(environment []string, endpointFD, crede
 		case "NRE_PLUGIN_ENDPOINT":
 			if namespaces {
 				result[index] = key + "=unix:/run/nre-plugin/" + filepath.Base(guestEndpoint)
+			}
+		case pluginsdk.EnvPluginUIEndpoint, pluginsdk.EnvPluginHostEndpoint:
+			if namespaces {
+				_, address, ok := strings.Cut(entry, "=unix:")
+				if ok {
+					result[index] = key + "=unix:/run/nre-plugin/" + filepath.Base(address)
+				}
 			}
 		case "NRE_PLUGIN_COOKIE_FILE":
 			if namespaces {

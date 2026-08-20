@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"golang.org/x/sync/singleflight"
 )
 
 type Manager struct {
@@ -27,6 +28,7 @@ type Manager struct {
 	repository       Repository
 	now              func() time.Time
 	leaseTTL         time.Duration
+	packageDownloads singleflight.Group
 }
 
 func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository) (*Manager, error) {
@@ -89,6 +91,41 @@ func (m *Manager) AcquirePackage(ctx context.Context, source Source, entry plugi
 	if err != nil {
 		return "", err
 	}
+	key := source.ID + ":" + entry.PackageSHA256 + ":" + trust.Fingerprint
+	return m.coalescePackageAcquisition(ctx, key, func(acquireCtx context.Context) (string, error) {
+		return m.acquirePackage(acquireCtx, source, entry, trust, validator)
+	})
+}
+
+func (m *Manager) coalescePackageAcquisition(ctx context.Context, key string, acquire func(context.Context) (string, error)) (string, error) {
+	if ctx == nil || strings.TrimSpace(key) == "" || acquire == nil {
+		return "", errors.New("package acquisition context, key, and function are required")
+	}
+	timeout := m.leaseTTL
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	result := m.packageDownloads.DoChan(key, func() (any, error) {
+		acquireCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+		return acquire(acquireCtx)
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case completed := <-result:
+		if completed.Err != nil {
+			return "", completed.Err
+		}
+		path, ok := completed.Val.(string)
+		if !ok || strings.TrimSpace(path) == "" {
+			return "", errors.New("package acquisition returned an invalid cache path")
+		}
+		return path, nil
+	}
+}
+
+func (m *Manager) acquirePackage(ctx context.Context, source Source, entry plugins.MarketEntry, trust SignatureTrust, validator *plugins.Validator) (string, error) {
 	staging := filepath.Join(m.root, "package-staging", source.ID, randomID("package"))
 	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
 		return "", err
@@ -363,7 +400,9 @@ func applyPackageDisplayNames(entries []plugins.MarketEntry, packages []plugins.
 			entries[index].Name = name
 			continue
 		}
-		entries[index].Name = digests[strings.ToLower(entries[index].PackageSHA256)]
+		if name, ok := digests[strings.ToLower(entries[index].PackageSHA256)]; ok && name != "" {
+			entries[index].Name = name
+		}
 	}
 }
 

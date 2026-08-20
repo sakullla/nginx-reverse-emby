@@ -218,6 +218,7 @@ const navItems = computed(() => {
       type: 'group',
       label: accessGroup.label,
       icon: icons.users,
+      activePathPrefix: '/access',
       children: accessGroup.children.map((child) => ({
         label: child.label,
         to: child.path,
@@ -239,7 +240,10 @@ function navItemAriaLabel(item) {
   return item.title && item.title !== item.label ? `${item.label}，${item.title}` : item.label
 }
 function isGroupOpen(label) { return openGroups.value.has(label) }
-function isGroupActive(group) { return group.children.some(c => isChildActive(c)) }
+function isGroupActive(group) {
+  if (group.children.some((child) => isChildActive(child))) return true
+  return Boolean(group.activePathPrefix && route.path.startsWith(group.activePathPrefix))
+}
 
 function toggleGroup(label) {
   if (openGroups.value.has(label)) { openGroups.value.delete(label) } else { openGroups.value.add(label) }
@@ -270,6 +274,7 @@ onMounted(() => {
   openActiveGroups()
 })
 watch(() => route.path, openActiveGroups)
+watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 </script>
 
 <style scoped>

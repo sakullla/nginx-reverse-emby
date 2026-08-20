@@ -14,6 +14,7 @@ const {
   fetchUser,
   createUser,
   updateUser,
+  deleteUser,
   changePassword,
   resetUserPassword,
   fetchResourceGroups,
@@ -186,7 +187,22 @@ describe('authz user account contract', () => {
       role_ids: ['operator'],
       disabled: true
     })
-    expect(access.deleteUser).toBeUndefined()
+  })
+
+  it('deletes a user and surfaces last-administrator protection', async () => {
+    del.mockResolvedValueOnce({ data: { ok: true } })
+    await expect(deleteUser('usr/1')).resolves.toEqual({ ok: true })
+    expect(del).toHaveBeenCalledWith('/access/users/usr%2F1')
+
+    del.mockRejectedValueOnce(accessError({
+      code: 'last_admin_protected',
+      message: 'cannot disable, delete or demote the last sign-in capable full administrator',
+      details: { reason: 'last_admin' }
+    }))
+    await expect(deleteUser('usr-1')).rejects.toMatchObject({
+      code: 'last_admin_protected',
+      details: { reason: 'last_admin' }
+    })
   })
 
   it('propagates last-administrator protection without sending a delete', async () => {

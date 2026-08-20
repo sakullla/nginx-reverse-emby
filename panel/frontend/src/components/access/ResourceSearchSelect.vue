@@ -27,7 +27,8 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
   busy: { type: [Boolean, String], default: false },
-  targetGroupId: { type: String, default: '' }
+  targetGroupId: { type: String, default: '' },
+  showCurrentMembers: { type: Boolean, default: true }
 })
 
 const emit = defineEmits([
@@ -48,6 +49,7 @@ const fetchError = ref('')
 const fetchLoading = ref(false)
 const searched = ref(false)
 const selectedInternal = ref(null)
+const selectedKeys = ref([])
 const actionError = ref('')
 const confirmDialog = ref(null)
 const confirmDialogEl = ref(null)
@@ -60,6 +62,7 @@ const visibleGroups = computed(() => (Array.isArray(props.groups) ? props.groups
 const targetGroup = computed(() => groupById(props.targetGroupId) || (props.targetGroupId ? { id: props.targetGroupId } : null))
 
 const memberItems = computed(() => {
+  if (!props.showCurrentMembers) return []
   if (props.members != null) return flattenResources(props.members)
   const target = String(props.targetGroupId || '').trim()
   if (!target) return []
@@ -70,14 +73,28 @@ const searchResults = computed(() => {
   const source = props.resources != null ? flattenResources(props.resources) : fetched.value
   const kind = String(kindFilter.value || '').trim()
   const q = String(searchQuery.value || '').trim().toLowerCase()
+  const target = String(props.targetGroupId || '').trim()
   return source.filter((item) => {
+    if (target && groupIdOf(item) === target) return false
     if (kind && resourceKindOf(item) !== kind) return false
     if (!q) return true
     return resourceSearchText(item).includes(q)
   })
 })
 
+const selectedItems = computed(() => (
+  selectedKeys.value
+    .map((key) => searchResults.value.find((item) => resourceKey(item) === key))
+    .filter(Boolean)
+))
+const selectedCount = computed(() => selectedItems.value.length)
+const allDisplayedSelected = computed(() => (
+  searchResults.value.length > 0
+  && searchResults.value.every((item) => selectedKeys.value.includes(resourceKey(item)))
+))
+
 const selected = computed(() => {
+  if (selectedItems.value.length) return selectedItems.value.at(-1)
   const current = props.modelValue || selectedInternal.value
   if (!current) return null
   return searchResults.value.find((item) => sameResource(item, current))
@@ -100,7 +117,15 @@ watch(() => props.query, (value) => {
 })
 
 watch(() => props.targetGroupId, () => {
+  selectedKeys.value = []
+  selectedInternal.value = null
   if (shouldAutoLoad()) loadCatalog()
+})
+
+watch(searchResults, () => {
+  const valid = new Set(searchResults.value.map(resourceKey))
+  const next = selectedKeys.value.filter((key) => valid.has(key))
+  if (next.length !== selectedKeys.value.length) selectedKeys.value = next
 })
 
 onMounted(() => {
@@ -151,6 +176,10 @@ function groupIdOf(item) {
 
 function sameResource(left, right) {
   return resourceKindOf(left) === resourceKindOf(right) && resourceIdOf(left) === resourceIdOf(right)
+}
+
+function resourceKey(item) {
+  return `${resourceKindOf(item)}:${resourceIdOf(item)}`
 }
 
 function resourceSearchText(item) {
@@ -222,9 +251,18 @@ function retrySearch() {
   loadCatalog()
 }
 
+function humanCatalogError(message) {
+  const raw = String(message || '').trim()
+  if (/status code 5\d\d|network error|failed to fetch|502/i.test(raw)) {
+    return '暂时连不上服务，请稍后重试。'
+  }
+  return raw || '读取资源失败'
+}
+
 function onKindChange(value) {
   kindFilter.value = value
   emit('update:kind', value)
+  if (!props.disabled) loadCatalog()
 }
 
 function clearSearch() {
@@ -233,18 +271,44 @@ function clearSearch() {
   emit('update:query', '')
 }
 
-function selectResource(item) {
+function isChecked(item) {
+  return selectedKeys.value.includes(resourceKey(item))
+}
+
+function toggleResource(item) {
   if (props.disabled || isBusy.value) return
   const next = normalizeResource(item)
-  selectedInternal.value = next
-  emit('update:modelValue', next)
-  emit('select', next)
+  if (!next) return
+  const key = resourceKey(next)
+  selectedKeys.value = isChecked(next)
+    ? selectedKeys.value.filter((itemKey) => itemKey !== key)
+    : [...selectedKeys.value, key]
+  selectedInternal.value = selectedItems.value.at(-1) || null
+  emit('update:modelValue', selectedInternal.value)
+  emit('select', selectedInternal.value)
+  actionError.value = ''
+}
+
+function toggleAllResults() {
+  if (props.disabled || isBusy.value || !searchResults.value.length) return
+  if (allDisplayedSelected.value) {
+    selectedKeys.value = []
+    selectedInternal.value = null
+    emit('update:modelValue', null)
+    emit('select', null)
+    return
+  }
+  selectedKeys.value = searchResults.value.map(resourceKey)
+  selectedInternal.value = searchResults.value.at(-1)
+  emit('update:modelValue', selectedInternal.value)
+  emit('select', selectedInternal.value)
   actionError.value = ''
 }
 
 function requestMove() {
   if (!canWrite.value || isBusy.value) return
-  if (!selected.value) {
+  const items = selectedItems.value.length ? selectedItems.value : (selected.value ? [selected.value] : [])
+  if (!items.length) {
     actionError.value = '请先选择要移动的资源。'
     return
   }
@@ -253,18 +317,23 @@ function requestMove() {
     actionError.value = '请选择目标资源组。'
     return
   }
-  if (targetID === groupIdOf(selected.value)) {
-    actionError.value = '该资源已在当前资源组。'
+  const movable = items.filter((item) => groupIdOf(item) !== targetID)
+  if (!movable.length) {
+    actionError.value = '所选资源已在当前资源组。'
     return
   }
   actionError.value = ''
+  const message = movable.length === 1
+    ? `将把「${resourceLabel(movable[0])}」从「${groupLabel(groupIdOf(movable[0]))}」移动到「${groupLabel(targetID)}」。只改变所属资源组，不修改资源自身的业务配置。`
+    : `将把 ${movable.length} 项资源移动到「${groupLabel(targetID)}」。只改变所属资源组，不修改资源自身的业务配置。`
   openConfirm({
     kind: 'move',
     title: '确认移动资源',
     confirmText: '确认移动',
-    message: `将把「${resourceLabel(selected.value)}」从「${groupLabel(groupIdOf(selected.value))}」移动到「${groupLabel(targetID)}」。只改变所属资源组，不修改资源自身的业务配置。`,
+    message,
     targetGroupId: targetID,
-    resource: selected.value
+    resource: movable[0],
+    resources: movable
   })
 }
 
@@ -301,11 +370,18 @@ function acceptConfirm() {
   if (!dialog || confirmBusy.value) return
   const resource = dialog.resource
   if (dialog.kind === 'move') {
+    const resources = Array.isArray(dialog.resources) && dialog.resources.length ? dialog.resources : [resource]
     emit('move', {
       resource_kind: resourceKindOf(resource),
       resource_id: resourceIdOf(resource),
-      resource_group_id: dialog.targetGroupId
+      resource_group_id: dialog.targetGroupId,
+      resources: resources.map((item) => ({
+        resource_kind: resourceKindOf(item),
+        resource_id: resourceIdOf(item)
+      }))
     })
+    selectedKeys.value = []
+    selectedInternal.value = null
   } else {
     emit('unbind', {
       resource_kind: resourceKindOf(resource),
@@ -319,33 +395,48 @@ function acceptConfirm() {
 <template>
   <div class="resource-search-select" data-test="resource-search-select">
     <form class="resource-search-select__search" data-test="resource-search-form" @submit.prevent="submitSearch">
-      <label>
-        <span>资源类型</span>
-        <select
-          :value="kindFilter"
-          data-test="resource-kind"
+      <div class="resource-search-select__kinds" role="tablist" aria-label="资源类型">
+        <button
+          v-for="option in RESOURCE_KIND_OPTIONS"
+          :key="option.id || 'all'"
+          type="button"
+          class="resource-search-select__kind"
+          :class="{ 'resource-search-select__kind--active': kindFilter === option.id }"
           :disabled="disabled"
-          @change="onKindChange($event.target.value)"
+          @click="onKindChange(option.id)"
         >
-          <option v-for="option in RESOURCE_KIND_OPTIONS" :key="option.id || 'all'" :value="option.id">
-            {{ option.label }}
-          </option>
-        </select>
-      </label>
-      <label>
-        <span>搜索资源</span>
+          {{ option.label }}
+        </button>
+      </div>
+      <select
+        class="resource-search-select__kind-native"
+        :value="kindFilter"
+        data-test="resource-kind"
+        :disabled="disabled"
+        tabindex="-1"
+        aria-hidden="true"
+        @change="onKindChange($event.target.value)"
+      >
+        <option v-for="option in RESOURCE_KIND_OPTIONS" :key="option.id || 'all'" :value="option.id">
+          {{ option.label }}
+        </option>
+      </select>
+      <div class="search-field">
+        <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="M20 20l-3.5-3.5" />
+        </svg>
         <input
           v-model="searchQuery"
           data-test="resource-search"
           type="search"
-          placeholder="按类型、名称或上下文搜索"
+          placeholder="按名称或上下文搜索"
+          aria-label="搜索资源"
           :disabled="disabled"
           @keydown.esc.prevent="clearSearch"
         >
-      </label>
-      <button class="btn btn-secondary" type="submit" :disabled="disabled || catalogLoading">
-        {{ catalogLoading ? '搜索中…' : '搜索' }}
-      </button>
+        <button class="resource-search-select__sr-submit" type="submit" tabindex="-1">搜索</button>
+      </div>
     </form>
 
     <p v-if="actionError" class="resource-search-select__alert" role="alert">{{ actionError }}</p>
@@ -363,13 +454,17 @@ function acceptConfirm() {
           </span>
           <button
             v-if="canWrite"
-            class="btn btn-secondary"
+            class="resource-search-select__icon-btn"
             type="button"
             :data-test="unbindTestId(item)"
             :disabled="disabled || isBusy || groupIdOf(item) === DEFAULT_GROUP_ID"
+            title="解绑回默认组"
+            aria-label="解绑回默认组"
             @click="requestUnbind(item)"
           >
-            {{ busy === 'unbind' ? '解绑中…' : '解除绑定' }}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
           </button>
         </li>
       </ul>
@@ -377,46 +472,60 @@ function acceptConfirm() {
 
     <div v-if="catalogLoading" class="resource-search-select__status">正在搜索资源…</div>
     <div v-else-if="catalogError" class="resource-search-select__status" role="alert">
-      <p>{{ catalogError }}</p>
-      <button class="btn btn-secondary" type="button" data-test="resource-retry" :disabled="disabled" @click="retrySearch">
-        重试
-      </button>
+      <p>
+        {{ humanCatalogError(catalogError) }}
+        <button class="resource-search-select__retry" type="button" data-test="resource-retry" :disabled="disabled" @click="retrySearch">
+          重试
+        </button>
+      </p>
     </div>
     <p v-else-if="searched && !searchResults.length" class="resource-search-select__status">
-      没有匹配的资源
+      没有可移入的资源
     </p>
-    <ul v-else-if="searchResults.length" class="resource-search-select__list" role="listbox" aria-label="可移动资源">
-      <li v-for="item in searchResults" :key="`${resourceKindOf(item)}:${resourceIdOf(item)}`">
+    <template v-else-if="searchResults.length">
+      <div class="resource-search-select__toolbar">
         <button
           type="button"
-          role="option"
-          class="resource-search-select__option"
-          :class="{ 'resource-search-select__option--active': selected && sameResource(selected, item) }"
-          :aria-selected="selected && sameResource(selected, item) ? 'true' : 'false'"
+          class="resource-search-select__select-all"
+          data-test="resource-select-all"
           :disabled="disabled || isBusy"
-          :data-test="optionTestId(item)"
-          @click="selectResource(item)"
+          @click="toggleAllResults"
         >
-          <span>
-            <strong>{{ resourceLabel(item) }}</strong>
-            <small>
-              {{ kindLabel(resourceKindOf(item)) }}
-              <template v-if="item.context"> · {{ item.context }}</template>
-              · {{ groupLabel(groupIdOf(item)) }}
-            </small>
-          </span>
+          {{ allDisplayedSelected ? '取消全选' : '全选当前列表' }}
         </button>
-      </li>
-    </ul>
+        <span>{{ searchResults.length }} 项<template v-if="selectedCount"> · 已选 {{ selectedCount }}</template></span>
+      </div>
+      <ul class="resource-search-select__list" role="listbox" aria-multiselectable="true" aria-label="可移动资源">
+        <li v-for="item in searchResults" :key="`${resourceKindOf(item)}:${resourceIdOf(item)}`">
+          <button
+            type="button"
+            role="option"
+            class="resource-search-select__option"
+            :class="{ 'resource-search-select__option--active': isChecked(item) }"
+            :aria-selected="isChecked(item) ? 'true' : 'false'"
+            :disabled="disabled || isBusy"
+            :data-test="optionTestId(item)"
+            @click="toggleResource(item)"
+          >
+            <span class="resource-search-select__check" :class="{ 'resource-search-select__check--on': isChecked(item) }" aria-hidden="true"></span>
+            <span>
+              <strong>{{ resourceLabel(item) }}</strong>
+              <small>
+                {{ kindLabel(resourceKindOf(item)) }}
+                <template v-if="item.context"> · {{ item.context }}</template>
+                · {{ groupLabel(groupIdOf(item)) }}
+              </small>
+            </span>
+          </button>
+        </li>
+      </ul>
+    </template>
 
-    <form v-if="canWrite" class="resource-search-select__move" data-test="move-form" @submit.prevent="requestMove">
-      <p>
-        把选中的资源移动到
-        <strong>{{ targetGroup ? groupLabel(targetGroup) : '当前资源组' }}</strong>
-        ，只改变所属组。
-      </p>
-      <button class="btn btn-secondary" type="submit" :disabled="disabled || isBusy || !selected">
-        {{ busy === 'move' ? '移动中…' : '移动到当前组' }}
+    <form v-if="canWrite && selectedCount" class="resource-search-select__move" data-test="move-form" @submit.prevent="requestMove">
+      <button class="btn btn-primary" type="submit" :disabled="disabled || isBusy">
+        {{ selectedCount > 1
+          ? `移入 ${targetGroup ? groupLabel(targetGroup) : '当前资源组'}（${selectedCount}）`
+          : `移入 ${targetGroup ? groupLabel(targetGroup) : '当前资源组'}` }}
       </button>
     </form>
 
@@ -452,34 +561,128 @@ function acceptConfirm() {
 .resource-search-select,
 .resource-search-select__members,
 .resource-search-select__move {
+  position: relative;
   display: grid;
   gap: var(--space-3);
 }
 
-.resource-search-select__search,
-.resource-search-select__dialog-actions {
+.resource-search-select__search {
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: var(--space-3);
-  align-items: end;
 }
 
-.resource-search-select label {
-  display: grid;
-  gap: var(--space-2);
+.resource-search-select__kinds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.resource-search-select__kind {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  background: var(--color-bg-canvas);
   color: var(--color-text-secondary);
-  font-size: var(--text-sm);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  cursor: pointer;
 }
 
-.resource-search-select input,
-.resource-search-select select {
-  min-width: 0;
-  padding: 0.65rem 0.75rem;
+.resource-search-select .search-field {
+  width: 100%;
+}
+
+.resource-search-select__kind--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.resource-search-select__kind-native,
+.resource-search-select__sr-submit {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  pointer-events: none;
+}
+
+.resource-search-select__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.resource-search-select__select-all {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.resource-search-select__select-all:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.resource-search-select__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  padding: 0;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-canvas);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.resource-search-select__icon-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.resource-search-select__icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.resource-search-select__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.resource-search-select input[type="search"] {
+  min-width: 0;
+  width: 100%;
+  padding: 0.45rem 0;
+  border: 0;
+  background: transparent;
   color: var(--color-text-primary);
   font: inherit;
+  outline: none;
+}
+
+.resource-search-select input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
 }
 
 .resource-search-select__alert {
@@ -498,9 +701,17 @@ function acceptConfirm() {
 }
 
 .resource-search-select__status {
-  display: grid;
-  gap: var(--space-3);
-  justify-items: start;
+  display: block;
+}
+
+.resource-search-select__retry {
+  margin-left: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  cursor: pointer;
 }
 
 .resource-search-select__members ul,
@@ -515,6 +726,24 @@ function acceptConfirm() {
 .resource-search-select__list {
   max-height: 16rem;
   overflow: auto;
+}
+
+.resource-search-select__check {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.25rem;
+  background: var(--color-bg-canvas);
+}
+
+.resource-search-select__check--on {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-6'/%3E%3C/svg%3E");
+  background-size: 0.75rem;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .resource-search-select__members li,
@@ -545,6 +774,10 @@ function acceptConfirm() {
 .resource-search-select__option--active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
+}
+
+.resource-search-select__move .btn {
+  width: 100%;
 }
 
 .resource-search-select__overlay {

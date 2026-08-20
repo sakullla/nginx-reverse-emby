@@ -207,6 +207,31 @@ func (s *GormStore) SaveUser(ctx context.Context, row UserRow) error {
 	})
 }
 
+func (s *GormStore) DeleteUser(ctx context.Context, userID string) error {
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("user id is required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ?", userID).Delete(&RoleBindingRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("subject_kind = ? AND subject_id = ?", "user", userID).Delete(&ResourceGroupGrantRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", userID).Delete(&SessionRow{}).Error; err != nil {
+			return err
+		}
+		result := tx.Where("id = ?", userID).Delete(&UserRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+}
+
 func (s *GormStore) GetUser(ctx context.Context, id string) (UserRow, error) {
 	var row UserRow
 	err := s.db.WithContext(ctx).Where("id = ?", id).First(&row).Error

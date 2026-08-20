@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 )
 
 func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
@@ -56,23 +55,11 @@ func TestMasterCFDNSConstructorPreservesTokenAliasesAndScope(t *testing.T) {
 		})
 	}
 
-	pluginhost.SetCloudflareDNSLookup(nil)
 	for _, key := range append(append([]string(nil), dnsAliases...), zoneAliases...) {
 		t.Setenv(key, "")
 	}
 	if issuer := newMasterCFDNSManagedCertificateIssuer(); issuer != nil {
 		t.Fatalf("issuer without DNS token = %T, want nil", issuer)
-	}
-}
-
-func TestMasterCFDNSConstructorAllowsPluginWithoutEnvToken(t *testing.T) {
-	for _, key := range []string{"CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token", "CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN"} {
-		t.Setenv(key, "")
-	}
-	pluginhost.SetCloudflareDNSLookup(staticTokenLookup{tokens: map[string]string{"example.com": "mapped-a"}})
-	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
-	if issuer := newMasterCFDNSManagedCertificateIssuer(); issuer == nil {
-		t.Fatal("issuer with plugin and no env token = nil")
 	}
 }
 
@@ -87,11 +74,7 @@ func TestMasterCFDNSConstructorLeavesZoneTokenEmptyForIssueTimeFallback(t *testi
 	}
 }
 
-func TestMasterCFDNSIssueUsesHostResolveEntry(t *testing.T) {
-	pluginhost.SetCloudflareDNSLookup(staticTokenLookup{tokens: map[string]string{
-		"www.example.com": "token-a",
-	}})
-	t.Cleanup(func() { pluginhost.SetCloudflareDNSLookup(nil) })
+func TestMasterCFDNSIssueUsesConfiguredResolver(t *testing.T) {
 	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
 	t.Setenv("CF_DNS_API_TOKEN", "")
 	t.Setenv("CF_TOKEN", "token-b")
@@ -107,6 +90,12 @@ func TestMasterCFDNSIssueUsesHostResolveEntry(t *testing.T) {
 		newSolver: func(_ masterACMEStateStore, dnsToken, _ string) (acmeflow.ChallengeSolver, error) {
 			gotDNS = append(gotDNS, dnsToken)
 			return fakeMasterDNS01Solver{}, nil
+		},
+		resolveToken: func(_ context.Context, domain string) (string, error) {
+			if domain == "www.example.com" {
+				return "token-a", nil
+			}
+			return "token-b", nil
 		},
 		now: func() time.Time { return now },
 	}
@@ -143,7 +132,7 @@ func TestMasterCFDNSIssueUsesMappedTokenNotEnvironment(t *testing.T) {
 			if domain == "www.example.com" {
 				return "token-a", nil
 			}
-			return pluginhost.ResolveCloudflareDNSToken(context.Background(), domain)
+			return firstNonEmptyEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"), nil
 		},
 		now: func() time.Time { return now },
 	}
@@ -182,17 +171,18 @@ func TestMasterCFDNSIssueFallsBackZoneTokenToResolvedDNSToken(t *testing.T) {
 }
 
 func TestMasterCFDNSIssueFailsWhenDomainHasNoToken(t *testing.T) {
+	errTokenUnavailable := errors.New("DNS API token unavailable")
 	issuer := &masterCFDNSManagedCertificateIssuer{
 		openState: func(string) (masterACMEStateStore, error) {
 			t.Fatal("state must not open when token resolve fails")
 			return nil, errors.New("unused")
 		},
 		resolveToken: func(context.Context, string) (string, error) {
-			return "", fmt.Errorf("%w: missing.example", pluginhost.ErrTokenUnavailable)
+			return "", fmt.Errorf("%w: missing.example", errTokenUnavailable)
 		},
 	}
 	_, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "missing.example"})
-	if err == nil || !errors.Is(err, pluginhost.ErrTokenUnavailable) {
+	if err == nil || !errors.Is(err, errTokenUnavailable) {
 		t.Fatalf("Issue() err = %v, want token unavailable", err)
 	}
 	if !strings.Contains(err.Error(), "missing.example") {
@@ -202,33 +192,23 @@ func TestMasterCFDNSIssueFailsWhenDomainHasNoToken(t *testing.T) {
 
 func TestMasterCFDNSIssueFailsWhenMappedTokenUnavailable(t *testing.T) {
 	t.Setenv("CF_TOKEN", "token-b")
+	errCredentialUnavailable := errors.New("mapped credential unavailable")
 	issuer := &masterCFDNSManagedCertificateIssuer{
 		openState: func(string) (masterACMEStateStore, error) {
 			t.Fatal("state must not open when mapped token is unavailable")
 			return nil, errors.New("unused")
 		},
 		resolveToken: func(context.Context, string) (string, error) {
-			return "", fmt.Errorf("%w: example.com", pluginhost.ErrMappedTokenUnavailable)
+			return "", fmt.Errorf("%w: example.com", errCredentialUnavailable)
 		},
 	}
 	_, err := issuer.Issue(context.Background(), ManagedCertificate{Domain: "example.com"})
-	if err == nil || !errors.Is(err, pluginhost.ErrMappedTokenUnavailable) {
+	if err == nil || !errors.Is(err, errCredentialUnavailable) {
 		t.Fatalf("Issue() err = %v, want mapped token unavailable", err)
 	}
 	if !strings.Contains(err.Error(), "example.com") {
 		t.Fatalf("Issue() err = %v, want domain in message", err)
 	}
-}
-
-type staticTokenLookup struct {
-	tokens map[string]string
-}
-
-func (s staticTokenLookup) ResolveToken(_ context.Context, domain string) (string, error) {
-	if token, ok := s.tokens[domain]; ok {
-		return token, nil
-	}
-	return "", pluginhost.ErrMappingMiss
 }
 
 func TestMasterCFDNSContextErrorsStayTypedWithoutOpeningState(t *testing.T) {

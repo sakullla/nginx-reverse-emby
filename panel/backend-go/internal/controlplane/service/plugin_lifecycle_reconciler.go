@@ -86,13 +86,32 @@ func (r *PluginLifecycleReconciler) completeTrustedRevisionOperation(ctx context
 				}
 				if len(pending) > 0 {
 					if _, err := r.runtime.ActivateBatch(ctx, pending); err != nil {
-						return err
+						failureResults := controlPlaneRuntimeFailureResults(agentResults, err)
+						if completeErr := r.plugins.CompleteTrustedRevisionOperation(ctx, operation, false, failureResults); completeErr != nil {
+							return errors.Join(err, completeErr)
+						}
+						return nil
 					}
 				}
 			}
 		}
 	}
 	return r.plugins.CompleteTrustedRevisionOperation(ctx, operation, applied, agentResults)
+}
+
+func controlPlaneRuntimeFailureResults(agentResults any, cause error) map[string]any {
+	results := make(map[string]any)
+	if existing, ok := agentResults.(map[string]any); ok {
+		for key, value := range existing {
+			results[key] = value
+		}
+	}
+	message := "control-plane plugin activation failed"
+	if cause != nil && strings.TrimSpace(cause.Error()) != "" {
+		message = cause.Error()
+	}
+	results["control-plane-runtime"] = map[string]any{"state": "failed", "safe_detail": message}
+	return results
 }
 
 // Reconcile records a report from the already-authenticated Agent control

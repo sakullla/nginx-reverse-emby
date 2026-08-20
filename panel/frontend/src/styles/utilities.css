@@ -391,6 +391,70 @@
   to { transform: rotate(360deg); }
 }
 
+/* ----- Search field (always-visible input + icon, no mobile collapse) ----- */
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0 0.5rem 0 0.8rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-canvas);
+  box-sizing: border-box;
+}
+
+.search-field:focus-within {
+  border-color: var(--color-primary);
+}
+
+.search-field__icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.search-field__input,
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 0.45rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+}
+
+.search-field input::-webkit-search-decoration,
+.search-field input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.search-field__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.search-field__clear:hover,
+.search-field__clear:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
 /* ----- Search wrapper ----- */
 .search-wrapper {
   display: flex;
@@ -502,7 +566,10 @@
   flex-wrap: wrap;
 }
 
-.page-header__left { flex: 1; min-width: 0; }
+.page-header__left {
+  flex: 1 1 18rem;
+  min-width: min(18rem, 100%);
+}
 
 .page-header__right {
   display: flex;
@@ -599,6 +666,8 @@
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   margin: 0;
+  line-height: 1.45;
+  text-wrap: pretty;
 }
 
 /* ----- Empty state — Enhanced ----- */
@@ -683,6 +752,8 @@
   position: relative;
 }
 
+.modal--sm { width: min(400px, 92vw); }
+.modal--md { width: min(500px, 92vw); }
 .modal--lg { width: min(760px, 94vw); }
 /* Wide enough for the main form modals to pair short fields two-up. */
 .modal--xl {

@@ -3963,6 +3963,12 @@ func (s *GormStore) ListInstalledPlugins(ctx context.Context) ([]InstalledPlugin
 	return rows, err
 }
 
+func (s *GormStore) ListPluginPackages(ctx context.Context) ([]PluginPackageRow, error) {
+	var rows []PluginPackageRow
+	err := s.db.WithContext(ctx).Order("plugin_id, version, digest").Find(&rows).Error
+	return rows, err
+}
+
 func (s *GormStore) GetPluginPackage(ctx context.Context, digest string) (PluginPackageRow, bool, error) {
 	var row PluginPackageRow
 	err := s.db.WithContext(ctx).Where("digest = ?", strings.ToLower(digest)).Order("identity").First(&row).Error

@@ -95,6 +95,13 @@ type HostCandidate struct {
 	HTTPBackendProviders                                                        []pluginsdk.HTTPBackendProviderDescriptor
 }
 
+func candidateExtensionPoints(candidate HostCandidate) []string {
+	if len(candidate.HTTPBackendProviders) == 0 {
+		return nil
+	}
+	return []string{pluginsdk.ExtensionHTTPBackendProvider}
+}
+
 type RuntimeStatus struct {
 	InstanceID      string
 	Generation      string
@@ -650,7 +657,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		ArtifactDigest:   candidate.Artifact.SHA256,
 		GrantedScopes:    append([]string(nil), candidate.Scopes...),
 		Generation:       candidate.Generation,
-		RequiredFeatures: pluginsdk.RequiredRPCFeatures(candidate.Scopes),
+		RequiredFeatures: pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Scopes, candidateExtensionPoints(candidate)),
 	}
 	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {

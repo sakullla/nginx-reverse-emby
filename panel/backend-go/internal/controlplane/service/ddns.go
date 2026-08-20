@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -29,8 +28,8 @@ type ddnsStore interface {
 // DDNSService is the master-side dynamic DNS reconciler. It implements
 // service.DDNSReconciler (ReconcileAfterHeartbeat) for the heartbeat trigger and
 // runs a background sweep loop as a fallback for retries and agents whose
-// heartbeats have gone quiet. Tokens are resolved per domain through
-// pluginhost; this struct never persists, logs, or dispatches a credential (R7).
+// heartbeats have gone quiet. This struct never persists, logs, or dispatches
+// a credential (R7).
 type DDNSService struct {
 	cfg          config.Config
 	store        ddnsStore
@@ -315,11 +314,14 @@ func (s *DDNSService) tokenForDomain(ctx context.Context, domain string) (string
 	if s.resolveToken != nil {
 		return s.resolveToken(ctx, domain)
 	}
-	fallback := pluginhost.CloudflareDNSAPIToken()
-	if fallback == "" {
-		fallback = strings.TrimSpace(s.cfg.DDNS.Token)
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	return pluginhost.ResolveCloudflareDNSTokenWithFallback(ctx, domain, fallback)
+	token := strings.TrimSpace(s.cfg.DDNS.Token)
+	if token == "" {
+		return "", fmt.Errorf("Cloudflare domain %s has no available token", strings.TrimSpace(domain))
+	}
+	return token, nil
 }
 
 func (s *DDNSService) lookupAgent(ctx context.Context, agentID string) (storage.AgentRow, []storage.AgentRow, bool) {

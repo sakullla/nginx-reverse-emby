@@ -3,8 +3,8 @@
     <StatCard
       :tone="domainTone"
       :value="domainValue"
-      label="PKI 域"
-      sub-label="内部信任边界标识"
+      label="内部互信"
+      :sub-label="domainSub"
     >
       <template #icon>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -15,9 +15,9 @@
 
     <StatCard
       tone="primary"
-      :value="epochValue"
-      label="Epoch / 安全修订"
-      sub-label="安全快照版本"
+      :value="versionValue"
+      label="配置版本"
+      sub-label="有变更时会增加"
     >
       <template #icon>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -30,8 +30,8 @@
     <StatCard
       tone="primary"
       :value="countsValue"
-      label="身份 / 证书"
-      sub-label="当前登记规模"
+      label="节点证书"
+      :sub-label="countsSub"
     >
       <template #icon>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -47,7 +47,7 @@
       :tone="runtimeTone"
       :value="runtimeLabel"
       label="运行状态"
-      :sub-label="runtimeRaw"
+      sub-label="节点之间能否互信"
     >
       <template #icon>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -69,11 +69,14 @@ const props = defineProps({
   runtimeStatusLabel: { type: Function, required: true },
 })
 
-const domainValue = computed(() => props.overview.pki_domain_id || '尚未初始化')
+const domainValue = computed(() => (props.overview.pki_domain_id ? '已启用' : '尚未初始化'))
 const domainTone = computed(() => (props.overview.pki_domain_id ? 'success' : 'warning'))
-const epochValue = computed(() => `${props.overview.pki_epoch ?? '—'} / ${props.overview.security_revision ?? '—'}`)
-const countsValue = computed(() => `${props.overview.identity_count ?? props.identityCount} / ${props.overview.certificate_count ?? props.certificateCount}`)
-const runtimeRaw = computed(() => props.overview.runtime_status || 'unknown')
+const domainSub = computed(() => (props.overview.pki_domain_id ? '节点之间可以互相认证' : '还没有内部信任根'))
+const versionValue = computed(() => props.overview.security_revision ?? props.overview.pki_epoch ?? '—')
+const identityTotal = computed(() => props.overview.identity_count ?? props.identityCount)
+const certificateTotal = computed(() => props.overview.certificate_count ?? props.certificateCount)
+const countsValue = computed(() => identityTotal.value ?? 0)
+const countsSub = computed(() => `${certificateTotal.value ?? 0} 张证书`)
 const runtimeLabel = computed(() => props.runtimeStatusLabel(props.overview.runtime_status))
 const runtimeTone = computed(() => {
   const value = String(props.overview.runtime_status || '').toLowerCase()
@@ -91,10 +94,15 @@ const runtimeTone = computed(() => {
   gap: var(--space-3);
 }
 
+.pki-health :deep(.stat-card) {
+  min-width: 0;
+}
+
 .pki-health :deep(.stat-card__value) {
-  font-size: 1.15rem;
+  font-size: 1.35rem;
   overflow-wrap: anywhere;
   word-break: break-word;
+  max-width: 100%;
 }
 
 @media (min-width: 1920px) {
@@ -105,13 +113,9 @@ const runtimeTone = computed(() => {
   .pki-health :deep(.stat-card) {
     padding: var(--space-6);
   }
-
-  .pki-health :deep(.stat-card__value) {
-    font-size: 1.35rem;
-  }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 960px) {
   .pki-health {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -119,7 +123,7 @@ const runtimeTone = computed(() => {
 
 @media (max-width: 640px) {
   .pki-health {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2);
   }
 
@@ -134,7 +138,7 @@ const runtimeTone = computed(() => {
   }
 
   .pki-health :deep(.stat-card__value) {
-    font-size: 0.95rem;
+    font-size: 1.05rem;
   }
 
   .pki-health :deep(.stat-card__label),

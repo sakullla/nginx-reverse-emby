@@ -211,7 +211,7 @@ func (v *Validator) validateOfficialMarketV1EagerSnapshot(root, sourceRoot strin
 			artifacts = append(artifacts, ArtifactIndex{SHA256: strings.ToLower(artifact.SHA256), Size: artifact.Size, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH})
 		}
 		result.Manifest.Entries = append(result.Manifest.Entries, MarketEntry{
-			ID: entry.ID, Version: entry.Version, Description: validated.Manifest.Description,
+			ID: entry.ID, Version: entry.Version, Name: strings.TrimSpace(validated.Manifest.Name), Description: validated.Manifest.Description,
 			Capabilities: append([]string(nil), validated.Manifest.ExtensionPoints...), Compatibility: validated.Manifest.Compatibility,
 			Runtime:   RuntimeIndex{Kind: validated.Manifest.Runtime.Kind, ABI: validated.Manifest.Runtime.ABI, HostScope: validated.Manifest.Runtime.HostScope, PolicyKind: validated.Manifest.Runtime.PolicyKind},
 			Artifacts: artifacts, PackagePath: entry.PackageURL, PackageSHA256: envelope.digest,

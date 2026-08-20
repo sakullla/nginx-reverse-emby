@@ -543,7 +543,8 @@ func validatePluginStringSet(label string, values []string, known func(string) b
 
 func knownPluginExtensionPoint(value string) bool {
 	switch value {
-	case "http.request", "http.response", pluginsdk.ExtensionHTTPBackendProvider, "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route":
+	case "http.request", "http.response", pluginsdk.ExtensionHTTPBackendProvider, "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider",
+		pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup:
 		return true
 	default:
 		return false

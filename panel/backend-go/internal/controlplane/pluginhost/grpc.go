@@ -281,6 +281,17 @@ func (c *dynamicRPCClient) lifecycle(ctx context.Context, method string, request
 	failure := output.Get(errorField).Message()
 	return pluginsdk.LifecycleResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorCode(failure.Get(failure.Descriptor().Fields().ByName("code")).Enum()), Message: failure.Get(failure.Descriptor().Fields().ByName("message")).String(), Retryable: failure.Get(failure.Descriptor().Fields().ByName("retryable")).Bool()}}, nil
 }
+
+func lifecycleResponseError(response pluginsdk.LifecycleResponse) error {
+	if err := response.Validate(); err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return response.Error
+	}
+	return nil
+}
+
 func (c *dynamicRPCClient) invoke(ctx context.Context, method string, input, output *dynamicpb.Message) error {
 	callCtx, cancel := context.WithTimeout(ctx, c.deadline)
 	defer cancel()

@@ -20,10 +20,10 @@
       />
       <p class="cert-center__hint" role="note">
         <template v-if="activeDomain === 'public'">
-          当前为公网业务证书域 · 网站 ACME / 手动上传。内部 relay mTLS 请切换到「内部 PKI」。
+          当前为公网证书 · 给网站签发 HTTPS。节点之间的内部证书请切换到「内部 PKI」。
         </template>
         <template v-else>
-          当前为内部 PKI 域 · relay 身份 / CA / 撤销 / 备份。公网 ACME 请切换到「公网证书」。
+          当前为内部 PKI 域 · 给节点签发内部证书。网站 HTTPS 请切换到「公网证书」。
         </template>
       </p>
     </div>

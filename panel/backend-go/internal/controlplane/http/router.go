@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -725,9 +726,13 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.PluginCapabilityService = manager
 		manager.SetTrafficSummaryProvider(d.TrafficService)
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
+		d.PluginRuntimeHost.SetHostResourceDispatcher(manager)
 		if d.SecretVault != nil {
 			manager.SetCoreResourceVault(d.SecretVault)
 			d.SecretVault.SetPluginCapabilityTargetRevoker(manager)
+		}
+		if err := pluginService.RecoverControlPlaneRuntimes(context.Background(), d.PluginRuntimeHost); err != nil {
+			log.Printf("[plugin-runtime] startup recovery failed: %v", err)
 		}
 	}
 	if d.MarketplaceService == nil {

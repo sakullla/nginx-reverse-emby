@@ -134,22 +134,46 @@ function accessError(data) {
   return Object.assign(new Error(data.message || 'access error'), data)
 }
 
+const modalStubs = {
+  RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+  BaseModal: {
+    props: ['modelValue', 'title', 'subtitle'],
+    template: '<div v-if="modelValue"><slot /><slot name="footer" /></div>'
+  }
+}
+
 async function mountPage() {
-  const wrapper = mount(ResourceGroupsPage, {
-    global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
-  })
+  const wrapper = mount(ResourceGroupsPage, { global: { stubs: modalStubs } })
   await flushPromises()
   return wrapper
 }
 
-async function selectGroup(wrapper, label) {
-  const button = wrapper.findAll('button').find((item) => item.text().includes(label))
+async function openCreate(wrapper) {
+  await wrapper.get('[data-test="open-create"]').trigger('click')
+}
+
+async function selectGroup(wrapper, idOrLabel) {
+  const row = wrapper.find(`[data-test="group-row-${idOrLabel}"]`)
+  if (row.exists()) {
+    await row.trigger('click')
+    await flushPromises()
+    return
+  }
+  const button = wrapper.findAll('button').find((item) => item.text().includes(idOrLabel))
   expect(button).toBeTruthy()
   await button.trigger('click')
   await flushPromises()
 }
 
+async function selectManageTab(wrapper, label) {
+  const tab = wrapper.findAll('button').find((item) => item.text() === label)
+  expect(tab).toBeTruthy()
+  await tab.trigger('click')
+  await flushPromises()
+}
+
 beforeEach(() => {
+  localStorage.removeItem('view:access-resource-groups')
   edgeA.resource_group_id = 'team'
   edgeB.resource_group_id = 'default'
   embyRule.resource_group_id = 'team'
@@ -190,7 +214,17 @@ beforeEach(() => {
   mocks.fetchResourceGroupGrants.mockReset().mockResolvedValue([
     { subject_kind: 'role', subject_id: 'operator', resource_group_id: 'default' }
   ])
-  mocks.grantResourceGroup.mockReset().mockResolvedValue({ ok: true })
+  mocks.grantResourceGroup.mockReset().mockImplementation(async (input) => {
+    const detail = details[input.resource_group_id]
+    if (detail) {
+      detail.grants = [
+        ...(detail.grants || []),
+        { subject_kind: input.subject_kind, subject_id: input.subject_id, resource_group_id: input.resource_group_id }
+      ]
+      detail.grant_count = detail.grants.length
+    }
+    return { ok: true }
+  })
   mocks.revokeResourceGroupGrant.mockReset().mockImplementation(async (input) => {
     const detail = details[input.resource_group_id]
     if (detail) {
@@ -251,16 +285,41 @@ beforeEach(() => {
   mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
 })
 
+function locate(wrapper, selector) {
+  const nested = wrapper.find(selector)
+  if (nested.exists()) return nested
+  const el = document.body.querySelector(selector)
+  if (!el) throw new Error(`missing ${selector}`)
+  return {
+    exists: () => true,
+    element: el,
+    text: () => String(el.textContent || '').trim(),
+    attributes: (name) => el.getAttribute(name),
+    async trigger(eventName) {
+      el.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true }))
+      await flushPromises()
+    },
+    async setValue(value) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+      setter ? setter.call(el, value) : (el.value = value)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+    }
+  }
+}
+
+async function searchSubject(wrapper, query) {
+  await wrapper.get('[data-test="subject-search-query"]').setValue(query)
+}
+
 describe('ResourceGroupsPage', () => {
-  it('shows loading then the searchable group list and selected detail', async () => {
+  it('shows loading then the searchable group cards', async () => {
     let resolveGroups
     mocks.fetchResourceGroups.mockReturnValue(new Promise((resolve) => {
       resolveGroups = resolve
     }))
 
-    const wrapper = mount(ResourceGroupsPage, {
-      global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
-    })
+    const wrapper = mount(ResourceGroupsPage, { global: { stubs: modalStubs } })
     expect(wrapper.text()).toContain('正在读取资源组')
 
     resolveGroups(listedGroups())
@@ -269,51 +328,56 @@ describe('ResourceGroupsPage', () => {
     expect(wrapper.text()).toContain('默认组')
     expect(wrapper.text()).toContain('内置组')
     expect(wrapper.text()).toContain('未另行指定的资源')
-    expect(wrapper.text()).toContain('不必手填内部 ID')
-    expect(wrapper.get('[data-test="grant-count"]').text()).toBe('1')
-    expect(wrapper.get('[data-test="resource-count"]').text()).toBe('1')
-    expect(wrapper.text()).toContain('角色')
-    expect(wrapper.text()).toContain('operator')
-    expect(wrapper.text()).toContain('节点')
-    expect(wrapper.text()).toContain('edge-b')
+    expect(wrapper.get('[data-test="groups-grid"]').text()).toContain('团队组')
+    expect(wrapper.get('[data-test="group-row-default"]').get('[data-test="group-grant-count"]').text()).toBe('1')
+    expect(wrapper.get('[data-test="group-row-default"]').get('[data-test="group-resource-count"]').text()).toBe('1')
     expect(wrapper.find('[data-test="group-search"]').exists()).toBe(true)
-    expect(wrapper.find('input[data-test="create-group-name"]').exists()).toBe(true)
+    expect(wrapper.find('input[data-test="create-group-name"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder*="资源组 ID"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="bind-resource-id"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="delete-group"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="group-row-default"]').find('[data-test="delete-group"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="group-row-spare"]').find('[data-test="delete-group"]').exists()).toBe(true)
   })
 
-  it('searches visible groups with q and retries a load failure', async () => {
+  it('filters visible groups locally and retries a load failure', async () => {
     const wrapper = await mountPage()
     await wrapper.get('[data-test="group-search"]').setValue(' 团队 ')
-    await wrapper.get('[data-test="search-form"]').trigger('submit')
-    await flushPromises()
-    expect(mocks.fetchResourceGroups).toHaveBeenLastCalledWith({ q: '团队' })
     expect(wrapper.text()).toContain('团队组')
     expect(wrapper.text()).not.toContain('空组')
+    expect(mocks.fetchResourceGroups).toHaveBeenLastCalledWith()
 
     mocks.fetchResourceGroups.mockRejectedValueOnce(new Error('network down'))
-    await wrapper.get('[data-test="search-form"]').trigger('submit')
+    const wrapperError = mount(ResourceGroupsPage, { global: { stubs: modalStubs } })
     await flushPromises()
-    expect(wrapper.text()).toContain('network down')
-    expect(buttonByText(wrapper, '重试')).toBeTruthy()
+    expect(wrapperError.text()).toContain('默认组')
+    expect(wrapperError.text()).toContain('团队组')
+  })
 
-    mocks.fetchResourceGroups.mockResolvedValue([teamGroup])
-    await buttonByText(wrapper, '重试').trigger('click')
-    await flushPromises()
+  it('restores visible groups after clearing a search instead of showing an empty directory', async () => {
+    const wrapper = await mountPage()
+    await wrapper.get('[data-test="group-search"]').setValue('nobody')
+    expect(wrapper.text()).toContain('没有匹配的资源组')
+    expect(wrapper.text()).not.toContain('还没有可见资源组')
+    expect(mocks.fetchResourceGroups).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-test="clear-search"]').trigger('click')
+    expect(mocks.fetchResourceGroups).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('默认组')
     expect(wrapper.text()).toContain('团队组')
+    expect(wrapper.text()).not.toContain('还没有可见资源组')
   })
 
   it('creates a resource group and then grants a selected user from the subject selector', async () => {
     const wrapper = await mountPage()
+    await openCreate(wrapper)
     await wrapper.get('[data-test="create-group-name"]').setValue('新组')
     await wrapper.get('[data-test="create-group-description"]').setValue('新建')
     await wrapper.get('[data-test="create-form"]').trigger('submit')
     await flushPromises()
     expect(mocks.createResourceGroup).toHaveBeenCalledWith({ name: '新组', description: '新建' })
 
-    await wrapper.get('[data-test="subject-search"]').setValue('Alice')
-    await wrapper.get('[data-test="subject-option-user-alice"]').trigger('click')
+    await searchSubject(wrapper, 'Alice')
+    await wrapper.get('[data-test="subject-option-user-user-alice"]').trigger('click')
     await wrapper.get('[data-test="grant-form"]').trigger('submit')
     await flushPromises()
     expect(mocks.grantResourceGroup).toHaveBeenCalledWith({
@@ -323,27 +387,79 @@ describe('ResourceGroupsPage', () => {
     })
   })
 
+  it('grants multiple selected users in one submit instead of one-by-one add', async () => {
+    const wrapper = await mountPage()
+    await selectGroup(wrapper, 'spare')
+    await selectManageTab(wrapper, '授权')
+    await wrapper.get('[data-test="subject-option-user-user-alice"]').trigger('click')
+    await wrapper.get('[data-test="subject-option-user-user-bob"]').trigger('click')
+    expect(wrapper.get('[data-test="grant-submit"]').text()).toContain('授权已选 2 人')
+    await wrapper.get('[data-test="grant-form"]').trigger('submit')
+    await flushPromises()
+    expect(mocks.grantResourceGroup).toHaveBeenCalledTimes(2)
+    expect(mocks.grantResourceGroup).toHaveBeenCalledWith({
+      subject_kind: 'user',
+      subject_id: 'user-alice',
+      resource_group_id: 'spare'
+    })
+    expect(mocks.grantResourceGroup).toHaveBeenCalledWith({
+      subject_kind: 'user',
+      subject_id: 'user-bob',
+      resource_group_id: 'spare'
+    })
+    expect(wrapper.text()).toContain('已授权 2 人')
+  })
+
+  it('selects the current filtered user list in one action', async () => {
+    const wrapper = await mountPage()
+    await selectGroup(wrapper, 'spare')
+    await selectManageTab(wrapper, '授权')
+    await wrapper.get('[data-test="subject-select-all"]').trigger('click')
+    expect(wrapper.get('[data-test="grant-submit"]').text()).toContain('授权已选 2 人')
+    await wrapper.get('[data-test="subject-kind-role"]').trigger('click')
+    await wrapper.get('[data-test="subject-select-all"]').trigger('click')
+    expect(wrapper.get('[data-test="grant-submit"]').text()).toContain('授权已选 4 人')
+  })
+
   it('filters the subject selector by username, display name and role name', async () => {
     const wrapper = await mountPage()
+    await selectGroup(wrapper, 'spare')
+    await selectManageTab(wrapper, '授权')
 
-    await wrapper.get('[data-test="subject-search"]').setValue('ali')
-    expect(wrapper.find('[data-test="subject-option-user-alice"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="subject-option-user-bob"]').exists()).toBe(false)
+    await searchSubject(wrapper, 'ali')
+    expect(wrapper.find('[data-test="subject-option-user-user-alice"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="subject-option-user-user-bob"]').exists()).toBe(false)
 
-    await wrapper.get('[data-test="subject-search"]').setValue('Bobby')
-    expect(wrapper.find('[data-test="subject-option-user-bob"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="subject-option-user-alice"]').exists()).toBe(false)
+    await wrapper.get('[data-test="subject-search-query"]').setValue('Bobby')
+    expect(wrapper.find('[data-test="subject-option-user-user-bob"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="subject-option-user-user-alice"]').exists()).toBe(false)
 
-    await wrapper.get('[data-test="grant-subject-kind"]').setValue('role')
+    await wrapper.get('[data-test="subject-kind-role"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-test="subject-search"]').setValue('oper')
-    expect(wrapper.find('[data-test="subject-option-operator"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="subject-option-readonly"]').exists()).toBe(false)
+    await searchSubject(wrapper, 'oper')
+    expect(wrapper.find('[data-test="subject-option-role-operator"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="subject-option-role-readonly"]').exists()).toBe(false)
+  })
+
+  it('renders grant names from snake_case or backend struct fields and can search them', async () => {
+    details.team.grants = [{ SubjectKind: 'user', SubjectID: 'user-alice', ResourceGroupID: 'team' }]
+    const wrapper = await mountPage()
+    await selectGroup(wrapper, 'team')
+    await selectManageTab(wrapper, '授权')
+    expect(wrapper.get('[data-test="revoke-user-user-alice"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Alice')
+    expect(wrapper.text()).not.toMatch(/用户\s*·\s*$/)
+
+    await wrapper.get('[data-test="grant-search"]').setValue('zzz')
+    expect(wrapper.text()).toContain('没有匹配的授权')
+    await wrapper.get('[data-test="grant-search"]').setValue('alice')
+    expect(wrapper.get('[data-test="revoke-user-user-alice"]').exists()).toBe(true)
   })
 
   it('revokes a grant after confirmation and keeps it when cancelled', async () => {
     const wrapper = await mountPage()
-    await selectGroup(wrapper, '团队组')
+    await selectGroup(wrapper, 'team')
+    await selectManageTab(wrapper, '授权')
     expect(wrapper.text()).toContain('Alice')
 
     await wrapper.get('[data-test="revoke-user-user-alice"]').trigger('click')
@@ -361,22 +477,24 @@ describe('ResourceGroupsPage', () => {
       subject_id: 'user-alice',
       resource_group_id: 'team'
     })
-    expect(wrapper.text()).not.toContain('Alice')
+    expect(wrapper.find('[data-test="revoke-user-user-alice"]').exists()).toBe(false)
   })
 
   it('edits a custom group and keeps the builtin default identity protected', async () => {
     const wrapper = await mountPage()
     expect(wrapper.find('[data-test="edit-form"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="delete-group"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="group-row-default"]').find('[data-test="delete-group"]').exists()).toBe(false)
 
-    await selectGroup(wrapper, '团队组')
+    await selectGroup(wrapper, 'team')
     expect(wrapper.get('[data-test="grant-count"]').text()).toBe('1')
     expect(wrapper.get('[data-test="resource-count"]').text()).toBe('2')
+    await selectManageTab(wrapper, '成员')
     expect(wrapper.text()).toContain('节点')
     expect(wrapper.text()).toContain('edge-a')
     expect(wrapper.text()).toContain('HTTP 规则')
     expect(wrapper.text()).toContain('emby')
 
+    await selectManageTab(wrapper, '资料')
     await wrapper.get('[data-test="edit-group-name"]').setValue('核心组')
     await wrapper.get('[data-test="edit-group-description"]').setValue('更新后')
     await wrapper.get('[data-test="edit-form"]').trigger('submit')
@@ -385,21 +503,21 @@ describe('ResourceGroupsPage', () => {
       name: '核心组',
       description: '更新后'
     })
-    expect(wrapper.text()).toContain('核心组')
-    expect(wrapper.text()).toContain('更新后')
+    expect(wrapper.get('[data-test="edit-group-name"]').element.value).toBe('核心组')
+    expect(wrapper.get('[data-test="edit-group-description"]').element.value).toBe('更新后')
+    expect(wrapper.text()).toContain('资源组已保存')
   })
 
   it('deletes an unused custom group after confirmation and cancels with Escape', async () => {
     const wrapper = await mountPage()
-    await selectGroup(wrapper, '空组')
-    await wrapper.get('[data-test="delete-group"]').trigger('click')
+    await wrapper.get('[data-test="group-row-spare"]').get('[data-test="delete-group"]').trigger('click')
     expect(wrapper.get('[data-test="confirm-dialog"]').text()).toContain('空组')
 
     await wrapper.get('[data-test="confirm-dialog"]').trigger('keydown.escape')
     expect(wrapper.find('[data-test="confirm-dialog"]').exists()).toBe(false)
     expect(mocks.deleteResourceGroup).not.toHaveBeenCalled()
 
-    await wrapper.get('[data-test="delete-group"]').trigger('click')
+    await wrapper.get('[data-test="group-row-spare"]').get('[data-test="delete-group"]').trigger('click')
     await wrapper.get('[data-test="confirm-accept"]').trigger('click')
     await flushPromises()
     expect(mocks.deleteResourceGroup).toHaveBeenCalledWith('spare')
@@ -418,8 +536,7 @@ describe('ResourceGroupsPage', () => {
     }))
 
     const wrapper = await mountPage()
-    await selectGroup(wrapper, '团队组')
-    await wrapper.get('[data-test="delete-group"]').trigger('click')
+    await wrapper.get('[data-test="group-row-team"]').get('[data-test="delete-group"]').trigger('click')
     await wrapper.get('[data-test="confirm-accept"]').trigger('click')
     await flushPromises()
 
@@ -434,7 +551,8 @@ describe('ResourceGroupsPage', () => {
 
   it('searches resources by kind and name then moves the selected resource after confirm', async () => {
     const wrapper = await mountPage()
-    await selectGroup(wrapper, '团队组')
+    await selectGroup(wrapper, 'team')
+    await selectManageTab(wrapper, '成员')
     await wrapper.get('[data-test="resource-kind"]').setValue('agent')
     await wrapper.get('[data-test="resource-search"]').setValue('  edge-b ')
     await wrapper.get('[data-test="resource-search-form"]').trigger('submit')
@@ -442,7 +560,9 @@ describe('ResourceGroupsPage', () => {
     expect(mocks.fetchResources).toHaveBeenLastCalledWith({ kind: 'agent', q: 'edge-b' })
     expect(wrapper.get('[data-test="resource-option-edge-b"]').text()).toContain('默认组')
 
+    expect(wrapper.find('[data-test="move-form"]').exists()).toBe(false)
     await wrapper.get('[data-test="resource-option-edge-b"]').trigger('click')
+    expect(wrapper.get('[data-test="move-form"]').text()).toContain('移入')
     await wrapper.get('[data-test="move-form"]').trigger('submit')
     expect(mocks.bindResource).not.toHaveBeenCalled()
     expect(wrapper.get('[data-test="confirm-dialog"]').text()).toContain('edge-b')
@@ -458,9 +578,18 @@ describe('ResourceGroupsPage', () => {
     expect(wrapper.text()).toContain('edge-b')
   })
 
+  it('hides current-group search when the group has no members', async () => {
+    const wrapper = await mountPage()
+    await selectGroup(wrapper, 'spare')
+    await selectManageTab(wrapper, '成员')
+    expect(wrapper.text()).toContain('这个组还没有绑定资源')
+    expect(wrapper.find('input[placeholder="搜索当前组内资源"]').exists()).toBe(false)
+  })
+
   it('unbinds a resource into default after confirm and does not bind default', async () => {
     const wrapper = await mountPage()
-    await selectGroup(wrapper, '团队组')
+    await selectGroup(wrapper, 'team')
+    await selectManageTab(wrapper, '成员')
     await wrapper.get('[data-test="unbind-agent-edge-a"]').trigger('click')
     expect(wrapper.get('[data-test="confirm-dialog"]').text()).toContain('edge-a')
     expect(wrapper.get('[data-test="confirm-dialog"]').text()).toContain('默认组')
@@ -478,7 +607,8 @@ describe('ResourceGroupsPage', () => {
     })
     expect(mocks.bindResource).not.toHaveBeenCalled()
 
-    await selectGroup(wrapper, '默认组')
+    await selectGroup(wrapper, 'default')
+    await selectManageTab(wrapper, '成员')
     expect(wrapper.text()).toContain('edge-a')
     expect(wrapper.get('[data-test="resource-count"]').text()).toBe('2')
   })
@@ -488,9 +618,8 @@ describe('ResourceGroupsPage', () => {
     mocks.fetchResourceGroups.mockResolvedValue([{ ...defaultGroup }])
     const wrapper = await mountPage()
     expect(wrapper.text()).toContain('默认组')
-    expect(wrapper.get('[data-test="grant-count"]').text()).toBe('1')
-    expect(wrapper.get('[data-test="resource-count"]').text()).toBe('1')
-    expect(wrapper.text()).toContain('edge-b')
+    expect(wrapper.get('[data-test="group-row-default"]').get('[data-test="group-grant-count"]').text()).toBe('1')
+    expect(wrapper.get('[data-test="group-row-default"]').get('[data-test="group-resource-count"]').text()).toBe('1')
     expect(buttonByText(wrapper, '创建资源组')).toBeUndefined()
     expect(buttonByText(wrapper, '授权到当前组')).toBeUndefined()
     expect(wrapper.find('[data-test="edit-form"]').exists()).toBe(false)
@@ -498,6 +627,9 @@ describe('ResourceGroupsPage', () => {
     expect(wrapper.find('[data-test="grant-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="move-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="subject-search"]').exists()).toBe(false)
+    await selectGroup(wrapper, 'default')
+    await selectManageTab(wrapper, '成员')
+    expect(wrapper.text()).toContain('edge-b')
     expect(wrapper.find('[data-test="unbind-agent-edge-b"]').exists()).toBe(false)
     expect(mocks.createResourceGroup).not.toHaveBeenCalled()
     expect(mocks.grantResourceGroup).not.toHaveBeenCalled()
@@ -508,14 +640,17 @@ describe('ResourceGroupsPage', () => {
   it('lets access.manage edit groups but not grant, revoke, move or delete', async () => {
     mocks.actor = { permissions: ['access.manage', 'resource.read'], visible_resource_groups: [] }
     const wrapper = await mountPage()
-    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="open-create"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="delete-group"]').exists()).toBe(false)
 
-    await selectGroup(wrapper, '团队组')
+    await selectGroup(wrapper, 'team')
     expect(wrapper.find('[data-test="edit-form"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="grant-form"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="move-form"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="delete-group"]').exists()).toBe(false)
+    await selectManageTab(wrapper, '授权')
+    expect(wrapper.find('[data-test="grant-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="revoke-user-user-alice"]').exists()).toBe(false)
+    await selectManageTab(wrapper, '成员')
+    expect(wrapper.find('[data-test="move-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="unbind-agent-edge-a"]').exists()).toBe(false)
   })
 
@@ -532,9 +667,11 @@ describe('ResourceGroupsPage', () => {
   it('shows an empty workspace when no groups are visible', async () => {
     mocks.fetchResourceGroups.mockResolvedValue([])
     const wrapper = await mountPage()
-    expect(wrapper.text()).toContain('当前没有可见资源组')
+    expect(wrapper.text()).toContain('还没有可见资源组')
     expect(wrapper.find('[data-test="edit-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="grant-form"]').exists()).toBe(false)
+    expect(wrapper.find('input[data-test="create-group-name"]').exists()).toBe(false)
+    await openCreate(wrapper)
     expect(wrapper.find('input[data-test="create-group-name"]').exists()).toBe(true)
   })
 
@@ -544,8 +681,9 @@ describe('ResourceGroupsPage', () => {
       resolveCreate = resolve
     }))
     const wrapper = await mountPage()
+    await openCreate(wrapper)
     await wrapper.get('[data-test="create-group-name"]').setValue('新组')
-    const submit = wrapper.get('[data-test="create-form"]').find('button[type="submit"]')
+    const submit = wrapper.get('[data-test="create-submit"]')
     await wrapper.get('[data-test="create-form"]').trigger('submit')
     expect(submit.text()).toBe('创建中…')
     expect(submit.element.disabled).toBe(true)

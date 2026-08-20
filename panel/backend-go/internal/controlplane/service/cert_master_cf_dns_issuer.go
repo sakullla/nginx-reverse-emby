@@ -14,7 +14,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow/cloudflare"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -39,7 +38,8 @@ type masterCFDNSManagedCertificateIssuer struct {
 }
 
 func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
-	if pluginhost.CloudflareDNSAPIToken() == "" && !pluginhost.CloudflareDNSAvailable() {
+	dnsToken := firstNonEmptyEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token")
+	if dnsToken == "" {
 		return nil
 	}
 	directoryURL := strings.TrimSpace(os.Getenv("NRE_ACME_DIRECTORY_URL"))
@@ -61,7 +61,7 @@ func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
 		openState: func(dataDir string) (masterACMEStateStore, error) {
 			return openMasterACMEAccountStore(dataDir)
 		},
-		resolveToken: pluginhost.ResolveCloudflareDNSToken,
+		resolveToken: func(context.Context, string) (string, error) { return dnsToken, nil },
 		now:          time.Now,
 	}
 	issuer.newSolver = func(state masterACMEStateStore, dnsToken, zoneToken string) (masterACMESolver, error) {
@@ -189,7 +189,13 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 func (i *masterCFDNSManagedCertificateIssuer) tokenForDomain(ctx context.Context, domain string) (string, error) {
 	resolve := i.resolveToken
 	if resolve == nil {
-		resolve = pluginhost.ResolveCloudflareDNSToken
+		dnsToken := firstNonEmptyEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token")
+		resolve = func(context.Context, string) (string, error) {
+			if dnsToken == "" {
+				return "", errors.New("Cloudflare DNS API token is unavailable")
+			}
+			return dnsToken, nil
+		}
 	}
 	return resolve(ctx, domain)
 }

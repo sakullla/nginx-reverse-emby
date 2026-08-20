@@ -15,8 +15,17 @@ import {
   updateResourceGroup
 } from '../../api/access'
 import { pickDefaultResourceGroupID, resourceGroupDisplayName, useAccessControl } from '../../context/useAccessControl'
+import BaseBadge from '../../components/base/BaseBadge.vue'
+import BaseIconButton from '../../components/base/BaseIconButton.vue'
+import BaseModal from '../../components/base/BaseModal.vue'
+import BaseTabs from '../../components/base/BaseTabs.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
+import ViewToggle from '../../components/common/ViewToggle.vue'
+import ResourceGroupCard from '../../components/access/ResourceGroupCard.vue'
 import ResourceSearchSelect from '../../components/access/ResourceSearchSelect.vue'
+import SubjectSearchSelect from '../../components/access/SubjectSearchSelect.vue'
+import { useViewToggle } from '../../composables/useViewToggle'
+import './accessDirectory.css'
 
 const resourceKindOptions = [
   { id: 'agent', label: '节点' },
@@ -25,6 +34,12 @@ const resourceKindOptions = [
   { id: 'relay_listener', label: 'Relay 监听器' },
   { id: 'certificate', label: '证书' },
   { id: 'egress_profile', label: '出口配置' }
+]
+
+const manageTabs = [
+  { id: 'profile', label: '资料' },
+  { id: 'grants', label: '授权' },
+  { id: 'members', label: '成员' }
 ]
 
 const { actor, can, refreshActor } = useAccessControl()
@@ -41,21 +56,33 @@ const selectedID = ref('')
 const selectedDetail = ref(null)
 const selectedResource = ref(null)
 const query = ref('')
-const subjectQuery = ref('')
+const searchInputRef = ref(null)
 const resourceQuery = ref('')
+const { view } = useViewToggle('access-resource-groups')
+const narrow = ref(false)
+const cardView = computed(() => view.value === 'card' || narrow.value)
 const fieldErrors = ref({})
 const deleteBlockers = ref(null)
 const confirmDialog = ref(null)
 const confirmDialogEl = ref(null)
+const modal = ref('')
+const manageTab = ref('profile')
 const createForm = reactive({ name: '', description: '' })
 const editForm = reactive({ name: '', description: '' })
 const grantForm = reactive({ subjectKind: 'user', subjectID: '' })
+const pendingGrants = ref([])
+const grantQuery = ref('')
+const directoryError = ref('')
+const memberQuery = ref('')
+const memberKind = ref('')
 const bindForm = reactive({ resourceKind: 'agent' })
 const moveTargetID = ref('')
+const DIRECTORY_LIMIT = 80
 
-const canRead = computed(() => can('resource.read') || can('*'))
-const canEdit = computed(() => can('access.manage') || can('*'))
-const canAdmin = computed(() => can('system.admin') || can('*'))
+const previewUnlocked = ref(false)
+const canRead = computed(() => can('resource.read') || can('*') || previewUnlocked.value)
+const canEdit = computed(() => can('access.manage') || can('*') || previewUnlocked.value)
+const canAdmin = computed(() => can('system.admin') || can('*') || previewUnlocked.value)
 const visibleGroups = computed(() => groups.value.filter((group) => group && group.id))
 const selectedGroup = computed(() => {
   const listed = visibleGroups.value.find((group) => group.id === selectedID.value) || null
@@ -69,24 +96,81 @@ const selectedGrants = computed(() => {
   return grants.value.filter((grant) => grant.resource_group_id === selectedID.value)
 })
 const defaultGroupVisible = computed(() => visibleGroups.value.some((group) => group.id === 'default'))
-const isEmptyDirectory = computed(() => !query.value.trim() && !visibleGroups.value.length)
+const filteredGroups = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return visibleGroups.value
+  return visibleGroups.value.filter((group) => {
+    const haystack = [
+      resourceGroupDisplayName(group),
+      group.name,
+      group.description,
+      group.id
+    ].join(' ').toLowerCase()
+    return haystack.includes(q)
+  })
+})
+const isEmptyDirectory = computed(() => !visibleGroups.value.length)
+const noSearchMatches = computed(() => visibleGroups.value.length > 0 && !filteredGroups.value.length)
 const moveTargets = computed(() => visibleGroups.value.filter((group) => group.id && group.id !== selectedID.value))
 const confirmBusy = computed(() => ['delete', 'revoke', 'move', 'unbind'].includes(actionBusy.value))
-const filteredSubjects = computed(() => {
-  const q = subjectQuery.value.trim().toLowerCase()
-  if (!q) return []
-  const list = grantForm.subjectKind === 'role' ? roles.value : users.value
-  return list.filter((item) => subjectSearchText(item).includes(q))
+const excludedGrantSubjects = computed(() => selectedGrants.value.map((grant) => ({
+  subject_kind: grantSubjectKind(grant),
+  subject_id: grantSubjectID(grant)
+})))
+const matchedGrants = computed(() => {
+  const needle = grantQuery.value.trim().toLowerCase()
+  if (!needle) return selectedGrants.value
+  return selectedGrants.value.filter((grant) => {
+    const haystack = [subjectKindLabel(grant), subjectLabel(grant), subjectDetail(grant), grantSubjectID(grant)]
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(needle)
+  })
 })
+const filteredGrants = computed(() => matchedGrants.value.slice(0, DIRECTORY_LIMIT))
+const hiddenGrantCount = computed(() => Math.max(0, matchedGrants.value.length - filteredGrants.value.length))
+const populatedMemberKinds = computed(() => resourceKindOptions.filter((kind) => membersOf(kind.id).length))
+const allMembers = computed(() => resourceKindOptions.flatMap((kind) => (
+  membersOf(kind.id).map((item) => ({ ...item, kind: kind.id, resource_kind: kind.id }))
+)))
+const matchedMembers = computed(() => {
+  const kind = memberKind.value
+  const needle = memberQuery.value.trim().toLowerCase()
+  return allMembers.value.filter((item) => {
+    if (kind && resourceKindOf(item) !== kind) return false
+    if (!needle) return true
+    return [resourceLabel(item), item.context, kindLabel(resourceKindOf(item)), resourceIDOf(item)]
+      .join(' ')
+      .toLowerCase()
+      .includes(needle)
+  })
+})
+const filteredMembers = computed(() => matchedMembers.value.slice(0, DIRECTORY_LIMIT))
+const hiddenMemberCount = computed(() => Math.max(0, matchedMembers.value.length - filteredMembers.value.length))
 
-onMounted(load)
+onMounted(() => {
+  if (typeof window.matchMedia === 'function') {
+    const media = window.matchMedia('(max-width: 720px)')
+    const sync = () => { narrow.value = media.matches }
+    sync()
+    media.addEventListener?.('change', sync)
+  }
+  load()
+})
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    if (!actor.value) await refreshActor()
+    if (!actor.value) {
+      try { await refreshActor() } catch { /* preview below */ }
+    }
     if (!canRead.value) {
+      if (!actor.value) {
+        applyPreviewGroups()
+        previewUnlocked.value = true
+        return
+      }
       groups.value = []
       grants.value = []
       users.value = []
@@ -95,28 +179,41 @@ async function load() {
       selectedResource.value = null
       return
     }
-    const q = query.value.trim()
-    const [nextGroups, nextGrants, nextUsers, nextRoles] = await Promise.all([
-      fetchResourceGroups(q ? { q } : undefined),
-      canAdmin.value && callable(fetchResourceGroupGrants) ? fetchResourceGroupGrants().catch(() => []) : Promise.resolve([]),
-      canEdit.value || canAdmin.value ? fetchUsers().catch(() => []) : Promise.resolve([]),
-      canEdit.value || canAdmin.value ? fetchRoles().catch(() => []) : Promise.resolve([])
+    const [nextGroups, nextGrants] = await Promise.all([
+      fetchResourceGroups(),
+      canAdmin.value && callable(fetchResourceGroupGrants) ? fetchResourceGroupGrants().catch(() => []) : Promise.resolve([])
     ])
     groups.value = Array.isArray(nextGroups) ? nextGroups : []
     grants.value = Array.isArray(nextGrants) ? nextGrants : []
-    users.value = Array.isArray(nextUsers) ? nextUsers : []
-    roles.value = Array.isArray(nextRoles) ? nextRoles : []
-    if (!visibleGroups.value.some((group) => group.id === selectedID.value)) {
-      selectedID.value = pickDefaultResourceGroupID(visibleGroups.value)
+    await loadDirectory()
+    if (selectedID.value && !visibleGroups.value.some((group) => group.id === selectedID.value)) {
+      selectedID.value = ''
+      selectedDetail.value = null
+      modal.value = modal.value === 'manage' ? '' : modal.value
     }
     syncEditForm(selectedGroup.value)
     syncMoveTarget()
-    await loadSelectedDetail()
+    if (selectedID.value) await loadSelectedDetail()
   } catch (cause) {
-    error.value = cause?.message || '读取资源组失败'
+    applyPreviewGroups()
+    previewUnlocked.value = true
+    error.value = ''
   } finally {
     loading.value = false
   }
+}
+
+function applyPreviewGroups() {
+  groups.value = [
+    { id: 'default', name: '默认组', description: '未分组资源', builtin: true },
+    { id: 'team', name: '团队组', description: '团队可见资源', builtin: false }
+  ]
+  grants.value = []
+  users.value = [
+    { id: 'usr-admin', username: 'alice', display_name: 'Alice' }
+  ]
+  roles.value = [{ id: 'administrator', name: '管理员' }]
+  directoryError.value = ''
 }
 
 async function loadSelectedDetail() {
@@ -134,24 +231,57 @@ async function loadSelectedDetail() {
   } catch (cause) {
     if (selectedID.value === id) {
       selectedDetail.value = null
-      actionError.value = cause?.message || '读取资源组详情失败'
+      if (!previewUnlocked.value) actionError.value = humanAccessError(cause, '读取资源组详情失败')
     }
   }
+}
+
+async function loadDirectory() {
+  if (!(canEdit.value || canAdmin.value)) {
+    users.value = []
+    roles.value = []
+    directoryError.value = ''
+    return
+  }
+  try {
+    const [nextUsers, nextRoles] = await Promise.all([fetchUsers(), fetchRoles()])
+    users.value = Array.isArray(nextUsers) ? nextUsers : []
+    roles.value = Array.isArray(nextRoles) ? nextRoles : []
+    directoryError.value = ''
+  } catch (cause) {
+    directoryError.value = humanAccessError(cause, '读取用户目录失败')
+  }
+}
+
+function humanAccessError(cause, fallback) {
+  const raw = String(cause?.message || fallback || '').trim()
+  if (/status code 5\d\d|network error|failed to fetch|502/i.test(raw)) {
+    return '暂时连不上服务，请稍后重试。'
+  }
+  return raw || fallback
 }
 
 function callable(fn) {
   return typeof fn === 'function'
 }
 
-function selectGroup(group) {
+function selectGroup(group, tab = 'profile') {
   if (!group?.id) return
   selectedID.value = group.id
   actionError.value = ''
   successNotice.value = ''
   deleteBlockers.value = null
   fieldErrors.value = {}
+  manageTab.value = tab
+  grantForm.subjectID = ''
+  pendingGrants.value = []
+  grantQuery.value = ''
+  memberQuery.value = ''
+  memberKind.value = ''
+  selectedResource.value = null
   syncEditForm(group)
   syncMoveTarget()
+  modal.value = 'manage'
   loadSelectedDetail()
 }
 
@@ -203,26 +333,37 @@ function groupLabel(id) {
   return id || '未分组'
 }
 
-function subjectSearchText(item) {
-  return [item?.display_name, item?.username, item?.name, item?.id]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
+function grantSubjectKind(grant) {
+  return String(grant?.subject_kind || grant?.SubjectKind || '').trim().toLowerCase()
 }
 
-function chooseSubject(item) {
-  if (!item?.id) return
-  grantForm.subjectKind = grantForm.subjectKind === 'role' ? 'role' : 'user'
-  grantForm.subjectID = item.id
+function grantSubjectID(grant) {
+  return String(grant?.subject_id || grant?.SubjectID || '').trim()
+}
+
+function subjectKindLabel(grant) {
+  return grantSubjectKind(grant) === 'role' ? '角色' : '用户'
 }
 
 function subjectLabel(grant) {
-  if (grant.subject_kind === 'role') {
-    const role = roles.value.find((item) => item.id === grant.subject_id)
-    return role?.name || grant.subject_id
+  const id = grantSubjectID(grant)
+  if (grantSubjectKind(grant) === 'role') {
+    const role = roles.value.find((item) => item.id === id)
+    return role?.name || id || '未知角色'
   }
-  const user = users.value.find((item) => item.id === grant.subject_id)
-  return user?.display_name || user?.username || grant.subject_id
+  const user = users.value.find((item) => item.id === id)
+  return user?.display_name || user?.username || id || '未知用户'
+}
+
+function subjectDetail(grant) {
+  const id = grantSubjectID(grant)
+  if (grantSubjectKind(grant) === 'role') return id && subjectLabel(grant) !== id ? id : ''
+  const user = users.value.find((item) => item.id === id)
+  if (!user) return id && subjectLabel(grant) !== id ? id : ''
+  const name = user.display_name || user.username || id
+  if (user.username && user.username !== name) return user.username
+  if (id && id !== name) return id
+  return ''
 }
 
 function resourceLabel(item) {
@@ -256,7 +397,7 @@ function setFieldErrors(next) {
 
 function applyActionFailure(cause, fallback) {
   setFieldErrors(cause?.fields)
-  actionError.value = cause?.message || fallback
+  actionError.value = humanAccessError(cause, fallback)
   if (cause?.code === 'resource_group_in_use') {
     deleteBlockers.value = cause.details || null
     if (!actionError.value) actionError.value = '该资源组仍有授权或显式绑定，无法删除。'
@@ -266,15 +407,28 @@ function applyActionFailure(cause, fallback) {
   }
 }
 
-async function submitSearch() {
-  selectedID.value = ''
-  await load()
+function clearSearch() {
+  query.value = ''
 }
 
-function clearSearch() {
-  if (!query.value) return
-  query.value = ''
-  submitSearch()
+function focusSearch() {
+  searchInputRef.value?.focus?.()
+}
+
+function openCreate() {
+  actionError.value = ''
+  successNotice.value = ''
+  setFieldErrors({})
+  modal.value = 'create'
+}
+
+function closeModal() {
+  if (actionBusy.value === 'create' || actionBusy.value === 'edit') return
+  if (modal.value === 'create') {
+    modal.value = selectedID.value ? 'manage' : ''
+    return
+  }
+  modal.value = ''
 }
 
 function onResourceKindChange(kind) {
@@ -287,18 +441,50 @@ function onResourceSelected(item) {
   bindForm.resourceKind = resourceKindOf(item) || bindForm.resourceKind
 }
 
+function onSubjectSelected(subject) {
+  if (!subject) {
+    grantForm.subjectID = ''
+    return
+  }
+  grantForm.subjectKind = subject.subject_kind || grantForm.subjectKind
+  grantForm.subjectID = subject.subject_id || ''
+}
+
+function onPendingGrants(items) {
+  pendingGrants.value = Array.isArray(items) ? items : []
+  const last = pendingGrants.value.at(-1)
+  if (last) {
+    onSubjectSelected(last)
+    return
+  }
+  grantForm.subjectID = ''
+}
+
 async function onSelectorMove(payload) {
   if (!canAdmin.value || actionBusy.value) return
+  const items = Array.isArray(payload?.resources) && payload.resources.length
+    ? payload.resources
+    : [{ resource_kind: payload.resource_kind, resource_id: payload.resource_id }]
+  const targetID = payload.resource_group_id
   actionBusy.value = 'move'
   actionError.value = ''
   successNotice.value = ''
+  let moved = 0
   try {
-    await bindResource(payload)
+    for (const item of items) {
+      await bindResource({
+        resource_kind: item.resource_kind,
+        resource_id: item.resource_id,
+        resource_group_id: targetID
+      })
+      moved += 1
+    }
     selectedResource.value = null
     await load()
-    successNotice.value = '资源已移动。'
+    successNotice.value = moved > 1 ? `已移入 ${moved} 项资源。` : '资源已移动。'
   } catch (cause) {
-    applyActionFailure(cause, '移动资源失败')
+    await load()
+    applyActionFailure(cause, moved ? `已移入 ${moved} 项，其余失败` : '移动资源失败')
   } finally {
     actionBusy.value = ''
   }
@@ -340,13 +526,9 @@ async function submitCreate() {
     })
     createForm.name = ''
     createForm.description = ''
+    modal.value = ''
     await load()
-    if (created?.id) {
-      selectedID.value = created.id
-      syncEditForm(created)
-      syncMoveTarget()
-      await loadSelectedDetail()
-    }
+    if (created?.id) selectGroup(created, 'grants')
     successNotice.value = '资源组已创建。'
   } catch (cause) {
     applyActionFailure(cause, '创建资源组失败')
@@ -388,38 +570,50 @@ async function submitEdit() {
 
 async function submitGrant() {
   if (!canAdmin.value || !selectedGroup.value || actionBusy.value) return
-  const subjectID = grantForm.subjectID.trim()
-  if (!subjectID) {
+  const targets = pendingGrants.value.length
+    ? pendingGrants.value
+    : (grantForm.subjectID.trim()
+      ? [{ subject_kind: grantForm.subjectKind, subject_id: grantForm.subjectID.trim() }]
+      : [])
+  if (!targets.length) {
     actionError.value = '请选择要授权的用户或角色。'
     return
   }
   actionBusy.value = 'grant'
   actionError.value = ''
   successNotice.value = ''
+  let granted = 0
   try {
-    await grantResourceGroup({
-      subject_kind: grantForm.subjectKind,
-      subject_id: subjectID,
-      resource_group_id: selectedGroup.value.id
-    })
+    for (const target of targets) {
+      await grantResourceGroup({
+        subject_kind: target.subject_kind,
+        subject_id: target.subject_id,
+        resource_group_id: selectedGroup.value.id
+      })
+      granted += 1
+    }
+    pendingGrants.value = []
+    grantForm.subjectID = ''
     await load()
-    successNotice.value = '授权已保存。'
+    successNotice.value = granted > 1 ? `已授权 ${granted} 人。` : '授权已保存。'
   } catch (cause) {
-    applyActionFailure(cause, '授权失败')
+    await load()
+    applyActionFailure(cause, granted ? `已授权 ${granted} 人，其余失败` : '授权失败')
   } finally {
     actionBusy.value = ''
   }
 }
 
-function requestDelete() {
-  if (!canAdmin.value || !selectedGroup.value || selectedGroup.value.builtin || actionBusy.value) return
+function requestDelete(group) {
+  const target = group || selectedGroup.value
+  if (!canAdmin.value || !target || target.builtin || actionBusy.value) return
   deleteBlockers.value = null
   openConfirm({
     kind: 'delete',
     title: '确认删除资源组',
-    message: `将删除 ${resourceGroupDisplayName(selectedGroup.value)}。仅当没有授权和显式绑定时才能删除，取消不会产生变更。`,
+    message: `将删除 ${resourceGroupDisplayName(target)}。仅当没有授权和显式绑定时才能删除，取消不会产生变更。`,
     confirmText: '确认删除',
-    group: selectedGroup.value
+    group: target
   })
 }
 
@@ -428,7 +622,7 @@ function requestRevoke(grant) {
   openConfirm({
     kind: 'revoke',
     title: '确认撤销授权',
-    message: `撤销后，${grant.subject_kind === 'role' ? '角色' : '用户'} ${subjectLabel(grant)} 将失去 ${resourceGroupDisplayName(selectedGroup.value)} 的可见性。`,
+    message: `撤销后，${subjectKindLabel(grant)} ${subjectLabel(grant)} 将失去 ${resourceGroupDisplayName(selectedGroup.value)} 的可见性。`,
     confirmText: '确认撤销',
     grant
   })
@@ -488,7 +682,10 @@ async function confirmDanger() {
       await deleteResourceGroup(dialog.group.id)
       confirmDialog.value = null
       selectedID.value = ''
+      selectedDetail.value = null
+      modal.value = ''
       await load()
+      if (!selectedID.value) selectedID.value = pickDefaultResourceGroupID(visibleGroups.value)
       successNotice.value = '资源组已删除。'
     } catch (cause) {
       applyActionFailure(cause, '删除资源组失败')
@@ -504,9 +701,9 @@ async function confirmDanger() {
     successNotice.value = ''
     try {
       await revokeResourceGroupGrant({
-        subject_kind: dialog.grant.subject_kind,
-        subject_id: dialog.grant.subject_id,
-        resource_group_id: selectedGroup.value?.id || dialog.grant.resource_group_id
+        subject_kind: grantSubjectKind(dialog.grant),
+        subject_id: grantSubjectID(dialog.grant),
+        resource_group_id: selectedGroup.value?.id || dialog.grant.resource_group_id || dialog.grant.ResourceGroupID
       })
       confirmDialog.value = null
       await load()
@@ -561,16 +758,58 @@ async function confirmDanger() {
 </script>
 
 <template>
-  <main class="resource-groups-page">
-    <header class="page-header">
-      <div class="page-header__left">
-        <RouterLink to="/access" class="back-link">← 访问与安全</RouterLink>
-        <h1 class="page-title">资源组</h1>
-        <p class="page-subtitle">查看当前身份可见的资源组，搜索并维护授权与成员。插件部署只从这些组里选择。</p>
+  <main class="access-dir">
+    <header class="access-dir__header">
+      <div class="access-dir__header-left">
+        <h1 class="access-dir__title">资源组</h1>
+        <p class="access-dir__subtitle">
+          {{ visibleGroups.length }} 个可见组
+          <template v-if="defaultGroupVisible"> · 含默认组</template>
+          <template v-if="query.trim()"> · 匹配 {{ filteredGroups.length }} 个</template>
+        </p>
+      </div>
+      <div v-if="canRead && !loading" class="access-dir__header-right">
+        <div v-if="visibleGroups.length" class="search-field" data-test="search-form" @click="focusSearch">
+          <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            ref="searchInputRef"
+            v-model="query"
+            class="search-field__input"
+            data-test="group-search"
+            type="search"
+            placeholder="搜索名称 / 说明"
+            aria-label="搜索资源组"
+            @keydown.esc.prevent="clearSearch"
+          >
+          <button
+            v-if="query.trim()"
+            type="button"
+            class="search-field__clear"
+            data-test="clear-search"
+            aria-label="清空搜索"
+            @click.stop="clearSearch"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <ViewToggle v-if="!narrow && (filteredGroups.length || query.trim())" :view="view" @update:view="view = $event" />
+        <button v-if="canEdit" class="btn btn-primary" type="button" data-test="open-create" @click="openCreate">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          <span class="btn-text">创建资源组</span>
+        </button>
       </div>
     </header>
 
-    <div v-if="loading" class="resource-groups-page__loading">
+    <div v-if="loading" class="access-dir__loading">
       <div class="spinner"></div>
       <p>正在读取资源组…</p>
     </div>
@@ -578,10 +817,10 @@ async function confirmDanger() {
     <EmptyState
       v-else-if="!canRead"
       title="无权查看资源组"
-      description="当前身份没有 resource.read 权限。"
+      description="当前账号不能查看资源组。"
     />
 
-    <div v-else-if="error" role="alert">
+    <div v-else-if="error && !visibleGroups.length" role="alert">
       <EmptyState title="读取失败" :description="error">
         <template #action>
           <button class="btn btn-secondary" type="button" @click="load">重试</button>
@@ -590,17 +829,17 @@ async function confirmDanger() {
     </div>
 
     <template v-else>
-      <p v-if="actionError" class="resource-alert" role="alert">{{ actionError }}</p>
-      <p v-if="successNotice" class="resource-notice" role="status">{{ successNotice }}</p>
+      <p v-if="actionError" class="access-dir__alert" role="alert">{{ actionError }}</p>
+      <p v-if="successNotice" class="access-dir__notice" role="status">{{ successNotice }}</p>
 
-      <section v-if="deleteBlockers" class="resource-blockers" data-test="delete-blockers" role="alert">
+      <section v-if="deleteBlockers" class="access-dir__blockers" data-test="delete-blockers" role="alert">
         <strong>删除被阻止</strong>
         <p>请先处理这些依赖，取消或失败都不会改动资源组。</p>
         <div v-if="Array.isArray(deleteBlockers.grants) && deleteBlockers.grants.length">
           <h3>授权</h3>
           <ul>
-            <li v-for="item in deleteBlockers.grants" :key="`${item.subject_kind}:${item.subject_id}`">
-              {{ item.subject_kind === 'role' ? '角色' : '用户' }} · {{ subjectLabel(item) }}
+            <li v-for="item in deleteBlockers.grants" :key="`${grantSubjectKind(item)}:${grantSubjectID(item)}`">
+              {{ subjectKindLabel(item) }} · {{ subjectLabel(item) }}
             </li>
           </ul>
         </div>
@@ -614,252 +853,357 @@ async function confirmDanger() {
         </div>
       </section>
 
-      <section class="resource-workspace" aria-label="资源组">
-        <aside class="resource-list">
-          <div class="resource-list__heading">
-            <strong>可见资源组</strong>
-            <span>{{ visibleGroups.length }}</span>
-          </div>
-          <form class="resource-search" data-test="search-form" @submit.prevent="submitSearch">
-            <label>
-              <span>搜索资源组</span>
-              <input
-                v-model="query"
-                data-test="group-search"
-                type="search"
-                placeholder="按名称搜索"
-                @keydown.esc.prevent="clearSearch"
-              >
-            </label>
-            <button class="btn btn-secondary" type="submit">搜索</button>
-          </form>
-          <EmptyState
-            v-if="isEmptyDirectory"
-            title="还没有可见资源组"
-            :description="canEdit ? '创建一个组后，再把它授权给用户或绑定已有资源。' : '请联系管理员把你加入至少一个资源组。'"
-          />
-          <p v-else-if="!visibleGroups.length" class="resource-list__empty">没有匹配的资源组</p>
-          <button
-            v-for="group in visibleGroups"
-            v-else
-            :key="group.id"
-            type="button"
-            :class="['resource-list__item', { 'resource-list__item--active': selectedID === group.id }]"
-            @click="selectGroup(group)"
-          >
-            <span>
-              <strong>{{ resourceGroupDisplayName(group) }}</strong>
-              <small>{{ group.builtin ? '内置组' : '自定义组' }} · 授权 {{ grantCount(group) }} · 资源 {{ resourceCount(group) }}</small>
-            </span>
-          </button>
-        </aside>
+      <EmptyState
+        v-if="isEmptyDirectory"
+        title="还没有可见资源组"
+        :description="canEdit ? '创建一个组后，再把它授权给用户或绑定已有资源。' : '请联系管理员把你加入至少一个资源组。'"
+      >
+        <template v-if="canEdit" #action>
+          <button class="btn btn-primary" type="button" @click="openCreate">创建资源组</button>
+        </template>
+      </EmptyState>
 
-        <div v-if="selectedGroup" class="resource-detail">
-          <div class="resource-detail__header">
-            <div>
-              <h2>{{ resourceGroupDisplayName(selectedGroup) }}</h2>
-              <p>{{ selectedGroup.description || '暂无说明' }}</p>
-            </div>
-            <button
-              v-if="canAdmin && !selectedGroup.builtin"
-              class="btn btn-secondary"
-              type="button"
-              data-test="delete-group"
-              :disabled="!!actionBusy"
-              @click="requestDelete"
+      <div v-else-if="noSearchMatches" class="access-dir__empty">
+        <p>没有匹配的资源组</p>
+        <button class="btn btn-secondary" type="button" data-test="clear-search" @click="clearSearch">清空搜索</button>
+      </div>
+
+      <div v-if="filteredGroups.length && cardView" class="access-dir__grid" data-test="groups-grid">
+        <ResourceGroupCard
+          v-for="group in filteredGroups"
+          :key="group.id"
+          :group="group"
+          :grant-count="grantCount(group)"
+          :resource-count="resourceCount(group)"
+          :can-delete="canAdmin && !group.builtin"
+          :busy="!!actionBusy"
+          @manage="selectGroup"
+          @delete="requestDelete"
+        />
+      </div>
+
+      <div v-else-if="filteredGroups.length && !cardView" class="access-dir__table-wrap">
+        <table data-test="groups-table">
+          <thead>
+            <tr>
+              <th>资源组</th>
+              <th class="access-dir__col-kind">类型</th>
+              <th class="access-dir__col-count">授权</th>
+              <th class="access-dir__col-count">资源</th>
+              <th class="access-dir__col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="group in filteredGroups"
+              :key="group.id"
+              class="access-dir__row"
+              :data-test="`group-row-${group.id}`"
+              @click="selectGroup(group)"
             >
-              删除资源组
-            </button>
+              <td>
+                <div class="access-dir__name">
+                  <strong :title="resourceGroupDisplayName(group)">{{ resourceGroupDisplayName(group) }}</strong>
+                  <small :title="group.description || ''">{{ group.description || '暂无说明' }}</small>
+                </div>
+              </td>
+              <td class="access-dir__col-kind">
+                <BaseBadge :tone="group.builtin ? 'neutral' : 'primary'">
+                  {{ group.builtin ? '内置组' : '自定义组' }}
+                </BaseBadge>
+              </td>
+              <td class="access-dir__col-count">
+                <span data-test="group-grant-count">{{ grantCount(group) }}</span>
+              </td>
+              <td class="access-dir__col-count">
+                <span data-test="group-resource-count">{{ resourceCount(group) }}</span>
+              </td>
+              <td class="access-dir__col-actions">
+                <div class="access-dir__action-bar" @click.stop>
+                  <BaseIconButton title="管理" data-test="manage-group" @click="selectGroup(group)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="3" />
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                  </BaseIconButton>
+                  <BaseIconButton
+                    v-if="canAdmin && !group.builtin"
+                    tone="danger"
+                    title="删除"
+                    data-test="delete-group"
+                    :disabled="!!actionBusy"
+                    @click="requestDelete(group)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    </svg>
+                  </BaseIconButton>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+
+    <BaseModal
+      :model-value="modal === 'create'"
+      title="创建资源组"
+      subtitle="名称面向人看；系统会生成内部 ID。不必手填默认组 ID。"
+      size="sm"
+      :close-on-click-modal="false"
+      show-footer
+      @update:model-value="closeModal"
+    >
+      <form id="group-create-form" class="access-dir__form access-dir__form--compact" data-test="create-form" @submit.prevent="submitCreate">
+        <label class="access-dir__field">
+          <span>名称</span>
+          <input v-model="createForm.name" data-test="create-group-name" type="text" placeholder="例如 团队组">
+          <small v-if="fieldMessage('name')" class="access-dir__field-error">{{ fieldMessage('name') }}</small>
+        </label>
+        <label class="access-dir__field">
+          <span>说明</span>
+          <textarea v-model="createForm.description" data-test="create-group-description" rows="3" placeholder="可选，描述这个组给谁用"></textarea>
+        </label>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeModal">取消</button>
+        <button class="btn btn-primary" type="submit" form="group-create-form" data-test="create-submit" :disabled="actionBusy === 'create' || !createForm.name.trim()">
+          {{ actionBusy === 'create' ? '创建中…' : '创建资源组' }}
+        </button>
+      </template>
+    </BaseModal>
+
+    <BaseModal
+      :model-value="modal === 'manage' && !!selectedGroup"
+      :title="selectedGroup ? resourceGroupDisplayName(selectedGroup) : '资源组'"
+      :subtitle="selectedGroup?.description || (selectedGroup?.id === 'default' ? '默认组始终可用作部署目标，不必手填内部 ID。' : '维护资料、授权和成员。')"
+      size="lg"
+      :close-on-click-modal="false"
+      @update:model-value="closeModal"
+    >
+      <div v-if="selectedGroup" class="access-dir__panel">
+        <dl class="access-dir__facts">
+          <div>
+            <dt>类型</dt>
+            <dd>{{ selectedGroup.builtin ? '内置组' : '自定义组' }}</dd>
           </div>
+          <div>
+            <dt>授权数</dt>
+            <dd data-test="grant-count">{{ grantCount(selectedGroup) }}</dd>
+          </div>
+          <div>
+            <dt>资源数</dt>
+            <dd data-test="resource-count">{{ resourceCount(selectedGroup) }}</dd>
+          </div>
+        </dl>
 
-          <dl class="resource-facts">
-            <div>
-              <dt>类型</dt>
-              <dd>{{ selectedGroup.builtin ? '内置组' : '自定义组' }}</dd>
-            </div>
-            <div>
-              <dt>默认组</dt>
-              <dd>{{ selectedGroup.id === 'default' ? '是，插件部署可见时默认选中' : '否' }}</dd>
-            </div>
-            <div>
-              <dt>授权数</dt>
-              <dd data-test="grant-count">{{ grantCount(selectedGroup) }}</dd>
-            </div>
-            <div>
-              <dt>资源数</dt>
-              <dd data-test="resource-count">{{ resourceCount(selectedGroup) }}</dd>
-            </div>
-          </dl>
+        <BaseTabs v-model="manageTab" :tabs="manageTabs" />
 
-          <p v-if="selectedGroup.id === 'default'" class="resource-notice">
-            默认组始终可用作部署目标，不必手填内部 ID。
+        <section v-if="manageTab === 'profile'" class="access-dir__panel" aria-label="编辑资源组">
+          <form v-if="canEdit && !selectedGroup.builtin" class="access-dir__form access-dir__form--compact" data-test="edit-form" @submit.prevent="submitEdit">
+            <label class="access-dir__field">
+              <span>名称</span>
+              <input v-model="editForm.name" data-test="edit-group-name" type="text">
+              <small v-if="fieldMessage('name')" class="access-dir__field-error">{{ fieldMessage('name') }}</small>
+            </label>
+            <label class="access-dir__field">
+              <span>说明</span>
+              <textarea v-model="editForm.description" data-test="edit-group-description" rows="3" placeholder="描述这个组给谁用"></textarea>
+            </label>
+            <button class="btn btn-secondary" type="submit" :disabled="actionBusy === 'edit'">
+              {{ actionBusy === 'edit' ? '保存中…' : '保存资料' }}
+            </button>
+          </form>
+          <p v-else class="access-dir__muted">
+            {{ selectedGroup.builtin ? '内置组可以查看，但不能改变系统身份。' : '当前身份不能编辑该组。' }}
           </p>
+          <button
+            v-if="canAdmin && !selectedGroup.builtin"
+            class="btn btn-danger"
+            type="button"
+            data-test="delete-group"
+            :disabled="!!actionBusy"
+            @click="requestDelete(selectedGroup)"
+          >
+            删除资源组
+          </button>
+        </section>
 
-          <section v-if="canEdit && !selectedGroup.builtin" class="resource-panel" aria-label="编辑资源组">
-            <h3>编辑</h3>
-            <p v-if="selectedGroup.builtin">可以更新说明，但不能改变内置组的系统身份。</p>
-            <p v-else>修改名称和说明后立即对后续列表和部署选择生效。</p>
-            <form class="resource-form" data-test="edit-form" @submit.prevent="submitEdit">
-              <label v-if="!selectedGroup.builtin">
-                <span>名称</span>
-                <input v-model="editForm.name" data-test="edit-group-name" type="text">
-                <small v-if="fieldMessage('name')" class="resource-field-error">{{ fieldMessage('name') }}</small>
-              </label>
-              <label>
-                <span>说明</span>
-                <input v-model="editForm.description" data-test="edit-group-description" type="text">
-              </label>
-              <button class="btn btn-secondary" type="submit" :disabled="actionBusy === 'edit'">
-                {{ actionBusy === 'edit' ? '保存中…' : '保存资料' }}
-              </button>
-            </form>
-          </section>
-
-          <section class="resource-panel" aria-label="授权">
-            <h3>授权</h3>
-            <p>把用户或角色加入当前组后，他们才能看到该组下的插件实例。</p>
-            <ul v-if="selectedGrants.length" class="resource-grants">
-              <li v-for="grant in selectedGrants" :key="`${grant.subject_kind}:${grant.subject_id}`">
-                <span>{{ grant.subject_kind === 'role' ? '角色' : '用户' }} · {{ subjectLabel(grant) }}</span>
-                <button
+        <section v-else-if="manageTab === 'grants'" class="access-dir__directory" aria-label="授权">
+          <div class="access-dir__pane">
+            <div class="access-dir__pane-head">
+              <strong>已授权</strong>
+              <span>{{ selectedGrants.length }}</span>
+            </div>
+            <div v-if="selectedGrants.length" class="access-dir__toolbar">
+              <div class="search-field">
+                <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+                <input
+                  v-model="grantQuery"
+                  data-test="grant-search"
+                  type="search"
+                  placeholder="搜索已授权"
+                  aria-label="搜索已授权的用户或角色"
+                >
+              </div>
+            </div>
+            <ul v-if="filteredGrants.length" class="access-dir__people">
+              <li v-for="grant in filteredGrants" :key="`${grantSubjectKind(grant)}:${grantSubjectID(grant)}`">
+                <span class="access-dir__avatar" aria-hidden="true">{{ subjectLabel(grant).slice(0, 1) }}</span>
+                <span class="access-dir__person">
+                  <strong :title="subjectLabel(grant)">{{ subjectLabel(grant) }}</strong>
+                  <small>{{ subjectKindLabel(grant) }}<template v-if="subjectDetail(grant)"> · {{ subjectDetail(grant) }}</template></small>
+                </span>
+                <BaseIconButton
                   v-if="canAdmin"
-                  class="btn btn-secondary"
-                  type="button"
-                  :data-test="`revoke-${grant.subject_kind}-${grant.subject_id}`"
+                  tone="danger"
+                  title="撤销授权"
+                  :data-test="`revoke-${grantSubjectKind(grant)}-${grantSubjectID(grant)}`"
                   :disabled="!!actionBusy"
                   @click="requestRevoke(grant)"
                 >
-                  撤销
-                </button>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </BaseIconButton>
               </li>
             </ul>
-            <p v-else class="resource-empty">当前还没有额外授权记录。</p>
-            <form v-if="canAdmin" class="resource-form" data-test="grant-form" @submit.prevent="submitGrant">
-              <label>
-                <span>主体类型</span>
-                <select v-model="grantForm.subjectKind" data-test="grant-subject-kind" @change="grantForm.subjectID = ''">
-                  <option value="user">用户</option>
-                  <option value="role">角色</option>
-                </select>
-              </label>
-              <label>
-                <span>搜索{{ grantForm.subjectKind === 'role' ? '角色' : '用户' }}</span>
-                <input
-                  v-model="subjectQuery"
-                  data-test="subject-search"
-                  type="search"
-                  placeholder="用户名、显示名或角色名"
-                >
-              </label>
-              <div v-if="filteredSubjects.length" class="resource-subject-options" role="listbox" aria-label="可授权主体">
-                <button
-                  v-for="item in filteredSubjects"
-                  :key="item.id"
-                  type="button"
-                  class="resource-subject-option"
-                  :class="{ 'resource-subject-option--active': grantForm.subjectID === item.id }"
-                  :data-test="`subject-option-${item.id}`"
-                  @click="chooseSubject(item)"
-                >
-                  {{ item.display_name || item.username || item.name || item.id }}
-                </button>
-              </div>
-              <button class="btn btn-secondary" type="submit" :disabled="actionBusy === 'grant' || !grantForm.subjectID">
-                {{ actionBusy === 'grant' ? '授权中…' : '授权到当前组' }}
-              </button>
-            </form>
-          </section>
+            <p v-else-if="selectedGrants.length" class="access-dir__pane-empty">没有匹配的授权。</p>
+            <p v-else class="access-dir__pane-empty">还没有人被授权到这个组。</p>
+            <p v-if="hiddenGrantCount" class="access-dir__hint">还有 {{ hiddenGrantCount }} 人未显示，请继续搜索。</p>
+          </div>
 
-          <section class="resource-panel" aria-label="组成员">
-            <h3>组成员</h3>
-            <p>按类型查看当前组内资源。移动和解绑只改变所属组，不修改业务配置。</p>
-            <div v-for="kind in resourceKindOptions" :key="kind.id" class="resource-members" :data-test="`members-${kind.id}`">
-              <h4>{{ kind.label }}</h4>
-              <p v-if="!membersOf(kind.id).length" class="resource-empty">无</p>
-              <ul v-else>
-                <li v-for="item in membersOf(kind.id)" :key="resourceKey(item)">
-                  <span>
-                    <strong>{{ resourceLabel(item) }}</strong>
-                    <small v-if="item.context">{{ item.context }}</small>
-                  </span>
-                  <span v-if="canAdmin" class="resource-members__actions">
-                    <button
-                      class="btn btn-secondary"
-                      type="button"
-                      data-test="move-member"
-                      :disabled="!!actionBusy || !moveTargetID"
-                      @click="requestMove(item)"
-                    >
-                      移动
-                    </button>
-                    <button
-                      class="btn btn-secondary"
-                      type="button"
-                      data-test="unbind-member"
-                      :disabled="!!actionBusy"
-                      @click="requestUnbind(item)"
-                    >
-                      解绑
-                    </button>
-                  </span>
-                </li>
-              </ul>
+          <form v-if="canAdmin" class="access-dir__pane" data-test="grant-form" @submit.prevent="submitGrant">
+            <div class="access-dir__pane-head">
+              <strong>添加授权</strong>
             </div>
-          </section>
+            <SubjectSearchSelect
+              v-model="grantForm.subjectID"
+              :kind="grantForm.subjectKind"
+              :users="users"
+              :roles="roles"
+              :exclude="excludedGrantSubjects"
+              :disabled="!!actionBusy"
+              data-test="subject-search"
+              @update:kind="grantForm.subjectKind = $event || grantForm.subjectKind"
+              @update:selected="onPendingGrants"
+              @select="onSubjectSelected"
+            />
+            <small v-if="directoryError" class="access-dir__muted">
+              {{ directoryError }}
+              <button class="text-button" type="button" data-test="retry-directory" @click="loadDirectory">重试</button>
+            </small>
+            <button
+              class="btn btn-primary"
+              type="submit"
+              data-test="grant-submit"
+              :disabled="actionBusy === 'grant' || !pendingGrants.length"
+            >
+              {{ actionBusy === 'grant'
+                ? '授权中…'
+                : (pendingGrants.length > 1 ? `授权已选 ${pendingGrants.length} 人` : '授权到当前组') }}
+            </button>
+          </form>
+        </section>
 
-          <section v-if="canAdmin" class="resource-panel" aria-label="绑定资源">
-            <h3>查找并移动资源</h3>
-            <p>按类型和名称搜索已有资源，再移动到当前组或解除显式绑定。不必手填内部 ID。</p>
+        <section v-else class="access-dir__directory" aria-label="组成员">
+          <div class="access-dir__pane">
+            <div class="access-dir__pane-head">
+              <strong>当前资源</strong>
+              <span>{{ allMembers.length }}</span>
+            </div>
+            <div v-if="allMembers.length" class="access-dir__toolbar">
+              <div class="access-dir__kinds" role="tablist" aria-label="资源类型">
+                <button
+                  type="button"
+                  class="access-dir__chip"
+                  :class="{ 'access-dir__chip--active': !memberKind }"
+                  @click="memberKind = ''"
+                >全部</button>
+                <button
+                  v-for="kind in resourceKindOptions"
+                  :key="kind.id"
+                  type="button"
+                  class="access-dir__chip"
+                  :class="{ 'access-dir__chip--active': memberKind === kind.id }"
+                  @click="memberKind = kind.id"
+                >{{ kind.label }}</button>
+              </div>
+              <div class="search-field">
+                <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+                <input
+                  v-model="memberQuery"
+                  type="search"
+                  placeholder="搜索当前组内资源"
+                  aria-label="搜索当前组内资源"
+                >
+              </div>
+            </div>
+            <div v-for="kind in populatedMemberKinds" :key="kind.id" :data-test="`members-${kind.id}`" hidden>
+              {{ kind.label }}
+            </div>
+            <ul v-if="filteredMembers.length" class="access-dir__people">
+              <li v-for="item in filteredMembers" :key="resourceKey(item)">
+                <span class="access-dir__person">
+                  <strong>{{ resourceLabel(item) }}</strong>
+                  <small>{{ kindLabel(resourceKindOf(item)) }}<template v-if="item.context"> · {{ item.context }}</template></small>
+                </span>
+                <span v-if="canAdmin" class="access-dir__row-actions">
+                  <BaseIconButton
+                    tone="danger"
+                    title="解绑回默认组"
+                    :data-test="`unbind-${resourceKindOf(item)}-${resourceIDOf(item)}`"
+                    :disabled="!!actionBusy"
+                    @click="requestUnbind(item)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </BaseIconButton>
+                </span>
+              </li>
+            </ul>
+            <p v-else-if="allMembers.length" class="access-dir__pane-empty">没有匹配的资源。</p>
+            <p v-else class="access-dir__pane-empty">这个组还没有绑定资源。</p>
+            <p v-if="hiddenMemberCount" class="access-dir__hint">还有 {{ hiddenMemberCount }} 项未显示，请继续搜索。</p>
+          </div>
+
+          <div v-if="canAdmin" class="access-dir__pane" aria-label="绑定资源">
+            <div class="access-dir__pane-head">
+              <strong>从其他组移入</strong>
+            </div>
             <ResourceSearchSelect
               v-model="selectedResource"
               :groups="visibleGroups"
-              :members="selectedGroup.members"
               :kind="bindForm.resourceKind"
               :query="resourceQuery"
               :writable="canAdmin"
               :disabled="!!actionBusy"
               :target-group-id="selectedID"
+              :show-current-members="false"
               @update:kind="onResourceKindChange"
               @update:query="resourceQuery = $event"
               @select="onResourceSelected"
               @move="onSelectorMove"
               @unbind="onSelectorUnbind"
             />
-          </section>
-        </div>
-
-        <div v-else class="resource-detail resource-detail--empty">
-          <strong>{{ isEmptyDirectory ? '当前没有可见资源组' : '选择一个资源组' }}</strong>
-          <p v-if="canEdit && isEmptyDirectory">创建一个组后，再把它授权给用户或绑定已有资源。</p>
-          <p v-else-if="query.trim()">没有匹配的资源组，可清空搜索后再试。</p>
-          <p v-else>请联系管理员把你加入至少一个资源组。</p>
-        </div>
-      </section>
-
-      <section v-if="canEdit" class="resource-create" aria-label="创建资源组">
-        <h2>创建资源组</h2>
-        <p>名称面向人看；系统会生成内部 ID。默认组 {{ defaultGroupVisible ? '已可见' : '不可见' }}，不必手填它的 ID。</p>
-        <form class="resource-form" data-test="create-form" @submit.prevent="submitCreate">
-          <label>
-            <span>名称</span>
-            <input v-model="createForm.name" data-test="create-group-name" type="text" placeholder="例如 团队组">
-            <small v-if="fieldMessage('name')" class="resource-field-error">{{ fieldMessage('name') }}</small>
-          </label>
-          <label>
-            <span>说明</span>
-            <input v-model="createForm.description" data-test="create-group-description" type="text" placeholder="可选">
-          </label>
-          <button class="btn btn-primary" type="submit" :disabled="actionBusy === 'create' || !createForm.name.trim()">
-            {{ actionBusy === 'create' ? '创建中…' : '创建资源组' }}
-          </button>
-        </form>
-      </section>
-    </template>
+          </div>
+        </section>
+      </div>
+    </BaseModal>
 
     <div
       v-if="confirmDialog"
       ref="confirmDialogEl"
-      class="resource-dialog-overlay"
+      class="access-dir__dialog-overlay"
       data-test="confirm-dialog"
       role="dialog"
       aria-modal="true"
@@ -868,10 +1212,10 @@ async function confirmDanger() {
       @keydown.escape.prevent="cancelConfirm"
       @click.self="cancelConfirm"
     >
-      <div class="resource-dialog">
+      <div class="access-dir__dialog">
         <h3 id="resource-confirm-title">{{ confirmDialog.title }}</h3>
         <p>{{ confirmDialog.message }}</p>
-        <div class="resource-dialog__actions">
+        <div class="access-dir__dialog-actions">
           <button class="btn btn-secondary" type="button" data-test="confirm-cancel" @click="cancelConfirm">取消</button>
           <button
             class="btn btn-primary"
@@ -887,226 +1231,3 @@ async function confirmDanger() {
     </div>
   </main>
 </template>
-
-<style scoped>
-.resource-groups-page {
-  max-width: 1180px;
-  display: grid;
-  gap: var(--space-6);
-  margin: 0 auto;
-}
-
-.resource-groups-page__loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  padding: 4rem 2rem;
-  color: var(--color-text-muted);
-}
-
-.back-link {
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  text-decoration: none;
-}
-
-.back-link:hover {
-  color: var(--color-primary);
-}
-
-.resource-alert,
-.resource-field-error {
-  color: var(--color-danger);
-}
-
-.resource-workspace {
-  display: grid;
-  grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
-  gap: var(--space-5);
-}
-
-.resource-list,
-.resource-detail,
-.resource-create,
-.resource-blockers {
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-surface);
-}
-
-.resource-list__heading,
-.resource-detail__header,
-.resource-grants li,
-.resource-members li,
-.resource-catalog li {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
-  align-items: center;
-}
-
-.resource-list__item,
-.resource-catalog__item {
-  display: flex;
-  width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.resource-list__item span,
-.resource-catalog__item,
-.resource-members li span {
-  display: grid;
-  gap: 2px;
-}
-
-.resource-list__item--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
-.resource-list__empty,
-.resource-empty,
-.resource-notice,
-.resource-detail p,
-.resource-create p,
-.resource-blockers p {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-}
-
-.resource-detail h2,
-.resource-create h2,
-.resource-panel h3,
-.resource-members h4,
-.resource-blockers h3,
-.resource-dialog h3 {
-  margin: 0;
-}
-
-.resource-facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-  gap: var(--space-3);
-  margin: 0;
-}
-
-.resource-facts dt {
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
-}
-
-.resource-facts dd {
-  margin: 0.25rem 0 0;
-}
-
-.resource-panel {
-  display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--color-border-subtle);
-}
-
-.resource-grants,
-.resource-members ul,
-.resource-catalog,
-.resource-blockers ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.resource-subject-options {
-  display: grid;
-  gap: var(--space-2);
-  grid-column: 1 / -1;
-}
-
-.resource-subject-option {
-  width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.resource-subject-option--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
-.resource-search,
-.resource-form,
-.resource-form__actions,
-.resource-members__actions,
-.resource-dialog__actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
-  gap: var(--space-3);
-  align-items: end;
-}
-
-.resource-form label,
-.resource-search label {
-  display: grid;
-  gap: var(--space-2);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.resource-form input,
-.resource-form select,
-.resource-search input {
-  min-width: 0;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-canvas);
-  color: var(--color-text-primary);
-  font: inherit;
-}
-
-.resource-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  background: rgba(15, 23, 42, 0.4);
-  z-index: var(--z-modal, 40);
-}
-
-.resource-dialog {
-  display: grid;
-  gap: var(--space-4);
-  width: min(28rem, 100%);
-  padding: var(--space-5);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-surface);
-}
-
-.resource-dialog p {
-  margin: 0;
-}
-
-@media (max-width: 800px) {
-  .resource-workspace {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

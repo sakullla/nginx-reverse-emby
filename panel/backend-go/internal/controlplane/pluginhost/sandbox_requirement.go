@@ -129,7 +129,8 @@ func knownControlSandboxPermission(value string) bool {
 
 func knownControlSandboxExtension(value string) bool {
 	switch value {
-	case "http.request", "http.response", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider", "ui.route":
+	case "http.request", "http.response", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider",
+		pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup:
 		return true
 	default:
 		return false

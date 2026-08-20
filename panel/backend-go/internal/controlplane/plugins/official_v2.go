@@ -24,6 +24,7 @@ type officialMarketManifestV2 struct {
 type officialMarketPackageV2 struct {
 	ID             string          `yaml:"id"`
 	Version        string          `yaml:"version"`
+	Name           string          `yaml:"name,omitempty"`
 	Description    string          `yaml:"description"`
 	Capabilities   []string        `yaml:"capabilities"`
 	Compatibility  Compatibility   `yaml:"compatibility"`
@@ -89,7 +90,7 @@ func (v *Validator) validateOfficialMarketV2Snapshot(root, sourceRoot string, ma
 	projection := MarketManifest{SchemaVersion: 2, Name: "Sakullla Official", Entries: make([]MarketEntry, 0, len(market.Packages))}
 	for _, entry := range market.Packages {
 		projection.Entries = append(projection.Entries, MarketEntry{
-			ID: entry.ID, Version: entry.Version, Description: entry.Description, Capabilities: append([]string(nil), entry.Capabilities...), Compatibility: entry.Compatibility,
+			ID: entry.ID, Version: entry.Version, Name: strings.TrimSpace(entry.Name), Description: entry.Description, Capabilities: append([]string(nil), entry.Capabilities...), Compatibility: entry.Compatibility,
 			Runtime: RuntimeIndex{Kind: entry.Runtime, ABI: entry.ABI, HostScope: entry.HostScope, PolicyKind: entry.PolicyKind}, Artifacts: append([]ArtifactIndex(nil), entry.Artifacts...),
 			PackagePath: entry.PackageURL, PackageSHA256: entry.PackageSHA256, BlobSHA256: entry.BlobSHA256, BlobSize: entry.BlobSize, BlobFormat: entry.BlobFormat,
 			SignatureKeyID: entry.SignerIdentity, Provenance: "sakullla-plugins", Official: true,

@@ -2,41 +2,228 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchPluginLogs } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
-const props = defineProps({ pluginId: { type: String, required: true }, instanceId: { type: String, required: true }, agents: { type: Array, default: () => [] } })
-const entries = ref([]); const nextCursor = ref(''); const agentID = ref(''); const loading = ref(false); const error = ref('')
+import BaseBadge from '../base/BaseBadge.vue'
+
+const props = defineProps({
+  pluginId: { type: String, required: true },
+  instanceId: { type: String, required: true },
+  agents: { type: Array, default: () => [] }
+})
+
+const entries = ref([])
+const agentID = ref('')
+const loading = ref(false)
+const error = ref('')
 let generation = 0
 let controller = null
-onMounted(() => load(false, true))
-watch(() => [props.pluginId, props.instanceId, agentID.value], () => load(false, true))
+
+onMounted(() => load(true))
+watch(() => [props.pluginId, props.instanceId, agentID.value], () => load(true))
 onBeforeUnmount(() => controller?.abort())
-async function load(more, selectionChanged = false) {
-	if (loading.value && !selectionChanged) return
-	if (selectionChanged) controller?.abort()
-	const requestGeneration = ++generation
-	controller = new AbortController()
-	loading.value = true; error.value = ''
-	const identity = { pluginID: props.pluginId, instanceID: props.instanceId, agentID: agentID.value }
-	try {
-		const page = await fetchPluginLogs(identity.pluginID, identity.instanceID, { agentID: identity.agentID, cursor: more ? nextCursor.value : '', limit: 50, signal: controller.signal })
-		if (requestGeneration !== generation) return
-		entries.value = more ? entries.value.concat(page.entries) : page.entries
-		nextCursor.value = page.next_cursor
-	} catch (cause) {
-		if (requestGeneration === generation && cause?.name !== 'AbortError' && cause?.code !== 'ERR_CANCELED') error.value = sanitizePluginText(cause?.message || '读取运行日志失败')
-	} finally { if (requestGeneration === generation) loading.value = false }
+
+async function load(selectionChanged = false) {
+  if (loading.value && !selectionChanged) return
+  if (selectionChanged) controller?.abort()
+  const requestGeneration = ++generation
+  controller = new AbortController()
+  loading.value = true
+  error.value = ''
+  const identity = { pluginID: props.pluginId, instanceID: props.instanceId, agentID: agentID.value }
+  try {
+    const page = await fetchPluginLogs(identity.pluginID, identity.instanceID, {
+      agentID: identity.agentID,
+      cursor: '',
+      limit: 5,
+      signal: controller.signal
+    })
+    if (requestGeneration !== generation) return
+    entries.value = [...page.entries]
+      .sort((left, right) => {
+        const leftTime = Date.parse(left?.created_at || '') || 0
+        const rightTime = Date.parse(right?.created_at || '') || 0
+        return rightTime - leftTime
+      })
+      .slice(0, 5)
+  } catch (cause) {
+    if (requestGeneration === generation && cause?.name !== 'AbortError' && cause?.code !== 'ERR_CANCELED') {
+      error.value = sanitizePluginText(cause?.message || '读取运行日志失败')
+    }
+  } finally {
+    if (requestGeneration === generation) loading.value = false
+  }
+}
+
+function levelTone(level) {
+  const value = String(level || '').toLowerCase()
+  if (['error', 'fatal', 'panic'].includes(value)) return 'danger'
+  if (['warning', 'warn'].includes(value)) return 'warning'
+  if (['debug', 'trace'].includes(value)) return 'neutral'
+  return 'primary'
+}
+
+function formatStamp(value) {
+  const parsed = Date.parse(value || '')
+  if (!Number.isFinite(parsed) || parsed <= 0) return value || '—'
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }).format(new Date(parsed))
+  } catch {
+    return value || '—'
+  }
 }
 </script>
 
 <template>
   <div class="plugin-log-viewer">
-    <label>Agent 过滤<select v-model="agentID"><option value="">全部可见 Agent</option><option v-for="agent in agents" :key="agent" :value="agent">{{ agent }}</option></select></label>
-    <p v-if="error" role="alert">{{ error }}</p>
-    <ol v-else class="plugin-log-list"><li v-for="(entry, index) in entries" :key="`${entry.created_at}-${index}`" :data-level="entry.level"><time>{{ entry.created_at }}</time><strong>{{ entry.agent_id }}</strong><span>{{ entry.message }}</span><em v-if="entry.truncated">已截断</em></li></ol>
-    <p v-if="!loading && !entries.length">暂无宿主持久化运行日志。</p>
-    <button v-if="nextCursor" class="btn btn-secondary" type="button" :disabled="loading" @click="load(true)">{{ loading ? '读取中…' : '加载更早日志' }}</button>
+    <label class="plugin-log-viewer__filter">
+      <span>Agent 过滤</span>
+      <select v-model="agentID">
+        <option value="">全部可见 Agent</option>
+        <option v-for="agent in agents" :key="agent" :value="agent">{{ agent }}</option>
+      </select>
+    </label>
+
+    <p v-if="error" class="plugin-log-viewer__error" role="alert">{{ error }}</p>
+    <p v-else-if="loading && !entries.length" class="plugin-log-viewer__empty">正在读取运行日志…</p>
+    <ol v-else-if="entries.length" class="plugin-log-list">
+      <li v-for="(entry, index) in entries" :key="`${entry.created_at}-${index}`" :data-level="entry.level">
+        <header>
+          <BaseBadge :tone="levelTone(entry.level)" size="sm">{{ entry.level || 'info' }}</BaseBadge>
+          <strong>{{ entry.agent_id }}</strong>
+          <time :datetime="entry.created_at" :title="entry.created_at">{{ formatStamp(entry.created_at) }}</time>
+        </header>
+        <span>{{ entry.message }}</span>
+        <em v-if="entry.truncated">已截断</em>
+      </li>
+    </ol>
+    <p v-else-if="!loading && !entries.length" class="plugin-log-viewer__empty">暂无宿主持久化运行日志。</p>
   </div>
 </template>
 
 <style scoped>
-.plugin-log-viewer { display: grid; gap: var(--space-3); }.plugin-log-viewer label { display: flex; gap: var(--space-2); align-items: center; }.plugin-log-viewer select { padding: .5rem; }.plugin-log-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }.plugin-log-list li { min-width: 0; display: grid; grid-template-columns: minmax(10rem, auto) minmax(6rem, auto) minmax(0, 1fr) auto; gap: var(--space-2); padding: var(--space-2); background: var(--color-bg-subtle); }.plugin-log-list span { overflow-wrap: anywhere; }.plugin-log-list em { color: var(--color-warning); }@media (max-width: 42rem) { .plugin-log-list li { grid-template-columns: minmax(0, 1fr); } }
+.plugin-log-viewer {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.plugin-log-viewer__filter {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 22rem;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.plugin-log-viewer__filter select {
+  min-width: 0;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.plugin-log-viewer__error {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.plugin-log-viewer__empty {
+  margin: 0;
+  padding: 1.1rem 0.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.plugin-log-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-log-list li {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-bg-subtle) 45%, var(--color-bg-surface));
+}
+
+.plugin-log-list li[data-level='error'],
+.plugin-log-list li[data-level='fatal'] {
+  border-color: color-mix(in srgb, var(--color-danger) 28%, var(--color-border-subtle));
+}
+
+.plugin-log-list li[data-level='warning'],
+.plugin-log-list li[data-level='warn'] {
+  border-color: color-mix(in srgb, var(--color-warning) 28%, var(--color-border-subtle));
+}
+
+.plugin-log-list header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.plugin-log-list strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.plugin-log-list time {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.plugin-log-list span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.plugin-log-list em {
+  color: var(--color-warning);
+  font-size: 0.75rem;
+  font-style: normal;
+}
+
+@media (max-width: 42rem) {
+  .plugin-log-viewer__filter {
+    max-width: none;
+  }
+
+  .plugin-log-list header {
+    flex-wrap: wrap;
+  }
+
+  .plugin-log-list time {
+    margin-left: 0;
+    width: 100%;
+  }
+}
 </style>

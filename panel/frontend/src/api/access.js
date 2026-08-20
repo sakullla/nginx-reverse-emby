@@ -148,6 +148,9 @@ export function updateUser(id, input) {
     .then(body)
     .then((data) => omitSecrets(data.user))
 }
+export function deleteUser(id) {
+  return withAccessError(api.delete(userPath(id))).then(body)
+}
 export async function changePassword(input = {}) {
   const payload = await withAccessError(api.post('/access/me/password', {
     current_password: input.current_password,

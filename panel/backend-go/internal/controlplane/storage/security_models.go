@@ -63,11 +63,11 @@ type ResourceGroupRow struct {
 }
 
 type ResourceGroupGrantRow struct {
-	ID              string    `gorm:"primaryKey;size:64"`
-	SubjectKind     string    `gorm:"uniqueIndex:idx_group_grant;size:16;not null"`
-	SubjectID       string    `gorm:"uniqueIndex:idx_group_grant;size:64;not null"`
-	ResourceGroupID string    `gorm:"uniqueIndex:idx_group_grant;size:64;not null"`
-	CreatedAt       time.Time `gorm:"not null"`
+	ID              string    `gorm:"primaryKey;size:64" json:"id"`
+	SubjectKind     string    `gorm:"uniqueIndex:idx_group_grant;size:16;not null" json:"subject_kind"`
+	SubjectID       string    `gorm:"uniqueIndex:idx_group_grant;size:64;not null" json:"subject_id"`
+	ResourceGroupID string    `gorm:"uniqueIndex:idx_group_grant;size:64;not null" json:"resource_group_id"`
+	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
 }
 
 type ResourceBindingRow struct {

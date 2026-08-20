@@ -36,6 +36,7 @@ type PluginCapabilityManagerStore interface {
 	ClaimPluginCapabilityOperation(context.Context, string, string, string, string, string, time.Time, time.Time) (storage.IdempotencyRecordRow, bool, error)
 	RenewPluginCapabilityOperation(context.Context, string, string, string, string, time.Time) error
 	CompletePluginCapabilityOperation(context.Context, string, string, string, string, string) error
+	GetIdempotencyRecord(context.Context, string, string) (storage.IdempotencyRecordRow, bool, error)
 }
 
 type PluginCapabilityRuntime interface {
@@ -87,7 +88,6 @@ type PluginCapabilityManager struct {
 	operationLocks     map[string]*pluginCapabilityOperationLock
 	secretVault        *secrets.Vault
 	trafficSummary     PluginCapabilityTrafficSummaryProvider
-	cloudflare         cloudflareDNSClient
 	dockerSocket       string
 }
 
@@ -100,7 +100,7 @@ func NewPluginCapabilityManager(store PluginCapabilityManagerStore, resourceAuth
 	if store == nil || resourceAuthorizer == nil || runtime == nil || packages == nil {
 		return nil, errors.New("plugin capability durable store, authorization owner, package validator, and runtime are required")
 	}
-	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock), cloudflare: newHTTPCloudflareClient("", 10*time.Second), dockerSocket: storage.PluginCapabilityDockerSocketPath}
+	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock), dockerSocket: storage.PluginCapabilityDockerSocketPath}
 	manager.loadPackage = packages.loadValidatedCapabilityPackage
 	return manager, nil
 }
@@ -444,34 +444,7 @@ func (manager *PluginCapabilityManager) executeResourceCall(ctx context.Context,
 			Blocked           bool    `json:"blocked"`
 		}{summary.AgentID, summary.CycleStart, summary.CycleEnd, summary.RXBytes, summary.TXBytes, summary.AccountedBytes, summary.UsedBytes, summary.MonthlyQuotaBytes, summary.QuotaPercent, summary.RemainingBytes, summary.OverQuota, summary.Blocked})
 	case pluginsdk.RPCResourceDNSApply:
-		if manager.secretVault == nil || manager.cloudflare == nil || (binding.Kind != "secret" && binding.Kind != "vault.secret") {
-			return nil, errors.New("Cloudflare DNS resource adapter is unavailable")
-		}
-		var input struct {
-			FQDN    string `json:"fqdn"`
-			Type    string `json:"type"`
-			Content string `json:"content"`
-			TTL     int    `json:"ttl"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(call.Input))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.FQDN) == "" || (input.Type != "A" && input.Type != "AAAA") || strings.TrimSpace(input.Content) == "" || input.TTL < 60 || input.TTL > 86400 {
-			return nil, errors.New("Cloudflare DNS resource request is invalid")
-		}
-		token, err := manager.secretVault.Resolve(ctx, secrets.OperationContext{ActorID: request.Actor.ID, SessionID: request.Actor.SessionID, ResourceGroupID: binding.ResourceGroupID}, binding.ID)
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			for index := range token {
-				token[index] = 0
-			}
-		}()
-		outcome, err := manager.cloudflare.EnsureRecord(ctx, string(token), strings.TrimSpace(input.FQDN), input.Type, strings.TrimSpace(input.Content), input.TTL)
-		if err != nil {
-			return nil, err
-		}
-		return pluginCapabilityResourceJSON(map[string]any{"action": outcome.Action})
+		return manager.store.ExecutePluginCapabilityResourceCall(ctx, binding, call)
 	case pluginsdk.RPCResourceDockerRequest:
 		if binding.Kind != "docker.socket" || runtime.GOOS == "windows" || strings.TrimSpace(manager.dockerSocket) == "" {
 			return nil, errors.New("Docker resource adapter is unavailable")
