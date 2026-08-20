@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM golang:1.26.5-trixie AS go-builder
+FROM golang:1.27.0-trixie AS go-builder
 ARG GO_AGENT_LDFLAGS="-s -w"
 WORKDIR /src
 COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent ./cmd/nre-agent
 
-FROM golang:1.26.5-trixie AS backend-go-builder
+FROM golang:1.27.0-trixie AS backend-go-builder
 ARG APP_VERSION=dev
 ARG BUILD_TIME=dev
 ARG GO_VERSION=dev

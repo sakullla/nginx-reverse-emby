@@ -1,6 +1,6 @@
 module github.com/sakullla/nginx-reverse-emby/panel/backend-go
 
-go 1.26.5
+go 1.27.0
 
 require (
 	github.com/glebarez/sqlite v1.11.0

@@ -1,6 +1,6 @@
 module github.com/sakullla/nginx-reverse-emby/go-agent
 
-go 1.26.5
+go 1.27.0
 
 require (
 	github.com/quic-go/quic-go v0.61.0

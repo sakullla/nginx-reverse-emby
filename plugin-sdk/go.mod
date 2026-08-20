@@ -1,6 +1,6 @@
 module github.com/sakullla/nginx-reverse-emby/plugin-sdk
 
-go 1.26.5
+go 1.27.0
 
 require (
 	github.com/bufbuild/protocompile v0.14.1
