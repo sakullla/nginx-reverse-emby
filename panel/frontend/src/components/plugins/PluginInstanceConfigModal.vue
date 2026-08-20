@@ -154,12 +154,26 @@ function documentNeedsHttpRuleOptions(document) {
   return needed
 }
 
-function documentHasRequiredHttpRule(components) {
-  let required = false
-  walkUIComponents(components, (component) => {
-    if (component.options_source === 'http_rule' && component.required) required = true
-  })
-  return required
+function hasMissingRequiredHttpRule(components, model, base = '') {
+  for (const component of components || []) {
+    if (!component || typeof component !== 'object') continue
+    const pointer = base + (component.binding || '')
+    if (component.options_source === 'http_rule' && component.required) {
+      const current = resolvePointer(model, pointer)
+      if (typeof current !== 'string' || !current.trim()) return true
+    }
+    if (component.type === 'array') {
+      const items = resolvePointer(model, pointer)
+      if (Array.isArray(items) && Array.isArray(component.children)) {
+        for (const index of items.keys()) {
+          if (hasMissingRequiredHttpRule(component.children, model, `${pointer}/${index}`)) return true
+        }
+      }
+    } else if (Array.isArray(component.children) && hasMissingRequiredHttpRule(component.children, model, base)) {
+      return true
+    }
+  }
+  return false
 }
 
 function collectBoundHttpRuleValues(components, model, base = '', acc = []) {
@@ -336,8 +350,7 @@ function startNewPublish() {
 
 async function save(payload) {
   if (!props.canWrite || !props.instance || busy.value) return
-  if (httpRuleBlocker.value && documentHasRequiredHttpRule(props.document?.components)
-    && !collectBoundHttpRuleValues(props.document?.components, payload?.config).length) {
+  if (httpRuleBlocker.value && hasMissingRequiredHttpRule(props.document?.components, payload?.config)) {
     error.value = httpRuleBlocker.value
     return
   }

@@ -123,6 +123,10 @@ function constraintHint(component) {
     if (component.min_length != null && component.max_length != null) parts.push(`${component.min_length}–${component.max_length} 字符`)
     else if (component.min_length != null) parts.push(`≥ ${component.min_length} 字符`)
     else if (component.max_length != null) parts.push(`≤ ${component.max_length} 字符`)
+  } else if (component.type === 'array' || component.type === 'multiselect') {
+    if (component.min_items > 0 && component.max_items != null) parts.push(`${component.min_items}–${component.max_items} 项`)
+    else if (component.min_items > 0) parts.push(`≥ ${component.min_items} 项`)
+    else if (component.max_items != null) parts.push(`≤ ${component.max_items} 项`)
   }
   return parts.join(' · ')
 }
@@ -244,7 +248,7 @@ const error = computed(() => {
           <button class="btn btn-secondary btn-sm" type="button" :disabled="component.read_only" @click="removeItem(index)">移除</button>
         </div>
       </template>
-      <button class="btn btn-secondary btn-sm declarative-array__add" type="button" :disabled="component.read_only" @click="addItem">+ 添加</button>
+      <button class="btn btn-secondary btn-sm declarative-array__add" type="button" :disabled="component.read_only || (component.max_items != null && items.length >= component.max_items)" @click="addItem">+ 添加</button>
     </div>
   </template>
 </template>

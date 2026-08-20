@@ -126,6 +126,15 @@ function schemaEnumOptions(field) {
     .map((item) => ({ value: item, label: String(item) }))
 }
 
+function withSchemaArrayConstraints(component, field, required) {
+  const minimum = Number.isInteger(field.minItems) && field.minItems >= 0 ? field.minItems : 0
+  component.min_items = minimum
+  if (Number.isInteger(field.maxItems) && field.maxItems >= 0) component.max_items = field.maxItems
+  if (field.default !== undefined) component.default = field.default
+  else if (required && minimum === 0) component.default = []
+  return component
+}
+
 function synthesizeComponent(name, field, pointerPrefix, required) {
   if (!field || typeof field !== 'object' || Array.isArray(field)) return []
   // hostInjected properties are written by the host and stay off the fill-in UI.
@@ -158,14 +167,13 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
     case 'array': {
       const items = field.items
       if (items && typeof items === 'object' && !Array.isArray(items) && (items.type === 'object' || items.properties)) {
-        return [{ type: 'array', ...identity, ...annotation, binding: pointer, required, children: synthesizeObjectProperties(items, '') }]
+        return [withSchemaArrayConstraints({ type: 'array', ...identity, ...annotation, binding: pointer, required, children: synthesizeObjectProperties(items, '') }, field, required)]
       }
       if (items && typeof items === 'object' && !Array.isArray(items) && items.type === 'string' && Array.isArray(items.enum) && items.enum.length && items.enum.every((item) => typeof item === 'string')) {
         const component = { type: 'multiselect', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(items) }
-        if (field.default !== undefined) component.default = field.default
-        return [component]
+        return [withSchemaArrayConstraints(component, field, required)]
       }
-      return [{ type: 'array', ...identity, ...annotation, binding: pointer, required }]
+      return [withSchemaArrayConstraints({ type: 'array', ...identity, ...annotation, binding: pointer, required }, field, required)]
     }
     case 'boolean': {
       const component = { type: 'toggle', ...identity, ...annotation, binding: pointer, required }
@@ -236,6 +244,17 @@ export function schemaToUIComponents(schema) {
 
 export function fieldConstraintError(component, current) {
   if (!component || typeof component !== 'object' || component.read_only) return ''
+  // Synthesized JSON Schema arrays carry min_items (including zero). For
+  // these components `required` means the property must exist; it does not
+  // make an empty array invalid unless minItems says so. Declarative UI
+  // components without min_items keep their historical non-empty semantics.
+  if ((component.type === 'array' || component.type === 'multiselect') && component.min_items != null) {
+    if (current === undefined || current === null) return component.required ? '此项为必填' : ''
+    if (!Array.isArray(current)) return '格式不匹配'
+    if (current.length < component.min_items) return `至少 ${component.min_items} 项`
+    if (component.max_items != null && current.length > component.max_items) return `最多 ${component.max_items} 项`
+    return ''
+  }
   if (isEmptyValue(current)) return component.required ? '此项为必填' : ''
   if (component.type === 'number') {
     if (component.minimum != null && current < component.minimum) return `不能小于 ${component.minimum}`

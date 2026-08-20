@@ -30,7 +30,11 @@ function seedDefaults() {
       if (component.type === 'section' || component.type === 'grid') {
         walk(component.children || [], basePointer)
       } else if (component.type === 'array') {
-        const items = resolvePointer(model, full)
+        let items = resolvePointer(model, full)
+        if (items === undefined && component.default !== undefined) {
+          setValue(full, clone(component.default))
+          items = resolvePointer(model, full)
+        }
         if (Array.isArray(items) && Array.isArray(component.children) && component.children.length) {
           items.forEach((item, index) => walk(component.children, `${full}/${index}`))
         }

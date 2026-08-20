@@ -880,6 +880,41 @@ describe('PluginDetailPage', () => {
     }))
   })
 
+  it('saves an empty required array when the schema does not declare minItems', async () => {
+    const detail = makeDetail({
+      package: {
+        ...makeDetail().package,
+        config_schema: {
+          type: 'object',
+          required: ['apps'],
+          properties: {
+            apps: {
+              type: 'array',
+              maxItems: 128,
+              items: {
+                type: 'object',
+                required: ['image', 'rule_ref'],
+                properties: {
+                  image: { type: 'string', minLength: 1 },
+                  rule_ref: { type: 'string', minLength: 1 }
+                }
+              }
+            }
+          }
+        }
+      },
+      instances: [makeInstance({ config: {} })]
+    })
+    const wrapper = await mountPage(detail)
+    const modal = await openConfigModal(wrapper)
+    await modalButton(modal, '保存配置').trigger('click')
+    await flushPromises()
+    expect(modal.text()).not.toContain('此项为必填')
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      config: { apps: [] }
+    }))
+  })
+
   it('opens the undeployed primary action into the deploy modal instead of an inline config form', async () => {
     const wrapper = await mountPage(undeployedDetail())
     expect(deployModal(wrapper).exists()).toBe(false)

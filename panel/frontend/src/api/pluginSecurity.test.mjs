@@ -64,13 +64,36 @@ describe('plugin UI security boundary', () => {
         children: [{ type: 'secret', id: 'token', label: 'token', description: '', binding: '/credentials/token', required: false }]
       },
       {
-        type: 'array', id: 'upstreams', label: 'upstreams', description: '', binding: '/upstreams', required: false,
+        type: 'array', id: 'upstreams', label: 'upstreams', description: '', binding: '/upstreams', required: false, min_items: 0,
         children: [
           { type: 'text', id: 'host', label: 'host', description: '', binding: '/host', required: false },
           { type: 'number', id: 'port', label: 'port', description: '', binding: '/port', required: false }
         ]
       },
-      { type: 'array', id: 'tags', label: 'tags', description: '', binding: '/tags', required: false }
+      { type: 'array', id: 'tags', label: 'tags', description: '', binding: '/tags', required: false, min_items: 0 }
+    ])
+  })
+
+  it('keeps a required schema array empty unless minItems requires entries', () => {
+    const [apps] = schemaToUIComponents({
+      type: 'object',
+      required: ['apps'],
+      properties: {
+        apps: { type: 'array', maxItems: 128, items: { type: 'object', properties: { image: { type: 'string' } } } }
+      }
+    })
+    expect(apps).toMatchObject({ required: true, min_items: 0, max_items: 128, default: [] })
+    expect(collectDeclarativeConstraintErrors([apps], { apps: [] })).toEqual([])
+
+    const [nonEmptyApps] = schemaToUIComponents({
+      type: 'object',
+      required: ['apps'],
+      properties: {
+        apps: { type: 'array', minItems: 1, items: { type: 'object', properties: { image: { type: 'string' } } } }
+      }
+    })
+    expect(collectDeclarativeConstraintErrors([nonEmptyApps], { apps: [] })).toEqual([
+      { pointer: '/apps', message: '至少 1 项' }
     ])
   })
 

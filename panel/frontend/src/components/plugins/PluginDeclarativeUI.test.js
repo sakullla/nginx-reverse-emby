@@ -183,6 +183,21 @@ describe('PluginDeclarativeUI', () => {
     expect(wrapper.emitted('submit')[0][0].config).toEqual({ enabled: false, name: 'default-name', mode: 'basic' })
   })
 
+  it('seeds an empty required schema array and allows it to submit', async () => {
+    const arrayDocument = {
+      schema_version: 1,
+      title: 'Arrays',
+      components: [
+        { type: 'array', id: 'apps', label: 'apps', binding: '/apps', required: true, min_items: 0, default: [], children: [{ type: 'text', id: 'image', label: '镜像', binding: '/image', required: true }] }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: arrayDocument, config: {}, canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ apps: [] })
+    expect(wrapper.text()).not.toContain('此项为必填')
+  })
+
   it('round-trips numeric enum values through a select', async () => {
     const numericDocument = {
       schema_version: 1,
