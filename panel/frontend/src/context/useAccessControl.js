@@ -141,6 +141,21 @@ export function resourceGroupDisplayName(group) {
   return group.name || group.id
 }
 
+const STOCK_DEFAULT_DESCRIPTIONS = new Set([
+  '',
+  'default',
+  'resources not explicitly assigned to another group'
+])
+
+export function resourceGroupDisplayDescription(group) {
+  if (!group || typeof group !== 'object') return ''
+  const description = String(group.description || '').trim()
+  if (group.id === 'default' && STOCK_DEFAULT_DESCRIPTIONS.has(description.toLowerCase())) {
+    return '未另行指定的资源'
+  }
+  return description
+}
+
 export function useAccessControl() {
   const permissionSet = computed(() => new Set(actor.value?.permissions || []))
   const can = (permission) => permissionSet.value.has('*') || permissionSet.value.has(permission)

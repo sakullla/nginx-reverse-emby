@@ -2,7 +2,7 @@
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import BaseListCard from '../base/BaseListCard.vue'
-import { resourceGroupDisplayName } from '../../context/useAccessControl'
+import { resourceGroupDisplayDescription, resourceGroupDisplayName } from '../../context/useAccessControl'
 
 const props = defineProps({
   group: { type: Object, required: true },
@@ -16,6 +16,10 @@ defineEmits(['manage', 'delete'])
 
 function displayName() {
   return resourceGroupDisplayName(props.group)
+}
+
+function displayDescription() {
+  return resourceGroupDisplayDescription(props.group)
 }
 </script>
 
@@ -54,7 +58,7 @@ function displayName() {
       </BaseIconButton>
     </template>
 
-    <p class="rg-card__desc" :title="group.description || ''">{{ group.description || '暂无说明' }}</p>
+    <p class="rg-card__desc" :title="displayDescription() || ''">{{ displayDescription() || '暂无说明' }}</p>
     <template #footer>
       <span class="rg-card__stat">授权 <strong data-test="group-grant-count">{{ grantCount }}</strong></span>
       <span class="rg-card__stat">资源 <strong data-test="group-resource-count">{{ resourceCount }}</strong></span>

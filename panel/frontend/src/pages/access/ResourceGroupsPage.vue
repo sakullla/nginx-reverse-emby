@@ -14,7 +14,7 @@ import {
   unbindResource,
   updateResourceGroup
 } from '../../api/access'
-import { pickDefaultResourceGroupID, resourceGroupDisplayName, useAccessControl } from '../../context/useAccessControl'
+import { pickDefaultResourceGroupID, resourceGroupDisplayDescription, resourceGroupDisplayName, useAccessControl } from '../../context/useAccessControl'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseIconButton from '../../components/base/BaseIconButton.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
@@ -25,6 +25,7 @@ import ResourceGroupCard from '../../components/access/ResourceGroupCard.vue'
 import ResourceSearchSelect from '../../components/access/ResourceSearchSelect.vue'
 import SubjectSearchSelect from '../../components/access/SubjectSearchSelect.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
+import { previewResourceGroups } from './previewDirectory'
 import './accessDirectory.css'
 
 const resourceKindOptions = [
@@ -75,9 +76,9 @@ const grantQuery = ref('')
 const directoryError = ref('')
 const memberQuery = ref('')
 const memberKind = ref('')
-const bindForm = reactive({ resourceKind: 'agent' })
+const bindForm = reactive({ resourceKind: '' })
 const moveTargetID = ref('')
-const DIRECTORY_LIMIT = 80
+const DIRECTORY_LIMIT = 250
 
 const previewUnlocked = ref(false)
 const canRead = computed(() => can('resource.read') || can('*') || previewUnlocked.value)
@@ -103,6 +104,7 @@ const filteredGroups = computed(() => {
     const haystack = [
       resourceGroupDisplayName(group),
       group.name,
+      resourceGroupDisplayDescription(group),
       group.description,
       group.id
     ].join(' ').toLowerCase()
@@ -204,15 +206,11 @@ async function load() {
 }
 
 function applyPreviewGroups() {
-  groups.value = [
-    { id: 'default', name: '默认组', description: '未分组资源', builtin: true },
-    { id: 'team', name: '团队组', description: '团队可见资源', builtin: false }
-  ]
-  grants.value = []
-  users.value = [
-    { id: 'usr-admin', username: 'alice', display_name: 'Alice' }
-  ]
-  roles.value = [{ id: 'administrator', name: '管理员' }]
+  const preview = previewResourceGroups({ userCount: 200, memberCount: 200 })
+  groups.value = preview.groups
+  grants.value = preview.grants
+  users.value = preview.users
+  roles.value = preview.roles
   directoryError.value = ''
 }
 
@@ -387,6 +385,11 @@ function resourceGroupOf(item) {
   return item.resource_group_id || 'default'
 }
 
+function initialOf(value) {
+  const chars = Array.from(String(value || '').trim())
+  return chars.length ? chars[0].toUpperCase() : '?'
+}
+
 function fieldMessage(name) {
   return fieldErrors.value[name] || ''
 }
@@ -432,7 +435,7 @@ function closeModal() {
 }
 
 function onResourceKindChange(kind) {
-  bindForm.resourceKind = kind || 'agent'
+  bindForm.resourceKind = kind || ''
 }
 
 function onResourceSelected(item) {
@@ -904,7 +907,7 @@ async function confirmDanger() {
               <td>
                 <div class="access-dir__name">
                   <strong :title="resourceGroupDisplayName(group)">{{ resourceGroupDisplayName(group) }}</strong>
-                  <small :title="group.description || ''">{{ group.description || '暂无说明' }}</small>
+                  <small :title="resourceGroupDisplayDescription(group) || ''">{{ resourceGroupDisplayDescription(group) || '暂无说明' }}</small>
                 </div>
               </td>
               <td class="access-dir__col-kind">
@@ -978,8 +981,8 @@ async function confirmDanger() {
     <BaseModal
       :model-value="modal === 'manage' && !!selectedGroup"
       :title="selectedGroup ? resourceGroupDisplayName(selectedGroup) : '资源组'"
-      :subtitle="selectedGroup?.description || (selectedGroup?.id === 'default' ? '默认组始终可用作部署目标，不必手填内部 ID。' : '维护资料、授权和成员。')"
-      size="lg"
+      :subtitle="resourceGroupDisplayDescription(selectedGroup) || (selectedGroup?.id === 'default' ? '默认组始终可用作部署目标，不必手填内部 ID。' : '维护资料、授权和成员。')"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeModal"
     >
@@ -1001,43 +1004,121 @@ async function confirmDanger() {
 
         <BaseTabs v-model="manageTab" :tabs="manageTabs" />
 
-        <section v-if="manageTab === 'profile'" class="access-dir__panel" aria-label="编辑资源组">
-          <form v-if="canEdit && !selectedGroup.builtin" class="access-dir__form access-dir__form--compact" data-test="edit-form" @submit.prevent="submitEdit">
+        <section v-if="manageTab === 'profile'" class="access-dir__workspace" aria-label="编辑资源组">
+          <header class="access-dir__workspace-head">
+            <div>
+              <h3>资料</h3>
+              <p>
+                {{ selectedGroup.builtin
+                  ? '内置组可以查看，但不能改变系统身份。'
+                  : (canEdit ? '名称面向人看，保存后不会改内部 ID。' : '当前身份不能编辑该组。') }}
+              </p>
+            </div>
+          </header>
+
+          <form
+            v-if="canEdit && !selectedGroup.builtin"
+            class="access-dir__form"
+            data-test="edit-form"
+            @submit.prevent="submitEdit"
+          >
             <label class="access-dir__field">
               <span>名称</span>
-              <input v-model="editForm.name" data-test="edit-group-name" type="text">
+              <input v-model="editForm.name" data-test="edit-group-name" type="text" placeholder="例如 团队组">
               <small v-if="fieldMessage('name')" class="access-dir__field-error">{{ fieldMessage('name') }}</small>
             </label>
             <label class="access-dir__field">
               <span>说明</span>
-              <textarea v-model="editForm.description" data-test="edit-group-description" rows="3" placeholder="描述这个组给谁用"></textarea>
+              <textarea
+                v-model="editForm.description"
+                data-test="edit-group-description"
+                rows="4"
+                placeholder="描述这个组给谁用"
+              ></textarea>
             </label>
-            <button class="btn btn-secondary" type="submit" :disabled="actionBusy === 'edit'">
-              {{ actionBusy === 'edit' ? '保存中…' : '保存资料' }}
-            </button>
+            <div class="access-dir__workspace-footer">
+              <button
+                v-if="canAdmin"
+                class="btn btn-danger"
+                type="button"
+                data-test="delete-group"
+                :disabled="!!actionBusy"
+                @click="requestDelete(selectedGroup)"
+              >
+                删除资源组
+              </button>
+              <span v-else class="access-dir__workspace-footer-spacer"></span>
+              <button class="btn btn-primary" type="submit" :disabled="actionBusy === 'edit'">
+                {{ actionBusy === 'edit' ? '保存中…' : '保存资料' }}
+              </button>
+            </div>
           </form>
-          <p v-else class="access-dir__muted">
-            {{ selectedGroup.builtin ? '内置组可以查看，但不能改变系统身份。' : '当前身份不能编辑该组。' }}
-          </p>
-          <button
-            v-if="canAdmin && !selectedGroup.builtin"
-            class="btn btn-danger"
-            type="button"
-            data-test="delete-group"
-            :disabled="!!actionBusy"
-            @click="requestDelete(selectedGroup)"
-          >
-            删除资源组
-          </button>
+
+          <div v-else class="access-dir__profile-readonly" data-test="profile-readonly">
+            <dl class="access-dir__profile-facts">
+              <div>
+                <dt>名称</dt>
+                <dd>{{ resourceGroupDisplayName(selectedGroup) }}</dd>
+              </div>
+              <div>
+                <dt>说明</dt>
+                <dd>{{ resourceGroupDisplayDescription(selectedGroup) || '暂无说明' }}</dd>
+              </div>
+            </dl>
+            <div v-if="canAdmin && !selectedGroup.builtin" class="access-dir__workspace-footer">
+              <button
+                class="btn btn-danger"
+                type="button"
+                data-test="delete-group"
+                :disabled="!!actionBusy"
+                @click="requestDelete(selectedGroup)"
+              >
+                删除资源组
+              </button>
+            </div>
+          </div>
         </section>
 
-        <section v-else-if="manageTab === 'grants'" class="access-dir__directory" aria-label="授权">
-          <div class="access-dir__pane">
-            <div class="access-dir__pane-head">
-              <strong>已授权</strong>
-              <span>{{ selectedGrants.length }}</span>
+        <section v-else-if="manageTab === 'grants'" class="access-dir__workspace" aria-label="授权">
+          <form v-if="canAdmin" class="access-dir__compose access-dir__compose--flush" data-test="grant-form" @submit.prevent="submitGrant">
+            <div class="access-dir__compose-lead">
+              <strong>添加授权</strong>
+              <p>{{ pendingGrants.length ? `已选 ${pendingGrants.length} 人，确认后写入这个组` : '搜索并勾选用户或角色，再一次性写入' }}</p>
             </div>
-            <div v-if="selectedGrants.length" class="access-dir__toolbar">
+            <SubjectSearchSelect
+              v-model="grantForm.subjectID"
+              :kind="grantForm.subjectKind"
+              :users="users"
+              :roles="roles"
+              :exclude="excludedGrantSubjects"
+              :disabled="!!actionBusy"
+              data-test="subject-search"
+              @update:kind="grantForm.subjectKind = $event || grantForm.subjectKind"
+              @update:selected="onPendingGrants"
+              @select="onSubjectSelected"
+            />
+            <button
+              class="btn btn-primary"
+              type="submit"
+              data-test="grant-submit"
+              :disabled="actionBusy === 'grant' || !pendingGrants.length"
+            >
+              {{ actionBusy === 'grant'
+                ? '授权中…'
+                : (pendingGrants.length > 1 ? `授权已选 ${pendingGrants.length} 人` : '授权到当前组') }}
+            </button>
+            <small v-if="directoryError" class="access-dir__muted">
+              {{ directoryError }}
+              <button class="text-button" type="button" data-test="retry-directory" @click="loadDirectory">重试</button>
+            </small>
+          </form>
+
+          <header class="access-dir__workspace-head">
+            <div>
+              <h3>已授权</h3>
+              <p>{{ selectedGrants.length ? `${selectedGrants.length} 个用户或角色可访问这个组` : '还没有人被授权到这个组' }}</p>
+            </div>
+            <div v-if="selectedGrants.length" class="access-dir__workspace-tools">
               <div class="search-field">
                 <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <circle cx="11" cy="11" r="7" />
@@ -1052,88 +1133,56 @@ async function confirmDanger() {
                 >
               </div>
             </div>
-            <ul v-if="filteredGrants.length" class="access-dir__people">
-              <li v-for="grant in filteredGrants" :key="`${grantSubjectKind(grant)}:${grantSubjectID(grant)}`">
-                <span class="access-dir__avatar" aria-hidden="true">{{ subjectLabel(grant).slice(0, 1) }}</span>
-                <span class="access-dir__person">
-                  <strong :title="subjectLabel(grant)">{{ subjectLabel(grant) }}</strong>
-                  <small>{{ subjectKindLabel(grant) }}<template v-if="subjectDetail(grant)"> · {{ subjectDetail(grant) }}</template></small>
-                </span>
-                <BaseIconButton
-                  v-if="canAdmin"
-                  tone="danger"
-                  title="撤销授权"
-                  :data-test="`revoke-${grantSubjectKind(grant)}-${grantSubjectID(grant)}`"
-                  :disabled="!!actionBusy"
-                  @click="requestRevoke(grant)"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </BaseIconButton>
-              </li>
-            </ul>
-            <p v-else-if="selectedGrants.length" class="access-dir__pane-empty">没有匹配的授权。</p>
-            <p v-else class="access-dir__pane-empty">还没有人被授权到这个组。</p>
-            <p v-if="hiddenGrantCount" class="access-dir__hint">还有 {{ hiddenGrantCount }} 人未显示，请继续搜索。</p>
-          </div>
+          </header>
 
-          <form v-if="canAdmin" class="access-dir__pane" data-test="grant-form" @submit.prevent="submitGrant">
-            <div class="access-dir__pane-head">
-              <strong>添加授权</strong>
-            </div>
-            <SubjectSearchSelect
-              v-model="grantForm.subjectID"
-              :kind="grantForm.subjectKind"
-              :users="users"
-              :roles="roles"
-              :exclude="excludedGrantSubjects"
-              :disabled="!!actionBusy"
-              data-test="subject-search"
-              @update:kind="grantForm.subjectKind = $event || grantForm.subjectKind"
-              @update:selected="onPendingGrants"
-              @select="onSubjectSelected"
-            />
-            <small v-if="directoryError" class="access-dir__muted">
-              {{ directoryError }}
-              <button class="text-button" type="button" data-test="retry-directory" @click="loadDirectory">重试</button>
-            </small>
-            <button
-              class="btn btn-primary"
-              type="submit"
-              data-test="grant-submit"
-              :disabled="actionBusy === 'grant' || !pendingGrants.length"
+          <ul v-if="filteredGrants.length" class="access-dir__entry-list" data-test="grants-table">
+            <li
+              v-for="grant in filteredGrants"
+              :key="`${grantSubjectKind(grant)}:${grantSubjectID(grant)}`"
+              class="access-dir__entry"
             >
-              {{ actionBusy === 'grant'
-                ? '授权中…'
-                : (pendingGrants.length > 1 ? `授权已选 ${pendingGrants.length} 人` : '授权到当前组') }}
-            </button>
-          </form>
+              <span class="access-dir__mark" aria-hidden="true">{{ initialOf(subjectLabel(grant)) }}</span>
+              <div class="access-dir__entry-copy">
+                <strong :title="subjectLabel(grant)">{{ subjectLabel(grant) }}</strong>
+                <small>
+                  {{ subjectKindLabel(grant) }}
+                  <template v-if="subjectDetail(grant)"> · {{ subjectDetail(grant) }}</template>
+                </small>
+              </div>
+              <button
+                v-if="canAdmin"
+                type="button"
+                class="access-dir__text-action"
+                title="撤销授权"
+                :data-test="`revoke-${grantSubjectKind(grant)}-${grantSubjectID(grant)}`"
+                :disabled="!!actionBusy"
+                @click="requestRevoke(grant)"
+              >
+                撤销
+              </button>
+            </li>
+          </ul>
+          <p v-else-if="selectedGrants.length" class="access-dir__empty-inline">没有匹配的授权。</p>
+          <p v-else class="access-dir__empty-inline">授权后，这些用户或角色就能看到这个组里的资源。</p>
+          <p v-if="hiddenGrantCount" class="access-dir__hint">还有 {{ hiddenGrantCount }} 人未显示，请继续搜索。</p>
         </section>
 
-        <section v-else class="access-dir__directory" aria-label="组成员">
-          <div class="access-dir__pane">
-            <div class="access-dir__pane-head">
-              <strong>当前资源</strong>
-              <span>{{ allMembers.length }}</span>
+        <section v-else class="access-dir__workspace" aria-label="组成员">
+          <header class="access-dir__workspace-head">
+            <div>
+              <h3>当前资源</h3>
+              <p>{{ allMembers.length ? `${allMembers.length} 项绑定在这个组` : '这个组还没有绑定资源' }}</p>
             </div>
-            <div v-if="allMembers.length" class="access-dir__toolbar">
-              <div class="access-dir__kinds" role="tablist" aria-label="资源类型">
-                <button
-                  type="button"
-                  class="access-dir__chip"
-                  :class="{ 'access-dir__chip--active': !memberKind }"
-                  @click="memberKind = ''"
-                >全部</button>
-                <button
-                  v-for="kind in resourceKindOptions"
-                  :key="kind.id"
-                  type="button"
-                  class="access-dir__chip"
-                  :class="{ 'access-dir__chip--active': memberKind === kind.id }"
-                  @click="memberKind = kind.id"
-                >{{ kind.label }}</button>
-              </div>
+            <div v-if="allMembers.length" class="access-dir__workspace-tools">
+              <select
+                v-model="memberKind"
+                class="access-dir__select"
+                data-test="member-kind"
+                aria-label="资源类型"
+              >
+                <option value="">全部类型</option>
+                <option v-for="kind in resourceKindOptions" :key="kind.id" :value="kind.id">{{ kind.label }}</option>
+              </select>
               <div class="search-field">
                 <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <circle cx="11" cy="11" r="7" />
@@ -1141,44 +1190,47 @@ async function confirmDanger() {
                 </svg>
                 <input
                   v-model="memberQuery"
+                  data-test="member-search"
                   type="search"
                   placeholder="搜索当前组内资源"
                   aria-label="搜索当前组内资源"
                 >
               </div>
             </div>
-            <div v-for="kind in populatedMemberKinds" :key="kind.id" :data-test="`members-${kind.id}`" hidden>
-              {{ kind.label }}
-            </div>
-            <ul v-if="filteredMembers.length" class="access-dir__people">
-              <li v-for="item in filteredMembers" :key="resourceKey(item)">
-                <span class="access-dir__person">
-                  <strong>{{ resourceLabel(item) }}</strong>
-                  <small>{{ kindLabel(resourceKindOf(item)) }}<template v-if="item.context"> · {{ item.context }}</template></small>
-                </span>
-                <span v-if="canAdmin" class="access-dir__row-actions">
-                  <BaseIconButton
-                    tone="danger"
-                    title="解绑回默认组"
-                    :data-test="`unbind-${resourceKindOf(item)}-${resourceIDOf(item)}`"
-                    :disabled="!!actionBusy"
-                    @click="requestUnbind(item)"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
-                  </BaseIconButton>
-                </span>
-              </li>
-            </ul>
-            <p v-else-if="allMembers.length" class="access-dir__pane-empty">没有匹配的资源。</p>
-            <p v-else class="access-dir__pane-empty">这个组还没有绑定资源。</p>
-            <p v-if="hiddenMemberCount" class="access-dir__hint">还有 {{ hiddenMemberCount }} 项未显示，请继续搜索。</p>
+          </header>
+          <div v-for="kind in populatedMemberKinds" :key="kind.id" :data-test="`members-${kind.id}`" hidden>
+            {{ kind.label }}
           </div>
+          <ul v-if="filteredMembers.length" class="access-dir__entry-list" data-test="members-table">
+            <li v-for="item in filteredMembers" :key="resourceKey(item)" class="access-dir__entry">
+              <span class="access-dir__mark" aria-hidden="true">{{ initialOf(resourceLabel(item)) }}</span>
+              <div class="access-dir__entry-copy">
+                <strong :title="resourceLabel(item)">{{ resourceLabel(item) }}</strong>
+                <small>
+                  {{ kindLabel(resourceKindOf(item)) }}
+                  <template v-if="item.context"> · {{ item.context }}</template>
+                </small>
+              </div>
+              <button
+                v-if="canAdmin"
+                type="button"
+                class="access-dir__text-action"
+                title="解绑回默认组"
+                :data-test="`unbind-${resourceKindOf(item)}-${resourceIDOf(item)}`"
+                :disabled="!!actionBusy"
+                @click="requestUnbind(item)"
+              >
+                解绑
+              </button>
+            </li>
+          </ul>
+          <p v-else-if="allMembers.length" class="access-dir__empty-inline">没有匹配的资源。</p>
+          <p v-if="hiddenMemberCount" class="access-dir__hint">还有 {{ hiddenMemberCount }} 项未显示，请继续搜索。</p>
 
-          <div v-if="canAdmin" class="access-dir__pane" aria-label="绑定资源">
-            <div class="access-dir__pane-head">
+          <div v-if="canAdmin" class="access-dir__compose" aria-label="绑定资源">
+            <div class="access-dir__compose-lead">
               <strong>从其他组移入</strong>
+              <p>搜索其他组里的资源，勾选后移入当前组</p>
             </div>
             <ResourceSearchSelect
               v-model="selectedResource"

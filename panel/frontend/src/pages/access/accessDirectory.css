@@ -235,6 +235,10 @@
   width: 4.5rem;
 }
 
+.access-dir__col-context {
+  width: 9rem;
+}
+
 .access-dir th.access-dir__col-actions,
 .access-dir td.access-dir__col-actions {
   width: 10rem;
@@ -322,16 +326,286 @@
   gap: 0.75rem;
 }
 
+.access-dir__workspace {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.access-dir__workspace-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+}
+
+.access-dir__workspace-head h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.access-dir__workspace-head p {
+  margin: 0.15rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.access-dir__workspace-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.access-dir__workspace-tools .search-field {
+  flex: 1 1 12rem;
+  max-width: 20rem;
+}
+
+.access-dir__select {
+  min-width: 8.25rem;
+  min-height: 2.5rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.access-dir__table-wrap--inset {
+  max-height: min(24rem, 52vh);
+  overflow: auto;
+}
+
+.access-dir__entry-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(14rem, 34vh);
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+}
+
+.access-dir__entry-list--page {
+  max-height: none;
+  overflow: visible;
+}
+
+.access-dir__entry {
+  display: grid;
+  grid-template-columns: 1.85rem minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.7rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.access-dir__entry:last-child {
+  border-bottom: 0;
+}
+
+.access-dir__entry:hover {
+  background: var(--color-bg-hover);
+}
+
+.access-dir__entry--clickable {
+  cursor: pointer;
+}
+
+.access-dir__entry--disabled .access-dir__entry-copy strong {
+  color: var(--color-text-secondary);
+}
+
+.access-dir__mark {
+  display: grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 0.45rem;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.access-dir__entry-copy {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.access-dir__entry-copy strong,
+.access-dir__entry-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-dir__entry-copy strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.access-dir__entry-copy small {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.access-dir__text-action {
+  appearance: none;
+  padding: 0.28rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.access-dir__text-action:hover:not(:disabled) {
+  color: var(--color-danger);
+  background: var(--color-danger-50);
+}
+
+.access-dir__text-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.access-dir__empty-inline {
+  margin: 0;
+  padding: 0.85rem 0.15rem;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.access-dir__compose {
+  display: grid;
+  gap: 0.65rem;
+  padding-top: 0.95rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.access-dir__compose--flush {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.access-dir__compose-lead strong {
+  display: block;
+  font-size: 0.875rem;
+}
+
+.access-dir__compose-lead p {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.access-dir__compose > .btn {
+  justify-self: start;
+  width: max-content;
+  min-width: 8.5rem;
+}
+
+.access-dir__composer {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.access-dir__composer-head {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.access-dir__composer-head strong {
+  display: block;
+  font-size: 0.875rem;
+}
+
+.access-dir__composer-head p,
+.access-dir__composer-head span {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.access-dir__composer > .btn,
+.access-dir__composer-head .btn {
+  justify-self: start;
+  width: max-content;
+  min-width: 8.5rem;
+}
+
+.access-dir__workspace-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-top: 0.85rem;
+  margin-top: 0.15rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.access-dir__workspace-footer-spacer {
+  flex: 1;
+}
+
+.access-dir__workspace-footer .btn {
+  width: max-content;
+  min-width: 8.5rem;
+}
+
+.access-dir__workspace-footer .btn-primary {
+  margin-left: auto;
+}
+
+.access-dir__profile-readonly {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.access-dir__profile-facts {
+  display: grid;
+  gap: 0.9rem;
+  margin: 0;
+}
+
+.access-dir__profile-facts dt {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.access-dir__profile-facts dd {
+  margin: 0.3rem 0 0;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 .access-dir__directory {
   display: grid;
   gap: 0.75rem;
   align-items: stretch;
-}
-
-@media (min-width: 700px) {
-  .access-dir__directory {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
 }
 
 .access-dir__pane {
@@ -340,7 +614,6 @@
   flex-direction: column;
   gap: 0.7rem;
   min-width: 0;
-  min-height: 22rem;
   padding: 0.9rem 1rem;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
@@ -613,5 +886,23 @@
 
   .access-dir__header-right .btn {
     flex: 0 0 auto;
+  }
+
+  .access-dir__workspace-tools {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+
+  .access-dir__workspace-tools .search-field {
+    max-width: none;
+  }
+
+  .access-dir__compose > .btn,
+  .access-dir__composer-head {
+    width: 100%;
+  }
+
+  .access-dir__col-context {
+    display: none;
   }
 }

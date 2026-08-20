@@ -395,47 +395,37 @@ function acceptConfirm() {
 <template>
   <div class="resource-search-select" data-test="resource-search-select">
     <form class="resource-search-select__search" data-test="resource-search-form" @submit.prevent="submitSearch">
-      <div class="resource-search-select__kinds" role="tablist" aria-label="资源类型">
-        <button
-          v-for="option in RESOURCE_KIND_OPTIONS"
-          :key="option.id || 'all'"
-          type="button"
-          class="resource-search-select__kind"
-          :class="{ 'resource-search-select__kind--active': kindFilter === option.id }"
-          :disabled="disabled"
-          @click="onKindChange(option.id)"
-        >
-          {{ option.label }}
-        </button>
-      </div>
-      <select
-        class="resource-search-select__kind-native"
-        :value="kindFilter"
-        data-test="resource-kind"
-        :disabled="disabled"
-        tabindex="-1"
-        aria-hidden="true"
-        @change="onKindChange($event.target.value)"
-      >
-        <option v-for="option in RESOURCE_KIND_OPTIONS" :key="option.id || 'all'" :value="option.id">
-          {{ option.label }}
-        </option>
-      </select>
-      <div class="search-field">
-        <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" />
-          <path d="M20 20l-3.5-3.5" />
-        </svg>
-        <input
-          v-model="searchQuery"
-          data-test="resource-search"
-          type="search"
-          placeholder="按名称或上下文搜索"
-          aria-label="搜索资源"
-          :disabled="disabled"
-          @keydown.esc.prevent="clearSearch"
-        >
-        <button class="resource-search-select__sr-submit" type="submit" tabindex="-1">搜索</button>
+      <div class="resource-search-select__box">
+        <div class="resource-search-select__bar">
+          <select
+            class="resource-search-select__kind-select"
+            :value="kindFilter"
+            data-test="resource-kind"
+            :disabled="disabled"
+            aria-label="资源类型"
+            @change="onKindChange($event.target.value)"
+          >
+            <option v-for="option in RESOURCE_KIND_OPTIONS" :key="option.id || 'all'" :value="option.id">
+              {{ option.label }}
+            </option>
+          </select>
+          <div class="resource-search-select__query">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
+            </svg>
+            <input
+              v-model="searchQuery"
+              data-test="resource-search"
+              type="search"
+              placeholder="按名称或上下文搜索"
+              aria-label="搜索资源"
+              :disabled="disabled"
+              @keydown.esc.prevent="clearSearch"
+            >
+            <button class="resource-search-select__sr-submit" type="submit" tabindex="-1">搜索</button>
+          </div>
+        </div>
       </div>
     </form>
 
@@ -508,7 +498,7 @@ function acceptConfirm() {
             @click="toggleResource(item)"
           >
             <span class="resource-search-select__check" :class="{ 'resource-search-select__check--on': isChecked(item) }" aria-hidden="true"></span>
-            <span>
+            <span class="resource-search-select__copy">
               <strong>{{ resourceLabel(item) }}</strong>
               <small>
                 {{ kindLabel(resourceKindOf(item)) }}
@@ -569,39 +559,55 @@ function acceptConfirm() {
 .resource-search-select__search {
   position: relative;
   display: grid;
-  gap: var(--space-3);
+  gap: 0.5rem;
 }
 
-.resource-search-select__kinds {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.resource-search-select__kind {
-  padding: 0.3rem 0.7rem;
+.resource-search-select__box {
+  overflow: hidden;
   border: 1px solid var(--color-border-default);
-  border-radius: 999px;
-  background: var(--color-bg-canvas);
-  color: var(--color-text-secondary);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+}
+
+.resource-search-select__bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+
+.resource-search-select__kind-select {
+  min-width: 7.5rem;
+  min-height: 2.6rem;
+  padding: 0 0.7rem;
+  border: 0;
+  border-right: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-primary);
   font: inherit;
-  font-size: 0.8125rem;
-  line-height: 1.2;
-  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.resource-search-select__query {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0 0.7rem;
+}
+
+.resource-search-select__query svg {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
 }
 
 .resource-search-select .search-field {
+  flex: 1;
   width: 100%;
 }
 
-.resource-search-select__kind--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary);
-  color: #fff;
-}
-
-.resource-search-select__kind-native,
 .resource-search-select__sr-submit {
   position: absolute;
   width: 1px;
@@ -717,22 +723,26 @@ function acceptConfirm() {
 .resource-search-select__members ul,
 .resource-search-select__list {
   display: grid;
-  gap: var(--space-2);
+  gap: 0.1rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .resource-search-select__list {
-  max-height: 16rem;
+  max-height: 14rem;
   overflow: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
 }
 
 .resource-search-select__check {
   width: 1rem;
   height: 1rem;
   flex-shrink: 0;
-  border: 1px solid var(--color-border-default);
+  border: 1px solid var(--color-border-strong);
   border-radius: 0.25rem;
   background: var(--color-bg-canvas);
 }
@@ -746,38 +756,66 @@ function acceptConfirm() {
   background-repeat: no-repeat;
 }
 
-.resource-search-select__members li,
-.resource-search-select__option {
-  display: flex;
-  justify-content: space-between;
+.resource-search-select__members li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-3);
+  column-gap: 0.65rem;
   width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-md);
+}
+
+.resource-search-select__option {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.65rem;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: inherit;
   text-align: left;
-}
-
-.resource-search-select__option {
   cursor: pointer;
 }
 
-.resource-search-select__members li span,
-.resource-search-select__option span {
+.resource-search-select__option:hover,
+.resource-search-select__members li:hover {
+  background: var(--color-bg-hover);
+}
+
+.resource-search-select__copy {
   display: grid;
-  gap: 2px;
+  min-width: 0;
+  gap: 0.08rem;
+  text-align: left;
+}
+
+.resource-search-select__copy strong,
+.resource-search-select__copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-search-select__copy strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.resource-search-select__meta {
+  display: none;
 }
 
 .resource-search-select__option--active {
-  border-color: var(--color-primary);
   background: var(--color-primary-subtle);
 }
 
 .resource-search-select__move .btn {
-  width: 100%;
+  width: max-content;
+  min-width: 8.5rem;
 }
 
 .resource-search-select__overlay {

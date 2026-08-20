@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import ResourceGroupsPage from './ResourceGroupsPage.vue'
+import { previewMembers, previewRoles, previewUsers } from './previewDirectory'
 
 const mocks = vi.hoisted(() => ({
   fetchResourceGroups: vi.fn(),
@@ -508,6 +509,29 @@ describe('ResourceGroupsPage', () => {
     expect(wrapper.text()).toContain('资源组已保存')
   })
 
+  it('localizes the builtin default group description instead of truncating English', async () => {
+    mocks.fetchResourceGroups.mockResolvedValue([{
+      ...defaultGroup,
+      description: 'resources not explicitly assigned to another group'
+    }])
+    const wrapper = await mountPage()
+    expect(wrapper.get('[data-test="group-row-default"]').text()).toContain('未另行指定的资源')
+    expect(wrapper.get('[data-test="group-row-default"]').text()).not.toContain('resource not')
+    await selectGroup(wrapper, 'default')
+    expect(wrapper.get('[data-test="profile-readonly"]').text()).toContain('未另行指定的资源')
+    expect(wrapper.text()).not.toContain('resources not explicitly assigned to another group')
+  })
+
+  it('shows a read-only profile for the builtin group instead of an editor', async () => {
+    const wrapper = await mountPage()
+    await selectGroup(wrapper, 'default')
+    expect(wrapper.find('[data-test="edit-form"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('内置组可以查看，但不能改变系统身份')
+    expect(wrapper.get('[data-test="profile-readonly"]').text()).toContain('默认组')
+    expect(wrapper.get('[data-test="profile-readonly"]').text()).toContain('未另行指定的资源')
+    expect(wrapper.get('[data-test="profile-readonly"]').find('[data-test="delete-group"]').exists()).toBe(false)
+  })
+
   it('deletes an unused custom group after confirmation and cancels with Escape', async () => {
     const wrapper = await mountPage()
     await wrapper.get('[data-test="group-row-spare"]').get('[data-test="delete-group"]').trigger('click')
@@ -652,6 +676,53 @@ describe('ResourceGroupsPage', () => {
     await selectManageTab(wrapper, '成员')
     expect(wrapper.find('[data-test="move-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="unbind-agent-edge-a"]').exists()).toBe(false)
+  })
+
+  it('keeps grants, members and the subject picker usable with 200 users and 200 resources', async () => {
+    const users = previewUsers(200)
+    const members = previewMembers(200, 'default')
+    const grants = users.map((user) => ({
+      subject_kind: 'user',
+      subject_id: user.id,
+      resource_group_id: 'default'
+    }))
+    mocks.fetchUsers.mockResolvedValue(users)
+    mocks.fetchRoles.mockResolvedValue(previewRoles())
+    mocks.fetchResourceGroups.mockResolvedValue([
+      { ...defaultGroup, grant_count: grants.length, resource_count: 200 },
+      { ...teamGroup },
+      { ...spareGroup }
+    ])
+    mocks.fetchResourceGroup.mockImplementation(async (id) => {
+      if (id === 'default') {
+        return { ...defaultGroup, grants, members, grant_count: grants.length, resource_count: 200 }
+      }
+      if (id === 'spare') {
+        return { ...spareGroup, grants: [], members: emptyMembers() }
+      }
+      return details[id]
+    })
+
+    const wrapper = await mountPage()
+    await selectGroup(wrapper, 'default')
+    await selectManageTab(wrapper, '授权')
+    expect(wrapper.get('[data-test="grants-table"]').findAll('li')).toHaveLength(200)
+    await wrapper.get('[data-test="grant-search"]').setValue('user200')
+    expect(wrapper.get('[data-test="grants-table"]').text()).toContain('用户 200')
+    expect(wrapper.get('[data-test="grants-table"]').findAll('li')).toHaveLength(1)
+
+    await wrapper.get('[data-test="grant-search"]').setValue('')
+    await selectManageTab(wrapper, '成员')
+    expect(wrapper.get('[data-test="members-table"]').findAll('li')).toHaveLength(200)
+    await wrapper.get('[data-test="member-search"]').setValue('host-200')
+    expect(wrapper.get('[data-test="members-table"]').text()).toContain('https://host-200.example.com')
+
+    await selectGroup(wrapper, 'spare')
+    await selectManageTab(wrapper, '授权')
+    expect(wrapper.get('[data-test="subject-search"]').text()).toContain('200 人')
+    await wrapper.get('[data-test="subject-search-query"]').setValue('user200')
+    expect(wrapper.find('[data-test="subject-option-user-usr-200"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="subject-option-user-usr-199"]').exists()).toBe(false)
   })
 
   it('hides the workspace from an unauthorized identity', async () => {

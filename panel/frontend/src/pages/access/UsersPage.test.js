@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import UsersPage from './UsersPage.vue'
+import { previewUsers } from './previewDirectory'
 
 const mocks = vi.hoisted(() => ({
   fetchUsers: vi.fn(),
@@ -191,10 +192,36 @@ describe('UsersPage', () => {
     })
     expect(wrapper.text()).toContain('首个管理员已创建')
     expect(wrapper.text()).toContain('账号密码')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="profile-form"]').exists()).toBe(false)
     await wrapper.get('[data-test="logout-to-account"]').trigger('click')
     await flushPromises()
     expect(mocks.logout).toHaveBeenCalledTimes(1)
     expect(mocks.replace).toHaveBeenCalledWith({ name: 'login' })
+  })
+
+  it('creates a user and stays on the list instead of opening the editor', async () => {
+    const wrapper = await mountPage()
+    await openCreate(wrapper)
+    await wrapper.get('[data-test="create-username"]').setValue('carol')
+    await wrapper.get('[data-test="create-display-name"]').setValue('Carol')
+    await wrapper.get('[data-test="create-password"]').setValue('correct-horse')
+    await wrapper.get('[data-test="create-confirm-password"]').setValue('correct-horse')
+    await wrapper.get('[data-test="create-role-operator"]').setValue(true)
+    await wrapper.get('[data-test="create-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createUser).toHaveBeenCalledWith({
+      username: 'carol',
+      display_name: 'Carol',
+      password: 'correct-horse',
+      role_ids: ['operator']
+    })
+    expect(wrapper.text()).toContain('用户已创建')
+    expect(wrapper.get('[data-test="users-grid"]').text()).toContain('Carol')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="profile-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="profile-display-name"]').exists()).toBe(false)
   })
 
   it('surfaces field errors and does not create when the form is invalid', async () => {
@@ -381,6 +408,17 @@ describe('UsersPage', () => {
     expect(wrapper.text()).toContain('Bob')
     expect(wrapper.text()).not.toContain('还没有账号')
     expect(wrapper.text()).not.toContain('创建首个管理员')
+  })
+
+  it('renders and searches a 200-user directory', async () => {
+    mocks.fetchUsers.mockResolvedValue(previewUsers(200))
+    const wrapper = await mountPage()
+    expect(wrapper.findAll('[data-test^="user-row-"]').length).toBe(200)
+    expect(wrapper.text()).toContain('200 个账号')
+    await wrapper.get('[data-test="user-search"]').setValue('user200')
+    expect(wrapper.findAll('[data-test^="user-row-"]').length).toBe(1)
+    expect(wrapper.get('[data-test="users-grid"]').text()).toContain('用户 200')
+    expect(wrapper.get('[data-test="users-grid"]').text()).not.toContain('用户 199')
   })
 
   it('hides management actions from an unauthorized identity', async () => {

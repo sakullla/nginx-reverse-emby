@@ -9,6 +9,7 @@ import {
   isAccessManagementChildActive,
   isBootstrapActor,
   pickDefaultResourceGroupID,
+  resourceGroupDisplayDescription,
   resourceGroupDisplayName,
   shouldPromptLeaveBootstrap,
   shouldShowFirstAdminSetup,
@@ -90,6 +91,12 @@ describe('visible resource group selection', () => {
     expect(pickDefaultResourceGroupID([])).toBe('')
     expect(resourceGroupDisplayName({ id: 'default', name: 'default' })).toBe('默认组')
     expect(resourceGroupDisplayName({ id: 'team', name: '团队' })).toBe('团队')
+    expect(resourceGroupDisplayDescription({
+      id: 'default',
+      description: 'resources not explicitly assigned to another group'
+    })).toBe('未另行指定的资源')
+    expect(resourceGroupDisplayDescription({ id: 'default', description: '' })).toBe('未另行指定的资源')
+    expect(resourceGroupDisplayDescription({ id: 'team', description: '团队可见' })).toBe('团队可见')
   })
 })
 

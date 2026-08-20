@@ -12,7 +12,6 @@ import {
   updateUser
 } from '../../api/access'
 import { useAccessControl } from '../../context/useAccessControl'
-import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseIconButton from '../../components/base/BaseIconButton.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
@@ -20,6 +19,7 @@ import ViewToggle from '../../components/common/ViewToggle.vue'
 import RoleSelect from '../../components/access/RoleSelect.vue'
 import UserCard from '../../components/access/UserCard.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
+import { previewRoles, previewUsers } from './previewDirectory'
 import './accessDirectory.css'
 
 const MIN_PASSWORD_LENGTH = 10
@@ -142,15 +142,8 @@ async function load() {
 }
 
 function applyPreviewUsers() {
-  roles.value = [
-    { id: 'administrator', name: '管理员' },
-    { id: 'operator', name: '运维' },
-    { id: 'readonly', name: '只读' }
-  ]
-  users.value = [
-    { id: 'usr-admin', username: 'alice', display_name: 'Alice', disabled: false, role_ids: ['administrator'] },
-    { id: 'usr-ops', username: 'bob', display_name: 'Bob', disabled: false, role_ids: ['operator'] }
-  ]
+  roles.value = previewRoles()
+  users.value = previewUsers(200)
 }
 
 function hasRole(roleID) {
@@ -159,6 +152,20 @@ function hasRole(roleID) {
 
 function userLabel(user) {
   return user?.display_name || user?.username || user?.id || ''
+}
+
+function initialOf(value) {
+  const chars = Array.from(String(value || '').trim())
+  return chars.length ? chars[0].toUpperCase() : '?'
+}
+
+function userMeta(user) {
+  const roles = roleIDs(user).map(roleName).filter(Boolean)
+  return [
+    user?.username || '',
+    roles.length ? roles.join(' · ') : '未分配',
+    user?.disabled ? '已停用' : '已启用'
+  ].filter(Boolean).join(' · ')
 }
 
 function roleName(roleID) {
@@ -280,7 +287,7 @@ async function submitCreate() {
   successNotice.value = ''
   setFieldErrors({})
   try {
-    const created = await createUser({
+    await createUser({
       username: createForm.username,
       display_name: createForm.display_name,
       password: createForm.password,
@@ -293,10 +300,6 @@ async function submitCreate() {
     createForm.role_ids = []
     modal.value = ''
     await load()
-    if (created?.id) {
-      const next = users.value.find((user) => user.id === created.id) || created
-      openEdit(next)
-    }
     successNotice.value = wasEmpty
       ? '首个管理员已创建。请退出当前令牌身份，再使用账号密码登录。'
       : '用户已创建。'
@@ -633,93 +636,69 @@ function onRowActivate(user) {
         />
       </div>
 
-      <div v-else-if="filteredUsers.length && !cardView" class="access-dir__table-wrap">
-        <table data-test="users-table">
-          <thead>
-            <tr>
-              <th>用户</th>
-              <th class="access-dir__col-role">角色</th>
-              <th class="access-dir__col-status">状态</th>
-              <th class="access-dir__col-actions">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="user in filteredUsers"
-              :key="user.id"
-              class="access-dir__row"
-              :class="{ 'access-dir__row--disabled': user.disabled }"
-              :data-test="`user-row-${user.id}`"
-              @click="onRowActivate(user)"
+      <ul
+        v-else-if="filteredUsers.length && !cardView"
+        class="access-dir__entry-list access-dir__entry-list--page"
+        data-test="users-table"
+      >
+        <li
+          v-for="user in filteredUsers"
+          :key="user.id"
+          class="access-dir__entry access-dir__entry--clickable"
+          :class="{ 'access-dir__entry--disabled': user.disabled }"
+          :data-test="`user-row-${user.id}`"
+          @click="onRowActivate(user)"
+        >
+          <span class="access-dir__mark" aria-hidden="true">{{ initialOf(userLabel(user)) }}</span>
+          <div class="access-dir__entry-copy">
+            <strong :title="userLabel(user)">{{ userLabel(user) }}</strong>
+            <small data-test="user-username" :title="userMeta(user)">{{ userMeta(user) }}</small>
+          </div>
+          <div class="access-dir__action-bar" @click.stop>
+            <BaseIconButton title="编辑" data-test="edit-user" @click="openEdit(user)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+            </BaseIconButton>
+            <BaseIconButton
+              v-if="user.disabled"
+              title="启用"
+              data-test="enable-user"
+              :disabled="!!actionBusy"
+              @click="submitEnable(user)"
             >
-              <td>
-                <div class="access-dir__name">
-                  <strong :title="userLabel(user)">{{ userLabel(user) }}</strong>
-                  <small data-test="user-username" :title="user.username">{{ user.username }}</small>
-                </div>
-              </td>
-              <td class="access-dir__col-role">
-                <div class="access-dir__chips">
-                  <BaseBadge v-for="roleID in roleIDs(user)" :key="roleID" tone="neutral">
-                    {{ roleName(roleID) }}
-                  </BaseBadge>
-                  <span v-if="!roleIDs(user).length" class="access-dir__muted">未分配</span>
-                </div>
-              </td>
-              <td class="access-dir__col-status">
-                <BaseBadge :tone="user.disabled ? 'danger' : 'success'" dot>
-                  {{ user.disabled ? '已停用' : '已启用' }}
-                </BaseBadge>
-              </td>
-              <td class="access-dir__col-actions">
-                <div class="access-dir__action-bar" @click.stop>
-                  <BaseIconButton title="编辑" data-test="edit-user" @click="openEdit(user)">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                  </BaseIconButton>
-                  <BaseIconButton
-                    v-if="user.disabled"
-                    title="启用"
-                    data-test="enable-user"
-                    :disabled="!!actionBusy"
-                    @click="submitEnable(user)"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M5 12h14" />
-                      <path d="M12 5v14" />
-                    </svg>
-                  </BaseIconButton>
-                  <BaseIconButton
-                    v-else
-                    title="停用"
-                    data-test="disable-user"
-                    :disabled="!!actionBusy"
-                    @click="requestDisable(user)"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="6" y="6" width="12" height="12" rx="2" />
-                    </svg>
-                  </BaseIconButton>
-                  <BaseIconButton title="重置密码" data-test="reset-user" :disabled="!!actionBusy" @click="openReset(user)">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                  </BaseIconButton>
-                  <BaseIconButton title="删除" tone="danger" data-test="delete-user" :disabled="!!actionBusy" @click="requestDelete(user)">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                    </svg>
-                  </BaseIconButton>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14" />
+                <path d="M12 5v14" />
+              </svg>
+            </BaseIconButton>
+            <BaseIconButton
+              v-else
+              title="停用"
+              data-test="disable-user"
+              :disabled="!!actionBusy"
+              @click="requestDisable(user)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </BaseIconButton>
+            <BaseIconButton title="重置密码" data-test="reset-user" :disabled="!!actionBusy" @click="openReset(user)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </BaseIconButton>
+            <BaseIconButton title="删除" tone="danger" data-test="delete-user" :disabled="!!actionBusy" @click="requestDelete(user)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              </svg>
+            </BaseIconButton>
+          </div>
+        </li>
+      </ul>
 
       <section v-if="canChangeOwnPassword" class="access-dir__notice" data-test="account-security">
         <div>
