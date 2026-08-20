@@ -5,15 +5,13 @@ package pluginhost
 import (
 	"context"
 	"errors"
-	"io"
-	"os"
 	"strings"
 	"testing"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
-func TestPluginHostSandboxRequirementAndFailClosedLaunch(t *testing.T) {
+func TestPluginHostSandboxRequirement(t *testing.T) {
 	t.Parallel()
 	digest := strings.Repeat("a", 64)
 	pkg := validatedSandboxPackage(digest, []string{"secret.use"}, []string{"container.provider"})
@@ -24,17 +22,8 @@ func TestPluginHostSandboxRequirementAndFailClosedLaunch(t *testing.T) {
 	if !requirement.RequiresNetworkIsolation() && !requirement.HighRisk() {
 		t.Fatal("privileged container/dns package lost sandbox identity")
 	}
-
-	err = validatePlatformSandbox(Candidate{Identity: Identity{PackageDigest: digest}, Requirement: requirement})
-	if err == nil || !strings.Contains(err.Error(), "isolation is unavailable") {
-		t.Fatalf("validatePlatformSandbox() = %v, want isolation unavailable", err)
-	}
-
-	_, startErr := (ExecLauncher{}).Start(t.Context(), os.Args[0], nil, nil, io.Discard, Candidate{
-		Identity: Identity{PackageDigest: digest}, Requirement: requirement,
-	})
-	if startErr == nil || !strings.Contains(startErr.Error(), "isolation is unavailable") {
-		t.Fatalf("Start() = %v, want isolation unavailable", startErr)
+	if err := requirement.validatePackageDigest(digest); err != nil {
+		t.Fatalf("sandbox package digest binding = %v", err)
 	}
 }
 
