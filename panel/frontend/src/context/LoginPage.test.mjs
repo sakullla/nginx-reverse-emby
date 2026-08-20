@@ -9,7 +9,8 @@ const { push, login, verifyToken } = vi.hoisted(() => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push })
+  useRouter: () => ({ push }),
+  useRoute: () => ({ query: {} })
 }))
 
 vi.mock('../api', () => ({ verifyToken }))

@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   refreshActor: vi.fn()
 }))
 
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ replace: vi.fn() })
+}))
+
 vi.mock('../../api/access', () => ({
   fetchResourceGroups: mocks.fetchResourceGroups,
   fetchUsers: mocks.fetchUsers,

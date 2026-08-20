@@ -67,7 +67,10 @@ vi.mock('../components/traffic/DashboardTrafficModule.vue', () => ({
 async function mountPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const wrapper = mount(DashboardPage, {
-    global: { plugins: [[VueQueryPlugin, { queryClient }]] }
+    global: {
+      plugins: [[VueQueryPlugin, { queryClient }]],
+      stubs: { RouterLink: { props: ['to'], template: '<a><slot /></a>' } }
+    }
   })
   await flushPromises()
   return wrapper
