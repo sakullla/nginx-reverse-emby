@@ -605,6 +605,106 @@
   }
 }
 
+/* Plugin catalog list tables (marketplace / installed / resource groups) */
+.plugin-catalog-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-surface);
+}
+
+.plugin-catalog-table {
+  width: 100%;
+  min-width: 36rem;
+  border-collapse: collapse;
+}
+
+.plugin-catalog-table th,
+.plugin-catalog-table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.plugin-catalog-table th {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--color-text-muted);
+  background: var(--color-bg-subtle);
+}
+
+.plugin-catalog-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.plugin-catalog-table tbody tr {
+  cursor: pointer;
+}
+
+.plugin-catalog-table tbody tr:hover,
+.plugin-catalog-table__row--active {
+  background: var(--color-bg-hover);
+}
+
+.plugin-catalog-table__name {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.plugin-catalog-table__name strong,
+.plugin-catalog-table__name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-catalog-table__name strong {
+  color: var(--color-text-primary);
+}
+
+.plugin-catalog-table__name small {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.plugin-catalog-table__version,
+.plugin-catalog-table__ref {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-catalog-table__col-status {
+  width: 7.25rem;
+}
+
+.plugin-catalog-table__col-version {
+  width: 6.5rem;
+}
+
+.plugin-catalog-table__col-source {
+  width: 7.5rem;
+}
+
+.plugin-catalog-table__col-actions {
+  width: 9.5rem;
+  white-space: nowrap;
+}
+
+.plugin-catalog-table__actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
 /* Dense table/list action rows */
 .actions-cell,
 .table-actions,

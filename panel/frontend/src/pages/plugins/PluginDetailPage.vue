@@ -15,6 +15,7 @@ import {
 import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
 import { filterPluginDetailForActor, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
+import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseTabs from '../../components/base/BaseTabs.vue'
 import DeleteConfirmDialog from '../../components/DeleteConfirmDialog.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
@@ -167,6 +168,11 @@ const primaryTaskLabel = computed(() => (taskState.value === 'unpublished' ? '�
 const showPrimaryTask = computed(() => taskState.value === 'undeployed' || taskState.value === 'unpublished')
 const deployModalInstance = computed(() => (deployIntent.value === 'deploy' ? null : selectedInstance.value))
 
+const hasPendingOperation = computed(() => Boolean(String(detail.value?.plugin?.pending_operation_id || '').trim()))
+const hasInstances = computed(() => (detail.value?.instances || []).length > 0)
+const showUninstallOnTask = computed(() => admin.value && !hasInstances.value)
+const uninstallNeedsDisable = computed(() => hasInstances.value && detail.value?.plugin?.current_lifecycle !== 'disabled' && detail.value?.plugin?.desired_lifecycle !== 'disabled')
+
 const confirmCopy = computed(() => {
   switch (confirmDialog.value.action) {
     case 'disable':
@@ -176,6 +182,15 @@ const confirmCopy = computed(() => {
     case 'delete-instance':
       return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置与插件密钥将被清理；已绑定规则时不能删除。', confirmText: '确认删除实例' }
     case 'uninstall':
+      return {
+        title: '确认卸载插件',
+        message: uninstallNeedsDisable.value
+          ? '插件还在运行。确认后会先停用，再卸载并移除配置。此操作不可撤销。'
+          : hasPendingOperation.value
+            ? '这个插件还有未完成的操作。确认后会继续卸载；若仍被占用，等当前操作结束后再试。'
+            : '卸载将移除插件及其配置，此操作不可撤销。',
+        confirmText: uninstallNeedsDisable.value ? '停用并卸载' : '确认卸载'
+      }
     default:
       return { title: '确认卸载插件', message: '卸载将移除插件及其配置，此操作不可撤销。', confirmText: '确认卸载' }
   }
@@ -295,6 +310,11 @@ function startExtraDomain() {
   void openDeployModal('publish')
 }
 
+function publishedEntryHref(entry) {
+  const url = String(entry?.frontend_url || '').trim()
+  return /^https?:\/\//i.test(url) ? url : ''
+}
+
 async function lifecycle(action) {
   if (!admin.value || busy.value) return
   busy.value = action
@@ -306,7 +326,7 @@ async function lifecycle(action) {
     else if (action === 'rollback') await rollbackPlugin(pluginID, detail.value.package.permissions || [])
     await load()
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || `插件 ${action} 失败`)
+    error.value = humanPluginError(cause, `插件 ${action} 失败`)
   } finally {
     busy.value = ''
   }
@@ -325,6 +345,29 @@ function cancelConfirm() {
   confirmDialog.value = { visible: false, loading: false, action: '' }
 }
 
+function humanPluginError(cause, fallback) {
+  const raw = sanitizePluginText(cause?.message || fallback || '').trim()
+  if (/already pending|plugin state conflict/i.test(raw)) {
+    return '这个插件还有未完成的操作，所以这次没有提交。等当前停用/升级结束后再试。'
+  }
+  if (/must be disabled and drained|runtime_not_drained/i.test(raw)) {
+    return '请先停用插件，等节点完成停用后再卸载。'
+  }
+  if (/still used by .* bound rule/i.test(raw)) {
+    return '还有 HTTP 规则绑定这个实例。先改入口或删掉绑定规则，再删除实例。'
+  }
+  return raw || fallback || '操作失败'
+}
+
+async function uninstallPluginWithPrep() {
+  const pluginID = detail.value.plugin.plugin_id
+  if (uninstallNeedsDisable.value) {
+    await disablePlugin(pluginID)
+    await load()
+  }
+  await uninstallPlugin(pluginID)
+}
+
 async function confirmAction() {
   const action = confirmDialog.value.action
   if (action === 'delete-instance' ? !canWrite.value : !admin.value) return
@@ -332,21 +375,21 @@ async function confirmAction() {
   error.value = ''
   try {
     if (action === 'uninstall') {
-      await uninstallPlugin(detail.value.plugin.plugin_id)
+      await uninstallPluginWithPrep()
+      confirmDialog.value = { visible: false, loading: false, action: '' }
       await router.push('/plugins')
     } else if (action === 'delete-instance') {
       await deletePluginInstance(detail.value.plugin.plugin_id, selectedInstance.value.id)
+      confirmDialog.value = { visible: false, loading: false, action: '' }
       await load()
     } else {
       await lifecycle(action)
+      confirmDialog.value = { visible: false, loading: false, action: '' }
     }
   } catch (cause) {
-    if (action === 'uninstall' || action === 'delete-instance') {
-      const fallback = action === 'delete-instance' ? '删除插件实例失败' : '卸载插件失败'
-      error.value = sanitizePluginText(cause?.message || fallback)
-    }
-  } finally {
-    confirmDialog.value = { visible: false, loading: false, action: '' }
+    const fallback = action === 'delete-instance' ? '删除插件实例失败' : action === 'uninstall' ? '卸载插件失败' : `插件 ${action} 失败`
+    error.value = humanPluginError(cause, fallback)
+    confirmDialog.value = { ...confirmDialog.value, loading: false }
   }
 }
 
@@ -432,40 +475,71 @@ async function retryAgent(status) {
           当前身份可以看懂下一步，但不能提交部署或发布。
         </p>
 
-        <div v-if="publishedEntries.length" class="plugin-published" data-test="plugin-published-entries">
-          <article
-            v-for="entry in publishedEntries"
-            :key="entry.rule_id"
-            class="plugin-published__item"
-            data-test="plugin-published-entry"
-          >
-            <strong>{{ sanitizePluginText(entry.frontend_url) }}</strong>
-            <span>{{ entry.enabled ? '已启用' : '未启用' }}</span>
-            <span>{{ entry.accessible ? '可访问' : '还不能访问' }}</span>
-            <span>节点 {{ entry.agent_id }}</span>
-            <button
-              v-if="admin"
-              class="btn btn-secondary btn-sm"
-              type="button"
-              :disabled="!!busy"
-              @click="startEditEntry(entry)"
+        <div v-if="publishedEntries.length" class="plugin-http-entries" data-test="plugin-published-entries">
+          <header class="plugin-http-entries__head">
+            <div>
+              <h2>HTTP 入口</h2>
+              <p>已发布的访问域名。点域名可直接打开，状态一眼可扫。</p>
+            </div>
+            <span class="plugin-http-entries__count">{{ publishedEntries.length }} 条</span>
+          </header>
+          <ul class="plugin-http-entries__list">
+            <li
+              v-for="entry in publishedEntries"
+              :key="entry.rule_id"
+              class="plugin-http-entry"
+              data-test="plugin-published-entry"
             >
-              修改入口
-            </button>
-          </article>
+              <div class="plugin-http-entry__main">
+                <a
+                  v-if="publishedEntryHref(entry)"
+                  class="plugin-http-entry__url"
+                  :href="publishedEntryHref(entry)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ sanitizePluginText(entry.frontend_url) }}</a>
+                <strong v-else class="plugin-http-entry__url">{{ sanitizePluginText(entry.frontend_url) }}</strong>
+                <div class="plugin-http-entry__meta">
+                  <BaseBadge :tone="entry.enabled ? 'success' : 'neutral'" size="sm" dot>
+                    {{ entry.enabled ? '已启用' : '未启用' }}
+                  </BaseBadge>
+                  <BaseBadge :tone="entry.accessible ? 'success' : 'warning'" size="sm" dot>
+                    {{ entry.accessible ? '可访问' : '还不能访问' }}
+                  </BaseBadge>
+                  <span class="plugin-http-entry__node">节点 {{ entry.agent_id }}</span>
+                </div>
+              </div>
+              <div class="plugin-http-entry__actions">
+                <button
+                  v-if="admin"
+                  class="btn btn-secondary btn-sm"
+                  type="button"
+                  :disabled="!!busy"
+                  @click="startEditEntry(entry)"
+                >
+                  修改入口
+                </button>
+              </div>
+            </li>
+          </ul>
           <button
             v-if="admin && hasHTTPBackend"
-            class="btn btn-secondary btn-sm"
+            class="plugin-http-entries__add"
             type="button"
             :disabled="!!busy"
             @click="startExtraDomain"
           >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
             再发布一条域名
           </button>
         </div>
 
-        <div v-if="showPrimaryTask" class="plugin-task__actions">
+        <div v-if="showPrimaryTask || showUninstallOnTask" class="plugin-task__actions">
           <button
+            v-if="showPrimaryTask"
             class="btn btn-primary"
             type="button"
             data-test="plugin-task-primary"
@@ -473,6 +547,16 @@ async function retryAgent(status) {
             @click="startPrimaryTask"
           >
             {{ primaryTaskLabel }}
+          </button>
+          <button
+            v-if="showUninstallOnTask"
+            class="btn btn-danger"
+            type="button"
+            data-test="plugin-task-uninstall"
+            :disabled="!!busy"
+            @click="handleLifecycleAction('uninstall')"
+          >
+            卸载
           </button>
         </div>
       </section>
@@ -515,7 +599,7 @@ async function retryAgent(status) {
             <header class="plugin-ops-panel__head">
               <div>
                 <h2>管理操作</h2>
-                <p>启用、停用、回滚，或导出脱敏诊断。卸载前必须先停用。</p>
+                <p>启用、停用、回滚，或导出脱敏诊断。还在运行的插件卸载时会先停用。</p>
               </div>
             </header>
             <div class="plugin-detail-actions">
@@ -524,7 +608,14 @@ async function retryAgent(status) {
                 <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('enable')">启用</button>
                 <button class="btn btn-secondary" type="button" :disabled="!!busy" @click="handleLifecycleAction('disable')">停用</button>
                 <button class="btn btn-secondary" type="button" :disabled="!!busy || !detail.plugin.rollback_package_digest" @click="handleLifecycleAction('rollback')">回滚</button>
-                <button class="btn btn-danger" type="button" :disabled="!!busy || detail.plugin.current_lifecycle !== 'disabled'" @click="handleLifecycleAction('uninstall')">卸载</button>
+                <button
+                  class="btn btn-danger"
+                  type="button"
+                  data-test="plugin-uninstall"
+                  :disabled="!!busy"
+                  :title="uninstallNeedsDisable ? '将先停用再卸载' : (hasPendingOperation ? '有未完成操作时仍可尝试卸载' : '卸载插件')"
+                  @click="handleLifecycleAction('uninstall')"
+                >卸载</button>
               </template>
             </div>
           </section>
@@ -739,16 +830,114 @@ async function retryAgent(status) {
 .plugin-task__status { margin: 0; font-size: var(--text-lg); font-weight: 600; }
 .plugin-task__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.plugin-published { display: grid; gap: var(--space-4); }
-.plugin-published__item {
+.plugin-http-entries {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 0.15rem;
+}
+.plugin-http-entries__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.plugin-http-entries__head h2 {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+}
+.plugin-http-entries__head p {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.plugin-http-entries__count {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+.plugin-http-entries__list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.plugin-http-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  min-width: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--color-bg-canvas) 72%, var(--color-bg-surface));
+}
+.plugin-http-entry__main {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+.plugin-http-entry__url {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 650;
+  color: var(--color-text-primary);
+  text-decoration: none;
+  line-height: 1.35;
+}
+a.plugin-http-entry__url:hover {
+  color: var(--color-primary);
+}
+.plugin-http-entry__meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
+  gap: 0.35rem 0.5rem;
 }
-.plugin-published__item strong { color: var(--color-text-primary); overflow-wrap: anywhere; }
+.plugin-http-entry__node {
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+}
+.plugin-http-entry__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+.plugin-http-entries__add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.55rem 1rem;
+  border: 1px dashed color-mix(in srgb, var(--color-border-default) 80%, var(--color-primary) 20%);
+  border-radius: var(--radius-xl);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.plugin-http-entries__add:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, transparent);
+}
+.plugin-http-entries__add:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
 
 .plugin-section { display: grid; gap: var(--space-4); padding-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); }
 .plugin-section h2 { margin: 0; font-size: var(--text-lg); }
@@ -766,5 +955,8 @@ async function retryAgent(status) {
   .plugin-ops__stack { padding-left: 0.85rem; padding-right: 0.85rem; }
   .plugin-ops-panel { padding: 0.8rem 0.85rem; }
   .plugin-detail-actions .btn { flex: 1 1 auto; }
+  .plugin-http-entry { align-items: stretch; flex-direction: column; }
+  .plugin-http-entry__actions { margin-left: 0; }
+  .plugin-http-entry__actions .btn { width: 100%; }
 }
 </style>

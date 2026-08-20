@@ -10,6 +10,7 @@
         </p>
       </div>
       <div v-if="groups.length" class="plugin-groups-page__header-right">
+        <ViewToggle v-model:view="view" />
         <div class="search-field" @click="focusSearch">
           <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <circle cx="11" cy="11" r="7" />
@@ -55,7 +56,7 @@
         <p>没有匹配的资源组</p>
         <button class="btn btn-secondary" type="button" @click="query = ''">清空搜索</button>
       </div>
-      <div v-else class="plugin-groups-page__grid">
+      <div v-else-if="view === 'card'" class="plugin-groups-page__grid">
       <BaseListCard
         v-for="group in filtered"
         :key="group.id"
@@ -92,6 +93,57 @@
         </template>
       </BaseListCard>
     </div>
+      <div v-else class="plugin-catalog-table-wrap" data-test="plugin-groups-table">
+        <table class="plugin-catalog-table" aria-label="插件资源组">
+          <thead>
+            <tr>
+              <th>资源组</th>
+              <th class="plugin-catalog-table__col-status">状态</th>
+              <th>引用</th>
+              <th class="plugin-catalog-table__col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="group in filtered"
+              :key="group.id"
+              @click="selected = group"
+            >
+              <td>
+                <div class="plugin-catalog-table__name">
+                  <strong :title="group.label">{{ group.label }}</strong>
+                  <small v-if="group.description">{{ group.description }}</small>
+                </div>
+              </td>
+              <td>
+                <BaseBadge :tone="group.status === 'registered' ? 'success' : 'neutral'" dot>
+                  {{ statusLabel(group.status) }}
+                </BaseBadge>
+              </td>
+              <td>
+                <code class="plugin-catalog-table__ref" :title="group.ref">{{ group.ref }}</code>
+              </td>
+              <td class="plugin-catalog-table__col-actions">
+                <div class="plugin-catalog-table__actions" @click.stop>
+                  <BaseIconButton :title="copiedId === group.id ? '已复制' : '复制引用'" @click="copyRef(group)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                  </BaseIconButton>
+                  <a
+                    v-if="manageHref(group)"
+                    class="btn btn-secondary btn-sm"
+                    :href="manageHref(group)"
+                    target="_blank"
+                    rel="noopener"
+                  >打开管理页</a>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
     <BaseModal
       :model-value="Boolean(selected)"
@@ -137,9 +189,12 @@ import BaseIconButton from '../components/base/BaseIconButton.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import EmptyState from '../components/base/EmptyState.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import { usePluginResourceGroups } from '../hooks/usePluginResourceGroups'
 
 const { groups, loading, error } = usePluginResourceGroups()
+const { view } = useViewToggle('plugin-resource-groups')
 const query = ref('')
 const selected = ref(null)
 const copiedId = ref('')
@@ -214,6 +269,7 @@ async function copyRef(group) {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 0.5rem;
   flex: 1 1 16rem;
   min-width: 0;
 }

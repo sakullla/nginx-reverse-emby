@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchRepositoryContents, fetchRepositorySources } from '../../api/pluginRepositories'
 import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../../api/plugins'
@@ -9,10 +9,13 @@ import BaseIconButton from '../../components/base/BaseIconButton.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
+import ViewToggle from '../../components/common/ViewToggle.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
+import { useViewToggle } from '../../composables/useViewToggle'
 
 const router = useRouter()
+const { view } = useViewToggle('plugin-marketplace')
 
 const loading = ref(true)
 const actionBusy = ref(false)
@@ -27,9 +30,30 @@ const detailPrepared = ref(false)
 const confirmVisible = ref(false)
 const inspectVisible = ref(false)
 const confirmFromInspect = ref(false)
+const pendingConflict = ref(false)
 const query = ref('')
 const searchInputRef = ref(null)
 const packageDetailCache = new Map()
+const downloadElapsedSec = ref(0)
+let downloadTimer = 0
+
+const downloadSteps = [
+  { id: 'download', label: '下载签名包' },
+  { id: 'verify', label: '校验完整性' },
+  { id: 'permissions', label: '读取权限' }
+]
+
+const downloadPhase = computed(() => (downloadElapsedSec.value < 2 ? 'connect' : 'download'))
+const downloadPhaseLabel = computed(() => {
+  if (downloadPhase.value === 'connect') return '正在连接市场源'
+  const size = packageSizeLabel(selected.value)
+  return size ? `正在下载签名包（约 ${size}）` : '正在下载签名包'
+})
+const downloadHint = computed(() => (
+  source.value.kind === 'official'
+    ? '官方包首次安装会先下载并校验，可能需要一两分钟。进度按真实阶段显示，不会假装已经快完成。'
+    : '安装前会读取并校验签名包。进度按真实阶段显示，不会假装已经快完成。'
+))
 
 const source = computed(() => selected.value?.source || {})
 const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
@@ -86,6 +110,7 @@ const nextStepHint = computed(() => {
 })
 
 onMounted(load)
+onBeforeUnmount(stopDownloadProgress)
 
 async function load() {
   loading.value = true
@@ -199,9 +224,43 @@ function selectPackage(item) {
   actionError.value = ''
 }
 
+function startDownloadProgress() {
+  downloadElapsedSec.value = 0
+  if (downloadTimer) window.clearInterval(downloadTimer)
+  downloadTimer = window.setInterval(() => {
+    downloadElapsedSec.value += 1
+  }, 1000)
+}
+
+function stopDownloadProgress() {
+  if (!downloadTimer) return
+  window.clearInterval(downloadTimer)
+  downloadTimer = 0
+}
+
+function packageSizeLabel(item) {
+  const blob = Number(item?.plugin?.blob_size)
+  if (Number.isFinite(blob) && blob > 0) return formatPackageSize(blob)
+  const artifacts = Array.isArray(item?.plugin?.artifacts) ? item.plugin.artifacts : []
+  const total = artifacts.reduce((sum, artifact) => sum + (Number(artifact?.size) || 0), 0)
+  return total > 0 ? formatPackageSize(total) : ''
+}
+
+function formatPackageSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  if (bytes < 1024 * 1024) {
+    const kb = bytes / 1024
+    return `${kb >= 10 ? kb.toFixed(0) : kb.toFixed(1)} KB`
+  }
+  const mb = bytes / (1024 * 1024)
+  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
+}
+
 async function preparePackageDetail(item) {
   detailLoading.value = true
   actionError.value = ''
+  startDownloadProgress()
   try {
     detail.value = await cachedPackageDetail(item)
     detailPrepared.value = true
@@ -214,6 +273,7 @@ async function preparePackageDetail(item) {
     }
     return false
   } finally {
+    stopDownloadProgress()
     detailLoading.value = false
   }
 }
@@ -280,8 +340,31 @@ function statusTone(item) {
   return 'neutral'
 }
 
+function isPendingConflictMessage(message) {
+  return /already pending|plugin state conflict/i.test(String(message || ''))
+}
+
+function pendingPlugin() {
+  return installedPlugin.value
+}
+
+function hasPendingOperation() {
+  return Boolean(String(pendingPlugin()?.pending_operation_id || '').trim())
+}
+
+function isPendingSameUpgrade() {
+  const pendingDigest = String(pendingPlugin()?.pending_target_digest || '').trim()
+  const selectedDigest = String(selected.value?.plugin?.sha256 || '').trim()
+  return hasPendingOperation() && pendingDigest && selectedDigest && pendingDigest === selectedDigest
+}
+
 function humanLoadError(cause, fallback) {
   const raw = sanitizePluginText(cause?.message || fallback)
+  if (isPendingConflictMessage(raw)) {
+    return isPendingSameUpgrade()
+      ? '这个插件已有升级在进行。打开详情查看进度，不用重复提交。'
+      : '这个插件还有未完成的操作，所以这次没有提交。打开详情查看进度，结束后再点重试。'
+  }
   if (/timeout|timed out|exceeded|econnaborted/i.test(raw)) {
     return '读取插件包超时。安装前需要下载并校验签名包，请检查出站网络或 HTTP 代理后重试。'
   }
@@ -309,6 +392,7 @@ async function startCardAction(item) {
   confirmFromInspect.value = false
   error.value = ''
   actionError.value = ''
+  pendingConflict.value = false
   const status = installedStatus(item)
   if (status === '已安装') {
     await router.push(`/plugins/${encodeURIComponent(item.plugin.id)}`)
@@ -343,12 +427,38 @@ function onConfirmVisible(open) {
   cancelConfirm()
 }
 
+async function refreshInstalled() {
+  try {
+    installed.value = await fetchPlugins()
+  } catch {
+    // Keep the last known installed list so retry and pending checks still work.
+  }
+}
+
+async function openSelectedDetail() {
+  const pluginID = String(selected.value?.plugin?.id || '').trim()
+  if (!pluginID) return
+  confirmVisible.value = false
+  inspectVisible.value = false
+  await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
+}
+
 async function applyPackage() {
-  if (!selected.value || actionBusy.value || detailLoading.value || actionError.value) return
+  if (!selected.value || actionBusy.value || detailLoading.value) return
+  const pluginID = selected.value.plugin.id
   actionBusy.value = true
   actionError.value = ''
+  pendingConflict.value = false
   try {
-    const pluginID = selected.value.plugin.id
+    if (!detailPrepared.value) {
+      const prepared = await preparePackageDetail(selected.value)
+      if (!prepared) return
+    }
+    await refreshInstalled()
+    if (isPendingSameUpgrade()) {
+      await openSelectedDetail()
+      return
+    }
     if (isUpgrade.value) await upgradePlugin(pluginID, installSelection())
     else await installPlugin(installSelection())
     confirmVisible.value = false
@@ -357,7 +467,12 @@ async function applyPackage() {
   } catch (cause) {
     confirmVisible.value = true
     inspectVisible.value = false
+    await refreshInstalled()
+    pendingConflict.value = isPendingConflictMessage(cause?.message)
     actionError.value = humanLoadError(cause, '提交插件包失败')
+    if (isPendingSameUpgrade()) {
+      await openSelectedDetail()
+    }
   } finally {
     actionBusy.value = false
   }
@@ -400,6 +515,7 @@ async function applyPackage() {
             </svg>
           </button>
         </div>
+        <ViewToggle v-if="packages.length" v-model:view="view" />
         <RouterLink class="btn btn-secondary" to="/plugins/repositories">高级：管理仓库源</RouterLink>
       </div>
     </header>
@@ -426,8 +542,9 @@ async function applyPackage() {
     <template v-else>
       <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
 
-      <section class="plugin-marketplace-catalog" aria-label="可安装插件">
-        <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
+      <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
+
+      <section v-else-if="view === 'card'" class="plugin-marketplace-catalog" aria-label="可安装插件">
         <BaseListCard
           v-for="item in filteredPackages"
           :key="packageKey(item)"
@@ -450,7 +567,7 @@ async function applyPackage() {
             </BaseBadge>
             <BaseIconButton
               :tone="installedStatus(item) === '已安装' ? 'default' : 'primary'"
-              :title="detailLoading && isSelected(item) ? '正在读取签名包…' : cardActionLabel(item)"
+              :title="detailLoading && isSelected(item) ? '正在下载签名包…' : cardActionLabel(item)"
               :data-test="`marketplace-card-action-${item.plugin.id}`"
               :disabled="(actionBusy || detailLoading) && isSelected(item)"
               @click="startCardAction(item)"
@@ -474,6 +591,59 @@ async function applyPackage() {
           </template>
         </BaseListCard>
       </section>
+
+      <div v-else class="plugin-catalog-table-wrap" data-test="marketplace-table">
+        <table class="plugin-catalog-table" aria-label="可安装插件">
+          <thead>
+            <tr>
+              <th>插件</th>
+              <th class="plugin-catalog-table__col-status">状态</th>
+              <th class="plugin-catalog-table__col-version">版本</th>
+              <th class="plugin-catalog-table__col-source">来源</th>
+              <th class="plugin-catalog-table__col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in filteredPackages"
+              :key="packageKey(item)"
+              :class="{ 'plugin-catalog-table__row--active': isSelected(item) }"
+              @click="selectPackage(item)"
+            >
+              <td>
+                <div class="plugin-catalog-table__name">
+                  <strong :title="pluginTitle(item)">{{ pluginTitle(item) }}</strong>
+                  <small v-if="pluginBlurb(item)">{{ pluginBlurb(item) }}</small>
+                </div>
+              </td>
+              <td>
+                <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
+              </td>
+              <td>
+                <span class="plugin-catalog-table__version">{{ item.plugin.version }}</span>
+              </td>
+              <td>
+                <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
+                  {{ sourceKindLabel(item.source.kind) }}
+                </BaseBadge>
+              </td>
+              <td class="plugin-catalog-table__col-actions">
+                <div class="plugin-catalog-table__actions" @click.stop>
+                  <button
+                    type="button"
+                    class="btn btn-secondary btn-sm"
+                    :data-test="`marketplace-card-action-${item.plugin.id}`"
+                    :disabled="(actionBusy || detailLoading) && isSelected(item)"
+                    @click="startCardAction(item)"
+                  >
+                    {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <BaseModal
         :model-value="inspectVisible"
@@ -518,7 +688,7 @@ async function applyPackage() {
             打开详情
           </RouterLink>
           <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled || detailLoading" @click="openConfirm">
-            {{ detailLoading ? '读取中…' : isUpgrade ? '升级插件' : '安装插件' }}
+            {{ detailLoading ? '下载中…' : isUpgrade ? '升级插件' : '安装插件' }}
           </button>
         </template>
       </BaseModal>
@@ -534,21 +704,46 @@ async function applyPackage() {
       >
         <div class="confirm-permissions">
           <p v-if="actionError" class="plugin-alert" role="alert" data-test="marketplace-action-error">{{ actionError }}</p>
-          <p v-if="detailLoading" data-test="marketplace-detail-loading">正在读取签名包详情…官方包首次安装会先下载并校验。</p>
+          <p v-if="actionError && (hasPendingOperation() || pendingConflict)" class="confirm-pending-next">
+            <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
+          </p>
+          <div v-if="detailLoading" class="package-download-progress" data-test="marketplace-detail-loading">
+            <p class="package-download-progress__title">{{ downloadPhaseLabel }}</p>
+            <p class="package-download-progress__hint">{{ downloadHint }}</p>
+            <div
+              class="package-download-progress__track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-valuetext="downloadPhaseLabel"
+            >
+              <div class="package-download-progress__fill"></div>
+            </div>
+            <ol class="package-download-progress__steps">
+              <li
+                v-for="step in downloadSteps"
+                :key="step.id"
+                :class="{ 'is-current': step.id === 'download' }"
+              >
+                {{ step.label }}
+              </li>
+            </ol>
+            <p class="package-download-progress__elapsed">已等待 {{ downloadElapsedSec }} 秒</p>
+          </div>
           <template v-else>
             <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
             <p v-else>此包未请求宿主能力。</p>
             <ul v-if="requiredPermissions.length" class="permission-list">
               <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
             </ul>
-            <p class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
+            <p v-if="!actionError" class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
             <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
           </template>
         </div>
         <template #footer>
           <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="cancelConfirm">取消</button>
-          <button class="btn btn-primary" type="button" :disabled="actionBusy || detailLoading || !!actionError" @click="applyPackage">
-            {{ actionBusy ? '提交中…' : detailLoading ? '读取中…' : isUpgrade ? '确认升级' : '确认安装' }}
+          <button class="btn btn-primary" type="button" data-test="marketplace-confirm-submit" :disabled="actionBusy || detailLoading" @click="applyPackage">
+            {{ actionBusy ? '提交中…' : detailLoading ? '下载中…' : actionError ? (isUpgrade ? '重试升级' : '重试安装') : isUpgrade ? '确认升级' : '确认安装' }}
           </button>
         </template>
       </BaseModal>
@@ -760,7 +955,7 @@ async function applyPackage() {
   gap: var(--space-3);
 }
 
-.confirm-permissions p {
+.confirm-permissions > p {
   margin: 0;
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
@@ -770,8 +965,94 @@ async function applyPackage() {
   color: var(--color-text-primary);
 }
 
+.confirm-pending-next {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.confirm-pending-next a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.confirm-pending-next a:hover {
+  text-decoration: underline;
+}
+
 .confirm-risk {
   color: var(--color-warning);
+}
+
+.package-download-progress {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.package-download-progress__title {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 650;
+}
+
+.package-download-progress__hint,
+.package-download-progress__elapsed {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.package-download-progress__track {
+  position: relative;
+  overflow: hidden;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+}
+
+.package-download-progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 36%;
+  border-radius: inherit;
+  background: var(--color-primary);
+  animation: package-download-indeterminate 1.35s ease-in-out infinite;
+}
+
+.package-download-progress__steps {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.package-download-progress__steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+}
+
+.package-download-progress__steps li::before {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.package-download-progress__steps li.is-current {
+  color: var(--color-primary);
+  font-weight: 650;
+}
+
+@keyframes package-download-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(340%); }
 }
 
 @media (max-width: 800px) {

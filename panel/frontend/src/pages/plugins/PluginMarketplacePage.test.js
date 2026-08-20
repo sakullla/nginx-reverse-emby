@@ -63,6 +63,7 @@ function buttonByText(wrapper, text) {
 }
 
 beforeEach(() => {
+  localStorage.removeItem('view:plugin-marketplace')
   mocks.fetchRepositorySources.mockReset().mockResolvedValue([source])
   mocks.fetchRepositoryContents.mockReset().mockResolvedValue({ entries: [entry], directPlugin: null })
   mocks.fetchPlugins.mockReset().mockResolvedValue([])
@@ -149,12 +150,38 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
-    expect(wrapper.get('[data-test="marketplace-detail-loading"]').text()).toContain('正在读取签名包详情')
-    expect(buttonByText(wrapper, '读取中…').attributes('disabled')).toBeDefined()
+    const loading = wrapper.get('[data-test="marketplace-detail-loading"]')
+    expect(loading.text()).toContain('正在连接市场源')
+    expect(loading.text()).toContain('下载签名包')
+    expect(loading.text()).toContain('已等待 0 秒')
+    expect(loading.find('[role="progressbar"]').exists()).toBe(true)
+    expect(buttonByText(wrapper, '下载中…').attributes('disabled')).toBeDefined()
     resolveDetail(packageDetail)
     await flushPromises()
     expect(wrapper.find('[data-test="marketplace-detail-loading"]').exists()).toBe(false)
     expect(buttonByText(wrapper, '确认安装').attributes('disabled')).toBeUndefined()
+  })
+
+  it('shows download size and elapsed time on the confirm progress bar', async () => {
+    vi.useFakeTimers()
+    mocks.fetchRepositoryContents.mockResolvedValue({
+      entries: [{ ...entry, blob_size: 12 * 1024 * 1024 }],
+      directPlugin: null
+    })
+    let resolveDetail
+    mocks.fetchPluginPackageDetail.mockReturnValue(new Promise((resolve) => { resolveDetail = resolve }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await vi.advanceTimersByTimeAsync(2000)
+    const loading = wrapper.get('[data-test="marketplace-detail-loading"]')
+    expect(loading.text()).toContain('正在下载签名包（约 12 MB）')
+    expect(loading.text()).toContain('已等待 2 秒')
+    expect(loading.text()).toContain('校验完整性')
+    resolveDetail(packageDetail)
+    await flushPromises()
+    vi.useRealTimers()
+    wrapper.unmount()
   })
 
   it('explains a package-detail timeout on the confirm dialog', async () => {
@@ -164,7 +191,8 @@ describe('PluginMarketplacePage', () => {
     await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('读取插件包超时')
-    expect(buttonByText(wrapper, '确认安装').attributes('disabled')).toBeDefined()
+    expect(buttonByText(wrapper, '重试安装')).toBeTruthy()
+    expect(buttonByText(wrapper, '重试安装').attributes('disabled')).toBeUndefined()
   })
 
   it('installs from the card action without requiring a second inspect click', async () => {
@@ -371,6 +399,63 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     expect(wrapper.find('[data-test="marketplace-action-error"]').text()).toBe('source rejected')
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
+    expect(buttonByText(wrapper, '重试安装')).toBeTruthy()
     expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('retries upgrade after a pending-operation conflict instead of ignoring the confirm click', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+    mocks.upgradePlugin
+      .mockRejectedValueOnce(new Error('plugin state conflict: another plugin operation is already pending'))
+      .mockResolvedValueOnce({})
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认升级').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('未完成的操作')
+    expect(wrapper.get('[data-test="marketplace-pending-detail"]').attributes('href')).toBe(`/plugins/${encodeURIComponent(entry.id)}`)
+    expect(wrapper.find('[data-test="marketplace-confirm-next"]').exists()).toBe(false)
+    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
+    expect(mocks.push).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(2)
+    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+  })
+
+  it('opens plugin detail when the same upgrade is already pending', async () => {
+    mocks.fetchPlugins
+      .mockResolvedValueOnce([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+      .mockResolvedValue([{
+        plugin_id: entry.id,
+        active_package_digest: 'c'.repeat(64),
+        pending_operation_id: 'op-upgrade',
+        pending_kind: 'upgrade',
+        pending_target_digest: entry.sha256
+      }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认升级').trigger('click')
+    await flushPromises()
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+  })
+
+  it('switches the catalog to a list table', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.plugin-marketplace-catalog').exists()).toBe(true)
+    await wrapper.get('button[title="列表视图"]').trigger('click')
+    expect(wrapper.find('.plugin-marketplace-catalog').exists()).toBe(false)
+    const table = wrapper.get('[data-test="marketplace-table"]')
+    expect(table.text()).toContain('WAF')
+    expect(table.text()).toContain('安装')
+    await table.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
   })
 })

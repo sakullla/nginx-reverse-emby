@@ -92,6 +92,7 @@ describe('RuleDetailPage', () => {
       '/l4',
       '/relay-listeners',
       '/agents',
+      '/plugins/marketplace',
       '/resource-groups',
       '/settings'
     ])

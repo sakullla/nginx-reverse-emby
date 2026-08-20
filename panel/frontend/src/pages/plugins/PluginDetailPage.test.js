@@ -246,9 +246,10 @@ function firstScreenButtons(wrapper) {
   })
 }
 
-function expectOpsOnlyInMore(wrapper) {
+function expectOpsOnlyInMore(wrapper, { allowUninstall = false } = {}) {
   const screen = firstScreenText(wrapper)
-  for (const label of opsLabels) {
+  const hidden = allowUninstall ? opsLabels.filter((label) => label !== '卸载') : opsLabels
+  for (const label of hidden) {
     expect(firstScreenButtons(wrapper).some((button) => button.text() === label)).toBe(false)
   }
   expect(screen).not.toContain('导出脱敏诊断')
@@ -339,9 +340,10 @@ describe('PluginDetailPage', () => {
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
     expect(wrapper.get('.plugin-task__purpose').text()).toContain('把插件部署到一个节点后即可在该节点上使用')
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
+    expect(wrapper.find('[data-test="plugin-task-uninstall"]').exists()).toBe(true)
     expect(firstScreenText(wrapper)).not.toContain('模式')
     expect(wrapper.find('[data-test="plugin-task-center"] .declarative-field').exists()).toBe(false)
-    expectOpsOnlyInMore(wrapper)
+    expectOpsOnlyInMore(wrapper, { allowUninstall: true })
     const more = await openMore(wrapper)
     expect(buttonByText(more, '启用')?.classes() || []).not.toContain('btn-primary')
     expect(buttonByText(more, '回滚')?.classes() || []).not.toContain('btn-primary')
@@ -523,7 +525,12 @@ describe('PluginDetailPage', () => {
   it('shows the published entry and updates the original rule from the detail page', async () => {
     const wrapper = await mountPage(publishedHTTPDetail())
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('已可用')
-    expect(wrapper.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
+    const entries = wrapper.get('[data-test="plugin-published-entries"]')
+    expect(entries.text()).toContain('HTTP 入口')
+    expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
+    expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('已启用')
+    expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('可访问')
+    expect(entries.find('a.plugin-http-entry__url').attributes('href')).toBe('https://media.example.com')
     expectNoProviderOrRuleDetour(wrapper)
 
     await buttonByText(wrapper, '修改入口').trigger('click')
@@ -577,8 +584,57 @@ describe('PluginDetailPage', () => {
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
+    expect(mocks.disablePlugin).not.toHaveBeenCalled()
     expect(mocks.uninstallPlugin).toHaveBeenCalledWith('official.waf')
     expect(mocks.push).toHaveBeenCalledWith('/plugins')
+  })
+
+  it('uninstalls an undeployed applying plugin from the task card without disabling first', async () => {
+    const wrapper = await mountPage(makeDetail({
+      plugin: { ...makeDetail().plugin, current_lifecycle: 'applying', desired_lifecycle: 'enabled' },
+      instances: [],
+      published_entries: [],
+      agent_statuses: []
+    }))
+    const uninstall = wrapper.get('[data-test="plugin-task-uninstall"]')
+    expect(uninstall.attributes('disabled')).toBeUndefined()
+    await uninstall.trigger('click')
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认卸载插件')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.disablePlugin).not.toHaveBeenCalled()
+    expect(mocks.uninstallPlugin).toHaveBeenCalledWith('official.waf')
+    expect(mocks.push).toHaveBeenCalledWith('/plugins')
+  })
+
+  it('disables an active plugin before uninstalling it', async () => {
+    const wrapper = await mountPage(makeDetail())
+    const more = await openMore(wrapper)
+    const uninstall = buttonByText(more, '卸载')
+    expect(uninstall.attributes('disabled')).toBeUndefined()
+    await uninstall.trigger('click')
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认卸载插件')
+    expect(wrapper.text()).toContain('会先停用')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.disablePlugin).toHaveBeenCalledWith('official.waf')
+    expect(mocks.uninstallPlugin).toHaveBeenCalledWith('official.waf')
+    expect(mocks.push).toHaveBeenCalledWith('/plugins')
+  })
+
+  it('keeps uninstall available after a pending-operation conflict and humanizes the error', async () => {
+    mocks.uninstallPlugin.mockRejectedValue(new Error('plugin state conflict: another plugin operation is already pending'))
+    const detail = makeDetail()
+    detail.plugin.current_lifecycle = 'disabled'
+    detail.plugin.pending_operation_id = 'op-upgrade'
+    const wrapper = await mountPage(detail)
+    const more = await openMore(wrapper)
+    await buttonByText(more, '卸载').trigger('click')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.plugin-alert').text()).toContain('未完成的操作')
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
+    expect(mocks.push).not.toHaveBeenCalled()
   })
 
   it('confirms deletion of only the selected deployment instance', async () => {
@@ -652,7 +708,7 @@ describe('PluginDetailPage', () => {
   it('keeps enable, diagnostics, logs, timeline, and technical details only in 更多', async () => {
     const wrapper = await mountPage(undeployedDetail())
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
-    expectOpsOnlyInMore(wrapper)
+    expectOpsOnlyInMore(wrapper, { allowUninstall: true })
     const more = await openMore(wrapper)
     for (const label of opsLabels) {
       expect(buttonByText(more, label)).toBeTruthy()
@@ -684,7 +740,7 @@ describe('PluginDetailPage', () => {
     const wrapper = await mountPage(undeployedDetail({ instances: [], agent_statuses: [] }))
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
     expect(deployModal(wrapper).exists()).toBe(false)
-    expectOpsOnlyInMore(wrapper)
+    expectOpsOnlyInMore(wrapper, { allowUninstall: true })
     expect(morePanel(wrapper).find('.plugin-technical').exists()).toBe(true)
     const modal = await openGuide(wrapper)
     expect(modal.exists()).toBe(true)

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchPluginUIRoutes } from '../../api'
 import { fetchPluginDetail, fetchPlugins } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
@@ -7,7 +8,11 @@ import { filterPluginDetailForActor, useAccessControl } from '../../context/useA
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
+import ViewToggle from '../../components/common/ViewToggle.vue'
+import { useViewToggle } from '../../composables/useViewToggle'
 
+const router = useRouter()
+const { view } = useViewToggle('installed-plugins')
 const { actor, refreshActor } = useAccessControl()
 const loading = ref(true)
 const error = ref('')
@@ -99,12 +104,6 @@ function sourceLabel(detail) {
   return detail.plugin?.active_source_kind === 'official' ? '官方来源' : '非官方来源'
 }
 
-function publishedEntryLabel(detail) {
-  const entries = publishedEntriesOf(detail)
-  const ready = entries.find((entry) => entry.enabled && entry.accessible) || entries[0]
-  return ready?.frontend_url || ''
-}
-
 function nextStepLabel(detail) {
   switch (pluginTaskStatus(detail)) {
     case 'undeployed':
@@ -172,8 +171,12 @@ function applyPreviewPlugins() {
 
 function manageHref(detail) {
   const id = String(detail?.plugin?.plugin_id || '').trim()
+  if (!id) return ''
   const route = uiRoutes.value.find((item) => item.id === id)
   if (route?.href) return route.href
+  if (hasHTTPBackend(detail) || publishedEntriesOf(detail).length) {
+    return `/panel-api/plugins/${encodeURIComponent(id)}/`
+  }
   return ''
 }
 
@@ -183,6 +186,11 @@ function openManage(detail, event) {
   const href = manageHref(detail)
   if (href) window.open(href, '_blank', 'noopener')
 }
+
+function openDetail(detail) {
+  const id = String(detail?.plugin?.plugin_id || '').trim()
+  if (id) router.push(`/plugins/${encodeURIComponent(id)}`)
+}
 </script>
 
 <template>
@@ -190,9 +198,10 @@ function openManage(detail, event) {
     <header class="page-header">
       <div class="page-header__left">
         <h1 class="page-title">已安装插件</h1>
-        <p class="page-subtitle">看每个插件还差部署、发布还是已经能用。点卡片进入详情做下一步；尚未部署的也会列在这里。</p>
+        <p class="page-subtitle">看每个插件还差部署、发布还是已经能用。点卡片或列表进入详情做下一步；尚未部署的也会列在这里。</p>
       </div>
       <div class="page-header__right">
+        <ViewToggle v-if="plugins.length || searchQuery || taskFilter" v-model:view="view" />
         <RouterLink class="btn btn-primary" to="/plugins/marketplace">打开插件市场</RouterLink>
       </div>
     </header>
@@ -260,7 +269,7 @@ function openManage(detail, event) {
 
     <EmptyState v-else-if="!filteredPlugins.length" title="没有匹配的插件" description="下一步：试试全部任务状态，或换一个搜索词。" />
 
-    <section v-else class="plugin-grid" aria-label="已安装插件">
+    <section v-else-if="view === 'card'" class="plugin-grid" aria-label="已安装插件">
       <RouterLink
         v-for="detail in filteredPlugins"
         :key="detail.plugin.plugin_id"
@@ -282,7 +291,6 @@ function openManage(detail, event) {
             <span class="plugin-card__version">{{ detail.package.version }}</span>
           </template>
           <p class="plugin-card__meta">{{ nextStepLabel(detail) }}</p>
-          <p v-if="publishedEntryLabel(detail)" class="plugin-card__url">{{ publishedEntryLabel(detail) }}</p>
           <template #footer>
             <BaseBadge :tone="detail.plugin?.active_source_kind === 'official' ? 'success' : 'warning'">
               {{ sourceLabel(detail) }}
@@ -290,13 +298,70 @@ function openManage(detail, event) {
             <button
               v-if="manageHref(detail)"
               type="button"
-              class="plugin-card__manage"
+              class="btn btn-secondary btn-sm plugin-card__manage"
+              data-test="plugin-open-manage"
               @click.stop.prevent="openManage(detail, $event)"
             >打开管理页</button>
           </template>
         </BaseListCard>
       </RouterLink>
     </section>
+
+    <div v-else class="plugin-catalog-table-wrap" data-test="installed-plugins-table">
+      <table class="plugin-catalog-table" aria-label="已安装插件">
+        <thead>
+          <tr>
+            <th>插件</th>
+            <th class="plugin-catalog-table__col-status">状态</th>
+            <th class="plugin-catalog-table__col-version">版本</th>
+            <th class="plugin-catalog-table__col-source">来源</th>
+            <th class="plugin-catalog-table__col-actions">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="detail in filteredPlugins"
+            :key="detail.plugin.plugin_id"
+            @click="openDetail(detail)"
+          >
+            <td>
+              <div class="plugin-catalog-table__name">
+                <strong>{{ pluginName(detail) }}</strong>
+                <small>{{ nextStepLabel(detail) }}</small>
+              </div>
+            </td>
+            <td>
+              <BaseBadge
+                :tone="taskStatusTone(pluginTaskStatus(detail))"
+                :data-test="`plugin-task-status-${pluginTaskStatus(detail)}`"
+                dot
+              >
+                {{ taskStatusLabel(pluginTaskStatus(detail)) }}
+              </BaseBadge>
+            </td>
+            <td>
+              <span class="plugin-catalog-table__version">{{ detail.package.version }}</span>
+            </td>
+            <td>
+              <BaseBadge :tone="detail.plugin?.active_source_kind === 'official' ? 'success' : 'warning'">
+                {{ sourceLabel(detail) }}
+              </BaseBadge>
+            </td>
+            <td class="plugin-catalog-table__col-actions">
+              <div class="plugin-catalog-table__actions" @click.stop>
+                <button
+                  v-if="manageHref(detail)"
+                  type="button"
+                  class="btn btn-secondary btn-sm"
+                  data-test="plugin-open-manage"
+                  @click="openManage(detail, $event)"
+                >打开管理页</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </main>
 </template>
 
@@ -407,19 +472,13 @@ function openManage(detail, event) {
   color: #fff;
 }
 
-.plugin-card__meta,
-.plugin-card__url {
+.plugin-card__meta {
   margin: 0;
   color: var(--color-text-muted);
   font-size: 0.8125rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.plugin-card__url {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
 }
 
 .plugin-card-link :deep(.base-list-card__footer) {
@@ -432,14 +491,6 @@ function openManage(detail, event) {
 
 .plugin-card__manage {
   margin-left: auto;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-primary);
-  font: inherit;
-  font-size: 0.75rem;
-  cursor: pointer;
-  white-space: nowrap;
 }
 
 .plugin-card__facts {

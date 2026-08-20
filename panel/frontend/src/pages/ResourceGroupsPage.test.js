@@ -22,6 +22,7 @@ vi.mock('../components/base/BaseModal.vue', () => ({
 
 describe('ResourceGroupsPage', () => {
   beforeEach(() => {
+    localStorage.removeItem('view:plugin-resource-groups')
     groups.value = []
     loading.value = false
     error.value = ''
@@ -81,6 +82,29 @@ describe('ResourceGroupsPage', () => {
     await page.find('input[type="search"]').setValue('cloudflare')
     expect(page.text()).toContain('Cloudflare DNS')
     expect(page.text()).not.toContain('其他组')
+    page.unmount()
+  })
+
+  it('switches declared groups to a list table', async () => {
+    groups.value = [{
+      id: 'cloudflare-dns',
+      plugin_id: 'cloudflare-dns',
+      ref: 'resource-group/cloudflare-dns',
+      label: 'Cloudflare DNS',
+      description: '按域名后缀隔离 Token 映射',
+      status: 'registered',
+      ui_href: '/panel-api/plugins/cloudflare-dns/'
+    }]
+    const page = mount(ResourceGroupsPage)
+    await flushPromises()
+    await page.get('button[title="列表视图"]').trigger('click')
+    expect(page.find('.plugin-groups-page__grid').exists()).toBe(false)
+    const table = page.get('[data-test="plugin-groups-table"]')
+    expect(table.text()).toContain('Cloudflare DNS')
+    expect(table.text()).toContain('resource-group/cloudflare-dns')
+    expect(table.find('a[href="/panel-api/plugins/cloudflare-dns/"]').exists()).toBe(true)
+    await table.get('tbody tr').trigger('click')
+    expect(page.text()).toContain('资源组管理')
     page.unmount()
   })
 })

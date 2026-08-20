@@ -34,12 +34,16 @@ describe('Sidebar plugin UI routes', () => {
     sidebar.unmount()
   })
 
-  it('has a resource-groups management page that is not a plugin UI route', () => {
+  it('keeps marketplace, installed plugins, and plugin resource groups in the plugin menu', () => {
     pluginRoutes.value = []
     const sidebar = mount(Sidebar)
-    const link = sidebar.findAll('a').find((item) => item.attributes('href') === '/resource-groups')
-    expect(link).toBeTruthy()
-    expect(link.text()).toContain('资源组')
+    const hrefs = sidebar.findAll('a').map((item) => item.attributes('href'))
+    expect(hrefs).toContain('/plugins/marketplace')
+    expect(hrefs).toContain('/plugins')
+    expect(hrefs).toContain('/resource-groups')
+    expect(sidebar.text()).toContain('插件市场')
+    expect(sidebar.text()).toContain('已安装插件')
+    expect(sidebar.text()).toContain('插件资源组')
     sidebar.unmount()
   })
 

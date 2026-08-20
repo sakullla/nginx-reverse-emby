@@ -6,8 +6,13 @@ const mocks = vi.hoisted(() => ({
   fetchPlugins: vi.fn(),
   fetchPluginDetail: vi.fn(),
   refreshActor: vi.fn(),
+  push: vi.fn(),
   actor: { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
 }))
+vi.mock('vue-router', async (original) => {
+  const actual = await original()
+  return { ...actual, useRouter: () => ({ push: mocks.push }) }
+})
 vi.mock('../../api/plugins', () => ({ fetchPlugins: mocks.fetchPlugins, fetchPluginDetail: mocks.fetchPluginDetail }))
 vi.mock('../../context/useAccessControl', async (original) => {
   const actual = await original()
@@ -75,10 +80,12 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  localStorage.removeItem('view:installed-plugins')
   mocks.actor = { permissions: ['resource.read'], visible_resource_groups: ['group-a'] }
   mocks.fetchPlugins.mockReset().mockResolvedValue([{ plugin_id: 'visible' }, { plugin_id: 'foreign' }])
   mocks.fetchPluginDetail.mockReset().mockImplementation(async (id) => id === 'visible' ? detail(id, 'group-a') : detail(id, 'group-b'))
   mocks.refreshActor.mockReset()
+  mocks.push.mockReset()
 })
 
 describe('PluginsPage', () => {
@@ -183,7 +190,8 @@ describe('PluginsPage', () => {
     expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').text()).toBe('待发布')
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
     expect(wrapper.find('[data-test="plugin-task-status-abnormal"]').text()).toBe('异常')
-    expect(wrapper.text()).toContain('https://ready.example.com')
+    expect(wrapper.text()).not.toContain('https://ready.example.com')
+    expect(wrapper.findAll('[data-test="plugin-open-manage"]').length).toBeGreaterThan(0)
   })
 
   it('does not treat a deployed non-HTTP plugin as waiting to publish', async () => {
@@ -256,7 +264,8 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
-    expect(wrapper.text()).toContain('https://admin-visible.example.com')
+    expect(wrapper.text()).not.toContain('https://admin-visible.example.com')
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(true)
   })
 
   it('marks failed node runtimes as abnormal even without a published entry', async () => {
@@ -314,5 +323,51 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.findAll('.plugins-chip').map((chip) => chip.text())).toEqual(['全部', '尚未部署', '待发布', '已可用', '异常'])
+  })
+
+  it('switches the installed catalog to a list table', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-a', {
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://ready.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.plugin-grid').exists()).toBe(true)
+    await wrapper.get('button[title="列表视图"]').trigger('click')
+    expect(wrapper.find('.plugin-grid').exists()).toBe(false)
+    expect(wrapper.find('[data-test="installed-plugins-table"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('ready')
+    expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('打开管理页')
+    await wrapper.find('[data-test="installed-plugins-table"] tbody tr').trigger('click')
+    expect(mocks.push).toHaveBeenCalledWith('/plugins/ready')
+  })
+
+  it('replaces the published HTTP rule with a management-page jump', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-a', {
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://ready.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('https://ready.example.com')
+    const manage = wrapper.get('[data-test="plugin-open-manage"]')
+    expect(manage.text()).toBe('打开管理页')
+    await manage.trigger('click')
+    expect(open).toHaveBeenCalledWith('/panel-api/plugins/ready/', '_blank', 'noopener')
+    expect(wrapper.find('a.plugin-card-link').attributes('href')).toBe('/plugins/ready')
+    open.mockRestore()
   })
 })
