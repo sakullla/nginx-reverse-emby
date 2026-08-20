@@ -185,15 +185,9 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 		}
 
 		var temporary string
-		if err := withCacheRootMutationLocked(root, func() error {
-			var createErr error
-			temporary, createErr = os.MkdirTemp(root, ".package-")
-			return createErr
-		}); err != nil {
-			return err
-		}
 		published := false
 		containerExisted := false
+		containerPrepared := false
 		committed := false
 		defer func() {
 			if committed {
@@ -201,13 +195,15 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 			}
 			cleanupErr := withCacheRootMutationLocked(root, func() error {
 				var cleanupErr error
+				if containerPrepared {
+					unsealErr := unsealCacheContainer(container)
+					if errors.Is(unsealErr, os.ErrNotExist) {
+						unsealErr = nil
+					}
+					cleanupErr = errors.Join(cleanupErr, unsealErr)
+				}
 				if published {
 					cleanupErr = errors.Join(cleanupErr, unsealCacheTree(target), os.RemoveAll(target))
-					if containerExisted {
-						cleanupErr = errors.Join(cleanupErr, sealCacheContainer(container))
-					} else {
-						cleanupErr = errors.Join(cleanupErr, os.Remove(container))
-					}
 				}
 				if temporary != "" {
 					unsealErr := unsealCacheTree(temporary)
@@ -216,10 +212,38 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 					}
 					cleanupErr = errors.Join(cleanupErr, unsealErr, os.RemoveAll(temporary))
 				}
+				if containerPrepared {
+					if containerExisted {
+						cleanupErr = errors.Join(cleanupErr, sealCacheContainer(container))
+					} else {
+						cleanupErr = errors.Join(cleanupErr, os.Remove(container))
+					}
+				}
 				return cleanupErr
 			})
 			resultErr = errors.Join(resultErr, cleanupErr)
 		}()
+		if err := withCacheRootMutationLocked(root, func() error {
+			if info, statErr := os.Lstat(container); statErr == nil {
+				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					return errors.New("verified cache digest container is not a directory")
+				}
+				containerExisted = true
+				if err := unsealCacheContainer(container); err != nil {
+					return fmt.Errorf("unseal verified cache digest container: %w", err)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return statErr
+			} else if err := os.MkdirAll(container, 0o755); err != nil {
+				return err
+			}
+			containerPrepared = true
+			var createErr error
+			temporary, createErr = os.MkdirTemp(container, ".package-")
+			return errors.Join(createErr, sealCacheContainer(container))
+		}); err != nil {
+			return err
+		}
 		if err := copyRegularTree(validated.Root, temporary); err != nil {
 			return err
 		}
@@ -235,21 +259,18 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 		}
 
 		publishErr := withCacheRootMutationLocked(root, func() error {
-			if info, statErr := os.Lstat(container); statErr == nil {
-				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-					return errors.New("verified cache digest container is not a directory")
-				}
-				containerExisted = true
-				if err := unsealCacheContainer(container); err != nil {
-					return fmt.Errorf("unseal verified cache digest container: %w", err)
-				}
-			} else if !errors.Is(statErr, os.ErrNotExist) {
+			info, statErr := os.Lstat(container)
+			if statErr != nil {
 				return statErr
-			} else if err := os.MkdirAll(container, 0o755); err != nil {
-				return err
+			}
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("verified cache digest container is not a directory")
+			}
+			if err := unsealCacheContainer(container); err != nil {
+				return fmt.Errorf("unseal verified cache digest container: %w", err)
 			}
 
-			publishErr := os.Rename(temporary, target)
+			publishErr := publishSealedCacheTree(temporary, target)
 			published = publishErr == nil
 			if publishErr != nil {
 				if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
@@ -271,6 +292,13 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 		return "", err
 	}
 	return target, nil
+}
+
+func publishSealedCacheTree(staging, target string) error {
+	if !sameCacheCanonicalPath(filepath.Dir(staging), filepath.Dir(target)) {
+		return errors.New("sealed cache staging directory must share the target container")
+	}
+	return os.Rename(staging, target)
 }
 
 func validateCachedPackage(target string, validated plugins.ValidatedPackage, validator *plugins.Validator) error {
