@@ -318,7 +318,11 @@ func (manager *PluginCapabilityManager) pluginHostSecretReveal(ctx context.Conte
 		return nil, err
 	}
 	defer clear(material)
-	return map[string]any{"material": material}, nil
+	// The response is marshaled by dispatchPluginHostResource after this helper
+	// returns. Keep the Vault-owned plaintext eligible for immediate clearing,
+	// but hand the response encoder an independent copy so the deferred clear
+	// does not turn a valid secret into an equal-length all-zero payload.
+	return map[string]any{"material": append([]byte(nil), material...)}, nil
 }
 
 func (manager *PluginCapabilityManager) pluginHostSecretMetadata(ctx context.Context, candidate pluginhost.Candidate, ref string) (secrets.Metadata, bool, error) {
