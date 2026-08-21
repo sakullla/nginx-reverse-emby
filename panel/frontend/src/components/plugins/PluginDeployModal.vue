@@ -33,7 +33,15 @@ const busy = ref(false)
 const error = ref('')
 const httpRulesLoading = ref(false)
 const loadedHttpRules = ref([])
+const agentQuery = ref('')
+const agentStatusFilter = ref('')
 const deployment = reactive({ resourceGroupID: '', target: '', host: '', https: true })
+const agentStatusOptions = [
+  { value: '', label: '全部' },
+  { value: 'online', label: '在线' },
+  { value: 'offline', label: '离线' },
+  { value: 'failed', label: '失败' }
+]
 
 const hasHTTPBackend = computed(() => {
   if (props.declaresHTTPBackend === true) return true
@@ -51,6 +59,14 @@ const mode = computed(() => {
   return 'deploy'
 })
 const sortedAgents = computed(() => [...props.agents].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
+const visibleAgents = computed(() => {
+  const query = agentQuery.value.trim().toLowerCase()
+  return sortedAgents.value.filter((agent) => {
+    if (agentStatusFilter.value && getAgentStatus(agent) !== agentStatusFilter.value) return false
+    if (!query) return true
+    return String(agent.name || '').toLowerCase().includes(query) || String(agent.id || '').toLowerCase().includes(query)
+  })
+})
 const selectedAgent = computed(() => sortedAgents.value.find((agent) => agent.id === deployment.target) || null)
 const submitLabel = computed(() => {
   if (busy.value) return hasHTTPBackend.value ? '发布中…' : '部署中…'
@@ -245,6 +261,8 @@ function buildFrontendURL(host, https) {
 
 function resetForm() {
   error.value = ''
+  agentQuery.value = ''
+  agentStatusFilter.value = ''
   const instance = props.instance
   const published = mode.value === 'update' ? parseFrontendURL(props.publishedEntry?.frontend_url) : { host: '', https: true }
   const preferredTarget = String((mode.value === 'update' ? props.publishedEntry?.agent_id : '') || instance?.targets?.[0] || '').trim()
@@ -377,31 +395,78 @@ async function deploy(payload) {
       </div>
       <fieldset class="plugin-deployment__agents">
         <legend>选择一个节点</legend>
-        <p class="plugin-deployment__agent-hint">一次只部署到一个节点。</p>
-        <div v-if="sortedAgents.length" class="plugin-deployment__agent-grid">
-          <label
-            v-for="agent in sortedAgents"
-            :key="agent.id"
-            class="plugin-deployment__agent"
-            :class="{ 'plugin-deployment__agent--selected': deployment.target === agent.id }"
-          >
-            <input
-              v-model="deployment.target"
-              type="radio"
-              name="plugin-deployment-target"
-              :value="agent.id"
-              data-test="deployment-agent"
-              :disabled="!canSubmit || lockedScope || busy"
-              @change="selectAgent(agent.id)"
-            >
-            <span>
-              <strong>{{ agent.name || agent.id }}</strong>
-              <small>{{ getAgentStatusLabel(getAgentStatus(agent)) }}</small>
-            </span>
-          </label>
+        <p class="plugin-deployment__agent-hint">一次只部署到一个节点。可搜索名称或按状态筛选。</p>
+        <div v-if="lockedScope && selectedAgent" class="plugin-deployment__agent plugin-deployment__agent--locked">
+          <span
+            class="plugin-deployment__agent-dot"
+            :class="`plugin-deployment__agent-dot--${getAgentStatus(selectedAgent)}`"
+            aria-hidden="true"
+          />
+          <span class="plugin-deployment__agent-copy">
+            <strong>{{ selectedAgent.name || selectedAgent.id }}</strong>
+            <small>将更新该节点上的原入口</small>
+          </span>
         </div>
+        <template v-else-if="sortedAgents.length">
+          <div class="plugin-deployment__agent-toolbar">
+            <label class="plugin-deployment__agent-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input
+                v-model="agentQuery"
+                type="search"
+                placeholder="搜索节点"
+                aria-label="搜索节点"
+                :disabled="!canSubmit || busy"
+              >
+            </label>
+            <div class="plugin-deployment__agent-filters" role="group" aria-label="节点状态">
+              <button
+                v-for="option in agentStatusOptions"
+                :key="option.value || 'all'"
+                type="button"
+                class="plugin-deployment__agent-filter"
+                :class="{ 'plugin-deployment__agent-filter--active': agentStatusFilter === option.value }"
+                :disabled="!canSubmit || busy"
+                @click="agentStatusFilter = option.value"
+              >{{ option.label }}</button>
+            </div>
+          </div>
+          <div v-if="visibleAgents.length" class="plugin-deployment__agent-list" role="radiogroup" aria-label="选择一个节点">
+            <label
+              v-for="agent in visibleAgents"
+              :key="agent.id"
+              class="plugin-deployment__agent"
+              :class="{
+                'plugin-deployment__agent--selected': deployment.target === agent.id,
+                [`plugin-deployment__agent--${getAgentStatus(agent)}`]: true
+              }"
+            >
+              <input
+                v-model="deployment.target"
+                type="radio"
+                name="plugin-deployment-target"
+                :value="agent.id"
+                data-test="deployment-agent"
+                :disabled="!canSubmit || lockedScope || busy"
+                @change="selectAgent(agent.id)"
+              >
+              <span
+                class="plugin-deployment__agent-dot"
+                :class="`plugin-deployment__agent-dot--${getAgentStatus(agent)}`"
+                aria-hidden="true"
+              />
+              <span class="plugin-deployment__agent-copy">
+                <strong>{{ agent.name || agent.id }}</strong>
+                <small>{{ getAgentStatusLabel(getAgentStatus(agent)) }}</small>
+              </span>
+            </label>
+          </div>
+          <p v-else class="plugin-deployment__empty">没有匹配的节点。</p>
+        </template>
         <p v-else class="plugin-deployment__empty">当前没有可选择的节点。</p>
-        <p v-if="lockedScope && selectedAgent" class="plugin-deployment__empty">将更新节点 {{ selectedAgent.name || selectedAgent.id }} 上的原入口。</p>
       </fieldset>
       <fieldset v-if="hasHTTPBackend" class="plugin-deployment__entry">
         <legend>入口域名</legend>
@@ -472,18 +537,60 @@ async function deploy(payload) {
 .plugin-deployment__agents, .plugin-deployment__entry { display: grid; gap: var(--space-3); min-width: 0; margin: 0; padding: 0; border: 0; }
 .plugin-deployment__agents legend, .plugin-deployment__entry legend { margin-bottom: var(--space-2); color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
 .plugin-deployment__agent-hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
-.plugin-deployment__agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space-3); }
+.plugin-deployment__agent-toolbar { display: grid; gap: var(--space-2); min-width: 0; }
+.plugin-deployment__agent-search {
+  display: flex; align-items: center; gap: var(--space-2); min-width: 0;
+  padding: 0 .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md);
+  background: var(--color-bg-surface); color: var(--color-text-muted);
+}
+.plugin-deployment__agent-search input {
+  flex: 1; min-width: 0; padding: .55rem 0; border: 0; background: transparent;
+  color: var(--color-text-primary); font: inherit; outline: none;
+}
+.plugin-deployment__agent-search input::-webkit-search-cancel-button { appearance: none; }
+.plugin-deployment__agent-search:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.plugin-deployment__agent-filters { display: flex; flex-wrap: wrap; gap: .35rem; }
+.plugin-deployment__agent-filter {
+  padding: .25rem .65rem; border: 1px solid var(--color-border-default); border-radius: 999px;
+  background: var(--color-bg-canvas); color: var(--color-text-secondary);
+  font: inherit; font-size: var(--text-xs); cursor: pointer;
+}
+.plugin-deployment__agent-filter--active {
+  border-color: var(--color-primary); background: var(--color-primary); color: #fff;
+}
+.plugin-deployment__agent-filter:disabled { cursor: not-allowed; opacity: .6; }
+.plugin-deployment__agent-list {
+  display: grid; gap: 2px; max-height: 16.5rem; overflow: auto; min-width: 0;
+  padding: 2px; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
 .plugin-deployment__agent {
-  display: flex; align-items: start; gap: var(--space-3); padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg);
+  position: relative;
+  display: flex; align-items: center; gap: var(--space-3); margin: 0; padding: .55rem .7rem;
+  border: 1px solid transparent; border-radius: calc(var(--radius-lg) - 2px);
   background: var(--color-bg-surface); cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default), background var(--duration-fast) var(--ease-default);
 }
 .plugin-deployment__agent:hover { border-color: var(--color-border-default); }
-.plugin-deployment__agent--selected { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 6%, var(--color-bg-surface)); }
-.plugin-deployment__agent input { margin-top: .2rem; accent-color: var(--color-primary); }
-.plugin-deployment__agent span { min-width: 0; display: grid; gap: 2px; }
-.plugin-deployment__agent strong, .plugin-deployment__agent small { overflow-wrap: anywhere; }
+.plugin-deployment__agent--selected {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
+}
+.plugin-deployment__agent--locked { cursor: default; border-color: var(--color-border-subtle); }
+.plugin-deployment__agent input {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.plugin-deployment__agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--color-text-muted); }
+.plugin-deployment__agent-dot--online { background: var(--color-success); }
+.plugin-deployment__agent-dot--offline { background: var(--color-text-muted); }
+.plugin-deployment__agent-dot--failed { background: var(--color-danger); }
+.plugin-deployment__agent-dot--pending { background: var(--color-warning); }
+.plugin-deployment__agent-copy { min-width: 0; display: grid; gap: 1px; flex: 1; }
+.plugin-deployment__agent strong, .plugin-deployment__agent small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plugin-deployment__agent small, .plugin-deployment__empty, .plugin-deployment__readonly { color: var(--color-text-muted); }
 .plugin-deployment__empty, .plugin-deployment__readonly { margin: 0; font-size: var(--text-sm); }
 .plugin-deployment__entry-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); align-items: end; }

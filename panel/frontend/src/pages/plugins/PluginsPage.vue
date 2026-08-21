@@ -104,15 +104,38 @@ function sourceLabel(detail) {
   return detail.plugin?.active_source_kind === 'official' ? '官方来源' : '非官方来源'
 }
 
+function firstPublishedEntry(detail) {
+  return publishedEntriesOf(detail).find((entry) => String(entry?.frontend_url || '').trim()) || null
+}
+
+function publishedEntryHref(entry) {
+  const raw = String(entry?.frontend_url || '').trim()
+  if (!raw) return ''
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+}
+
+function publishedEntryLabel(entry) {
+  const href = publishedEntryHref(entry)
+  if (!href) return ''
+  try {
+    const parsed = new URL(href)
+    return parsed.host || href.replace(/^https?:\/\//i, '')
+  } catch {
+    return href.replace(/^https?:\/\//i, '')
+  }
+}
+
 function nextStepLabel(detail) {
+  const entry = firstPublishedEntry(detail)
   switch (pluginTaskStatus(detail)) {
     case 'undeployed':
       return '下一步：打开详情开始部署'
     case 'unpublished':
       return '下一步：打开详情填写入口域名'
     case 'abnormal':
-      return '下一步：打开详情查看原因'
+      return entry ? '入口已发布，但现在还不能正常访问' : '下一步：打开详情查看原因'
     default:
+      if (entry) return '已可访问'
       return hasHTTPBackend(detail) ? '已可使用，打开详情查看入口' : '已部署到节点，打开详情查看状态'
   }
 }
@@ -173,11 +196,7 @@ function manageHref(detail) {
   const id = String(detail?.plugin?.plugin_id || '').trim()
   if (!id) return ''
   const route = uiRoutes.value.find((item) => item.id === id)
-  if (route?.href) return route.href
-  if (hasHTTPBackend(detail) || publishedEntriesOf(detail).length) {
-    return `/panel-api/plugins/${encodeURIComponent(id)}/`
-  }
-  return ''
+  return route?.href || ''
 }
 
 function openManage(detail, event) {
@@ -295,8 +314,25 @@ function openDetail(detail) {
             <BaseBadge :tone="detail.plugin?.active_source_kind === 'official' ? 'success' : 'warning'">
               {{ sourceLabel(detail) }}
             </BaseBadge>
+            <a
+              v-if="firstPublishedEntry(detail)"
+              class="plugin-card__domain"
+              :href="publishedEntryHref(firstPublishedEntry(detail))"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-test="plugin-open-entry"
+              :title="publishedEntryHref(firstPublishedEntry(detail))"
+              @click.stop
+            >
+              <span>{{ publishedEntryLabel(firstPublishedEntry(detail)) }}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                <path d="M14 5h5v5" />
+                <path d="M10 14L19 5" />
+                <path d="M19 12v6a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" />
+              </svg>
+            </a>
             <button
-              v-if="manageHref(detail)"
+              v-else-if="manageHref(detail)"
               type="button"
               class="btn btn-secondary btn-sm plugin-card__manage"
               data-test="plugin-open-manage"
@@ -327,7 +363,7 @@ function openDetail(detail) {
             <td>
               <div class="plugin-catalog-table__name">
                 <strong>{{ pluginName(detail) }}</strong>
-                <small>{{ nextStepLabel(detail) }}</small>
+                <small>{{ firstPublishedEntry(detail) ? publishedEntryLabel(firstPublishedEntry(detail)) : nextStepLabel(detail) }}</small>
               </div>
             </td>
             <td>
@@ -349,8 +385,24 @@ function openDetail(detail) {
             </td>
             <td class="plugin-catalog-table__col-actions">
               <div class="plugin-catalog-table__actions" @click.stop>
+                <a
+                  v-if="firstPublishedEntry(detail)"
+                  class="plugin-card__domain plugin-card__domain--table"
+                  :href="publishedEntryHref(firstPublishedEntry(detail))"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-test="plugin-open-entry"
+                  :title="publishedEntryHref(firstPublishedEntry(detail))"
+                >
+                  <span>{{ publishedEntryLabel(firstPublishedEntry(detail)) }}</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <path d="M14 5h5v5" />
+                    <path d="M10 14L19 5" />
+                    <path d="M19 12v6a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" />
+                  </svg>
+                </a>
                 <button
-                  v-if="manageHref(detail)"
+                  v-else-if="manageHref(detail)"
                   type="button"
                   class="btn btn-secondary btn-sm"
                   data-test="plugin-open-manage"
@@ -489,8 +541,52 @@ function openDetail(detail) {
   border-top: 1px solid var(--color-border-subtle);
 }
 
-.plugin-card__manage {
+.plugin-card__manage,
+.plugin-card__domain {
   margin-left: auto;
+}
+
+.plugin-card__domain {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: min(14rem, 100%);
+  min-width: 0;
+  padding: 0.28rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border-default));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
+  color: var(--color-primary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.plugin-card__domain span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-card__domain svg {
+  flex-shrink: 0;
+}
+
+.plugin-card__domain:hover {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-surface));
+}
+
+.plugin-card__domain:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
+}
+
+.plugin-card__domain--table {
+  margin-left: 0;
+  max-width: 12.5rem;
 }
 
 .plugin-card__facts {

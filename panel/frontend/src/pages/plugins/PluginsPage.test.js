@@ -190,8 +190,11 @@ describe('PluginsPage', () => {
     expect(wrapper.find('[data-test="plugin-task-status-unpublished"]').text()).toBe('待发布')
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
     expect(wrapper.find('[data-test="plugin-task-status-abnormal"]').text()).toBe('异常')
-    expect(wrapper.text()).not.toContain('https://ready.example.com')
-    expect(wrapper.findAll('[data-test="plugin-open-manage"]').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('[data-test="plugin-open-entry"]').map((link) => link.text().trim())).toEqual([
+      'ready.example.com',
+      'broken.example.com'
+    ])
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(false)
   })
 
   it('does not treat a deployed non-HTTP plugin as waiting to publish', async () => {
@@ -264,8 +267,9 @@ describe('PluginsPage', () => {
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.find('[data-test="plugin-task-status-available"]').text()).toBe('已可用')
-    expect(wrapper.text()).not.toContain('https://admin-visible.example.com')
-    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="plugin-open-entry"]').text()).toContain('admin-visible.example.com')
+    expect(wrapper.get('[data-test="plugin-open-entry"]').attributes('href')).toBe('https://admin-visible.example.com')
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(false)
   })
 
   it('marks failed node runtimes as abnormal even without a published entry', async () => {
@@ -343,31 +347,56 @@ describe('PluginsPage', () => {
     expect(wrapper.find('.plugin-grid').exists()).toBe(false)
     expect(wrapper.find('[data-test="installed-plugins-table"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('ready')
-    expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('打开管理页')
+    expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('ready.example.com')
+    expect(wrapper.find('[data-test="installed-plugins-table"]').text()).not.toContain('打开管理页')
+    const entry = wrapper.get('[data-test="installed-plugins-table"] [data-test="plugin-open-entry"]')
+    expect(entry.attributes('href')).toBe('https://ready.example.com')
     await wrapper.find('[data-test="installed-plugins-table"] tbody tr').trigger('click')
     expect(mocks.push).toHaveBeenCalledWith('/plugins/ready')
   })
 
-  it('replaces the published HTTP rule with a management-page jump', async () => {
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+  it('shows the first published HTTP domain and opens it instead of the management page', async () => {
     mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
     mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-a', {
-      published_entries: [{
-        rule_id: 12,
-        agent_id: 'edge-a',
-        frontend_url: 'https://ready.example.com',
-        enabled: true,
-        accessible: true
-      }]
+      published_entries: [
+        {
+          rule_id: 12,
+          agent_id: 'edge-a',
+          frontend_url: 'https://ready.example.com',
+          enabled: true,
+          accessible: true
+        },
+        {
+          rule_id: 13,
+          agent_id: 'edge-a',
+          frontend_url: 'https://second.example.com',
+          enabled: true,
+          accessible: true
+        }
+      ]
     })))
     const wrapper = mountPage()
     await flushPromises()
-    expect(wrapper.text()).not.toContain('https://ready.example.com')
-    const manage = wrapper.get('[data-test="plugin-open-manage"]')
-    expect(manage.text()).toBe('打开管理页')
-    await manage.trigger('click')
-    expect(open).toHaveBeenCalledWith('/panel-api/plugins/ready/', '_blank', 'noopener')
+    const entry = wrapper.get('[data-test="plugin-open-entry"]')
+    expect(entry.text()).toContain('ready.example.com')
+    expect(entry.text()).not.toContain('second.example.com')
+    expect(entry.attributes('href')).toBe('https://ready.example.com')
+    expect(entry.attributes('target')).toBe('_blank')
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(false)
     expect(wrapper.find('a.plugin-card-link').attributes('href')).toBe('/plugins/ready')
-    open.mockRestore()
+  })
+
+  it('does not fall back to a plugin management page when HTTP is undeployed', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'fresh' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('fresh', 'group-a', {
+      instances: [],
+      agent_statuses: [],
+      published_entries: []
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[data-test="plugin-task-status-undeployed"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="plugin-open-entry"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(false)
   })
 })

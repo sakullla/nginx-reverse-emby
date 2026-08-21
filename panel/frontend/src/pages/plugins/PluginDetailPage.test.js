@@ -1050,6 +1050,32 @@ describe('PluginDetailPage', () => {
     expect(guide.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
   })
 
+  it('lets the deploy modal search and filter nodes instead of showing every node as a card', async () => {
+    mocks.fetchAgents.mockResolvedValue([
+      { id: 'hangzhou', name: '阿里云-杭州', status: 'online', desired_revision: 1, current_revision: 1, last_apply_status: 'success' },
+      { id: 'core', name: 'core', status: 'offline', desired_revision: 1, current_revision: 1, last_apply_status: 'success' },
+      { id: 'debian', name: 'debian-jnp12', status: 'online', desired_revision: 1, current_revision: 1, last_apply_status: 'failed' }
+    ])
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    expect(guide.find('.plugin-deployment__agent-grid').exists()).toBe(false)
+    expect(guide.find('input[aria-label="搜索节点"]').exists()).toBe(true)
+    expect(guide.findAll('[data-test="deployment-agent"]').map((input) => input.element.value).sort()).toEqual(['core', 'debian', 'hangzhou'])
+
+    await guide.get('input[aria-label="搜索节点"]').setValue('core')
+    expect(guide.findAll('[data-test="deployment-agent"]').map((input) => input.element.value)).toEqual(['core'])
+
+    await guide.get('input[aria-label="搜索节点"]').setValue('')
+    const offline = guide.findAll('button').find((button) => button.text() === '离线')
+    expect(offline).toBeTruthy()
+    await offline.trigger('click')
+    expect(guide.findAll('[data-test="deployment-agent"]').map((input) => input.element.value)).toEqual(['core'])
+
+    const failed = guide.findAll('button').find((button) => button.text() === '失败')
+    await failed.trigger('click')
+    expect(guide.findAll('[data-test="deployment-agent"]').map((input) => input.element.value)).toEqual(['debian'])
+  })
+
   it('renders rule_ref as a select of host HTTP rules and blocks an empty required value', async () => {
     const schema = {
       type: 'object',
