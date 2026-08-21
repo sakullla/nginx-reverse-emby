@@ -1,5 +1,6 @@
 <template>
   <div class="app-shell">
+    <OperationTracker />
     <TopBar @open-search="searchOpen = true" />
     <GlobalSearch
       :open="searchOpen"
@@ -24,6 +25,7 @@ import TopBar from './TopBar.vue'
 import Sidebar from './Sidebar.vue'
 import BottomNav from './BottomNav.vue'
 import GlobalSearch from '../GlobalSearch.vue'
+import OperationTracker from '../operations/OperationTracker.vue'
 
 const mobileSidebarOpen = ref(false)
 const searchOpen = ref(false)

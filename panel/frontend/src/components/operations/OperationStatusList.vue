@@ -1,9 +1,4 @@
 <template>
-  <OperationTracker
-    v-for="operation in trackedOperations"
-    :key="`tracker-${operation.operation_id}`"
-    :operation-id="operation.operation_id"
-  />
   <aside v-if="visibleOperations.length || actionError" class="operation-list" aria-label="配置生效状态">
     <p v-if="actionError" class="operation-list__error" role="alert">{{ actionError }}</p>
     <OperationStatus
@@ -24,7 +19,6 @@ import { computed, ref } from 'vue'
 import { useAgents } from '../../hooks/useAgents'
 import { useOperationsStore } from '../../stores/operations'
 import OperationStatus from './OperationStatus.vue'
-import OperationTracker from './OperationTracker.vue'
 
 const props = defineProps({
   agentId: { type: String, default: '' }
@@ -42,7 +36,6 @@ const agentNameById = computed(() => {
   }
   return names
 })
-const trackedOperations = computed(() => operations.value.filter((operation) => !operation.terminal))
 const visibleOperations = computed(() => operations.value
   .filter(matchesSelectedAgent)
   .filter((operation) => !operation.terminal || ['failed', 'degraded'].includes(operation.ui_status))
