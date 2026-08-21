@@ -1532,7 +1532,13 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 	if snapshot.Revision <= 0 {
 		return "", nil
 	}
-	payload, digest, err := revision.CanonicalSnapshotPayload(snapshot)
+	// The bundled runtime package is a live heartbeat delivery overlay. It is
+	// sent outside the immutable configuration snapshot and may change when the
+	// control-plane image changes without allocating a configuration revision.
+	// Exclude it from revision identity comparisons and heartbeat-issued
+	// artifacts while continuing to return it in HeartbeatReply below.
+	revisionSnapshot := heartbeatRevisionSnapshot(snapshot)
+	payload, digest, err := revision.CanonicalSnapshotPayload(revisionSnapshot)
 	if err != nil {
 		return "", err
 	}
@@ -1552,9 +1558,12 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 					return "", errors.New("heartbeat durable revision snapshot is missing")
 				}
 				// Older immutable artifacts may contain a PKI security projection.
-				// Compare the non-PKI revision contract while preserving and returning
-				// the original artifact digest used by its lease and pull response.
+				// Version packages are likewise delivered outside the immutable
+				// configuration contract. Compare those live overlays out while
+				// preserving and returning the original artifact digest used by its
+				// lease and pull response.
 				durable.Snapshot.PKISecurity = nil
+				durable.Snapshot = heartbeatRevisionSnapshot(durable.Snapshot)
 				_, durableComparableDigest, compareErr := revision.CanonicalSnapshotPayload(durable.Snapshot)
 				if compareErr != nil {
 					return "", compareErr
@@ -1593,7 +1602,7 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 		}
 		return strings.ToLower(digest), nil
 	}
-	issued, err := issuer.EnsureAgentHeartbeatRevision(ctx, agentID, snapshot, payload, digest, s.now().UTC())
+	issued, err := issuer.EnsureAgentHeartbeatRevision(ctx, agentID, revisionSnapshot, payload, digest, s.now().UTC())
 	if err != nil {
 		return "", err
 	}
@@ -1601,6 +1610,11 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 		return "", errors.New("heartbeat revision issuer returned a conflicting identity")
 	}
 	return strings.ToLower(digest), nil
+}
+
+func heartbeatRevisionSnapshot(snapshot storage.Snapshot) storage.Snapshot {
+	snapshot.VersionPackage = nil
+	return snapshot
 }
 
 func isPKIControlClientError(err error) bool {
@@ -2323,6 +2337,7 @@ func normalizeCapabilities(values []string) []string {
 		"egress_profiles":                   {},
 		"http3_ingress":                     {},
 		packageManifestCapability:           {},
+		storage.PluginGenerationCapability:  {},
 	}
 	seen := map[string]struct{}{}
 	normalized := make([]string, 0, len(values))

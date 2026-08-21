@@ -144,6 +144,10 @@ func TestPluginPublishWritesSingleEnabledHTTPRuleWithoutLiveCatalog(t *testing.T
 	if !stored.Enabled || stored.FrontendURL != "https://emby.example.com" {
 		t.Fatalf("published rule = %+v", stored)
 	}
+	storedTags := parseStringArray(stored.TagsJSON)
+	if !slicesContains(storedTags, "plugin") || !slicesContains(storedTags, "plugin:"+fixture.pluginID) {
+		t.Fatalf("published rule tags = %v, want plugin provenance tags", storedTags)
+	}
 	assertPluginProviderBackend(t, stored, published.ID, "default")
 	if certs, err := fixture.store.ListManagedCertificates(t.Context()); err != nil {
 		t.Fatal(err)
@@ -248,8 +252,8 @@ func TestPluginPublishUpdatesOriginalRuleAndCreatesIndependentDomain(t *testing.
 		t.Fatalf("update PublishMutation() error = %v", err)
 	}
 	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
-	if updated := mustPluginPublishRule(t, fixture.store, "local", 0); updated.ID != first.ID || updated.FrontendURL != "https://emby-updated.example.com" {
-		t.Fatalf("updated rule = %+v, want id %d and new frontend_url", updated, first.ID)
+	if updated := mustPluginPublishRule(t, fixture.store, "local", 0); updated.ID != first.ID || updated.FrontendURL != "https://emby-updated.example.com" || !slicesContains(parseStringArray(updated.TagsJSON), "plugin") || !slicesContains(parseStringArray(updated.TagsJSON), "plugin:"+fixture.pluginID) {
+		t.Fatalf("updated rule = %+v, want id %d, new frontend_url, and plugin provenance tags", updated, first.ID)
 	}
 
 	delete(fields, "RuleID")

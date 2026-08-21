@@ -1945,9 +1945,9 @@ func (s *PluginService) publish(ctx context.Context, request PluginConfigureRequ
 		if !pluginRuleBacksInstance(current, instance.ID) {
 			return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: rule %d is not a published entry for instance %s", ErrInvalidArgument, ruleID, instance.ID)
 		}
-		rule, err = rules.Update(ctx, agentID, ruleID, pluginPublishFrontendURLInput(frontendURL))
+		rule, err = rules.Update(ctx, agentID, ruleID, pluginPublishFrontendURLInput(frontendURL, request.PluginID, current.Tags))
 	} else {
-		rule, err = rules.Create(ctx, agentID, pluginPublishHTTPRuleInput(frontendURL, instance.ID, providerID))
+		rule, err = rules.Create(ctx, agentID, pluginPublishHTTPRuleInput(frontendURL, instance.ID, providerID, request.PluginID))
 	}
 	if err != nil {
 		return PluginInstanceDetail{}, HTTPRule{}, err
@@ -3651,8 +3651,15 @@ func (s *PluginService) validateAgentTargets(ctx context.Context, constraint str
 		if !ok {
 			return fmt.Errorf("plugin target agent %s is unavailable", targetID)
 		}
-		if err := plugins.CheckAgentCompatibility(agent.Version, constraint); err != nil {
-			return fmt.Errorf("plugin target agent %s: %w", targetID, err)
+		// Development and legacy agents may report a non-SemVer build label.
+		// Their advertised capability is the compatibility contract; retain the
+		// package's version constraint only for agents reporting a concrete
+		// semantic version.
+		agentVersion := strings.TrimSpace(agent.Version)
+		if plugins.IsSemanticVersion(agentVersion) {
+			if err := plugins.CheckAgentCompatibility(agentVersion, constraint); err != nil {
+				return fmt.Errorf("plugin target agent %s: %w", targetID, err)
+			}
 		}
 		var capabilities []string
 		if err := json.Unmarshal([]byte(agent.CapabilitiesJSON), &capabilities); err != nil {

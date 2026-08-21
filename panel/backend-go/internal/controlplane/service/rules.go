@@ -1955,12 +1955,14 @@ type httpBackendProviderAdmissionStore interface {
 	GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
 }
 
-func pluginPublishHTTPRuleInput(frontendURL, instanceID, providerID string) HTTPRuleInput {
+func pluginPublishHTTPRuleInput(frontendURL, instanceID, providerID, pluginID string) HTTPRuleInput {
 	enabled := true
 	frontend := strings.TrimSpace(frontendURL)
+	tags := pluginPublishRuleTags(pluginID)
 	return HTTPRuleInput{
 		FrontendURL: &frontend,
 		Enabled:     &enabled,
+		Tags:        &tags,
 		Backends: &[]HTTPRuleBackend{{
 			Kind: pluginsdk.HTTPBackendKindPluginProvider,
 			PluginProvider: &pluginsdk.HTTPPluginProviderRef{
@@ -1971,9 +1973,18 @@ func pluginPublishHTTPRuleInput(frontendURL, instanceID, providerID string) HTTP
 	}
 }
 
-func pluginPublishFrontendURLInput(frontendURL string) HTTPRuleInput {
+func pluginPublishFrontendURLInput(frontendURL, pluginID string, currentTags []string) HTTPRuleInput {
 	frontend := strings.TrimSpace(frontendURL)
-	return HTTPRuleInput{FrontendURL: &frontend}
+	tags := normalizeTagUnion(currentTags, pluginPublishRuleTags(pluginID))
+	return HTTPRuleInput{FrontendURL: &frontend, Tags: &tags}
+}
+
+func pluginPublishRuleTags(pluginID string) []string {
+	tags := []string{"plugin"}
+	if pluginID = strings.TrimSpace(pluginID); pluginID != "" {
+		tags = append(tags, "plugin:"+pluginID)
+	}
+	return tags
 }
 
 func (s *ruleService) validateHTTPBackendProviders(ctx context.Context, agentID string, backends []HTTPRuleBackend) error {

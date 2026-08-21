@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -118,6 +119,7 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	reply, err := d.AgentService.Heartbeat(r.Context(), payload, r.Header.Get("X-Agent-Token"))
 	if err != nil {
+		log.Printf("[agents] heartbeat failed for agent %q: %v", strings.TrimSpace(payload.AgentID), err)
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
 		return
