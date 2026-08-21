@@ -69,9 +69,10 @@ only bounded results—never raw resource identity, sockets, or credentials.
 
 ## Go rpc-service quick start
 
-SDK 0.7.4 owns the private Unix listener, cookie authentication, dynamic
-protobuf transport, and feature acknowledgement. A plugin declares its public
-surface once and delegates the handshake instead of copying the wire protocol:
+The SDK owns entrypoint probing, private Unix listeners, cookie authentication,
+dynamic protobuf transport, browser-isolated UI assets, lifecycle safety, and
+feature acknowledgement. A plugin declares its public surface once instead of
+copying process, wire, and generation templates:
 
 ```go
 var declaration = pluginsdk.RPCPluginDeclaration{
@@ -81,20 +82,30 @@ var declaration = pluginsdk.RPCPluginDeclaration{
 	SupportedFeatures:    []string{pluginsdk.RPCFeatureDurableActionsV1},
 }
 
-func (p *Plugin) Handshake(_ context.Context, request pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
-	return pluginsdk.NegotiateRPCHandshake(declaration, request)
-}
-
-func main() {
-	if err := pluginsdk.ServeRPCPlugin(context.Background(), plugin); err != nil {
-		log.Fatal(err)
-	}
+func run(ctx context.Context, args []string, output io.Writer) error {
+	return pluginsdk.RunRPCEntrypoint(ctx, args, output, pluginsdk.RPCEntrypointConfig{
+		Declaration: declaration,
+		NewProbeLifecycle: newProbeLifecycle,
+		Run: func(ctx context.Context) error {
+			plugin, err := newPlugin()
+			if err != nil {
+				return err
+			}
+			return pluginsdk.ServeRPCPluginServices(ctx, pluginsdk.RPCPluginServices{
+				Lifecycle: plugin,
+				UI: plugin,
+			})
+		},
+	})
 }
 ```
 
-The plugin implements only `RPCLifecycle` (`Handshake`, `Prepare`, `Activate`,
-and `Stop`). It must not read `NRE_PLUGIN_ENDPOINT`, load the cookie file,
-register gRPC descriptors, or manually mirror `RequiredFeatures`.
+The plugin implements `RPCLifecycle` (`Handshake`, `Prepare`, `Activate`, and
+`Stop`) using `go/rpcplugin.Lifecycle` for serialized generation ownership and
+revocable handles. Plugin UI handlers use `SetPluginUIResponseHeaders`,
+`ServePluginUIAsset`, `PluginUIActor`, and `WritePluginUIJSON`. Plugins must not
+read private endpoint variables, load the cookie file, register gRPC
+descriptors, or manually mirror `RequiredFeatures`.
 
 `go.Manifest` and `go/schema/plugin-manifest-v1.schema.json` are the canonical
 structural `plugin.yaml v1` contract for publishers and hosts. Each package
