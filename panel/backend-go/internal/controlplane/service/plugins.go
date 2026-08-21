@@ -1594,13 +1594,6 @@ func (s *PluginService) DeleteInstance(ctx context.Context, request PluginDelete
 	if err := ensureNoPendingOperation(installed); err != nil {
 		return s.recordFailure(ctx, operation, request.ActorID, err)
 	}
-	consumers, err := s.pluginInstanceConsumerCount(ctx, instance)
-	if err != nil {
-		return s.recordFailure(ctx, operation, request.ActorID, err)
-	}
-	if consumers > 0 {
-		return s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: instance %s is still used by %d bound rule(s)", storage.ErrPluginDependencyConsumerInUse, instance.ID, consumers))
-	}
 	now := s.now()
 	operation.InstanceID, operation.ResourceGroupID = instance.ID, instance.ResourceGroupID
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
@@ -1608,7 +1601,7 @@ func (s *PluginService) DeleteInstance(ctx context.Context, request PluginDelete
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
 	return s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
 		PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
-		Installed: &installed, DeleteInstanceID: instance.ID, ExpectedInstanceVersion: instance.StateVersion,
+		Installed: &installed, DeleteInstanceID: instance.ID, DeleteInstanceHTTPRules: true, ExpectedInstanceVersion: instance.StateVersion,
 		Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now),
 	})
 }

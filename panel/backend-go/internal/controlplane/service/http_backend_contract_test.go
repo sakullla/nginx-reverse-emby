@@ -408,7 +408,7 @@ func TestPluginPublishUpdatesSecondNodeEntryFromOriginalInstanceID(t *testing.T)
 	}
 }
 
-func TestPluginPublishSurvivesCompleteConfigureAndBlocksDeleteInstance(t *testing.T) {
+func TestPluginPublishSurvivesCompleteConfigureAndDeleteInstanceCascadesPublishedRules(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginPublishFixture(t, true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
@@ -446,18 +446,12 @@ func TestPluginPublishSurvivesCompleteConfigureAndBlocksDeleteInstance(t *testin
 	}
 	if err := fixture.service.DeleteInstanceMutation(ctx, PluginDeleteInstanceRequest{
 		PluginID: fixture.pluginID, InstanceID: instance.ID, ActorID: "admin", Actor: pluginPublishAdmin(),
-	}); !errors.Is(err, storage.ErrPluginDependencyConsumerInUse) {
-		t.Fatalf("DeleteInstance() error = %v, want %v", err, storage.ErrPluginDependencyConsumerInUse)
-	}
-
-	if err := fixture.store.SaveHTTPRules(ctx, "local", nil); err != nil {
-		t.Fatal(err)
-	}
-	instance = mustPluginInstance(t, fixture.store, fixture.pluginID)
-	if err := fixture.service.DeleteInstanceMutation(ctx, PluginDeleteInstanceRequest{
-		PluginID: fixture.pluginID, InstanceID: instance.ID, ActorID: "admin", Actor: pluginPublishAdmin(),
 	}); err != nil {
-		t.Fatalf("DeleteInstance() after published rules were removed = %v", err)
+		t.Fatalf("DeleteInstance() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 0)
+	if _, found, err := fixture.store.GetPluginInstance(ctx, instance.ID); err != nil || found {
+		t.Fatalf("GetPluginInstance() = (_, %v, %v), want deleted", found, err)
 	}
 }
 

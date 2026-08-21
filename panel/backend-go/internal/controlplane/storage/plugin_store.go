@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -3063,6 +3064,7 @@ type PluginMutation struct {
 	ReplaceInstance            *PluginInstanceRow
 	ReplaceInstances           []PluginInstanceRow
 	DeleteInstanceID           string
+	DeleteInstanceHTTPRules    bool
 	ExpectedInstanceVersion    uint64
 	DeletePlugin               bool
 	DeleteInstances            bool
@@ -3379,6 +3381,14 @@ func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation)
 	if mutation.ExpectedInstanceVersion != 0 && current.StateVersion != mutation.ExpectedInstanceVersion {
 		return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
 	}
+	if mutation.DeleteInstanceHTTPRules {
+		if err := cascadePluginInstanceHTTPRulesTx(tx, instanceID, mutation.Operation.CreatedAt); err != nil {
+			return err
+		}
+		if err := tx.Where("id = ? AND plugin_id = ?", instanceID, mutation.PluginID).First(&current).Error; err != nil {
+			return err
+		}
+	}
 	bindings, err := CanonicalPluginInstanceBindings(current.BindingsJSON)
 	if err != nil {
 		return fmt.Errorf("plugin instance %s bindings: %w", current.ID, err)
@@ -3404,6 +3414,42 @@ func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation)
 		now = time.Now().UTC()
 	}
 	return recomputeCountQuotaUsageTx(tx, now)
+}
+
+func cascadePluginInstanceHTTPRulesTx(tx *gorm.DB, instanceID string, now time.Time) error {
+	var rules []HTTPRuleRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("agent_id, id").Find(&rules).Error; err != nil {
+		return err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for _, rule := range rules {
+		matched := false
+		for _, backend := range parseHTTPBackendsForIntent(rule.BackendsJSON) {
+			if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider && backend.PluginProvider != nil && strings.TrimSpace(backend.PluginProvider.InstanceID) == instanceID {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		resourceID := rule.AgentID + ":" + strconv.Itoa(rule.ID)
+		if err := detachPluginConsumerBindingsTx(tx, PluginDependencyConsumerHTTPRule, resourceID, now); err != nil {
+			return err
+		}
+		if err := tx.Where("resource_kind = ? AND resource_id = ?", PluginDependencyConsumerHTTPRule, resourceID).Delete(&QuotaAllocationRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("resource_kind = ? AND resource_id = ?", PluginDependencyConsumerHTTPRule, resourceID).Delete(&ResourceBindingRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ? AND id = ?", rule.AgentID, rule.ID).Delete(&HTTPRuleRow{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func completePluginAgentRuntimeAuthorityTx(tx *gorm.DB, operation PluginOperationRow) error {

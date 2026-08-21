@@ -444,6 +444,40 @@ func TestRPCGenerationOptionalPrepareFailurePublishesFencedDegradedStatus(t *tes
 	}
 }
 
+func TestRPCGenerationHTTPBackendProviderFailureDoesNotBlockCutover(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	generation := rpcPluginGenerationForTest(t, root, 24, "operation-24")
+	generation.ExtensionPoints = []string{pluginsdk.ExtensionHTTPBackendProvider}
+	generation.RequiredFeatures = []string{pluginsdk.RPCFeatureHTTPBackendProviderV1}
+	generation.HTTPBackendProviders = []pluginsdk.HTTPBackendProviderDescriptor{{ID: "default", DisplayName: "Default"}}
+	client := &generationLifecycleClient{prepareErr: context.DeadlineExceeded}
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(root, "runtime")}, pluginprocess.NewSupervisor(hostRunner{}, generationTestSandbox{}, io.Discard), func(context.Context, DialConfig) (LifecycleClient, io.Closer, error) {
+		return client, hostCloser{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := rpcSnapshotWithRequiredInstance(t, 24, []model.PluginGeneration{generation}, generation.InstanceID)
+	next.Rules[0].Backends = []model.HTTPBackend{{
+		Kind:           pluginsdk.HTTPBackendKindPluginProvider,
+		PluginProvider: &pluginsdk.HTTPPluginProviderRef{InstanceID: generation.InstanceID, ProviderID: "default"},
+	}}
+	prepared, err := NewGenerationModule(host).Prepare(t.Context(), module.ApplyRequest{Next: next})
+	if err != nil {
+		t.Fatalf("Prepare() blocked unrelated cutover: %v", err)
+	}
+	transaction := prepared.(*generationTransaction)
+	if err := transaction.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.PrepareGenerationPublication(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	transaction.FinalizeGenerationPublication()
+	assertOptionalFailureStatus(t, transaction.PluginRuntimeStatuses(), generation, "degraded", "rpc_prepare_failed")
+}
+
 func rpcPluginGenerationForTest(t *testing.T, root string, revision int64, operationID string) model.PluginGeneration {
 	t.Helper()
 	payload := []byte("rpc generation executable")

@@ -276,11 +276,24 @@ func RequiredPluginInstanceIDs(snapshot Snapshot) ([]string, error) {
 	if err := ValidatePluginDependencies(snapshot); err != nil {
 		return nil, err
 	}
+	providers := make(map[string]PluginGeneration, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		providers[generation.InstanceID] = generation
+	}
 	requiredInstances := make(map[string]struct{})
 	for _, edge := range snapshot.PluginDependencies {
-		if edge.ProviderInstanceID != "" {
-			requiredInstances[edge.ProviderInstanceID] = struct{}{}
+		provider := providers[edge.ProviderInstanceID]
+		// HTTP backend providers are isolated fail-closed consumers: if the
+		// provider cannot start, its rules are omitted from the candidate HTTP
+		// runtime while unrelated configuration can still cut over. Explicit
+		// request/response policy bindings remain hard dependencies.
+		if edge.Consumer.Kind == "http_rule" &&
+			slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) &&
+			!slices.Contains(provider.ExtensionPoints, "http.request") &&
+			!slices.Contains(provider.ExtensionPoints, "http.response") {
+			continue
 		}
+		requiredInstances[edge.ProviderInstanceID] = struct{}{}
 	}
 	ids := make([]string, 0, len(requiredInstances))
 	for id := range requiredInstances {

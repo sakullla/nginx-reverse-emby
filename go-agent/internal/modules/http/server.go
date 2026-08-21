@@ -206,7 +206,10 @@ func newServerWithResilience(
 		if err != nil {
 			var providerErr *httpBackendProviderResolutionError
 			if errors.As(err, &providerErr) {
-				return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, providerErr)
+				// A plugin-backed route fails closed when its provider generation is
+				// unavailable. Do not reject the whole HTTP generation: unrelated
+				// routes must remain deployable and available.
+				continue
 			}
 			continue
 		}

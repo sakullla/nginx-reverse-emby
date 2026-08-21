@@ -190,7 +190,7 @@ const confirmCopy = computed(() => {
     case 'rollback':
       return { title: '确认回滚插件', message: '回滚将把插件恢复到上一版本，并可能变更其权限。', confirmText: '确认回滚' }
     case 'delete-instance':
-      return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置与插件密钥将被清理；已绑定规则时不能删除。', confirmText: '确认删除实例' }
+      return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置、插件密钥及其发布的入口规则将一并清理。', confirmText: '确认删除实例' }
     case 'uninstall':
       return {
         title: '确认卸载插件',
