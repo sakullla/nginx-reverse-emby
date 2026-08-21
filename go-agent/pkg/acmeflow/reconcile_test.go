@@ -2,8 +2,11 @@ package acmeflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,5 +90,67 @@ func TestReconcileIsIdempotentAndPreservesCurrent(t *testing.T) {
 	}
 	if len(second.RemovedStages) != 0 || len(second.RemovedCompletedChallenges) != 0 {
 		t.Fatalf("Reconcile(second) was not idempotent: %#v", second)
+	}
+}
+
+func TestReconcileDropsUnreadablePendingAfterCurrentFallback(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 28, 8, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := OpenStateStore(root, WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+
+	activeInput := testGenerationInput(t, 41, now)
+	active, err := store.StageGeneration(ctx, activeInput)
+	if err != nil {
+		t.Fatalf("StageGeneration(active) error = %v", err)
+	}
+	if err := store.PromoteGeneration(ctx, active.ID, nil); err != nil {
+		t.Fatalf("PromoteGeneration(active) error = %v", err)
+	}
+
+	pendingInput := testGenerationInput(t, 42, now)
+	pendingInput.Pending = &PendingGenerationInput{
+		PreviousGenerationID: active.ID,
+		PolicySHA256:         strings.Repeat("a", sha256.Size*2),
+		RecordRenewal:        true,
+	}
+	pending, err := store.StageGeneration(ctx, pendingInput)
+	if err != nil {
+		t.Fatalf("StageGeneration(pending) error = %v", err)
+	}
+	if err := store.PromoteGeneration(ctx, pending.ID, nil); err != nil {
+		t.Fatalf("PromoteGeneration(pending) error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	certificatePath := filepath.Join(root, generationsDirectory, pending.ID, generationCertificateFile)
+	if err := os.WriteFile(certificatePath, []byte("partial"), 0o600); err != nil {
+		t.Fatalf("WriteFile(pending certificate) error = %v", err)
+	}
+	reopened, err := OpenStateStore(root, WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore(reopen) error = %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	result, err := reopened.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.Current == nil || result.Current.Manifest.ID != active.ID {
+		t.Fatalf("Reconcile() current = %#v, want fallback %q", result.Current, active.ID)
+	}
+	if result.RemovedPendingGeneration != pending.ID {
+		t.Fatalf("Reconcile() removed pending = %q, want %q", result.RemovedPendingGeneration, pending.ID)
+	}
+	if _, err := reopened.LoadPendingGeneration(ctx); !errors.Is(err, ErrNoPendingGeneration) {
+		t.Fatalf("LoadPendingGeneration() error = %v, want ErrNoPendingGeneration", err)
 	}
 }
