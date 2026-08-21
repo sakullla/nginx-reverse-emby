@@ -181,6 +181,58 @@ func TestDurableStateAtomicityConfinementAndRecovery(t *testing.T) {
 			t.Fatalf("reopened generation = %#v, %v", current.Manifest, err)
 		}
 	})
+
+	t.Run("unreadable pending generation falls back", func(t *testing.T) {
+		store := fixture.open("generation-fallback")
+		activeInput := durableGenerationInput(t, fixture.now)
+		active, err := store.StageGeneration(ctx, activeInput)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.PromoteGeneration(ctx, active.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		pendingInput := durableGenerationInput(t, fixture.now.Add(time.Second))
+		pendingInput.Pending = &PendingGenerationInput{
+			PreviousGenerationID: active.ID,
+			PolicySHA256:         sha256Hex([]byte("pending-policy")),
+			RecordRenewal:        true,
+		}
+		pending, err := store.StageGeneration(ctx, pendingInput)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pending.ID == active.ID {
+			t.Fatal("pending generation reused the active generation ID")
+		}
+		if err := store.PromoteGeneration(ctx, pending.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		certificatePath := filepath.Join(fixture.root, "generation-fallback", generationsDirectory, pending.ID, generationCertificateFile)
+		if err := os.WriteFile(certificatePath, []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store = fixture.open("generation-fallback")
+		t.Cleanup(func() { _ = store.Close() })
+		result, err := store.Reconcile(ctx)
+		if err != nil {
+			t.Fatalf("Reconcile() error = %v", err)
+		}
+		if result.Current == nil || result.Current.Manifest.ID != active.ID {
+			t.Fatalf("Reconcile() current = %#v, want fallback %q", result.Current, active.ID)
+		}
+		if result.RemovedPendingGeneration != pending.ID {
+			t.Fatalf("Reconcile() removed pending = %q, want %q", result.RemovedPendingGeneration, pending.ID)
+		}
+		if _, err := store.LoadPendingGeneration(ctx); !errors.Is(err, ErrNoPendingGeneration) {
+			t.Fatalf("LoadPendingGeneration() error = %v, want ErrNoPendingGeneration", err)
+		}
+	})
 }
 
 func durableGenerationInput(t *testing.T, now time.Time) GenerationInput {
