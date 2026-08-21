@@ -431,6 +431,35 @@ func pluginGenerationDeclaresHTTPProvider(generation PluginGeneration, providerI
 	return false
 }
 
+// filterUnavailablePluginProviderRules keeps a broken optional provider from
+// making the entire Agent snapshot unavailable. The persisted rule remains
+// visible to operators, but it is omitted from runtime publication until its
+// declared provider generation is available again.
+func filterUnavailablePluginProviderRules(rules []HTTPRule, generations []PluginGeneration) []HTTPRule {
+	providers := make(map[string]PluginGeneration, len(generations))
+	for _, generation := range generations {
+		providers[generation.InstanceID] = generation
+	}
+	filtered := make([]HTTPRule, 0, len(rules))
+	for _, rule := range rules {
+		available := true
+		for _, backend := range rule.Backends {
+			if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+				continue
+			}
+			generation, found := providers[backend.PluginProvider.InstanceID]
+			if !found || !pluginGenerationDeclaresHTTPProvider(generation, backend.PluginProvider.ProviderID) {
+				available = false
+				break
+			}
+		}
+		if available {
+			filtered = append(filtered, rule)
+		}
+	}
+	return filtered
+}
+
 func stringSet(values []string) map[string]struct{} {
 	result := make(map[string]struct{}, len(values))
 	for _, value := range values {

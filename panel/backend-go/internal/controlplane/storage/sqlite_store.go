@@ -477,6 +477,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	}
 	snapshotRules := snapshotHTTPRules(httpRows, !runtimeFiltered)
 	snapshotL4 := snapshotL4Rules(l4Rows, !runtimeFiltered)
+	snapshotRules = filterUnavailablePluginProviderRules(snapshotRules, pluginGenerations)
 	pluginDependencies, err := s.loadAgentPluginDependencies(ctx, resolvedAgentID, pluginGenerations, snapshotRules, snapshotL4)
 	if err != nil {
 		return Snapshot{}, err
