@@ -1386,7 +1386,7 @@ func (s *PluginService) pluginBindHostSecretRef(schema map[string]any, request P
 	if err != nil {
 		return nil, fmt.Errorf("%w: plugin config is invalid", ErrInvalidArgument)
 	}
-	prepared, err := s.secretVault.PreparePluginSecret(vaultOp, "plugin-host-"+request.InstanceID+"-secret-ref", "plugin-config:"+request.InstanceID+":/secret_ref", string(payload))
+	prepared, err := s.secretVault.PreparePluginSecret(vaultOp, "plugin-host-"+operation.ID+"-secret-ref", "plugin-config:"+request.InstanceID+":/secret_ref", string(payload))
 	if err != nil {
 		return nil, err
 	}

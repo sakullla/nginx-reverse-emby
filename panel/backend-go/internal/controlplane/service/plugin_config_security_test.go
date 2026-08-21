@@ -124,6 +124,40 @@ func TestPluginConfigureInjectsHostInjectedKeysThenValidates(t *testing.T) {
 	assertInjectedGenerationMatchesLifecycle(t, fixture, instance.ID, generation)
 }
 
+func TestPluginConfigureRecreatesHostSecretAfterRetiredNameCollision(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginHostInjectedFixture(t, "official.host-recreate", hostInjectedConfigSchema, false)
+	ctx := WithSystemMutationPrincipal(context.Background(), "system:owner")
+	retiredAt := time.Date(2026, 8, 18, 5, 0, 0, 0, time.UTC)
+	const instanceID = "instance-reused"
+	const retiredSecretID = "sec-retired-host"
+	if err := fixture.store.CreateSecret(ctx, storage.SecretRow{
+		ID: retiredSecretID, Name: "plugin-host-" + instanceID + "-secret-ref",
+		Purpose: "plugin-config:" + instanceID + ":/secret_ref", OwnerUserID: "admin", ResourceGroupID: "default",
+		ActiveVersion: 1, Fingerprint: "retired", CreatedAt: retiredAt, RotatedAt: retiredAt, RetiredAt: &retiredAt,
+	}, storage.SecretVersionRow{
+		SecretID: retiredSecretID, Version: 1, KeyID: "test", Nonce: []byte("retired"), Ciphertext: []byte("retired"),
+		CreatedAt: retiredAt, DestroyedAt: &retiredAt,
+	}); err != nil {
+		t.Fatalf("CreateSecret(retired host handle) error = %v", err)
+	}
+
+	instance, err := fixture.service.ConfigureMutation(ctx, pluginHostInjectedConfigureRequest(fixture.pluginID, instanceID, json.RawMessage(`{"mode":"strict"}`)))
+	if err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	configured := pluginHostInjectedPendingObject(t, instance)
+	secretRef, _ := configured["secret_ref"].(string)
+	secret, err := fixture.store.GetSecret(ctx, secretRef)
+	if err != nil {
+		t.Fatalf("GetSecret(%q) error = %v", secretRef, err)
+	}
+	wantName := "plugin-host-" + instance.PendingOperationID + "-secret-ref"
+	if secret.Name != wantName {
+		t.Fatalf("host secret name = %q, want operation-bound %q", secret.Name, wantName)
+	}
+}
+
 func TestPluginApplyRuntimeGenerationOverridesOnlyDeclaredHostFields(t *testing.T) {
 	t.Parallel()
 	topSchema, err := plugins.DecodeConfigSchema([]byte(hostInjectedConfigSchema))
