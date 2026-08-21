@@ -1433,8 +1433,7 @@ func managedCertificateMutationNeedsManagedDNSIssue(previous *ManagedCertificate
 	return previous.Domain != current.Domain ||
 		previous.Scope != current.Scope ||
 		previous.IssuerMode != current.IssuerMode ||
-		previous.CertificateType != current.CertificateType ||
-		!reflect.DeepEqual(previous.TargetAgentIDs, current.TargetAgentIDs)
+		previous.CertificateType != current.CertificateType
 }
 
 func (s *certificateService) issueManagedCertificateInBackground(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {
@@ -2502,7 +2501,11 @@ func (s *certificateService) ensureAgentExists(ctx context.Context, agentID stri
 }
 
 func (s *certificateService) assertCertificateDistributionTargetsAllowed(ctx context.Context, cert ManagedCertificate) error {
-	if !cert.Enabled || cert.IssuerMode != "local_http01" || cert.CertificateType != "uploaded" {
+	if !cert.Enabled {
+		return nil
+	}
+	requiresInstall := cert.IssuerMode == "master_cf_dns" || cert.IssuerMode == "local_http01" && cert.CertificateType == "uploaded"
+	if !requiresInstall {
 		return nil
 	}
 	for _, targetAgentID := range cert.TargetAgentIDs {
@@ -3149,19 +3152,12 @@ func assertManagedCertificateMutationAllowed(previous *ManagedCertificate, next 
 	return nil
 }
 
-func assertManagedCertificateTargetingAllowed(cfg config.Config, cert ManagedCertificate) error {
+func assertManagedCertificateTargetingAllowed(_ config.Config, cert ManagedCertificate) error {
 	if cert.IssuerMode != "master_cf_dns" {
 		return nil
 	}
 	if cert.CertificateType != "acme" {
 		return fmt.Errorf("%w: master_cf_dns certificates must use certificate_type=acme", ErrInvalidArgument)
-	}
-	localAgentID := strings.TrimSpace(cfg.LocalAgentID)
-	if localAgentID == "" {
-		return nil
-	}
-	if len(cert.TargetAgentIDs) != 1 || strings.TrimSpace(cert.TargetAgentIDs[0]) != localAgentID {
-		return fmt.Errorf("%w: master_cf_dns certificates can only target the local master agent; use local_http01 for remote agents", ErrInvalidArgument)
 	}
 	return nil
 }
