@@ -425,7 +425,7 @@ describe('PluginMarketplacePage', () => {
     expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
   })
 
-  it('opens plugin detail when the same upgrade is already pending', async () => {
+  it('still submits upgrade when the same catalog digest is already pending', async () => {
     mocks.fetchPlugins
       .mockResolvedValueOnce([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
       .mockResolvedValue([{
@@ -441,7 +441,27 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认升级').trigger('click')
     await flushPromises()
-    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).toHaveBeenCalledWith(entry.id, expect.objectContaining({
+      source_id: 'community', plugin_id: entry.id, digest: entry.sha256
+    }))
+    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+  })
+
+  it('does not skip upgrade when a non-upgrade pending operation happens to share the catalog digest', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{
+      plugin_id: entry.id,
+      active_package_digest: 'c'.repeat(64),
+      pending_operation_id: 'op-configure',
+      pending_kind: 'configure',
+      pending_target_digest: entry.sha256
+    }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认升级').trigger('click')
+    await flushPromises()
+    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
     expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
   })
 

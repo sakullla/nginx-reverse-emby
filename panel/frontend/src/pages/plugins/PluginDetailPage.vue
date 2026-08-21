@@ -129,7 +129,14 @@ const publishedEntries = computed(() => {
   }
   return entries.filter((entry) => visibleAgents.has(entry.agent_id))
 })
+const isUpgrading = computed(() => {
+  const plugin = detail.value?.plugin
+  if (!plugin) return false
+  if (String(plugin.current_lifecycle || '').trim() === 'upgrading') return true
+  return String(plugin.pending_kind || '').trim() === 'upgrade' && Boolean(String(plugin.pending_operation_id || '').trim())
+})
 const taskState = computed(() => {
+  if (isUpgrading.value) return 'upgrading'
   if (!(detail.value?.instances || []).length) return 'undeployed'
   if (!hasHTTPBackend.value) return 'deployed'
   if (!publishedEntries.value.length) return 'unpublished'
@@ -137,6 +144,7 @@ const taskState = computed(() => {
   return 'available'
 })
 const taskStateLabel = computed(() => ({
+  upgrading: '正在升级',
   undeployed: '还没部署',
   unpublished: '还没发布域名',
   'published-unavailable': '已发布但还不能访问',
@@ -152,6 +160,8 @@ const pluginPurpose = computed(() => {
 })
 const taskHint = computed(() => {
   switch (taskState.value) {
+    case 'upgrading':
+      return '新版本正在应用到节点。完成前请等待，不要重复提交升级。'
     case 'undeployed':
       return '下一步：选择一个节点开始部署。'
     case 'unpublished':

@@ -353,9 +353,15 @@ function hasPendingOperation() {
 }
 
 function isPendingSameUpgrade() {
-  const pendingDigest = String(pendingPlugin()?.pending_target_digest || '').trim()
+  const pending = pendingPlugin()
+  const pendingKind = String(pending?.pending_kind || '').trim().toLowerCase()
+  const pendingDigest = String(pending?.pending_target_digest || '').trim()
   const selectedDigest = String(selected.value?.plugin?.sha256 || '').trim()
-  return hasPendingOperation() && pendingDigest && selectedDigest && pendingDigest === selectedDigest
+  return hasPendingOperation()
+    && pendingKind === 'upgrade'
+    && pendingDigest
+    && selectedDigest
+    && pendingDigest.toLowerCase() === selectedDigest.toLowerCase()
 }
 
 function humanLoadError(cause, fallback) {
@@ -435,17 +441,10 @@ async function refreshInstalled() {
   }
 }
 
-async function openSelectedDetail() {
-  const pluginID = String(selected.value?.plugin?.id || '').trim()
-  if (!pluginID) return
-  confirmVisible.value = false
-  inspectVisible.value = false
-  await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
-}
-
 async function applyPackage() {
   if (!selected.value || actionBusy.value || detailLoading.value) return
   const pluginID = selected.value.plugin.id
+  const shouldUpgrade = isUpgrade.value
   actionBusy.value = true
   actionError.value = ''
   pendingConflict.value = false
@@ -455,11 +454,7 @@ async function applyPackage() {
       if (!prepared) return
     }
     await refreshInstalled()
-    if (isPendingSameUpgrade()) {
-      await openSelectedDetail()
-      return
-    }
-    if (isUpgrade.value) await upgradePlugin(pluginID, installSelection())
+    if (shouldUpgrade) await upgradePlugin(pluginID, installSelection())
     else await installPlugin(installSelection())
     confirmVisible.value = false
     actionError.value = ''
@@ -470,9 +465,6 @@ async function applyPackage() {
     await refreshInstalled()
     pendingConflict.value = isPendingConflictMessage(cause?.message)
     actionError.value = humanLoadError(cause, '提交插件包失败')
-    if (isPendingSameUpgrade()) {
-      await openSelectedDetail()
-    }
   } finally {
     actionBusy.value = false
   }

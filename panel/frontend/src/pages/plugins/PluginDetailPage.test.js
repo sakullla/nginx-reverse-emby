@@ -333,6 +333,22 @@ describe('PluginDetailPage', () => {
     )
   })
 
+  it('surfaces an in-progress upgrade in the task center instead of the next deploy step', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail({
+      plugin: {
+        ...makeDetail().plugin,
+        current_lifecycle: 'upgrading',
+        pending_operation_id: 'op-upgrade',
+        pending_kind: 'upgrade'
+      }
+    }))
+    expect(wrapper.get('.page-subtitle').text()).toContain('升级中')
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('正在升级')
+    expect(wrapper.get('.plugin-task__hint').text()).toContain('新版本正在应用到节点')
+    expect(wrapper.find('[data-test="plugin-task-primary"]').exists()).toBe(false)
+    expect(pagePrimaryButtons(wrapper)).toHaveLength(0)
+  })
+
   it('shows start-deploy as the first-screen primary action when the plugin is not deployed', async () => {
     const wrapper = await mountPage(undeployedDetail())
     expect(wrapper.find('.page-header').exists()).toBe(true)
