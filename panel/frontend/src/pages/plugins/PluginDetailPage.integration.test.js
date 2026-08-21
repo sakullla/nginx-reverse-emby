@@ -493,7 +493,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
     expect(mainPathConfigFields(wrapper)).toHaveLength(0)
     expect(wrapper.find('[data-test="plugin-deploy-modal"]').exists()).toBe(false)
-    expect(mainPathButtons(wrapper).map((button) => button.text()).filter((text) => OPS_ACTION_LABELS.includes(text))).toEqual([])
+    expect(mainPathButtons(wrapper).map((button) => button.text()).filter((text) => OPS_ACTION_LABELS.includes(text))).toEqual(['卸载'])
     for (const pattern of OPS_SECTION_PATTERNS) {
       expect(mainPathText(wrapper)).not.toMatch(pattern)
     }
