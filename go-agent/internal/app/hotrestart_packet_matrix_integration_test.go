@@ -41,8 +41,13 @@ func TestIntegrationHotRestartPacketRepeatedUpgradeCleanup(t *testing.T) {
 	}
 	cases := []hotRestartPacketTestProcess{
 		{
-			name:    "repeated_fd_and_control_descriptor_lifecycle",
-			args:    []string{"./internal/hotrestart", "^TestIntegrationPacketHandoffRepeatedCloseReturnsFileDescriptorsToBaseline$|^TestIntegrationSuccessfulWaitClosesParentControlDescriptors$"},
+			name:    "repeated_fd_lifecycle",
+			args:    []string{"./internal/hotrestart", "^TestIntegrationPacketHandoffRepeatedCloseReturnsFileDescriptorsToBaseline$"},
+			timeout: 3 * time.Minute,
+		},
+		{
+			name:    "control_descriptor_lifecycle",
+			args:    []string{"./internal/hotrestart", "^TestIntegrationSuccessfulWaitClosesParentControlDescriptors$"},
 			timeout: 3 * time.Minute,
 		},
 		{
