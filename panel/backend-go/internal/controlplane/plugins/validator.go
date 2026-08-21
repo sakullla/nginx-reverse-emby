@@ -2083,6 +2083,9 @@ func readBoundedFile(name string, limit int64) ([]byte, error) {
 }
 
 func isExecutableName(name string) bool {
+	if isUIFrontendAsset(name) {
+		return false
+	}
 	ext := strings.ToLower(path.Ext(filepath.ToSlash(name)))
 	switch ext {
 	case ".exe", ".dll", ".so", ".dylib", ".a", ".lib", ".bin", ".com", ".bat", ".cmd", ".ps1", ".sh", ".bash", ".zsh", ".py", ".pyc", ".pyo", ".pl", ".rb", ".js", ".wasm", ".class", ".jar", ".zip", ".dex", ".luac", ".bc":
@@ -2091,7 +2094,23 @@ func isExecutableName(name string) bool {
 	return false
 }
 
+func isUIFrontendAsset(name string) bool {
+	name = filepath.ToSlash(strings.TrimSpace(name))
+	if !strings.HasPrefix(name, "ui/") || strings.Contains(name, "..") {
+		return false
+	}
+	switch strings.ToLower(path.Ext(name)) {
+	case ".html", ".css", ".js":
+		return true
+	default:
+		return false
+	}
+}
+
 func isSafeAssetName(name string) bool {
+	if isUIFrontendAsset(name) {
+		return true
+	}
 	switch strings.ToLower(path.Ext(name)) {
 	case ".json", ".yaml", ".yml", ".txt", ".md", ".png", ".jpg", ".jpeg", ".gif":
 		return true
@@ -2128,7 +2147,7 @@ func validateAssetContent(name, logicalName string, limit int64) error {
 		if err := decoder.Decode(&trailing); err != io.EOF {
 			return errors.New("YAML asset contains multiple documents")
 		}
-	case ".txt", ".md":
+	case ".txt", ".md", ".html", ".css", ".js":
 		if !utf8.Valid(data) {
 			return errors.New("text asset is not valid UTF-8")
 		}

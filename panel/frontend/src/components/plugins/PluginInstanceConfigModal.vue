@@ -24,7 +24,7 @@ const props = defineProps({
   httpRules: { type: Array, default: null },
   intent: { type: String, default: 'configure' }
 })
-const emit = defineEmits(['update:modelValue', 'saved', 'refreshed'])
+const emit = defineEmits(['update:modelValue', 'saved', 'refreshed', 'delete-entry'])
 
 const busy = ref(false)
 const actionBusy = ref(false)
@@ -450,15 +450,27 @@ async function runDynamicAction({ action, target_id, confirmed }) {
               <strong>{{ entry.frontend_url }}</strong>
               <small>{{ agentLabel(entry.agent_id) }} · {{ entry.frontend_url.startsWith('https:') ? 'HTTPS' : 'HTTP' }} · {{ entryStatus(entry) }}</small>
             </div>
-            <button
-              v-if="canPublish"
-              class="btn btn-secondary btn-sm"
-              type="button"
-              :disabled="publishBusy"
-              @click="applyEntry(entry)"
-            >
-              修改入口
-            </button>
+            <div class="plugin-published-entry__actions">
+              <button
+                v-if="canPublish"
+                class="btn btn-secondary btn-sm"
+                type="button"
+                :disabled="publishBusy"
+                @click="applyEntry(entry)"
+              >
+                修改入口
+              </button>
+              <button
+                v-if="canPublish"
+                class="btn btn-danger btn-sm"
+                type="button"
+                data-test="plugin-delete-entry"
+                :disabled="publishBusy"
+                @click="emit('delete-entry', entry)"
+              >
+                删除入口
+              </button>
+            </div>
           </li>
         </ul>
 
@@ -554,6 +566,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 .plugin-published-entry div { min-width: 0; display: grid; gap: 2px; }
 .plugin-published-entry strong, .plugin-published-entry small { overflow-wrap: anywhere; }
 .plugin-published-entry small { color: var(--color-text-muted); }
+.plugin-published-entry__actions { display: flex; flex-wrap: wrap; gap: 0.4rem; flex-shrink: 0; }
 .plugin-publish__form { display: grid; gap: var(--space-3); min-width: 0; }
 .plugin-publish__targets { display: grid; gap: var(--space-2); margin: 0; padding: 0; border: 0; }
 .plugin-publish__targets legend { margin-bottom: var(--space-1); color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
@@ -575,5 +588,6 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 
 @media (max-width: 640px) {
   .plugin-published-entry { align-items: stretch; flex-direction: column; }
+  .plugin-published-entry__actions .btn { width: 100%; }
 }
 </style>

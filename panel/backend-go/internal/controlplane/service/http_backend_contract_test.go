@@ -328,6 +328,95 @@ func TestPluginPublishUpdatesOriginalRuleAndCreatesIndependentDomain(t *testing.
 	}
 }
 
+func TestPluginUnpublishDeletesOneEntryAndKeepsIndependentDomain(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instanceID := "provider-1"
+	fields := pluginPublishFields(fixture.pluginID, instanceID, "https://emby.example.com", 0)
+	firstInstance, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("first PublishMutation() error = %v", err)
+	}
+	first := mustPluginPublishRule(t, fixture.store, "local", 0)
+	delete(fields, "RuleID")
+	fields["FrontendURL"] = "https://emby-second.example.com"
+	if _, err := callPluginPublish(t, fixture.service, ctx, fields); err != nil {
+		t.Fatalf("second-domain PublishMutation() error = %v", err)
+	}
+	second := mustPluginPublishRule(t, fixture.store, "local", 1)
+	assertPluginPublishRuleCount(t, fixture.store, "local", 2)
+
+	updated, err := callPluginUnpublish(t, fixture.service, ctx, fixture.pluginID, "local", second.ID)
+	if err != nil {
+		t.Fatalf("UnpublishMutation() error = %v", err)
+	}
+	if updated.ID != firstInstance.ID {
+		t.Fatalf("unpublish instance = %+v, want %s", updated, firstInstance.ID)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 1)
+	if stored := mustPluginPublishRule(t, fixture.store, "local", 0); stored.ID != first.ID || stored.FrontendURL != "https://emby.example.com" {
+		t.Fatalf("remaining rule = %+v, want original entry %d", stored, first.ID)
+	}
+	entries := publishedEntriesFromState(t, fixture, "local")
+	if len(entries) != 1 || !containsPublishedEntry(entries, first.ID, "local", "https://emby.example.com") {
+		t.Fatalf("published_entries after first unpublish = %+v", entries)
+	}
+	if containsPublishedEntry(entries, second.ID, "local", "https://emby-second.example.com") {
+		t.Fatalf("unpublished entry still projected = %+v", entries)
+	}
+
+	if _, err := callPluginUnpublish(t, fixture.service, ctx, fixture.pluginID, "local", first.ID); err != nil {
+		t.Fatalf("second UnpublishMutation() error = %v", err)
+	}
+	assertPluginPublishRuleCount(t, fixture.store, "local", 0)
+	if remaining := publishedEntriesFromState(t, fixture, "local"); len(remaining) != 0 {
+		t.Fatalf("published_entries after last unpublish = %+v, want empty", remaining)
+	}
+	if _, found, err := fixture.store.GetPluginInstance(ctx, firstInstance.ID); err != nil || !found {
+		t.Fatalf("GetPluginInstance() after unpublish = (_, %v, %v), want instance retained", found, err)
+	}
+}
+
+func TestPluginUnpublishRejectsForeignRuleAndNonHTTPBackend(t *testing.T) {
+	t.Parallel()
+	httpFixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	if _, err := callPluginPublish(t, httpFixture.service, ctx, pluginPublishFields(httpFixture.pluginID, "provider-1", "https://emby.example.com", 0)); err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	owned := mustPluginPublishRule(t, httpFixture.store, "local", 0)
+	if _, err := callPluginUnpublish(t, httpFixture.service, ctx, httpFixture.pluginID, "local", 0); err == nil {
+		t.Fatal("UnpublishMutation() accepted a missing rule id")
+	}
+	if _, err := callPluginUnpublish(t, httpFixture.service, ctx, httpFixture.pluginID, "local", owned.ID+99); err == nil {
+		t.Fatal("UnpublishMutation() accepted a missing rule")
+	}
+
+	frontend := "https://plain.example.com"
+	enabled := true
+	backends := []HTTPRuleBackend{{Kind: pluginsdk.HTTPBackendKindURL, URL: "http://127.0.0.1:8096"}}
+	plain, err := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, httpFixture.store).Create(ctx, "local", HTTPRuleInput{
+		FrontendURL: &frontend, Backends: &backends, Enabled: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("Create() plain HTTP rule error = %v", err)
+	}
+	if _, err := callPluginUnpublish(t, httpFixture.service, ctx, httpFixture.pluginID, "local", plain.ID); err == nil {
+		t.Fatal("UnpublishMutation() accepted a rule that is not a published plugin entry")
+	}
+	assertPluginPublishRuleCount(t, httpFixture.store, "local", 2)
+	if stored := mustPluginPublishRule(t, httpFixture.store, "local", 0); stored.ID != owned.ID {
+		t.Fatalf("rejected unpublish mutated owned rule = %+v", stored)
+	}
+
+	nonHTTP := newPluginPublishFixture(t, false)
+	if _, err := callPluginUnpublish(t, nonHTTP.service, ctx, nonHTTP.pluginID, "local", 1); err == nil {
+		t.Fatal("UnpublishMutation() accepted a plugin without an HTTP backend")
+	}
+	assertPluginPublishRuleCount(t, nonHTTP.store, "local", 0)
+}
+
 func TestPluginPublishSecondNodeKeepsOriginalInstanceAndEntry(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginPublishFixture(t, true)
@@ -849,6 +938,18 @@ func pluginPublishFields(pluginID, instanceID, frontendURL string, ruleID int) m
 		fields["RuleID"] = ruleID
 	}
 	return fields
+}
+
+func callPluginUnpublish(t *testing.T, svc *PluginService, ctx context.Context, pluginID, agentID string, ruleID int) (PluginInstanceDetail, error) {
+	t.Helper()
+	instance, _, err := svc.UnpublishMutation(ctx, PluginUnpublishRequest{
+		PluginID: pluginID,
+		Targets:  []string{agentID},
+		RuleID:   ruleID,
+		ActorID:  "admin",
+		Actor:    pluginPublishAdmin(),
+	})
+	return instance, err
 }
 
 func callPluginPublish(t *testing.T, svc *PluginService, ctx context.Context, fields map[string]any) (PluginInstanceDetail, error) {

@@ -89,6 +89,14 @@ type PluginDeleteInstanceRequest struct {
 	Actor      authz.Actor
 }
 
+type PluginUnpublishRequest struct {
+	PluginID string
+	Targets  any
+	RuleID   int
+	ActorID  string
+	Actor    authz.Actor
+}
+
 type PluginUpgradeRequest struct {
 	PluginID             string
 	Package              PluginPackageCandidate
@@ -672,6 +680,51 @@ func (s *PluginService) PublishMutation(ctx context.Context, request PluginConfi
 	return s.publish(ctx, request, frontendURL, ruleID)
 }
 
+func (s *PluginService) UnpublishMutation(ctx context.Context, request PluginUnpublishRequest) (PluginInstanceDetail, HTTPRule, error) {
+	request.PluginID = strings.TrimSpace(request.PluginID)
+	if request.PluginID == "" {
+		return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: plugin identity is required", ErrInvalidArgument)
+	}
+	if request.RuleID <= 0 {
+		return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: rule_id must be a positive rule id", ErrInvalidArgument)
+	}
+	agentID, err := pluginPublishRequestTargets(request.Targets)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	if _, err := s.pluginHTTPBackendProviderID(ctx, request.PluginID); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	configure := &PluginConfigureRequest{
+		PluginID:              request.PluginID,
+		Targets:               request.Targets,
+		ActorID:               request.ActorID,
+		Actor:                 request.Actor,
+		RuleID:                request.RuleID,
+		PublishDesiredEnabled: true,
+	}
+	if s.mutationExecutor != nil && !s.revisionMutation {
+		if err := s.reconcileSupersededConfigure(ctx, request.PluginID); err != nil {
+			return PluginInstanceDetail{}, HTTPRule{}, err
+		}
+		var instance PluginInstanceDetail
+		var rule HTTPRule
+		postCommit := make([]func(), 0)
+		err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.unpublish", request, configure, func(txService *PluginService, mutationCtx context.Context) error {
+			txService.postCommitActions = &postCommit
+			var mutateErr error
+			instance, rule, mutateErr = txService.unpublish(mutationCtx, request, agentID)
+			return mutateErr
+		})
+		if err != nil {
+			return PluginInstanceDetail{}, HTTPRule{}, err
+		}
+		runConfigPostCommitActions(postCommit)
+		return instance, rule, nil
+	}
+	return s.unpublish(ctx, request, agentID)
+}
+
 type pluginCoordinatorRevisionStore interface {
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 }
@@ -791,7 +844,7 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 		return err
 	}
 	dependencyAction := revision.DependencyActionApply
-	if strings.HasSuffix(kind, ".disable") || strings.HasSuffix(kind, ".delete-instance") {
+	if strings.HasSuffix(kind, ".disable") || strings.HasSuffix(kind, ".delete-instance") || strings.HasSuffix(kind, ".unpublish") {
 		dependencyAction = revision.DependencyActionDelete
 	}
 	mutationCtx := context.WithValue(ctx, pluginLifecycleOperationContextKey{}, operationID)
@@ -2030,6 +2083,46 @@ func (s *PluginService) publish(ctx context.Context, request PluginConfigureRequ
 		return PluginInstanceDetail{}, HTTPRule{}, err
 	}
 	return instance, rule, nil
+}
+
+func (s *PluginService) unpublish(ctx context.Context, request PluginUnpublishRequest, agentID string) (PluginInstanceDetail, HTTPRule, error) {
+	instance, err := s.publishedInstanceForRule(ctx, PluginConfigureRequest{PluginID: request.PluginID, RuleID: request.RuleID}, agentID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	row, found, err := s.store.GetPluginInstance(ctx, instance.ID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	if !found || row.PluginID != request.PluginID {
+		return PluginInstanceDetail{}, HTTPRule{}, ErrPluginInstanceNotFound
+	}
+	if err := authorizePluginInstanceWrite(request.Actor, row); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	rules, err := s.pluginPublishRuleService()
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	current, err := rules.Get(ctx, agentID, request.RuleID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	if !pluginRuleBacksInstance(current, instance.ID) {
+		return PluginInstanceDetail{}, HTTPRule{}, fmt.Errorf("%w: rule %d is not a published entry for instance %s", ErrInvalidArgument, request.RuleID, instance.ID)
+	}
+	deleted, err := rules.Delete(ctx, agentID, request.RuleID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	if err := s.sanitizeUnsupportedHTTPRuleBindings(ctx, request.PluginID, instance.ID, request.ActorID); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	instance, err = s.projectInstanceWithPublishedBindings(ctx, request.PluginID, instance.ID)
+	if err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
+	return instance, deleted, nil
 }
 
 func (s *PluginService) ensurePublishedInstance(ctx context.Context, request PluginConfigureRequest, agentID string) (PluginInstanceDetail, error) {

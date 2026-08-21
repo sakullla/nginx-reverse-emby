@@ -74,6 +74,24 @@ describe('plugin UI security boundary', () => {
     ])
   })
 
+  it('keeps hostInjected arrays off the fill-in UI even when they have a schema default', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      required: ['records'],
+      properties: {
+        records: {
+          type: 'array',
+          hostInjected: true,
+          default: [],
+          items: { type: 'object', properties: { body: { type: 'string', title: '正文' } } }
+        },
+        note: { type: 'string', title: '备注' }
+      }
+    })
+    expect(components.map((component) => component.id)).toEqual(['note'])
+    expect(JSON.stringify(components)).not.toContain('正文')
+  })
+
   it('keeps a required schema array empty unless minItems requires entries', () => {
     const [apps] = schemaToUIComponents({
       type: 'object',

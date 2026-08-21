@@ -579,8 +579,18 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), generation.HTTPBackendProviders...),
 		Process:              pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute},
 		Dial: DialConfig{Network: generationEndpointNetwork(), Deadline: deadline,
+			UIRoute:              hasUIRoute(generation.ExtensionPoints),
 			HTTPBackendProviders: httpBackendProviderIdentities(generation.InstanceID, generationID, generation.HTTPBackendProviders)},
 	}, nil
+}
+
+func hasUIRoute(points []string) bool {
+	for _, point := range points {
+		if point == pluginsdk.ExtensionUIRoute {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeLogIdentityFromGeneration(generation model.PluginGeneration) pluginprocess.RuntimeLogIdentity {

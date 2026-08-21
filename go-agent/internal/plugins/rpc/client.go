@@ -37,6 +37,7 @@ type DialConfig struct {
 	TLSConfig            *tls.Config
 	Deadline             time.Duration
 	RuntimeRoot          string
+	UIRoute              bool
 	HTTPBackendProviders []HTTPBackendProviderIdentity
 }
 

@@ -275,6 +275,82 @@ func TestPluginPublishKeepsSubmittedUserFields(t *testing.T) {
 	}
 }
 
+func TestPluginApplyMissingHostInjectedUsesSchemaDefault(t *testing.T) {
+	t.Parallel()
+	schema, err := plugins.DecodeConfigSchema([]byte(`{
+		"type":"object",
+		"additionalProperties":false,
+		"required":["records"],
+		"properties":{
+			"records":{
+				"type":"array",
+				"maxItems":128,
+				"hostInjected":true,
+				"default":[],
+				"items":{
+					"type":"object",
+					"additionalProperties":false,
+					"required":["id","body","generation"],
+					"properties":{
+						"id":{"type":"string","minLength":1,"hostInjected":true},
+						"body":{"type":"string","minLength":1},
+						"generation":{"type":"string","minLength":1,"maxLength":128,"hostInjected":true}
+					}
+				}
+			},
+			"enabled":{"type":"boolean","hostInjected":true,"default":false}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := pluginApplyMissingHostInjected(schema, map[string]any{}, map[string]any{}, "", pluginHostInjectedSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, _ := got.(map[string]any)
+	records, _ := object["records"].([]any)
+	if records == nil || len(records) != 0 {
+		t.Fatalf("omitted hostInjected array default = %#v, want empty array", object["records"])
+	}
+	if enabled, _ := object["enabled"].(bool); enabled {
+		t.Fatalf("omitted hostInjected boolean default = %#v, want false", object["enabled"])
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plugins.ValidateConfig(schema, encoded); err != nil {
+		t.Fatalf("injected schema defaults failed ValidateConfig: %v", err)
+	}
+
+	kept, err := pluginApplyMissingHostInjected(schema, map[string]any{
+		"records": []any{map[string]any{"body": "keep"}},
+		"enabled": true,
+	}, map[string]any{}, "", pluginHostInjectedSource{Generation: "generation-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptObject, _ := kept.(map[string]any)
+	keptRecords, _ := keptObject["records"].([]any)
+	if len(keptRecords) != 1 {
+		t.Fatalf("submitted hostInjected array was not kept: %#v", kept)
+	}
+	item, _ := keptRecords[0].(map[string]any)
+	if item["body"] != "keep" {
+		t.Fatalf("submitted item changed: %#v", item)
+	}
+	if id, _ := item["id"].(string); id == "" {
+		t.Fatalf("nested hostInjected id was not written: %#v", item)
+	}
+	if generation, _ := item["generation"].(string); generation != "generation-1" {
+		t.Fatalf("nested hostInjected generation = %v", item["generation"])
+	}
+	if enabled, _ := keptObject["enabled"].(bool); !enabled {
+		t.Fatalf("submitted hostInjected boolean was overwritten: %#v", keptObject["enabled"])
+	}
+}
+
 func TestPluginConfigureInjectsNestedHostInjectedKeysThenValidates(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginHostInjectedFixture(t, "official.host-nested", nestedHostInjectedConfigSchema, false)

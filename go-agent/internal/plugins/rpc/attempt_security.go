@@ -123,6 +123,21 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 		dial.RuntimeRoot = endpointDirectory
 		guestEndpoint = guestEndpointDirectory + "/" + socketName
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT=unix:"+dial.Address)
+		if dial.UIRoute {
+			if endpointHandle == nil {
+				endpointHandle, err = os.Open(endpointDirectory)
+				if err != nil {
+					return security, err
+				}
+				dial.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+			}
+			uiSocketName := "u-" + cookie[:16] + ".sock"
+			uiAddress := filepath.Join(endpointDirectory, uiSocketName)
+			if runtime.GOOS == "linux" {
+				uiAddress = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), uiSocketName)
+			}
+			environment = append(environment, pluginsdk.EnvPluginUIEndpoint+"=unix:"+uiAddress)
+		}
 	} else {
 		environment = append(environment, "NRE_PLUGIN_ENDPOINT="+dial.Network+":"+dial.Address)
 	}

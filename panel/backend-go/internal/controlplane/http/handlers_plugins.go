@@ -586,6 +586,9 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 	case "publish":
 		d.handlePluginPublish(w, r)
 		return
+	case "unpublish":
+		d.handlePluginUnpublish(w, r)
+		return
 	default:
 		writeJSON(w, http.StatusNotFound, errorPayload("plugin action not found"))
 		return
@@ -603,7 +606,7 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 
 func isPluginLifecycleAction(action string) bool {
 	switch action {
-	case "enable", "disable", "rollback", "configure", "upgrade", "uninstall", "publish":
+	case "enable", "disable", "rollback", "configure", "upgrade", "uninstall", "publish", "unpublish":
 		return true
 	default:
 		return false
@@ -695,6 +698,58 @@ func (d Dependencies) handlePluginPublish(w http.ResponseWriter, r *http.Request
 		result.Rule = &copied
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"result": result})
+}
+
+func (d Dependencies) handlePluginUnpublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+		return
+	}
+	var input struct {
+		Targets any  `json:"targets"`
+		RuleID  *int `json:"rule_id"`
+	}
+	if err := decodeStrictPluginJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		return
+	}
+	if _, err := pluginPublishTargetIDs(input.Targets); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		return
+	}
+	if input.RuleID == nil || *input.RuleID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("rule_id must be a positive rule id"))
+		return
+	}
+	var actor authz.Actor
+	if current, haveActor := actorFromRequest(r); haveActor {
+		actor = current
+	}
+	publisher, ok := d.PluginService.(PluginPublishAPI)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin publish is unavailable"))
+		return
+	}
+	instance, _, err := publisher.UnpublishMutation(r.Context(), service.PluginUnpublishRequest{
+		PluginID: r.PathValue("id"),
+		Targets:  input.Targets,
+		RuleID:   *input.RuleID,
+		ActorID:  pluginActorID(r),
+		Actor:    actor,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidArgument) {
+			writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		} else {
+			writePluginError(w, err)
+		}
+		return
+	}
+	entries := []pluginPublishedEntry{}
+	if projected, projectErr := d.publishedPluginEntries(r.Context(), service.PluginDetail{Instances: []service.PluginInstanceDetail{instance}}); projectErr == nil {
+		entries = projected
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"result": pluginPublishResult{Instance: instance, PublishedEntries: entries}})
 }
 
 type pluginDetailView struct {

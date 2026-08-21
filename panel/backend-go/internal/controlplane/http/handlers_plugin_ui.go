@@ -1,11 +1,15 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
+
+const pluginUIPageCSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
 const (
 	nreActorHeader         = "X-NRE-Actor"
@@ -19,7 +23,16 @@ func (d Dependencies) handlePluginUIRoutes(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"routes": pluginhost.ListUIRoutes()})
+	routes := pluginhost.ListUIRoutes()
+	if catalog, ok := d.PluginService.(PluginUICatalogAPI); ok {
+		declared, err := catalog.DeclaredUIRoutes(r.Context())
+		if err != nil {
+			writePluginError(w, err)
+			return
+		}
+		routes = service.MergePluginUIRoutes(routes, declared)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"routes": routes})
 }
 
 func (d Dependencies) handlePluginResourceGroups(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +56,9 @@ func (d Dependencies) handlePluginUI(w http.ResponseWriter, r *http.Request) {
 	}
 	handler, group, ok := pluginhost.Lookup(routeID)
 	if !ok {
+		if d.serveDeclaredPluginUIAsset(w, r, routeID, suffix) {
+			return
+		}
 		writeJSON(w, http.StatusServiceUnavailable, errorPayload(routeID+" plugin is unavailable"))
 		return
 	}
@@ -56,6 +72,9 @@ func (d Dependencies) handlePluginUI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	forward.Header.Set(nreActorHeader, panelSessionActor)
+	if agentID := strings.TrimSpace(r.URL.Query().Get("agent_id")); agentID != "" {
+		forward.Header.Set("X-NRE-Agent", agentID)
+	}
 	if group.Ref != "" {
 		forward.Header.Set(nreResourceGroupHeader, group.Ref)
 	}
@@ -68,4 +87,31 @@ func isPluginUIPage(path string) bool {
 		return false
 	}
 	return !strings.Contains(suffix, "/api/")
+}
+
+func (d Dependencies) serveDeclaredPluginUIAsset(w http.ResponseWriter, r *http.Request, routeID, suffix string) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	catalog, ok := d.PluginService.(PluginUICatalogAPI)
+	if !ok {
+		return false
+	}
+	name, data, err := catalog.OpenUIAsset(r.Context(), routeID, suffix)
+	if err != nil {
+		if errors.Is(err, service.ErrPluginUIAssetNotFound) || errors.Is(err, service.ErrPluginNotInstalled) {
+			return false
+		}
+		writePluginError(w, err)
+		return true
+	}
+	w.Header().Set("Content-Type", service.PluginUIAssetContentType(name))
+	w.Header().Set("Content-Security-Policy", pluginUIPageCSP)
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
+	return true
 }

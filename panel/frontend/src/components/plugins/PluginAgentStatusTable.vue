@@ -3,12 +3,20 @@ import { safePluginJSON, sanitizePluginText } from '../../api/pluginSecurity'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseListCard from '../base/BaseListCard.vue'
 
-defineProps({
+const props = defineProps({
   statuses: { type: Array, default: () => [] },
+  agents: { type: Array, default: () => [] },
   actionable: { type: Boolean, default: false },
   busyAgent: { type: String, default: '' }
 })
 defineEmits(['retry'])
+
+function agentLabel(agentID) {
+  const id = String(agentID || '').trim()
+  const agent = (props.agents || []).find((item) => String(item?.id || '') === id)
+  const name = String(agent?.name || '').trim()
+  return name || id
+}
 
 function statusTone(status) {
   const value = String(status.runtime_state || status.current_state || '').toLowerCase()
@@ -43,7 +51,7 @@ function statusLabel(status) {
       :clickable="false"
     >
       <template #header-left>
-        <strong class="agent-status-card__name">{{ status.agent_id }}</strong>
+        <strong class="agent-status-card__name">{{ agentLabel(status.agent_id) }}</strong>
         <BaseBadge :tone="statusTone(status)" dot>{{ statusLabel(status) }}</BaseBadge>
       </template>
       <template #header-right>

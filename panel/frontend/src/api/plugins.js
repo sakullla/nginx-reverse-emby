@@ -63,7 +63,7 @@ export async function installPlugin(selection) {
 }
 
 export async function runPluginAction(pluginID, action, payload = {}) {
-  const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall', 'publish'])
+  const allowed = new Set(['enable', 'disable', 'rollback', 'configure', 'upgrade', 'uninstall', 'publish', 'unpublish'])
   if (!allowed.has(action)) throw new Error('plugin action is invalid')
   const { data } = await api.post(pluginPath(pluginID, `/${action}`), payload, longRunningRequest)
   return projectPluginPublishedEntries(redactPluginProjection(data?.result))
@@ -81,6 +81,16 @@ export async function publishPlugin(pluginID, payload) {
   if (targets.length !== 1) throw new Error('exactly one target is required')
   if (!String(request.frontend_url || '').trim()) throw new Error('frontend url is required')
   return runPluginAction(pluginID, 'publish', payload)
+}
+export async function unpublishPlugin(pluginID, payload) {
+  const request = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+  const targets = Array.isArray(request.targets)
+    ? [...new Set(request.targets.map((target) => String(target || '').trim()).filter(Boolean))]
+    : []
+  if (targets.length !== 1) throw new Error('exactly one target is required')
+  const ruleID = Number(request.rule_id)
+  if (!Number.isInteger(ruleID) || ruleID <= 0) throw new Error('rule id is required')
+  return runPluginAction(pluginID, 'unpublish', { targets, rule_id: ruleID })
 }
 export const upgradePlugin = (pluginID, selection) => runPluginAction(pluginID, 'upgrade', selection)
 export const uninstallPlugin = (pluginID) => runPluginAction(pluginID, 'uninstall', { drained: true })

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
 func pluginDeclaration() pluginhost.Declaration {
@@ -145,6 +147,115 @@ func TestPluginUIMountForwardsSingleSegmentStaticAssetPastActionRouter(t *testin
 
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "text/css") {
 		t.Fatalf("static asset status=%d type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+}
+
+type stubPluginUICatalog struct {
+	stubPluginAPI
+	routes []pluginhost.UIRoute
+	assets map[string][]byte
+}
+
+func (stub stubPluginUICatalog) DeclaredUIRoutes(context.Context) ([]pluginhost.UIRoute, error) {
+	return stub.routes, nil
+}
+
+func (stub stubPluginUICatalog) OpenUIAsset(_ context.Context, routeID, suffix string) (string, []byte, error) {
+	name, err := service.PluginUIAssetName(suffix)
+	if err != nil {
+		return "", nil, err
+	}
+	if routeID != "docker-app" {
+		return "", nil, service.ErrPluginNotInstalled
+	}
+	data, ok := stub.assets[name]
+	if !ok {
+		return "", nil, service.ErrPluginUIAssetNotFound
+	}
+	return name, data, nil
+}
+
+type stubPluginAPI struct{}
+
+func (stubPluginAPI) List(context.Context) ([]service.PluginSummary, error) {
+	return nil, nil
+}
+func (stubPluginAPI) Detail(context.Context, string) (service.PluginDetail, error) {
+	return service.PluginDetail{}, nil
+}
+func (stubPluginAPI) PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error) {
+	return service.PluginPackageDetail{}, nil
+}
+func (stubPluginAPI) InstallMutation(context.Context, service.PluginInstallRequest) (service.PluginSummary, error) {
+	return service.PluginSummary{}, nil
+}
+func (stubPluginAPI) EnableMutation(context.Context, string, string) (service.PluginSummary, error) {
+	return service.PluginSummary{}, nil
+}
+func (stubPluginAPI) DisableMutation(context.Context, string, string) (service.PluginSummary, error) {
+	return service.PluginSummary{}, nil
+}
+func (stubPluginAPI) ConfigureMutation(context.Context, service.PluginConfigureRequest) (service.PluginInstanceDetail, error) {
+	return service.PluginInstanceDetail{}, nil
+}
+func (stubPluginAPI) DeleteInstanceMutation(context.Context, service.PluginDeleteInstanceRequest) error {
+	return nil
+}
+func (stubPluginAPI) UpgradeMutation(context.Context, service.PluginUpgradeRequest) (service.PluginSummary, error) {
+	return service.PluginSummary{}, nil
+}
+func (stubPluginAPI) RollbackMutation(context.Context, service.PluginRollbackRequest) (service.PluginSummary, error) {
+	return service.PluginSummary{}, nil
+}
+func (stubPluginAPI) Uninstall(context.Context, service.PluginUninstallRequest) error {
+	return nil
+}
+func (stubPluginAPI) Operations(context.Context, string) ([]service.PluginOperationDetail, error) {
+	return nil, nil
+}
+
+func TestPluginUIRoutesIncludeDeclaredAgentPluginCatalog(t *testing.T) {
+	pluginhost.Unregister("docker-app")
+	cfg := config.Default()
+	cfg.PanelToken = "panel-secret"
+	d := Dependencies{
+		Config: cfg,
+		PluginService: stubPluginUICatalog{
+			routes: []pluginhost.UIRoute{{ID: "docker-app", Label: "Docker 应用", Group: "基础设施", Href: "/panel-api/plugins/docker-app/"}},
+		},
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/panel-api/plugin-ui-routes", d.requirePanelToken(http.HandlerFunc(d.handlePluginUIRoutes)))
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/plugin-ui-routes", nil)
+	req.Header.Set("X-Panel-Token", "panel-secret")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/panel-api/plugins/docker-app/") {
+		t.Fatalf("declared routes = %s", rec.Body.String())
+	}
+}
+
+func TestPluginUIServesDeclaredPackageAssetsWithoutLiveMount(t *testing.T) {
+	pluginhost.Unregister("docker-app")
+	cfg := config.Default()
+	cfg.PanelToken = "panel-secret"
+	d := Dependencies{
+		Config: cfg,
+		PluginService: stubPluginUICatalog{
+			assets: map[string][]byte{"ui/index.html": []byte("<!doctype html><title>Docker 应用</title>")},
+		},
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/panel-api/plugins/", d.requirePanelToken(http.HandlerFunc(d.handlePluginUI)))
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/docker-app/", nil)
+	req.Header.Set("X-Panel-Token", "panel-secret")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Docker 应用") {
+		t.Fatalf("declared asset status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("declared UI asset missing CSP")
 	}
 }
 

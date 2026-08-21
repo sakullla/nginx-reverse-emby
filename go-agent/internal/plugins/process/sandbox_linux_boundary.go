@@ -89,6 +89,15 @@ func linuxChildEnvironmentForIsolation(environment []string, endpointFD, credent
 			if namespaces {
 				result[index] = key + "=unix:/run/nre-plugin/" + filepath.Base(guestEndpoint)
 			}
+		case "NRE_PLUGIN_UI_ENDPOINT":
+			if namespaces {
+				_, address, ok := strings.Cut(entry[len(key)+1:], ":")
+				socket := filepath.Base(address)
+				if !ok || socket == "" || socket == "." || socket == string(filepath.Separator) {
+					break
+				}
+				result[index] = key + "=unix:/run/nre-plugin/" + socket
+			}
 		case "NRE_PLUGIN_COOKIE_FILE":
 			if namespaces {
 				result[index] = key + "=/run/nre-plugin-credentials/cookie"

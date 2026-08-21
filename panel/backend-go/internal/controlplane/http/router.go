@@ -17,6 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	marketplacepkg "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
@@ -167,6 +168,12 @@ type PluginAPI interface {
 
 type PluginPublishAPI interface {
 	PublishMutation(context.Context, service.PluginConfigureRequest, string, int) (service.PluginInstanceDetail, service.HTTPRule, error)
+	UnpublishMutation(context.Context, service.PluginUnpublishRequest) (service.PluginInstanceDetail, service.HTTPRule, error)
+}
+
+type PluginUICatalogAPI interface {
+	DeclaredUIRoutes(context.Context) ([]pluginhost.UIRoute, error)
+	OpenUIAsset(context.Context, string, string) (string, []byte, error)
 }
 
 type AgentPluginArtifactService interface {
@@ -489,6 +496,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 				mux.Handle(prefix+"/plugins/{id}/instances/{instance}/actions/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginDynamicAction)))
 			}
 			mux.Handle(prefix+"/plugins/{id}/publish", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginPublish)))
+			mux.Handle(prefix+"/plugins/{id}/unpublish", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUnpublish)))
 			mux.Handle(prefix+"/plugins/{id}/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginAction)))
 		}
 	}

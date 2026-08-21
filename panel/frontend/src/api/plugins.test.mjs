@@ -159,6 +159,24 @@ describe('plugin publish API', () => {
     expect(post.mock.calls[0][1].frontend_url).toBe('https://alt.example.com')
   })
 
+  it('unpublishes one published entry by original rule id and target', async () => {
+    post.mockResolvedValue({ data: { result: { published_entries: [] } } })
+
+    const result = await plugins.unpublishPlugin('official.waf', { targets: ['edge-a'], rule_id: 7 })
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/plugins/official.waf/unpublish', { targets: ['edge-a'], rule_id: 7 }, longRunningRequest)
+    expect(result.published_entries).toEqual([])
+  })
+
+  it('rejects unpublish without exactly one target or a positive rule id', async () => {
+    await expect(plugins.unpublishPlugin('official.waf', { targets: ['edge-a', 'edge-b'], rule_id: 7 }))
+      .rejects.toThrow('exactly one target is required')
+    await expect(plugins.unpublishPlugin('official.waf', { targets: ['edge-a'], rule_id: 0 }))
+      .rejects.toThrow('rule id is required')
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('rejects multiple targets or a missing domain before any write', async () => {
     await expect(plugins.publishPlugin('official.waf', { ...publishPayload, targets: ['edge-a', 'edge-b'] }))
       .rejects.toThrow('exactly one target is required')

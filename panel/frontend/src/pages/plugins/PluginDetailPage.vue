@@ -10,7 +10,8 @@ import {
   fetchPluginDetail,
   fetchPluginOperations,
   rollbackPlugin,
-  uninstallPlugin
+  uninstallPlugin,
+  unpublishPlugin
 } from '../../api/plugins'
 import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
@@ -107,9 +108,13 @@ const formConfig = computed(() => {
 })
 const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.components?.length))
 
-const confirmDialog = ref({ visible: false, loading: false, action: '' })
+const confirmDialog = ref({ visible: false, loading: false, action: '', entry: null })
 const pluginName = computed(() => detail.value?.package?.manifest?.name || detail.value?.plugin?.plugin_id || '')
-const confirmName = computed(() => confirmDialog.value.action === 'delete-instance' ? selectedInstance.value?.id || '' : pluginName.value)
+const confirmName = computed(() => {
+  if (confirmDialog.value.action === 'delete-instance') return selectedInstance.value?.id || ''
+  if (confirmDialog.value.action === 'delete-entry') return sanitizePluginText(confirmDialog.value.entry?.frontend_url || '')
+  return pluginName.value
+})
 const hasHTTPBackend = computed(() => {
   const pkg = detail.value?.package
   const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
@@ -155,15 +160,15 @@ const pluginPurpose = computed(() => {
   const description = String(detail.value?.package?.manifest?.description || '').trim()
   if (description) return description
   return hasHTTPBackend.value
-    ? '把插件部署到一个节点，再填写一条入口域名即可发布。'
-    : '把插件部署到一个节点后即可在该节点上使用。'
+    ? '把插件部署到所选节点，再填写一条入口域名即可发布。'
+    : '把插件部署到所选节点后即可在这些节点上使用。'
 })
 const taskHint = computed(() => {
   switch (taskState.value) {
     case 'upgrading':
       return '新版本正在应用到节点。完成前请等待，不要重复提交升级。'
     case 'undeployed':
-      return '下一步：选择一个节点开始部署。'
+      return '下一步：选择节点开始部署。'
     case 'unpublished':
       return '还差发布：填写一条入口域名。'
     case 'published-unavailable':
@@ -191,6 +196,8 @@ const confirmCopy = computed(() => {
       return { title: '确认回滚插件', message: '回滚将把插件恢复到上一版本，并可能变更其权限。', confirmText: '确认回滚' }
     case 'delete-instance':
       return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置、插件密钥及其发布的入口规则将一并清理。', confirmText: '确认删除实例' }
+    case 'delete-entry':
+      return { title: '确认删除入口', message: '删除后该域名将不再指向此插件，已发布的访问会立即失效。插件实例仍保留，需要时可以再发布。', confirmText: '确认删除入口' }
     case 'uninstall':
       return {
         title: '确认卸载插件',
@@ -315,6 +322,11 @@ function startEditEntry(entry) {
   void openDeployModal('update', entry)
 }
 
+function startDeleteEntry(entry) {
+  if (!admin.value || !entry) return
+  confirmDialog.value = { visible: true, loading: false, action: 'delete-entry', entry }
+}
+
 function startExtraDomain() {
   if (!admin.value) return
   void openDeployModal('publish')
@@ -323,6 +335,19 @@ function startExtraDomain() {
 function publishedEntryHref(entry) {
   const url = String(entry?.frontend_url || '').trim()
   return /^https?:\/\//i.test(url) ? url : ''
+}
+
+function agentLabel(agentID) {
+  const id = String(agentID || '').trim()
+  const agent = agents.value.find((item) => String(item?.id || '') === id)
+  const name = String(agent?.name || '').trim()
+  return name || id
+}
+
+function instanceTargetLabels(instance) {
+  const ids = Array.isArray(instance?.targets) ? instance.targets : []
+  if (!ids.length) return '—'
+  return ids.map((id) => agentLabel(id)).join('、')
 }
 
 async function lifecycle(action) {
@@ -352,7 +377,7 @@ function handleLifecycleAction(action) {
 }
 
 function cancelConfirm() {
-  confirmDialog.value = { visible: false, loading: false, action: '' }
+  confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
 }
 
 function humanPluginError(cause, fallback) {
@@ -386,18 +411,31 @@ async function confirmAction() {
   try {
     if (action === 'uninstall') {
       await uninstallPluginWithPrep()
-      confirmDialog.value = { visible: false, loading: false, action: '' }
+      confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
       await router.push('/plugins')
     } else if (action === 'delete-instance') {
       await deletePluginInstance(detail.value.plugin.plugin_id, selectedInstance.value.id)
-      confirmDialog.value = { visible: false, loading: false, action: '' }
+      confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
+      await load()
+    } else if (action === 'delete-entry') {
+      const entry = confirmDialog.value.entry
+      const ruleID = Number(entry?.rule_id)
+      const agentID = String(entry?.agent_id || '').trim()
+      if (!Number.isInteger(ruleID) || ruleID <= 0 || !agentID) throw new Error('入口规则无效')
+      await unpublishPlugin(detail.value.plugin.plugin_id, { rule_id: ruleID, targets: [agentID] })
+      confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
+      configModalOpen.value = false
       await load()
     } else {
       await lifecycle(action)
-      confirmDialog.value = { visible: false, loading: false, action: '' }
+      confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
     }
   } catch (cause) {
-    const fallback = action === 'delete-instance' ? '删除插件实例失败' : action === 'uninstall' ? '卸载插件失败' : `插件 ${action} 失败`
+    const fallback = action === 'delete-instance'
+      ? '删除插件实例失败'
+      : action === 'delete-entry'
+        ? '删除入口失败'
+        : action === 'uninstall' ? '卸载插件失败' : `插件 ${action} 失败`
     error.value = humanPluginError(cause, fallback)
     confirmDialog.value = { ...confirmDialog.value, loading: false }
   }
@@ -496,7 +534,7 @@ async function retryAgent(status) {
           <ul class="plugin-http-entries__list">
             <li
               v-for="entry in publishedEntries"
-              :key="entry.rule_id"
+              :key="`${entry.agent_id}:${entry.rule_id}`"
               class="plugin-http-entry"
               data-test="plugin-published-entry"
             >
@@ -516,7 +554,7 @@ async function retryAgent(status) {
                   <BaseBadge :tone="entry.accessible ? 'success' : 'warning'" size="sm" dot>
                     {{ entry.accessible ? '可访问' : '还不能访问' }}
                   </BaseBadge>
-                  <span class="plugin-http-entry__node">节点 {{ entry.agent_id }}</span>
+                  <span class="plugin-http-entry__node">节点 {{ agentLabel(entry.agent_id) }}</span>
                 </div>
               </div>
               <div class="plugin-http-entry__actions">
@@ -528,6 +566,16 @@ async function retryAgent(status) {
                   @click="startEditEntry(entry)"
                 >
                   修改入口
+                </button>
+                <button
+                  v-if="admin"
+                  class="btn btn-danger btn-sm"
+                  type="button"
+                  data-test="plugin-delete-entry"
+                  :disabled="!!busy"
+                  @click="startDeleteEntry(entry)"
+                >
+                  删除入口
                 </button>
               </div>
             </li>
@@ -589,12 +637,12 @@ async function retryAgent(status) {
           @update:model-value="selectedInstanceID = $event"
         />
         <div v-if="selectedInstance" class="instance-facts">
-          <span>目标：{{ selectedInstance.targets.join(', ') || '—' }}</span>
+          <span>目标：{{ instanceTargetLabels(selectedInstance) }}</span>
           <span>版本：{{ selectedInstance.config_version }}</span>
           <span>状态：{{ selectedInstance.current_state }}</span>
           <div v-if="canWrite" class="instance-actions">
             <button v-if="!formEmpty" class="btn btn-secondary btn-sm" type="button" @click="openConfigModal">编辑配置</button>
-            <button class="btn btn-danger btn-sm" type="button" :disabled="!!busy" @click="confirmDialog = { visible: true, loading: false, action: 'delete-instance' }">删除实例</button>
+            <button class="btn btn-danger btn-sm" type="button" :disabled="!!busy" @click="confirmDialog = { visible: true, loading: false, action: 'delete-instance', entry: null }">删除实例</button>
           </div>
         </div>
         <p v-else class="plugin-config-empty">尚未部署。</p>
@@ -650,7 +698,7 @@ async function retryAgent(status) {
                 <p>查看每个节点的 revision 与故障；失败时可重试。</p>
               </div>
             </header>
-            <PluginAgentStatusTable :statuses="detail.agent_statuses" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" />
+            <PluginAgentStatusTable :statuses="detail.agent_statuses" :agents="agents" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" />
           </section>
 
           <section v-if="selectedInstance" class="plugin-ops-panel">
@@ -711,6 +759,7 @@ async function retryAgent(status) {
         :can-publish="admin"
         @saved="handleConfigSaved"
         @refreshed="handleConfigRefreshed"
+        @delete-entry="startDeleteEntry"
       />
 
       <DeleteConfirmDialog

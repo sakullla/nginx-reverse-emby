@@ -3,6 +3,20 @@ import { mount } from '@vue/test-utils'
 import PluginAgentStatusTable from './PluginAgentStatusTable.vue'
 
 describe('PluginAgentStatusTable', () => {
+  it('shows the agent name instead of the raw id when a matching agent is provided', () => {
+    const wrapper = mount(PluginAgentStatusTable, {
+      props: {
+        agents: [{ id: 'a4ae8a0d7d39f1f94d0dd862196784a8', name: 'nosla-hk' }],
+        statuses: [{
+          instance_id: 'waf-a', agent_id: 'a4ae8a0d7d39f1f94d0dd862196784a8', target_scope: 'active', runtime_state: 'active',
+          operation_kind: 'configure', operation_status: 'succeeded'
+        }]
+      }
+    })
+    expect(wrapper.text()).toContain('nosla-hk')
+    expect(wrapper.find('.agent-status-card__name').text()).not.toContain('a4ae8a0d7d39f1f94d0dd862196784a8')
+  })
+
   it('shows per-Agent runtime, budget and crash state without credential material', () => {
     const wrapper = mount(PluginAgentStatusTable, {
       props: {

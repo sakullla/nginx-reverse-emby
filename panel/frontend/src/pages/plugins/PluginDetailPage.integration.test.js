@@ -538,7 +538,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(guide.text()).not.toContain('到 HTTP 规则添加')
     expect(guide.text()).not.toContain('选择插件提供商')
     expect(guide.text()).not.toContain('选择全部')
-    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]')).toHaveLength(0)
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBeGreaterThan(0)
     expect(guide.find('[data-test="plugin-guide-domain"], [data-test="deployment-domain"], [data-test="deployment-frontend-host"]').exists()).toBe(true)
     expect(guide.find('[data-test="plugin-guide-https"], [data-test="deployment-https"]').exists()).toBe(true)
     expect(guideSubmitButton(guide).attributes('disabled')).toBeDefined()
@@ -708,6 +708,33 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(mocks.post.mock.calls[0][1]).not.toHaveProperty('rule_id')
   })
 
+  it('deletes a published entry from the plugin page without a rules-page detour', async () => {
+    mocks.post.mockResolvedValue({ data: { result: { published_entries: [] } } })
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance({
+        bindings: [{ consumer: { kind: 'http_rule', id: '12' }, target_agent_id: 'edge-a' }]
+      })],
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://media.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    }))
+    await buttonByText(wrapper, '删除入口').trigger('click')
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认删除入口')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(writePaths()).toEqual(['/plugins/rpc.plugin/unpublish'])
+    expect(mocks.post.mock.calls[0][1]).toEqual({
+      rule_id: 12,
+      targets: ['edge-a']
+    })
+    expect(writePaths().some((path) => path.includes('/rules'))).toBe(false)
+  })
+
   it('keeps lifecycle, diagnostics, logs, and timeline only inside 更多', async () => {
     const wrapper = await mountDetail(productionDetail({
       plugin: {
@@ -745,7 +772,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(more.text()).toContain('逐 Agent 状态')
     expect(more.text()).toMatch(/运行日志/)
     expect(more.text()).toMatch(/生命周期操作与审计|操作时间线|审计/)
-    expect(more.text()).toContain('edge-a')
+    expect(more.text()).toContain('Edge A')
     expect(more.text()).toContain('ready')
     expect(more.text()).toContain('configure')
     expect(more.find('.plugin-technical').exists()).toBe(true)

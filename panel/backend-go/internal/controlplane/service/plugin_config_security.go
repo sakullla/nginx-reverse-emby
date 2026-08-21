@@ -255,6 +255,10 @@ func pluginApplyMissingHostInjected(schema map[string]any, requested, current an
 			value, ok := pluginResolveHostInjectedValue(key, childPointer, currentObject[key], typed, host)
 			if ok {
 				typed[key] = value
+				continue
+			}
+			if cloned, hasDefault := pluginCloneSchemaDefault(childSchema); hasDefault {
+				typed[key] = cloned
 			}
 		}
 		return typed, nil
@@ -422,6 +426,22 @@ func pluginResolveHostInjectedValue(name, pointer string, current any, parent ma
 		return pluginStableHostItemID(parent), true
 	}
 	return nil, false
+}
+
+func pluginCloneSchemaDefault(schema map[string]any) (any, bool) {
+	raw, ok := schema["default"]
+	if !ok {
+		return nil, false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	var cloned any
+	if err := json.Unmarshal(encoded, &cloned); err != nil {
+		return nil, false
+	}
+	return cloned, true
 }
 
 func pluginHandleID(handles []storage.PluginInstanceSecretHandle, pointer string) string {

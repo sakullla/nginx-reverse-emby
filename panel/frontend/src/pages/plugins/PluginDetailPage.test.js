@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import PluginDetailPage from './PluginDetailPage.vue'
 
 const mocks = vi.hoisted(() => ({
-  fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(), publishPlugin: vi.fn(),
+  fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(), publishPlugin: vi.fn(), unpublishPlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(), deletePluginInstance: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(), fetchHttpRulesPage: vi.fn(),
   fetchAllAgentsRules: vi.fn(), fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
@@ -18,7 +18,7 @@ vi.mock('../../api', () => ({
 vi.mock('../../api/access', () => ({ fetchResourceGroups: mocks.fetchResourceGroups }))
 vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
-  publishPlugin: mocks.publishPlugin,
+  publishPlugin: mocks.publishPlugin, unpublishPlugin: mocks.unpublishPlugin,
   enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin, deletePluginInstance: mocks.deletePluginInstance,
   invokePluginDynamicAction: mocks.invokePluginDynamicAction, fetchPluginLogs: mocks.fetchPluginLogs
 }))
@@ -39,7 +39,7 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
     name: 'DeleteConfirmDialog',
     props: ['show', 'title', 'message', 'name', 'confirmText', 'loading'],
     emits: ['confirm', 'cancel'],
-    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
+    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><div v-if="name" class="delete-dialog-name">{{ name }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
   }
 }))
 vi.mock('../../components/base/BaseModal.vue', () => ({
@@ -267,6 +267,7 @@ beforeEach(() => {
   mocks.fetchPluginOperations.mockReset().mockResolvedValue([{ id: 'op', kind: 'configure', status: 'failed', error: 'token=raw-token', agent_results: {} }])
   mocks.configurePlugin.mockReset().mockResolvedValue({})
   mocks.publishPlugin.mockReset().mockResolvedValue({ instance: { id: 'official.waf-default' }, published_entries: [] })
+  mocks.unpublishPlugin.mockReset().mockResolvedValue({ instance: { id: 'official.waf-default' }, published_entries: [] })
   mocks.enablePlugin.mockReset().mockResolvedValue({})
   mocks.disablePlugin.mockReset().mockResolvedValue({})
   mocks.rollbackPlugin.mockReset().mockResolvedValue({})
@@ -354,7 +355,7 @@ describe('PluginDetailPage', () => {
     expect(wrapper.find('.page-header').exists()).toBe(true)
     expect(wrapper.find('.page-title').text()).toBe('WAF')
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
-    expect(wrapper.get('.plugin-task__purpose').text()).toContain('把插件部署到一个节点后即可在该节点上使用')
+    expect(wrapper.get('.plugin-task__purpose').text()).toContain('把插件部署到所选节点后即可在这些节点上使用')
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
     expect(wrapper.find('[data-test="plugin-task-uninstall"]').exists()).toBe(true)
     expect(firstScreenText(wrapper)).not.toContain('模式')
@@ -422,7 +423,7 @@ describe('PluginDetailPage', () => {
     expect(findControl(guide, ['plugin-guide-domain', 'deployment-frontend-host', 'deployment-domain'])).toBeNull()
     expect(findControl(guide, ['plugin-guide-https', 'deployment-https'])).toBeNull()
     expect(guide.text()).not.toContain('选择全部')
-    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBeGreaterThan(0)
     const groupSelect = findControl(guide, ['plugin-guide-resource-group', 'deployment-resource-group'])
     expect(groupSelect).toBeTruthy()
     expect(groupSelect.element.tagName).toBe('SELECT')
@@ -446,6 +447,20 @@ describe('PluginDetailPage', () => {
     expect(wrapper.text()).not.toContain('还没发布域名')
   })
 
+  it('deploys a non-HTTP plugin to every selected node', async () => {
+    mocks.configurePlugin.mockResolvedValue({ id: 'official.waf-default' })
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    await selectTarget(guide, 'edge-a')
+    await selectTarget(guide, 'edge-b')
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      targets: ['edge-a', 'edge-b']
+    }))
+  })
+
   it('publishes an HTTP-backend plugin with one node, one domain, and HTTPS from the same guide', async () => {
     mocks.publishPlugin.mockResolvedValue({
       instance: { id: 'official.waf-default' },
@@ -454,7 +469,7 @@ describe('PluginDetailPage', () => {
     const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
     const guide = await openGuide(wrapper)
     expect(guide.text()).not.toContain('选择全部')
-    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBeGreaterThan(0)
     expectNoProviderOrRuleDetour(guide)
     await selectTarget(guide, 'edge-a')
     await fillDomain(guide, { host: 'media.example.com', https: true })
@@ -475,6 +490,23 @@ describe('PluginDetailPage', () => {
     expect(mocks.publishPlugin.mock.calls[0][1]).not.toHaveProperty('rule_id')
     expect(mocks.configurePlugin).not.toHaveBeenCalled()
     expect(mocks.enablePlugin).not.toHaveBeenCalled()
+  })
+
+  it('publishes the same HTTP domain onto every selected node', async () => {
+    mocks.publishPlugin.mockResolvedValue({
+      instance: { id: 'official.waf-default' },
+      published_entries: [{ rule_id: 12, agent_id: 'edge-a', frontend_url: 'https://media.example.com', enabled: true, accessible: true }]
+    })
+    const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
+    const guide = await openGuide(wrapper)
+    await selectTarget(guide, 'edge-a')
+    await selectTarget(guide, 'edge-b')
+    await fillDomain(guide, { host: 'media.example.com', https: true })
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(mocks.publishPlugin).toHaveBeenCalledTimes(2)
+    expect(mocks.publishPlugin.mock.calls.map((call) => call[1].targets)).toEqual([['edge-a'], ['edge-b']])
   })
 
   it('keeps the HTTP publish submit disabled until a node and domain are present', async () => {
@@ -546,6 +578,8 @@ describe('PluginDetailPage', () => {
     expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
     expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('已启用')
     expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('可访问')
+    expect(entries.get('[data-test="plugin-published-entry"]').text()).toContain('Edge A')
+    expect(entries.get('[data-test="plugin-published-entry"]').text()).not.toContain('edge-a')
     expect(entries.find('a.plugin-http-entry__url').attributes('href')).toBe('https://media.example.com')
     expectNoProviderOrRuleDetour(wrapper)
 
@@ -578,6 +612,25 @@ describe('PluginDetailPage', () => {
     }))
     expect(mocks.publishPlugin.mock.calls[0][1]).not.toHaveProperty('rule_id')
     expectNoProviderOrRuleDetour(guide)
+  })
+
+  it('confirms deletion of one published HTTP entry without opening the rules page', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail())
+    mocks.fetchPluginDetail.mockResolvedValue(unpublishedHTTPDetail())
+    await buttonByText(wrapper, '删除入口').trigger('click')
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认删除入口')
+    expect(wrapper.find('.delete-dialog-stub').text()).toContain('https://media.example.com')
+    expect(mocks.unpublishPlugin).not.toHaveBeenCalled()
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.unpublishPlugin).toHaveBeenCalledWith('official.waf', {
+      rule_id: 12,
+      targets: ['edge-a']
+    })
+    expect(mocks.publishPlugin).not.toHaveBeenCalled()
+    expect(mocks.deletePluginInstance).not.toHaveBeenCalled()
+    expectNoProviderOrRuleDetour(wrapper)
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toMatch(/还差发布|还没发布域名/)
   })
 
   it('marks a published entry that is not yet reachable instead of calling it available', async () => {
@@ -804,6 +857,7 @@ describe('PluginDetailPage', () => {
     const published = await mountPage(publishedHTTPDetail())
     expect(published.get('[data-test="plugin-published-entry"]').text()).toContain('https://media.example.com')
     expect(buttonByText(published, '修改入口')).toBeUndefined()
+    expect(buttonByText(published, '删除入口')).toBeUndefined()
     expect(buttonByText(published, '再发布一条域名')).toBeUndefined()
     const modal = await openConfigModal(published)
     expect(modal.find('[data-test="plugin-publish-needed"]').exists()).toBe(false)
@@ -813,6 +867,7 @@ describe('PluginDetailPage', () => {
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalled()
     expect(mocks.publishPlugin).not.toHaveBeenCalled()
+    expect(mocks.unpublishPlugin).not.toHaveBeenCalled()
   })
 
   it('lets a resource writer save a schema fallback form without declarative UI', async () => {
@@ -992,7 +1047,7 @@ describe('PluginDetailPage', () => {
     expect(deployModal(wrapper).exists()).toBe(false)
     expect(wrapper.find('[data-test="plugin-task-guide"]').exists()).toBe(false)
     expect(wrapper.find('.declarative-field').exists()).toBe(false)
-    expect(firstScreenText(wrapper)).toContain('把插件部署到一个节点后即可在该节点上使用')
+    expect(firstScreenText(wrapper)).toContain('把插件部署到所选节点后即可在这些节点上使用')
     expect(firstScreenText(wrapper)).toContain('还没部署')
 
     const guide = await openGuide(wrapper)
@@ -1046,7 +1101,7 @@ describe('PluginDetailPage', () => {
     expect(Array.from(groupSelect.element.options).map((option) => option.value)).toEqual(['default', 'team', 'hidden'])
     const targets = guide.findAll('[data-test="plugin-guide-target"], [data-test="deployment-agent"]')
     expect(targets.map((input) => input.element.value).sort()).toEqual(['edge-a', 'edge-b'])
-    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(2)
     expect(guide.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
   })
 
