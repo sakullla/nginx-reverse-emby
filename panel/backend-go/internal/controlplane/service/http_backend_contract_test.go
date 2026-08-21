@@ -181,6 +181,58 @@ func TestPluginPublishWritesSingleEnabledHTTPRuleWithoutLiveCatalog(t *testing.T
 	}
 }
 
+func TestPluginPublishReconcilesSupersededConfigureBeforeNextMutation(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "https://superseded.example.com", 0))
+	if err != nil {
+		t.Fatalf("first PublishMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingOperationID == "" || installed.PendingRevision <= 0 {
+		t.Fatalf("pending installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	fixture.service.store = supersededPluginPublishStore{
+		GormStore: fixture.store,
+		revision: storage.AgentRevisionRow{
+			AgentID: "local", Revision: installed.PendingRevision, State: storage.AgentRevisionStateSuperseded,
+		},
+	}
+	if err := fixture.service.reconcileSupersededConfigure(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcileSupersededConfigure() error = %v", err)
+	}
+	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingOperationID != "" {
+		t.Fatalf("reconciled installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	row := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	if row.PendingOperationID != "" || row.CurrentState != "degraded" {
+		t.Fatalf("reconciled instance = %+v", row)
+	}
+	operations, err := fixture.store.ListPluginOperations(ctx, fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range operations {
+		if operation.ID == installed.LastOperationID && operation.Status == "failed" && operation.ErrorClass == "agent_apply" {
+			return
+		}
+	}
+	t.Fatalf("superseded operation was not failed: %+v", operations)
+}
+
+type supersededPluginPublishStore struct {
+	*storage.GormStore
+	revision storage.AgentRevisionRow
+}
+
+func (s supersededPluginPublishStore) GetCoordinatorRevision(_ context.Context, agentID string, revision int64) (storage.AgentRevisionRow, bool, error) {
+	if s.revision.AgentID == agentID && s.revision.Revision == revision {
+		return s.revision, true, nil
+	}
+	return storage.AgentRevisionRow{}, false, nil
+}
+
 func TestPluginPublishRejectsNonHTTPBackendAndLeavesRulesUnchanged(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginPublishFixture(t, false)

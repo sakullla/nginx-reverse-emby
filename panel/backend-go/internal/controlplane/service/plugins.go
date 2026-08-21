@@ -608,6 +608,9 @@ func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID s
 
 func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
 	if s.mutationExecutor != nil && !s.revisionMutation {
+		if err := s.reconcileSupersededConfigure(ctx, request.PluginID); err != nil {
+			return PluginInstanceDetail{}, err
+		}
 		var prospective PluginInstanceDetail
 		err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.configure", request, &request, func(txService *PluginService, mutationCtx context.Context) error {
 			_, err := txService.configureWithProspectiveDetail(mutationCtx, request, &prospective)
@@ -648,6 +651,9 @@ func (s *PluginService) PublishMutation(ctx context.Context, request PluginConfi
 	request.FrontendURL = frontendURL
 	request.RuleID = ruleID
 	if s.mutationExecutor != nil && !s.revisionMutation {
+		if err := s.reconcileSupersededConfigure(ctx, request.PluginID); err != nil {
+			return PluginInstanceDetail{}, HTTPRule{}, err
+		}
 		var instance PluginInstanceDetail
 		var rule HTTPRule
 		postCommit := make([]func(), 0)
@@ -664,6 +670,70 @@ func (s *PluginService) PublishMutation(ctx context.Context, request PluginConfi
 		return instance, rule, nil
 	}
 	return s.publish(ctx, request, frontendURL, ruleID)
+}
+
+type pluginCoordinatorRevisionStore interface {
+	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
+}
+
+func (s *PluginService) reconcileSupersededConfigure(ctx context.Context, pluginID string) error {
+	if s == nil || s.revisionMutation || strings.TrimSpace(pluginID) == "" {
+		return nil
+	}
+	revisions, ok := s.store.(pluginCoordinatorRevisionStore)
+	if !ok {
+		return nil
+	}
+	installed, found, err := s.store.GetInstalledPlugin(ctx, pluginID)
+	if err != nil || !found || installed.PendingOperationID == "" || installed.PendingKind != "configure" {
+		return err
+	}
+	operations, err := s.store.ListPluginOperations(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	var operation storage.PluginOperationRow
+	for _, candidate := range operations {
+		if candidate.ID == installed.PendingOperationID {
+			operation = candidate
+			break
+		}
+	}
+	if operation.ID == "" || operation.Status != "applying" || operation.TargetRevision <= 0 {
+		return err
+	}
+	instances, err := s.store.ListPluginInstances(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	for _, instance := range instances {
+		if instance.PendingOperationID != operation.ID || instance.PendingVersion == 0 {
+			continue
+		}
+		targets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), strings.TrimSpace(s.cfg.LocalAgentID))
+		if err != nil {
+			return err
+		}
+		for _, agentID := range targets {
+			revisionRow, found, err := revisions.GetCoordinatorRevision(ctx, agentID, operation.TargetRevision)
+			if err != nil {
+				return err
+			}
+			if !found || revisionRow.State != storage.AgentRevisionStateSuperseded {
+				continue
+			}
+			_, err = s.CompleteConfigure(ctx, PluginApplyResult{
+				PluginID: pluginID, InstanceID: instance.ID, OperationID: operation.ID,
+				TargetRevision: operation.TargetRevision, TargetDigest: operation.TargetPackageDigest,
+				ConfigVersion: instance.PendingVersion, ActorID: operation.ActorID, Applied: false,
+				AgentResults: map[string]any{agentID + "/" + instance.ID: map[string]any{
+					"state": "failed", "error_code": "superseded", "details": map[string]any{},
+				}},
+			})
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request PluginDeleteInstanceRequest) error {
