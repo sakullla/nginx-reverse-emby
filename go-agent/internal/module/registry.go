@@ -447,9 +447,10 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 	}
 	providers := newProviderSet()
 	request := ApplyRequest{
-		Previous:  generationContext.Previous(),
-		Next:      generationContext.Snapshot(),
-		Providers: providers,
+		Previous:   generationContext.Previous(),
+		Next:       generationContext.Snapshot(),
+		Providers:  providers,
+		Generation: generationContext,
 	}
 	candidate := &generationCandidate{
 		registry:  r,

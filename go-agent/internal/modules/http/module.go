@@ -156,7 +156,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if err != nil {
 		return nil, err
 	}
-	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
+	generationContext, err := req.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}

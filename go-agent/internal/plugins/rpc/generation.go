@@ -86,7 +86,7 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 	if err := model.ValidatePluginGenerations(request.Next, true); err != nil {
 		return nil, err
 	}
-	generationContext, err := module.NewGenerationContext(request.Previous, request.Next)
+	generationContext, err := request.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}

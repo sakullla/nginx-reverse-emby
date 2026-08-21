@@ -46,6 +46,40 @@ func TestRegistryOrdersModulesByRequiredProviders(t *testing.T) {
 	}
 }
 
+func TestApplyRequestPreservesGenerationIdentityAcrossTrafficRuntimeOverlay(t *testing.T) {
+	previous := model.Snapshot{Revision: 1}
+	next := model.Snapshot{Revision: 2}
+	generationContext, err := module.NewGenerationContext(previous, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	overlaid := generationContext.WithTrafficRuntimeConfig(model.AgentConfig{
+		TrafficStatsEnabled: &enabled,
+		TrafficBlocked:      true,
+		TrafficBlockReason:  "runtime-only",
+	})
+	recomputed, err := module.NewGenerationContext(overlaid.Previous(), overlaid.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recomputed.ID() == overlaid.ID() {
+		t.Fatal("test precondition failed: runtime overlay did not change a recomputed generation identity")
+	}
+
+	resolved, err := (module.ApplyRequest{
+		Previous:   overlaid.Previous(),
+		Next:       overlaid.Snapshot(),
+		Generation: overlaid,
+	}).ResolvedGenerationContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ID() != generationContext.ID() {
+		t.Fatalf("resolved generation ID = %q, want global ID %q", resolved.ID(), generationContext.ID())
+	}
+}
+
 func TestRegistryRollsBackPreparedTransactionsWhenLaterApplyFails(t *testing.T) {
 	registry := module.NewRegistry()
 	events := []string{}

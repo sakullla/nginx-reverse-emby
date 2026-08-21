@@ -237,6 +237,41 @@ func TestRPCGenerationPrepareReadyAtomicPublishAndDestroy(t *testing.T) {
 	}
 }
 
+func TestRPCGenerationPreparePreservesGlobalIdentityAcrossTrafficRuntimeOverlay(t *testing.T) {
+	previous := model.Snapshot{Revision: 7}
+	next := model.Snapshot{Revision: 8}
+	generationContext, err := module.NewGenerationContext(previous, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	generationContext = generationContext.WithTrafficRuntimeConfig(model.AgentConfig{
+		TrafficStatsEnabled: &enabled,
+		TrafficBlocked:      true,
+		TrafficBlockReason:  "runtime-only",
+	})
+	recomputed, err := module.NewGenerationContext(generationContext.Previous(), generationContext.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recomputed.ID() == generationContext.ID() {
+		t.Fatal("test precondition failed: runtime overlay did not change the recomputed generation ID")
+	}
+
+	prepared, err := NewGenerationModule(nil).Prepare(t.Context(), module.ApplyRequest{
+		Previous:   generationContext.Previous(),
+		Next:       generationContext.Snapshot(),
+		Generation: generationContext,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	transaction := prepared.(*generationTransaction)
+	if transaction.generationID != generationContext.ID() {
+		t.Fatalf("RPC generation ID = %q, want global ID %q", transaction.generationID, generationContext.ID())
+	}
+}
+
 func TestRPCGenerationRequiredFailureRetryPreservesSameFenceSequence(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

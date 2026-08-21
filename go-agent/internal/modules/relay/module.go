@@ -122,7 +122,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
 	previousOutboundProxyURL := OutboundProxyURL()
 	nextOutboundProxyURL := strings.TrimSpace(req.Next.AgentConfig.OutboundProxyURL)
-	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
+	generationContext, err := req.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}

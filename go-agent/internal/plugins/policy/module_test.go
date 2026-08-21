@@ -57,6 +57,12 @@ func TestPolicyModulePublishesGenerationOwnedEvaluatorAndClosesWithView(t *testi
 	if err != nil {
 		t.Fatalf("NewGenerationContext() error = %v", err)
 	}
+	enabled := true
+	generationContext = generationContext.WithTrafficRuntimeConfig(model.AgentConfig{
+		TrafficStatsEnabled: &enabled,
+		TrafficBlocked:      true,
+		TrafficBlockReason:  "runtime-only",
+	})
 	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
 	if err != nil {
 		t.Fatalf("PrepareGeneration() error = %v", err)

@@ -84,7 +84,7 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	if m == nil {
 		return nil, errors.New("policy module is nil")
 	}
-	generationContext, err := module.NewGenerationContext(request.Previous, request.Next)
+	generationContext, err := request.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}

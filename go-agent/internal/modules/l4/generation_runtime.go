@@ -69,7 +69,7 @@ func (m *Module) prepareGeneration(
 	if err := validateL4Rules(activeRules, relayListeners, providers.Relay); err != nil {
 		return nil, err
 	}
-	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
+	generationContext, err := req.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}
