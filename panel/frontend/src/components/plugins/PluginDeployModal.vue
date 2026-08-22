@@ -7,6 +7,7 @@ import { pickDefaultResourceGroupID, resourceGroupDisplayName } from '../../cont
 import BaseModal from '../base/BaseModal.vue'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
 import { getAgentStatus, getAgentStatusLabel } from '../../utils/agentHelpers'
+import { messageStore } from '../../stores/messages'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -30,7 +31,6 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'deployed'])
 
 const busy = ref(false)
-const error = ref('')
 const httpRulesLoading = ref(false)
 const loadedHttpRules = ref([])
 const agentQuery = ref('')
@@ -99,17 +99,21 @@ const needsHttpRuleOptions = computed(() => documentNeedsHttpRuleOptions(props.d
 const visibleHttpRuleOptions = computed(() => httpRuleSelectOptions(
   Array.isArray(props.httpRules) ? props.httpRules : loadedHttpRules.value
 ))
-const blocker = computed(() => {
+const persistentBlocker = computed(() => {
   if (!props.resourceGroups.length) return '当前身份没有可见的资源组，无法部署。'
   if (!sortedAgents.value.length) return '当前没有可选择的节点。'
-  if (!selectedTargets.value.length) return '请选择至少一个节点。'
-  if (hasHTTPBackend.value && !normalizeHost(deployment.host)) return '请填写一条入口域名。'
   if (needsHttpRuleOptions.value && !httpRulesLoading.value && !visibleHttpRuleOptions.value.length) {
     return '当前身份没有可见的 HTTP 规则，无法绑定规则。'
   }
   return ''
 })
-const submitDisabled = computed(() => busy.value || httpRulesLoading.value || !!blocker.value || !props.canSubmit)
+const submitBlocker = computed(() => {
+  if (persistentBlocker.value) return persistentBlocker.value
+  if (!selectedTargets.value.length) return '请选择至少一个节点。'
+  if (hasHTTPBackend.value && !normalizeHost(deployment.host)) return '请填写一条入口域名。'
+  return ''
+})
+const submitDisabled = computed(() => busy.value || httpRulesLoading.value || !!submitBlocker.value || !props.canSubmit)
 const submitDocument = computed(() => bindHttpRuleOptions({
   ...(props.document || {}),
   title: props.document?.title || '插件配置',
@@ -270,7 +274,6 @@ function buildFrontendURL(host, https) {
 }
 
 function resetForm() {
-  error.value = ''
   agentQuery.value = ''
   agentStatusFilter.value = ''
   const instance = props.instance
@@ -330,9 +333,8 @@ function toggleVisibleAgents() {
 
 async function deploy(payload) {
   if (busy.value || httpRulesLoading.value || !props.canSubmit) return
-  error.value = ''
-  if (blocker.value) {
-    error.value = blocker.value
+  if (submitBlocker.value) {
+    messageStore.error(submitBlocker.value)
     return
   }
   const instanceID = resolveInstanceID()
@@ -340,19 +342,19 @@ async function deploy(payload) {
   const targets = selectedTargets.value
   const frontendURL = hasHTTPBackend.value ? buildFrontendURL(deployment.host, deployment.https) : ''
   if (mode.value !== 'deploy' && !instanceID) {
-    error.value = '缺少已部署实例，无法发布入口。'
+    messageStore.error('缺少已部署实例，无法发布入口。')
     return
   }
   if (!props.resourceGroups.some((group) => group.id === resourceGroupID)) {
-    error.value = props.resourceGroups.length ? '请选择一个可见的资源组。' : '当前身份没有可见的资源组，无法部署。'
+    messageStore.error(props.resourceGroups.length ? '请选择一个可见的资源组。' : '当前身份没有可见的资源组，无法部署。')
     return
   }
   if (!targets.length) {
-    error.value = '请选择至少一个节点。'
+    messageStore.error('请选择至少一个节点。')
     return
   }
   if (hasHTTPBackend.value && !frontendURL) {
-    error.value = '请填写一条入口域名。'
+    messageStore.error('请填写一条入口域名。')
     return
   }
   const request = {
@@ -374,6 +376,7 @@ async function deploy(payload) {
         if (mode.value === 'update' && publishedRuleID.value) next.rule_id = publishedRuleID.value
         published = await publishPlugin(props.pluginId, next)
       }
+      messageStore.success(mode.value === 'update' ? '入口已更新' : mode.value === 'publish' ? '入口已发布' : '插件已部署并发布')
       emit('deployed', published?.instance?.id || published?.id || instanceID)
       emit('update:modelValue', false)
       return
@@ -381,11 +384,12 @@ async function deploy(payload) {
     const created = await configurePlugin(props.pluginId, { ...request, bindings: [] })
     configured = true
     if (props.desiredLifecycle !== 'enabled' && props.currentLifecycle !== 'active') await enablePlugin(props.pluginId)
+    messageStore.success('插件已部署')
     emit('deployed', created?.id || instanceID)
     emit('update:modelValue', false)
   } catch (cause) {
     const message = sanitizePluginText(cause?.message || (hasHTTPBackend.value ? '发布插件入口失败' : '部署插件实例失败'))
-    error.value = configured ? `配置已提交，但启用失败：${message}` : message
+    messageStore.error(configured ? `配置已提交，但启用失败：${message}` : message)
   } finally {
     busy.value = false
   }
@@ -529,7 +533,7 @@ async function deploy(payload) {
         <p class="plugin-deployment__empty">HTTPS 开启后按该入口申请托管证书。</p>
       </fieldset>
       <p v-if="!canSubmit" class="plugin-deployment__readonly">当前身份只能查看下一步，不能提交。</p>
-      <p v-if="error || blocker" class="plugin-alert" role="alert">{{ error || blocker }}</p>
+      <p v-else-if="persistentBlocker" class="plugin-deployment__empty">{{ persistentBlocker }}</p>
       <div v-if="formEmpty && mode === 'deploy'" class="plugin-deployment__empty-config">
         <p class="plugin-config-empty">此插件没有需要先填写的配置，可直接{{ hasHTTPBackend ? '发布到域名' : '部署' }}。</p>
         <button class="btn btn-primary" type="button" :disabled="submitDisabled" @click="deploy({ config: {}, secret_replacements: {} })">
@@ -634,7 +638,6 @@ async function deploy(payload) {
 .plugin-deployment__https input { accent-color: var(--color-primary); }
 .plugin-deployment__empty-config { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .plugin-deployment__empty-config p { margin: 0; }
-.plugin-alert { margin: 0; color: var(--color-danger); font-size: var(--text-sm); }
 .plugin-config-empty { color: var(--color-text-muted); font-size: var(--text-xs); }
 
 @media (max-width: 640px) {

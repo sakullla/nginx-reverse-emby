@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginDetailPage from './PluginDetailPage.vue'
+import { messageStore } from '../../stores/messages'
 
 const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(), publishPlugin: vi.fn(), unpublishPlugin: vi.fn(),
@@ -261,6 +262,10 @@ function expectOpsOnlyInMore(wrapper, { allowUninstall = false } = {}) {
   expect(more.get('summary').text()).toBe('更多')
   expect(more.element.open).toBeFalsy()
 }
+
+afterEach(() => {
+  messageStore.clearAll()
+})
 
 beforeEach(() => {
   mocks.fetchPluginDetail.mockReset().mockResolvedValue(makeDetail())
@@ -701,9 +706,23 @@ describe('PluginDetailPage', () => {
     await buttonByText(more, '卸载').trigger('click')
     await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.plugin-alert').text()).toContain('未完成的操作')
+    expect(wrapper.find('.plugin-alert').exists()).toBe(false)
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('未完成的操作')
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
     expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('toasts a failed deploy instead of embedding the error in the page', async () => {
+    mocks.configurePlugin.mockRejectedValue(new Error('address already in use'))
+    const wrapper = await mountPage(undeployedDetail())
+    const guide = await openGuide(wrapper)
+    await selectTarget(guide, 'edge-a')
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.plugin-alert').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('address already in use')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('address already in use')
   })
 
   it('confirms deletion of only the selected deployment instance', async () => {

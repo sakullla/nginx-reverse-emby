@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { fetchResources } from '../../api/access'
 import { resourceGroupDisplayName } from '../../context/useAccessControl'
+import { messageStore } from '../../stores/messages'
 
 const RESOURCE_KIND_OPTIONS = [
   { id: '', label: '全部类型' },
@@ -50,7 +51,6 @@ const fetchLoading = ref(false)
 const searched = ref(false)
 const selectedInternal = ref(null)
 const selectedKeys = ref([])
-const actionError = ref('')
 const confirmDialog = ref(null)
 const confirmDialogEl = ref(null)
 
@@ -286,7 +286,6 @@ function toggleResource(item) {
   selectedInternal.value = selectedItems.value.at(-1) || null
   emit('update:modelValue', selectedInternal.value)
   emit('select', selectedInternal.value)
-  actionError.value = ''
 }
 
 function toggleAllResults() {
@@ -302,27 +301,25 @@ function toggleAllResults() {
   selectedInternal.value = searchResults.value.at(-1)
   emit('update:modelValue', selectedInternal.value)
   emit('select', selectedInternal.value)
-  actionError.value = ''
 }
 
 function requestMove() {
   if (!canWrite.value || isBusy.value) return
   const items = selectedItems.value.length ? selectedItems.value : (selected.value ? [selected.value] : [])
   if (!items.length) {
-    actionError.value = '请先选择要移动的资源。'
+    messageStore.error('请先选择要移动的资源。')
     return
   }
   const targetID = String(props.targetGroupId || '').trim()
   if (!targetID) {
-    actionError.value = '请选择目标资源组。'
+    messageStore.error('请选择目标资源组。')
     return
   }
   const movable = items.filter((item) => groupIdOf(item) !== targetID)
   if (!movable.length) {
-    actionError.value = '所选资源已在当前资源组。'
+    messageStore.error('所选资源已在当前资源组。')
     return
   }
-  actionError.value = ''
   const message = movable.length === 1
     ? `将把「${resourceLabel(movable[0])}」从「${groupLabel(groupIdOf(movable[0]))}」移动到「${groupLabel(targetID)}」。只改变所属资源组，不修改资源自身的业务配置。`
     : `将把 ${movable.length} 项资源移动到「${groupLabel(targetID)}」。只改变所属资源组，不修改资源自身的业务配置。`
@@ -342,10 +339,9 @@ function requestUnbind(item) {
   const resource = normalizeResource(item)
   if (!resource) return
   if (groupIdOf(resource) === DEFAULT_GROUP_ID) {
-    actionError.value = '该资源已在默认组，无需解绑。'
+    messageStore.error('该资源已在默认组，无需解绑。')
     return
   }
-  actionError.value = ''
   openConfirm({
     kind: 'unbind',
     title: '确认解绑资源',
@@ -428,8 +424,6 @@ function acceptConfirm() {
         </div>
       </div>
     </form>
-
-    <p v-if="actionError" class="resource-search-select__alert" role="alert">{{ actionError }}</p>
 
     <section v-if="memberItems.length" class="resource-search-select__members" aria-label="当前组成员">
       <ul>

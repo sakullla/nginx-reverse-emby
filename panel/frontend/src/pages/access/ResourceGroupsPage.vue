@@ -25,6 +25,7 @@ import ResourceGroupCard from '../../components/access/ResourceGroupCard.vue'
 import ResourceSearchSelect from '../../components/access/ResourceSearchSelect.vue'
 import SubjectSearchSelect from '../../components/access/SubjectSearchSelect.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
+import { messageStore } from '../../stores/messages'
 import { previewResourceGroups } from './previewDirectory'
 import './accessDirectory.css'
 
@@ -46,9 +47,7 @@ const manageTabs = [
 const { actor, can, refreshActor } = useAccessControl()
 const loading = ref(true)
 const error = ref('')
-const actionError = ref('')
 const actionBusy = ref('')
-const successNotice = ref('')
 const groups = ref([])
 const grants = ref([])
 const users = ref([])
@@ -229,7 +228,7 @@ async function loadSelectedDetail() {
   } catch (cause) {
     if (selectedID.value === id) {
       selectedDetail.value = null
-      if (!previewUnlocked.value) actionError.value = humanAccessError(cause, '读取资源组详情失败')
+      if (!previewUnlocked.value) messageStore.error(humanAccessError(cause, '读取资源组详情失败'))
     }
   }
 }
@@ -266,8 +265,6 @@ function callable(fn) {
 function selectGroup(group, tab = 'profile') {
   if (!group?.id) return
   selectedID.value = group.id
-  actionError.value = ''
-  successNotice.value = ''
   deleteBlockers.value = null
   fieldErrors.value = {}
   manageTab.value = tab
@@ -400,14 +397,15 @@ function setFieldErrors(next) {
 
 function applyActionFailure(cause, fallback) {
   setFieldErrors(cause?.fields)
-  actionError.value = humanAccessError(cause, fallback)
+  let text = humanAccessError(cause, fallback)
   if (cause?.code === 'resource_group_in_use') {
     deleteBlockers.value = cause.details || null
-    if (!actionError.value) actionError.value = '该资源组仍有授权或显式绑定，无法删除。'
+    if (!text) text = '该资源组仍有授权或显式绑定，无法删除。'
   }
-  if (cause?.code === 'resource_group_protected' && !actionError.value) {
-    actionError.value = '内置资源组不能删除或改变系统身份。'
+  if (cause?.code === 'resource_group_protected' && !text) {
+    text = '内置资源组不能删除或改变系统身份。'
   }
+  if (text) messageStore.error(text)
 }
 
 function clearSearch() {
@@ -419,8 +417,6 @@ function focusSearch() {
 }
 
 function openCreate() {
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   modal.value = 'create'
 }
@@ -470,8 +466,6 @@ async function onSelectorMove(payload) {
     : [{ resource_kind: payload.resource_kind, resource_id: payload.resource_id }]
   const targetID = payload.resource_group_id
   actionBusy.value = 'move'
-  actionError.value = ''
-  successNotice.value = ''
   let moved = 0
   try {
     for (const item of items) {
@@ -484,7 +478,7 @@ async function onSelectorMove(payload) {
     }
     selectedResource.value = null
     await load()
-    successNotice.value = moved > 1 ? `已移入 ${moved} 项资源。` : '资源已移动。'
+    messageStore.success(moved > 1 ? `已移入 ${moved} 项资源。` : '资源已移动。')
   } catch (cause) {
     await load()
     applyActionFailure(cause, moved ? `已移入 ${moved} 项，其余失败` : '移动资源失败')
@@ -496,13 +490,11 @@ async function onSelectorMove(payload) {
 async function onSelectorUnbind(payload) {
   if (!canAdmin.value || actionBusy.value || !callable(unbindResource)) return
   actionBusy.value = 'unbind'
-  actionError.value = ''
-  successNotice.value = ''
   try {
     await unbindResource(payload)
     selectedResource.value = null
     await load()
-    successNotice.value = '资源已解绑并回落到默认组。'
+    messageStore.success('资源已解绑并回落到默认组。')
   } catch (cause) {
     applyActionFailure(cause, '解绑资源失败')
   } finally {
@@ -515,12 +507,10 @@ async function submitCreate() {
   const name = createForm.name.trim()
   if (!name) {
     setFieldErrors({ name: '请填写资源组名称。' })
-    actionError.value = '请填写资源组名称。'
+    messageStore.error('请填写资源组名称。')
     return
   }
   actionBusy.value = 'create'
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   try {
     const created = await createResourceGroup({
@@ -532,7 +522,7 @@ async function submitCreate() {
     modal.value = ''
     await load()
     if (created?.id) selectGroup(created, 'grants')
-    successNotice.value = '资源组已创建。'
+    messageStore.success('资源组已创建。')
   } catch (cause) {
     applyActionFailure(cause, '创建资源组失败')
   } finally {
@@ -545,12 +535,10 @@ async function submitEdit() {
   const name = selectedGroup.value.builtin ? selectedGroup.value.name : editForm.name.trim()
   if (!selectedGroup.value.builtin && !name) {
     setFieldErrors({ name: '请填写资源组名称。' })
-    actionError.value = '请先修正表单中的错误。'
+    messageStore.error('请先修正表单中的错误。')
     return
   }
   actionBusy.value = 'edit'
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   try {
     const updated = await updateResourceGroup(selectedGroup.value.id, {
@@ -563,7 +551,7 @@ async function submitEdit() {
       syncEditForm(updated)
       await loadSelectedDetail()
     }
-    successNotice.value = '资源组已保存。'
+    messageStore.success('资源组已保存。')
   } catch (cause) {
     applyActionFailure(cause, '保存资源组失败')
   } finally {
@@ -579,12 +567,10 @@ async function submitGrant() {
       ? [{ subject_kind: grantForm.subjectKind, subject_id: grantForm.subjectID.trim() }]
       : [])
   if (!targets.length) {
-    actionError.value = '请选择要授权的用户或角色。'
+    messageStore.error('请选择要授权的用户或角色。')
     return
   }
   actionBusy.value = 'grant'
-  actionError.value = ''
-  successNotice.value = ''
   let granted = 0
   try {
     for (const target of targets) {
@@ -598,7 +584,7 @@ async function submitGrant() {
     pendingGrants.value = []
     grantForm.subjectID = ''
     await load()
-    successNotice.value = granted > 1 ? `已授权 ${granted} 人。` : '授权已保存。'
+    messageStore.success(granted > 1 ? `已授权 ${granted} 人。` : '授权已保存。')
   } catch (cause) {
     await load()
     applyActionFailure(cause, granted ? `已授权 ${granted} 人，其余失败` : '授权失败')
@@ -636,7 +622,7 @@ function requestMove(item, targetID = moveTargetID.value) {
   const resourceID = resourceIDOf(item)
   const target = visibleGroups.value.find((group) => group.id === targetID)
   if (!resourceID || !target) {
-    actionError.value = '请选择要移动的资源和目标组。'
+    messageStore.error('请选择要移动的资源和目标组。')
     return
   }
   openConfirm({
@@ -678,8 +664,6 @@ async function confirmDanger() {
   if (dialog.kind === 'delete') {
     if (!callable(deleteResourceGroup)) return
     actionBusy.value = 'delete'
-    actionError.value = ''
-    successNotice.value = ''
     deleteBlockers.value = null
     try {
       await deleteResourceGroup(dialog.group.id)
@@ -689,7 +673,7 @@ async function confirmDanger() {
       modal.value = ''
       await load()
       if (!selectedID.value) selectedID.value = pickDefaultResourceGroupID(visibleGroups.value)
-      successNotice.value = '资源组已删除。'
+      messageStore.success('资源组已删除。')
     } catch (cause) {
       applyActionFailure(cause, '删除资源组失败')
     } finally {
@@ -700,8 +684,6 @@ async function confirmDanger() {
   if (dialog.kind === 'revoke') {
     if (!callable(revokeResourceGroupGrant)) return
     actionBusy.value = 'revoke'
-    actionError.value = ''
-    successNotice.value = ''
     try {
       await revokeResourceGroupGrant({
         subject_kind: grantSubjectKind(dialog.grant),
@@ -710,7 +692,7 @@ async function confirmDanger() {
       })
       confirmDialog.value = null
       await load()
-      successNotice.value = '授权已撤销。'
+      messageStore.success('授权已撤销。')
     } catch (cause) {
       applyActionFailure(cause, '撤销授权失败')
     } finally {
@@ -720,8 +702,6 @@ async function confirmDanger() {
   }
   if (dialog.kind === 'move') {
     actionBusy.value = 'move'
-    actionError.value = ''
-    successNotice.value = ''
     try {
       await bindResource({
         resource_kind: resourceKindOf(dialog.item),
@@ -730,7 +710,7 @@ async function confirmDanger() {
       })
       confirmDialog.value = null
       await load()
-      successNotice.value = '资源已移动。'
+      messageStore.success('资源已移动。')
     } catch (cause) {
       applyActionFailure(cause, '移动资源失败')
     } finally {
@@ -741,8 +721,6 @@ async function confirmDanger() {
   if (dialog.kind === 'unbind') {
     if (!callable(unbindResource)) return
     actionBusy.value = 'unbind'
-    actionError.value = ''
-    successNotice.value = ''
     try {
       await unbindResource({
         resource_kind: resourceKindOf(dialog.item),
@@ -750,7 +728,7 @@ async function confirmDanger() {
       })
       confirmDialog.value = null
       await load()
-      successNotice.value = '资源已解绑并回落到默认组。'
+      messageStore.success('资源已解绑并回落到默认组。')
     } catch (cause) {
       applyActionFailure(cause, '解绑资源失败')
     } finally {
@@ -832,8 +810,7 @@ async function confirmDanger() {
     </div>
 
     <template v-else>
-      <p v-if="actionError" class="access-dir__alert" role="alert">{{ actionError }}</p>
-      <p v-if="successNotice" class="access-dir__notice" role="status">{{ successNotice }}</p>
+
 
       <section v-if="deleteBlockers" class="access-dir__blockers" data-test="delete-blockers" role="alert">
         <strong>删除被阻止</strong>

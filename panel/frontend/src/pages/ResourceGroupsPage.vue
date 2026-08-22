@@ -133,7 +133,7 @@
                   </BaseIconButton>
                   <a
                     v-if="manageHref(group)"
-                    class="btn btn-secondary btn-sm"
+                    class="btn btn-ghost btn-sm"
                     :href="manageHref(group)"
                     target="_blank"
                     rel="noopener"

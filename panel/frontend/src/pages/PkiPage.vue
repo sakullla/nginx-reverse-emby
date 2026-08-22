@@ -112,8 +112,6 @@
         :import-passphrase="importPassphrase"
         :import-reason="importReason"
         :has-archive="Boolean(exportArchive)"
-        :message="backupMessage"
-        :message-kind="backupMessageKind"
         :hide-header="true"
         @export="exportBackup"
         @import="importBackup"
@@ -190,7 +188,6 @@
             :placeholder="pendingAction?.confirmText || ''"
           >
         </label>
-        <p v-if="actionError" class="danger-text">{{ actionError }}</p>
         </form>
       <template #footer>
         <button class="btn btn--secondary" type="button" :disabled="actionBusy" @click="closeAction">取消</button>
@@ -236,6 +233,7 @@ import {
 } from '../api/pki'
 import { useAgents } from '../hooks/useAgents'
 import { recordPkiOperation, resetPkiOperationMemory, usePkiOperations } from '../hooks/usePkiOperations'
+import { messageStore } from '../stores/messages'
 
 const loading = ref(false)
 const pageError = ref('')
@@ -1025,7 +1023,6 @@ const pendingAction = ref(null)
 const actionReason = ref('')
 const actionConfirmation = ref('')
 const actionBusy = ref(false)
-const actionError = ref('')
 
 function openIdentityAction(kind, identity) {
   pendingAction.value = kind === 'revoke'
@@ -1077,7 +1074,6 @@ function resetAction() {
   pendingAction.value = null
   actionReason.value = ''
   actionConfirmation.value = ''
-  actionError.value = ''
 }
 
 function closeAction() {
@@ -1096,7 +1092,6 @@ async function submitAction() {
   const confirmationText = actionConfirmation.value
   if (actionBusy.value || !action || confirmationText !== action.confirmText || !reason) return
   actionBusy.value = true
-  actionError.value = ''
   try {
     let confirmationNonce = ''
     if (action.nonceAction) {
@@ -1109,16 +1104,15 @@ async function submitAction() {
     operationPage.value = 1
     resetAction()
     await loadAll()
+    messageStore.success(`${action.label}已提交`)
   } catch (error) {
-    actionError.value = error?.message || '内部 PKI 操作提交失败；请刷新状态后再决定是否重试'
+    messageStore.error(error?.message || '内部 PKI 操作提交失败；请刷新状态后再决定是否重试')
   } finally {
     actionBusy.value = false
   }
 }
 
 const backupBusy = ref(false)
-const backupMessage = ref('')
-const backupMessageKind = ref('success')
 const exportPassphrase = ref('')
 const exportPassphraseConfirm = ref('')
 const exportArchive = ref(null)
@@ -1127,8 +1121,10 @@ const importReason = ref('')
 let importFile = null
 
 function setBackupMessage(message, kind = 'success') {
-  backupMessage.value = message
-  backupMessageKind.value = kind
+  const text = String(message || '').trim()
+  if (!text) return
+  if (kind === 'error') messageStore.error(text)
+  else messageStore.success(text)
 }
 
 async function exportBackup() {

@@ -19,6 +19,7 @@ import ViewToggle from '../../components/common/ViewToggle.vue'
 import RoleSelect from '../../components/access/RoleSelect.vue'
 import UserCard from '../../components/access/UserCard.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
+import { messageStore } from '../../stores/messages'
 import { previewRoles, previewUsers } from './previewDirectory'
 import './accessDirectory.css'
 
@@ -30,9 +31,8 @@ const { actor, can, refreshActor } = useAccessControl()
 
 const loading = ref(true)
 const error = ref('')
-const actionError = ref('')
 const actionBusy = ref('')
-const successNotice = ref('')
+const bootstrapNotice = ref('')
 const users = ref([])
 const roles = ref([])
 const query = ref('')
@@ -186,10 +186,11 @@ function setFieldErrors(next) {
 
 function applyActionFailure(cause, fallback) {
   setFieldErrors(cause?.fields)
-  actionError.value = cause?.message || fallback
-  if (cause?.code === 'last_admin_protected' && !actionError.value) {
-    actionError.value = '不能去掉最后一个可登录的完整管理员。'
+  let text = cause?.message || fallback
+  if (cause?.code === 'last_admin_protected' && !text) {
+    text = '不能去掉最后一个可登录的完整管理员。'
   }
+  if (text) messageStore.error(text)
 }
 
 function clearSecrets(target) {
@@ -228,8 +229,6 @@ function validateOwnPassword() {
 }
 
 function openCreate() {
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   if (isEmptyDirectory.value && !createForm.role_ids.length && hasRole(ADMIN_ROLE)) {
     createForm.role_ids = [ADMIN_ROLE]
@@ -239,8 +238,6 @@ function openCreate() {
 
 function openEdit(user) {
   if (!user?.id) return
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   profileForm.id = user.id
   profileForm.username = user.username || ''
@@ -251,8 +248,6 @@ function openEdit(user) {
 
 function openReset(user) {
   if (!user?.id) return
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   resetForm.id = user.id
   resetForm.label = userLabel(user)
@@ -262,8 +257,6 @@ function openReset(user) {
 }
 
 function openPassword() {
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   clearSecrets(passwordForm)
   modal.value = 'password'
@@ -279,12 +272,10 @@ async function submitCreate() {
   const fields = validateCreate()
   if (Object.keys(fields).length) {
     setFieldErrors(fields)
-    actionError.value = '请先修正表单中的错误。'
+    messageStore.error('请先修正表单中的错误。')
     return
   }
   actionBusy.value = 'create'
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   try {
     await createUser({
@@ -300,9 +291,11 @@ async function submitCreate() {
     createForm.role_ids = []
     modal.value = ''
     await load()
-    successNotice.value = wasEmpty
-      ? '首个管理员已创建。请退出当前令牌身份，再使用账号密码登录。'
-      : '用户已创建。'
+    if (wasEmpty) {
+      bootstrapNotice.value = '首个管理员已创建。请退出当前令牌身份，再使用账号密码登录。'
+    } else {
+      messageStore.success('用户已创建。')
+    }
   } catch (cause) {
     applyActionFailure(cause, '创建用户失败')
   } finally {
@@ -314,12 +307,10 @@ async function submitProfile() {
   if (!canManage.value || !profileForm.id || actionBusy.value) return
   if (!profileForm.role_ids.length) {
     setFieldErrors({ role_ids: '请至少选择一个角色。' })
-    actionError.value = '请先修正表单中的错误。'
+    messageStore.error('请先修正表单中的错误。')
     return
   }
   actionBusy.value = 'profile'
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   try {
     const updated = await updateUser(profileForm.id, {
@@ -328,7 +319,7 @@ async function submitProfile() {
     })
     await load()
     if (updated?.id) openEdit(users.value.find((user) => user.id === updated.id) || updated)
-    successNotice.value = '用户资料已保存。'
+    messageStore.success('用户资料已保存。')
   } catch (cause) {
     applyActionFailure(cause, '保存用户资料失败')
   } finally {
@@ -350,12 +341,10 @@ function requestDisable(user) {
 async function submitEnable(user) {
   if (!canManage.value || !user || actionBusy.value) return
   actionBusy.value = 'enable'
-  actionError.value = ''
-  successNotice.value = ''
   try {
     await updateUser(user.id, { disabled: false })
     await load()
-    successNotice.value = '账号已启用。'
+    messageStore.success('账号已启用。')
   } catch (cause) {
     applyActionFailure(cause, '启用账号失败')
   } finally {
@@ -368,7 +357,7 @@ function requestReset() {
   const fields = validateReset()
   if (Object.keys(fields).length) {
     setFieldErrors(fields)
-    actionError.value = '请先修正表单中的错误。'
+    messageStore.error('请先修正表单中的错误。')
     return
   }
   openConfirm({
@@ -396,12 +385,10 @@ async function submitOwnPassword() {
   const fields = validateOwnPassword()
   if (Object.keys(fields).length) {
     setFieldErrors(fields)
-    actionError.value = '请先修正表单中的错误。'
+    messageStore.error('请先修正表单中的错误。')
     return
   }
   actionBusy.value = 'password'
-  actionError.value = ''
-  successNotice.value = ''
   setFieldErrors({})
   try {
     await changePassword({
@@ -409,7 +396,7 @@ async function submitOwnPassword() {
       new_password: passwordForm.new_password
     })
     clearSecrets(passwordForm)
-    successNotice.value = '密码已更新，请使用新密码重新登录。'
+    messageStore.success('密码已更新，请使用新密码重新登录。')
     await router.replace({ name: 'login' })
   } catch (cause) {
     applyActionFailure(cause, '修改密码失败')
@@ -444,13 +431,11 @@ async function confirmDanger() {
   if (!dialog || actionBusy.value) return
   if (dialog.kind === 'disable') {
     actionBusy.value = 'disable'
-    actionError.value = ''
-    successNotice.value = ''
     try {
       await updateUser(dialog.user.id, { disabled: true })
       confirmDialog.value = null
       await load()
-      successNotice.value = '账号已停用。'
+      messageStore.success('账号已停用。')
     } catch (cause) {
       applyActionFailure(cause, '停用账号失败')
     } finally {
@@ -460,14 +445,12 @@ async function confirmDanger() {
   }
   if (dialog.kind === 'reset') {
     actionBusy.value = 'reset'
-    actionError.value = ''
-    successNotice.value = ''
     try {
       await resetUserPassword(dialog.user.id, { new_password: resetForm.new_password })
       clearSecrets(resetForm)
       confirmDialog.value = null
       modal.value = ''
-      successNotice.value = '密码已重置，目标用户需要使用新密码重新登录。'
+      messageStore.success('密码已重置，目标用户需要使用新密码重新登录。')
     } catch (cause) {
       applyActionFailure(cause, '重置密码失败')
     } finally {
@@ -477,15 +460,13 @@ async function confirmDanger() {
   }
   if (dialog.kind === 'delete') {
     actionBusy.value = 'delete'
-    actionError.value = ''
-    successNotice.value = ''
     try {
       await deleteUser(dialog.user.id)
       confirmDialog.value = null
       if (profileForm.id === dialog.user.id) closeModal()
       const deletedSelf = actor.value?.id === dialog.user.id
       await load()
-      successNotice.value = '用户已删除。'
+      messageStore.success('用户已删除。')
       if (deletedSelf) {
         await logout().catch(() => undefined)
         await router.replace({ name: 'login' })
@@ -591,11 +572,9 @@ function onRowActivate(user) {
     </div>
 
     <template v-else>
-      <p v-if="actionError" class="access-dir__alert" role="alert">{{ actionError }}</p>
-      <div v-if="successNotice" class="access-dir__notice" role="status">
-        <p>{{ successNotice }}</p>
+      <div v-if="bootstrapNotice" class="access-dir__notice" role="status">
+        <p>{{ bootstrapNotice }}</p>
         <button
-          v-if="successNotice.includes('令牌身份')"
           class="btn btn-secondary"
           type="button"
           data-test="logout-to-account"

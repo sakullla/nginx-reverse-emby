@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginMarketplacePage from './PluginMarketplacePage.vue'
+import { messageStore } from '../../stores/messages'
 
 const mocks = vi.hoisted(() => ({
   fetchRepositorySources: vi.fn(), fetchRepositoryContents: vi.fn(), fetchPlugins: vi.fn(),
@@ -62,6 +63,10 @@ function buttonByText(wrapper, text) {
   return wrapper.findAll('button').find((button) => button.text().includes(text))
 }
 
+afterEach(() => {
+  messageStore.clearAll()
+})
+
 beforeEach(() => {
   localStorage.removeItem('view:plugin-marketplace')
   mocks.fetchRepositorySources.mockReset().mockResolvedValue([source])
@@ -92,7 +97,7 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.find('.page-subtitle').text()).toContain('发布')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins')
     expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/repositories')
-    expect(wrapper.find('.page-header__right a').text()).toContain('高级')
+    expect(wrapper.find('.page-header__right a').text()).toBe('高级：仓库源')
   })
 
   it('shows a spinner while loading', () => {
@@ -190,7 +195,8 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('读取插件包超时')
+    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('读取插件包超时')
     expect(buttonByText(wrapper, '重试安装')).toBeTruthy()
     expect(buttonByText(wrapper, '重试安装').attributes('disabled')).toBeUndefined()
   })
@@ -397,7 +403,8 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认安装').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-test="marketplace-action-error"]').text()).toBe('source rejected')
+    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('source rejected')
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
     expect(buttonByText(wrapper, '重试安装')).toBeTruthy()
     expect(mocks.push).not.toHaveBeenCalled()
@@ -414,7 +421,8 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认升级').trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('未完成的操作')
+    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('未完成的操作')
     expect(wrapper.get('[data-test="marketplace-pending-detail"]').attributes('href')).toBe(`/plugins/${encodeURIComponent(entry.id)}`)
     expect(wrapper.find('[data-test="marketplace-confirm-next"]').exists()).toBe(false)
     expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
@@ -474,7 +482,10 @@ describe('PluginMarketplacePage', () => {
     const table = wrapper.get('[data-test="marketplace-table"]')
     expect(table.text()).toContain('WAF')
     expect(table.text()).toContain('安装')
-    await table.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    const action = table.get(`[data-test="marketplace-card-action-${entry.id}"]`)
+    expect(action.classes()).toContain('btn-sm')
+    expect(action.classes()).toContain('btn-primary')
+    await action.trigger('click')
     await flushPromises()
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
   })

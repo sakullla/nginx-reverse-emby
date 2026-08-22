@@ -1322,8 +1322,8 @@ async function handleSubmit() {
     }
 
     emit('success')
-  } catch (err) {
-    errors.value.submit = err?.message || '操作失败'
+  } catch {
+    // API failures are toasted by useRules.
   }
 }
 </script>

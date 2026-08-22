@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import ResourceGroupsPage from './ResourceGroupsPage.vue'
+import { messageStore } from '../../stores/messages'
 import { previewMembers, previewRoles, previewUsers } from './previewDirectory'
 
 const mocks = vi.hoisted(() => ({
@@ -172,6 +173,10 @@ async function selectManageTab(wrapper, label) {
   await tab.trigger('click')
   await flushPromises()
 }
+
+afterEach(() => {
+  messageStore.clearAll()
+})
 
 beforeEach(() => {
   localStorage.removeItem('view:access-resource-groups')
@@ -408,7 +413,7 @@ describe('ResourceGroupsPage', () => {
       subject_id: 'user-bob',
       resource_group_id: 'spare'
     })
-    expect(wrapper.text()).toContain('已授权 2 人')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('已授权 2 人')
   })
 
   it('selects the current filtered user list in one action', async () => {
@@ -506,7 +511,7 @@ describe('ResourceGroupsPage', () => {
     })
     expect(wrapper.get('[data-test="edit-group-name"]').element.value).toBe('核心组')
     expect(wrapper.get('[data-test="edit-group-description"]').element.value).toBe('更新后')
-    expect(wrapper.text()).toContain('资源组已保存')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('资源组已保存')
   })
 
   it('localizes the builtin default group description instead of truncating English', async () => {
@@ -564,7 +569,7 @@ describe('ResourceGroupsPage', () => {
     await wrapper.get('[data-test="confirm-accept"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('resource group still has grants or bindings')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('resource group still has grants or bindings')
     expect(wrapper.text()).toContain('授权')
     expect(wrapper.text()).toContain('Alice')
     expect(wrapper.text()).toContain('资源')

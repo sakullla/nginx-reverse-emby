@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginRepositoriesPage from './PluginRepositoriesPage.vue'
+import { messageStore } from '../../stores/messages'
 
 const {
   fetchRepositorySources,
@@ -110,6 +111,7 @@ beforeEach(() => {
 afterEach(() => {
   wrapper?.unmount()
   wrapper = null
+  messageStore.clearAll()
 })
 
 async function mountPage() {
@@ -191,7 +193,8 @@ describe('PluginRepositoriesPage', () => {
     await buttonByText('立即刷新').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[role="alert"]').text()).toContain('credential rejected')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('credential rejected')
   })
 
   it('keeps the create form visible when saving the first source fails', async () => {
@@ -215,7 +218,8 @@ describe('PluginRepositoriesPage', () => {
     await flushPromises()
 
     expect(wrapper.findComponent({ name: 'RepositorySourceForm' }).exists()).toBe(true)
-    expect(wrapper.text()).toContain('duplicate id')
+    expect(wrapper.text()).not.toContain('duplicate id')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('duplicate id')
     expect(wrapper.text()).not.toContain('读取失败')
     expect(createRepositorySource).toHaveBeenCalled()
   })
@@ -225,7 +229,8 @@ describe('PluginRepositoriesPage', () => {
     await mountPage()
     await openSource('Team Plugins')
 
-    expect(wrapper.text()).toContain('snapshot unavailable')
+    expect(wrapper.text()).not.toContain('snapshot unavailable')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('snapshot unavailable')
     expect(wrapper.text()).toContain('读取包投影失败')
     expect(wrapper.text()).not.toContain('当前快照没有可用包')
   })

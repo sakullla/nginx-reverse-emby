@@ -16,6 +16,7 @@ import {
 import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
 import { filterPluginDetailForActor, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
+import { messageStore } from '../../stores/messages'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseTabs from '../../components/base/BaseTabs.vue'
 import DeleteConfirmDialog from '../../components/DeleteConfirmDialog.vue'
@@ -284,6 +285,7 @@ async function load({ background = false } = {}) {
       : visibleDetail.instances[0]?.id || ''
   } catch (cause) {
     error.value = humanLoadError(cause, '读取插件详情失败')
+    if (detail.value) messageStore.error(error.value)
   } finally {
     refreshInFlight = false
     if (!background) loading.value = false
@@ -350,18 +352,24 @@ function instanceTargetLabels(instance) {
   return ids.map((id) => agentLabel(id)).join('、')
 }
 
+const lifecycleSuccess = {
+  enable: '插件已启用',
+  disable: '插件已停用',
+  rollback: '插件已回滚'
+}
+
 async function lifecycle(action) {
   if (!admin.value || busy.value) return
   busy.value = action
-  error.value = ''
   try {
     const pluginID = detail.value.plugin.plugin_id
     if (action === 'enable') await enablePlugin(pluginID)
     else if (action === 'disable') await disablePlugin(pluginID)
     else if (action === 'rollback') await rollbackPlugin(pluginID, detail.value.package.permissions || [])
     await load()
+    messageStore.success(lifecycleSuccess[action] || '插件操作已完成')
   } catch (cause) {
-    error.value = humanPluginError(cause, `插件 ${action} 失败`)
+    messageStore.error(humanPluginError(cause, `插件 ${action} 失败`))
   } finally {
     busy.value = ''
   }
@@ -407,16 +415,17 @@ async function confirmAction() {
   const action = confirmDialog.value.action
   if (action === 'delete-instance' ? !canWrite.value : !admin.value) return
   confirmDialog.value.loading = true
-  error.value = ''
   try {
     if (action === 'uninstall') {
       await uninstallPluginWithPrep()
       confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
+      messageStore.success('插件已卸载')
       await router.push('/plugins')
     } else if (action === 'delete-instance') {
       await deletePluginInstance(detail.value.plugin.plugin_id, selectedInstance.value.id)
       confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
       await load()
+      messageStore.success('插件实例已删除')
     } else if (action === 'delete-entry') {
       const entry = confirmDialog.value.entry
       const ruleID = Number(entry?.rule_id)
@@ -426,6 +435,7 @@ async function confirmAction() {
       confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
       configModalOpen.value = false
       await load()
+      messageStore.success('入口已删除')
     } else {
       await lifecycle(action)
       confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
@@ -436,7 +446,7 @@ async function confirmAction() {
       : action === 'delete-entry'
         ? '删除入口失败'
         : action === 'uninstall' ? '卸载插件失败' : `插件 ${action} 失败`
-    error.value = humanPluginError(cause, fallback)
+    messageStore.error(humanPluginError(cause, fallback))
     confirmDialog.value = { ...confirmDialog.value, loading: false }
   }
 }
@@ -472,14 +482,14 @@ function humanLoadError(cause, fallback) {
 async function retryAgent(status) {
   if (!admin.value || retryingAgent.value) return
   retryingAgent.value = status.agent_id
-  error.value = ''
   try {
     const revision = Math.max(Number(status.desired_revision) || 0, Number(status.target_revision) || 0)
     if (!revision) throw new Error('Agent revision 无效')
     await retryRevision({ agent_id: status.agent_id, desired_revision: revision, agents: [] }, { agent_id: status.agent_id, desired_revision: revision })
     await load()
+    messageStore.success('已提交重试')
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '重试 Agent revision 失败')
+    messageStore.error(sanitizePluginText(cause?.message || '重试 Agent revision 失败'))
   } finally {
     retryingAgent.value = ''
   }
@@ -512,8 +522,6 @@ async function retryAgent(status) {
           <p class="page-subtitle">{{ sourceLabel }} · {{ lifecycleLabel }} · {{ deploymentStatusLabel }}</p>
         </div>
       </header>
-
-      <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
 
       <section class="plugin-task" data-test="plugin-task-center" aria-label="插件任务">
         <p class="plugin-task__purpose">{{ pluginPurpose }}</p>
@@ -805,7 +813,6 @@ async function retryAgent(status) {
 
 .plugin-detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.plugin-alert { color: var(--color-danger); }
 .plugin-technical { display: grid; gap: var(--space-4); min-width: 0; }
 .plugin-ops {
   border: 1px solid var(--color-border-subtle);

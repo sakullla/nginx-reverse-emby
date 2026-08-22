@@ -13,6 +13,7 @@ import ViewToggle from '../../components/common/ViewToggle.vue'
 import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
 import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
+import { messageStore } from '../../stores/messages'
 
 const router = useRouter()
 const { view } = useViewToggle('plugin-marketplace')
@@ -270,6 +271,7 @@ async function preparePackageDetail(item) {
     detailPrepared.value = false
     if (!String(item?.plugin?.sha256 || '').startsWith('preview-')) {
       actionError.value = humanLoadError(cause, '读取签名包详情失败')
+      messageStore.error(actionError.value)
     }
     return false
   } finally {
@@ -391,6 +393,10 @@ function cardActionLabel(item) {
   return '安装'
 }
 
+function tableActionClass(item) {
+  return cardActionLabel(item) === '打开详情' ? 'btn btn-ghost btn-sm' : 'btn btn-primary btn-sm'
+}
+
 async function startCardAction(item) {
   if (!item?.plugin?.id || actionBusy.value || detailLoading.value) return
   selected.value = item
@@ -458,6 +464,7 @@ async function applyPackage() {
     else await installPlugin(installSelection())
     confirmVisible.value = false
     actionError.value = ''
+    messageStore.success(shouldUpgrade ? '插件已升级' : '插件已安装')
     await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
   } catch (cause) {
     confirmVisible.value = true
@@ -465,6 +472,7 @@ async function applyPackage() {
     await refreshInstalled()
     pendingConflict.value = isPendingConflictMessage(cause?.message)
     actionError.value = humanLoadError(cause, '提交插件包失败')
+    messageStore.error(actionError.value)
   } finally {
     actionBusy.value = false
   }
@@ -508,7 +516,7 @@ async function applyPackage() {
           </button>
         </div>
         <ViewToggle v-if="packages.length" v-model:view="view" />
-        <RouterLink class="btn btn-secondary" to="/plugins/repositories">高级：管理仓库源</RouterLink>
+        <RouterLink class="btn btn-ghost btn-sm" to="/plugins/repositories">高级：仓库源</RouterLink>
       </div>
     </header>
 
@@ -532,8 +540,6 @@ async function applyPackage() {
     </EmptyState>
 
     <template v-else>
-      <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
-
       <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
 
       <section v-else-if="view === 'card'" class="plugin-marketplace-catalog" aria-label="可安装插件">
@@ -623,7 +629,7 @@ async function applyPackage() {
                 <div class="plugin-catalog-table__actions" @click.stop>
                   <button
                     type="button"
-                    class="btn btn-secondary btn-sm"
+                    :class="tableActionClass(item)"
                     :data-test="`marketplace-card-action-${item.plugin.id}`"
                     :disabled="(actionBusy || detailLoading) && isSelected(item)"
                     @click="startCardAction(item)"
@@ -647,7 +653,6 @@ async function applyPackage() {
         @update:model-value="inspectVisible = $event"
       >
         <div v-if="detail" class="plugin-marketplace-detail">
-          <p v-if="actionError" class="plugin-alert" role="alert" data-test="marketplace-action-error">{{ actionError }}</p>
           <section class="marketplace-primary">
             <p class="marketplace-primary__source">{{ sourceKindLabel(source.kind) }}</p>
             <p class="marketplace-primary__purpose">{{ pluginPurpose }}</p>
@@ -695,7 +700,6 @@ async function applyPackage() {
         @update:model-value="onConfirmVisible"
       >
         <div class="confirm-permissions">
-          <p v-if="actionError" class="plugin-alert" role="alert" data-test="marketplace-action-error">{{ actionError }}</p>
           <p v-if="actionError && (hasPendingOperation() || pendingConflict)" class="confirm-pending-next">
             <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
           </p>
@@ -782,10 +786,6 @@ async function applyPackage() {
 
 .back-link:hover {
   color: var(--color-primary);
-}
-
-.plugin-alert {
-  color: var(--color-danger);
 }
 
 .plugin-marketplace-catalog {

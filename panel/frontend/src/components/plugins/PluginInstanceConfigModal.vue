@@ -4,6 +4,7 @@ import { fetchAllAgentsRules, fetchHttpRulesPage } from '../../api'
 import { configurePlugin, invokePluginDynamicAction, publishPlugin } from '../../api/plugins'
 import { resolvePointer } from '../../api/pluginCondition'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
+import { messageStore } from '../../stores/messages'
 import BaseModal from '../base/BaseModal.vue'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
 
@@ -29,7 +30,6 @@ const emit = defineEmits(['update:modelValue', 'saved', 'refreshed', 'delete-ent
 const busy = ref(false)
 const actionBusy = ref(false)
 const publishBusy = ref(false)
-const error = ref('')
 const publishHost = ref('')
 const publishHTTPS = ref(true)
 const publishTarget = ref('')
@@ -298,7 +298,6 @@ async function loadVisibleHttpRules() {
 
 function closeWithoutSaving() {
   if (busy.value || publishBusy.value || actionBusy.value) return
-  error.value = ''
   emit('update:modelValue', false)
 }
 
@@ -324,7 +323,6 @@ function persistableConfigureBindings(instance, pkg, httpBackendHint) {
 }
 
 function resetPublishForm() {
-  error.value = ''
   const preferred = props.intent === 'publish' ? null : instanceEntries.value[0]
   if (preferred) {
     applyEntry(preferred)
@@ -351,11 +349,10 @@ function startNewPublish() {
 async function save(payload) {
   if (!props.canWrite || !props.instance || busy.value) return
   if (httpRuleBlocker.value && hasMissingRequiredHttpRule(props.document?.components, payload?.config)) {
-    error.value = httpRuleBlocker.value
+    messageStore.error(httpRuleBlocker.value)
     return
   }
   busy.value = true
-  error.value = ''
   try {
     const instance = props.instance
     await configurePlugin(props.pluginId, {
@@ -367,10 +364,11 @@ async function save(payload) {
       config: stripReadOnlyConfigValues(props.configSchema, payload.config),
       secret_replacements: payload.secret_replacements || {}
     })
+    messageStore.success('插件配置已保存')
     emit('saved')
     emit('update:modelValue', false)
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '保存插件配置失败')
+    messageStore.error(sanitizePluginText(cause?.message || '保存插件配置失败'))
   } finally {
     busy.value = false
   }
@@ -380,13 +378,12 @@ async function publish() {
   if (!props.canPublish || !props.instance || !httpBackendDeclared.value || publishBusy.value) return
   const blocker = publishBlocked.value
   if (blocker) {
-    error.value = blocker
+    messageStore.error(blocker)
     return
   }
   const target = String(publishTarget.value || '').trim()
   const frontendURL = buildFrontendURL(publishHost.value, publishHTTPS.value)
   publishBusy.value = true
-  error.value = ''
   try {
     const payload = {
       instance_id: props.instance.id,
@@ -399,10 +396,11 @@ async function publish() {
     }
     if (editingRuleID.value > 0) payload.rule_id = editingRuleID.value
     await publishPlugin(props.pluginId, payload)
+    messageStore.success(editingRuleID.value > 0 ? '入口已保存' : '入口已发布')
     emit('saved')
     emit('update:modelValue', false)
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || (editingRuleID.value > 0 ? '保存入口失败' : '发布到域名失败'))
+    messageStore.error(sanitizePluginText(cause?.message || (editingRuleID.value > 0 ? '保存入口失败' : '发布到域名失败')))
   } finally {
     publishBusy.value = false
   }
@@ -411,12 +409,12 @@ async function publish() {
 async function runDynamicAction({ action, target_id, confirmed }) {
   if (!props.canWrite || !props.instance || actionBusy.value) return
   actionBusy.value = true
-  error.value = ''
   try {
     await invokePluginDynamicAction(props.pluginId, props.instance.id, action.id, target_id, confirmed)
+    messageStore.success(`${action.label} 已完成`)
     emit('refreshed')
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || `动态操作 ${action.label} 失败`)
+    messageStore.error(sanitizePluginText(cause?.message || `动态操作 ${action.label} 失败`))
   } finally {
     actionBusy.value = false
   }
@@ -435,8 +433,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <section class="plugin-instance-config" :aria-label="httpBackendDeclared && (intent === 'publish' || needsPublish) ? '发布到域名' : '编辑实例配置'">
-      <p v-if="error" class="plugin-alert" role="alert">{{ error }}</p>
-      <p v-else-if="httpRuleBlocker" class="plugin-alert" role="alert" data-test="plugin-http-rule-empty">{{ httpRuleBlocker }}</p>
+      <p v-if="httpRuleBlocker" class="plugin-next-step" role="status" data-test="plugin-http-rule-empty">{{ httpRuleBlocker }}</p>
 
       <section v-if="httpBackendDeclared" class="plugin-publish" aria-label="入口域名">
         <p v-if="needsPublish" class="plugin-next-step" data-test="plugin-publish-needed">
@@ -554,7 +551,6 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 
 <style scoped>
 .plugin-instance-config { display: grid; gap: var(--space-4); min-width: 0; }
-.plugin-alert { margin: 0; color: var(--color-danger); font-size: var(--text-sm); }
 .plugin-publish { display: grid; gap: var(--space-4); min-width: 0; }
 .plugin-next-step { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .plugin-published-entries { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }

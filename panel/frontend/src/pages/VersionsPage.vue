@@ -267,8 +267,8 @@ async function submitPolicy() {
       await createPolicy.mutateAsync(payload)
     }
     closeForm()
-  } catch (err) {
-    errors.value.submit = err?.message || '保存版本策略失败'
+  } catch {
+    // API failures are toasted by useVersionPolicies.
   }
 }
 

@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import UsersPage from './UsersPage.vue'
+import { messageStore } from '../../stores/messages'
 import { previewUsers } from './previewDirectory'
 
 const mocks = vi.hoisted(() => ({
@@ -91,6 +92,10 @@ async function mountPage() {
 async function openCreate(wrapper) {
   await wrapper.get('[data-test="open-create"]').trigger('click')
 }
+
+afterEach(() => {
+  messageStore.clearAll()
+})
 
 beforeEach(() => {
   localStorage.removeItem('view:access-users')
@@ -217,7 +222,7 @@ describe('UsersPage', () => {
       password: 'correct-horse',
       role_ids: ['operator']
     })
-    expect(wrapper.text()).toContain('用户已创建')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('用户已创建')
     expect(wrapper.get('[data-test="users-grid"]').text()).toContain('Carol')
     expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="profile-form"]').exists()).toBe(false)
@@ -312,7 +317,7 @@ describe('UsersPage', () => {
     await wrapper.get('[data-test="disable-user"]').trigger('click')
     await wrapper.get('[data-test="confirm-accept"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('cannot remove the last sign-in administrator')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('cannot remove the last sign-in administrator')
   })
 
   it('deletes a user after confirmation and protects the last administrator', async () => {
@@ -336,7 +341,7 @@ describe('UsersPage', () => {
     await wrapper.get('[data-test="delete-user"]').trigger('click')
     await wrapper.get('[data-test="confirm-accept"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('cannot disable, delete or demote the last sign-in capable full administrator')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('cannot disable, delete or demote the last sign-in capable full administrator')
   })
 
   it('resets another user password only after confirmation', async () => {

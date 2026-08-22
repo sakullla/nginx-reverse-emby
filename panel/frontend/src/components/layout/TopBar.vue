@@ -141,7 +141,6 @@
           {{ fieldErrors.confirm_password }}
         </p>
       </div>
-      <p v-if="formError" class="account-security__error" role="alert">{{ formError }}</p>
       <div class="account-security__actions">
         <button type="button" class="btn btn--secondary" :disabled="submitting" @click="closeSecurity">取消</button>
         <button type="submit" class="btn btn--primary" :disabled="submitting">
@@ -159,6 +158,7 @@ import { changePassword, logout } from '../../api/access'
 import { useAccessControl } from '../../context/useAccessControl'
 import { useAgent } from '../../context/AgentContext'
 import { useAuthState } from '../../context/useAuthState'
+import { messageStore } from '../../stores/messages'
 import BaseModal from '../base/BaseModal.vue'
 import ThemeSelector from '../base/ThemeSelector.vue'
 
@@ -174,7 +174,6 @@ const accountMenuRef = ref(null)
 const accountMenuOpen = ref(false)
 const securityOpen = ref(false)
 const submitting = ref(false)
-const formError = ref('')
 const fieldErrors = ref({})
 const passwordForm = reactive({
   current_password: '',
@@ -232,7 +231,6 @@ function resetPasswordForm() {
   passwordForm.new_password = ''
   passwordForm.confirm_password = ''
   fieldErrors.value = {}
-  formError.value = ''
 }
 
 function openSecurity() {
@@ -271,7 +269,6 @@ async function submitPasswordChange() {
   if (submitting.value) return
   const next = validatePasswordForm()
   fieldErrors.value = next
-  formError.value = ''
   if (Object.keys(next).length) return
 
   submitting.value = true
@@ -282,10 +279,11 @@ async function submitPasswordChange() {
     })
     resetPasswordForm()
     securityOpen.value = false
+    messageStore.success('密码已更新，请使用新密码重新登录。')
     await router.replace({ name: 'login' })
   } catch (error) {
     fieldErrors.value = error?.fields && typeof error.fields === 'object' ? { ...error.fields } : {}
-    formError.value = error?.response?.data?.message || error?.message || '修改密码失败'
+    messageStore.error(error?.response?.data?.message || error?.message || '修改密码失败')
   } finally {
     submitting.value = false
   }

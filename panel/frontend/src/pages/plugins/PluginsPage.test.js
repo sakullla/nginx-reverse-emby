@@ -348,6 +348,7 @@ describe('PluginsPage', () => {
     expect(wrapper.find('[data-test="installed-plugins-table"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('ready')
     expect(wrapper.find('[data-test="installed-plugins-table"]').text()).toContain('ready.example.com')
+    expect(wrapper.get('[data-test="installed-plugins-table"] .plugin-catalog-table__name strong').text()).toBe('ready')
     expect(wrapper.find('[data-test="installed-plugins-table"]').text()).not.toContain('打开管理页')
     const entry = wrapper.get('[data-test="installed-plugins-table"] [data-test="plugin-open-entry"]')
     expect(entry.attributes('href')).toBe('https://ready.example.com')

@@ -343,8 +343,8 @@ async function handleSubmit() {
       await createCertificate.mutateAsync(payload)
     }
     emit('success')
-  } catch (err) {
-    errors.submit = err?.message || '操作失败'
+  } catch {
+    // API failures are toasted by useCertificates.
   }
 }
 </script>

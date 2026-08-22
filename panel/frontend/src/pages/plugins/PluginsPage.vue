@@ -334,7 +334,7 @@ function openDetail(detail) {
             <button
               v-else-if="manageHref(detail)"
               type="button"
-              class="btn btn-secondary btn-sm plugin-card__manage"
+              class="btn btn-ghost btn-sm plugin-card__manage"
               data-test="plugin-open-manage"
               @click.stop.prevent="openManage(detail, $event)"
             >打开管理页</button>
@@ -404,7 +404,7 @@ function openDetail(detail) {
                 <button
                   v-else-if="manageHref(detail)"
                   type="button"
-                  class="btn btn-secondary btn-sm"
+                  class="btn btn-ghost btn-sm"
                   data-test="plugin-open-manage"
                   @click="openManage(detail, $event)"
                 >打开管理页</button>

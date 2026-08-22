@@ -30,9 +30,6 @@
     </div>
 
     <template v-else>
-      <p v-if="loadError" class="repository-alert repository-alert--error" role="alert">{{ loadError }}</p>
-      <p v-if="error" class="repository-alert repository-alert--error" role="alert">{{ error }}</p>
-
       <EmptyState
         v-if="!sources.length"
         title="还没有仓库源"
@@ -187,7 +184,6 @@
       v-if="showForm"
       :source="editingSource"
       :saving="saving"
-      :submit-error="error"
       @save="saveSource"
       @cancel="closeForm"
     />
@@ -222,6 +218,7 @@ import EmptyState from '../../components/base/EmptyState.vue'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
+import { messageStore } from '../../stores/messages'
 
 const sources = ref([])
 const previewMode = ref(false)
@@ -230,7 +227,6 @@ const loading = ref(false)
 const saving = ref(false)
 const refreshingId = ref('')
 const loadError = ref('')
-const error = ref('')
 const showForm = ref(false)
 const editingSource = ref(null)
 const confirmingDelete = ref(false)
@@ -302,7 +298,6 @@ async function loadContents(id) {
   repositoryContents.value = { entries: [], directPlugin: null }
   contentsFailed.value = false
   if (!id) return
-  error.value = ''
   contentsLoading.value = true
   try {
     const contents = await fetchRepositoryContents(id)
@@ -317,8 +312,8 @@ async function loadContents(id) {
           directPlugin: null
         }
       } else {
-        error.value = sanitizePluginText(cause?.message || '读取仓库包投影失败')
         contentsFailed.value = true
+        messageStore.error(sanitizePluginText(cause?.message || '读取仓库包投影失败'))
       }
     }
   } finally {
@@ -337,14 +332,12 @@ function closeInspect() {
 }
 
 function openCreate() {
-  error.value = ''
   editingSource.value = null
   showForm.value = true
 }
 
 function openEdit() {
   if (!selectedSource.value || isOfficial(selectedSource.value)) return
-  error.value = ''
   editingSource.value = selectedSource.value
   showForm.value = true
 }
@@ -352,20 +345,20 @@ function openEdit() {
 function closeForm() {
   showForm.value = false
   editingSource.value = null
-  error.value = ''
 }
 
 async function saveSource(payload) {
   saving.value = true
-  error.value = ''
   try {
-    const source = editingSource.value
+    const updating = Boolean(editingSource.value)
+    const source = updating
       ? await updateRepositorySource(editingSource.value.id, { ...payload, config_revision: editingSource.value.config_revision })
       : await createRepositorySource(payload)
     closeForm()
     await loadSources(source.id)
+    messageStore.success(updating ? '仓库源已更新' : '仓库源已创建')
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '保存仓库源失败')
+    messageStore.error(sanitizePluginText(cause?.message || '保存仓库源失败'))
   } finally {
     saving.value = false
   }
@@ -375,13 +368,13 @@ async function refreshSelected() {
   if (!selectedSource.value) return
   const id = selectedSource.value.id
   refreshingId.value = id
-  error.value = ''
   try {
     await refreshRepositorySource(id)
     await loadSources(id)
     await loadContents(id)
+    messageStore.success('仓库源已刷新')
   } catch (cause) {
-    error.value = sanitizePluginText(cause?.message || '刷新仓库源失败')
+    messageStore.error(sanitizePluginText(cause?.message || '刷新仓库源失败'))
   } finally {
     refreshingId.value = ''
   }
@@ -391,26 +384,18 @@ async function removeSelected() {
   if (!selectedSource.value || isOfficial(selectedSource.value)) return
   const id = selectedSource.value.id
   saving.value = true
-  error.value = ''
   try {
     await deleteRepositorySource(id)
     confirmingDelete.value = false
     selectedId.value = ''
     await loadSources()
+    messageStore.success('仓库源已删除')
   } catch (cause) {
     confirmingDelete.value = false
-    error.value = sanitizePluginText(cause?.message || '删除仓库源失败')
+    messageStore.error(sanitizePluginText(cause?.message || '删除仓库源失败'))
   } finally {
     saving.value = false
   }
-}
-
-function humanLoadError(cause, fallback) {
-  const raw = sanitizePluginText(cause?.message || fallback)
-  if (/status code 5\d\d|network error|failed to fetch/i.test(raw)) {
-    return '暂时连不上服务，请稍后重试。'
-  }
-  return raw
 }
 
 function isOfficial(source) {
