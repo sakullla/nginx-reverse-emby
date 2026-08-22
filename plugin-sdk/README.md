@@ -100,9 +100,10 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 }
 ```
 
-The plugin implements `RPCLifecycle` (`Handshake`, `Prepare`, `Activate`, and
-`Stop`) using `go/rpcplugin.Lifecycle` for serialized generation ownership and
-revocable handles. Plugin UI handlers use `SetPluginUIResponseHeaders`,
+The plugin embeds `go/rpcplugin.Adapter` for `RPCLifecycle` and uses
+`GenerationSlot[T]` when one prepared service becomes the active
+generation-owned service. Both build on `Lifecycle` for serialized generation
+ownership and revocable handles. Plugin UI handlers use `SetPluginUIResponseHeaders`,
 `ServePluginUIAsset`, `PluginUIActor`, and `WritePluginUIJSON`. Plugins must not
 read private endpoint variables, load the cookie file, register gRPC
 descriptors, or manually mirror `RequiredFeatures`.
