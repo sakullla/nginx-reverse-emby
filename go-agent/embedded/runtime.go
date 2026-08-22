@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
 
 type Snapshot = model.Snapshot
@@ -260,6 +262,21 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	applyCtx := context.WithValue(ctx, approvedRevisionContextKey{}, sanitizeSnapshot(snapshot))
 	applyCtx = agentcore.WithRevisionDrainTimeout(applyCtx, drainTimeout)
 	return r.app.SyncNow(applyCtx)
+}
+
+func (r *Runtime) Call(ctx context.Context, pluginID, name string, payload json.RawMessage) (json.RawMessage, error) {
+	if r == nil || r.app == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	hostOwner, ok := r.app.(interface{ PluginRPCHost() *pluginrpc.Host })
+	if !ok {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	host := hostOwner.PluginRPCHost()
+	if host == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	return host.Call(ctx, pluginID, name, payload)
 }
 
 func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req DiagnosticRequest) (map[string]any, error) {

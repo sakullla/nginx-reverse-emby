@@ -150,7 +150,7 @@ func NewClient(conn grpc.ClientConnInterface, cookie string, deadline time.Durat
 	if deadline <= 0 {
 		deadline = 5 * time.Second
 	}
-	names := []string{"HandshakeRequest", "HandshakeResponse", "LifecycleRequest", "LifecycleResponse", "ActionRequest", "ActionPlanResponse", "ActionQueryRequest", "ActionResponse"}
+	names := []string{"HandshakeRequest", "HandshakeResponse", "LifecycleRequest", "LifecycleResponse", "ActionRequest", "ActionPlanResponse", "ActionQueryRequest", "ActionResponse", "PluginCallRequest", "PluginCallResponse"}
 	messages := make(map[string]protoreflect.MessageDescriptor, len(names))
 	for _, name := range names {
 		descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.rpc.v1." + name))

@@ -124,6 +124,8 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"ActionPending", []fieldExpectation{}},
 		{"ActionMissing", []fieldExpectation{}},
 		{"ActionQueryRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"operation_id", 2, protoreflect.StringKind, false, ""}}},
+		{"PluginCallRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"name", 2, protoreflect.StringKind, false, ""}, {"payload", 3, protoreflect.BytesKind, false, ""}}},
+		{"PluginCallResponse", []fieldExpectation{{"payload", 1, protoreflect.BytesKind, false, ""}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
@@ -135,6 +137,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"), 2, nil)
 	assertExclusiveResult(t, file.Messages().ByName("ActionResponse"), 4, map[protoreflect.Name]struct{}{"operation_id": {}})
 	assertExclusiveResult(t, file.Messages().ByName("ResourceResult"), 2, map[protoreflect.Name]struct{}{"request_id": {}})
+	assertExclusiveResult(t, file.Messages().ByName("PluginCallResponse"), 2, nil)
 	services := file.Services()
 	if services.Len() != 1 || services.Get(0).Name() != "PluginRuntime" {
 		t.Fatalf("RPC services changed: %v", services.Len())
@@ -148,6 +151,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"InvokeAction", "nre.plugin.rpc.v1.ActionRequest", "nre.plugin.rpc.v1.ActionResponse"},
 		{"QueryAction", "nre.plugin.rpc.v1.ActionQueryRequest", "nre.plugin.rpc.v1.ActionResponse"},
 		{"Stop", "nre.plugin.rpc.v1.LifecycleRequest", "nre.plugin.rpc.v1.LifecycleResponse"},
+		{"Call", "nre.plugin.rpc.v1.PluginCallRequest", "nre.plugin.rpc.v1.PluginCallResponse"},
 	}
 	if methods.Len() != len(wantMethods) {
 		t.Fatalf("RPC method count = %d", methods.Len())

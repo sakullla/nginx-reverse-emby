@@ -103,6 +103,59 @@ func TestPluginHostSecretRevealPreservesMaterialUntilResponseEncoding(t *testing
 	}
 }
 
+func TestPluginHostRuntimeServicesUnboundUntilSetters(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	manager := &PluginCapabilityManager{store: store}
+	tasksBound, rulesBound := manager.HostRuntimeServicesBound()
+	if tasksBound || rulesBound {
+		t.Fatal("production composition left TaskService/RuleService bound before setters")
+	}
+	lookup := func(context.Context, string, string) (pluginCallTarget, error) {
+		return pluginCallTarget{InstanceID: "exec-1", Generation: "generation-1", PluginID: "example.plugin"}, nil
+	}
+	manager.setPluginCallLookup(lookup)
+	callPayload, err := json.Marshal(pluginsdk.PluginCallRequest{AgentID: "edge-a", Name: "engine.report", Payload: json.RawMessage(`{"probe":true}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPluginCallFailClosed(t, manager.DispatchPluginHostResource(t.Context(), pluginCallCandidate(), pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimePluginCall,
+		Payload:   callPayload,
+	}), pluginsdk.ErrorUnavailable)
+
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionHTTPRule}
+	rulePayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionCreate, AgentID: "edge-a", Domain: "app.example.com", Port: 8096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-unbound",
+		Payload:     rulePayload,
+	})
+	if denied.Error == nil || denied.Error.Code != pluginsdk.ErrorUnavailable {
+		t.Fatalf("unbound http.rule error = %v", denied.Error)
+	}
+
+	tasks := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = tasks.Close() })
+	if err := tasks.RegisterSession(TaskSessionRegistration{AgentID: "edge-a", Session: &pluginCallEchoSession{svc: tasks, agentID: "edge-a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager.SetTaskService(tasks)
+	manager.SetRuleService(rules)
+	tasksBound, rulesBound = manager.HostRuntimeServicesBound()
+	if !tasksBound || !rulesBound {
+		t.Fatal("setters left TaskService/RuleService unbound")
+	}
+}
+
 func TestPluginHostPluginCallReturnsExecutionPayloadAsIs(t *testing.T) {
 	t.Parallel()
 	tasks := NewTaskService(TaskServiceConfig{})

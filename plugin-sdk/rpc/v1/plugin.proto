@@ -32,6 +32,9 @@ service PluginRuntime {
   // without re-entering the action.
   rpc QueryAction(ActionQueryRequest) returns (ActionResponse);
   rpc Stop(LifecycleRequest) returns (LifecycleResponse);
+  // Call delivers an opaque plugin.call envelope to this execution instance.
+  // Hosts MUST forward name and payload without interpreting them.
+  rpc Call(PluginCallRequest) returns (PluginCallResponse);
 }
 
 message HandshakeRequest {
@@ -132,6 +135,19 @@ message ActionMissing {}
 message ActionQueryRequest {
   string generation = 1;
   string operation_id = 2;
+}
+
+message PluginCallRequest {
+  string generation = 1;
+  string name = 2;
+  bytes payload = 3;
+}
+
+message PluginCallResponse {
+  oneof result {
+    bytes payload = 1;
+    RuntimeError error = 2;
+  }
 }
 
 message RuntimeError {

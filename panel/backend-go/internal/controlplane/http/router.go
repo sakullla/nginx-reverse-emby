@@ -732,6 +732,12 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			return Dependencies{}, fmt.Errorf("initialize plugin capability manager: %w", managerErr)
 		}
 		d.PluginCapabilityService = manager
+		if tasks, ok := d.TaskService.(*service.TaskService); ok {
+			manager.SetTaskService(tasks)
+		}
+		if d.RuleService != nil {
+			manager.SetRuleService(d.RuleService)
+		}
 		manager.SetTrafficSummaryProvider(d.TrafficService)
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 		d.PluginRuntimeHost.SetHostResourceDispatcher(manager)

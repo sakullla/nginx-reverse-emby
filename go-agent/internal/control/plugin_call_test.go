@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -54,6 +55,19 @@ func TestHandlePluginCallTaskReturnsExecutionPayloadAsIs(t *testing.T) {
 	}
 	if !strings.Contains(string(caller.payload), `"probe":true`) {
 		t.Fatalf("forwarded payload = %s", caller.payload)
+	}
+}
+
+func TestTaskClientPluginCallerUnboundUntilSet(t *testing.T) {
+	t.Parallel()
+	client := NewTaskClient(TaskClientConfig{MasterURL: "http://127.0.0.1", HTTPClient: http.DefaultClient})
+	if client.PluginCaller() != nil {
+		t.Fatal("production TaskClient must not invent a PluginCaller")
+	}
+	caller := &recordingPluginCaller{response: json.RawMessage(`{"ready":true}`)}
+	client.SetPluginCaller(caller)
+	if client.PluginCaller() != caller {
+		t.Fatal("SetPluginCaller left PluginCaller unbound")
 	}
 }
 

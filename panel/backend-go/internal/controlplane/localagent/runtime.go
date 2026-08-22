@@ -220,6 +220,19 @@ func (r *Runtime) StateSink() *StateSink {
 	return r.sink
 }
 
+func (r *Runtime) Call(ctx context.Context, pluginID, name string, payload json.RawMessage) (json.RawMessage, error) {
+	if r == nil || r.runtime == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	caller, ok := r.runtime.(interface {
+		Call(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	})
+	if !ok {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	return caller.Call(ctx, pluginID, name, payload)
+}
+
 func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
 	if r == nil || r.runtime == nil {
 		return nil, errors.New("embedded runtime is not initialized")

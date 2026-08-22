@@ -30,7 +30,7 @@ func TestServeRPCPluginRejectsMissingTransportBeforeListening(t *testing.T) {
 
 func TestRPCPluginServiceDeclaresCanonicalLifecycleMethods(t *testing.T) {
 	description := rpcLifecycleServiceDesc("cookie", rpcLifecycleFixture{})
-	want := []string{"Handshake", "Prepare", "Activate", "Stop"}
+	want := []string{"Handshake", "Prepare", "Activate", "Stop", "Call"}
 	if description.ServiceName != rpcServiceName || len(description.Methods) != len(want) {
 		t.Fatalf("service = %#v", description)
 	}

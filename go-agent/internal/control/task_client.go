@@ -77,6 +77,20 @@ func NewTaskClient(cfg TaskClientConfig) *TaskClient {
 	return &TaskClient{cfg: cfg, transport: transport}
 }
 
+func (c *TaskClient) SetPluginCaller(caller PluginCaller) {
+	if c == nil {
+		return
+	}
+	c.cfg.PluginCaller = caller
+}
+
+func (c *TaskClient) PluginCaller() PluginCaller {
+	if c == nil {
+		return nil
+	}
+	return c.cfg.PluginCaller
+}
+
 func (c *TaskClient) Run(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {

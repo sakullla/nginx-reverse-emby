@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/types/known/wrapperspb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // PluginCallClient is the equivalent RPC used to deliver an opaque plugin.call
@@ -88,22 +86,40 @@ func (c *Client) Call(ctx context.Context, generation, name string, payload json
 	if len(payload) > pluginsdk.PluginHostPayloadMaxBytes || (len(payload) > 0 && !json.Valid(payload)) {
 		return nil, errors.New("plugin call payload is invalid or exceeds the canonical bound")
 	}
-	envelope, err := json.Marshal(struct {
-		Generation string          `json:"generation"`
-		Name       string          `json:"name"`
-		Payload    json.RawMessage `json:"payload,omitempty"`
-	}{Generation: generation, Name: name, Payload: payload})
-	if err != nil {
+	request := dynamicpb.NewMessage(c.messages["PluginCallRequest"])
+	setString(request, "generation", generation)
+	setString(request, "name", name)
+	if len(payload) > 0 {
+		setBytes(request, "payload", payload)
+	}
+	response := dynamicpb.NewMessage(c.messages["PluginCallResponse"])
+	if err := c.invoke(ctx, "Call", request, response); err != nil {
 		return nil, err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, c.deadline)
-	defer cancel()
-	callCtx = metadata.AppendToOutgoingContext(callCtx, CookieMetadataKey, c.cookie)
-	out := &wrapperspb.BytesValue{}
-	if err := c.conn.Invoke(callCtx, "/"+rpcServiceName+"/Call", wrapperspb.Bytes(envelope), out); err != nil {
-		return nil, fmt.Errorf("RPC plugin call: %w", err)
+	return decodePluginCallResponse(response)
+}
+
+func decodePluginCallResponse(message *dynamicpb.Message) (json.RawMessage, error) {
+	payloadField := message.Descriptor().Fields().ByName("payload")
+	errorField := message.Descriptor().Fields().ByName("error")
+	hasPayload, hasError := message.Has(payloadField), message.Has(errorField)
+	if hasPayload == hasError {
+		return nil, errors.New("plugin call response must contain exactly one result")
 	}
-	result := append([]byte(nil), out.GetValue()...)
+	if hasError {
+		failure := message.Get(errorField).Message()
+		code := pluginsdk.ErrorCode(failure.Get(failure.Descriptor().Fields().ByName("code")).Enum())
+		err := &pluginsdk.RuntimeError{
+			Code:      code,
+			Message:   failure.Get(failure.Descriptor().Fields().ByName("message")).String(),
+			Retryable: failure.Get(failure.Descriptor().Fields().ByName("retryable")).Bool(),
+		}
+		if err.Validate() != nil {
+			return nil, errors.New("plugin call response error is invalid")
+		}
+		return nil, err
+	}
+	result := append([]byte(nil), message.Get(payloadField).Bytes()...)
 	if len(result) > pluginsdk.PluginHostPayloadMaxBytes || (len(result) > 0 && !json.Valid(result)) {
 		return nil, errors.New("plugin call response is invalid or exceeds the canonical bound")
 	}

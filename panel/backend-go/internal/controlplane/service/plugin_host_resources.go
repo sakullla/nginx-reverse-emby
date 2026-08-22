@@ -525,18 +525,26 @@ func pluginHostState(manager *PluginCapabilityManager) *pluginHostRuntimeState {
 	return actual.(*pluginHostRuntimeState)
 }
 
-func (manager *PluginCapabilityManager) SetTaskService(tasks *TaskService) {
+func (manager *PluginCapabilityManager) SetTaskService(tasks pluginHostTaskDispatcher) {
 	state := pluginHostState(manager)
 	state.mu.Lock()
 	state.tasks = tasks
 	state.mu.Unlock()
 }
 
-func (manager *PluginCapabilityManager) SetRuleService(rules *ruleService) {
+func (manager *PluginCapabilityManager) SetRuleService(rules pluginHostHTTPRuleService) {
 	state := pluginHostState(manager)
 	state.mu.Lock()
 	state.rules = rules
 	state.mu.Unlock()
+}
+
+func (manager *PluginCapabilityManager) HostRuntimeServicesBound() (tasksBound, rulesBound bool) {
+	if manager == nil {
+		return false, false
+	}
+	state := pluginHostState(manager)
+	return state.taskDispatcher() != nil, state.ruleService() != nil
 }
 
 func (manager *PluginCapabilityManager) setPluginCallLookup(lookup func(context.Context, string, string) (pluginCallTarget, error)) {

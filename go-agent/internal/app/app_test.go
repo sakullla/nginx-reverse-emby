@@ -26,6 +26,21 @@ import (
 	"testing"
 )
 
+func TestNewWiresRPCHostAsPluginCaller(t *testing.T) {
+	t.Parallel()
+	app, err := New(Config{DataDir: t.TempDir(), AgentID: "edge-a", AgentName: "edge-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+	if app.taskClient == nil || app.taskClient.PluginCaller() == nil {
+		t.Fatal("production TaskClient left PluginCaller unbound")
+	}
+	if app.taskClient.PluginCaller() != app.PluginRPCHost() {
+		t.Fatal("production PluginCaller is not the local RPC host")
+	}
+}
+
 func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testing.T) {
 	store, err := core.NewFilesystem(t.TempDir())
 	if err != nil {

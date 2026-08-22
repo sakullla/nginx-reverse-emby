@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,7 +14,14 @@ import (
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+type localPluginCaller interface {
+	Call(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+}
+
+var _ localPluginCaller = (*Runtime)(nil)
 
 type TaskServiceRegistrar interface {
 	RegisterSession(service.TaskSessionRegistration) error
@@ -160,6 +168,8 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 		result, taskErr = s.reconcilePKISecurity(ctx)
 	case service.TaskTypePKIForceRotation:
 		result, taskErr = s.forceRotatePKI(ctx, envelope)
+	case service.TaskTypePluginCall:
+		result, taskErr = s.handlePluginCall(ctx, envelope)
 	default:
 		taskErr = fmt.Errorf("unsupported task type %q", envelope.Type)
 	}
@@ -183,6 +193,42 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 	}); reportErr != nil {
 		log.Printf("[local-agent] failed to report task result: %v", reportErr)
 	}
+}
+
+func (s *LocalTaskSession) handlePluginCall(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	caller, _ := s.diagnostics.(localPluginCaller)
+	if caller == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	pluginID, _ := envelope.Payload["plugin_id"].(string)
+	name, _ := envelope.Payload["name"].(string)
+	pluginID = strings.TrimSpace(pluginID)
+	name = strings.TrimSpace(name)
+	if pluginsdk.ValidatePolicyIdentity(pluginID) != nil || pluginsdk.ValidatePolicyIdentity(name) != nil {
+		return nil, errors.New("plugin.call payload is invalid")
+	}
+	var payload json.RawMessage
+	if raw, ok := envelope.Payload["payload"]; ok && raw != nil {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) > pluginsdk.PluginHostPayloadMaxBytes {
+			return nil, errors.New("plugin.call payload exceeds the canonical bound")
+		}
+		payload = encoded
+	}
+	response, err := caller.Call(ctx, pluginID, name, payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(response) > pluginsdk.PluginHostPayloadMaxBytes || (len(response) > 0 && !json.Valid(response)) {
+		return nil, errors.New("plugin.call response is invalid or exceeds the canonical bound")
+	}
+	if len(response) == 0 {
+		response = json.RawMessage("null")
+	}
+	return map[string]any{"payload": json.RawMessage(response)}, nil
 }
 
 func (s *LocalTaskSession) reconcilePKISecurity(ctx context.Context) (map[string]any, error) {

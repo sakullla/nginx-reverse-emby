@@ -103,6 +103,8 @@ type App struct {
 	processPackets         *ingress.ProcessPacketRegistry
 }
 
+var _ control.PluginCaller = (*pluginrpc.Host)(nil)
+
 func advertisedCapabilities(cfg Config) []string {
 	return core.CapabilityNames(appCapabilitySource{cfg: cfg})
 }
@@ -552,6 +554,9 @@ func newAppWithAllDeps(
 	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(cfg.DataDir, "plugins", "rpc-runtime")}, rpcProcesses, nil)
 	if redeemer, ok := client.(pluginrpc.SecretRedeemer); ok {
 		rpcHost.SetSecretRedeemer(redeemer)
+	}
+	if taskClient != nil {
+		taskClient.SetPluginCaller(rpcHost)
 	}
 	app := &App{
 		cfg:            cfg,

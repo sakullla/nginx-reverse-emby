@@ -3,6 +3,7 @@ package pluginsdk
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -33,6 +34,12 @@ type RPCLifecycle interface {
 	Prepare(context.Context, LifecycleRequest) LifecycleResponse
 	Activate(context.Context, LifecycleRequest) LifecycleResponse
 	Stop(context.Context, LifecycleRequest) LifecycleResponse
+}
+
+// RPCPluginCaller is the optional execution-face surface for opaque plugin.call
+// forwarding. Guests that do not implement it fail closed.
+type RPCPluginCaller interface {
+	Call(ctx context.Context, generation, name string, payload []byte) ([]byte, error)
 }
 
 // ServeRPCPlugin serves the canonical authenticated local RPC transport.
@@ -125,6 +132,9 @@ func rpcLifecycleServiceDesc(cookie string, lifecycle RPCLifecycle) *grpc.Servic
 			return rpcEncodeLifecycle(result)
 		})})
 	}
+	methods = append(methods, grpc.MethodDesc{MethodName: "Call", Handler: rpcDynamicUnary(cookie, "PluginCallRequest", func(ctx context.Context, request *dynamicpb.Message) (*dynamicpb.Message, error) {
+		return rpcHandlePluginCall(ctx, lifecycle, request)
+	})})
 	return &grpc.ServiceDesc{ServiceName: rpcServiceName, HandlerType: (*interface{})(nil), Methods: methods}
 }
 
@@ -174,8 +184,55 @@ func rpcEncodeHandshake(result RPCHandshakeResponse) (*dynamicpb.Message, error)
 	return message, nil
 }
 
+func rpcHandlePluginCall(ctx context.Context, lifecycle RPCLifecycle, request *dynamicpb.Message) (*dynamicpb.Message, error) {
+	generation := rpcGetString(request, "generation")
+	name := rpcGetString(request, "name")
+	payload := append([]byte(nil), request.Get(rpcField(request, "payload")).Bytes()...)
+	if ValidatePolicyIdentity(generation) != nil || ValidatePolicyIdentity(name) != nil {
+		return rpcEncodePluginCallError(ErrorInvalidArgument, "plugin call identity is invalid")
+	}
+	if len(payload) > PluginHostPayloadMaxBytes || (len(payload) > 0 && !json.Valid(payload)) {
+		return rpcEncodePluginCallError(ErrorInvalidArgument, "plugin call payload is invalid or exceeds the canonical bound")
+	}
+	caller, ok := lifecycle.(RPCPluginCaller)
+	if !ok {
+		return rpcEncodePluginCallError(ErrorUnavailable, "plugin execution instance is unavailable")
+	}
+	result, err := caller.Call(ctx, generation, name, payload)
+	if err != nil {
+		if runtimeErr, ok := err.(*RuntimeError); ok && runtimeErr != nil {
+			return rpcEncodePluginCall(nil, runtimeErr)
+		}
+		return rpcEncodePluginCallError(ErrorUnavailable, err.Error())
+	}
+	if len(result) > PluginHostPayloadMaxBytes || (len(result) > 0 && !json.Valid(result)) {
+		return rpcEncodePluginCallError(ErrorInternal, "plugin call response is invalid or exceeds the canonical bound")
+	}
+	return rpcEncodePluginCall(result, nil)
+}
+
 func rpcDecodeLifecycleRequest(message *dynamicpb.Message) LifecycleRequest {
 	return LifecycleRequest{Generation: rpcGetString(message, "generation"), Config: append([]byte(nil), message.Get(rpcField(message, "config")).Bytes()...)}
+}
+
+func rpcEncodePluginCallError(code ErrorCode, message string) (*dynamicpb.Message, error) {
+	return rpcEncodePluginCall(nil, &RuntimeError{Code: code, Message: message, Retryable: code == ErrorUnavailable})
+}
+
+func rpcEncodePluginCall(payload []byte, failure *RuntimeError) (*dynamicpb.Message, error) {
+	message, err := rpcNewMessage("PluginCallResponse")
+	if err != nil {
+		return nil, err
+	}
+	if failure != nil {
+		wire := message.Mutable(rpcField(message, "error")).Message()
+		wire.Set(wire.Descriptor().Fields().ByName("code"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(failure.Code)))
+		wire.Set(wire.Descriptor().Fields().ByName("message"), protoreflect.ValueOfString(failure.Message))
+		wire.Set(wire.Descriptor().Fields().ByName("retryable"), protoreflect.ValueOfBool(failure.Retryable))
+		return message, nil
+	}
+	message.Set(rpcField(message, "payload"), protoreflect.ValueOfBytes(append([]byte(nil), payload...)))
+	return message, nil
 }
 
 func rpcEncodeLifecycle(result LifecycleResponse) (*dynamicpb.Message, error) {
