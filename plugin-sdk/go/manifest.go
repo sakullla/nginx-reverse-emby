@@ -104,6 +104,25 @@ func RuntimeDeclaresHostScope(runtime Runtime, scope string) bool {
 	return false
 }
 
+// RuntimeAgentFaceHostScope is the host_scope stamped onto Agent execution
+// snapshots. host_scope stays the primary durable face; dual-face packages
+// still project the Agent face as "agent" so issuance can match an Agent-face
+// artifact copy.
+func RuntimeAgentFaceHostScope(runtime Runtime) string {
+	if RuntimeDeclaresHostScope(runtime, HostScopeAgent) {
+		return HostScopeAgent
+	}
+	return strings.TrimSpace(runtime.HostScope)
+}
+
+// RuntimeDurableArtifactHostScopeMatches is the revision-issuance equality
+// contract: a persisted artifact host_scope must equal the generation snapshot
+// host_scope. Dual-face packages satisfy this by persisting an Agent-face copy.
+func RuntimeDurableArtifactHostScopeMatches(generationHostScope, artifactHostScope string) bool {
+	generationHostScope = strings.TrimSpace(generationHostScope)
+	return generationHostScope != "" && generationHostScope == strings.TrimSpace(artifactHostScope)
+}
+
 type Artifact struct {
 	Path   string `yaml:"path" json:"path"`
 	SHA256 string `yaml:"sha256" json:"sha256"`

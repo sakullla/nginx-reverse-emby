@@ -52,6 +52,9 @@ func (s *GormStore) LoadAgentPluginGenerations(ctx context.Context, agentID, pla
 	if s.transactionScoped {
 		return s.loadAgentPluginGenerations(ctx, agentID, platform)
 	}
+	if err := s.ensureEnabledAgentFacePluginArtifacts(ctx); err != nil {
+		return nil, err
+	}
 	var generations []PluginGeneration
 	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
 		var err error
@@ -158,6 +161,49 @@ func (s *GormStore) selectPluginGenerationArtifact(ctx context.Context, packageR
 	if err := s.db.WithContext(ctx).Where("package_identity = ? AND package_digest = ?", packageRow.Identity, packageRow.Digest).Order("path").Find(&artifacts).Error; err != nil {
 		return PluginArtifactRow{}, err
 	}
+	selected, err := selectAgentFacePluginArtifact(artifacts, manifest, platform)
+	if err != nil {
+		return PluginArtifactRow{}, err
+	}
+	if pluginArtifactIDPresent(artifacts, selected.ID) {
+		return selected, nil
+	}
+	if s.transactionScoped {
+		if primary := firstDurablePluginGenerationArtifact(artifacts, manifest, platform); primary.ID != "" {
+			return primary, nil
+		}
+		return PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", ErrPluginGenerationConflict, platform)
+	}
+	if err := s.persistAgentFacePluginArtifact(ctx, selected); err != nil {
+		return PluginArtifactRow{}, err
+	}
+	return selected, nil
+}
+
+func selectAgentFacePluginArtifact(artifacts []PluginArtifactRow, manifest plugins.Manifest, platform string) (PluginArtifactRow, error) {
+	goos, goarch := splitPluginPlatform(platform)
+	var fallback PluginArtifactRow
+	for _, artifact := range artifacts {
+		if !pluginGenerationArtifactMatchesRuntimeEntry(artifact, manifest) {
+			continue
+		}
+		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
+			continue
+		}
+		if strings.TrimSpace(artifact.HostScope) == pluginsdk.HostScopeAgent {
+			return artifact, nil
+		}
+		if fallback.ID == "" {
+			fallback = artifact
+		}
+	}
+	if fallback.ID == "" {
+		return PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", ErrPluginGenerationConflict, platform)
+	}
+	return AgentFacePluginArtifact(fallback), nil
+}
+
+func firstDurablePluginGenerationArtifact(artifacts []PluginArtifactRow, manifest plugins.Manifest, platform string) PluginArtifactRow {
 	goos, goarch := splitPluginPlatform(platform)
 	for _, artifact := range artifacts {
 		if !pluginGenerationArtifactMatchesRuntimeEntry(artifact, manifest) {
@@ -166,9 +212,140 @@ func (s *GormStore) selectPluginGenerationArtifact(ctx context.Context, packageR
 		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
 			continue
 		}
-		return artifact, nil
+		return artifact
 	}
-	return PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", ErrPluginGenerationConflict, platform)
+	return PluginArtifactRow{}
+}
+
+func pluginArtifactIDPresent(artifacts []PluginArtifactRow, artifactID string) bool {
+	artifactID = strings.TrimSpace(artifactID)
+	if artifactID == "" {
+		return false
+	}
+	for _, artifact := range artifacts {
+		if artifact.ID == artifactID {
+			return true
+		}
+	}
+	return false
+}
+
+// AgentFacePluginArtifact returns the durable Agent-face copy of a package
+// artifact. Dual-face packages keep the primary host_scope row and persist this
+// copy so generation HostScope=agent equals the issued artifact host_scope.
+func AgentFacePluginArtifact(artifact PluginArtifactRow) PluginArtifactRow {
+	if strings.TrimSpace(artifact.HostScope) == pluginsdk.HostScopeAgent {
+		return artifact
+	}
+	clone := artifact
+	clone.HostScope = pluginsdk.HostScopeAgent
+	clone.ID = pluginStorageDigest(strings.TrimSpace(artifact.PackageIdentity), strings.TrimSpace(artifact.Path), pluginsdk.HostScopeAgent)
+	return clone
+}
+
+// EnsureAgentFacePluginArtifacts persists Agent-face artifact rows for dual-face
+// packages so LoadAgentPluginGenerations and loadIssuedRuntimeArtifact share the
+// same host_scope equality.
+func (s *GormStore) EnsureAgentFacePluginArtifacts(ctx context.Context, manifest plugins.Manifest, packageIdentity string) error {
+	if !pluginManifestProjectsAgentRPC(manifest) {
+		return nil
+	}
+	packageIdentity = strings.ToLower(strings.TrimSpace(packageIdentity))
+	if packageIdentity == "" {
+		return nil
+	}
+	persist := func(tx *gorm.DB) error {
+		var artifacts []PluginArtifactRow
+		if err := tx.Where("package_identity = ?", packageIdentity).Order("path").Find(&artifacts).Error; err != nil {
+			return err
+		}
+		existingIDs := make(map[string]struct{}, len(artifacts))
+		for _, artifact := range artifacts {
+			existingIDs[artifact.ID] = struct{}{}
+		}
+		extras := make([]PluginArtifactRow, 0)
+		for _, artifact := range artifacts {
+			if strings.TrimSpace(artifact.HostScope) == pluginsdk.HostScopeAgent {
+				continue
+			}
+			extra := AgentFacePluginArtifact(artifact)
+			if _, exists := existingIDs[extra.ID]; exists {
+				continue
+			}
+			extras = append(extras, extra)
+			existingIDs[extra.ID] = struct{}{}
+		}
+		if len(extras) == 0 {
+			return nil
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&extras).Error
+	}
+	if s.transactionScoped {
+		return persist(s.db.WithContext(ctx))
+	}
+	return s.writeTransaction(ctx, persist)
+}
+
+func (s *GormStore) persistAgentFacePluginArtifact(ctx context.Context, artifact PluginArtifactRow) error {
+	if strings.TrimSpace(artifact.ID) == "" {
+		return errors.New("plugin artifact identity is required")
+	}
+	write := func(tx *gorm.DB) error {
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&artifact).Error
+	}
+	if s.transactionScoped {
+		return write(s.db.WithContext(ctx))
+	}
+	return s.writeTransaction(ctx, write)
+}
+
+func (s *GormStore) ensureEnabledAgentFacePluginArtifacts(ctx context.Context) error {
+	var installed []InstalledPluginRow
+	if err := s.db.WithContext(ctx).Where("desired_lifecycle = ?", "enabled").Order("plugin_id").Find(&installed).Error; err != nil {
+		return err
+	}
+	for _, plugin := range installed {
+		packageIdentity, packageDigest := plugin.ActivePackageIdentity, plugin.ActivePackageDigest
+		if plugin.PendingOperationID != "" && plugin.StagedPackageIdentity != "" && plugin.StagedPackageDigest != "" {
+			packageIdentity, packageDigest = plugin.StagedPackageIdentity, plugin.StagedPackageDigest
+		}
+		var packageRow PluginPackageRow
+		query := s.db.WithContext(ctx).Where("identity = ? AND digest = ?", packageIdentity, packageDigest)
+		if packageIdentity == "" {
+			query = s.db.WithContext(ctx).Where("digest = ?", packageDigest)
+		}
+		if err := query.Order("identity").First(&packageRow).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return fmt.Errorf("load plugin %s generation package: %w", plugin.PluginID, err)
+		}
+		var manifest plugins.Manifest
+		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+			return fmt.Errorf("decode plugin %s generation manifest: %w", plugin.PluginID, err)
+		}
+		if err := s.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PrimaryPluginPackageArtifacts drops Agent-face copies that dual-face packages
+// persist in addition to the primary host_scope projection.
+func PrimaryPluginPackageArtifacts(manifest plugins.Manifest, artifacts []PluginArtifactRow) []PluginArtifactRow {
+	primary := strings.TrimSpace(manifest.Runtime.HostScope)
+	if primary == pluginsdk.HostScopeAgent || !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+		return artifacts
+	}
+	filtered := make([]PluginArtifactRow, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact.HostScope) == pluginsdk.HostScopeAgent {
+			continue
+		}
+		filtered = append(filtered, artifact)
+	}
+	return filtered
 }
 
 func pluginGenerationArtifactMatchesRuntimeEntry(artifact PluginArtifactRow, manifest plugins.Manifest) bool {
@@ -233,7 +410,7 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	generation := PluginGeneration{
 		OperationID: operationID, InstanceID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
 		Artifact:             PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
-		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: pluginsdk.HostScopeAgent, Entry: artifact.Path},
+		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: pluginsdk.RuntimeAgentFaceHostScope(manifest.Runtime), Entry: artifact.Path},
 		ExtensionPoints:      canonicalPluginGenerationStrings(manifest.ExtensionPoints),
 		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants, manifest.ExtensionPoints)),
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),

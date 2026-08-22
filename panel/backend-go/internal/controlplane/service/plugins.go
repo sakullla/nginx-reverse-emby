@@ -325,6 +325,7 @@ type pluginLifecycleStore interface {
 	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
 	ListPluginArtifacts(context.Context, string) ([]storage.PluginArtifactRow, error)
 	ListPluginArtifactsByIdentity(context.Context, string) ([]storage.PluginArtifactRow, error)
+	EnsureAgentFacePluginArtifacts(context.Context, plugins.Manifest, string) error
 	ListPluginGrants(context.Context, string) ([]storage.PluginGrantRow, error)
 	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
 	ListPluginInstances(context.Context, string) ([]storage.PluginInstanceRow, error)
@@ -986,6 +987,9 @@ func (s *PluginService) Install(ctx context.Context, request PluginInstallReques
 	if err := s.store.InstallPlugin(ctx, transaction); err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
+	if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	return installed, nil
 }
 
@@ -1036,6 +1040,9 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 			if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
 				return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 			}
+		}
+		if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 	}
 	if installed.DesiredLifecycle == desired && installed.CurrentLifecycle == current {
@@ -1600,6 +1607,13 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 		if err != nil {
 			return "", err
 		}
+		if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
+			return "", err
+		}
+		artifacts, err = s.storedArtifacts(ctx, packageRow.Identity, packageRow.Digest)
+		if err != nil {
+			return "", err
+		}
 		artifact, err := pluginSelectAgentGenerationArtifact(artifacts, manifest, platform)
 		if err != nil {
 			return "", err
@@ -1661,6 +1675,7 @@ func pluginSelectAgentGenerationArtifact(artifacts []storage.PluginArtifactRow, 
 	if len(parts) == 2 {
 		goos, goarch = parts[0], parts[1]
 	}
+	var fallback storage.PluginArtifactRow
 	for _, artifact := range artifacts {
 		if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI {
 			continue
@@ -1676,9 +1691,17 @@ func pluginSelectAgentGenerationArtifact(artifacts []storage.PluginArtifactRow, 
 		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
 			continue
 		}
-		return artifact, nil
+		if strings.TrimSpace(artifact.HostScope) == pluginsdk.HostScopeAgent {
+			return artifact, nil
+		}
+		if fallback.ID == "" {
+			fallback = artifact
+		}
 	}
-	return storage.PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", storage.ErrPluginGenerationConflict, platform)
+	if fallback.ID == "" {
+		return storage.PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", storage.ErrPluginGenerationConflict, platform)
+	}
+	return storage.AgentFacePluginArtifact(fallback), nil
 }
 
 func pluginGenerationArtifact(artifact storage.PluginArtifactRow, packageRow storage.PluginPackageRow) storage.PluginGenerationArtifact {
@@ -3003,7 +3026,13 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	setPendingOperation(&installed, operation)
 	operation.Status = "staged"
 	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: oldDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, Package: &packageRow, Artifacts: artifacts, ReplaceInstances: instances, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest})
-	return installed, err
+	if err != nil {
+		return installed, err
+	}
+	if err := s.store.EnsureAgentFacePluginArtifacts(ctx, request.Package.Package.Manifest, packageRow.Identity); err != nil {
+		return installed, err
+	}
+	return installed, nil
 }
 
 func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginApplyResult) (storage.InstalledPluginRow, error) {
@@ -3429,7 +3458,13 @@ func (s *PluginService) finishUndeployedUpgrade(
 		Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now),
 		RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest,
 	})
-	return installed, err
+	if err != nil {
+		return installed, err
+	}
+	if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
+		return installed, err
+	}
+	return installed, nil
 }
 
 func uninstallReady(installed storage.InstalledPluginRow, instanceCount int) error {
@@ -3658,6 +3693,8 @@ func validateStoredPackageProjection(row storage.PluginPackageRow, artifacts []s
 		return errors.New("persisted plugin declarative UI differs from verified cache")
 	}
 	projectedRow, projectedArtifacts, err := storage.ProjectPluginPackage(row, validated.Manifest)
+	artifacts = storage.PrimaryPluginPackageArtifacts(validated.Manifest, artifacts)
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
 	sort.Slice(projectedArtifacts, func(i, j int) bool { return projectedArtifacts[i].Path < projectedArtifacts[j].Path })
 	if err != nil || projectedRow.RuntimeKind != row.RuntimeKind || projectedRow.RuntimeABI != row.RuntimeABI || projectedRow.HostScope != row.HostScope || projectedRow.PolicyKind != row.PolicyKind || projectedRow.EntryPath != row.EntryPath || projectedRow.SignatureKeyID != row.SignatureKeyID || projectedRow.SignatureVerdict != row.SignatureVerdict || projectedRow.ResourceBudgetJSON != row.ResourceBudgetJSON || projectedRow.FailurePolicyJSON != row.FailurePolicyJSON || !reflect.DeepEqual(projectedArtifacts, artifacts) {
 		return errors.New("persisted plugin runtime projection differs from verified cache")

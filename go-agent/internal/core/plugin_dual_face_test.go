@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestRuntimeApplyKeepsDualFaceExecutionGenerationWithoutHTTPBackend(t *testing.T) {
@@ -44,5 +45,25 @@ func TestRuntimeApplyKeepsDualFaceExecutionGenerationWithoutHTTPBackend(t *testi
 	merged := MergeSnapshotPayload(model.Snapshot{Revision: 1}, got)
 	if len(merged.PluginGenerations) != 1 || merged.PluginGenerations[0].PluginID != "dual-face" {
 		t.Fatalf("merged generations = %+v", merged.PluginGenerations)
+	}
+}
+
+func TestDualFaceAgentArtifactHostScopeMatchesGeneration(t *testing.T) {
+	runtime := pluginsdk.Runtime{
+		Kind:       pluginsdk.RuntimeRPCService,
+		ABI:        pluginsdk.RPCABIV1,
+		HostScope:  pluginsdk.HostScopeControlPlane,
+		HostScopes: []string{pluginsdk.HostScopeControlPlane, pluginsdk.HostScopeAgent},
+		Entry:      "artifacts/plugin",
+	}
+	generationHostScope := pluginsdk.RuntimeAgentFaceHostScope(runtime)
+	if generationHostScope != pluginsdk.HostScopeAgent {
+		t.Fatalf("agent snapshot host_scope = %q", generationHostScope)
+	}
+	if !pluginsdk.RuntimeDurableArtifactHostScopeMatches(generationHostScope, pluginsdk.HostScopeAgent) {
+		t.Fatal("agent-face artifact host_scope must equal generation host_scope for issuance")
+	}
+	if pluginsdk.RuntimeDurableArtifactHostScopeMatches(generationHostScope, runtime.HostScope) {
+		t.Fatal("primary control-plane artifact host_scope must not satisfy agent generation equality")
 	}
 }

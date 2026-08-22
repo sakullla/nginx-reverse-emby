@@ -88,6 +88,15 @@ runtime:
 	if !RuntimeDeclaresHostScope(agentOnly, HostScopeAgent) || RuntimeDeclaresHostScope(agentOnly, HostScopeControlPlane) {
 		t.Fatalf("agent-only scopes = %v", RuntimeDeclaredHostScopes(agentOnly))
 	}
+	if RuntimeAgentFaceHostScope(manifest.Runtime) != HostScopeAgent {
+		t.Fatalf("dual-face agent snapshot host_scope = %q", RuntimeAgentFaceHostScope(manifest.Runtime))
+	}
+	if !RuntimeDurableArtifactHostScopeMatches(HostScopeAgent, HostScopeAgent) {
+		t.Fatal("agent-face artifact host_scope must equal generation host_scope")
+	}
+	if RuntimeDurableArtifactHostScopeMatches(HostScopeAgent, HostScopeControlPlane) {
+		t.Fatal("primary control-plane artifact host_scope must not satisfy agent generation equality")
+	}
 }
 
 func TestPluginManifestV1PermissionYAMLUsesOneTypedProjection(t *testing.T) {
