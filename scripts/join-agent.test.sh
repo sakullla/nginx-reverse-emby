@@ -44,6 +44,22 @@ assert_eq() {
 
 assert_eq "canonical systemd service name" "$SYSTEMD_SERVICE_NAME" "nre-agent.service"
 assert_eq "legacy systemd service name" "$LEGACY_SYSTEMD_SERVICE_NAME" "nginx-reverse-emby-agent.service"
+grep -Fq 'repair-systemd) run_repair_systemd' "$script" || {
+    echo "repair-systemd command must route to the existing Agent repair path" >&2
+    exit 1
+}
+grep -Fq 'ASSET_BASE_URL="$MASTER_URL/panel-api/public/agent-assets"' "$script" || {
+    echo "repair-systemd must derive the verified package source from the persisted master URL" >&2
+    exit 1
+}
+grep -Fq 'backup_legacy_unit "$LEGACY_SYSTEMD_SERVICE_NAME"' "$script" || {
+    echo "repair-systemd must preserve the legacy unit before cutover" >&2
+    exit 1
+}
+grep -Fq 'install_systemd_service' "$script" || {
+    echo "repair-systemd must reuse the canonical service migration implementation" >&2
+    exit 1
+}
 grep -Fq 'Delegate=yes' "$script" || {
     echo "systemd install must delegate the Agent cgroup subtree" >&2
     exit 1

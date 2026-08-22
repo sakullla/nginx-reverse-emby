@@ -19,13 +19,15 @@ usage() {
 Usage:
   join-agent.sh --register-token TOKEN [options]
   join-agent.sh migrate-from-main --register-token TOKEN [options]
+  join-agent.sh repair-systemd [options]
   join-agent.sh uninstall-agent [options]
 
 Commands:
   migrate-from-main       Migrate a legacy lightweight Agent node to go-agent
+  repair-systemd          Repair an existing Go Agent and migrate its legacy systemd unit
   uninstall-agent         Remove the local Agent runtime from this host
 
-Required:
+Required for join and migrate-from-main:
   --register-token TOKEN   Master registration token
 
 Optional:
@@ -51,6 +53,7 @@ Examples:
   join-agent.sh --master-url http://master.example.com:3000 --register-token change-this-register-token --install-systemd
   join-agent.sh --register-token change-this-register-token --install-launchd
   join-agent.sh migrate-from-main --master-url http://master.example.com:3000 --register-token change-this-register-token
+  curl -fsSL ${DEFAULT_MASTER_URL:-http://master.example.com:3000}/panel-api/public/join-agent.sh | sh -s -- repair-systemd
   join-agent.sh uninstall-agent --data-dir /var/lib/nre-agent
 EOF
 }
@@ -1921,6 +1924,70 @@ run_migrate_from_main() {
     cleanup_legacy_runtime
 }
 
+# Existing Go Agents installed before the canonical service rename cannot run
+# install_systemd_service without re-registering. In particular, a legacy
+# bootstrap binary may be unable to hot-restart directly into a much newer
+# snapshot schema, leaving the old unit in a permanent update/rollback loop.
+# Repair from the already persisted, root-owned Agent identity: download and
+# verify the current package, then let the normal systemd installer stop the
+# legacy cgroup and cold-start the canonical unit. No control token is printed
+# or replaced and no master registration mutation is performed.
+run_repair_systemd() {
+    [ "$PLATFORM" = "linux" ] || { echo "repair-systemd is only supported on Linux" >&2; exit 1; }
+    command -v curl >/dev/null 2>&1 || { echo "curl is required for repair-systemd" >&2; exit 1; }
+    command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required for repair-systemd" >&2; exit 1; }
+
+    INSTALL_SYSTEMD="1"
+    INSTALL_LAUNCHD="0"
+    DATA_DIR="$(absolute_path "$DATA_DIR")"
+    BIN_DIR="$DATA_DIR/bin"
+    ENV_FILE="$DATA_DIR/agent.env"
+    BIN_PATH="$BIN_DIR/nre-agent"
+    BIN_TMP_PATH="$BIN_PATH.tmp.$$"
+    JOIN_SCRIPT_PATH="$BIN_DIR/join-agent.sh"
+    UNINSTALL_WRAPPER_PATH="/usr/local/bin/nginx-reverse-emby-agent-uninstall.sh"
+    ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
+
+    [ -f "$ENV_FILE" ] || { echo "Existing Agent env not found: $ENV_FILE" >&2; exit 1; }
+    load_existing_agent_env_if_present "$ENV_FILE"
+    [ -n "$MASTER_URL" ] || {
+        echo "Missing --master-url and existing Agent env has no control-plane URL" >&2
+        exit 1
+    }
+    MASTER_URL="$(normalize_master_url "$MASTER_URL")"
+    if ! is_valid_master_url "$MASTER_URL"; then
+        echo "Invalid existing Agent master URL: $MASTER_URL" >&2
+        exit 1
+    fi
+    ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
+    if [ -z "$ASSET_BASE_URL" ]; then
+        ASSET_BASE_URL="$MASTER_URL/panel-api/public/agent-assets"
+    fi
+
+    SUDO_BIN="$(require_root_or_sudo)" || {
+        echo "Repairing systemd services requires root or sudo" >&2
+        exit 1
+    }
+    mkdir -p "$BIN_DIR"
+    rm -f "$BIN_TMP_PATH" "$BIN_TMP_PATH.manifest.json"
+    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    persist_installed_join_script
+    backup_legacy_unit "$LEGACY_SYSTEMD_SERVICE_NAME"
+    if [ -f "$BIN_PATH" ] && [ ! -f "$BIN_PATH.pre-systemd-repair" ]; then
+        cp -p "$BIN_PATH" "$BIN_PATH.pre-systemd-repair"
+    fi
+    if [ -f "$BIN_PATH.manifest.json" ] && [ ! -f "$BIN_PATH.manifest.json.pre-systemd-repair" ]; then
+        cp -p "$BIN_PATH.manifest.json" "$BIN_PATH.manifest.json.pre-systemd-repair"
+    fi
+
+    install_systemd_service
+    verify_systemd_service_active || {
+        echo "Repaired nre-agent.service did not become active" >&2
+        exit 1
+    }
+    echo "[REPAIR] Existing Agent package refreshed and systemd service migrated to $SYSTEMD_SERVICE_NAME"
+}
+
 run_uninstall_agent() {
     if [ "$USER_DATA_DIR_DEFAULT" = "1" ]; then
         if [ -d "/var/lib/nre-agent" ]; then
@@ -1976,6 +2043,9 @@ ARCH="$(detect_arch)"
 if [ $# -gt 0 ] && [ "$1" = "migrate-from-main" ]; then
     COMMAND="migrate-from-main"
     shift 1
+elif [ $# -gt 0 ] && [ "$1" = "repair-systemd" ]; then
+    COMMAND="repair-systemd"
+    shift 1
 elif [ $# -gt 0 ] && [ "$1" = "uninstall-agent" ]; then
     COMMAND="uninstall-agent"
     shift 1
@@ -2012,6 +2082,7 @@ fi
 case "$COMMAND" in
     join) run_join ;;
     migrate-from-main) run_migrate_from_main ;;
+    repair-systemd) run_repair_systemd ;;
     uninstall-agent) run_uninstall_agent ;;
     *) echo "Unknown command: $COMMAND" >&2; exit 1 ;;
 esac

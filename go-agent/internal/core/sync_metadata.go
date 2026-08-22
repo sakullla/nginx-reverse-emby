@@ -144,10 +144,10 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 	state.Metadata = ensureMetadata(state.Metadata)
 	lastSyncError := strings.TrimSpace(state.Metadata["last_sync_error"])
 	if lastSyncError == "" {
-		if !hasLegacyHeartbeatApplyError(state.Metadata) {
+		lastSyncError = recoverableApplyErrorMessage(state.Metadata)
+		if lastSyncError == "" {
 			return nil
 		}
-		lastSyncError = strings.TrimSpace(state.Metadata["last_apply_message"])
 	}
 	delete(state.Metadata, "last_sync_error")
 	if isRecoverableSyncApplyError(state.Metadata, lastSyncError) {
@@ -156,11 +156,22 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 	return c.Store.SaveRuntimeState(state)
 }
 
+func recoverableApplyErrorMessage(metadata map[string]string) string {
+	message := strings.TrimSpace(metadata["last_apply_message"])
+	if !isRecoverableSyncApplyError(metadata, message) {
+		return ""
+	}
+	return message
+}
+
 func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError string) bool {
 	normalizedError := strings.ToLower(strings.TrimSpace(lastSyncError))
 	restartRequested := strings.ToLower(ErrRestartRequested.Error())
 	recovered := isLegacyHeartbeatSyncError(normalizedError) ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
+		strings.HasPrefix(normalizedError, "start hot restart child:") ||
+		strings.HasPrefix(normalizedError, "activate hot restart child:") ||
+		strings.HasPrefix(normalizedError, "transfer hot restart authority:") ||
 		strings.HasPrefix(normalizedError, "open current executable:") ||
 		normalizedError == restartRequested ||
 		strings.HasSuffix(normalizedError, "\n"+restartRequested) ||
