@@ -54,6 +54,42 @@ func TestPluginManifestSchemaV1IsEmbeddedAndImmutable(t *testing.T) {
 	}
 }
 
+func TestPluginManifestRuntimeDeclaresControlPlaneAndAgentFaces(t *testing.T) {
+	schema := string(PluginManifestSchemaV1())
+	if !strings.Contains(schema, `"host_scopes"`) {
+		t.Fatal("manifest schema omits host_scopes")
+	}
+	data := []byte(`schema_version: 1
+id: dual-face
+version: 1.0.0
+name: Dual Face
+runtime:
+  kind: rpc-service
+  abi: nre:rpc/v1
+  host_scope: control-plane
+  host_scopes:
+    - control-plane
+    - agent
+  entry: plugin
+`)
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder.KnownFields(true)
+	var manifest Manifest
+	if err := decoder.Decode(&manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Runtime.HostScope != HostScopeControlPlane {
+		t.Fatalf("primary host_scope = %q", manifest.Runtime.HostScope)
+	}
+	if !RuntimeDeclaresHostScope(manifest.Runtime, HostScopeControlPlane) || !RuntimeDeclaresHostScope(manifest.Runtime, HostScopeAgent) {
+		t.Fatalf("declared host scopes = %v", RuntimeDeclaredHostScopes(manifest.Runtime))
+	}
+	agentOnly := Runtime{HostScope: HostScopeAgent}
+	if !RuntimeDeclaresHostScope(agentOnly, HostScopeAgent) || RuntimeDeclaresHostScope(agentOnly, HostScopeControlPlane) {
+		t.Fatalf("agent-only scopes = %v", RuntimeDeclaredHostScopes(agentOnly))
+	}
+}
+
 func TestPluginManifestV1PermissionYAMLUsesOneTypedProjection(t *testing.T) {
 	data := []byte(`schema_version: 1
 id: example

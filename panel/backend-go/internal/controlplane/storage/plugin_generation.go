@@ -125,7 +125,7 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 		}
 		// WASM execution remains owned by the existing PluginPolicies projection.
 		// Publishing it through both contracts would instantiate it twice.
-		if strings.TrimSpace(manifest.Runtime.HostScope) != "agent" || strings.TrimSpace(manifest.Runtime.Kind) != "rpc-service" {
+		if !pluginManifestProjectsAgentRPC(manifest) {
 			continue
 		}
 		artifact, err := s.selectPluginGenerationArtifact(ctx, packageRow, manifest, platform)
@@ -172,7 +172,10 @@ func (s *GormStore) selectPluginGenerationArtifact(ctx context.Context, packageR
 }
 
 func pluginGenerationArtifactMatchesRuntimeEntry(artifact PluginArtifactRow, manifest plugins.Manifest) bool {
-	if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope {
+	if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI {
+		return false
+	}
+	if artifact.HostScope != manifest.Runtime.HostScope && !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, artifact.HostScope) {
 		return false
 	}
 	artifactPath := path.Clean(strings.TrimSpace(artifact.Path))
@@ -230,7 +233,7 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	generation := PluginGeneration{
 		OperationID: operationID, InstanceID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
 		Artifact:             PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
-		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: artifact.Path},
+		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: pluginsdk.HostScopeAgent, Entry: artifact.Path},
 		ExtensionPoints:      canonicalPluginGenerationStrings(manifest.ExtensionPoints),
 		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants, manifest.ExtensionPoints)),
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
@@ -245,6 +248,10 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 		return PluginGeneration{}, err
 	}
 	return generation, nil
+}
+
+func pluginManifestProjectsAgentRPC(manifest plugins.Manifest) bool {
+	return strings.TrimSpace(manifest.Runtime.Kind) == pluginsdk.RuntimeRPCService && pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent)
 }
 
 func pluginGenerationRequiredFeatures(grants []PluginGenerationGrant, extensionPoints []string) []string {

@@ -1199,7 +1199,7 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
 		return controlPlanePluginRuntimePlan{}, err
 	}
-	if manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "control-plane" {
+	if manifest.Runtime.Kind != "rpc-service" || !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
 		return controlPlanePluginRuntimePlan{}, nil
 	}
 	var configSchema map[string]any
@@ -1588,6 +1588,28 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 	prospectiveInstance.PendingResourceGroupID = request.ResourceGroupID
 	prospectiveInstance.PendingVersion = version
 	prospectiveInstance.PendingOperationID = operation.ID
+	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+		agentID := ""
+		if len(targetIDs) > 0 {
+			agentID = strings.TrimSpace(targetIDs[0])
+		}
+		if agentID == "" {
+			return "", fmt.Errorf("%w: plugin generation target is required", ErrInvalidArgument)
+		}
+		platform, err := s.pluginGenerationTargetPlatform(ctx, agentID)
+		if err != nil {
+			return "", err
+		}
+		artifact, err := pluginSelectAgentGenerationArtifact(artifacts, manifest, platform)
+		if err != nil {
+			return "", err
+		}
+		generation, err := storage.BuildPluginGeneration(prospectiveInstalled, prospectiveInstance, packageRow, manifest, artifact, grants, agentID)
+		if err != nil {
+			return "", err
+		}
+		return generation.ID, nil
+	}
 	if strings.TrimSpace(manifest.Runtime.HostScope) == "control-plane" {
 		artifact, err := pluginSelectControlPlaneGenerationArtifact(artifacts, manifest)
 		if err != nil {
@@ -1608,26 +1630,7 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 		}
 		return storage.PluginGenerationIdentity(generation)
 	}
-	agentID := ""
-	if len(targetIDs) > 0 {
-		agentID = strings.TrimSpace(targetIDs[0])
-	}
-	if agentID == "" {
-		return "", fmt.Errorf("%w: plugin generation target is required", ErrInvalidArgument)
-	}
-	platform, err := s.pluginGenerationTargetPlatform(ctx, agentID)
-	if err != nil {
-		return "", err
-	}
-	artifact, err := pluginSelectAgentGenerationArtifact(artifacts, manifest, platform)
-	if err != nil {
-		return "", err
-	}
-	generation, err := storage.BuildPluginGeneration(prospectiveInstalled, prospectiveInstance, packageRow, manifest, artifact, grants, agentID)
-	if err != nil {
-		return "", err
-	}
-	return generation.ID, nil
+	return "", fmt.Errorf("%w: plugin generation host scope is unsupported", ErrInvalidArgument)
 }
 
 func (s *PluginService) pluginGenerationTargetPlatform(ctx context.Context, agentID string) (string, error) {
@@ -1659,7 +1662,10 @@ func pluginSelectAgentGenerationArtifact(artifacts []storage.PluginArtifactRow, 
 		goos, goarch = parts[0], parts[1]
 	}
 	for _, artifact := range artifacts {
-		if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI || artifact.HostScope != manifest.Runtime.HostScope {
+		if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI {
+			continue
+		}
+		if artifact.HostScope != manifest.Runtime.HostScope && !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, artifact.HostScope) {
 			continue
 		}
 		artifactPath := path.Clean(strings.TrimSpace(artifact.Path))
@@ -1986,7 +1992,7 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin bindings: %v", ErrInvalidArgument, err))
 	}
-	if len(bindings) > 0 && (manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "agent") {
+	if len(bindings) > 0 && (manifest.Runtime.Kind != "rpc-service" || !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent)) {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: core consumer bindings require an Agent rpc-service plugin", ErrInvalidArgument))
 	}
 	if err := storage.ValidatePluginInstanceBindingScope(bindings, targetIDs, manifest.ExtensionPoints); err != nil {
@@ -3745,7 +3751,7 @@ func (s *PluginService) validateStoredPluginBindings(ctx context.Context, instan
 	if len(bindings) == 0 {
 		return nil
 	}
-	if manifest.Runtime.Kind != "rpc-service" || manifest.Runtime.HostScope != "agent" {
+	if manifest.Runtime.Kind != "rpc-service" || !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
 		return fmt.Errorf("plugin instance %s core consumer bindings require an Agent rpc-service package", instance.ID)
 	}
 	defaultTargetID, err := s.defaultPluginTargetID(ctx)

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -58,11 +59,49 @@ type Manifest struct {
 }
 
 type Runtime struct {
-	Kind       string `yaml:"kind" json:"kind"`
-	ABI        string `yaml:"abi" json:"abi"`
-	HostScope  string `yaml:"host_scope" json:"host_scope"`
-	Entry      string `yaml:"entry" json:"entry"`
-	PolicyKind string `yaml:"policy_kind,omitempty" json:"policy_kind,omitempty"`
+	Kind       string   `yaml:"kind" json:"kind"`
+	ABI        string   `yaml:"abi" json:"abi"`
+	HostScope  string   `yaml:"host_scope" json:"host_scope"`
+	HostScopes []string `yaml:"host_scopes,omitempty" json:"host_scopes,omitempty"`
+	Entry      string   `yaml:"entry" json:"entry"`
+	PolicyKind string   `yaml:"policy_kind,omitempty" json:"policy_kind,omitempty"`
+}
+
+// RuntimeDeclaredHostScopes returns the unique host faces this runtime
+// declares. host_scope remains the primary face for durable rows; host_scopes
+// extends that contract so one plugin_id can also run on additional hosts.
+func RuntimeDeclaredHostScopes(runtime Runtime) []string {
+	seen := make(map[string]struct{}, 2)
+	result := make([]string, 0, 2)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	add(runtime.HostScope)
+	for _, scope := range runtime.HostScopes {
+		add(scope)
+	}
+	return result
+}
+
+func RuntimeDeclaresHostScope(runtime Runtime, scope string) bool {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return false
+	}
+	for _, declared := range RuntimeDeclaredHostScopes(runtime) {
+		if declared == scope {
+			return true
+		}
+	}
+	return false
 }
 
 type Artifact struct {
