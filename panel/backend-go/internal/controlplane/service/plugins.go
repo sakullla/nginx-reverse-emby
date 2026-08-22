@@ -2896,7 +2896,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	if !exists {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("active plugin package is unavailable"))
 	}
-	if err := s.validateStoredPackage(ctx, activePackage); err != nil {
+	if err := s.validateStoredPackageIntegrity(ctx, activePackage); err != nil {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	var activeManifest plugins.Manifest

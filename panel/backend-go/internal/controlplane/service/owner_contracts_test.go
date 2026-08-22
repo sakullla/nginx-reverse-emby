@@ -4,6 +4,10 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,16 +18,135 @@ import (
 	"testing"
 	"time"
 
-	"crypto/sha256"
-	"encoding/hex"
-
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestPluginUpgradeCanReplacePackageWithRetiredCapabilities(t *testing.T) {
+	t.Parallel()
+
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store := newServiceOwnerStore(t)
+	cacheRoot := filepath.Join(t.TempDir(), "plugins", "packages")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(cacheRoot) })
+
+	key := publishFixtureSigningKey()
+	trust := retiredPackageTrust(t, key)
+	legacyValidator := plugins.NewValidator(plugins.ValidatorOptions{
+		HostVersion:            "0.0.0-dev",
+		AllowedPermissions:     []string{"http.inspect", "container.compose"},
+		AllowedExtensionPoints: []string{"http.request", "container.provider"},
+		TrustedSigners:         map[string]ed25519.PublicKey{trust.KeyID: key.Public().(ed25519.PublicKey)},
+		TrustedSignerPolicy:    plugins.TrustedSignerPolicyExact,
+	})
+	currentValidator := plugins.NewValidator(plugins.ValidatorOptions{
+		HostVersion:         "0.0.0-dev",
+		TrustedSigners:      map[string]ed25519.PublicKey{trust.KeyID: key.Public().(ed25519.PublicKey)},
+		TrustedSignerPolicy: plugins.TrustedSignerPolicyExact,
+	})
+
+	const pluginID = "official.retired-upgrade"
+	oldRoot := writeRetiredPackageFixture(t, pluginID, "1.0.0", key)
+	oldCandidate := importPackageCandidate(t, cacheRoot, oldRoot, legacyValidator, trust)
+	installed, err := NewPluginServiceWithValidator(store, legacyValidator, cacheRoot).Install(ctx, PluginInstallRequest{
+		Package: oldCandidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "container.compose"}, RiskAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("install historically valid package: %v", err)
+	}
+	if _, err := currentValidator.ValidatePackage(oldCandidate.CachePath, plugins.PackageExpectation{}); err == nil || !strings.Contains(err.Error(), "container.compose") {
+		t.Fatalf("current validator unexpectedly accepts retired package: %v", err)
+	}
+
+	currentRoot := writeCurrentPackageFixture(t, pluginID, "2.0.0", key)
+	currentCandidate := importPackageCandidate(t, cacheRoot, currentRoot, currentValidator, trust)
+	upgraded, err := NewPluginServiceWithValidator(store, currentValidator, cacheRoot).Upgrade(ctx, PluginUpgradeRequest{
+		PluginID: pluginID, Package: currentCandidate, ActorID: "admin", RiskAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("upgrade away from retired capabilities: %v", err)
+	}
+	if upgraded.ActivePackageDigest != currentCandidate.Package.Digest || upgraded.ActivePackageDigest == installed.ActivePackageDigest {
+		t.Fatalf("upgrade did not promote current package: %+v", upgraded)
+	}
+}
+
+func retiredPackageTrust(t *testing.T, key ed25519.PrivateKey) marketplace.SignatureTrust {
+	t.Helper()
+	publicKey := base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marketplace.SignatureTrust{
+		SourceID: "retired-package-fixture", SourceKind: marketplace.SourceKindCustom,
+		KeyID: "test-fixture", PublicKey: publicKey, Fingerprint: fingerprint,
+	}
+}
+
+func writeRetiredPackageFixture(t *testing.T, pluginID, version string, key ed25519.PrivateKey) string {
+	t.Helper()
+	root := writeCurrentPackageFixture(t, pluginID, version, key)
+	manifestPath := filepath.Join(root, plugins.PackageManifestFile)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := strings.Replace(string(data), "permissions: [http.inspect]", "permissions: [http.inspect, container.compose]", 1)
+	manifest = strings.Replace(manifest, "extension_points: [http.request]", "extension_points: [http.request, container.provider]", 1)
+	writePublishFile(t, root, plugins.PackageManifestFile, manifest)
+	resignPackageFixture(t, root, key)
+	return root
+}
+
+func writeCurrentPackageFixture(t *testing.T, pluginID, version string, key ed25519.PrivateKey) string {
+	t.Helper()
+	root := writeHostInjectedPackage(t, pluginID, `{"type":"object","additionalProperties":false}`, false, key)
+	manifestPath := filepath.Join(root, plugins.PackageManifestFile)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePublishFile(t, root, plugins.PackageManifestFile, strings.Replace(string(data), "version: 1.0.0", "version: "+version, 1))
+	resignPackageFixture(t, root, key)
+	return root
+}
+
+func resignPackageFixture(t *testing.T, root string, key ed25519.PrivateKey) {
+	t.Helper()
+	digest, err := plugins.ComputePackageDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePublishFile(t, root, plugins.PackageDigestFile, digest+"\n")
+	writePublishFile(t, root, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte(digest)))+"\n")
+}
+
+func importPackageCandidate(t *testing.T, cacheRoot, root string, validator *plugins.Validator, trust marketplace.SignatureTrust) PluginPackageCandidate {
+	t.Helper()
+	validated, err := validator.ValidatePackage(root, plugins.PackageExpectation{SignatureKeyID: trust.KeyID})
+	if err != nil {
+		t.Fatalf("validate package fixture: %v", err)
+	}
+	cachePath, err := marketplace.ImportVerifiedPackage(cacheRoot, validated, validator, trust)
+	if err != nil {
+		t.Fatalf("import package fixture: %v", err)
+	}
+	return PluginPackageCandidate{
+		Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...),
+		SignatureTrust: trust, CachePath: cachePath, validator: validator,
+		sourceID: trust.SourceID, sourceKind: trust.SourceKind, sourceRiskLabel: marketplace.UntrustedRiskLabel,
+	}
+}
 
 func TestGovernedMutationWithoutPrincipalFailsClosed(t *testing.T) {
 	t.Parallel()

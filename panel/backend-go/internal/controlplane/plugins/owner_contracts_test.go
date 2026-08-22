@@ -216,6 +216,52 @@ func TestValidatePackageRejectsRemovedDockerComposeContracts(t *testing.T) {
 	}
 }
 
+func TestValidatePackageIntegrityAcceptsRetiredDockerComposeContracts(t *testing.T) {
+	t.Parallel()
+
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]", "permissions: [http.inspect, container.compose]", 1)
+	manifest = strings.Replace(manifest, "extension_points: [http.request]", "extension_points: [http.request, container.provider]", 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+
+	legacyValidator := NewValidator(ValidatorOptions{
+		AllowedPermissions:     []string{"http.inspect", "container.compose"},
+		AllowedExtensionPoints: []string{"http.request", "container.provider"},
+		TrustedSigners:         map[string]ed25519.PublicKey{"test-fixture": ownerSigningKey().Public().(ed25519.PublicKey)},
+	})
+	if _, err := legacyValidator.ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("historically valid package = %v", err)
+	}
+
+	currentValidator := newOwnerValidator()
+	if _, err := currentValidator.ValidatePackage(root, PackageExpectation{}); err == nil || !strings.Contains(err.Error(), "container.compose") {
+		t.Fatalf("current execution validation error = %v", err)
+	}
+	if _, err := currentValidator.ValidatePackageIntegrity(root, PackageExpectation{}); err != nil {
+		t.Fatalf("installed package integrity validation = %v", err)
+	}
+
+	artifactPath := filepath.Join(root, "artifacts", "policy.wasm")
+	artifact, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifactPath, append(artifact, 0), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := currentValidator.ValidatePackageIntegrity(root, PackageExpectation{}); err == nil {
+		t.Fatal("integrity validation accepted a tampered retired package")
+	}
+
+	malformed := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, malformed, PackageManifestFile, strings.Replace(validOwnerManifestYAML(), "extension_points: [http.request]", "extension_points: [container/provider]", 1))
+	refreshOwnerPackage(t, malformed)
+	if _, err := currentValidator.ValidatePackageIntegrity(malformed, PackageExpectation{}); err == nil || !strings.Contains(err.Error(), "canonical identifier") {
+		t.Fatalf("integrity validation accepted a malformed retired identifier: %v", err)
+	}
+}
+
 func TestValidatePackageAllowsResourceGroupExtension(t *testing.T) {
 	t.Parallel()
 

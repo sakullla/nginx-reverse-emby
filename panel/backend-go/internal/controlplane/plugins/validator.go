@@ -124,12 +124,13 @@ const (
 )
 
 type Validator struct {
-	options         ValidatorOptions
-	permissions     map[string]struct{}
-	extensionPoints map[string]struct{}
-	trustedSigners  map[string]ed25519.PublicKey
-	supportedABIs   map[string]struct{}
-	snapshotHook    func(stage, sourceRoot, snapshotRoot string)
+	options                  ValidatorOptions
+	permissions              map[string]struct{}
+	extensionPoints          map[string]struct{}
+	trustedSigners           map[string]ed25519.PublicKey
+	supportedABIs            map[string]struct{}
+	allowRetiredCapabilities bool
+	snapshotHook             func(stage, sourceRoot, snapshotRoot string)
 }
 
 // SignerIdentity is an immutable projection of a trusted signing root.
@@ -461,13 +462,17 @@ func (v *Validator) verifyPackageSignature(root string, manifest Manifest, diges
 
 // ValidatePackageIntegrity applies the full package, schema, permission and
 // digest contract without requiring the package to remain compatible with the
-// control-plane version that happens to be running now. This is used for safe
-// inspection and cleanup of an already-installed package.
+// control-plane version that happens to be running now. Signed permission and
+// extension identifiers retired by the current host remain structurally valid
+// in this mode so an already-installed package can be inspected, upgraded, or
+// removed without making those identifiers available to new packages.
 func (v *Validator) ValidatePackageIntegrity(root string, expected PackageExpectation) (ValidatedPackage, error) {
 	options := v.options
 	options.HostVersion = ""
 	options.AgentVersion = ""
-	return NewValidator(options).ValidatePackage(root, expected)
+	validator := NewValidator(options)
+	validator.allowRetiredCapabilities = true
+	return validator.ValidatePackage(root, expected)
 }
 
 func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedMarket, error) {
@@ -777,11 +782,16 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		if permission.Name != strings.TrimSpace(permission.Name) || permission.Resource != strings.TrimSpace(permission.Resource) {
 			return validationError("permission", PackageManifestFile, errors.New("permission name and resource must use canonical whitespace"))
 		}
+		if !identifierPattern.MatchString(permission.Name) {
+			return validationError("permission", PackageManifestFile, errors.New("permission name must be a canonical identifier"))
+		}
 		if len(permission.Name) > MaxPermissionNameBytes || len(permission.Resource) > MaxPermissionResourceBytes {
 			return validationError("permission", PackageManifestFile, errors.New("permission exceeds persistence field limit"))
 		}
-		if _, allowed := v.permissions[permission.Name]; !allowed {
-			return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q is not allowed", permission.Name))
+		if !v.allowRetiredCapabilities {
+			if _, allowed := v.permissions[permission.Name]; !allowed {
+				return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q is not allowed", permission.Name))
+			}
 		}
 		resource := permission.Resource
 		if resource == "*" || strings.Contains(resource, "..") || strings.ContainsAny(resource, "\r\n\x00") {
@@ -798,8 +808,13 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		if point != strings.TrimSpace(point) {
 			return validationError("extension_point", PackageManifestFile, errors.New("extension point must use canonical whitespace"))
 		}
-		if _, allowed := v.extensionPoints[point]; !allowed {
-			return validationError("extension_point", PackageManifestFile, fmt.Errorf("extension point %q is not allowed", point))
+		if len(point) > MaxPermissionNameBytes || !identifierPattern.MatchString(point) {
+			return validationError("extension_point", PackageManifestFile, errors.New("extension point must be a canonical identifier"))
+		}
+		if !v.allowRetiredCapabilities {
+			if _, allowed := v.extensionPoints[point]; !allowed {
+				return validationError("extension_point", PackageManifestFile, fmt.Errorf("extension point %q is not allowed", point))
+			}
 		}
 		if _, duplicate := seenPoints[point]; duplicate {
 			return validationError("extension_point", PackageManifestFile, fmt.Errorf("duplicate extension point %q", point))
