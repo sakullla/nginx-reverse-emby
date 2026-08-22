@@ -32,6 +32,29 @@ type Timeouts struct {
 	Drain    time.Duration
 }
 
+// UniformTimeouts returns one bound for every lifecycle phase.
+func UniformTimeouts(timeout time.Duration) Timeouts {
+	return Timeouts{Prepare: timeout, Activate: timeout, Stop: timeout, Drain: timeout}
+}
+
+// WithDefaults fills non-positive phase bounds from defaults. New still rejects
+// any phase left non-positive after resolution.
+func (timeouts Timeouts) WithDefaults(defaults Timeouts) Timeouts {
+	if timeouts.Prepare <= 0 {
+		timeouts.Prepare = defaults.Prepare
+	}
+	if timeouts.Activate <= 0 {
+		timeouts.Activate = defaults.Activate
+	}
+	if timeouts.Stop <= 0 {
+		timeouts.Stop = defaults.Stop
+	}
+	if timeouts.Drain <= 0 {
+		timeouts.Drain = defaults.Drain
+	}
+	return timeouts
+}
+
 // Config is immutable after the first successful handshake. Capabilities are
 // the public plugin capabilities returned by the SDK handshake, while
 // RequiredGrants are the scopes the host must place in
@@ -47,6 +70,7 @@ type Config struct {
 	Capabilities      []string
 	RequiredGrants    []string
 	SupportedFeatures []string
+	RequiredFeatures  []string
 	Timeouts          Timeouts
 	LogSink           LogSink
 }
@@ -166,6 +190,14 @@ func New(config Config, hooks Hooks) (*Lifecycle, error) {
 	if err := pluginsdk.ValidateRPCFeatures(config.SupportedFeatures, config.SupportedFeatures); err != nil {
 		return nil, fmt.Errorf("supported RPC features: %w", err)
 	}
+	for _, required := range config.RequiredFeatures {
+		if !containsName(config.SupportedFeatures, required) {
+			return nil, fmt.Errorf("required RPC feature %q is not supported", required)
+		}
+	}
+	if err := pluginsdk.ValidateRPCFeatures(config.RequiredFeatures, config.RequiredFeatures); err != nil {
+		return nil, fmt.Errorf("required RPC features: %w", err)
+	}
 	return &Lifecycle{config: config, hooks: hooks, state: stateNew}, nil
 }
 
@@ -181,6 +213,15 @@ func canonicalNames(kind string, values []string) ([]string, error) {
 		}
 	}
 	return result, nil
+}
+
+func containsName(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // Handshake binds the process to one generation and an immutable grant set.
@@ -199,6 +240,11 @@ func (l *Lifecycle) Handshake(ctx context.Context, request pluginsdk.RPCHandshak
 	}
 	if request.Generation == "" {
 		return pluginsdk.RPCHandshakeResponse{}, runtimeError(pluginsdk.ErrorInvalidArgument, "generation is required", false)
+	}
+	for _, required := range l.config.RequiredFeatures {
+		if !containsName(request.RequiredFeatures, required) {
+			return pluginsdk.RPCHandshakeResponse{}, runtimeError(pluginsdk.ErrorIncompatibleABI, fmt.Sprintf("required RPC feature %q was not requested", required), false)
+		}
 	}
 	negotiated := pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1}
 	if l.config.SupportedFeatures != nil {

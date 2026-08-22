@@ -65,3 +65,29 @@ func TestLifecycleRejectsPartialOrMissingDigestBinding(t *testing.T) {
 		t.Fatal("Handshake() accepted missing Host-attested digests")
 	}
 }
+
+func TestLifecycleRequiresDeclaredHandshakeFeature(t *testing.T) {
+	lifecycle, err := New(Config{
+		PluginID: "example", PluginVersion: "1.0.0",
+		SupportedFeatures: []string{pluginsdk.RPCFeatureHTTPBackendProviderV1},
+		RequiredFeatures:  []string{pluginsdk.RPCFeatureHTTPBackendProviderV1},
+		Timeouts:          Timeouts{Prepare: time.Second, Activate: time.Second, Stop: time.Second, Drain: time.Second},
+	}, HookFuncs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := pluginsdk.RPCHandshakeRequest{
+		ABI: pluginsdk.RPCABIV1, PluginID: "example", PluginVersion: "1.0.0",
+		PackageDigest: "package", ArtifactDigest: "artifact", Generation: "generation",
+	}
+	if _, err := lifecycle.Handshake(t.Context(), request); err == nil {
+		t.Fatal("handshake without required feature was accepted")
+	}
+}
+
+func TestTimeoutDefaultsPreserveExplicitBounds(t *testing.T) {
+	resolved := (Timeouts{Prepare: 2 * time.Second}).WithDefaults(UniformTimeouts(time.Second))
+	if resolved.Prepare != 2*time.Second || resolved.Activate != time.Second || resolved.Stop != time.Second || resolved.Drain != time.Second {
+		t.Fatalf("resolved timeouts = %#v", resolved)
+	}
+}

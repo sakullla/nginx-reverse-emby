@@ -20,13 +20,30 @@ const (
 // build-time handshake probe.
 type RPCLifecycleFactory func(RPCHandshakeRequest) (RPCLifecycle, error)
 
+// RPCRuntimeLifecycleFactory constructs the lifecycle used for the supervised
+// runtime after argument and probe handling is complete.
+type RPCRuntimeLifecycleFactory func() (RPCLifecycle, error)
+
+// RPCServiceDeclaration selects standard private services for a runtime
+// lifecycle. Provider IDs use the lifecycle itself as their HTTP handler;
+// explicitly supplied handlers override that default.
+type RPCServiceDeclaration struct {
+	UI                              bool
+	UIOptional                      bool
+	HTTPBackendProviderIDs          []string
+	HTTPBackendHandlers             map[string]http.Handler
+	UnavailableHTTPBackendProviders map[string]string
+}
+
 // RPCEntrypointConfig declares the common process bootstrap shared by every
 // rpc-service plugin. Run owns only plugin-specific runtime wiring; argument
 // parsing and the canonical build-time handshake stay in the SDK.
 type RPCEntrypointConfig struct {
-	Declaration       RPCPluginDeclaration
-	NewProbeLifecycle RPCLifecycleFactory
-	Run               func(context.Context) error
+	Declaration         RPCPluginDeclaration
+	NewProbeLifecycle   RPCLifecycleFactory
+	NewRuntimeLifecycle RPCRuntimeLifecycleFactory
+	Services            RPCServiceDeclaration
+	Run                 func(context.Context) error
 }
 
 // RunRPCEntrypoint runs the canonical build-time handshake probe or starts the
@@ -73,10 +90,68 @@ func RunRPCEntrypoint(ctx context.Context, args []string, output io.Writer, conf
 	if len(args) != 0 {
 		return fmt.Errorf("unexpected %s arguments: %v", config.Declaration.PluginID, args)
 	}
-	if config.Run == nil {
-		return errors.New("RPC entrypoint runtime is required")
+	if config.NewRuntimeLifecycle != nil {
+		lifecycle, err := config.NewRuntimeLifecycle()
+		if err != nil {
+			return err
+		}
+		services, err := pluginServices(lifecycle, config.Services)
+		if err != nil {
+			return err
+		}
+		return ServeRPCPluginServices(ctx, services)
 	}
-	return config.Run(ctx)
+	if config.Run != nil {
+		return config.Run(ctx)
+	}
+	return errors.New("RPC entrypoint runtime is required")
+}
+
+func pluginServices(lifecycle RPCLifecycle, declaration RPCServiceDeclaration) (RPCPluginServices, error) {
+	services := RPCPluginServices{Lifecycle: lifecycle, UIOptional: declaration.UIOptional}
+	handler, isHandler := lifecycle.(http.Handler)
+	if declaration.UI {
+		if !isHandler {
+			return RPCPluginServices{}, errors.New("RPC plugin UI lifecycle must implement http.Handler")
+		}
+		services.UI = handler
+	}
+	if len(declaration.HTTPBackendProviderIDs) != 0 {
+		if !isHandler {
+			return RPCPluginServices{}, errors.New("RPC HTTP backend lifecycle must implement http.Handler")
+		}
+		services.HTTPBackendHandlers = make(map[string]http.Handler, len(declaration.HTTPBackendProviderIDs)+len(declaration.HTTPBackendHandlers))
+		for _, providerID := range declaration.HTTPBackendProviderIDs {
+			if strings.TrimSpace(providerID) == "" {
+				return RPCPluginServices{}, errors.New("RPC HTTP backend provider id is required")
+			}
+			services.HTTPBackendHandlers[providerID] = handler
+		}
+	}
+	if len(declaration.HTTPBackendHandlers) != 0 {
+		if services.HTTPBackendHandlers == nil {
+			services.HTTPBackendHandlers = make(map[string]http.Handler, len(declaration.HTTPBackendHandlers))
+		}
+		for providerID, providerHandler := range declaration.HTTPBackendHandlers {
+			if strings.TrimSpace(providerID) == "" || providerHandler == nil {
+				return RPCPluginServices{}, errors.New("RPC HTTP backend provider id and handler are required")
+			}
+			services.HTTPBackendHandlers[providerID] = providerHandler
+		}
+	}
+	for providerID, message := range declaration.UnavailableHTTPBackendProviders {
+		if strings.TrimSpace(providerID) == "" || strings.TrimSpace(message) == "" {
+			return RPCPluginServices{}, errors.New("unavailable RPC HTTP backend provider id and message are required")
+		}
+		if services.HTTPBackendHandlers == nil {
+			services.HTTPBackendHandlers = make(map[string]http.Handler, len(declaration.UnavailableHTTPBackendProviders))
+		}
+		unavailableMessage := message
+		services.HTTPBackendHandlers[providerID] = http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			http.Error(writer, unavailableMessage, http.StatusServiceUnavailable)
+		})
+	}
+	return services, nil
 }
 
 // RPCPluginServices declares the standard private servers owned by one RPC

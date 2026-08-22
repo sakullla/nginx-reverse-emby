@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -11,6 +13,10 @@ import (
 type entrypointLifecycleFixture struct {
 	request RPCHandshakeRequest
 }
+
+type entrypointHTTPFixture struct{ entrypointLifecycleFixture }
+
+func (*entrypointHTTPFixture) ServeHTTP(http.ResponseWriter, *http.Request) {}
 
 func (fixture *entrypointLifecycleFixture) Handshake(_ context.Context, request RPCHandshakeRequest) (RPCHandshakeResponse, error) {
 	fixture.request = request
@@ -85,5 +91,28 @@ func TestRunRPCPluginServicesCancelsSiblingsAndJoinsResults(t *testing.T) {
 	case <-canceled:
 	default:
 		t.Fatal("sibling service was not canceled")
+	}
+}
+
+func TestPluginServicesProjectsLifecycleHTTPHandler(t *testing.T) {
+	lifecycle := &entrypointHTTPFixture{}
+	services, err := pluginServices(lifecycle, RPCServiceDeclaration{
+		UI: true, UIOptional: true,
+		HTTPBackendProviderIDs:          []string{"default"},
+		UnavailableHTTPBackendProviders: map[string]string{"offline": "provider unavailable"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if services.Lifecycle != lifecycle || services.UI != lifecycle || !services.UIOptional || services.HTTPBackendHandlers["default"] != lifecycle {
+		t.Fatalf("services = %#v", services)
+	}
+	recorder := httptest.NewRecorder()
+	services.HTTPBackendHandlers["offline"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable provider status = %d", recorder.Code)
+	}
+	if _, err := pluginServices(&entrypointLifecycleFixture{}, RPCServiceDeclaration{UI: true}); err == nil {
+		t.Fatal("non-HTTP lifecycle was accepted for UI")
 	}
 }
