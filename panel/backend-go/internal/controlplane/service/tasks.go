@@ -16,6 +16,9 @@ const (
 	TaskTypePKISecurityUpdate = "pki_security_update"
 	TaskTypePKIForceRotation  = "pki_force_rotation"
 	TaskTypePluginCall        = "plugin.call"
+	TaskTypeChannelEnsure     = "channel.ensure"
+	TaskTypeChannelTeardown   = "channel.teardown"
+	TaskTypeChannelStatus     = "channel.status"
 )
 
 const taskDeadlineExceededError = "task deadline exceeded"
@@ -668,9 +671,36 @@ func (s *TaskService) nextTaskID() string {
 	return fmt.Sprintf("task-%d-%d", s.now().UTC().UnixNano(), seq)
 }
 
+// PluginHostChannelTaskDispatcher dispatches agent tasks synchronously. It
+// backs host-mediated plugin operations whose data plane runs on agents.
+type PluginHostChannelTaskDispatcher interface {
+	DispatchAgentTask(context.Context, string, string, map[string]any) (map[string]any, error)
+}
+
+// DispatchAgentTask dispatches one agent task and returns the agent-reported
+// result once the task reaches a terminal state.
+func (s *TaskService) DispatchAgentTask(ctx context.Context, agentID, taskType string, payload map[string]any) (map[string]any, error) {
+	record, err := s.CreateAndDispatchContext(ctx, TaskCreateRequest{AgentID: agentID, Type: taskType, Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+	record, err = s.WaitForTask(ctx, record.ID)
+	if err != nil {
+		return nil, err
+	}
+	if record.State != "completed" {
+		if strings.TrimSpace(record.Error) != "" {
+			return nil, fmt.Errorf("agent task failed: %s", record.Error)
+		}
+		return nil, fmt.Errorf("agent task ended in state %q", record.State)
+	}
+	return record.Result, nil
+}
+
 func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
-	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation, TaskTypePluginCall:
+	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation, TaskTypePluginCall,
+		TaskTypeChannelEnsure, TaskTypeChannelTeardown, TaskTypeChannelStatus:
 		return true
 	default:
 		return false

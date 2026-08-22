@@ -45,6 +45,10 @@ type runtimeDiagnosticRunner interface {
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
+type runtimeChannelTaskRunner interface {
+	HandleChannelTask(context.Context, string, map[string]any) (map[string]any, error)
+}
+
 type runtimePKITaskRunner interface {
 	ReconcileTunnelPKI(context.Context) error
 	ForceRotateTunnelPKI(context.Context, string) error
@@ -56,6 +60,7 @@ type LocalTaskSession struct {
 	store       diagnosticRuleStore
 	diagnostics runtimeDiagnosticRunner
 	pki         runtimePKITaskRunner
+	channels    runtimeChannelTaskRunner
 	lifecycle   context.Context
 	cancel      context.CancelFunc
 
@@ -78,12 +83,14 @@ func NewLocalTaskSession(agentID string, reporter TaskServiceRegistrar, store di
 func NewLocalTaskSessionWithDiagnostics(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore, diagnostics runtimeDiagnosticRunner) *LocalTaskSession {
 	lifecycle, cancel := context.WithCancel(context.Background())
 	pki, _ := diagnostics.(runtimePKITaskRunner)
+	channels, _ := diagnostics.(runtimeChannelTaskRunner)
 	return &LocalTaskSession{
 		agentID:     agentID,
 		reporter:    reporter,
 		store:       store,
 		diagnostics: diagnostics,
 		pki:         pki,
+		channels:    channels,
 		lifecycle:   lifecycle,
 		cancel:      cancel,
 	}
@@ -170,6 +177,8 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 		result, taskErr = s.forceRotatePKI(ctx, envelope)
 	case service.TaskTypePluginCall:
 		result, taskErr = s.handlePluginCall(ctx, envelope)
+	case service.TaskTypeChannelEnsure, service.TaskTypeChannelTeardown, service.TaskTypeChannelStatus:
+		result, taskErr = s.handleChannelTask(ctx, envelope)
 	default:
 		taskErr = fmt.Errorf("unsupported task type %q", envelope.Type)
 	}
@@ -229,6 +238,13 @@ func (s *LocalTaskSession) handlePluginCall(ctx context.Context, envelope servic
 		response = json.RawMessage("null")
 	}
 	return map[string]any{"payload": json.RawMessage(response)}, nil
+}
+
+func (s *LocalTaskSession) handleChannelTask(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	if s.channels == nil {
+		return nil, errors.New("embedded channel task runner is unavailable")
+	}
+	return s.channels.HandleChannelTask(ctx, envelope.Type, envelope.Payload)
 }
 
 func (s *LocalTaskSession) reconcilePKISecurity(ctx context.Context) (map[string]any, error) {

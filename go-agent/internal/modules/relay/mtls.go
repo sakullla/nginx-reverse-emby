@@ -360,6 +360,9 @@ func verifyTunnelPeer(peerCertificates []*x509.Certificate, security TunnelSecur
 		if listenerID != "" {
 			return tunnelPeerIdentity{}, errors.New("tunnel client certificate contains a listener identity")
 		}
+		if expected.agentID != "" && agentID != expected.agentID {
+			return tunnelPeerIdentity{}, errors.New("tunnel client URI identity does not match the expected agent")
+		}
 	} else if agentID != expected.agentID || listenerID != expected.listenerID {
 		return tunnelPeerIdentity{}, errors.New("tunnel server URI identity does not match the relay listener")
 	}

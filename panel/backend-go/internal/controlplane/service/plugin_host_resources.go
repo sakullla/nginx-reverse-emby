@@ -88,6 +88,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostHTTPRule(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeL4Rule:
 		payload, err = manager.pluginHostL4Rule(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeChannelReverse:
+		payload, err = manager.pluginHostChannelReverse(ctx, candidate, call.Payload)
 	default:
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	}
@@ -131,6 +133,8 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionHTTPRule
 	case pluginsdk.HostRuntimeL4Rule:
 		return pluginsdk.PermissionL4Rule
+	case pluginsdk.HostRuntimeChannelReverse:
+		return pluginsdk.PermissionChannelReverse
 	default:
 		return ""
 	}
@@ -146,7 +150,8 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
-	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule || call.Operation == pluginsdk.HostRuntimeL4Rule {
+	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule || call.Operation == pluginsdk.HostRuntimeL4Rule ||
+		call.Operation == pluginsdk.HostRuntimeChannelReverse {
 		return true
 	}
 	if call.Operation != "http.secret-request" {
@@ -512,6 +517,12 @@ type pluginHostHTTPRuleService interface {
 	List(context.Context, string) ([]HTTPRule, error)
 }
 
+// pluginHostChannelSessions dispatches agent-scoped tasks. The reverse
+// channel data plane is driven by agent tasks rather than a panel service.
+type pluginHostChannelSessions interface {
+	DispatchAgentTask(context.Context, string, string, map[string]any) (map[string]any, error)
+}
+
 type pluginHostL4RuleService interface {
 	Create(context.Context, string, L4RuleInput) (L4Rule, error)
 	Get(context.Context, string, int) (L4Rule, error)
@@ -521,11 +532,13 @@ type pluginHostL4RuleService interface {
 }
 
 type pluginHostRuntimeState struct {
-	mu      sync.Mutex
-	tasks   pluginHostTaskDispatcher
-	rules   pluginHostHTTPRuleService
-	l4rules pluginHostL4RuleService
-	lookup  func(context.Context, string, string) (pluginCallTarget, error)
+	mu             sync.Mutex
+	tasks          pluginHostTaskDispatcher
+	rules          pluginHostHTTPRuleService
+	l4rules        pluginHostL4RuleService
+	channels       pluginHostChannelSessions
+	channelProject pluginHostChannelListenerProjector
+	lookup         func(context.Context, string, string) (pluginCallTarget, error)
 }
 
 var pluginHostRuntimeStates sync.Map
@@ -556,6 +569,20 @@ func (manager *PluginCapabilityManager) SetL4RuleService(rules pluginHostL4RuleS
 	state := pluginHostState(manager)
 	state.mu.Lock()
 	state.l4rules = rules
+	state.mu.Unlock()
+}
+
+func (manager *PluginCapabilityManager) SetChannelTaskDispatcher(sessions pluginHostChannelSessions) {
+	state := pluginHostState(manager)
+	state.mu.Lock()
+	state.channels = sessions
+	state.mu.Unlock()
+}
+
+func (manager *PluginCapabilityManager) SetChannelListenerProjector(projector pluginHostChannelListenerProjector) {
+	state := pluginHostState(manager)
+	state.mu.Lock()
+	state.channelProject = projector
 	state.mu.Unlock()
 }
 
@@ -599,6 +626,24 @@ func (state *pluginHostRuntimeState) l4RuleService() pluginHostL4RuleService {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return state.l4rules
+}
+
+func (state *pluginHostRuntimeState) channelTaskDispatcher() pluginHostChannelSessions {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.channels
+}
+
+func (state *pluginHostRuntimeState) channelListenerProjector() pluginHostChannelListenerProjector {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.channelProject
 }
 
 func (state *pluginHostRuntimeState) pluginCallLookup() func(context.Context, string, string) (pluginCallTarget, error) {

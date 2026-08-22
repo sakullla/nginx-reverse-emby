@@ -27,6 +27,8 @@ const (
 	PermissionStorageRead                    SandboxPermission = "storage.read"
 	PermissionStorageWrite                   SandboxPermission = "storage.write"
 	PermissionHTTPRule                       SandboxPermission = SandboxPermission(pluginsdk.CapabilityHTTPRule)
+	PermissionL4Rule                         SandboxPermission = SandboxPermission(pluginsdk.CapabilityL4Rule)
+	PermissionChannelReverse                 SandboxPermission = SandboxPermission(pluginsdk.CapabilityChannelReverse)
 	PermissionUIDynamic                      SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamic)
 	PermissionDNSManage                      SandboxPermission = "dns.manage"
 	PermissionPolicyAtomicState              SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyAtomicState)
@@ -90,7 +92,7 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 			requirement.privileged = true
 		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions,
-			PermissionHTTPRule, PermissionUIDynamic:
+			PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic:
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
 		}
@@ -162,7 +164,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
 		PermissionStorageRead, PermissionStorageWrite, PermissionDNSManage,
-		PermissionHTTPRule, PermissionUIDynamic,
+		PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
 		return true

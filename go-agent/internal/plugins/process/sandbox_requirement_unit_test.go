@@ -47,3 +47,41 @@ func TestNewSandboxRequirementAllowsResourceGroupExtension(t *testing.T) {
 		t.Fatalf("resource.group package digest binding = %v", err)
 	}
 }
+
+func TestNewSandboxRequirementKeepsL4RulePermissionHostMediated(t *testing.T) {
+	t.Parallel()
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest:   strings.Repeat("e", 64),
+		Permissions:     []SandboxPermission{PermissionL4Rule},
+		ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPRequest},
+		ResourceBudget: ManifestResourceBudget{
+			TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1,
+			InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("l4.rule sandbox requirement = %v", err)
+	}
+	if requirement.RequiresPrivilegeBoundary() || requirement.RequiresFilesystemBoundary() || requirement.Budget().Network {
+		t.Fatal("l4.rule permission gained ambient privilege, filesystem, or network authority")
+	}
+}
+
+func TestNewSandboxRequirementKeepsChannelReversePermissionHostMediated(t *testing.T) {
+	t.Parallel()
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest:   strings.Repeat("f", 64),
+		Permissions:     []SandboxPermission{PermissionChannelReverse},
+		ExtensionPoints: []SandboxExtensionPoint{ExtensionHTTPRequest},
+		ResourceBudget: ManifestResourceBudget{
+			TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1,
+			InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("channel.reverse sandbox requirement = %v", err)
+	}
+	if requirement.RequiresPrivilegeBoundary() || requirement.RequiresFilesystemBoundary() || requirement.Budget().Network {
+		t.Fatal("channel.reverse permission gained ambient privilege, filesystem, or network authority")
+	}
+}

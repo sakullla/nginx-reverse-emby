@@ -141,6 +141,41 @@ func TestHostAPIAuthorizationProjectsL4RuleCapability(t *testing.T) {
 	}
 }
 
+func TestHostAPIAuthorizationProjectsChannelReverseCapability(t *testing.T) {
+	capability := pluginsdk.CapabilityChannelReverse
+	target := pluginsdk.HostTarget{Kind: "channel_session", ID: "edge-a:session-1", ResourceGroupID: "group-1"}
+	call := pluginsdk.HostCapabilityCall{PluginID: "official.channel-manager", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.channel-manager", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
+	for _, test := range []struct {
+		name     string
+		declared []pluginsdk.HostCapability
+		granted  []pluginsdk.HostCapability
+		wantDeny bool
+	}{
+		{name: "declared and granted", declared: []pluginsdk.HostCapability{capability}, granted: []pluginsdk.HostCapability{capability}},
+		{name: "not declared", granted: []pluginsdk.HostCapability{capability}, wantDeny: true},
+		{name: "not granted", declared: []pluginsdk.HostCapability{capability}, wantDeny: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			quota, _ := NewCallQuota(4)
+			audit := &auditRecorder{}
+			authorizer := Authorizer{PluginID: call.PluginID, InstanceID: call.InstanceID, Generation: call.Generation, Declared: test.declared, Granted: test.granted, Actor: call.Actor, ActorCapabilities: []pluginsdk.HostCapability{capability}, Targets: []pluginsdk.HostTarget{target}, Quota: quota, Auditor: audit}
+			err := authorizer.Authorize(t.Context(), call)
+			if test.wantDeny {
+				if !errors.Is(err, ErrDenied) {
+					t.Fatalf("Authorize() error = %v, want denial", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+			if len(audit.events) != 1 || audit.events[0].Outcome != "allowed" || audit.events[0].Call.Capability != capability {
+				t.Fatalf("audit events = %+v", audit.events)
+			}
+		})
+	}
+}
+
 func TestHostAPIRevocableHandleBindsOwnerAndFencesDrainAndTargetRotation(t *testing.T) {
 	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
 	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}

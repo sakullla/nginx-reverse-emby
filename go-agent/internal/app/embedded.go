@@ -7,6 +7,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulechannel "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/channel"
 	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
@@ -69,6 +70,14 @@ func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	app.setConfiguredModules(modules)
 	app.pkiStore = pkiStore
 	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
+	channelManager, channelErr := modulechannel.NewManager(modulechannel.Config{
+		AgentID:     cfg.AgentID,
+		Credentials: app.relayTunnelCredentials,
+	})
+	if channelErr != nil {
+		return nil, fmt.Errorf("initialize channel session manager: %w", channelErr)
+	}
+	app.channelManager = channelManager
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

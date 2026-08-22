@@ -741,6 +741,12 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if d.L4RuleService != nil {
 			manager.SetL4RuleService(d.L4RuleService)
 		}
+		if sessions, ok := d.TaskService.(service.PluginHostChannelTaskDispatcher); ok {
+			manager.SetChannelTaskDispatcher(sessions)
+		}
+		if pki, ok := d.PKIService.(service.AgentPKIController); ok {
+			manager.SetChannelListenerProjector(pki.PrepareRelayListeners)
+		}
 		manager.SetTrafficSummaryProvider(d.TrafficService)
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 		d.PluginRuntimeHost.SetHostResourceDispatcher(manager)
