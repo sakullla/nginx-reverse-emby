@@ -62,3 +62,31 @@ func TestHostRuntimeCallRejectsUnboundedOrInvalidPayload(t *testing.T) {
 		t.Fatal("unconfigured host runtime client was accepted")
 	}
 }
+
+func TestPluginCallAndHTTPRuleRequestsValidateWithoutInterpretingActionNames(t *testing.T) {
+	call := PluginCallRequest{AgentID: "edge-a", Name: "compose.apply", Payload: json.RawMessage(`{"yaml":"services:\n  app:\n    image: example\n"}`)}
+	if err := call.Validate(); err != nil {
+		t.Fatalf("plugin.call envelope: %v", err)
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimePluginCall, Payload: json.RawMessage(`{"agent_id":"edge-a","name":"engine.report"}`)}).Validate(); err != nil {
+		t.Fatalf("plugin.call host operation: %v", err)
+	}
+	if err := (PluginCallRequest{AgentID: "edge-a", Name: "contains\nnewline"}).Validate(); err == nil {
+		t.Fatal("plugin.call accepted a non-canonical name")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCreate, AgentID: "edge-a", Domain: "app.example.com", Port: 8096}).Validate(); err != nil {
+		t.Fatalf("http.rule create: %v", err)
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: ""}).Validate(); err == nil {
+		t.Fatal("empty rule_ref cutover was accepted")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: "12"}).Validate(); err != nil {
+		t.Fatalf("http.rule cutover: %v", err)
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeHTTPRule}).Validate(); err != nil {
+		t.Fatalf("http.rule host operation: %v", err)
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeEventEmit}).Validate(); err != nil {
+		t.Fatalf("event.emit host operation: %v", err)
+	}
+}

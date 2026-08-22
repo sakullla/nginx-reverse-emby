@@ -34,6 +34,7 @@ type TaskClientConfig struct {
 	HTTPTransport HTTPTransportConfig
 	HTTPClient    *http.Client
 	Handler       TaskHandler
+	PluginCaller  PluginCaller
 }
 
 type TaskHandler interface {
@@ -469,17 +470,24 @@ func (c *TaskClient) handleTaskMessage(ctx context.Context, task TaskMessage, up
 	if err := update(ctx, task.TaskID, map[string]any{"state": "running"}); err != nil {
 		return err
 	}
-	if c.cfg.Handler == nil {
-		return update(ctx, task.TaskID, map[string]any{
-			"state": "failed",
-			"error": "no task handler configured",
-		})
-	}
 
 	taskCtx, cancel := contextWithTaskDeadline(ctx, task.Deadline)
 	defer cancel()
 
-	result, err := c.cfg.Handler.HandleTask(taskCtx, task)
+	var (
+		result map[string]any
+		err    error
+	)
+	if strings.TrimSpace(task.TaskType) == TaskTypePluginCall {
+		result, err = HandlePluginCallTask(taskCtx, c.cfg.PluginCaller, task)
+	} else if c.cfg.Handler == nil {
+		return update(ctx, task.TaskID, map[string]any{
+			"state": "failed",
+			"error": "no task handler configured",
+		})
+	} else {
+		result, err = c.cfg.Handler.HandleTask(taskCtx, task)
+	}
 	if err != nil {
 		return update(ctx, task.TaskID, map[string]any{
 			"state": "failed",

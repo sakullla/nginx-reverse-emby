@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
@@ -42,6 +44,12 @@ func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.C
 			return pluginHostRuntimeFailure(pluginsdk.ErrorPermissionDenied, "host resource permission was not granted", false)
 		}
 		return manager.pluginHostOperationInspect(ctx, candidate, call.Payload)
+	}
+	if call.Operation == pluginsdk.HostRuntimePluginCall {
+		if call.OperationID != "" {
+			return manager.dispatchDurablePluginHostResource(ctx, candidate, call)
+		}
+		return manager.dispatchPluginHostResource(ctx, candidate, call)
 	}
 	permission := pluginHostOperationPermission(call.Operation)
 	if permission == "" || !pluginCandidateHasGrant(candidate, permission) {
@@ -74,6 +82,10 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostSecretRequest(ctx, candidate, call.Payload)
 	case "event.emit":
 		payload, err = manager.pluginHostEvent(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimePluginCall:
+		payload, err = manager.pluginHostPluginCall(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeHTTPRule:
+		payload, err = manager.pluginHostHTTPRule(ctx, candidate, call.Payload)
 	default:
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	}
@@ -94,8 +106,9 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 }
 
 var (
-	errPluginHostInvalid = errors.New("plugin host resource request is invalid")
-	errPluginHostDenied  = errors.New("plugin host resource request is denied")
+	errPluginHostInvalid     = errors.New("plugin host resource request is invalid")
+	errPluginHostDenied      = errors.New("plugin host resource request is denied")
+	errPluginHostUnavailable = errors.New("plugin host resource request is unavailable")
 )
 
 func pluginHostOperationPermission(operation string) string {
@@ -112,6 +125,8 @@ func pluginHostOperationPermission(operation string) string {
 		return "event.emit"
 	case "operation.inspect":
 		return "storage.read"
+	case pluginsdk.HostRuntimeHTTPRule:
+		return pluginsdk.PermissionHTTPRule
 	default:
 		return ""
 	}
@@ -127,7 +142,7 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
-	if call.Operation == "secret.put" {
+	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule {
 		return true
 	}
 	if call.Operation != "http.secret-request" {
@@ -478,6 +493,367 @@ func (manager *PluginCapabilityManager) pluginHostEvent(ctx context.Context, can
 	}
 	err := store.AppendAuditEvent(ctx, storage.AuditEventRow{ID: capabilityAuditID(), ActorID: "plugin/" + candidate.Identity.PluginID, Action: input.Action, TargetKind: input.TargetKind, TargetID: input.TargetID, ResourceGroupID: candidate.ResourceGroupID, CorrelationID: candidate.Identity.Generation, Result: input.Result, MetadataJSON: string(metadata), CreatedAt: time.Now().UTC()})
 	return map[string]any{"emitted": err == nil}, err
+}
+
+type pluginHostTaskDispatcher interface {
+	HasSession(string) bool
+	CreateAndDispatchContext(context.Context, TaskCreateRequest) (TaskRecord, error)
+	WaitForTask(context.Context, string) (TaskRecord, error)
+}
+
+type pluginHostHTTPRuleService interface {
+	Create(context.Context, string, HTTPRuleInput) (HTTPRule, error)
+	Get(context.Context, string, int) (HTTPRule, error)
+	Update(context.Context, string, int, HTTPRuleInput) (HTTPRule, error)
+	List(context.Context, string) ([]HTTPRule, error)
+}
+
+type pluginHostRuntimeState struct {
+	mu     sync.Mutex
+	tasks  pluginHostTaskDispatcher
+	rules  pluginHostHTTPRuleService
+	lookup func(context.Context, string, string) (pluginCallTarget, error)
+}
+
+var pluginHostRuntimeStates sync.Map
+
+func pluginHostState(manager *PluginCapabilityManager) *pluginHostRuntimeState {
+	if manager == nil {
+		return &pluginHostRuntimeState{}
+	}
+	actual, _ := pluginHostRuntimeStates.LoadOrStore(manager, &pluginHostRuntimeState{})
+	return actual.(*pluginHostRuntimeState)
+}
+
+func (manager *PluginCapabilityManager) SetTaskService(tasks *TaskService) {
+	state := pluginHostState(manager)
+	state.mu.Lock()
+	state.tasks = tasks
+	state.mu.Unlock()
+}
+
+func (manager *PluginCapabilityManager) SetRuleService(rules *ruleService) {
+	state := pluginHostState(manager)
+	state.mu.Lock()
+	state.rules = rules
+	state.mu.Unlock()
+}
+
+func (manager *PluginCapabilityManager) setPluginCallLookup(lookup func(context.Context, string, string) (pluginCallTarget, error)) {
+	state := pluginHostState(manager)
+	state.mu.Lock()
+	state.lookup = lookup
+	state.mu.Unlock()
+}
+
+func (state *pluginHostRuntimeState) taskDispatcher() pluginHostTaskDispatcher {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.tasks
+}
+
+func (state *pluginHostRuntimeState) ruleService() pluginHostHTTPRuleService {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.rules
+}
+
+func (state *pluginHostRuntimeState) pluginCallLookup() func(context.Context, string, string) (pluginCallTarget, error) {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.lookup
+}
+
+type pluginCallLookupStore interface {
+	GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error)
+	ListPluginInstances(context.Context, string) ([]storage.PluginInstanceRow, error)
+	GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
+}
+
+type pluginCallTarget struct {
+	InstanceID string
+	Generation string
+	PluginID   string
+}
+
+func (manager *PluginCapabilityManager) pluginHostPluginCall(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (json.RawMessage, error) {
+	var input pluginsdk.PluginCallRequest
+	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return nil, errPluginHostInvalid
+	}
+	if err := manager.authorizePluginCallCaller(ctx, candidate); err != nil {
+		return nil, err
+	}
+	target, err := manager.resolvePluginCallTarget(ctx, candidate.Identity.PluginID, input.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	if target.PluginID != candidate.Identity.PluginID {
+		return nil, errPluginHostDenied
+	}
+	tasks := pluginHostState(manager).taskDispatcher()
+	if tasks == nil || !tasks.HasSession(input.AgentID) {
+		return nil, errPluginHostUnavailable
+	}
+	payload := map[string]any{
+		"plugin_id":   candidate.Identity.PluginID,
+		"instance_id": target.InstanceID,
+		"generation":  target.Generation,
+		"name":        input.Name,
+	}
+	if len(input.Payload) > 0 {
+		payload["payload"] = input.Payload
+	}
+	record, err := tasks.CreateAndDispatchContext(ctx, TaskCreateRequest{
+		AgentID: input.AgentID,
+		Type:    TaskTypePluginCall,
+		Payload: payload,
+	})
+	if err != nil {
+		if errors.Is(err, errTaskSessionUnavailable) {
+			return nil, errPluginHostUnavailable
+		}
+		return nil, err
+	}
+	record, err = tasks.WaitForTask(ctx, record.ID)
+	if err != nil {
+		return nil, errors.Join(err, errPluginHostUnavailable)
+	}
+	if record.Result == nil {
+		return nil, errPluginHostUnavailable
+	}
+	encoded, err := json.Marshal(record.Result["payload"])
+	if err != nil || (len(encoded) > 0 && !json.Valid(encoded)) || len(encoded) > pluginsdk.PluginHostPayloadMaxBytes {
+		return nil, errPluginHostUnavailable
+	}
+	if encoded == nil {
+		encoded = []byte("null")
+	}
+	return json.RawMessage(encoded), nil
+}
+
+func (manager *PluginCapabilityManager) authorizePluginCallCaller(ctx context.Context, candidate pluginhost.Candidate) error {
+	store, ok := manager.store.(pluginCallLookupStore)
+	if !ok {
+		return nil
+	}
+	installed, found, err := store.GetInstalledPlugin(ctx, candidate.Identity.PluginID)
+	if err != nil {
+		return err
+	}
+	if found && strings.TrimSpace(installed.HostScope) != "" && strings.TrimSpace(installed.HostScope) != "control-plane" {
+		return errPluginHostDenied
+	}
+	return nil
+}
+
+func (manager *PluginCapabilityManager) resolvePluginCallTarget(ctx context.Context, pluginID, agentID string) (pluginCallTarget, error) {
+	if lookup := pluginHostState(manager).pluginCallLookup(); lookup != nil {
+		return lookup(ctx, pluginID, agentID)
+	}
+	store, ok := manager.store.(pluginCallLookupStore)
+	if !ok {
+		return pluginCallTarget{}, errPluginHostUnavailable
+	}
+	installed, found, err := store.GetInstalledPlugin(ctx, pluginID)
+	if err != nil {
+		return pluginCallTarget{}, err
+	}
+	if !found {
+		return pluginCallTarget{}, errPluginHostUnavailable
+	}
+	instances, err := store.ListPluginInstances(ctx, pluginID)
+	if err != nil {
+		return pluginCallTarget{}, err
+	}
+	for _, instance := range instances {
+		if !instance.DesiredEnabled {
+			continue
+		}
+		if !pluginHostInstanceTargetsAgent(instance.TargetJSON, agentID) {
+			continue
+		}
+		operationID := strings.TrimSpace(instance.PendingOperationID)
+		if operationID == "" {
+			operationID = strings.TrimSpace(installed.LastOperationID)
+		}
+		if operationID == "" {
+			continue
+		}
+		status, ok, err := store.GetPluginAgentRuntimeStatusFence(ctx, operationID, agentID, instance.ID)
+		if err != nil {
+			return pluginCallTarget{}, err
+		}
+		if !ok || status.PluginID != pluginID || (status.State != "active" && status.State != "prepared") {
+			continue
+		}
+		generation := strings.TrimSpace(status.GenerationID)
+		if generation == "" {
+			generation = candidatePluginCallGeneration(instance)
+		}
+		return pluginCallTarget{InstanceID: instance.ID, Generation: generation, PluginID: pluginID}, nil
+	}
+	return pluginCallTarget{}, errPluginHostUnavailable
+}
+
+func candidatePluginCallGeneration(instance storage.PluginInstanceRow) string {
+	if strings.TrimSpace(instance.PendingOperationID) != "" {
+		return instance.PendingOperationID
+	}
+	return instance.ID
+}
+
+func (manager *PluginCapabilityManager) pluginHostHTTPRule(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (map[string]any, error) {
+	var input pluginsdk.HTTPRuleRequest
+	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return nil, errPluginHostInvalid
+	}
+	rules := pluginHostState(manager).ruleService()
+	if rules == nil {
+		return nil, errPluginHostUnavailable
+	}
+	ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
+	switch input.Action {
+	case pluginsdk.HTTPRuleActionCreate:
+		return manager.pluginHostHTTPRuleCreate(ctx, rules, input)
+	case pluginsdk.HTTPRuleActionCutover:
+		return manager.pluginHostHTTPRuleCutover(ctx, rules, input)
+	default:
+		return nil, errPluginHostInvalid
+	}
+}
+
+func (manager *PluginCapabilityManager) pluginHostHTTPRuleCreate(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (map[string]any, error) {
+	frontend, err := pluginHostRuleFrontendURL(input.Domain)
+	if err != nil {
+		return nil, errPluginHostInvalid
+	}
+	backend, err := pluginHostRuleBackendURL(input.Port)
+	if err != nil {
+		return nil, errPluginHostInvalid
+	}
+	enabled := true
+	rule, err := rules.Create(ctx, input.AgentID, HTTPRuleInput{
+		FrontendURL: &frontend,
+		Backends:    &[]HTTPRuleBackend{{URL: backend}},
+		Enabled:     &enabled,
+	})
+	if err != nil {
+		if errors.Is(err, ErrAgentNotFound) || errors.Is(err, ErrInvalidArgument) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostHTTPRuleResult(rule), nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostHTTPRuleCutover(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (map[string]any, error) {
+	if strings.TrimSpace(input.RuleRef) == "" {
+		return nil, errPluginHostInvalid
+	}
+	rule, err := manager.resolvePluginHostHTTPRule(ctx, rules, input)
+	if err != nil {
+		return nil, err
+	}
+	update := HTTPRuleInput{}
+	if input.Port > 0 {
+		backend, err := pluginHostRuleBackendURL(input.Port)
+		if err != nil {
+			return nil, errPluginHostInvalid
+		}
+		update.Backends = &[]HTTPRuleBackend{{URL: backend}}
+	}
+	if strings.TrimSpace(input.Domain) != "" {
+		frontend, err := pluginHostRuleFrontendURL(input.Domain)
+		if err != nil {
+			return nil, errPluginHostInvalid
+		}
+		update.FrontendURL = &frontend
+	}
+	if update.Backends == nil && update.FrontendURL == nil {
+		return pluginHostHTTPRuleResult(rule), nil
+	}
+	updated, err := rules.Update(ctx, rule.AgentID, rule.ID, update)
+	if err != nil {
+		if errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrInvalidArgument) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostHTTPRuleResult(updated), nil
+}
+
+func (manager *PluginCapabilityManager) resolvePluginHostHTTPRule(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (HTTPRule, error) {
+	agentID := strings.TrimSpace(input.AgentID)
+	if id, err := parsePluginHostRuleRef(input.RuleRef); err == nil {
+		if agentID == "" {
+			return HTTPRule{}, errPluginHostInvalid
+		}
+		rule, err := rules.Get(ctx, agentID, id)
+		if err != nil {
+			if errors.Is(err, ErrRuleNotFound) {
+				return HTTPRule{}, errPluginHostInvalid
+			}
+			return HTTPRule{}, err
+		}
+		return rule, nil
+	}
+	if agentID == "" {
+		return HTTPRule{}, errPluginHostInvalid
+	}
+	listed, err := rules.List(ctx, agentID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	want := strings.TrimSpace(input.RuleRef)
+	for _, rule := range listed {
+		if rule.FrontendURL == want {
+			return rule, nil
+		}
+		if _, host, ok := parseRuleFrontendTarget(rule.FrontendURL); ok && host == want {
+			return rule, nil
+		}
+	}
+	return HTTPRule{}, errPluginHostInvalid
+}
+
+func pluginHostInstanceTargetsAgent(raw, agentID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+		return false
+	}
+	var targets []string
+	if json.Unmarshal([]byte(raw), &targets) != nil {
+		return false
+	}
+	for _, target := range targets {
+		if strings.TrimSpace(target) == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginHostHTTPRuleResult(rule HTTPRule) map[string]any {
+	backend := ""
+	if len(rule.Backends) > 0 {
+		backend = strings.TrimSpace(rule.Backends[0].URL)
+	}
+	return map[string]any{
+		"rule_ref":     strconv.Itoa(rule.ID),
+		"agent_id":     rule.AgentID,
+		"frontend_url": rule.FrontendURL,
+		"backend_url":  backend,
+	}
 }
 
 func decodePluginHostPayload(raw json.RawMessage, target any) error {

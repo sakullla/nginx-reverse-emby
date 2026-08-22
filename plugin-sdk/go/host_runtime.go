@@ -18,6 +18,10 @@ const (
 	HeaderPluginHostCredential = "X-NRE-Plugin-Host-Credential"
 	PluginHostCallPath         = "/nre.plugin.host.v1/call"
 	PluginHostPayloadMaxBytes  = 1 << 20
+
+	HostRuntimePluginCall = "plugin.call"
+	HostRuntimeHTTPRule   = "http.rule"
+	HostRuntimeEventEmit  = "event.emit"
 )
 
 type HostRuntimeCall struct {
@@ -139,4 +143,77 @@ func (client *HostRuntimeClient) Call(ctx context.Context, call HostRuntimeCall,
 		return fmt.Errorf("decode plugin host runtime payload: %w", err)
 	}
 	return nil
+}
+
+// PluginCallRequest is the opaque control-plane → Agent execution-face
+// envelope. Hosts must forward Name and Payload without interpreting them.
+type PluginCallRequest struct {
+	AgentID string          `json:"agent_id"`
+	Name    string          `json:"name"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+func (request PluginCallRequest) Validate() error {
+	if err := ValidatePolicyIdentity(request.AgentID); err != nil {
+		return fmt.Errorf("plugin.call agent id: %w", err)
+	}
+	if err := ValidatePolicyIdentity(request.Name); err != nil {
+		return fmt.Errorf("plugin.call name: %w", err)
+	}
+	if len(request.Payload) > PluginHostPayloadMaxBytes || (len(request.Payload) > 0 && !json.Valid(request.Payload)) {
+		return errors.New("plugin.call payload is invalid or exceeds the canonical bound")
+	}
+	return nil
+}
+
+const (
+	HTTPRuleActionCreate  = "create"
+	HTTPRuleActionCutover = "cutover"
+)
+
+// HTTPRuleRequest creates or switches a control-plane HTTP rule. Cutover with
+// an empty RuleRef is an explicit error and must not rewrite other rules.
+type HTTPRuleRequest struct {
+	Action  string `json:"action"`
+	AgentID string `json:"agent_id,omitempty"`
+	Domain  string `json:"domain,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	RuleRef string `json:"rule_ref,omitempty"`
+}
+
+func (request HTTPRuleRequest) Validate() error {
+	switch request.Action {
+	case HTTPRuleActionCreate:
+		if err := ValidatePolicyIdentity(request.AgentID); err != nil {
+			return fmt.Errorf("http.rule agent id: %w", err)
+		}
+		if strings.TrimSpace(request.Domain) == "" || request.Domain != strings.TrimSpace(request.Domain) || len(request.Domain) > 253 || strings.ContainsAny(request.Domain, "\r\n\x00 /") {
+			return errors.New("http.rule domain is invalid")
+		}
+		if request.Port <= 0 || request.Port > 65535 {
+			return errors.New("http.rule port is invalid")
+		}
+		if strings.TrimSpace(request.RuleRef) != "" {
+			return errors.New("http.rule create does not accept rule_ref")
+		}
+		return nil
+	case HTTPRuleActionCutover:
+		if strings.TrimSpace(request.RuleRef) == "" {
+			return errors.New("http.rule cutover rule_ref is required")
+		}
+		if err := ValidatePolicyIdentity(request.RuleRef); err != nil {
+			return fmt.Errorf("http.rule rule_ref: %w", err)
+		}
+		if request.AgentID != "" {
+			if err := ValidatePolicyIdentity(request.AgentID); err != nil {
+				return fmt.Errorf("http.rule agent id: %w", err)
+			}
+		}
+		if request.Port < 0 || request.Port > 65535 {
+			return errors.New("http.rule port is invalid")
+		}
+		return nil
+	default:
+		return fmt.Errorf("http.rule action %q is unsupported", request.Action)
+	}
 }

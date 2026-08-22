@@ -15,6 +15,7 @@ const (
 	TaskTypeDiagnoseL4TCPRule = "diagnose_l4_tcp_rule"
 	TaskTypePKISecurityUpdate = "pki_security_update"
 	TaskTypePKIForceRotation  = "pki_force_rotation"
+	TaskTypePluginCall        = "plugin.call"
 )
 
 const taskDeadlineExceededError = "task deadline exceeded"
@@ -515,6 +516,54 @@ func sendTaskWithContext(ctx context.Context, session TaskSession, envelope Task
 	}
 }
 
+func (s *TaskService) HasSession(agentID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	if s == nil || agentID == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		return false
+	}
+	session, ok := s.sessions[agentID]
+	return ok && session.session != nil
+}
+
+func (s *TaskService) WaitForTask(ctx context.Context, taskID string) (TaskRecord, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		record, ok := s.tasks[strings.TrimSpace(taskID)]
+		if ok {
+			record = s.expireTaskIfDeadlineExceededLocked(record, s.now().UTC())
+			s.tasks[record.ID] = record
+		}
+		s.mu.Unlock()
+		if !ok {
+			return TaskRecord{}, ErrTaskNotFound
+		}
+		switch record.State {
+		case "completed":
+			return record, nil
+		case "failed":
+			if record.Error == "" {
+				return record, errors.New("task failed")
+			}
+			return record, fmt.Errorf("task failed: %s", record.Error)
+		}
+		select {
+		case <-ctx.Done():
+			return record, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *TaskService) waitForTaskTerminal(ctx context.Context, taskID string) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -621,7 +670,7 @@ func (s *TaskService) nextTaskID() string {
 
 func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
-	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation:
+	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation, TaskTypePluginCall:
 		return true
 	default:
 		return false

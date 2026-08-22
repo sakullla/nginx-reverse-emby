@@ -2312,6 +2312,40 @@ func isValidHTTPURL(raw string) bool {
 	}
 }
 
+func pluginHostRuleFrontendURL(domain string) (string, error) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" || domain != strings.TrimSpace(domain) || strings.ContainsAny(domain, "\r\n\x00 /") {
+		return "", fmt.Errorf("%w: domain is invalid", ErrInvalidArgument)
+	}
+	frontend := domain
+	if !strings.Contains(domain, "://") {
+		frontend = "http://" + domain
+	}
+	if !isValidHTTPURL(frontend) {
+		return "", fmt.Errorf("%w: domain is not a valid HTTP frontend", ErrInvalidArgument)
+	}
+	return frontend, nil
+}
+
+func pluginHostRuleBackendURL(port int) (string, error) {
+	if port <= 0 || port > 65535 {
+		return "", fmt.Errorf("%w: port is invalid", ErrInvalidArgument)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port), nil
+}
+
+func parsePluginHostRuleRef(ruleRef string) (int, error) {
+	ruleRef = strings.TrimSpace(ruleRef)
+	if ruleRef == "" {
+		return 0, fmt.Errorf("%w: rule_ref is required", ErrInvalidArgument)
+	}
+	id, err := strconv.Atoi(ruleRef)
+	if err != nil || id <= 0 || strconv.Itoa(id) != ruleRef {
+		return 0, fmt.Errorf("%w: rule_ref is invalid", ErrInvalidArgument)
+	}
+	return id, nil
+}
+
 func httpRuleFrontendListenPort(raw string) (int, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil {
