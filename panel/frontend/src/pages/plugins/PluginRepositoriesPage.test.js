@@ -243,6 +243,9 @@ describe('PluginRepositoriesPage', () => {
     expect(buttonByText('编辑')).toBeUndefined()
     expect(buttonByText('删除源')).toBeUndefined()
     expect(wrapper.text()).toContain('official.waf')
+    expect(buttonByText('关闭').classes()).toEqual(expect.arrayContaining(['btn-ghost', 'btn-sm']))
+    expect(buttonByText('立即刷新').classes()).toEqual(expect.arrayContaining(['btn-primary', 'btn-sm']))
+    expect(wrapper.find('.repository-package-list').exists()).toBe(true)
 
     await buttonByText('立即刷新').trigger('click')
     await flushPromises()

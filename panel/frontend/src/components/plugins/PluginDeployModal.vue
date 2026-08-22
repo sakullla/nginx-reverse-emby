@@ -7,6 +7,7 @@ import { pickDefaultResourceGroupID, resourceGroupDisplayName } from '../../cont
 import BaseModal from '../base/BaseModal.vue'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
 import { getAgentStatus, getAgentStatusLabel } from '../../utils/agentHelpers'
+import { buildFrontendURL, parseFrontendURL } from '../../utils/frontendURL'
 import { messageStore } from '../../stores/messages'
 
 const props = defineProps({
@@ -67,12 +68,23 @@ const visibleAgents = computed(() => {
     return String(agent.name || '').toLowerCase().includes(query) || String(agent.id || '').toLowerCase().includes(query)
   })
 })
+const singleAgent = computed(() => hasHTTPBackend.value)
 const selectedTargets = computed(() => {
   if (lockedScope.value) {
     const pinned = String((mode.value === 'update' ? props.publishedEntry?.agent_id : '') || props.instance?.targets?.[0] || '').trim()
     return pinned ? [pinned] : []
   }
-  return [...new Set((deployment.targets || []).map((id) => String(id || '').trim()).filter(Boolean))]
+  const ids = [...new Set((deployment.targets || []).map((id) => String(id || '').trim()).filter(Boolean))]
+  return singleAgent.value ? ids.slice(0, 1) : ids
+})
+const selectedTargetID = computed({
+  get() {
+    return selectedTargets.value[0] || ''
+  },
+  set(id) {
+    const next = String(id || '').trim()
+    deployment.targets = next ? [next] : []
+  }
 })
 const selectedAgent = computed(() => sortedAgents.value.find((agent) => agent.id === selectedTargets.value[0]) || null)
 const allVisibleSelected = computed(() => (
@@ -88,9 +100,9 @@ const modalTitle = computed(() => {
   return hasHTTPBackend.value ? '部署并发布' : '部署插件实例'
 })
 const modalSubtitle = computed(() => {
-  if (mode.value === 'update') return '更新已发布入口的域名或是否 HTTPS，不会新建入口。'
-  if (mode.value === 'publish') return '填写一条入口域名，把已部署的插件发布到所选节点。'
-  if (hasHTTPBackend.value) return '选择一个或多个节点并填写入口域名，一次完成部署和发布。'
+  if (mode.value === 'update') return '更新已发布入口的地址或是否 HTTPS，不会新建入口。'
+  if (mode.value === 'publish') return '填写一条入口地址，把已部署的插件发布到所选节点。'
+  if (hasHTTPBackend.value) return '选择一个节点并填写入口地址，一次完成部署和发布。'
   return '选择资源组和节点，把插件部署到当前身份可见的范围。'
 })
 const showConfig = computed(() => mode.value === 'deploy' && !props.formEmpty)
@@ -109,8 +121,8 @@ const persistentBlocker = computed(() => {
 })
 const submitBlocker = computed(() => {
   if (persistentBlocker.value) return persistentBlocker.value
-  if (!selectedTargets.value.length) return '请选择至少一个节点。'
-  if (hasHTTPBackend.value && !normalizeHost(deployment.host)) return '请填写一条入口域名。'
+  if (!selectedTargets.value.length) return singleAgent.value ? '请选择一个节点。' : '请选择至少一个节点。'
+  if (hasHTTPBackend.value && !buildFrontendURL(deployment.host, deployment.https)) return '请填写一条入口地址。'
   return ''
 })
 const submitDisabled = computed(() => busy.value || httpRulesLoading.value || !!submitBlocker.value || !props.canSubmit)
@@ -124,6 +136,11 @@ watch(() => props.modelValue, (open) => {
   if (!open) return
   resetForm()
   void loadVisibleHttpRules()
+})
+
+watch(() => deployment.host, (value) => {
+  if (/^https:\/\//i.test(value)) deployment.https = true
+  else if (/^http:\/\//i.test(value)) deployment.https = false
 })
 
 function walkUIComponents(components, visit) {
@@ -252,32 +269,11 @@ function packageDeclaresHTTPBackend(pkg) {
   return extensions.includes('http.backend-provider')
 }
 
-function parseFrontendURL(value) {
-  const raw = String(value || '').trim()
-  if (!raw) return { host: '', https: true }
-  try {
-    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`)
-    return { host: url.host, https: url.protocol !== 'http:' }
-  } catch {
-    return { host: raw.replace(/^https?:\/\//i, ''), https: !/^http:\/\//i.test(raw) }
-  }
-}
-
-function normalizeHost(value) {
-  return parseFrontendURL(value).host.replace(/\s+/g, '')
-}
-
-function buildFrontendURL(host, https) {
-  const normalized = normalizeHost(host)
-  if (!normalized) return ''
-  return `${https ? 'https' : 'http'}://${normalized}`
-}
-
 function resetForm() {
   agentQuery.value = ''
   agentStatusFilter.value = ''
   const instance = props.instance
-  const published = mode.value === 'update' ? parseFrontendURL(props.publishedEntry?.frontend_url) : { host: '', https: true }
+  const published = mode.value === 'update' ? parseFrontendURL(props.publishedEntry?.frontend_url) : { href: '', host: '', https: true }
   const preferredGroup = String(instance?.resource_group_id || '').trim()
   deployment.resourceGroupID = props.resourceGroups.some((group) => group.id === preferredGroup)
     ? preferredGroup
@@ -290,7 +286,7 @@ function resetForm() {
   } else {
     deployment.targets = []
   }
-  deployment.host = published.host
+  deployment.host = published.href || published.host || ''
   deployment.https = published.host ? published.https : true
 }
 
@@ -320,7 +316,7 @@ function resolveConfig(payload) {
 }
 
 function toggleVisibleAgents() {
-  if (!props.canSubmit || lockedScope.value || busy.value) return
+  if (!props.canSubmit || lockedScope.value || busy.value || singleAgent.value) return
   const ids = visibleAgents.value.map((agent) => agent.id)
   if (allVisibleSelected.value) {
     deployment.targets = deployment.targets.filter((id) => !ids.includes(id))
@@ -350,11 +346,15 @@ async function deploy(payload) {
     return
   }
   if (!targets.length) {
-    messageStore.error('请选择至少一个节点。')
+    messageStore.error(singleAgent.value ? '请选择一个节点。' : '请选择至少一个节点。')
+    return
+  }
+  if (hasHTTPBackend.value && targets.length !== 1) {
+    messageStore.error('有入口地址的插件每次只能发布到一个节点。')
     return
   }
   if (hasHTTPBackend.value && !frontendURL) {
-    messageStore.error('请填写一条入口域名。')
+    messageStore.error('请填写一条入口地址。')
     return
   }
   const request = {
@@ -423,7 +423,7 @@ async function deploy(payload) {
       </div>
       <fieldset class="plugin-deployment__agents">
         <legend>节点</legend>
-        <p class="plugin-deployment__agent-hint">可同时选多个节点；发布入口时会对每个所选节点各写一条域名。</p>
+        <p class="plugin-deployment__agent-hint">{{ singleAgent ? '发布入口只选一个节点。' : '可同时选多个节点。' }}</p>
         <div v-if="lockedScope && selectedAgent" class="plugin-deployment__picker">
           <div class="plugin-deployment__agent plugin-deployment__agent--locked">
             <span
@@ -464,6 +464,7 @@ async function deploy(payload) {
               >{{ option.label }}</button>
             </div>
             <button
+              v-if="!singleAgent"
               type="button"
               class="plugin-deployment__agent-filter"
               :class="{ 'plugin-deployment__agent-filter--active': allVisibleSelected }"
@@ -476,7 +477,7 @@ async function deploy(payload) {
             class="plugin-deployment__agent-list"
             role="group"
             aria-label="选择节点"
-            aria-multiselectable="true"
+            :aria-multiselectable="singleAgent ? 'false' : 'true'"
           >
             <label
               v-for="agent in visibleAgents"
@@ -488,6 +489,16 @@ async function deploy(payload) {
               }"
             >
               <input
+                v-if="singleAgent"
+                v-model="selectedTargetID"
+                type="radio"
+                name="plugin-deployment-target"
+                :value="agent.id"
+                data-test="deployment-agent"
+                :disabled="!canSubmit || lockedScope || busy"
+              >
+              <input
+                v-else
                 v-model="deployment.targets"
                 type="checkbox"
                 name="plugin-deployment-target"
@@ -511,17 +522,17 @@ async function deploy(payload) {
         <p v-else class="plugin-deployment__empty">当前没有可选择的节点。</p>
       </fieldset>
       <fieldset v-if="hasHTTPBackend" class="plugin-deployment__entry">
-        <legend>入口域名</legend>
+        <legend>入口地址</legend>
         <div class="plugin-deployment__entry-fields">
           <label>
-            <span>域名</span>
+            <span>域名或完整 URL</span>
             <input
               v-model="deployment.host"
               type="text"
               data-test="deployment-domain"
               autocomplete="off"
               spellcheck="false"
-              placeholder="例如 media.example.com"
+              placeholder="例如 media.example.com 或 https://doh.example.com:9998/token"
               :disabled="!canSubmit || busy"
             >
           </label>
@@ -530,7 +541,7 @@ async function deploy(payload) {
             <span>使用 HTTPS</span>
           </label>
         </div>
-        <p class="plugin-deployment__empty">HTTPS 开启后按该入口申请托管证书。</p>
+        <p class="plugin-deployment__empty">可带端口和路径。HTTPS 开启后按该入口的主机名申请托管证书。</p>
       </fieldset>
       <p v-if="!canSubmit" class="plugin-deployment__readonly">当前身份只能查看下一步，不能提交。</p>
       <p v-else-if="persistentBlocker" class="plugin-deployment__empty">{{ persistentBlocker }}</p>

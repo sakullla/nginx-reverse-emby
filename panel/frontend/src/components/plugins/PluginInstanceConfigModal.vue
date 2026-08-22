@@ -4,6 +4,7 @@ import { fetchAllAgentsRules, fetchHttpRulesPage } from '../../api'
 import { configurePlugin, invokePluginDynamicAction, publishPlugin } from '../../api/plugins'
 import { resolvePointer } from '../../api/pluginCondition'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
+import { buildFrontendURL, parseFrontendURL } from '../../utils/frontendURL'
 import { messageStore } from '../../stores/messages'
 import BaseModal from '../base/BaseModal.vue'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
@@ -70,7 +71,7 @@ const publishBlocked = computed(() => {
   if (!httpBackendDeclared.value) return ''
   if (!instanceTargets.value.length) return '当前实例没有可发布的节点。'
   if (!String(publishTarget.value || '').trim()) return '请选择一个节点后再发布。'
-  if (!String(publishHost.value || '').trim()) return '请填写一条入口域名。'
+  if (!buildFrontendURL(publishHost.value, publishHTTPS.value)) return '请填写一条入口地址。'
   return ''
 })
 const needsHttpRuleOptions = computed(() => documentNeedsHttpRuleOptions(props.document))
@@ -94,23 +95,10 @@ watch(() => props.modelValue, (open) => {
   void loadVisibleHttpRules()
 })
 
-function parseFrontendURL(value) {
-  const raw = String(value || '').trim()
-  if (!raw) return { https: true, host: '' }
-  try {
-    const parsed = new URL(raw.includes('://') ? raw : `https://${raw}`)
-    return { https: parsed.protocol === 'https:', host: parsed.host }
-  } catch {
-    return { https: !raw.startsWith('http://'), host: raw.replace(/^https?:\/\//i, '') }
-  }
-}
-
-function buildFrontendURL(host, https) {
-  const trimmed = String(host || '').trim()
-  if (!trimmed) return ''
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
-  return `${https ? 'https' : 'http'}://${trimmed}`
-}
+watch(publishHost, (value) => {
+  if (/^https:\/\//i.test(value)) publishHTTPS.value = true
+  else if (/^http:\/\//i.test(value)) publishHTTPS.value = false
+})
 
 function agentLabel(agentID) {
   const id = String(agentID || '').trim()
@@ -333,8 +321,8 @@ function resetPublishForm() {
 
 function applyEntry(entry) {
   const parsed = parseFrontendURL(entry?.frontend_url)
-  publishHost.value = parsed.host
-  publishHTTPS.value = parsed.https
+  publishHost.value = parsed.href || parsed.host || ''
+  publishHTTPS.value = parsed.host ? parsed.https : true
   editingRuleID.value = Number(entry?.rule_id) || 0
   publishTarget.value = String(entry?.agent_id || instanceTargets.value[0] || '').trim()
 }
@@ -482,12 +470,12 @@ async function runDynamicAction({ action, target_id, confirmed }) {
           <p v-else-if="publishTarget" class="plugin-publish__node">节点：{{ agentLabel(publishTarget) }}</p>
 
           <label class="plugin-publish__host">
-            <span>入口域名</span>
+            <span>入口地址</span>
             <input
               v-model="publishHost"
               type="text"
               autocomplete="off"
-              placeholder="例如 media.example.com"
+              placeholder="例如 media.example.com 或 https://doh.example.com:9998/token"
               data-test="plugin-publish-domain"
               :disabled="!canPublish || publishBusy"
             >

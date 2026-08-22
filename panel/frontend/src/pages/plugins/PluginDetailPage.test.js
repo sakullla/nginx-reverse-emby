@@ -473,8 +473,9 @@ describe('PluginDetailPage', () => {
     })
     const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
     const guide = await openGuide(wrapper)
-    expect(guide.text()).not.toContain('选择全部')
-    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBeGreaterThan(0)
+    expect(guide.text()).not.toContain('全选')
+    expect(guide.findAll('.plugin-deployment__agent input[type="radio"]').length).toBeGreaterThan(0)
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
     expectNoProviderOrRuleDetour(guide)
     await selectTarget(guide, 'edge-a')
     await fillDomain(guide, { host: 'media.example.com', https: true })
@@ -497,10 +498,10 @@ describe('PluginDetailPage', () => {
     expect(mocks.enablePlugin).not.toHaveBeenCalled()
   })
 
-  it('publishes the same HTTP domain onto every selected node', async () => {
+  it('does not let an HTTP-backend plugin select more than one node', async () => {
     mocks.publishPlugin.mockResolvedValue({
       instance: { id: 'official.waf-default' },
-      published_entries: [{ rule_id: 12, agent_id: 'edge-a', frontend_url: 'https://media.example.com', enabled: true, accessible: true }]
+      published_entries: [{ rule_id: 12, agent_id: 'edge-b', frontend_url: 'https://media.example.com', enabled: true, accessible: true }]
     })
     const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
     const guide = await openGuide(wrapper)
@@ -510,8 +511,30 @@ describe('PluginDetailPage', () => {
     await guide.get('.declarative-field input[type="text"]').setValue('block')
     await guideSubmit(guide).trigger('click')
     await flushPromises()
-    expect(mocks.publishPlugin).toHaveBeenCalledTimes(2)
-    expect(mocks.publishPlugin.mock.calls.map((call) => call[1].targets)).toEqual([['edge-a'], ['edge-b']])
+    expect(mocks.publishPlugin).toHaveBeenCalledTimes(1)
+    expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      targets: ['edge-b'],
+      frontend_url: 'https://media.example.com'
+    }))
+  })
+
+  it('publishes a complete frontend URL including port and path', async () => {
+    const frontendURL = 'https://doh.hk.966733.xyz:9998/XEIYeThAtsNTjcjwPQhcmc5dEp5U66'
+    mocks.publishPlugin.mockResolvedValue({
+      instance: { id: 'official.waf-default' },
+      published_entries: [{ rule_id: 12, agent_id: 'edge-a', frontend_url: frontendURL, enabled: true, accessible: true }]
+    })
+    const wrapper = await mountPage(withHTTPBackend(undeployedDetail()))
+    const guide = await openGuide(wrapper)
+    await selectTarget(guide, 'edge-a')
+    await fillDomain(guide, { host: frontendURL, https: true })
+    await guide.get('.declarative-field input[type="text"]').setValue('block')
+    await guideSubmit(guide).trigger('click')
+    await flushPromises()
+    expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      targets: ['edge-a'],
+      frontend_url: frontendURL
+    }))
   })
 
   it('keeps the HTTP publish submit disabled until a node and domain are present', async () => {

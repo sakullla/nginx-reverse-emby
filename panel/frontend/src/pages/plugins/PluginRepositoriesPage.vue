@@ -150,7 +150,7 @@
                 <strong>{{ repositoryContents.directPlugin.name || repositoryContents.directPlugin.id }}</strong>
                 <small>{{ repositoryContents.directPlugin.version }} · {{ repositoryContents.directPlugin.runtime?.kind || 'runtime 未声明' }}</small>
               </div>
-              <code>{{ repositoryContents.directPlugin.sha256 }}</code>
+              <code :title="repositoryContents.directPlugin.sha256">{{ repositoryContents.directPlugin.sha256 }}</code>
             </div>
             <div v-else-if="repositoryContents.entries.length" class="repository-package-list">
               <div v-for="entry in repositoryContents.entries" :key="`${entry.id}@${entry.version}`" class="repository-package-row">
@@ -158,7 +158,7 @@
                   <strong>{{ entry.name || entry.id }}</strong>
                   <small>{{ entry.version }} · {{ entry.runtime?.kind || 'runtime 未声明' }}</small>
                 </div>
-                <code>{{ entry.sha256 }}</code>
+                <code :title="entry.sha256">{{ entry.sha256 }}</code>
               </div>
             </div>
             <p v-else class="repository-packages__empty">当前快照没有可用包。下一步：立即刷新该来源，成功后再去市场安装。</p>
@@ -170,12 +170,12 @@
           </p>
         </div>
         <template #footer>
-          <button class="btn btn-secondary" type="button" @click="closeInspect">关闭</button>
-          <button class="btn btn-secondary" type="button" :disabled="refreshing" @click="refreshSelected">
+          <button class="btn btn-ghost btn-sm" type="button" @click="closeInspect">关闭</button>
+          <button class="btn btn-primary btn-sm" type="button" :disabled="refreshing" @click="refreshSelected">
             {{ refreshing ? '刷新中…' : '立即刷新' }}
           </button>
-          <button v-if="selectedSource && !isOfficial(selectedSource)" class="btn btn-secondary" type="button" @click="openEdit">编辑</button>
-          <button v-if="selectedSource && !isOfficial(selectedSource)" class="btn repository-delete-button" type="button" @click="confirmingDelete = true">删除源</button>
+          <button v-if="selectedSource && !isOfficial(selectedSource)" class="btn btn-ghost btn-sm" type="button" @click="openEdit">编辑</button>
+          <button v-if="selectedSource && !isOfficial(selectedSource)" class="btn btn--danger-ghost btn-sm" type="button" @click="confirmingDelete = true">删除源</button>
         </template>
       </BaseModal>
     </template>
@@ -521,42 +521,64 @@ function formatDate(value) {
 }
 
 .repository-detail { min-width: 0; }
-.repository-detail__header { padding-bottom: var(--space-4); border-bottom: 1px solid var(--color-border-subtle); }
+.repository-detail__header { padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-border-subtle); }
 .repository-detail__eyebrow { display: flex; flex-wrap: wrap; gap: var(--space-2); color: var(--color-text-muted); font-size: var(--text-xs); }
 .repository-risk { padding: 1px 7px; border-radius: var(--radius-full); background: var(--color-warning-subtle); color: var(--color-warning); }
 .repository-risk--official { background: var(--color-success-subtle); color: var(--color-success); }
 .repository-detail__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 
-.repository-detail__facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--space-5) 0 0; }
-.repository-detail__facts > div { min-width: 0; padding: var(--space-3) 0; border-bottom: 1px solid var(--color-border-subtle); }
+.repository-detail__facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--space-3) 0 0; }
+.repository-detail__facts > div { min-width: 0; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border-subtle); }
 .repository-detail__facts > div:nth-child(odd):not(.repository-detail__fact-wide) { padding-right: var(--space-5); }
 .repository-detail__facts dt { color: var(--color-text-muted); font-size: var(--text-xs); }
-.repository-detail__facts dd { margin: var(--space-1) 0 0; color: var(--color-text-primary); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.repository-detail__facts dd { margin: 2px 0 0; color: var(--color-text-primary); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .repository-detail__facts code { font-size: var(--text-xs); }
 .repository-detail__fact-wide { grid-column: 1 / -1; }
 .repository-state { color: var(--color-text-secondary); }
 .repository-state--current { color: var(--color-success); }
 .repository-state--error { color: var(--color-danger); }
 .repository-state--pending { color: var(--color-warning); }
-.repository-technical { margin-top: var(--space-4); }
+.repository-technical { margin-top: var(--space-3); }
 .repository-technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
-.repository-packages { margin-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-4); }
+.repository-packages { margin-top: var(--space-3); border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-3); }
 .repository-packages__heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.repository-packages__heading h3 { margin: 0; font-size: var(--text-sm); }
+.repository-packages__heading h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; }
 .repository-packages__heading span { color: var(--color-text-muted); font-size: var(--text-xs); }
-.repository-package-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
-.repository-package-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(12rem, 0.8fr); align-items: center; gap: var(--space-4); margin-top: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--color-border-subtle); }
-.repository-package-row div { display: grid; gap: var(--space-1); min-width: 0; }
-.repository-package-row small { color: var(--color-text-muted); }
-.repository-package-row code { overflow-wrap: anywhere; color: var(--color-text-secondary); font-size: var(--text-xs); }
-.repository-packages__empty { margin: var(--space-3) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
-.repository-detail__notice { margin: var(--space-5) 0 0; color: var(--color-text-muted); font-size: var(--text-xs); }
+.repository-package-list {
+  display: grid;
+  margin-top: var(--space-2);
+  max-height: 13.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.repository-package-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, 0.5fr);
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.42rem 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.repository-package-row:last-child { border-bottom: 0; }
+.repository-package-row div { display: grid; gap: 1px; min-width: 0; }
+.repository-package-row strong { font-size: 0.8125rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repository-package-row small { color: var(--color-text-muted); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repository-package-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+.repository-packages__empty { margin: var(--space-2) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
+.repository-detail__notice { margin: var(--space-3) 0 0; color: var(--color-text-muted); font-size: var(--text-xs); }
 .repository-detail__notice a { color: var(--color-primary); text-decoration: none; }
 .repository-detail__notice a:hover { text-decoration: underline; }
 
-.repository-alert { display: flex; gap: var(--space-2); margin: 0 0 var(--space-4); padding: var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); }
+.repository-alert { display: flex; gap: var(--space-2); margin: 0 0 var(--space-3); padding: var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); }
 .repository-alert--error { background: var(--color-danger-subtle); color: var(--color-danger); }
-.repository-delete-button { border: 1px solid var(--color-danger); background: transparent; color: var(--color-danger); }
 
 @media (max-width: 760px) {
   .repository-detail__facts { grid-template-columns: 1fr; }

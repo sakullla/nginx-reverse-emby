@@ -160,7 +160,7 @@ async function chooseTarget(guide, agentId) {
   }
   const match = guide.findAll('[data-test="plugin-guide-target"], [data-test="deployment-agent"], input[type="radio"], .plugin-deployment__agent input, .plugin-guide__agent input').find((input) => input.element.value === agentId)
   if (!match) throw new Error(`deployment target ${agentId} was not rendered`)
-  if (match.element.type === 'checkbox' || match.element.type === 'radio') await match.setValue(true)
+  if (match.element.type === 'checkbox' || match.element.type === 'radio') await match.setChecked(true)
   else await match.setValue(agentId)
 }
 
@@ -537,8 +537,9 @@ describe('PluginDetailPage task-center production API projection', () => {
     const guide = await openTaskGuide(wrapper, '开始部署')
     expect(guide.text()).not.toContain('到 HTTP 规则添加')
     expect(guide.text()).not.toContain('选择插件提供商')
-    expect(guide.text()).not.toContain('选择全部')
-    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBeGreaterThan(0)
+    expect(guide.text()).not.toContain('全选')
+    expect(guide.findAll('.plugin-deployment__agent input[type="radio"]').length).toBeGreaterThan(0)
+    expect(guide.findAll('.plugin-deployment__agent input[type="checkbox"]').length).toBe(0)
     expect(guide.find('[data-test="plugin-guide-domain"], [data-test="deployment-domain"], [data-test="deployment-frontend-host"]').exists()).toBe(true)
     expect(guide.find('[data-test="plugin-guide-https"], [data-test="deployment-https"]').exists()).toBe(true)
     expect(guideSubmitButton(guide).attributes('disabled')).toBeDefined()
