@@ -295,8 +295,13 @@ func (s *GormStore) LoadAgentHeartbeatSnapshot(ctx context.Context, agentID stri
 			return err
 		}
 		normalizeAgentRow(&row)
+		pointer, found, err := scoped.GetAgentRevisionPointer(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		desiredRevision := heartbeatDesiredRevision(row.DesiredRevision, pointer, found)
 		snapshot, err := scoped.loadAgentSnapshot(ctx, row.ID, AgentSnapshotInput{
-			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+			DesiredVersion: row.DesiredVersion, DesiredRevision: desiredRevision,
 			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
 		}, true)
 		if err != nil {
@@ -316,7 +321,7 @@ func (s *GormStore) LoadAgentHeartbeatSnapshot(ctx context.Context, agentID stri
 			Snapshot: snapshot,
 			Metadata: AgentSnapshotMetadata{
 				Platform: strings.TrimSpace(row.Platform), DesiredVersion: strings.TrimSpace(row.DesiredVersion),
-				DesiredRevision: row.DesiredRevision, CurrentRevision: row.CurrentRevision,
+				DesiredRevision: desiredRevision, CurrentRevision: row.CurrentRevision,
 				LastApplyStatus:  strings.TrimSpace(row.LastApplyStatus),
 				OutboundProxyURL: strings.TrimSpace(row.OutboundProxyURL), TrafficInterval: strings.TrimSpace(row.TrafficStatsInterval),
 				TrafficBlocked: row.TrafficBlocked, TrafficBlockReason: strings.TrimSpace(row.TrafficBlockReason),
@@ -325,6 +330,13 @@ func (s *GormStore) LoadAgentHeartbeatSnapshot(ctx context.Context, agentID stri
 		return nil
 	})
 	return result, err
+}
+
+func heartbeatDesiredRevision(agentDesired int, pointer AgentRevisionPointerRow, found bool) int {
+	if !found {
+		return agentDesired
+	}
+	return maxInt(agentDesired, boundedIntFromInt64(pointer.DesiredRevision))
 }
 
 func (s *GormStore) loadCompleteSnapshot(ctx context.Context, load func(*GormStore) (Snapshot, error)) (Snapshot, error) {
@@ -349,8 +361,8 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 			normalizeAgentRow(&remoteAgent)
 			remoteAgentFound = true
 			input.DesiredVersion = remoteAgent.DesiredVersion
-			input.DesiredRevision = remoteAgent.DesiredRevision
-			input.CurrentRevision = remoteAgent.CurrentRevision
+			input.DesiredRevision = maxInt(input.DesiredRevision, remoteAgent.DesiredRevision)
+			input.CurrentRevision = maxInt(input.CurrentRevision, remoteAgent.CurrentRevision)
 			input.Platform = remoteAgent.Platform
 		}
 	}
