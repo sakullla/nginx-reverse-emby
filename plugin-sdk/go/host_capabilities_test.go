@@ -9,7 +9,7 @@ func TestCanonicalPluginCapabilitiesAndCalls(t *testing.T) {
 	capabilities := []HostCapability{
 		CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
-		CapabilityHTTPRule, CapabilityUIDynamic,
+		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic,
 	}
 	for _, capability := range capabilities {
 		if err := capability.Validate(); err != nil {
@@ -42,7 +42,7 @@ func TestCanonicalPluginCapabilitiesAndCalls(t *testing.T) {
 			t.Fatalf("manifest schema still declares %q", name)
 		}
 	}
-	for _, name := range []string{"http.rule", "ui.dynamic"} {
+	for _, name := range []string{"http.rule", "l4.rule", "channel.reverse", "ui.dynamic"} {
 		if !strings.Contains(schema, `"`+name+`"`) {
 			t.Fatalf("manifest schema omits permission %q", name)
 		}
