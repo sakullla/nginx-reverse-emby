@@ -168,8 +168,8 @@ func NewValidator(options ValidatorOptions) *Validator {
 			"agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond",
 			pluginsdk.PermissionHTTPOutbound,
 			"l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use",
-			"storage.read", "storage.write", "container.read", "container.manage", "dns.manage",
-			string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule),
+			"storage.read", "storage.write", "dns.manage",
+			string(pluginsdk.CapabilityHTTPRule),
 			string(pluginsdk.CapabilityUIDynamic),
 			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
@@ -180,7 +180,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 		options.AllowedExtensionPoints = []string{
 			"http.request", "http.response", "l4.accept", "policy.provider", "dns.provider",
 			pluginsdk.ExtensionHTTPBackendProvider,
-			"container.provider", "tunnel.provider", pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup,
+			"tunnel.provider", pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup,
 		}
 	}
 	if len(options.SupportedABIs) == 0 {

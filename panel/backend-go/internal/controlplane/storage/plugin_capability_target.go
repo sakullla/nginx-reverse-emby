@@ -5,23 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"gorm.io/gorm"
 )
 
-const (
-	PluginCapabilityDockerSocketKind = "docker.socket"
-	PluginCapabilityDockerSocketID   = "local"
-	PluginCapabilityDockerSocketPath = "/var/run/docker.sock"
-)
+const PluginCapabilityDockerSocketPath = "/var/run/docker.sock"
 
 type PluginCapabilityTargetBinding struct {
 	Kind            string
@@ -30,27 +20,10 @@ type PluginCapabilityTargetBinding struct {
 	Version         string
 }
 
-// EnsurePluginCapabilityDockerSocketBinding registers the local execution
-// host's Docker endpoint as a core-owned resource. The endpoint path remains
-// host-side; every binding lookup also verifies the live Unix socket identity,
-// so disappearance or replacement revokes existing handle versions.
-func (s *GormStore) EnsurePluginCapabilityDockerSocketBinding(ctx context.Context, resourceGroupID, socketPath string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	resourceGroupID, socketPath = strings.TrimSpace(resourceGroupID), strings.TrimSpace(socketPath)
-	if resourceGroupID == "" || socketPath == "" {
-		return errors.New("Docker socket resource group and endpoint are required")
-	}
-	return s.BindResource(ctx, ResourceBindingRow{
-		ID:                 "core-docker-socket-local",
-		ResourceKind:       PluginCapabilityDockerSocketKind,
-		ResourceID:         PluginCapabilityDockerSocketID,
-		ResourceGroupID:    resourceGroupID,
-		ParentResourceKind: "host.unix-socket",
-		ParentResourceID:   socketPath,
-		UpdatedAt:          time.Now().UTC(),
-	})
+// EnsurePluginCapabilityDockerSocketBinding is a no-op. Docker sockets are not
+// plugin capability resources and are not dialed from the control plane.
+func (s *GormStore) EnsurePluginCapabilityDockerSocketBinding(context.Context, string, string) error {
+	return nil
 }
 
 // PluginCapabilityTargetVersion returns an opaque version of a core-owned
@@ -133,9 +106,8 @@ func (s *GormStore) loadPluginCapabilityTargetBinding(ctx context.Context, kind,
 			value = &EgressProfileRow{}
 		}
 		db = db.Where("id = ?", numericID)
-	case PluginCapabilityDockerSocketKind:
-		value = &ResourceBindingRow{}
-		db = db.Where("resource_kind = ? AND resource_id = ?", PluginCapabilityDockerSocketKind, id)
+	case "docker.socket":
+		return PluginCapabilityTargetBinding{}, false, nil
 	default:
 		value = &ResourceBindingRow{}
 		db = db.Where("resource_kind = ? AND resource_id = ?", kind, id)
@@ -154,16 +126,6 @@ func (s *GormStore) loadPluginCapabilityTargetBinding(ctx context.Context, kind,
 		resourceGroupID = row.ResourceGroupID
 	case *ResourceBindingRow:
 		resourceGroupID = row.ResourceGroupID
-		if kind == PluginCapabilityDockerSocketKind {
-			if row.ParentResourceKind != "host.unix-socket" {
-				return PluginCapabilityTargetBinding{}, false, nil
-			}
-			var ok bool
-			endpointVersion, ok = pluginCapabilityUnixSocketVersion(row.ParentResourceID)
-			if !ok {
-				return PluginCapabilityTargetBinding{}, false, nil
-			}
-		}
 	default:
 		var owner ResourceBindingRow
 		ownerResult := s.db.WithContext(ctx).Where("resource_kind = ? AND resource_id = ?", bindingKind, id).Limit(1).Find(&owner)
@@ -193,32 +155,4 @@ func (s *GormStore) loadPluginCapabilityTargetBinding(ctx context.Context, kind,
 	}
 	digest := sha256.Sum256(encoded)
 	return PluginCapabilityTargetBinding{Kind: kind, ID: id, ResourceGroupID: resourceGroupID, Version: hex.EncodeToString(digest[:])}, true, nil
-}
-
-func pluginCapabilityUnixSocketVersion(path string) (string, bool) {
-	if runtime.GOOS == "windows" || strings.TrimSpace(path) == "" {
-		return "", false
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode()&os.ModeSocket == 0 {
-		return "", false
-	}
-	identity := fmt.Sprintf("%s:%d", info.Name(), info.ModTime().UnixNano())
-	system := reflect.Indirect(reflect.ValueOf(info.Sys()))
-	if system.IsValid() {
-		device, inode := system.FieldByName("Dev"), system.FieldByName("Ino")
-		if device.IsValid() && inode.IsValid() && device.CanUint() && inode.CanUint() {
-			identity = fmt.Sprintf("%d:%d", device.Uint(), inode.Uint())
-			for _, fieldName := range []string{"Ctim", "Ctimespec", "Birthtimespec"} {
-				field := system.FieldByName(fieldName)
-				if field.IsValid() && field.CanInterface() {
-					identity += fmt.Sprintf(":%v", field.Interface())
-					break
-				}
-			}
-		}
-	}
-	payload := fmt.Sprintf("%s\x00%s\x00%s", path, info.Mode().String(), identity)
-	digest := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(digest[:]), true
 }

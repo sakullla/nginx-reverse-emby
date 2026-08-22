@@ -39,7 +39,7 @@ func (s *GormStore) ExecutePluginCapabilityResourceCall(ctx context.Context, bin
 		return boundedPluginResourceJSON(map[string]any{"available": true, "latency_ms": time.Since(started).Milliseconds()})
 	case pluginsdk.RPCResourceTrafficSummary:
 		return nil, errors.New("traffic summary requires the canonical traffic service adapter")
-	case pluginsdk.RPCResourceDNSApply, pluginsdk.RPCResourceDockerRequest:
+	case pluginsdk.RPCResourceDNSApply:
 		return nil, errors.New("privileged resource operation has no configured core adapter")
 	default:
 		return nil, errors.New("plugin capability resource operation is unsupported")

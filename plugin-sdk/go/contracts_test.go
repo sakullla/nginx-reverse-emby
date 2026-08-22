@@ -6,6 +6,17 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+func TestRPCResourceCallRejectsRemovedDockerOperation(t *testing.T) {
+	call := RPCResourceCall{RequestID: "request-1", ResourceHandle: "handle-1", Operation: RPCResourceDNSApply}
+	if err := call.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	call.Operation = 5
+	if err := call.Validate(); err == nil {
+		t.Fatal("removed Docker resource operation was accepted")
+	}
+}
+
 func TestRuntimeABIConstantsAndErrorsAreStable(t *testing.T) {
 	if PolicyABIV1 != "nre:policy/v1" || PolicyABIMajorVersion != 1 || RPCABIV1 != "nre:rpc/v1" {
 		t.Fatal("runtime ABI identifiers changed")

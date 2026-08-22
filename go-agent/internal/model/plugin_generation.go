@@ -556,7 +556,7 @@ func validatePluginStringSet(label string, values []string, known func(string) b
 
 func knownPluginExtensionPoint(value string) bool {
 	switch value {
-	case "http.request", "http.response", pluginsdk.ExtensionHTTPBackendProvider, "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider",
+	case "http.request", "http.response", pluginsdk.ExtensionHTTPBackendProvider, "l4.accept", "policy.provider", "dns.provider", "tunnel.provider",
 		pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup:
 		return true
 	default:
@@ -571,8 +571,8 @@ func knownPluginRequiredFeature(value string) bool {
 func knownPluginGrant(value string) bool {
 	switch value {
 	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
-		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage",
-		"dns.manage", string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule),
+		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write",
+		"dns.manage", string(pluginsdk.CapabilityHTTPRule),
 		string(pluginsdk.CapabilityUIDynamic):
 		return true
 	default:

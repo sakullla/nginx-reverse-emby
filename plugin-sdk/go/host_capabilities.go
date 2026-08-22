@@ -18,7 +18,6 @@ const (
 	CapabilityServiceRevocableResourceHandle HostCapability = "service.revocable-resource-handle"
 	CapabilityUIDynamicActions               HostCapability = "ui.dynamic-actions"
 	CapabilityHTTPOutbound                   HostCapability = PermissionHTTPOutbound
-	CapabilityContainerCompose               HostCapability = "container.compose"
 	CapabilityHTTPRule                       HostCapability = "http.rule"
 	CapabilityUIDynamic                      HostCapability = "ui.dynamic"
 )
@@ -33,7 +32,7 @@ func (capability HostCapability) Validate() error {
 	switch capability {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
-		CapabilityContainerCompose, CapabilityHTTPRule, CapabilityUIDynamic:
+		CapabilityHTTPRule, CapabilityUIDynamic:
 		return nil
 	default:
 		return fmt.Errorf("host capability %q is not in the canonical catalog", value)

@@ -187,6 +187,35 @@ func TestConfigSchemaVocabularyAcceptsHostInjectedAndRejectsWriteOnlyConflict(t 
 	}
 }
 
+func TestValidatePackageRejectsRemovedDockerComposeContracts(t *testing.T) {
+	t.Parallel()
+	assertCode := func(t *testing.T, err error, code string) {
+		t.Helper()
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || validationErr.Code != code {
+			t.Fatalf("expected validation code %q, got %v", code, err)
+		}
+	}
+
+	compose := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, compose, PackageManifestFile, strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]", "permissions: [http.inspect, container.compose]", 1))
+	refreshOwnerPackage(t, compose)
+	_, err := newOwnerValidator().ValidatePackage(compose, PackageExpectation{})
+	assertCode(t, err, "permission")
+	if !strings.Contains(err.Error(), "container.compose") {
+		t.Fatalf("container.compose error = %v", err)
+	}
+
+	provider := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, provider, PackageManifestFile, strings.Replace(validOwnerManifestYAML(), "extension_points: [http.request]", "extension_points: [http.request, container.provider]", 1))
+	refreshOwnerPackage(t, provider)
+	_, err = newOwnerValidator().ValidatePackage(provider, PackageExpectation{})
+	assertCode(t, err, "extension_point")
+	if !strings.Contains(err.Error(), "container.provider") {
+		t.Fatalf("container.provider error = %v", err)
+	}
+}
+
 func TestValidatePackageAllowsResourceGroupExtension(t *testing.T) {
 	t.Parallel()
 

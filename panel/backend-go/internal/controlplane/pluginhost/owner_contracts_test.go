@@ -14,16 +14,33 @@ import (
 func TestPluginHostSandboxRequirement(t *testing.T) {
 	t.Parallel()
 	digest := strings.Repeat("a", 64)
-	pkg := validatedSandboxPackage(digest, []string{"secret.use"}, []string{"container.provider"})
+	pkg := validatedSandboxPackage(digest, []string{"secret.use"}, []string{"dns.provider"})
 	requirement, err := SandboxRequirementFromValidatedPackage(pkg)
 	if err != nil || !requirement.RequiresPrivilegeBoundary() {
 		t.Fatalf("requirement=%+v err=%v", requirement, err)
 	}
 	if !requirement.RequiresNetworkIsolation() && !requirement.HighRisk() {
-		t.Fatal("privileged container/dns package lost sandbox identity")
+		t.Fatal("privileged dns package lost sandbox identity")
 	}
 	if err := requirement.validatePackageDigest(digest); err != nil {
 		t.Fatalf("sandbox package digest binding = %v", err)
+	}
+}
+
+func TestPluginHostSandboxRequirementRejectsRemovedDockerComposeIdentifiers(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("a", 64)
+	if _, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"container.compose"}, []string{"http.request"})); err == nil {
+		t.Fatal("container.compose sandbox permission was accepted")
+	}
+	if _, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"container.read"}, []string{"http.request"})); err == nil {
+		t.Fatal("container.read sandbox permission was accepted")
+	}
+	if _, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"container.manage"}, []string{"http.request"})); err == nil {
+		t.Fatal("container.manage sandbox permission was accepted")
+	}
+	if _, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"secret.use"}, []string{"container.provider"})); err == nil {
+		t.Fatal("container.provider sandbox extension was accepted")
 	}
 }
 

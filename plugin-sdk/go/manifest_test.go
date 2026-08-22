@@ -8,6 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestPluginManifestSchemaV1OmitsRemovedDockerComposeContracts(t *testing.T) {
+	schema := string(PluginManifestSchemaV1())
+	for _, name := range []string{"container.compose", "container.read", "container.manage", "container.provider"} {
+		if strings.Contains(schema, `"`+name+`"`) {
+			t.Fatalf("manifest schema still declares %q", name)
+		}
+	}
+}
+
 func TestPluginManifestSchemaV1DeclaresResourceGroup(t *testing.T) {
 	schema := string(PluginManifestSchemaV1())
 	if !strings.Contains(schema, `"resource.group"`) {

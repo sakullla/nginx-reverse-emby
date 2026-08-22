@@ -451,7 +451,6 @@ const (
 	RPCResourceProbe          RPCResourceOperation = 2
 	RPCResourceTrafficSummary RPCResourceOperation = 3
 	RPCResourceDNSApply       RPCResourceOperation = 4
-	RPCResourceDockerRequest  RPCResourceOperation = 5
 )
 
 const RPCResourcePayloadMaxBytes = 4096
@@ -470,7 +469,7 @@ func (call RPCResourceCall) Validate() error {
 	if err := ValidatePolicyIdentity(call.ResourceHandle); err != nil {
 		return fmt.Errorf("resource call handle identity: %w", err)
 	}
-	if call.Operation < RPCResourceInspect || call.Operation > RPCResourceDockerRequest {
+	if call.Operation < RPCResourceInspect || call.Operation > RPCResourceDNSApply {
 		return errors.New("resource call operation is unspecified or unknown")
 	}
 	if len(call.Input) > RPCResourcePayloadMaxBytes {

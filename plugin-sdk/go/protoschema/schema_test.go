@@ -127,7 +127,11 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
 	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
-	assertEnum(t, file.Enums().ByName("ResourceOperation"), []enumValueExpectation{{"RESOURCE_OPERATION_UNSPECIFIED", 0}, {"RESOURCE_OPERATION_INSPECT", 1}, {"RESOURCE_OPERATION_PROBE", 2}, {"RESOURCE_OPERATION_TRAFFIC_SUMMARY", 3}, {"RESOURCE_OPERATION_DNS_APPLY", 4}, {"RESOURCE_OPERATION_DOCKER_REQUEST", 5}})
+	resourceOperation := file.Enums().ByName("ResourceOperation")
+	assertEnum(t, resourceOperation, []enumValueExpectation{{"RESOURCE_OPERATION_UNSPECIFIED", 0}, {"RESOURCE_OPERATION_INSPECT", 1}, {"RESOURCE_OPERATION_PROBE", 2}, {"RESOURCE_OPERATION_TRAFFIC_SUMMARY", 3}, {"RESOURCE_OPERATION_DNS_APPLY", 4}})
+	if resourceOperation.Values().ByName("RESOURCE_OPERATION_DOCKER_REQUEST") != nil {
+		t.Fatal("RESOURCE_OPERATION_DOCKER_REQUEST remains in the canonical catalog")
+	}
 	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"), 2, nil)
 	assertExclusiveResult(t, file.Messages().ByName("ActionResponse"), 4, map[protoreflect.Name]struct{}{"operation_id": {}})
 	assertExclusiveResult(t, file.Messages().ByName("ResourceResult"), 2, map[protoreflect.Name]struct{}{"request_id": {}})

@@ -26,9 +26,6 @@ const (
 	PermissionSecretUse                      SandboxPermission = "secret.use"
 	PermissionStorageRead                    SandboxPermission = "storage.read"
 	PermissionStorageWrite                   SandboxPermission = "storage.write"
-	PermissionContainerRead                  SandboxPermission = "container.read"
-	PermissionContainerManage                SandboxPermission = "container.manage"
-	PermissionContainerCompose               SandboxPermission = SandboxPermission(pluginsdk.CapabilityContainerCompose)
 	PermissionHTTPRule                       SandboxPermission = SandboxPermission(pluginsdk.CapabilityHTTPRule)
 	PermissionUIDynamic                      SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamic)
 	PermissionDNSManage                      SandboxPermission = "dns.manage"
@@ -44,7 +41,6 @@ const (
 	ExtensionL4Accept            SandboxExtensionPoint = "l4.accept"
 	ExtensionPolicyProvider      SandboxExtensionPoint = "policy.provider"
 	ExtensionDNSProvider         SandboxExtensionPoint = "dns.provider"
-	ExtensionContainerProvider   SandboxExtensionPoint = "container.provider"
 	ExtensionTunnelProvider      SandboxExtensionPoint = "tunnel.provider"
 	ExtensionUIRoute             SandboxExtensionPoint = SandboxExtensionPoint(pluginsdk.ExtensionUIRoute)
 	ExtensionResourceGroup       SandboxExtensionPoint = SandboxExtensionPoint(pluginsdk.ExtensionResourceGroup)
@@ -90,11 +86,11 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		}
 		seenPermissions[permission] = struct{}{}
 		switch permission {
-		case PermissionContainerManage, PermissionDNSManage, PermissionSecretUse, PermissionStorageWrite:
+		case PermissionDNSManage, PermissionSecretUse, PermissionStorageWrite:
 			requirement.privileged = true
 		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions,
-			PermissionContainerCompose, PermissionHTTPRule, PermissionUIDynamic:
+			PermissionHTTPRule, PermissionUIDynamic:
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
 		}
@@ -113,13 +109,10 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		}
 		seenExtensions[extension] = struct{}{}
 		switch extension {
-		case ExtensionContainerProvider, ExtensionDNSProvider, ExtensionTunnelProvider:
+		case ExtensionDNSProvider, ExtensionTunnelProvider:
 			requirement.privileged = true
 			network = true
 		}
-	}
-	if _, ok := seenPermissions[PermissionContainerManage]; ok {
-		network = true
 	}
 	if _, ok := seenPermissions[PermissionDNSManage]; ok {
 		network = true
@@ -168,8 +161,8 @@ func knownSandboxPermission(value SandboxPermission) bool {
 	switch value {
 	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
-		PermissionStorageRead, PermissionStorageWrite, PermissionContainerRead, PermissionContainerManage, PermissionDNSManage,
-		PermissionContainerCompose, PermissionHTTPRule, PermissionUIDynamic,
+		PermissionStorageRead, PermissionStorageWrite, PermissionDNSManage,
+		PermissionHTTPRule, PermissionUIDynamic,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
 		return true
@@ -181,7 +174,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 func knownSandboxExtension(value SandboxExtensionPoint) bool {
 	switch value {
 	case ExtensionHTTPRequest, ExtensionHTTPResponse, ExtensionHTTPBackendProvider, ExtensionL4Accept, ExtensionPolicyProvider,
-		ExtensionDNSProvider, ExtensionContainerProvider, ExtensionTunnelProvider, ExtensionUIRoute, ExtensionResourceGroup:
+		ExtensionDNSProvider, ExtensionTunnelProvider, ExtensionUIRoute, ExtensionResourceGroup:
 		return true
 	default:
 		return false

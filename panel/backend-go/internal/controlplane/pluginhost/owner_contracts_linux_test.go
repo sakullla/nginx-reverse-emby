@@ -10,7 +10,7 @@ import (
 func TestPluginHostSandboxValidationAcceptsCanonicalCandidate(t *testing.T) {
 	t.Parallel()
 	digest := strings.Repeat("a", 64)
-	requirement, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"secret.use"}, []string{"container.provider"}))
+	requirement, err := SandboxRequirementFromValidatedPackage(validatedSandboxPackage(digest, []string{"secret.use"}, []string{"dns.provider"}))
 	if err != nil {
 		t.Fatal(err)
 	}

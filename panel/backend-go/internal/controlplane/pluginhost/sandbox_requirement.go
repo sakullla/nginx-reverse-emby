@@ -39,12 +39,12 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		}
 		seenPermissions[permission.Name] = struct{}{}
 		switch permission.Name {
-		case "container.manage", "dns.manage", "secret.use", "storage.write":
+		case "dns.manage", "secret.use", "storage.write":
 			requirement.privileged = true
 		case string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
 			string(pluginsdk.CapabilityUIDynamicActions),
-			string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule),
+			string(pluginsdk.CapabilityHTTPRule),
 			string(pluginsdk.CapabilityUIDynamic):
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
@@ -64,13 +64,10 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		}
 		seenExtensions[extension] = struct{}{}
 		switch extension {
-		case "container.provider", "dns.provider", "tunnel.provider":
+		case "dns.provider", "tunnel.provider":
 			requirement.privileged = true
 			network = true
 		}
-	}
-	if _, ok := seenPermissions["container.manage"]; ok {
-		network = true
 	}
 	if _, ok := seenPermissions["dns.manage"]; ok {
 		network = true
@@ -115,8 +112,8 @@ func validControlSandboxDigest(value string) bool {
 func knownControlSandboxPermission(value string) bool {
 	switch value {
 	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
-		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "container.read", "container.manage",
-		string(pluginsdk.CapabilityContainerCompose), string(pluginsdk.CapabilityHTTPRule), string(pluginsdk.CapabilityUIDynamic),
+		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write",
+		string(pluginsdk.CapabilityHTTPRule), string(pluginsdk.CapabilityUIDynamic),
 		"dns.manage":
 		return true
 	default:
@@ -129,7 +126,7 @@ func knownControlSandboxPermission(value string) bool {
 
 func knownControlSandboxExtension(value string) bool {
 	switch value {
-	case "http.request", "http.response", "l4.accept", "policy.provider", "dns.provider", "container.provider", "tunnel.provider",
+	case "http.request", "http.response", "l4.accept", "policy.provider", "dns.provider", "tunnel.provider",
 		pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionResourceGroup:
 		return true
 	default:

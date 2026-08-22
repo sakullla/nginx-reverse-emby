@@ -1,18 +1,13 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -88,7 +83,6 @@ type PluginCapabilityManager struct {
 	operationLocks     map[string]*pluginCapabilityOperationLock
 	secretVault        *secrets.Vault
 	trafficSummary     PluginCapabilityTrafficSummaryProvider
-	dockerSocket       string
 }
 
 type pluginCapabilityOperationLock struct {
@@ -100,7 +94,7 @@ func NewPluginCapabilityManager(store PluginCapabilityManagerStore, resourceAuth
 	if store == nil || resourceAuthorizer == nil || runtime == nil || packages == nil {
 		return nil, errors.New("plugin capability durable store, authorization owner, package validator, and runtime are required")
 	}
-	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock), dockerSocket: storage.PluginCapabilityDockerSocketPath}
+	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock)}
 	manager.loadPackage = packages.loadValidatedCapabilityPackage
 	return manager, nil
 }
@@ -443,52 +437,10 @@ func (manager *PluginCapabilityManager) executeResourceCall(ctx context.Context,
 			OverQuota         bool    `json:"over_quota"`
 			Blocked           bool    `json:"blocked"`
 		}{summary.AgentID, summary.CycleStart, summary.CycleEnd, summary.RXBytes, summary.TXBytes, summary.AccountedBytes, summary.UsedBytes, summary.MonthlyQuotaBytes, summary.QuotaPercent, summary.RemainingBytes, summary.OverQuota, summary.Blocked})
-	case pluginsdk.RPCResourceDNSApply:
+	case pluginsdk.RPCResourceInspect, pluginsdk.RPCResourceProbe, pluginsdk.RPCResourceDNSApply:
 		return manager.store.ExecutePluginCapabilityResourceCall(ctx, binding, call)
-	case pluginsdk.RPCResourceDockerRequest:
-		if binding.Kind != "docker.socket" || runtime.GOOS == "windows" || strings.TrimSpace(manager.dockerSocket) == "" {
-			return nil, errors.New("Docker resource adapter is unavailable")
-		}
-		var input struct {
-			Action      string `json:"action"`
-			ContainerID string `json:"container_id"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(call.Input))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&input); err != nil {
-			return nil, errors.New("Docker resource request is invalid")
-		}
-		method, path := http.MethodGet, "/_ping"
-		switch input.Action {
-		case "ping":
-		case "start", "stop", "restart":
-			if err := pluginsdk.ValidatePolicyIdentity(input.ContainerID); err != nil {
-				return nil, errors.New("Docker container identity is invalid")
-			}
-			method, path = http.MethodPost, "/v1.41/containers/"+input.ContainerID+"/"+input.Action
-		default:
-			return nil, errors.New("Docker resource action is unsupported")
-		}
-		transport := &http.Transport{DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(dialCtx, "unix", manager.dockerSocket)
-		}}
-		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-		httpRequest, err := http.NewRequestWithContext(ctx, method, "http://docker"+path, nil)
-		if err != nil {
-			return nil, err
-		}
-		response, err := client.Do(httpRequest)
-		if err != nil {
-			return nil, err
-		}
-		defer response.Body.Close()
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, pluginsdk.RPCResourcePayloadMaxBytes+1))
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return nil, fmt.Errorf("Docker resource action failed with status %d", response.StatusCode)
-		}
-		return pluginCapabilityResourceJSON(map[string]any{"accepted": true, "status": response.StatusCode})
 	default:
-		return manager.store.ExecutePluginCapabilityResourceCall(ctx, binding, call)
+		return nil, errors.New("plugin capability resource operation is unsupported")
 	}
 }
 
