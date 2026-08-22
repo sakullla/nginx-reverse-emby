@@ -551,7 +551,7 @@ func newAppWithAllDeps(
 	}
 	rpcProcesses := pluginprocess.NewSupervisor(nil, nil, nil)
 	rpcProcesses.SetRuntimeLogSink(core.NewPluginRuntimeLogSink(st))
-	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: filepath.Join(cfg.DataDir, "plugins", "rpc-runtime")}, rpcProcesses, nil)
+	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: rpcProcessRuntimeRoot(cfg.DataDir, os.Getpid())}, rpcProcesses, nil)
 	if redeemer, ok := client.(pluginrpc.SecretRedeemer); ok {
 		rpcHost.SetSecretRedeemer(redeemer)
 	}
@@ -576,6 +576,10 @@ func newAppWithAllDeps(
 	app.coldRestart = execColdReplacement
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
+}
+
+func rpcProcessRuntimeRoot(dataDir string, pid int) string {
+	return filepath.Join(dataDir, "plugins", "rpc-runtime", fmt.Sprintf("process-%d", pid))
 }
 
 func (a *App) setConfiguredModules(modules configuredModules) {

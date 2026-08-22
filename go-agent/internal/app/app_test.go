@@ -44,6 +44,39 @@ func TestNewWiresRPCHostAsPluginCaller(t *testing.T) {
 	}
 }
 
+func TestRPCRuntimeRootIsolatedAcrossHotRestartProcesses(t *testing.T) {
+	shared := t.TempDir()
+	parentRoot := rpcProcessRuntimeRoot(shared, 101)
+	childRoot := rpcProcessRuntimeRoot(shared, 202)
+	if parentRoot == childRoot {
+		t.Fatal("hot restart parent and child share an RPC runtime root")
+	}
+	wantBase := filepath.Join(shared, "plugins", "rpc-runtime")
+	if filepath.Dir(parentRoot) != wantBase || filepath.Dir(childRoot) != wantBase {
+		t.Fatalf("RPC process roots are outside the managed base: parent=%q child=%q", parentRoot, childRoot)
+	}
+
+	generation := "accelerator-sources-default-generation-414"
+	parentGeneration := filepath.Join(parentRoot, generation)
+	childGeneration := filepath.Join(childRoot, generation)
+	if err := os.MkdirAll(parentGeneration, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(childGeneration, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	childEndpoint := filepath.Join(childGeneration, "provider.sock")
+	if err := os.WriteFile(childEndpoint, []byte("child"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(parentGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(childEndpoint); err != nil {
+		t.Fatalf("retiring the parent generation removed the child endpoint: %v", err)
+	}
+}
+
 func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testing.T) {
 	store, err := core.NewFilesystem(t.TempDir())
 	if err != nil {
