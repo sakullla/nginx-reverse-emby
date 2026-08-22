@@ -22,3 +22,14 @@ func TestRecoverableSyncApplyErrorIncludesFailedHotRestartCutover(t *testing.T) 
 		t.Fatalf("unrelated recoverableApplyErrorMessage() = %q, want empty", got)
 	}
 }
+
+func TestRecoverableSyncApplyErrorClearsLegacySchemaIdentityMismatch(t *testing.T) {
+	message := "durable generation does not match the desired runtime snapshot"
+	metadata := map[string]string{
+		"last_apply_status":  "error",
+		"last_apply_message": message,
+	}
+	if !isRecoverableSyncApplyError(metadata, message) {
+		t.Fatal("legacy schema-derived generation mismatch was not cleared after a later successful sync")
+	}
+}

@@ -9,25 +9,33 @@ import (
 )
 
 func (m *GenerationManager) Apply(ctx context.Context, previous, next model.Snapshot) (GenerationCutover, error) {
-	return m.applyWithDrainTimeout(ctx, previous, next, 0)
+	return m.applyWithDrainTimeout(ctx, previous, next, 0, "")
 }
 
 func (m *GenerationManager) ApplyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
-	return m.applyWithDrainTimeout(ctx, previous, next, drainTimeout)
+	return m.applyWithDrainTimeout(ctx, previous, next, drainTimeout, "")
 }
 
-func (m *GenerationManager) applyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
-	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, nil)
+func (m *GenerationManager) ApplyWithDrainTimeoutAndSnapshotHash(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, snapshotHash string) (GenerationCutover, error) {
+	return m.applyWithDrainTimeout(ctx, previous, next, drainTimeout, snapshotHash)
+}
+
+func (m *GenerationManager) applyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, snapshotHash string) (GenerationCutover, error) {
+	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, nil, snapshotHash)
 }
 
 func (m *GenerationManager) ApplyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config model.AgentConfig) (GenerationCutover, error) {
-	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, &config)
+	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, &config, "")
 }
 
-func (m *GenerationManager) applyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config *model.AgentConfig) (GenerationCutover, error) {
+func (m *GenerationManager) ApplyWithTrafficRuntimeAndSnapshotHash(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config model.AgentConfig, snapshotHash string) (GenerationCutover, error) {
+	return m.applyWithTrafficRuntime(ctx, previous, next, drainTimeout, &config, snapshotHash)
+}
+
+func (m *GenerationManager) applyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config *model.AgentConfig, snapshotHash string) (GenerationCutover, error) {
 	started := time.Now()
 	before := m.ActiveIdentity()
-	cutover, err := m.apply(ctx, previous, next, drainTimeout, config)
+	cutover, err := m.apply(ctx, previous, next, drainTimeout, config, snapshotHash)
 	outcome := "succeeded"
 	if err != nil {
 		outcome = "failed"

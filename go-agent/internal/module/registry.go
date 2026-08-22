@@ -63,7 +63,21 @@ func NewGenerationContext(previous, next model.Snapshot) (GenerationContext, err
 		return GenerationContext{}, fmt.Errorf("encode generation snapshot: %w", err)
 	}
 	digest := sha256.Sum256(snapshotJSON)
-	hash := hex.EncodeToString(digest[:])
+	return NewGenerationContextWithSnapshotHash(previous, next, hex.EncodeToString(digest[:]))
+}
+
+// NewGenerationContextWithSnapshotHash restores or creates a generation with
+// an identity established outside the current Go snapshot schema. Revision
+// sync uses the control plane's verified artifact digest for new generations,
+// while process recovery uses the exact identity persisted in the generation
+// journal. Neither path is allowed to derive a new identity by re-encoding a
+// snapshot with the current binary.
+func NewGenerationContextWithSnapshotHash(previous, next model.Snapshot, snapshotHash string) (GenerationContext, error) {
+	hash := strings.ToLower(strings.TrimSpace(snapshotHash))
+	decoded, err := hex.DecodeString(hash)
+	if err != nil || len(decoded) != sha256.Size {
+		return GenerationContext{}, errors.New("generation snapshot hash must be a 64-character hex digest")
+	}
 	return GenerationContext{
 		id:           fmt.Sprintf("generation-%d-%s", next.Revision, hash[:16]),
 		revision:     next.Revision,

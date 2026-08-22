@@ -109,13 +109,13 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 	if err != nil {
 		return hotrestart.Identity{}, 0, err
 	}
-	runtimeDigest, err := hotRestartSnapshotDigest(desired)
-	if err != nil {
-		return hotrestart.Identity{}, 0, err
-	}
 	record := matchingHotRestartRecord(journal, desired.Revision)
 	if record == nil {
 		if desired.Revision == 0 {
+			runtimeDigest, err := hotRestartSnapshotDigest(desired)
+			if err != nil {
+				return hotrestart.Identity{}, 0, err
+			}
 			return a.bootstrapHotRestartLaunchState(runtimeDigest)
 		}
 		if legacyGenerationJournalIsEmpty(journal) {
@@ -123,9 +123,8 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 		}
 		return hotrestart.Identity{}, 0, errors.New("durable generation is not ready for hot restart")
 	}
-	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" ||
-		!strings.EqualFold(strings.TrimSpace(record.RuntimeSnapshotHash), runtimeDigest) {
-		return hotrestart.Identity{}, 0, errors.New("durable generation does not match the desired runtime snapshot")
+	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" {
+		return hotrestart.Identity{}, 0, errors.New("durable generation identity is incomplete for hot restart")
 	}
 	generationID := strings.TrimSpace(record.RuntimeGenerationID)
 	if generationID == "" {

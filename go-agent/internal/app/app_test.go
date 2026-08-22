@@ -4,8 +4,10 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 
 	"errors"
+	"fmt"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 
@@ -19,6 +21,7 @@ import (
 	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 
 	"os"
+	"path/filepath"
 
 	"reflect"
 
@@ -118,6 +121,74 @@ func TestHotRestartReplacementAbortsAndRetainsParentOnFailure(t *testing.T) {
 	}
 	if want := []string{"start", "activate", "abort"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("failure order = %v, want %v", order, want)
+	}
+}
+
+func TestHotRestartLaunchStatePreservesLegacySnapshotEncodingAcrossSchemaUpgrade(t *testing.T) {
+	root := t.TempDir()
+	store, err := core.NewFilesystem(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySnapshot := []byte(`{"desired_version":"","desired_revision":61,"agent_config":{},"ddns_config":{"enabled":true,"domain":"edge.example.com","ipv4":{"enabled":true,"source":"public_api"},"ipv6":{"enabled":false,"source":"public_api"}},"rules":[],"l4_rules":[],"egress_profiles":[],"relay_listeners":[],"certificates":[],"certificate_policies":[]}`)
+	legacyDigest := fmt.Sprintf("%x", sha256.Sum256(legacySnapshot))
+	if err := os.WriteFile(filepath.Join(root, "desired-snapshot.json"), legacySnapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(model.GenerationJournal{Version: 1, Active: &model.GenerationRecord{
+		GenerationID: "attempt-generation-61", RuntimeGenerationID: "generation-61-" + legacyDigest[:16],
+		RuntimeSnapshotHash: legacyDigest, Revision: 61, SnapshotDigest: "verified-revision-digest",
+		Phase: model.GenerationPhaseActive, Lease: model.RevisionLease{Revision: 61, LeaseID: "lease-61"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := store.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentDigest := mustHotRestartSnapshotDigest(t, decoded)
+	if currentDigest == legacyDigest {
+		t.Fatal("test precondition failed: current schema encoding did not change the legacy snapshot digest")
+	}
+
+	app := &App{store: store}
+	identity, _, err := app.hotRestartLaunchState()
+	if err != nil {
+		t.Fatalf("hotRestartLaunchState() error = %v", err)
+	}
+	if identity.SnapshotDigest != "verified-revision-digest" || identity.GenerationID != "generation-61-"+legacyDigest[:16] {
+		t.Fatalf("hot restart identity = %+v", identity)
+	}
+}
+
+func TestStartupRuntimeIdentityIgnoresUncutoverCandidate(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeHash := strings.Repeat("a", sha256.Size*2)
+	candidateHash := strings.Repeat("b", sha256.Size*2)
+	if err := store.SaveGenerationJournal(model.GenerationJournal{
+		Version: 1,
+		Active: &model.GenerationRecord{
+			Revision: 61, Phase: model.GenerationPhaseActive,
+			RuntimeSnapshotHash: activeHash, RuntimeGenerationID: "generation-61-" + activeHash[:16],
+		},
+		Candidate: &model.GenerationRecord{
+			Revision: 61, Phase: model.GenerationPhaseStarted,
+			RuntimeSnapshotHash: candidateHash, RuntimeGenerationID: "generation-61-" + candidateHash[:16],
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{store: store}
+	got, err := app.durableRuntimeSnapshotHash(61)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != activeHash {
+		t.Fatalf("durableRuntimeSnapshotHash() = %q, want active hash %q", got, activeHash)
 	}
 }
 

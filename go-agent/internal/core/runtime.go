@@ -51,10 +51,24 @@ func (r *Runtime) UsesGenerationManager() bool {
 }
 
 func (r *Runtime) CandidateGenerationIdentity(previous, next model.Snapshot) (GenerationIdentity, bool, error) {
+	return r.candidateGenerationIdentity(previous, next, "")
+}
+
+func (r *Runtime) CandidateGenerationIdentityWithSnapshotHash(previous, next model.Snapshot, snapshotHash string) (GenerationIdentity, bool, error) {
+	return r.candidateGenerationIdentity(previous, next, snapshotHash)
+}
+
+func (r *Runtime) candidateGenerationIdentity(previous, next model.Snapshot, snapshotHash string) (GenerationIdentity, bool, error) {
 	if !r.UsesGenerationManager() {
 		return GenerationIdentity{}, false, nil
 	}
-	identity, err := r.generations.CandidateIdentity(previous, next)
+	var identity GenerationIdentity
+	var err error
+	if snapshotHash == "" {
+		identity, err = r.generations.CandidateIdentity(previous, next)
+	} else {
+		identity, err = r.generations.CandidateIdentityWithSnapshotHash(previous, next, snapshotHash)
+	}
 	return identity, true, err
 }
 
@@ -118,22 +132,34 @@ func (r *Runtime) State() model.RuntimeState {
 }
 
 func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, true, 0, nil)
+	return r.activate(ctx, previous, next, true, 0, nil, "")
+}
+
+func (r *Runtime) ApplyWithSnapshotHash(ctx context.Context, previous, next model.Snapshot, snapshotHash string) error {
+	return r.activate(ctx, previous, next, true, 0, nil, snapshotHash)
 }
 
 func (r *Runtime) ApplyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) error {
-	return r.activate(ctx, previous, next, true, drainTimeout, nil)
+	return r.activate(ctx, previous, next, true, drainTimeout, nil, "")
+}
+
+func (r *Runtime) ApplyWithDrainTimeoutAndSnapshotHash(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, snapshotHash string) error {
+	return r.activate(ctx, previous, next, true, drainTimeout, nil, snapshotHash)
 }
 
 func (r *Runtime) ApplyWithTrafficRuntime(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config model.AgentConfig) error {
-	return r.activate(ctx, previous, next, true, drainTimeout, &config)
+	return r.activate(ctx, previous, next, true, drainTimeout, &config, "")
+}
+
+func (r *Runtime) ApplyWithTrafficRuntimeAndSnapshotHash(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, config model.AgentConfig, snapshotHash string) error {
+	return r.activate(ctx, previous, next, true, drainTimeout, &config, snapshotHash)
 }
 
 func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, false, 0, nil)
+	return r.activate(ctx, previous, next, false, 0, nil, "")
 }
 
-func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool, drainTimeout time.Duration, trafficRuntime *model.AgentConfig) error {
+func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool, drainTimeout time.Duration, trafficRuntime *model.AgentConfig, snapshotHash string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -155,9 +181,17 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 		var cutover GenerationCutover
 		var err error
 		if trafficRuntime != nil {
-			cutover, err = r.generations.ApplyWithTrafficRuntime(ctx, previous, next, drainTimeout, *trafficRuntime)
+			if snapshotHash == "" {
+				cutover, err = r.generations.ApplyWithTrafficRuntime(ctx, previous, next, drainTimeout, *trafficRuntime)
+			} else {
+				cutover, err = r.generations.ApplyWithTrafficRuntimeAndSnapshotHash(ctx, previous, next, drainTimeout, *trafficRuntime, snapshotHash)
+			}
 		} else {
-			cutover, err = r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
+			if snapshotHash == "" {
+				cutover, err = r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
+			} else {
+				cutover, err = r.generations.ApplyWithDrainTimeoutAndSnapshotHash(ctx, previous, next, drainTimeout, snapshotHash)
+			}
 		}
 		if err != nil {
 			r.state.Status = "error"

@@ -48,10 +48,18 @@ func NewGenerationManager(source module.GenerationPreparer) *GenerationManager {
 }
 
 func (m *GenerationManager) CandidateIdentity(previous, next model.Snapshot) (GenerationIdentity, error) {
+	return m.candidateIdentity(previous, next, "")
+}
+
+func (m *GenerationManager) CandidateIdentityWithSnapshotHash(previous, next model.Snapshot, snapshotHash string) (GenerationIdentity, error) {
+	return m.candidateIdentity(previous, next, snapshotHash)
+}
+
+func (m *GenerationManager) candidateIdentity(previous, next model.Snapshot, snapshotHash string) (GenerationIdentity, error) {
 	if m == nil || m.source == nil {
 		return GenerationIdentity{}, errors.New("generation source is not configured")
 	}
-	generationContext, err := module.NewGenerationContext(previous, next)
+	generationContext, err := generationContextWithSnapshotHash(previous, next, snapshotHash)
 	if err != nil {
 		return GenerationIdentity{}, err
 	}
@@ -80,7 +88,7 @@ func NewManagedGenerationManager(source module.GenerationPreparer, drain *Genera
 	return &GenerationManager{source: source, drain: drain, timeout: timeout, sessions: drain.Controller()}
 }
 
-func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, trafficRuntime *model.AgentConfig) (GenerationCutover, error) {
+func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration, trafficRuntime *model.AgentConfig, snapshotHash string) (GenerationCutover, error) {
 	if m == nil || m.source == nil {
 		return GenerationCutover{}, errors.New("generation source is not configured")
 	}
@@ -95,7 +103,7 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 		return GenerationCutover{}, fmt.Errorf("generation activation context: %w", err)
 	}
 
-	generationContext, err := module.NewGenerationContext(previous, next)
+	generationContext, err := generationContextWithSnapshotHash(previous, next, snapshotHash)
 	if err != nil {
 		return GenerationCutover{}, err
 	}
@@ -160,6 +168,13 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 	}
 	m.endPublication(publicationDone)
 	return cutover, nil
+}
+
+func generationContextWithSnapshotHash(previous, next model.Snapshot, snapshotHash string) (module.GenerationContext, error) {
+	if snapshotHash == "" {
+		return module.NewGenerationContext(previous, next)
+	}
+	return module.NewGenerationContextWithSnapshotHash(previous, next, snapshotHash)
 }
 
 func generationUsesProgressiveDrain(view *module.GenerationView) bool {

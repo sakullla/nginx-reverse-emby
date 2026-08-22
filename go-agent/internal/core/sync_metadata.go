@@ -169,6 +169,7 @@ func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError strin
 	restartRequested := strings.ToLower(ErrRestartRequested.Error())
 	recovered := isLegacyHeartbeatSyncError(normalizedError) ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
+		strings.HasPrefix(normalizedError, "durable generation does not match the desired runtime snapshot") ||
 		strings.HasPrefix(normalizedError, "start hot restart child:") ||
 		strings.HasPrefix(normalizedError, "activate hot restart child:") ||
 		strings.HasPrefix(normalizedError, "transfer hot restart authority:") ||

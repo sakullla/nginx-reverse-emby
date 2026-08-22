@@ -694,7 +694,16 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 		return err
 	}
 	hydratedApplied := a.hydrateAppliedSnapshotFromDesired(applied)
-	if err := a.runtime.Apply(ctx, Snapshot{}, hydratedApplied); err != nil {
+	runtimeSnapshotHash, err := a.durableRuntimeSnapshotHash(hydratedApplied.Revision)
+	if err != nil {
+		return err
+	}
+	if runtimeSnapshotHash != "" {
+		err = a.runtime.ApplyWithSnapshotHash(ctx, Snapshot{}, hydratedApplied, runtimeSnapshotHash)
+	} else {
+		err = a.runtime.Apply(ctx, Snapshot{}, hydratedApplied)
+	}
+	if err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
 		_ = a.syncController().RecordRuntimeErrorWithRevision(err, applied.Revision)
 	} else {
@@ -748,7 +757,19 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 		return fmt.Errorf("import hot restart packet connections: %w", err)
 	}
 	defer packetSet.Close()
-	if err := a.runtime.Apply(ctx, Snapshot{}, desired); err != nil {
+	runtimeSnapshotHash, err := a.hotRestartRuntimeSnapshotHash(child.Identity)
+	if err != nil {
+		return err
+	}
+	if runtimeSnapshotHash == "" && desired.Revision != 0 {
+		return errors.New("hot restart child generation has no durable runtime snapshot identity")
+	}
+	if runtimeSnapshotHash != "" {
+		err = a.runtime.ApplyWithSnapshotHash(ctx, Snapshot{}, desired, runtimeSnapshotHash)
+	} else {
+		err = a.runtime.Apply(ctx, Snapshot{}, desired)
+	}
+	if err != nil {
 		return fmt.Errorf("prepare hot restart child generation: %w", err)
 	}
 	if err := a.validateActiveHotRestartRuntime(child.Identity); err != nil {
@@ -812,13 +833,9 @@ func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired S
 	if err != nil {
 		return err
 	}
-	runtimeDigest, err := hotRestartSnapshotDigest(desired)
-	if err != nil {
-		return err
-	}
 	record := matchingHotRestartRecord(journal, desired.Revision)
 	if record == nil || desired.Revision != identity.Revision || record.Revision != identity.Revision ||
-		!strings.EqualFold(strings.TrimSpace(runtimeDigest), strings.TrimSpace(record.RuntimeSnapshotHash)) ||
+		strings.TrimSpace(record.RuntimeSnapshotHash) == "" ||
 		!strings.EqualFold(strings.TrimSpace(record.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
 		record.Lease.LeaseID != identity.LeaseID {
 		return errors.New("hot restart identity does not match the durable desired snapshot and generation journal")
@@ -827,6 +844,55 @@ func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired S
 		return errors.New("hot restart generation identity does not match the durable generation journal")
 	}
 	return nil
+}
+
+func (a *App) durableRuntimeSnapshotHash(revision int64) (string, error) {
+	if revision == 0 || a == nil || a.store == nil {
+		return "", nil
+	}
+	store, ok := a.store.(hotRestartJournalStore)
+	if !ok {
+		return "", nil
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return "", err
+	}
+	for _, record := range []*model.GenerationRecord{journal.Candidate, journal.Active, journal.LastKnownGood} {
+		if record == nil || record.Revision != revision || strings.TrimSpace(record.RuntimeSnapshotHash) == "" {
+			continue
+		}
+		if record == journal.Candidate && record.Phase != model.GenerationPhaseCutover {
+			continue
+		}
+		if record != journal.Candidate && record.Phase != model.GenerationPhaseActive {
+			continue
+		}
+		return record.RuntimeSnapshotHash, nil
+	}
+	return "", nil
+}
+
+func (a *App) hotRestartRuntimeSnapshotHash(identity hotrestart.Identity) (string, error) {
+	if identity.Revision == 0 {
+		return "", nil
+	}
+	store, ok := a.store.(hotRestartJournalStore)
+	if !ok {
+		return "", errors.New("store does not expose the generation journal required for hot restart")
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return "", err
+	}
+	record := matchingHotRestartRecord(journal, identity.Revision)
+	if record == nil || record.RuntimeGenerationID != identity.GenerationID ||
+		record.Lease.LeaseID != identity.LeaseID ||
+		!strings.EqualFold(record.SnapshotDigest, identity.SnapshotDigest) ||
+		strings.TrimSpace(record.RuntimeSnapshotHash) == "" {
+		return "", errors.New("hot restart runtime identity changed before child generation preparation")
+	}
+	return record.RuntimeSnapshotHash, nil
 }
 
 func (a *App) validateActiveHotRestartRuntime(identity hotrestart.Identity) error {

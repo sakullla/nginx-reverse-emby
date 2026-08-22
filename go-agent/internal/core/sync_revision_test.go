@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,60 @@ func TestRevisionSyncPersistsCutoverBeforeAppliedAcknowledgement(t *testing.T) {
 	)
 	if store.journal.Active == nil || !store.journal.Active.Acknowledged || store.journal.Candidate != nil {
 		t.Fatalf("final journal = %+v, want acknowledged active generation", store.journal)
+	}
+}
+
+func TestRevisionSyncManagedGenerationUsesVerifiedSnapshotDigest(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	pull := revisionPull(7, "lease-7", "verified-digest-7")
+	runtime := newManagedRevisionRuntime(t)
+	controller := &SyncController{
+		Store: store, Runtime: runtime,
+		SyncClient: &revisionClientStub{events: &events, pull: pull},
+	}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	identity, managed := runtime.ActiveGenerationIdentity()
+	if !managed || identity.SnapshotHash != pull.VerifiedSnapshotDigest {
+		t.Fatalf("active generation identity = %+v, managed = %t, want verified digest %q", identity, managed, pull.VerifiedSnapshotDigest)
+	}
+	if store.journal.Active == nil || store.journal.Active.RuntimeSnapshotHash != pull.VerifiedSnapshotDigest {
+		t.Fatalf("active generation journal = %+v, want verified runtime snapshot identity", store.journal.Active)
+	}
+}
+
+func TestRestoreDurableRevisionRuntimePreservesIdentityAcrossSnapshotSchemaChanges(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.applied = revisionSnapshot(61)
+	store.lkg = store.applied
+	store.runtime = RuntimeState{CurrentRevision: 61, Metadata: map[string]string{"current_revision": "61"}}
+	durableHash := strings.Repeat("a", sha256.Size*2)
+	currentHash, err := revisionSnapshotDigest(store.applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentHash == durableHash {
+		t.Fatal("test precondition failed: current schema encoding retained the durable hash")
+	}
+	record := model.GenerationRecord{
+		GenerationID: "attempt-generation-61", RuntimeGenerationID: "generation-61-" + durableHash[:16],
+		RuntimeSnapshotHash: durableHash, Revision: 61, SnapshotDigest: strings.Repeat("b", sha256.Size*2),
+		Phase: model.GenerationPhaseActive,
+	}
+	store.journal = model.GenerationJournal{Version: 1, Active: &record, LastKnownGood: &record}
+	runtime := newManagedRevisionRuntime(t)
+	controller := &SyncController{Store: store, Runtime: runtime}
+
+	if err := controller.restoreDurableRevisionRuntime(t.Context()); err != nil {
+		t.Fatalf("restoreDurableRevisionRuntime() error = %v", err)
+	}
+	identity, managed := runtime.ActiveGenerationIdentity()
+	if !managed || identity.SnapshotHash != durableHash || identity.ID != "generation-61-"+durableHash[:16] {
+		t.Fatalf("restored identity = %+v, managed = %t, want durable journal identity", identity, managed)
 	}
 }
 
@@ -446,6 +501,7 @@ func (s *revisionTestStore) record(event string) {
 }
 
 func revisionPull(revision int64, leaseID, digest string) model.RevisionPull {
+	digest = fmt.Sprintf("%x", sha256.Sum256([]byte(digest)))
 	snapshot := revisionSnapshot(revision)
 	lease := revisionLease(revision, leaseID, digest)
 	return model.RevisionPull{
