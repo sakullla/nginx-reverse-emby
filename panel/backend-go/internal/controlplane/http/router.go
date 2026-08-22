@@ -738,6 +738,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if d.RuleService != nil {
 			manager.SetRuleService(d.RuleService)
 		}
+		if d.L4RuleService != nil {
+			manager.SetL4RuleService(d.L4RuleService)
+		}
 		manager.SetTrafficSummaryProvider(d.TrafficService)
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 		d.PluginRuntimeHost.SetHostResourceDispatcher(manager)

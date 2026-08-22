@@ -3,10 +3,16 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
@@ -49,6 +55,9 @@ func TestPluginHostMutationsRequireDurableOperationID(t *testing.T) {
 	}
 	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeHTTPRule}) {
 		t.Fatal("http.rule did not require a durable operation id")
+	}
+	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeL4Rule}) {
+		t.Fatal("l4.rule did not require a durable operation id")
 	}
 	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimePluginCall}) {
 		t.Fatal("plugin.call unexpectedly required a mutation operation id")
@@ -351,6 +360,351 @@ func TestPluginHostEventEmitRemainsAuditOnly(t *testing.T) {
 	rules, err := store.ListHTTPRules(t.Context(), "edge-a")
 	if err != nil || len(rules) != 0 {
 		t.Fatalf("event.emit created rules = %+v err=%v", rules, err)
+	}
+}
+
+func TestPluginHostL4RuleLifecycleCarriesPluginAttribution(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local", Name: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewL4RuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager := &PluginCapabilityManager{store: store}
+	manager.SetL4RuleService(rules)
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionL4Rule}
+
+	createPayload, err := json.Marshal(pluginsdk.L4RuleRequest{
+		Action: pluginsdk.L4RuleActionCreate, AgentID: "local", Name: "edge-tcp", Protocol: pluginsdk.L4RuleProtocolTCP,
+		ListenPort: 9000, Backends: []pluginsdk.L4RuleBackend{{Host: "127.0.0.1", Port: 9001}},
+		Tags: []string{"team-edge", "plugin", "plugin:other.plugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-create-1",
+		Payload:     createPayload,
+	})
+	if created.Error != nil {
+		t.Fatalf("l4.rule create error = %v", created.Error)
+	}
+	var createdResult struct {
+		RuleRef string `json:"rule_ref"`
+		AgentID string `json:"agent_id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(created.Payload, &createdResult); err != nil {
+		t.Fatal(err)
+	}
+	if createdResult.RuleRef == "" || createdResult.AgentID != "local" || !createdResult.Enabled {
+		t.Fatalf("l4.rule create result = %+v", createdResult)
+	}
+	listed, err := rules.List(t.Context(), "local")
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("created rules = %+v err=%v", listed, err)
+	}
+	rule := listed[0]
+	for _, want := range []string{"team-edge", "plugin", "plugin:example.plugin", "plugin-instance:control-1"} {
+		if !slicesContains(rule.Tags, want) {
+			t.Fatalf("created rule tags = %v, missing %q", rule.Tags, want)
+		}
+	}
+	if slicesContains(rule.Tags, "plugin:other.plugin") {
+		t.Fatalf("spoofed attribution tag survived: %v", rule.Tags)
+	}
+	binding, err := store.GetResourceBinding(t.Context(), "l4_rule", "local:"+createdResult.RuleRef)
+	if err != nil || strings.TrimSpace(binding.ResourceGroupID) == "" {
+		t.Fatalf("created rule resource binding = %+v err=%v", binding, err)
+	}
+
+	updatePayload, err := json.Marshal(pluginsdk.L4RuleRequest{
+		Action: pluginsdk.L4RuleActionUpdate, AgentID: "local", RuleRef: createdResult.RuleRef,
+		Name: "edge-tcp-renamed", Tags: []string{"team-core"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-update-1",
+		Payload:     updatePayload,
+	})
+	if updated.Error != nil {
+		t.Fatalf("l4.rule update error = %v", updated.Error)
+	}
+	rule, err = rules.Get(t.Context(), "local", rule.ID)
+	if err != nil || rule.Name != "edge-tcp-renamed" || rule.ListenPort != 9000 {
+		t.Fatalf("updated rule = %+v err=%v", rule, err)
+	}
+	if !slicesContains(rule.Tags, "team-core") || !slicesContains(rule.Tags, "plugin:example.plugin") || slicesContains(rule.Tags, "team-edge") {
+		t.Fatalf("updated rule tags = %v", rule.Tags)
+	}
+
+	for action, wantEnabled := range map[string]bool{pluginsdk.L4RuleActionDisable: false, pluginsdk.L4RuleActionEnable: true} {
+		togglePayload, err := json.Marshal(pluginsdk.L4RuleRequest{Action: action, AgentID: "local", RuleRef: createdResult.RuleRef})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toggled := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+			Operation:   pluginsdk.HostRuntimeL4Rule,
+			OperationID: "l4-rule-" + action + "-1",
+			Payload:     togglePayload,
+		})
+		if toggled.Error != nil {
+			t.Fatalf("l4.rule %s error = %v", action, toggled.Error)
+		}
+		rule, err = rules.Get(t.Context(), "local", rule.ID)
+		if err != nil || rule.Enabled != wantEnabled {
+			t.Fatalf("l4.rule %s left rule = %+v err=%v", action, rule, err)
+		}
+	}
+
+	deletePayload, err := json.Marshal(pluginsdk.L4RuleRequest{Action: pluginsdk.L4RuleActionDelete, AgentID: "local", RuleRef: createdResult.RuleRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-delete-1",
+		Payload:     deletePayload,
+	})
+	if deleted.Error != nil {
+		t.Fatalf("l4.rule delete error = %v", deleted.Error)
+	}
+	remaining, err := rules.List(t.Context(), "local")
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("delete left rules = %+v err=%v", remaining, err)
+	}
+	repeated := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-delete-2",
+		Payload:     deletePayload,
+	})
+	if repeated.Error == nil || repeated.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("repeated delete error = %v", repeated.Error)
+	}
+}
+
+func TestPluginHostL4RuleRequiresGrantOwnershipAndBoundService(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local", Name: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewL4RuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager := &PluginCapabilityManager{store: store}
+	manager.SetL4RuleService(rules)
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionL4Rule}
+
+	createPayload, err := json.Marshal(pluginsdk.L4RuleRequest{
+		Action: pluginsdk.L4RuleActionCreate, AgentID: "local", Protocol: pluginsdk.L4RuleProtocolTCP,
+		ListenPort: 9100, Backends: []pluginsdk.L4RuleBackend{{Host: "127.0.0.1", Port: 9101}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ungranted := pluginCallCandidate()
+	denied := manager.DispatchPluginHostResource(t.Context(), ungranted, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-denied-1",
+		Payload:     createPayload,
+	})
+	if denied.Error == nil || denied.Error.Code != pluginsdk.ErrorPermissionDenied {
+		t.Fatalf("ungranted l4.rule error = %v", denied.Error)
+	}
+	if listed, err := rules.List(t.Context(), "local"); err != nil || len(listed) != 0 {
+		t.Fatalf("ungranted l4.rule created rules = %+v err=%v", listed, err)
+	}
+
+	created := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-create-owned",
+		Payload:     createPayload,
+	})
+	if created.Error != nil {
+		t.Fatalf("l4.rule create error = %v", created.Error)
+	}
+	var createdResult struct {
+		RuleRef string `json:"rule_ref"`
+	}
+	if err := json.Unmarshal(created.Payload, &createdResult); err != nil {
+		t.Fatal(err)
+	}
+
+	other := pluginhost.Candidate{
+		InstanceID:      "control-9",
+		ResourceGroupID: "default",
+		Identity:        pluginhost.Identity{PluginID: "other.plugin", Generation: "generation-1"},
+		Grants:          []string{pluginsdk.PermissionL4Rule},
+	}
+	disablePayload, err := json.Marshal(pluginsdk.L4RuleRequest{Action: pluginsdk.L4RuleActionDisable, AgentID: "local", RuleRef: createdResult.RuleRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossPlugin := manager.DispatchPluginHostResource(t.Context(), other, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-cross-plugin-1",
+		Payload:     disablePayload,
+	})
+	if crossPlugin.Error == nil || crossPlugin.Error.Code != pluginsdk.ErrorPermissionDenied {
+		t.Fatalf("cross-plugin l4.rule error = %v", crossPlugin.Error)
+	}
+	rule, err := rules.Get(t.Context(), "local", 1)
+	if err == nil && !rule.Enabled {
+		t.Fatalf("cross-plugin l4.rule mutated rule = %+v", rule)
+	}
+
+	unbound := &PluginCapabilityManager{store: store}
+	unboundResponse := unbound.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-unbound-1",
+		Payload:     createPayload,
+	})
+	if unboundResponse.Error == nil || unboundResponse.Error.Code != pluginsdk.ErrorUnavailable {
+		t.Fatalf("unbound l4.rule error = %v", unboundResponse.Error)
+	}
+}
+
+func TestPluginHostL4RuleUninstallCascadeLeavesNoOrphanRules(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local", Name: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewL4RuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager := &PluginCapabilityManager{store: store}
+	manager.SetL4RuleService(rules)
+
+	owner := pluginCallCandidate()
+	owner.Grants = []string{pluginsdk.PermissionL4Rule}
+	createOwned, err := json.Marshal(pluginsdk.L4RuleRequest{
+		Action: pluginsdk.L4RuleActionCreate, AgentID: "local", Protocol: pluginsdk.L4RuleProtocolTCP,
+		ListenPort: 9200, Backends: []pluginsdk.L4RuleBackend{{Host: "127.0.0.1", Port: 9201}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := manager.DispatchPluginHostResource(t.Context(), owner, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeL4Rule, OperationID: "l4-rule-cascade-owned", Payload: createOwned,
+	})
+	if owned.Error != nil {
+		t.Fatalf("l4.rule create error = %v", owned.Error)
+	}
+	var ownedResult struct {
+		RuleRef string `json:"rule_ref"`
+	}
+	if err := json.Unmarshal(owned.Payload, &ownedResult); err != nil {
+		t.Fatal(err)
+	}
+
+	other := pluginhost.Candidate{
+		InstanceID:      "control-9",
+		ResourceGroupID: "default",
+		Identity:        pluginhost.Identity{PluginID: "other.plugin", Generation: "generation-1"},
+		Grants:          []string{pluginsdk.PermissionL4Rule},
+	}
+	createOther, err := json.Marshal(pluginsdk.L4RuleRequest{
+		Action: pluginsdk.L4RuleActionCreate, AgentID: "local", Protocol: pluginsdk.L4RuleProtocolTCP,
+		ListenPort: 9300, Backends: []pluginsdk.L4RuleBackend{{Host: "127.0.0.1", Port: 9301}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept := manager.DispatchPluginHostResource(t.Context(), other, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeL4Rule, OperationID: "l4-rule-cascade-other", Payload: createOther,
+	}); kept.Error != nil {
+		t.Fatalf("other plugin l4.rule create error = %v", kept.Error)
+	}
+
+	installPluginForUninstall(t, store, "example.plugin")
+	now := time.Now().UTC()
+	installed, found, err := store.GetInstalledPlugin(t.Context(), "example.plugin")
+	if err != nil || !found {
+		t.Fatalf("installed plugin = %+v found=%v err=%v", installed, found, err)
+	}
+	packageRow, found, err := store.GetPluginPackageByIdentity(t.Context(), installed.ActivePackageIdentity)
+	if err != nil || !found {
+		t.Fatalf("plugin package found=%v err=%v", found, err)
+	}
+	operation := storage.PluginOperationRow{
+		ID: "op-uninstall-example.plugin", PluginID: "example.plugin", Kind: "uninstall", Status: "succeeded",
+		ActorID: "admin", AgentResultsJSON: `[]`, CreatedAt: now, CompletedAt: &now,
+	}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyPluginMutation(t.Context(), storage.PluginMutation{
+		PluginID: "example.plugin", ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		DeletePlugin: true, DeleteInstances: true, DeleteGrants: true,
+		Operation: operation,
+		Audit: storage.AuditEventRow{
+			ID: "audit-uninstall-example.plugin", ActorID: "admin", Action: "plugin.uninstall",
+			TargetKind: "plugin", TargetID: "example.plugin", Result: "success", MetadataJSON: `{}`, CreatedAt: now,
+		},
+	}); err != nil {
+		t.Fatalf("uninstall mutation error = %v", err)
+	}
+
+	remaining, err := rules.List(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].ListenPort != 9300 {
+		t.Fatalf("uninstall cascade left rules = %+v", remaining)
+	}
+	if !slicesContains(remaining[0].Tags, "plugin:other.plugin") {
+		t.Fatalf("surviving rule lost attribution: %v", remaining[0].Tags)
+	}
+	if _, err := store.GetResourceBinding(t.Context(), "l4_rule", "local:"+ownedResult.RuleRef); err == nil {
+		t.Fatal("orphan resource binding survived the uninstall cascade")
+	}
+}
+
+func installPluginForUninstall(t *testing.T, store *storage.GormStore, pluginID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprintSum := sha256.Sum256(publicKey)
+	fingerprint := hex.EncodeToString(fingerprintSum[:])
+	digest := strings.Repeat("a", 64)
+	identity := storage.PluginPackageIdentity(digest, "test-source", fingerprint)
+	packageRow := storage.PluginPackageRow{
+		Digest: digest, Identity: identity, PluginID: pluginID, Version: "1.0.0",
+		SourceID: "test-source", SourceKind: "custom", SignatureKeyID: "test-key",
+		SignaturePublicKey: base64.StdEncoding.EncodeToString(publicKey), SignatureFingerprint: fingerprint,
+		CachePath: "cache/" + pluginID, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now,
+	}
+	operation := storage.PluginOperationRow{
+		ID: "op-install-" + pluginID, PluginID: pluginID, Kind: "install", Status: "succeeded",
+		ActorID: "admin", AgentResultsJSON: `[]`, CreatedAt: now, CompletedAt: &now,
+	}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		t.Fatal(err)
+	}
+	installed := storage.InstalledPluginRow{
+		PluginID: pluginID, ActivePackageDigest: digest, ActivePackageIdentity: identity,
+		RuntimeKind: pluginsdk.RuntimeRPCService, RuntimeABI: pluginsdk.RPCABIV1, HostScope: "control-plane",
+		ActiveSourceID: "test-source", ActiveSourceKind: "custom", ActiveSignatureKeyID: "test-key",
+		ActiveSignaturePublicKey: packageRow.SignaturePublicKey, ActiveSignatureFingerprint: fingerprint,
+		DesiredLifecycle: "disabled", CurrentLifecycle: "disabled",
+		CleanupPolicyJSON: `{"instances":"delete","grants":"delete"}`, LastOperationID: operation.ID,
+		StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+	}
+	if err := store.InstallPlugin(t.Context(), storage.PluginInstallTransaction{
+		Package: packageRow, Installed: installed, Operation: operation,
+		Audit: storage.AuditEventRow{
+			ID: "audit-install-" + pluginID, ActorID: "admin", Action: "plugin.install",
+			TargetKind: "plugin", TargetID: pluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now,
+		},
+	}); err != nil {
+		t.Fatalf("InstallPlugin() error = %v", err)
 	}
 }
 

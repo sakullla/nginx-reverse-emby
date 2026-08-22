@@ -86,6 +86,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostPluginCall(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeHTTPRule:
 		payload, err = manager.pluginHostHTTPRule(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeL4Rule:
+		payload, err = manager.pluginHostL4Rule(ctx, candidate, call.Payload)
 	default:
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	}
@@ -127,6 +129,8 @@ func pluginHostOperationPermission(operation string) string {
 		return "storage.read"
 	case pluginsdk.HostRuntimeHTTPRule:
 		return pluginsdk.PermissionHTTPRule
+	case pluginsdk.HostRuntimeL4Rule:
+		return pluginsdk.PermissionL4Rule
 	default:
 		return ""
 	}
@@ -142,7 +146,7 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
-	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule {
+	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule || call.Operation == pluginsdk.HostRuntimeL4Rule {
 		return true
 	}
 	if call.Operation != "http.secret-request" {
@@ -508,11 +512,20 @@ type pluginHostHTTPRuleService interface {
 	List(context.Context, string) ([]HTTPRule, error)
 }
 
+type pluginHostL4RuleService interface {
+	Create(context.Context, string, L4RuleInput) (L4Rule, error)
+	Get(context.Context, string, int) (L4Rule, error)
+	Update(context.Context, string, int, L4RuleInput) (L4Rule, error)
+	Delete(context.Context, string, int) (L4Rule, error)
+	List(context.Context, string) ([]L4Rule, error)
+}
+
 type pluginHostRuntimeState struct {
-	mu     sync.Mutex
-	tasks  pluginHostTaskDispatcher
-	rules  pluginHostHTTPRuleService
-	lookup func(context.Context, string, string) (pluginCallTarget, error)
+	mu      sync.Mutex
+	tasks   pluginHostTaskDispatcher
+	rules   pluginHostHTTPRuleService
+	l4rules pluginHostL4RuleService
+	lookup  func(context.Context, string, string) (pluginCallTarget, error)
 }
 
 var pluginHostRuntimeStates sync.Map
@@ -536,6 +549,13 @@ func (manager *PluginCapabilityManager) SetRuleService(rules pluginHostHTTPRuleS
 	state := pluginHostState(manager)
 	state.mu.Lock()
 	state.rules = rules
+	state.mu.Unlock()
+}
+
+func (manager *PluginCapabilityManager) SetL4RuleService(rules pluginHostL4RuleService) {
+	state := pluginHostState(manager)
+	state.mu.Lock()
+	state.l4rules = rules
 	state.mu.Unlock()
 }
 
@@ -570,6 +590,15 @@ func (state *pluginHostRuntimeState) ruleService() pluginHostHTTPRuleService {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return state.rules
+}
+
+func (state *pluginHostRuntimeState) l4RuleService() pluginHostL4RuleService {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.l4rules
 }
 
 func (state *pluginHostRuntimeState) pluginCallLookup() func(context.Context, string, string) (pluginCallTarget, error) {
@@ -861,6 +890,204 @@ func pluginHostHTTPRuleResult(rule HTTPRule) map[string]any {
 		"agent_id":     rule.AgentID,
 		"frontend_url": rule.FrontendURL,
 		"backend_url":  backend,
+	}
+}
+
+const (
+	pluginHostL4RuleTagPrefix         = "plugin:"
+	pluginHostL4RuleInstanceTagPrefix = "plugin-instance:"
+)
+
+func (manager *PluginCapabilityManager) pluginHostL4Rule(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (map[string]any, error) {
+	var input pluginsdk.L4RuleRequest
+	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return nil, errPluginHostInvalid
+	}
+	rules := pluginHostState(manager).l4RuleService()
+	if rules == nil {
+		return nil, errPluginHostUnavailable
+	}
+	ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
+	switch input.Action {
+	case pluginsdk.L4RuleActionCreate:
+		return manager.pluginHostL4RuleCreate(ctx, candidate, rules, input)
+	case pluginsdk.L4RuleActionUpdate:
+		return manager.pluginHostL4RuleUpdate(ctx, candidate, rules, input)
+	case pluginsdk.L4RuleActionEnable, pluginsdk.L4RuleActionDisable:
+		return manager.pluginHostL4RuleSetEnabled(ctx, candidate, rules, input, input.Action == pluginsdk.L4RuleActionEnable)
+	case pluginsdk.L4RuleActionDelete:
+		return manager.pluginHostL4RuleDelete(ctx, candidate, rules, input)
+	default:
+		return nil, errPluginHostInvalid
+	}
+}
+
+func (manager *PluginCapabilityManager) pluginHostL4RuleCreate(ctx context.Context, candidate pluginhost.Candidate, rules pluginHostL4RuleService, input pluginsdk.L4RuleRequest) (map[string]any, error) {
+	agentID := strings.TrimSpace(input.AgentID)
+	if agentID == "" {
+		return nil, errPluginHostInvalid
+	}
+	ruleInput := pluginHostL4RuleInput(input)
+	tags := pluginHostL4RuleTags(input.Tags, candidate)
+	ruleInput.Tags = &tags
+	rule, err := rules.Create(ctx, agentID, ruleInput)
+	if err != nil {
+		if errors.Is(err, ErrAgentNotFound) || errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrL4Unsupported) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostL4RuleResult(rule), nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostL4RuleUpdate(ctx context.Context, candidate pluginhost.Candidate, rules pluginHostL4RuleService, input pluginsdk.L4RuleRequest) (map[string]any, error) {
+	rule, err := manager.resolvePluginHostL4Rule(ctx, candidate, rules, input)
+	if err != nil {
+		return nil, err
+	}
+	ruleInput := pluginHostL4RuleInput(input)
+	if input.Tags != nil {
+		tags := pluginHostL4RuleTags(input.Tags, candidate)
+		ruleInput.Tags = &tags
+	}
+	updated, err := rules.Update(ctx, rule.AgentID, rule.ID, ruleInput)
+	if err != nil {
+		if errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrInvalidArgument) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostL4RuleResult(updated), nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostL4RuleSetEnabled(ctx context.Context, candidate pluginhost.Candidate, rules pluginHostL4RuleService, input pluginsdk.L4RuleRequest, enabled bool) (map[string]any, error) {
+	rule, err := manager.resolvePluginHostL4Rule(ctx, candidate, rules, input)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := rules.Update(ctx, rule.AgentID, rule.ID, L4RuleInput{Enabled: &enabled})
+	if err != nil {
+		if errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrInvalidArgument) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostL4RuleResult(updated), nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostL4RuleDelete(ctx context.Context, candidate pluginhost.Candidate, rules pluginHostL4RuleService, input pluginsdk.L4RuleRequest) (map[string]any, error) {
+	rule, err := manager.resolvePluginHostL4Rule(ctx, candidate, rules, input)
+	if err != nil {
+		return nil, err
+	}
+	deleted, err := rules.Delete(ctx, rule.AgentID, rule.ID)
+	if err != nil {
+		if errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrInvalidArgument) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostL4RuleResult(deleted), nil
+}
+
+func (manager *PluginCapabilityManager) resolvePluginHostL4Rule(ctx context.Context, candidate pluginhost.Candidate, rules pluginHostL4RuleService, input pluginsdk.L4RuleRequest) (L4Rule, error) {
+	id, err := parsePluginHostRuleRef(input.RuleRef)
+	if err != nil {
+		return L4Rule{}, errPluginHostInvalid
+	}
+	agentID := strings.TrimSpace(input.AgentID)
+	if agentID == "" {
+		return L4Rule{}, errPluginHostInvalid
+	}
+	rule, err := rules.Get(ctx, agentID, id)
+	if err != nil {
+		if errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrAgentNotFound) || errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrL4Unsupported) {
+			return L4Rule{}, errPluginHostInvalid
+		}
+		return L4Rule{}, err
+	}
+	if !pluginHostL4RuleOwnedBy(rule, candidate.Identity.PluginID) {
+		return L4Rule{}, errPluginHostDenied
+	}
+	return rule, nil
+}
+
+func pluginHostL4RuleInput(input pluginsdk.L4RuleRequest) L4RuleInput {
+	ruleInput := L4RuleInput{Enabled: input.Enabled, EgressProfileID: input.EgressProfileID}
+	if name := strings.TrimSpace(input.Name); name != "" {
+		ruleInput.Name = &name
+	}
+	if protocol := strings.ToLower(strings.TrimSpace(input.Protocol)); protocol != "" {
+		ruleInput.Protocol = &protocol
+	}
+	if host := strings.TrimSpace(input.ListenHost); host != "" {
+		ruleInput.ListenHost = &host
+	}
+	if input.ListenPort > 0 {
+		port := input.ListenPort
+		ruleInput.ListenPort = &port
+	}
+	if input.Backends != nil {
+		backends := make([]L4Backend, 0, len(input.Backends))
+		for _, backend := range input.Backends {
+			backends = append(backends, L4Backend{Host: strings.TrimSpace(backend.Host), Port: backend.Port})
+		}
+		ruleInput.Backends = &backends
+	}
+	if input.LoadBalancing != nil {
+		ruleInput.LoadBalancing = &L4LoadBalancing{Strategy: input.LoadBalancing.Strategy}
+	}
+	if input.Tuning != nil {
+		ruleInput.Tuning = &L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{
+			Decode:       input.Tuning.ProxyProtocol.Decode,
+			Send:         input.Tuning.ProxyProtocol.Send,
+			TrustedPeers: append([]string(nil), input.Tuning.ProxyProtocol.TrustedPeers...),
+		}}
+	}
+	if input.RelayLayers != nil {
+		layers := cloneIntLayers(input.RelayLayers)
+		ruleInput.RelayLayers = &layers
+	}
+	if input.RelayObfs {
+		obfs := true
+		ruleInput.RelayObfs = &obfs
+	}
+	if mode := strings.TrimSpace(input.ListenMode); mode != "" {
+		ruleInput.ListenMode = &mode
+	}
+	return ruleInput
+}
+
+func pluginHostL4RuleTags(requested []string, candidate pluginhost.Candidate) []string {
+	tags := make([]string, 0, len(requested)+3)
+	for _, tag := range requested {
+		if tag == "plugin" || strings.HasPrefix(tag, pluginHostL4RuleTagPrefix) || strings.HasPrefix(tag, pluginHostL4RuleInstanceTagPrefix) {
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	tags = append(tags, pluginPublishRuleTags(candidate.Identity.PluginID)...)
+	if instanceID := strings.TrimSpace(candidate.InstanceID); instanceID != "" {
+		tags = append(tags, pluginHostL4RuleInstanceTagPrefix+instanceID)
+	}
+	return tags
+}
+
+func pluginHostL4RuleOwnedBy(rule L4Rule, pluginID string) bool {
+	want := pluginHostL4RuleTagPrefix + strings.TrimSpace(pluginID)
+	for _, tag := range rule.Tags {
+		if tag == want {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginHostL4RuleResult(rule L4Rule) map[string]any {
+	return map[string]any{
+		"rule_ref": strconv.Itoa(rule.ID),
+		"agent_id": rule.AgentID,
+		"enabled":  rule.Enabled,
 	}
 }
 
