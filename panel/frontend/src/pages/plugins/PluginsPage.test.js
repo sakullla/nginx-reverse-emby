@@ -136,8 +136,32 @@ describe('PluginsPage', () => {
     mocks.fetchPlugins.mockRejectedValue(new Error('backend unavailable'))
     const wrapper = mountPage()
     await flushPromises()
+    expect(wrapper.text()).toContain('读取失败')
+    expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.text()).toContain('下一步：重试读取已安装列表')
+    expect(wrapper.find('[role="alert"] a').attributes('href')).toBe('/plugins/marketplace')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('重试'))).toBe(true)
+    expect(wrapper.text()).not.toContain('Cloudflare DNS')
+  })
+
+  it('keeps every installed summary visible when one plugin detail fails', async () => {
+    mocks.fetchPlugins.mockResolvedValue([
+      { plugin_id: 'resource-acceleration', active_source_kind: 'official', current_lifecycle: 'active' },
+      { plugin_id: 'cloudflare-dns', active_source_kind: 'official', current_lifecycle: 'active' }
+    ])
+    mocks.fetchPluginDetail.mockImplementation(async (id) => {
+      if (id === 'resource-acceleration') throw new Error('active plugin package is unavailable')
+      return detail(id, 'group-a', { package: { version: '0.1.4', manifest: { name: 'Cloudflare DNS' } } })
+    })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('resource-acceleration')
     expect(wrapper.text()).toContain('Cloudflare DNS')
-    expect(wrapper.text()).toContain('打开管理页')
+    expect(wrapper.findAll('a.plugin-card-link')).toHaveLength(2)
+    expect(wrapper.text()).toContain('1 个插件的详情读取失败')
+    expect(wrapper.text()).toContain('打开详情重试')
   })
 
   it('shows an empty state that points to the marketplace', async () => {

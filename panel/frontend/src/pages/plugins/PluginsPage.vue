@@ -18,6 +18,7 @@ const loading = ref(true)
 const error = ref('')
 const plugins = ref([])
 const uiRoutes = ref([])
+const detailFailureCount = ref(0)
 const searchQuery = ref('')
 const taskFilter = ref('')
 
@@ -73,6 +74,7 @@ function abnormalAgentCount(detail) {
 }
 
 function pluginTaskStatus(detail) {
+  if (detail.detail_load_error) return 'abnormal'
   if (!(detail.instances || []).length) return 'undeployed'
   // Pending publish only applies when the installed package declares an HTTP backend.
   if (hasHTTPBackend(detail) && !publishedEntriesOf(detail).length) return 'unpublished'
@@ -126,6 +128,7 @@ function publishedEntryLabel(entry) {
 }
 
 function nextStepLabel(detail) {
+  if (detail.detail_load_error) return '详情读取失败，请打开详情重试'
   const entry = firstPublishedEntry(detail)
   switch (pluginTaskStatus(detail)) {
     case 'undeployed':
@@ -157,39 +160,39 @@ onMounted(load)
 async function load() {
   loading.value = true
   error.value = ''
+  detailFailureCount.value = 0
   try {
     if (!actor.value) await refreshActor()
     const summaries = await fetchPlugins()
-    const details = await Promise.all(summaries.map((summary) => fetchPluginDetail(summary.plugin_id)))
-    plugins.value = details.map((detail) => filterPluginDetailForActor(detail, actor.value)).filter(Boolean)
+    const details = await Promise.allSettled(summaries.map((summary) => fetchPluginDetail(summary.plugin_id)))
+    plugins.value = details.map((result, index) => {
+      if (result.status === 'fulfilled') return filterPluginDetailForActor(result.value, actor.value)
+      detailFailureCount.value += 1
+      return fallbackPluginDetail(summaries[index])
+    }).filter(Boolean)
     fetchPluginUIRoutes()
       .then((routes) => { uiRoutes.value = Array.isArray(routes) ? routes : [] })
       .catch(() => { uiRoutes.value = [] })
   } catch (cause) {
-    applyPreviewPlugins()
+    error.value = sanitizePluginText(cause?.message || '读取已安装插件失败').trim() || '读取已安装插件失败'
   } finally {
     loading.value = false
   }
 }
 
-function applyPreviewPlugins() {
-  uiRoutes.value = [
-    { id: 'cloudflare-dns', label: 'Cloudflare DNS', href: '/panel-api/plugins/cloudflare-dns/' }
-  ]
-  plugins.value = [{
-    plugin: {
-      plugin_id: 'cloudflare-dns',
-      current_lifecycle: 'active',
-      active_source_kind: 'official'
-    },
+function fallbackPluginDetail(summary) {
+  const pluginID = String(summary?.plugin_id || '').trim()
+  return {
+    detail_load_error: true,
+    plugin: { ...summary, plugin_id: pluginID },
     package: {
-      version: '0.1.4',
-      manifest: { name: 'Cloudflare DNS' }
+      version: String(summary?.version || '').trim() || '—',
+      manifest: { name: String(summary?.name || '').trim() || pluginID }
     },
-    instances: [{ id: 'cf-1', resource_group_id: 'cloudflare-dns', targets: ['local'] }],
-    agent_statuses: [{ instance_id: 'cf-1', runtime_state: 'active' }],
+    instances: [],
+    agent_statuses: [],
     published_entries: []
-  }]
+  }
 }
 
 function manageHref(detail) {
@@ -259,6 +262,10 @@ function openDetail(detail) {
         </button>
       </div>
     </div>
+
+    <p v-if="!loading && detailFailureCount" class="plugins-page__warning" role="status">
+      {{ detailFailureCount }} 个插件的详情读取失败，已保留在列表中；请打开详情重试。
+    </p>
 
     <div v-if="loading" class="plugins-page__loading">
       <div class="spinner"></div>
@@ -435,6 +442,16 @@ function openDetail(detail) {
   gap: 0.75rem;
   padding: 4rem 2rem;
   color: var(--color-text-muted);
+}
+
+.plugins-page__warning {
+  margin: 0 0 var(--space-4);
+  padding: 0.65rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, var(--color-border-default));
+  border-radius: var(--radius-lg);
+  background: var(--color-warning-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
 }
 
 .plugin-grid {
