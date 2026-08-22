@@ -219,6 +219,114 @@ func TestChannelUDPEndToEndDirect(t *testing.T) {
 	}
 }
 
+// startHalfCloseResponser serves one response per connection, but only after
+// the peer half-closes: the response bytes are generated strictly after the
+// channel propagated the FIN, so a stream aborted on first EOF loses them.
+func startHalfCloseResponser(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				request, err := io.ReadAll(conn)
+				if err != nil {
+					return
+				}
+				response := append([]byte("response: "), request...)
+				response = append(response, " (after fin)"...)
+				_, _ = conn.Write(response)
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+func TestChannelTCPHalfCloseDeliversTailResponse(t *testing.T) {
+	rig := newChannelTestRig(t, newTestCA(t, "domain-1"), ProtocolTCP, startHalfCloseResponser(t))
+	if status := rig.ensureExit(t); status.State != StateOnline {
+		t.Fatalf("exit status = %+v, want online", status)
+	}
+	waitForStatus(t, rig.entry, "session-1", StateOnline)
+
+	conn, err := net.DialTimeout("tcp", rig.bridge, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write([]byte("half-close payload")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		if err := tcp.CloseWrite(); err != nil {
+			t.Fatalf("client half-close: %v", err)
+		}
+	}
+	response, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read response after half-close: %v", err)
+	}
+	if want := "response: half-close payload (after fin)"; string(response) != want {
+		t.Fatalf("response = %q, want %q", response, want)
+	}
+}
+
+func TestChannelConcurrentEnsureKeepsSingleRuntime(t *testing.T) {
+	rig := newChannelTestRig(t, newTestCA(t, "domain-1"), ProtocolTCP, startTCPEcho(t))
+
+	const concurrency = 4
+	results := make(chan SessionStatus, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			status, err := rig.exit.Ensure(context.Background(), rig.spec)
+			if err != nil {
+				t.Errorf("concurrent ensure: %v", err)
+				return
+			}
+			results <- status
+		}()
+	}
+	online := false
+	for i := 0; i < concurrency; i++ {
+		select {
+		case status := <-results:
+			if status.State == StateOnline {
+				online = true
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("concurrent ensures did not return")
+		}
+	}
+	if !online {
+		waitForStatus(t, rig.exit, "session-1", StateOnline)
+	}
+	waitForStatus(t, rig.entry, "session-1", StateOnline)
+
+	// Exactly one runtime may survive the concurrent ensures: a leaked loser
+	// would reconnect after teardown and flip the entry back online.
+	if err := rig.exit.Teardown(context.Background(), "session-1"); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	waitForStatus(t, rig.entry, "session-1", StateOffline)
+	time.Sleep(500 * time.Millisecond)
+	status, err := rig.entry.Status("session-1")
+	if err != nil {
+		t.Fatalf("entry status: %v", err)
+	}
+	if status.State != StateOffline {
+		t.Fatalf("a leaked runtime reconnected after teardown: %+v", status)
+	}
+}
+
 func TestChannelReconnectsAfterChannelKilled(t *testing.T) {
 	rig := newChannelTestRig(t, newTestCA(t, "domain-1"), ProtocolTCP, startTCPEcho(t))
 	if status := rig.ensureExit(t); status.State != StateOnline {

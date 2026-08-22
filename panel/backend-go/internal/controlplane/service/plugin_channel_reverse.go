@@ -90,16 +90,23 @@ func (manager *PluginCapabilityManager) pluginHostChannelEnsure(ctx context.Cont
 	sessionID := strings.TrimSpace(input.SessionRef)
 	if sessionID == "" {
 		sessionID = pluginHostChannelSessionID(entryID, exitID)
+	} else if owners := pluginHostChannelSessionRefOwners(sessionID); len(owners) != 2 || owners[0] != entryID || owners[1] != exitID {
+		// Teardown and status route by the owners encoded in the session ref,
+		// so a custom ref that does not encode this session's owners would
+		// create a session the caller can never release. Fail closed.
+		return nil, errPluginHostInvalid
 	}
 
-	entryStatus, err := sessions.DispatchAgentTask(ctx, entryID, TaskTypeChannelEnsure, map[string]any{
+	dialHost := pluginHostChannelDialHost(entryRow, exitRow)
+	entryPayload := map[string]any{
 		"session_id":     sessionID,
 		"role":           "entry",
 		"protocol":       input.Protocol,
 		"entry_agent_id": entryID,
 		"exit_agent_id":  exitID,
-		"listen_host":    "127.0.0.1",
-	})
+		"listen_host":    pluginHostChannelListenHost(dialHost),
+	}
+	entryStatus, err := sessions.DispatchAgentTask(ctx, entryID, TaskTypeChannelEnsure, entryPayload)
 	if err != nil {
 		if errors.Is(err, errTaskSessionUnavailable) {
 			return nil, errPluginHostUnavailable
@@ -115,8 +122,7 @@ func (manager *PluginCapabilityManager) pluginHostChannelEnsure(ctx context.Cont
 		return nil, errPluginHostInvalid
 	}
 
-	dialHost := pluginHostChannelDialHost(entryRow, exitRow)
-	candidates := pluginHostChannelBackendHosts(entryRow, exitRow)
+	candidates := pluginHostChannelBackendHosts(input.BackendHost, entryRow, exitRow)
 
 	var lastResult map[string]any
 	for index, backendHost := range candidates {
@@ -320,9 +326,31 @@ func pluginHostChannelDialHost(entryRow, exitRow storage.AgentRow) string {
 	return "127.0.0.1"
 }
 
+// pluginHostChannelListenHost picks the entry ingress binding for one dial
+// host. The binding must cover the address the exit dials: a loopback dial
+// (co-located agents) binds that exact loopback address, while any other dial
+// host asks the entry agent to bind all interfaces, so the ingress stays
+// reachable across multi-homed and NAT topologies where the last-seen address
+// is not a locally bound interface.
+func pluginHostChannelListenHost(dialHost string) string {
+	host := strings.TrimSpace(dialHost)
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return host
+	}
+	return ""
+}
+
 // pluginHostChannelBackendHosts returns exit-side backend hosts in preference
-// order. The final entry is the loopback fallback.
-func pluginHostChannelBackendHosts(entryRow, exitRow storage.AgentRow) []string {
+// order. An explicit backend host from the caller is authoritative; the
+// exit-agent address heuristics are only a fallback for empty requests.
+func pluginHostChannelBackendHosts(backendHost string, entryRow, exitRow storage.AgentRow) []string {
+	backendHost = strings.TrimSpace(backendHost)
+	if backendHost != "" {
+		return []string{backendHost}
+	}
 	exitHost := strings.TrimSpace(exitRow.LastSeenIP)
 	entryHost := strings.TrimSpace(entryRow.LastSeenIP)
 	if exitHost != "" && exitHost != entryHost {

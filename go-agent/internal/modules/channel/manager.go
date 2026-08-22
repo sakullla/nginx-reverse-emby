@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net"
 	"strings"
@@ -103,6 +104,17 @@ func (m *Manager) Ensure(ctx context.Context, spec SessionSpec) (SessionStatus, 
 		m.mu.Unlock()
 		cancel()
 		return SessionStatus{}, errors.New("channel manager is closed")
+	}
+	if existing, ok := m.sessions[spec.SessionID]; ok {
+		// A concurrent Ensure for the same session raced past the existence
+		// check: exactly one runtime may own the slot, so discard this one
+		// instead of overwriting (and leaking) the winner.
+		if existing.spec.comparableEqual(spec) {
+			m.mu.Unlock()
+			cancel()
+			return existing.runtime.status(), nil
+		}
+		existing.cancel()
 	}
 	m.sessions[spec.SessionID] = current
 	m.mu.Unlock()
@@ -422,46 +434,84 @@ func (r *entryRuntime) serveBridgeConn(ctx context.Context, conn net.Conn) {
 	pipeStream(stream, conn)
 }
 
-// pipeStream copies between a mux stream and a raw connection until either
-// side ends, propagating half-closes.
+// pipeStream copies between a mux stream and a raw connection. A clean EOF on
+// one side is propagated as a half-close so queued and in-flight tail bytes
+// are still delivered to the peer; both endpoints are fully closed only after
+// both directions ended. An abnormal end resets both endpoints to unblock the
+// other direction.
 func pipeStream(stream *muxStream, conn net.Conn) {
-	done := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := conn.Read(buf)
-			if n > 0 {
-				if _, writeErr := stream.Write(buf[:n]); writeErr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
+		defer wg.Done()
+		if copyConnToStream(stream, conn) {
+			// The raw peer finished sending: forward its FIN so the stream
+			// peer can still drain everything already in flight.
+			_ = stream.CloseWrite()
+		} else {
+			abortStreamPair(stream, conn)
 		}
 	}()
 	go func() {
-		defer func() { done <- struct{}{} }()
-		defer stream.CloseWrite()
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := stream.Read(buf)
-			if n > 0 {
-				if _, writeErr := conn.Write(buf[:n]); writeErr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
+		defer wg.Done()
+		if copyStreamToConn(stream, conn) {
+			// The stream peer finished sending: half-close the raw peer.
+			closeConnWrite(conn)
+		} else {
+			abortStreamPair(stream, conn)
 		}
 	}()
-	<-done
-	// Unblock the other direction; both endpoints are released by the caller.
+	wg.Wait()
 	_ = conn.Close()
 	_ = stream.Close()
-	<-done
+}
+
+// abortStreamPair unblocks both directions after an abnormal end.
+func abortStreamPair(stream *muxStream, conn net.Conn) {
+	_ = conn.Close()
+	_ = stream.Close()
+}
+
+// copyConnToStream pumps the raw connection into the mux stream and reports
+// whether it ended with a clean EOF (io.EOF).
+func copyConnToStream(stream *muxStream, conn net.Conn) bool {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			if _, writeErr := stream.Write(buf[:n]); writeErr != nil {
+				return false
+			}
+		}
+		if err != nil {
+			return errors.Is(err, io.EOF)
+		}
+	}
+}
+
+// copyStreamToConn pumps the mux stream into the raw connection and reports
+// whether it ended with a clean EOF (io.EOF).
+func copyStreamToConn(stream *muxStream, conn net.Conn) bool {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := stream.Read(buf)
+		if n > 0 {
+			if _, writeErr := conn.Write(buf[:n]); writeErr != nil {
+				return false
+			}
+		}
+		if err != nil {
+			return errors.Is(err, io.EOF)
+		}
+	}
+}
+
+// closeConnWrite half-closes a raw connection when it supports it.
+func closeConnWrite(conn net.Conn) {
+	type closeWriter interface{ CloseWrite() error }
+	if writer, ok := conn.(closeWriter); ok {
+		_ = writer.CloseWrite()
+	}
 }
 
 // ---------------------------------------------------------------------------

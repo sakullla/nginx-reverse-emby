@@ -117,6 +117,10 @@ func TestPluginHostChannelReverseEnsureAppliesBothRoles(t *testing.T) {
 		entryTasks[0]["exit_agent_id"] != "exit-b" || entryTasks[0]["protocol"] != "tcp" {
 		t.Fatalf("entry ensure tasks = %+v", entryTasks)
 	}
+	// Co-located agents (no last-seen addresses) dial and bind the loopback.
+	if entryTasks[0]["listen_host"] != "127.0.0.1" {
+		t.Fatalf("co-located entry listen_host = %v", entryTasks[0]["listen_host"])
+	}
 	exitTasks := sessions.dispatchedTo("exit-b", TaskTypeChannelEnsure)
 	if len(exitTasks) != 1 || exitTasks[0]["role"] != "exit" {
 		t.Fatalf("exit ensure tasks = %+v", exitTasks)
@@ -146,6 +150,69 @@ func TestPluginHostChannelReverseEnsureWithoutSessionRefMintsOwnerEncoding(t *te
 	}
 	if result.SessionRef != "channel/entry-a/exit-b" {
 		t.Fatalf("minted session ref = %q", result.SessionRef)
+	}
+}
+
+func TestPluginHostChannelReverseCrossNetworkDialsEntryAndBindsReachableIngress(t *testing.T) {
+	t.Parallel()
+	manager, sessions, store := newChannelReverseManager(t)
+	for _, agent := range []storage.AgentRow{
+		{ID: "entry-a", Name: "entry", LastSeenIP: "203.0.113.10"},
+		{ID: "exit-b", Name: "exit", LastSeenIP: "198.51.100.7"},
+	} {
+		if err := store.SaveAgent(t.Context(), agent); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := dispatchChannelReverse(t, manager, "channel-cross-1", pluginsdk.ChannelReverseRequest{
+		Action:       pluginsdk.ChannelReverseActionEnsure,
+		EntryAgentID: "entry-a", ExitAgentID: "exit-b",
+		Protocol: pluginsdk.L4RuleProtocolTCP, BackendHost: "10.9.8.7", BackendPort: 9000,
+	})
+	if response.Error != nil {
+		t.Fatalf("cross-network ensure error = %v", response.Error)
+	}
+
+	entryTasks := sessions.dispatchedTo("entry-a", TaskTypeChannelEnsure)
+	if len(entryTasks) != 1 {
+		t.Fatalf("entry ensure tasks = %+v", entryTasks)
+	}
+	// A non-loopback dial must not leave the ingress bound to the loopback:
+	// the entry agent is asked to bind all interfaces.
+	if listenHost, _ := entryTasks[0]["listen_host"].(string); listenHost != "" {
+		t.Fatalf("cross-network entry listen_host = %q, want wildcard binding", listenHost)
+	}
+	exitTasks := sessions.dispatchedTo("exit-b", TaskTypeChannelEnsure)
+	if len(exitTasks) != 1 {
+		t.Fatalf("exit ensure tasks = %+v", exitTasks)
+	}
+	if exitTasks[0]["dial_address"] != "203.0.113.10:5000" {
+		t.Fatalf("cross-network dial address = %v", exitTasks[0]["dial_address"])
+	}
+	// The explicit backend host is authoritative over the exit address
+	// heuristics.
+	if exitTasks[0]["backend_address"] != "10.9.8.7:9000" {
+		t.Fatalf("cross-network backend address = %v", exitTasks[0]["backend_address"])
+	}
+}
+
+func TestPluginHostChannelReverseRejectsUnaddressableSessionRef(t *testing.T) {
+	t.Parallel()
+	manager, sessions, _ := newChannelReverseManager(t)
+
+	for _, ref := range []string{"session-1", "channel/entry-a/other-exit"} {
+		response := dispatchChannelReverse(t, manager, "channel-ref-1", pluginsdk.ChannelReverseRequest{
+			Action: pluginsdk.ChannelReverseActionEnsure, SessionRef: ref,
+			EntryAgentID: "entry-a", ExitAgentID: "exit-b",
+			Protocol: pluginsdk.L4RuleProtocolTCP, BackendHost: "127.0.0.1", BackendPort: 9000,
+		})
+		if response.Error == nil || response.Error.Code != pluginsdk.ErrorInvalidArgument {
+			t.Fatalf("custom ref %q ensure error = %v", ref, response.Error)
+		}
+	}
+	if len(sessions.tasks) != 0 {
+		t.Fatalf("rejected session refs still dispatched tasks: %+v", sessions.tasks)
 	}
 }
 
@@ -248,7 +315,7 @@ func TestPluginHostChannelReverseReportsOfflineStateAndLastError(t *testing.T) {
 	}
 
 	response := dispatchChannelReverse(t, manager, "channel-offline-1", pluginsdk.ChannelReverseRequest{
-		Action: pluginsdk.ChannelReverseActionEnsure, SessionRef: "session-1",
+		Action: pluginsdk.ChannelReverseActionEnsure, SessionRef: "channel/entry-a/exit-b",
 		EntryAgentID: "entry-a", ExitAgentID: "exit-b",
 		Protocol: pluginsdk.L4RuleProtocolTCP, BackendHost: "127.0.0.1", BackendPort: 9000,
 	})
