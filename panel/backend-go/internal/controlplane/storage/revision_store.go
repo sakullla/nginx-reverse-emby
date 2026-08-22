@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -241,8 +242,15 @@ func loadIssuedRuntimeArtifact(ctx context.Context, db *gorm.DB, generation Plug
 		return nil, fmt.Errorf("plugin runtime artifact %q durable identity: %w", descriptor.ArtifactID, err)
 	}
 	if artifact.Path != descriptor.RelativePath || artifact.RuntimeKind != generation.Runtime.Kind || artifact.RuntimeABI != generation.Runtime.ABI ||
-		artifact.HostScope != generation.Runtime.HostScope || !strings.EqualFold(artifact.PackageDigest, generation.PackageDigest) ||
+		!strings.EqualFold(artifact.PackageDigest, generation.PackageDigest) ||
 		!strings.EqualFold(artifact.SHA256, descriptor.SHA256) || artifact.SizeBytes != descriptor.SizeBytes {
+		return nil, fmt.Errorf("plugin runtime artifact %q durable evidence differs from snapshot", descriptor.ArtifactID)
+	}
+	var manifest pluginsdk.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return nil, fmt.Errorf("plugin runtime artifact %q package manifest: %w", descriptor.ArtifactID, err)
+	}
+	if !pluginsdk.RuntimeDurableArtifactHostScopeMatches(manifest.Runtime, generation.Runtime.HostScope, artifact.HostScope) {
 		return nil, fmt.Errorf("plugin runtime artifact %q durable evidence differs from snapshot", descriptor.ArtifactID)
 	}
 	artifactPath := filepath.Join(packageRow.CachePath, filepath.FromSlash(artifact.Path))

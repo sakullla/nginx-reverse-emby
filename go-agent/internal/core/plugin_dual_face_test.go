@@ -60,10 +60,10 @@ func TestDualFaceAgentArtifactHostScopeMatchesGeneration(t *testing.T) {
 	if generationHostScope != pluginsdk.HostScopeAgent {
 		t.Fatalf("agent snapshot host_scope = %q", generationHostScope)
 	}
-	if !pluginsdk.RuntimeDurableArtifactHostScopeMatches(generationHostScope, pluginsdk.HostScopeAgent) {
+	if !pluginsdk.RuntimeDurableArtifactHostScopeMatches(runtime, generationHostScope, pluginsdk.HostScopeAgent) {
 		t.Fatal("agent-face artifact host_scope must equal generation host_scope for issuance")
 	}
-	if pluginsdk.RuntimeDurableArtifactHostScopeMatches(generationHostScope, runtime.HostScope) {
-		t.Fatal("primary control-plane artifact host_scope must not satisfy agent generation equality")
+	if !pluginsdk.RuntimeDurableArtifactHostScopeMatches(runtime, generationHostScope, runtime.HostScope) {
+		t.Fatal("dual-face primary host_scope must satisfy agent generation issuance")
 	}
 }

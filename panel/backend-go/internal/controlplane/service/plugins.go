@@ -325,7 +325,6 @@ type pluginLifecycleStore interface {
 	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
 	ListPluginArtifacts(context.Context, string) ([]storage.PluginArtifactRow, error)
 	ListPluginArtifactsByIdentity(context.Context, string) ([]storage.PluginArtifactRow, error)
-	EnsureAgentFacePluginArtifacts(context.Context, plugins.Manifest, string) error
 	ListPluginGrants(context.Context, string) ([]storage.PluginGrantRow, error)
 	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
 	ListPluginInstances(context.Context, string) ([]storage.PluginInstanceRow, error)
@@ -987,9 +986,6 @@ func (s *PluginService) Install(ctx context.Context, request PluginInstallReques
 	if err := s.store.InstallPlugin(ctx, transaction); err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
-	if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
-		return storage.InstalledPluginRow{}, err
-	}
 	return installed, nil
 }
 
@@ -1040,9 +1036,6 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 			if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
 				return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 			}
-		}
-		if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
-			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 	}
 	if installed.DesiredLifecycle == desired && installed.CurrentLifecycle == current {
@@ -1607,13 +1600,6 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 		if err != nil {
 			return "", err
 		}
-		if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
-			return "", err
-		}
-		artifacts, err = s.storedArtifacts(ctx, packageRow.Identity, packageRow.Digest)
-		if err != nil {
-			return "", err
-		}
 		artifact, err := pluginSelectAgentGenerationArtifact(artifacts, manifest, platform)
 		if err != nil {
 			return "", err
@@ -1670,38 +1656,7 @@ func pluginSelectControlPlaneGenerationArtifact(artifacts []storage.PluginArtifa
 }
 
 func pluginSelectAgentGenerationArtifact(artifacts []storage.PluginArtifactRow, manifest plugins.Manifest, platform string) (storage.PluginArtifactRow, error) {
-	goos, goarch := "", ""
-	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(platform)), "-", 2)
-	if len(parts) == 2 {
-		goos, goarch = parts[0], parts[1]
-	}
-	var fallback storage.PluginArtifactRow
-	for _, artifact := range artifacts {
-		if artifact.RuntimeKind != manifest.Runtime.Kind || artifact.RuntimeABI != manifest.Runtime.ABI {
-			continue
-		}
-		if artifact.HostScope != manifest.Runtime.HostScope && !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, artifact.HostScope) {
-			continue
-		}
-		artifactPath := path.Clean(strings.TrimSpace(artifact.Path))
-		entry := strings.TrimSpace(manifest.Runtime.Entry)
-		if artifactPath != path.Clean(entry) && strings.TrimSuffix(path.Base(artifactPath), ".exe") != entry {
-			continue
-		}
-		if manifest.Runtime.Kind == "rpc-service" && (artifact.GOOS != goos || artifact.GOARCH != goarch) {
-			continue
-		}
-		if strings.TrimSpace(artifact.HostScope) == pluginsdk.HostScopeAgent {
-			return artifact, nil
-		}
-		if fallback.ID == "" {
-			fallback = artifact
-		}
-	}
-	if fallback.ID == "" {
-		return storage.PluginArtifactRow{}, fmt.Errorf("%w: target artifact is unavailable for %q", storage.ErrPluginGenerationConflict, platform)
-	}
-	return storage.AgentFacePluginArtifact(fallback), nil
+	return storage.SelectAgentFacePluginArtifact(artifacts, manifest, platform)
 }
 
 func pluginGenerationArtifact(artifact storage.PluginArtifactRow, packageRow storage.PluginPackageRow) storage.PluginGenerationArtifact {
@@ -3029,9 +2984,6 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	if err != nil {
 		return installed, err
 	}
-	if err := s.store.EnsureAgentFacePluginArtifacts(ctx, request.Package.Package.Manifest, packageRow.Identity); err != nil {
-		return installed, err
-	}
 	return installed, nil
 }
 
@@ -3459,9 +3411,6 @@ func (s *PluginService) finishUndeployedUpgrade(
 		RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest,
 	})
 	if err != nil {
-		return installed, err
-	}
-	if err := s.store.EnsureAgentFacePluginArtifacts(ctx, manifest, packageRow.Identity); err != nil {
 		return installed, err
 	}
 	return installed, nil

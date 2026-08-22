@@ -228,6 +228,7 @@ func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
+			storedArtifacts = durablePluginPackageArtifacts(storedArtifacts, artifacts)
 			if row.RuntimeKind != projected.RuntimeKind || row.RuntimeABI != projected.RuntimeABI || row.HostScope != projected.HostScope || row.PolicyKind != projected.PolicyKind || row.EntryPath != projected.EntryPath || row.SignatureKeyID != projected.SignatureKeyID || row.SignatureVerdict != "verified" || row.ResourceBudgetJSON != projected.ResourceBudgetJSON || row.FailurePolicyJSON != projected.FailurePolicyJSON || !samePluginArtifactRows(storedArtifacts, artifacts) {
 				legacy = true
 				break
@@ -3673,15 +3674,30 @@ func ensurePluginArtifactsTx(tx *gorm.DB, packageIdentity, packageDigest string,
 	}
 	expected := append([]PluginArtifactRow(nil), artifacts...)
 	sort.Slice(expected, func(i, j int) bool { return expected[i].Path < expected[j].Path })
-	if len(existing) != len(expected) {
+	existing = durablePluginPackageArtifacts(existing, expected)
+	if !samePluginArtifactRows(existing, expected) {
 		return fmt.Errorf("%w: verified artifact metadata differs for digest", ErrPluginConflict)
 	}
-	for index := range existing {
-		if existing[index] != expected[index] {
-			return fmt.Errorf("%w: verified artifact metadata differs for digest", ErrPluginConflict)
+	return nil
+}
+
+func durablePluginPackageArtifacts(existing, projected []PluginArtifactRow) []PluginArtifactRow {
+	ids := make(map[string]struct{}, len(projected))
+	for _, artifact := range projected {
+		id := strings.TrimSpace(artifact.ID)
+		if id == "" {
+			continue
+		}
+		ids[id] = struct{}{}
+	}
+	matched := make([]PluginArtifactRow, 0, len(projected))
+	for _, artifact := range existing {
+		if _, ok := ids[strings.TrimSpace(artifact.ID)]; ok {
+			matched = append(matched, artifact)
 		}
 	}
-	return nil
+	sort.Slice(matched, func(i, j int) bool { return matched[i].Path < matched[j].Path })
+	return matched
 }
 
 func samePluginArtifactRows(left, right []PluginArtifactRow) bool {

@@ -91,11 +91,14 @@ runtime:
 	if RuntimeAgentFaceHostScope(manifest.Runtime) != HostScopeAgent {
 		t.Fatalf("dual-face agent snapshot host_scope = %q", RuntimeAgentFaceHostScope(manifest.Runtime))
 	}
-	if !RuntimeDurableArtifactHostScopeMatches(HostScopeAgent, HostScopeAgent) {
+	if !RuntimeDurableArtifactHostScopeMatches(manifest.Runtime, HostScopeAgent, HostScopeAgent) {
 		t.Fatal("agent-face artifact host_scope must equal generation host_scope")
 	}
-	if RuntimeDurableArtifactHostScopeMatches(HostScopeAgent, HostScopeControlPlane) {
-		t.Fatal("primary control-plane artifact host_scope must not satisfy agent generation equality")
+	if !RuntimeDurableArtifactHostScopeMatches(manifest.Runtime, HostScopeAgent, manifest.Runtime.HostScope) {
+		t.Fatal("dual-face primary host_scope must satisfy agent generation issuance")
+	}
+	if RuntimeDurableArtifactHostScopeMatches(agentOnly, HostScopeAgent, HostScopeControlPlane) {
+		t.Fatal("agent-only runtime accepted a control-plane artifact host_scope")
 	}
 }
 
