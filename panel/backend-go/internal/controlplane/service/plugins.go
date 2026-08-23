@@ -158,6 +158,7 @@ type AgentPluginArtifact struct {
 }
 
 type PluginAgentStatus struct {
+	FaceID            string          `json:"face_id"`
 	InstanceID        string          `json:"instance_id"`
 	AgentID           string          `json:"agent_id"`
 	TargetScope       string          `json:"target_scope"`
@@ -295,12 +296,24 @@ type PluginPublishedEntry struct {
 }
 
 type PluginDetail struct {
-	Plugin           PluginSummary          `json:"plugin"`
-	Package          PluginPackageDetail    `json:"package"`
-	Instances        []PluginInstanceDetail `json:"instances"`
-	Grants           []PluginGrantDetail    `json:"grants"`
-	AgentStatuses    []PluginAgentStatus    `json:"agent_statuses"`
-	PublishedEntries []PluginPublishedEntry `json:"published_entries"`
+	Plugin            PluginSummary           `json:"plugin"`
+	Package           PluginPackageDetail     `json:"package"`
+	Faces             []PluginDeploymentFace  `json:"faces"`
+	TargetEligibility PluginTargetEligibility `json:"target_eligibility"`
+	Instances         []PluginInstanceDetail  `json:"instances"`
+	Grants            []PluginGrantDetail     `json:"grants"`
+	AgentStatuses     []PluginAgentStatus     `json:"agent_statuses"`
+	PublishedEntries  []PluginPublishedEntry  `json:"published_entries"`
+}
+
+type PluginDeploymentFace struct {
+	FaceID    string `json:"face_id"`
+	HostScope string `json:"host_scope"`
+}
+
+type PluginTargetEligibility struct {
+	CanonicalLocalTargetID string `json:"canonical_local_target_id"`
+	AgentTargetsAllowed    bool   `json:"agent_targets_allowed"`
 }
 
 // PluginApplyResult is supplied only by the trusted revision/Agent reporting
@@ -460,6 +473,10 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 		}
 		packageDetail.DeclarativeUI = validated.DeclarativeUI
 	}
+	faces, targetEligibility, err := s.pluginDeploymentProjection(ctx, packageDetail.Manifest)
+	if err != nil {
+		return PluginDetail{}, err
+	}
 	instanceDetails, err := s.pluginInstanceDetails(ctx, instances)
 	if err != nil {
 		return PluginDetail{}, err
@@ -469,9 +486,12 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	agentStatuses, err := s.pluginAgentStatuses(ctx, installed, instances, operations)
-	if err != nil {
-		return PluginDetail{}, err
+	agentStatuses := make([]PluginAgentStatus, 0)
+	if targetEligibility.AgentTargetsAllowed {
+		agentStatuses, err = s.pluginAgentStatuses(ctx, installed, instances, operations)
+		if err != nil {
+			return PluginDetail{}, err
+		}
 	}
 	publishedEntries, err := s.pluginPublishedEntries(ctx, instanceDetails)
 	if err != nil {
@@ -479,7 +499,26 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	}
 	summary := pluginSummary(installed)
 	summary.ActiveVersion = packageRow.Version
-	return PluginDetail{Plugin: summary, Package: packageDetail, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses, PublishedEntries: publishedEntries}, nil
+	return PluginDetail{Plugin: summary, Package: packageDetail, Faces: faces, TargetEligibility: targetEligibility, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses, PublishedEntries: publishedEntries}, nil
+}
+
+func (s *PluginService) pluginDeploymentProjection(ctx context.Context, manifest plugins.Manifest) ([]PluginDeploymentFace, PluginTargetEligibility, error) {
+	localTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return nil, PluginTargetEligibility{}, err
+	}
+	faces := make([]PluginDeploymentFace, 0, 2)
+	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
+		faces = append(faces, PluginDeploymentFace{FaceID: "local-management", HostScope: pluginsdk.HostScopeControlPlane})
+	}
+	agentTargetsAllowed := pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent)
+	if agentTargetsAllowed {
+		faces = append(faces, PluginDeploymentFace{FaceID: "agent-execution", HostScope: pluginsdk.HostScopeAgent})
+	}
+	if len(faces) == 0 {
+		return nil, PluginTargetEligibility{}, ErrPluginReadProjection
+	}
+	return faces, PluginTargetEligibility{CanonicalLocalTargetID: localTargetID, AgentTargetsAllowed: agentTargetsAllowed}, nil
 }
 
 func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPackageCandidate, pluginID string) (PluginPackageDetail, error) {
@@ -4478,7 +4517,7 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 	}
 	statuses := make([]PluginAgentStatus, 0)
 	for _, instance := range instances {
-		summary, err := pluginReadStatusObject(instance.StatusSummaryJSON)
+		summary, err := pluginAgentFaceStatusSummary(instance.StatusSummaryJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -4516,6 +4555,23 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 	return statuses, nil
 }
 
+func pluginAgentFaceStatusSummary(raw string) (json.RawMessage, error) {
+	summary, err := pluginReadStatusObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(summary, &values); err != nil || values == nil {
+		return nil, ErrPluginReadProjection
+	}
+	delete(values, "control-plane-runtime")
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return nil, ErrPluginReadProjection
+	}
+	return encoded, nil
+}
+
 func isPluginLifecyclePendingKind(kind string) bool {
 	return kind == "enable" || kind == "disable"
 }
@@ -4529,7 +4585,7 @@ func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]sto
 	for _, target := range targets {
 		target = strings.TrimSpace(target)
 		agent, available := agents[target]
-		status := PluginAgentStatus{InstanceID: instance.ID, AgentID: target, TargetScope: scope, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, OperationID: operationID, OperationKind: operation.Kind, OperationStatus: operation.Status, TargetRevision: targetRevision, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage}
+		status := PluginAgentStatus{FaceID: "agent-execution", InstanceID: instance.ID, AgentID: target, TargetScope: scope, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, OperationID: operationID, OperationKind: operation.Kind, OperationStatus: operation.Status, TargetRevision: targetRevision, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage}
 		if runtimeStatus, found := runtimeStatuses[operationID+"\x00"+target+"\x00"+instance.ID]; found {
 			status.GenerationID, status.PackageDigest, status.ArtifactDigest = runtimeStatus.GenerationID, runtimeStatus.PackageDigest, runtimeStatus.ArtifactDigest
 			status.RuntimeState, status.RuntimeErrorCode, status.ReportedAt = runtimeStatus.State, runtimeStatus.ErrorCode, runtimeStatus.ReportedAt

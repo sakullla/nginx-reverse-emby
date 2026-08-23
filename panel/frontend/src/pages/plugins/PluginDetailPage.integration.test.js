@@ -61,7 +61,7 @@ async function openConfigModal(wrapper) {
 }
 
 const OPS_ACTION_LABELS = ['启用', '停用', '回滚', '卸载', '导出脱敏诊断']
-const OPS_SECTION_PATTERNS = [/逐 Agent 状态/, /运行日志/, /生命周期操作与审计|操作时间线|审计/]
+const OPS_SECTION_PATTERNS = [/Agent 执行面状态|逐 Agent 状态/, /运行日志/, /生命周期操作与审计|操作时间线|审计/]
 
 function isOverlay(element) {
   return Boolean(element.closest('[data-test="plugin-deploy-modal"], [data-test="plugin-instance-config-modal"], .base-modal-stub, .delete-dialog-stub'))
@@ -219,6 +219,11 @@ function productionDetail(overrides = {}) {
       permission_diff: { added: [], removed: [] },
       config_schema: { type: 'object', properties: { mode: { type: 'string', title: '模式' } } }
     },
+    faces: [
+      { face_id: 'local-management', host_scope: 'control-plane' },
+      { face_id: 'agent-execution', host_scope: 'agent' }
+    ],
+    target_eligibility: { canonical_local_target_id: 'local-control', agent_targets_allowed: true },
     instances: [],
     agent_statuses: [],
     published_entries: [],
@@ -770,7 +775,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     for (const label of OPS_ACTION_LABELS) {
       expect(moreButton(wrapper, label)).toBeTruthy()
     }
-    expect(more.text()).toContain('逐 Agent 状态')
+    expect(more.text()).toContain('Agent 执行面状态')
     expect(more.text()).toMatch(/运行日志/)
     expect(more.text()).toMatch(/生命周期操作与审计|操作时间线|审计/)
     expect(more.text()).toContain('Edge A')
@@ -838,6 +843,63 @@ describe('PluginDetailPage task-center production API projection', () => {
     await chooseTarget(guide, 'edge-a')
     await groupSelect.setValue('group-a')
     expect(groupSelect.element.value).toBe('group-a')
+  })
+
+  it('keeps a control-plane-only plugin on the local management face without a remote target selector', async () => {
+    const wrapper = await mountDetail(productionDetail({
+      package: {
+        ...productionDetail().package,
+        manifest: httpBackendManifest({
+          runtime: { kind: 'rpc-service', host_scope: 'control-plane' }
+        })
+      },
+      faces: [{ face_id: 'local-management', host_scope: 'control-plane' }],
+      target_eligibility: { canonical_local_target_id: 'local-control', agent_targets_allowed: false }
+    }))
+
+    const localFace = wrapper.get('[data-test="plugin-face-local-management"]')
+    expect(localFace.text()).toMatch(/本地管理面|管理面.*local/i)
+    expect(wrapper.find('[data-test="plugin-face-agent-execution"]').exists()).toBe(false)
+
+    const guide = await openTaskGuide(wrapper, '开始部署')
+    const remoteTargets = guide.findAll('input, select, option').filter((node) => ['edge-a', 'edge-b'].includes(String(node.element.value || '')))
+    expect(remoteTargets).toHaveLength(0)
+    expect(guide.text()).not.toContain('Edge A')
+    expect(guide.text()).not.toContain('Edge B')
+    expect(guide.text()).toMatch(/本地|local-control/i)
+  })
+
+  it('separates local management from Agent execution generation and failures for a dual-face plugin', async () => {
+    const wrapper = await mountDetail(productionDetail({
+      plugin: { plugin_id: 'rpc.plugin', current_lifecycle: 'active', active_source_kind: 'official' },
+      instances: [deployedInstance()],
+      agent_statuses: [{
+        face_id: 'agent-execution',
+        instance_id: 'rpc.plugin-default',
+        agent_id: 'edge-a',
+        target_scope: 'active',
+        available: true,
+        generation_id: 'generation-edge-a-4',
+        runtime_state: 'failed',
+        runtime_error_code: 'activation_failed',
+        desired_revision: 4,
+        current_revision: 3,
+        operation_kind: 'configure',
+        operation_status: 'failed',
+        last_apply_message: 'activation failed on Agent'
+      }]
+    }))
+
+    const localFace = wrapper.get('[data-test="plugin-face-local-management"]')
+    const agentFace = wrapper.get('[data-test="plugin-face-agent-execution"]')
+    expect(localFace.text()).toMatch(/本地管理面|管理面.*local/i)
+    expect(localFace.text()).not.toContain('activation_failed')
+    expect(agentFace.text()).toContain('Edge A')
+    expect(agentFace.text()).toContain('Agent 执行面')
+    const executionStatus = wrapper.get('[data-test="plugin-agent-execution-status"]')
+    expect(executionStatus.text()).toContain('generation-edge-a-4')
+    expect(executionStatus.text()).toContain('activation_failed')
+    expect(executionStatus.text()).toContain('Agent 执行面')
   })
 
   it('binds the rule_ref select in the config modal to visible HTTP rules', async () => {

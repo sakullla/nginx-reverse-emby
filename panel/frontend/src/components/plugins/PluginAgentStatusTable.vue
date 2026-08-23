@@ -13,14 +13,36 @@ defineEmits(['retry'])
 
 function agentLabel(agentID) {
   const id = String(agentID || '').trim()
-  const agent = (props.agents || []).find((item) => String(item?.id || '') === id)
+  const agent = agentRecord(id)
   const name = String(agent?.name || '').trim()
   return name || id
 }
 
+function agentRecord(agentID) {
+  const id = String(agentID || '').trim()
+  return (props.agents || []).find((item) => String(item?.id || '') === id)
+}
+
+function statusValue(status) {
+  const agentState = String(agentRecord(status.agent_id)?.status || '').trim().toLowerCase()
+  if (status.available === false || ['offline', 'unreachable', 'disconnected'].includes(agentState)) return 'offline'
+  const runtimeState = String(status.runtime_state || '').trim().toLowerCase()
+  if (isFailureState(runtimeState)) return runtimeState
+  const operationStatus = String(status.operation_status || '').trim().toLowerCase()
+  if (isFailureState(operationStatus)) return operationStatus
+  const applyStatus = String(status.last_apply_status || '').trim().toLowerCase()
+  if (isFailureState(applyStatus)) return applyStatus
+  if (desiredRevision(status) > (Number(status.current_revision) || 0)) return 'unsynced'
+  return runtimeState || String(status.current_state || '').trim().toLowerCase()
+}
+
+function isFailureState(value) {
+  return ['failed', 'degraded', 'crashed'].includes(value) || /(?:fail|error|crash)/.test(value)
+}
+
 function statusTone(status) {
-  const value = String(status.runtime_state || status.current_state || '').toLowerCase()
-  if (['failed', 'degraded', 'crashed'].includes(value)) return 'danger'
+  const value = statusValue(status)
+  if (value === 'offline' || isFailureState(value)) return 'danger'
   if (['active', 'ready', 'applied'].includes(value)) return 'success'
   return 'warning'
 }
@@ -30,28 +52,49 @@ function desiredRevision(status) {
 }
 
 function canRetry(status) {
-  const value = String(status.runtime_state || status.current_state || '').toLowerCase()
-  return ['failed', 'degraded', 'crashed'].includes(value) && desiredRevision(status)
+  const value = statusValue(status)
+  return isFailureState(value) && desiredRevision(status)
 }
 
 function statusLabel(status) {
-  return status.runtime_state || status.current_state || '未知'
+  const value = statusValue(status)
+  return {
+    offline: 'Agent 离线',
+    failed: '执行失败',
+    degraded: '执行降级',
+    crashed: '执行崩溃',
+    unsynced: 'Generation 未同步',
+    active: '执行面就绪',
+    ready: '执行面就绪',
+    applied: '执行面就绪'
+  }[value] || status.runtime_state || status.current_state || '等待执行状态'
+}
+
+function syncLabel(status) {
+  const value = statusValue(status)
+  if (value === 'offline') return 'Agent 离线'
+  if (isFailureState(value)) return '同步或启动失败'
+  if (desiredRevision(status) > (Number(status.current_revision) || 0)) return 'Generation 未同步'
+  if (!String(status.generation_id || '').trim()) return '等待 Generation'
+  return 'Generation 已同步'
 }
 </script>
 
 <template>
   <div class="agent-status-table">
-    <p v-if="!statuses.length" class="agent-status-table__empty">尚无目标 Agent 运行状态。</p>
+    <p v-if="!statuses.length" class="agent-status-table__empty">尚无 Agent 执行面运行状态。</p>
     <BaseListCard
       v-for="status in statuses"
       v-else
       :key="`${status.instance_id}:${status.agent_id}:${status.target_scope}`"
       class="agent-status-card"
+      data-test="plugin-agent-execution-status"
       :status="statusTone(status)"
       :clickable="false"
     >
       <template #header-left>
         <strong class="agent-status-card__name">{{ agentLabel(status.agent_id) }}</strong>
+        <BaseBadge tone="primary">Agent 执行面</BaseBadge>
         <BaseBadge :tone="statusTone(status)" dot>{{ statusLabel(status) }}</BaseBadge>
       </template>
       <template #header-right>
@@ -59,6 +102,14 @@ function statusLabel(status) {
       </template>
 
       <dl>
+        <div>
+          <dt>Generation</dt>
+          <dd>{{ status.generation_id || '尚未生成' }}</dd>
+        </div>
+        <div>
+          <dt>同步状态</dt>
+          <dd>{{ syncLabel(status) }}</dd>
+        </div>
         <div>
           <dt>Revision</dt>
           <dd>{{ status.current_revision || 0 }} / {{ desiredRevision(status) }}</dd>
@@ -72,12 +123,18 @@ function statusLabel(status) {
           <dd>{{ status.reported_at || '—' }}</dd>
         </div>
         <div>
-          <dt>错误码</dt>
+          <dt>执行面错误码</dt>
           <dd>{{ status.runtime_error_code || '—' }}</dd>
         </div>
       </dl>
 
-      <p v-if="status.last_apply_message" class="agent-status-card__message">{{ sanitizePluginText(status.last_apply_message) }}</p>
+      <p
+        v-if="status.last_apply_message"
+        class="agent-status-card__message"
+        :role="statusTone(status) === 'danger' ? 'alert' : 'status'"
+      >
+        <strong>Agent 执行面：</strong>{{ sanitizePluginText(status.last_apply_message) }}
+      </p>
 
       <template #footer>
         <button

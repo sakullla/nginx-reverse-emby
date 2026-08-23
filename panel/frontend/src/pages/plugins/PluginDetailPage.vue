@@ -62,6 +62,14 @@ const lifecycleLabel = computed(() => {
   return labels[detail.value?.plugin?.current_lifecycle] || detail.value?.plugin?.current_lifecycle || '未知'
 })
 const deploymentStatusLabel = computed(() => (detail.value?.instances || []).length ? '已部署' : '尚未部署')
+const declaredFaces = computed(() => Array.isArray(detail.value?.faces) ? detail.value.faces : [])
+const hasDeclaredFaceProjection = computed(() => declaredFaces.value.length > 0)
+const hasLocalManagementFace = computed(() => declaredFaces.value.some((face) => face?.face_id === 'local-management'))
+const hasAgentExecutionFace = computed(() => declaredFaces.value.some((face) => face?.face_id === 'agent-execution'))
+const showAgentExecutionStatus = computed(() => hasAgentExecutionFace.value || !hasDeclaredFaceProjection.value)
+const targetEligibility = computed(() => detail.value?.target_eligibility || null)
+const usesCanonicalLocalTarget = computed(() => targetEligibility.value?.agent_targets_allowed === false)
+const canonicalLocalTargetID = computed(() => String(targetEligibility.value?.canonical_local_target_id || '').trim())
 const refreshIntervalMs = 5000
 let refreshTimer = 0
 let refreshInFlight = false
@@ -347,9 +355,32 @@ function agentLabel(agentID) {
 }
 
 function instanceTargetLabels(instance) {
+  if (usesCanonicalLocalTarget.value) return canonicalLocalTargetID.value ? `本地（${canonicalLocalTargetID.value}）` : '本地'
   const ids = Array.isArray(instance?.targets) ? instance.targets : []
   if (!ids.length) return '—'
   return ids.map((id) => agentLabel(id)).join('、')
+}
+
+function faceHostScope(faceID) {
+  const face = declaredFaces.value.find((item) => item?.face_id === faceID)
+  return sanitizePluginText(face?.host_scope || '')
+}
+
+function faceStateTone(state) {
+  const value = String(state || '').trim().toLowerCase()
+  if (['failed', 'degraded', 'crashed'].includes(value)) return 'danger'
+  if (['active', 'ready', 'applied', 'enabled'].includes(value)) return 'success'
+  return 'warning'
+}
+
+function localManagementState(instance) {
+  return instance?.current_state || '尚未部署'
+}
+
+function agentExecutionTargetLabels(instance) {
+  if (!instance) return '尚未部署'
+  const labels = instanceTargetLabels(instance)
+  return labels === '—' ? '尚未选择 Agent' : labels
 }
 
 const lifecycleSuccess = {
@@ -644,10 +675,44 @@ async function retryAgent(status) {
           :model-value="selectedInstanceID"
           @update:model-value="selectedInstanceID = $event"
         />
+        <div v-if="hasDeclaredFaceProjection" class="plugin-face-list" aria-label="插件运行面">
+          <section
+            v-if="hasLocalManagementFace"
+            class="plugin-face"
+            data-test="plugin-face-local-management"
+          >
+            <div class="plugin-face__heading">
+              <div>
+                <strong>本地管理面</strong>
+                <small v-if="faceHostScope('local-management')">{{ faceHostScope('local-management') }}</small>
+              </div>
+              <BaseBadge :tone="faceStateTone(localManagementState(selectedInstance))" size="sm" dot>
+                {{ localManagementState(selectedInstance) }}
+              </BaseBadge>
+            </div>
+            <p>目标固定为 {{ canonicalLocalTargetID || '本地' }}；配置与管理状态只归属当前控制面。</p>
+          </section>
+          <section
+            v-if="hasAgentExecutionFace"
+            class="plugin-face"
+            data-test="plugin-face-agent-execution"
+          >
+            <div class="plugin-face__heading">
+              <div>
+                <strong>Agent 执行面</strong>
+                <small v-if="faceHostScope('agent-execution')">{{ faceHostScope('agent-execution') }}</small>
+              </div>
+              <BaseBadge tone="neutral" size="sm">{{ (selectedInstance?.targets || []).length }} 个目标</BaseBadge>
+            </div>
+            <p>Agent：{{ agentExecutionTargetLabels(selectedInstance) }}。同步、离线与执行错误在此运行面单独展示。</p>
+          </section>
+        </div>
         <div v-if="selectedInstance" class="instance-facts">
-          <span>目标：{{ instanceTargetLabels(selectedInstance) }}</span>
           <span>版本：{{ selectedInstance.config_version }}</span>
-          <span>状态：{{ selectedInstance.current_state }}</span>
+          <template v-if="!hasDeclaredFaceProjection">
+            <span>目标：{{ instanceTargetLabels(selectedInstance) }}</span>
+            <span>状态：{{ selectedInstance.current_state }}</span>
+          </template>
           <div v-if="canWrite" class="instance-actions">
             <button v-if="!formEmpty" class="btn btn-secondary btn-sm" type="button" @click="openConfigModal">编辑配置</button>
             <button class="btn btn-danger btn-sm" type="button" :disabled="!!busy" @click="confirmDialog = { visible: true, loading: false, action: 'delete-instance', entry: null }">删除实例</button>
@@ -699,11 +764,11 @@ async function retryAgent(status) {
             </section>
           </div>
 
-          <section class="plugin-ops-panel">
+          <section v-if="showAgentExecutionStatus" class="plugin-ops-panel">
             <header class="plugin-ops-panel__head">
               <div>
-                <h2>逐 Agent 状态、预算与故障</h2>
-                <p>查看每个节点的 revision 与故障；失败时可重试。</p>
+                <h2>Agent 执行面状态、预算与故障</h2>
+                <p>generation、同步、离线与执行故障只归属 Agent 执行面；失败时可重试。</p>
               </div>
             </header>
             <PluginAgentStatusTable :statuses="detail.agent_statuses" :agents="agents" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" />
@@ -748,6 +813,7 @@ async function retryAgent(status) {
         :current-lifecycle="detail.plugin.current_lifecycle"
         :package-detail="detail.package"
         :declaresHTTPBackend="hasHTTPBackend"
+        :target-eligibility="targetEligibility"
         @deployed="handleDeployed"
       />
 
@@ -765,6 +831,7 @@ async function retryAgent(status) {
         :agents="agents"
         :can-write="canWrite"
         :can-publish="admin"
+        :target-eligibility="targetEligibility"
         @saved="handleConfigSaved"
         @refreshed="handleConfigRefreshed"
         @delete-entry="startDeleteEntry"
@@ -1011,6 +1078,21 @@ a.plugin-http-entry__url:hover {
 .plugin-section-heading > div { display: grid; gap: var(--space-1); }
 .plugin-section-heading p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .instance-facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.plugin-face-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: var(--space-3); width: 100%; }
+.plugin-face {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+}
+.plugin-face__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.plugin-face__heading > div { display: grid; gap: 0.15rem; min-width: 0; }
+.plugin-face__heading strong { color: var(--color-text-primary); font-size: var(--text-sm); }
+.plugin-face__heading small { color: var(--color-text-tertiary); font-family: var(--font-mono); font-size: var(--text-xs); }
+.plugin-face p { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: 1.5; }
 .instance-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
 
 @media (max-width: 640px) {

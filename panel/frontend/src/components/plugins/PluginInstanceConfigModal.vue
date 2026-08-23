@@ -23,6 +23,7 @@ const props = defineProps({
   packageDetail: { type: Object, default: null },
   publishedEntries: { type: Array, default: () => [] },
   agents: { type: Array, default: () => [] },
+  targetEligibility: { type: Object, default: null },
   httpRules: { type: Array, default: null },
   intent: { type: String, default: 'configure' }
 })
@@ -41,7 +42,15 @@ const httpBackendDeclared = computed(() => {
   if (props.hasHTTPBackend) return true
   return packageDeclaresHTTPBackend(props.packageDetail)
 })
-const instanceTargets = computed(() => [...new Set((props.instance?.targets || []).map((target) => String(target || '').trim()).filter(Boolean))])
+const usesCanonicalLocalTarget = computed(() => props.targetEligibility?.agent_targets_allowed === false)
+const canonicalLocalTargetID = computed(() => String(props.targetEligibility?.canonical_local_target_id || '').trim())
+const targetAuthorityBlocker = computed(() => usesCanonicalLocalTarget.value && !canonicalLocalTargetID.value
+  ? '本地管理面部署目标不可用，请刷新详情后重试。'
+  : '')
+const instanceTargets = computed(() => {
+  if (usesCanonicalLocalTarget.value) return canonicalLocalTargetID.value ? [canonicalLocalTargetID.value] : []
+  return [...new Set((props.instance?.targets || []).map((target) => String(target || '').trim()).filter(Boolean))]
+})
 const instanceEntries = computed(() => (Array.isArray(props.publishedEntries) ? props.publishedEntries : []).filter((entry) => {
   if (!entry || typeof entry !== 'object') return false
   const ruleID = Number(entry.rule_id)
@@ -69,6 +78,7 @@ const publishSubmitLabel = computed(() => {
 })
 const publishBlocked = computed(() => {
   if (!httpBackendDeclared.value) return ''
+  if (targetAuthorityBlocker.value) return targetAuthorityBlocker.value
   if (!instanceTargets.value.length) return '当前实例没有可发布的节点。'
   if (!String(publishTarget.value || '').trim()) return '请选择一个节点后再发布。'
   if (!buildFrontendURL(publishHost.value, publishHTTPS.value)) return '请填写一条入口地址。'
@@ -336,6 +346,10 @@ function startNewPublish() {
 
 async function save(payload) {
   if (!props.canWrite || !props.instance || busy.value) return
+  if (targetAuthorityBlocker.value) {
+    messageStore.error(targetAuthorityBlocker.value)
+    return
+  }
   if (httpRuleBlocker.value && hasMissingRequiredHttpRule(props.document?.components, payload?.config)) {
     messageStore.error(httpRuleBlocker.value)
     return
@@ -346,7 +360,7 @@ async function save(payload) {
     await configurePlugin(props.pluginId, {
       instance_id: instance.id,
       resource_group_id: instance.resource_group_id,
-      targets: instance.targets,
+      targets: instanceTargets.value,
       policy_chains: instance.policy_chains || [],
       bindings: persistableConfigureBindings(instance, props.packageDetail, props.hasHTTPBackend),
       config: stripReadOnlyConfigValues(props.configSchema, payload.config),
@@ -421,7 +435,15 @@ async function runDynamicAction({ action, target_id, confirmed }) {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <section class="plugin-instance-config" :aria-label="httpBackendDeclared && (intent === 'publish' || needsPublish) ? '发布到域名' : '编辑实例配置'">
+      <p
+        v-if="usesCanonicalLocalTarget"
+        class="plugin-target-authority"
+        data-test="plugin-config-local-target"
+      >
+        本地管理面 · 目标固定为 {{ canonicalLocalTargetID || '不可用' }}，不会提交远端 Agent。
+      </p>
       <p v-if="httpRuleBlocker" class="plugin-next-step" role="status" data-test="plugin-http-rule-empty">{{ httpRuleBlocker }}</p>
+      <p v-if="targetAuthorityBlocker" class="plugin-next-step" role="alert">{{ targetAuthorityBlocker }}</p>
 
       <section v-if="httpBackendDeclared" class="plugin-publish" aria-label="入口域名">
         <p v-if="needsPublish" class="plugin-next-step" data-test="plugin-publish-needed">
@@ -539,6 +561,15 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 
 <style scoped>
 .plugin-instance-config { display: grid; gap: var(--space-4); min-width: 0; }
+.plugin-target-authority {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
 .plugin-publish { display: grid; gap: var(--space-4); min-width: 0; }
 .plugin-next-step { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .plugin-published-entries { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
