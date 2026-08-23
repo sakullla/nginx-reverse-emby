@@ -23,6 +23,8 @@ const props = defineProps({
   currentLifecycle: { type: String, default: '' },
   declaresHTTPBackend: { type: Boolean, required: false },
   packageDetail: { type: Object, default: null },
+  faces: { type: Array, default: () => [] },
+  initialFace: { type: String, default: '' },
   targetEligibility: { type: Object, default: null },
   instance: { type: Object, default: null },
   publishedEntry: { type: Object, default: null },
@@ -37,6 +39,7 @@ const httpRulesLoading = ref(false)
 const loadedHttpRules = ref([])
 const agentQuery = ref('')
 const agentStatusFilter = ref('')
+const activeFace = ref('')
 const deployment = reactive({ resourceGroupID: '', targets: [], host: '', https: true })
 const agentStatusOptions = [
   { value: '', label: '全部' },
@@ -52,6 +55,15 @@ const hasHTTPBackend = computed(() => {
 })
 const usesCanonicalLocalTarget = computed(() => props.targetEligibility?.agent_targets_allowed === false)
 const canonicalLocalTargetID = computed(() => String(props.targetEligibility?.canonical_local_target_id || '').trim())
+const hasLocalManagementFace = computed(() => props.faces.some((face) => face?.face_id === 'local-management'))
+const hasAgentExecutionFace = computed(() => props.faces.some((face) => face?.face_id === 'agent-execution'))
+const dualFaceRuntime = computed(() => hasLocalManagementFace.value && hasAgentExecutionFace.value)
+const showingAgentExecutionFace = computed(() => !dualFaceRuntime.value || activeFace.value === 'agent-execution')
+const deploymentTargetLegend = computed(() => {
+  if (usesCanonicalLocalTarget.value) return '本地管理面'
+  if (dualFaceRuntime.value) return 'Agent 执行面目标'
+  return '部署节点'
+})
 const localTargetAuthorityBlocker = computed(() => usesCanonicalLocalTarget.value && !canonicalLocalTargetID.value
   ? '本地管理面部署目标不可用，请刷新详情后重试。'
   : '')
@@ -65,7 +77,9 @@ const mode = computed(() => {
   if (props.instance?.id && hasHTTPBackend.value) return 'publish'
   return 'deploy'
 })
-const sortedAgents = computed(() => [...props.agents].sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
+const sortedAgents = computed(() => props.agents
+  .filter((agent) => !dualFaceRuntime.value || String(agent?.id || '') !== canonicalLocalTargetID.value)
+  .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
 const visibleAgents = computed(() => {
   const query = agentQuery.value.trim().toLowerCase()
   return sortedAgents.value.filter((agent) => {
@@ -77,6 +91,7 @@ const visibleAgents = computed(() => {
 const singleAgent = computed(() => hasHTTPBackend.value)
 const selectedTargets = computed(() => {
   if (usesCanonicalLocalTarget.value) return canonicalLocalTargetID.value ? [canonicalLocalTargetID.value] : []
+  if (dualFaceRuntime.value && !showingAgentExecutionFace.value) return []
   if (lockedScope.value) {
     const pinned = String((mode.value === 'update' ? props.publishedEntry?.agent_id : '') || props.instance?.targets?.[0] || '').trim()
     return pinned ? [pinned] : []
@@ -99,17 +114,21 @@ const allVisibleSelected = computed(() => (
 ))
 const submitLabel = computed(() => {
   if (busy.value) return hasHTTPBackend.value ? '发布中…' : '部署中…'
+  if (dualFaceRuntime.value) return showingAgentExecutionFace.value ? '部署 Agent 执行面' : '部署本地管理面'
   return hasHTTPBackend.value ? '发布到域名' : '部署'
 })
 const modalTitle = computed(() => {
   if (mode.value === 'update') return '修改入口域名'
   if (mode.value === 'publish') return '发布到域名'
-  return hasHTTPBackend.value ? '部署并发布' : '部署插件实例'
+  return dualFaceRuntime.value ? '部署插件运行面' : (hasHTTPBackend.value ? '部署并发布' : '部署插件实例')
 })
 const modalSubtitle = computed(() => {
   if (mode.value === 'update') return '更新已发布入口的地址或是否 HTTPS，不会新建入口。'
   if (mode.value === 'publish') return '填写一条入口地址，把已部署的插件发布到所选节点。'
   if (usesCanonicalLocalTarget.value) return '选择资源组并填写配置；部署目标固定为本地管理面。'
+  if (dualFaceRuntime.value) return showingAgentExecutionFace.value
+    ? '本地管理面保持不变；为 Agent 执行面选择节点。'
+    : '先部署本地管理面；Agent 执行面可稍后单独部署。'
   if (hasHTTPBackend.value) return '选择一个节点并填写入口地址，一次完成部署和发布。'
   return '选择资源组和节点，把插件部署到当前身份可见的范围。'
 })
@@ -122,7 +141,7 @@ const visibleHttpRuleOptions = computed(() => httpRuleSelectOptions(
 const persistentBlocker = computed(() => {
   if (!props.resourceGroups.length) return '当前身份没有可见的资源组，无法部署。'
   if (localTargetAuthorityBlocker.value) return localTargetAuthorityBlocker.value
-  if (!usesCanonicalLocalTarget.value && !sortedAgents.value.length) return '当前没有可选择的节点。'
+  if (showingAgentExecutionFace.value && !usesCanonicalLocalTarget.value && !sortedAgents.value.length) return '当前没有可选择的节点。'
   if (needsHttpRuleOptions.value && !httpRulesLoading.value && !visibleHttpRuleOptions.value.length) {
     return '当前身份没有可见的 HTTP 规则，无法绑定规则。'
   }
@@ -130,7 +149,7 @@ const persistentBlocker = computed(() => {
 })
 const submitBlocker = computed(() => {
   if (persistentBlocker.value) return persistentBlocker.value
-  if (!selectedTargets.value.length) return singleAgent.value ? '请选择一个节点。' : '请选择至少一个节点。'
+  if (showingAgentExecutionFace.value && !selectedTargets.value.length) return singleAgent.value ? '请选择一个节点。' : '请选择至少一个节点。'
   if (hasHTTPBackend.value && !buildFrontendURL(deployment.host, deployment.https)) return '请填写一条入口地址。'
   return ''
 })
@@ -281,6 +300,9 @@ function packageDeclaresHTTPBackend(pkg) {
 function resetForm() {
   agentQuery.value = ''
   agentStatusFilter.value = ''
+  activeFace.value = dualFaceRuntime.value
+    ? (hasHTTPBackend.value || props.initialFace === 'agent-execution' ? 'agent-execution' : 'local-management')
+    : (hasAgentExecutionFace.value ? 'agent-execution' : 'local-management')
   const instance = props.instance
   const published = mode.value === 'update' ? parseFrontendURL(props.publishedEntry?.frontend_url) : { href: '', host: '', https: true }
   const preferredGroup = String(instance?.resource_group_id || '').trim()
@@ -356,7 +378,7 @@ async function deploy(payload) {
     messageStore.error(props.resourceGroups.length ? '请选择一个可见的资源组。' : '当前身份没有可见的资源组，无法部署。')
     return
   }
-  if (!targets.length) {
+  if (showingAgentExecutionFace.value && !targets.length) {
     messageStore.error(singleAgent.value ? '请选择一个节点。' : '请选择至少一个节点。')
     return
   }
@@ -419,6 +441,26 @@ async function deploy(payload) {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <section class="plugin-deployment" :aria-label="modalTitle">
+      <div v-if="dualFaceRuntime" class="plugin-face-switch" role="tablist" aria-label="选择插件运行面" data-test="plugin-deployment-face-switch">
+        <button
+          type="button"
+          role="tab"
+          data-test="plugin-deployment-face-local"
+          :aria-selected="activeFace === 'local-management'"
+          :class="{ 'plugin-face-switch__button--active': activeFace === 'local-management' }"
+          :disabled="busy"
+          @click="activeFace = 'local-management'"
+        >本地管理面</button>
+        <button
+          type="button"
+          role="tab"
+          data-test="plugin-deployment-face-agent"
+          :aria-selected="activeFace === 'agent-execution'"
+          :class="{ 'plugin-face-switch__button--active': activeFace === 'agent-execution' }"
+          :disabled="busy"
+          @click="activeFace = 'agent-execution'"
+        >Agent 执行面</button>
+      </div>
       <div class="plugin-deployment__metadata">
         <label>
           <span>资源组</span>
@@ -432,8 +474,12 @@ async function deploy(payload) {
           </select>
         </label>
       </div>
-      <fieldset class="plugin-deployment__agents">
-        <legend>{{ usesCanonicalLocalTarget ? '部署目标' : '节点' }}</legend>
+      <div v-if="dualFaceRuntime && !showingAgentExecutionFace" class="plugin-deployment__local-target" data-test="plugin-deployment-management-only">
+        <span class="plugin-deployment__local-target-dot" aria-hidden="true" />
+        <span><strong>本地管理面</strong><small>固定在当前控制面，不创建 Agent target。</small></span>
+      </div>
+      <fieldset v-else class="plugin-deployment__agents">
+        <legend>{{ deploymentTargetLegend }}</legend>
         <div
           v-if="usesCanonicalLocalTarget"
           class="plugin-deployment__local-target"
@@ -445,7 +491,10 @@ async function deploy(payload) {
             <small>固定目标 {{ canonicalLocalTargetID || '不可用' }}，不会提交远端 Agent</small>
           </span>
         </div>
-        <p v-if="!usesCanonicalLocalTarget" class="plugin-deployment__agent-hint">{{ singleAgent ? '发布入口只选一个节点。' : '可同时选多个节点。' }}</p>
+        <p v-if="dualFaceRuntime" class="plugin-deployment__agent-hint" data-test="plugin-deployment-dual-face-note">
+          本地管理面自动固定在当前控制面；这里只选择承载执行面的 Agent。
+        </p>
+        <p v-else-if="!usesCanonicalLocalTarget" class="plugin-deployment__agent-hint">{{ singleAgent ? '发布入口只选一个节点。' : '可同时选多个节点。' }}</p>
         <div v-if="!usesCanonicalLocalTarget && lockedScope && selectedAgent" class="plugin-deployment__picker">
           <div class="plugin-deployment__agent plugin-deployment__agent--locked">
             <span
@@ -605,6 +654,9 @@ async function deploy(payload) {
 
 <style scoped>
 .plugin-deployment { display: grid; gap: var(--space-5); min-width: 0; }
+.plugin-face-switch { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; padding: .3rem; border-radius: var(--radius-lg); background: var(--color-bg-subtle); }
+.plugin-face-switch button { min-height: 2.35rem; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-text-secondary); font: inherit; font-weight: 600; cursor: pointer; }
+.plugin-face-switch__button--active { background: var(--color-bg-surface) !important; color: var(--color-primary) !important; box-shadow: var(--shadow-sm); }
 .plugin-deployment__metadata { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
 .plugin-deployment__metadata label, .plugin-deployment__entry-fields label { display: grid; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
 .plugin-deployment__metadata select, .plugin-deployment__entry-fields input[type="text"] { min-width: 0; padding: .6rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit; }

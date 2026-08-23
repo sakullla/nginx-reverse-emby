@@ -979,11 +979,9 @@ func resolveInstalledLifecyclePackageTx(tx *gorm.DB, operation PluginOperationRo
 }
 
 func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
-	var targets []string
-	if strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != "null" {
-		if err := json.Unmarshal([]byte(raw), &targets); err != nil {
-			return nil, err
-		}
+	targets, err := pluginInstanceExplicitTargets(raw)
+	if err != nil {
+		return nil, err
 	}
 	if len(targets) == 0 {
 		defaultTargetID = strings.TrimSpace(defaultTargetID)
@@ -991,6 +989,16 @@ func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
 			return nil, errors.New("default target is unavailable")
 		}
 		targets = []string{defaultTargetID}
+	}
+	return targets, nil
+}
+
+func pluginInstanceExplicitTargets(raw string) ([]string, error) {
+	var targets []string
+	if strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != "null" {
+		if err := json.Unmarshal([]byte(raw), &targets); err != nil {
+			return nil, err
+		}
 	}
 	for index := range targets {
 		targets[index] = strings.TrimSpace(targets[index])

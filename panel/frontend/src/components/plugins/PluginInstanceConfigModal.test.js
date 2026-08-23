@@ -38,7 +38,7 @@ const PluginDeclarativeUIStub = {
   template: '<button data-test="save-config" @click="$emit(\'submit\', { config: { mode: \'observe\' }, secret_replacements: {} })">保存</button>'
 }
 
-function mountModal(targetEligibility) {
+function mountModal(targetEligibility, overrides = {}) {
   return mount(PluginInstanceConfigModal, {
     props: {
       modelValue: true,
@@ -53,8 +53,10 @@ function mountModal(targetEligibility) {
       document: { schema_version: 1, components: [] },
       configSchema: { type: 'object', properties: { mode: { type: 'string' } } },
       packageDetail: { manifest: { extension_points: [] } },
+      agents: [{ id: 'edge-a', name: 'Edge A', status: 'online' }, { id: 'edge-b', name: 'Edge B', status: 'online' }],
       canWrite: true,
-      targetEligibility
+      targetEligibility,
+      ...overrides
     },
     global: {
       stubs: {
@@ -83,13 +85,40 @@ describe('PluginInstanceConfigModal target authority', () => {
     expect(mocks.configurePlugin.mock.calls[0][1].targets).not.toContain('edge-a')
   })
 
-  it('preserves selected Agent targets for a dual-face instance', async () => {
-    const wrapper = mountModal({ canonical_local_target_id: 'local-control', agent_targets_allowed: true })
-    await wrapper.get('[data-test="save-config"]').trigger('click')
+  it('lets a dual-face instance change only its Agent execution targets', async () => {
+    const wrapper = mountModal(
+      { canonical_local_target_id: 'local-control', agent_targets_allowed: true },
+      { faces: [{ face_id: 'local-management' }, { face_id: 'agent-execution' }] }
+    )
+    await wrapper.get('[data-test="plugin-config-face-agent"]').trigger('click')
+    expect(wrapper.get('[data-test="plugin-config-dual-face-note"]').text()).toContain('本地管理面自动固定')
+    const targets = wrapper.findAll('[data-test="plugin-config-agent-target"]')
+    expect(targets).toHaveLength(2)
+    expect(targets[0].element.checked).toBe(true)
+    await targets[0].setValue(false)
+    await targets[1].setValue(true)
+    await wrapper.get('[data-test="plugin-save-agent-face"]').trigger('click')
     await flushPromises()
 
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.plugin', expect.objectContaining({
-      targets: ['edge-a']
+      targets: ['edge-b']
+    }))
+  })
+
+  it('allows a dual-face instance to keep the Agent execution face undeployed', async () => {
+    const wrapper = mountModal(
+      { canonical_local_target_id: 'local-control', agent_targets_allowed: true },
+      {
+        faces: [{ face_id: 'local-management' }, { face_id: 'agent-execution' }],
+        instance: { id: 'official.plugin-default', resource_group_id: 'default', targets: [], policy_chains: [], bindings: [] }
+      }
+    )
+    await wrapper.get('[data-test="plugin-config-face-agent"]').trigger('click')
+    await wrapper.get('[data-test="plugin-save-agent-face"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.plugin', expect.objectContaining({
+      targets: []
     }))
   })
 

@@ -83,11 +83,21 @@ describe('PluginDeployModal target authority', () => {
 
   it('keeps the Agent selector for a dual-face plugin', async () => {
     const wrapper = mountModal({
-      targetEligibility: { canonical_local_target_id: 'local', agent_targets_allowed: true }
+      targetEligibility: { canonical_local_target_id: 'local', agent_targets_allowed: true },
+      faces: [{ face_id: 'local-management' }, { face_id: 'agent-execution' }]
     })
     await openModal(wrapper)
 
     expect(wrapper.find('[data-test="plugin-deployment-local-target"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="plugin-deployment-management-only"]').text()).toContain('不创建 Agent target')
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.plugin', expect.objectContaining({ targets: [] }))
+
+    mocks.configurePlugin.mockClear()
+    await wrapper.get('[data-test="plugin-deployment-face-agent"]').trigger('click')
+    expect(wrapper.get('[data-test="plugin-deployment-dual-face-note"]').text()).toContain('本地管理面自动固定')
+    expect(wrapper.text()).toContain('Agent 执行面目标')
     const choices = wrapper.findAll('[data-test="deployment-agent"]')
     expect(choices).toHaveLength(2)
     await choices[0].setValue(true)

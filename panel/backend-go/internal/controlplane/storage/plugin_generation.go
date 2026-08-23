@@ -87,7 +87,7 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 			if instance.PendingOperationID == plugin.PendingOperationID && strings.TrimSpace(instance.PendingTargetJSON) != "" {
 				targetJSON = instance.PendingTargetJSON
 			}
-			targets, err := pluginInstanceTargets(targetJSON, s.LocalAgentID())
+			targets, err := pluginInstanceExplicitTargets(targetJSON)
 			if err != nil {
 				return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 			}

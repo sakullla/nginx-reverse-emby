@@ -150,6 +150,30 @@ func TestPluginConfigureAllowsDualFaceManifestToFormRemoteAgentGeneration(t *tes
 	}
 }
 
+func TestPluginConfigureAllowsDualFaceManagementOnlyWithoutAgentGeneration(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.dual-management-only", true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+	request := fixture.configureRequest("edge-a", "management-only-instance")
+	request.Targets = []string{}
+
+	instance, err := fixture.service.ConfigureMutation(ctx, request)
+	if err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	if len(instance.PendingTargets) != 0 {
+		t.Fatalf("management-only pending targets = %v", instance.PendingTargets)
+	}
+	for _, agentID := range []string{"local", "edge-a"} {
+		generations, err := fixture.store.LoadAgentPluginGenerations(ctx, agentID, runtime.GOOS+"-"+runtime.GOARCH)
+		if err != nil {
+			t.Fatalf("LoadAgentPluginGenerations(%s) error = %v", agentID, err)
+		}
+		if len(generations) != 0 {
+			t.Fatalf("management-only Agent generations for %s = %+v", agentID, generations)
+		}
+	}
+}
+
 func TestPluginDetailProjectsManifestDerivedFacesAndTargetEligibility(t *testing.T) {
 	t.Run("control-plane only", func(t *testing.T) {
 		fixture := newPluginTargetAuthorityFixture(t, "official.detail-control", false)

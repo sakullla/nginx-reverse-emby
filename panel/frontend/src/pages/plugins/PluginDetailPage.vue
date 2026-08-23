@@ -41,6 +41,7 @@ const agents = ref([])
 const resourceGroups = ref([])
 const httpRules = ref([])
 const selectedInstanceID = ref('')
+const selectedFaceID = ref('')
 const retryingAgent = ref('')
 const deployModalOpen = ref(false)
 const configModalOpen = ref(false)
@@ -77,6 +78,10 @@ let refreshInFlight = false
 const instanceTabs = computed(() => (detail.value?.instances || []).map((instance) => ({
   id: instance.id,
   label: `${instance.id} · ${instance.resource_group_id}`
+})))
+const faceTabs = computed(() => declaredFaces.value.map((face) => ({
+  id: face.face_id,
+  label: face.face_id === 'local-management' ? '本地管理面' : face.face_id === 'agent-execution' ? 'Agent 执行面' : face.face_id
 })))
 
 const httpRuleOptions = computed(() => {
@@ -291,6 +296,10 @@ async function load({ background = false } = {}) {
     selectedInstanceID.value = visibleDetail.instances.some((instance) => instance.id === previousInstanceID)
       ? previousInstanceID
       : visibleDetail.instances[0]?.id || ''
+    const faceIDs = visibleDetail.faces?.map((face) => face.face_id) || []
+    selectedFaceID.value = faceIDs.includes(selectedFaceID.value)
+      ? selectedFaceID.value
+      : (faceIDs.includes('local-management') ? 'local-management' : faceIDs[0] || '')
   } catch (cause) {
     error.value = humanLoadError(cause, '读取插件详情失败')
     if (detail.value) messageStore.error(error.value)
@@ -675,9 +684,16 @@ async function retryAgent(status) {
           :model-value="selectedInstanceID"
           @update:model-value="selectedInstanceID = $event"
         />
+        <BaseTabs
+          v-if="faceTabs.length > 1"
+          :tabs="faceTabs"
+          :model-value="selectedFaceID"
+          data-test="plugin-face-switch"
+          @update:model-value="selectedFaceID = $event"
+        />
         <div v-if="hasDeclaredFaceProjection" class="plugin-face-list" aria-label="插件运行面">
           <section
-            v-if="hasLocalManagementFace"
+            v-if="hasLocalManagementFace && selectedFaceID === 'local-management'"
             class="plugin-face"
             data-test="plugin-face-local-management"
           >
@@ -693,7 +709,7 @@ async function retryAgent(status) {
             <p>目标固定为 {{ canonicalLocalTargetID || '本地' }}；配置与管理状态只归属当前控制面。</p>
           </section>
           <section
-            v-if="hasAgentExecutionFace"
+            v-if="hasAgentExecutionFace && selectedFaceID === 'agent-execution'"
             class="plugin-face"
             data-test="plugin-face-agent-execution"
           >
@@ -813,6 +829,8 @@ async function retryAgent(status) {
         :current-lifecycle="detail.plugin.current_lifecycle"
         :package-detail="detail.package"
         :declaresHTTPBackend="hasHTTPBackend"
+        :faces="declaredFaces"
+        :initial-face="selectedFaceID"
         :target-eligibility="targetEligibility"
         @deployed="handleDeployed"
       />
@@ -829,6 +847,8 @@ async function retryAgent(status) {
         :hasHTTPBackend="hasHTTPBackend"
         :published-entries="publishedEntries"
         :agents="agents"
+        :faces="declaredFaces"
+        :initial-face="selectedFaceID"
         :can-write="canWrite"
         :can-publish="admin"
         :target-eligibility="targetEligibility"

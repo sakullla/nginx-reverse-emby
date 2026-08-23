@@ -23,6 +23,8 @@ const props = defineProps({
   packageDetail: { type: Object, default: null },
   publishedEntries: { type: Array, default: () => [] },
   agents: { type: Array, default: () => [] },
+  faces: { type: Array, default: () => [] },
+  initialFace: { type: String, default: '' },
   targetEligibility: { type: Object, default: null },
   httpRules: { type: Array, default: null },
   intent: { type: String, default: 'configure' }
@@ -37,19 +39,30 @@ const publishHTTPS = ref(true)
 const publishTarget = ref('')
 const editingRuleID = ref(0)
 const loadedHttpRules = ref([])
+const activeFace = ref('')
+const editableTargets = ref([...new Set((props.instance?.targets || []).map((target) => String(target || '').trim()).filter(Boolean))])
 
 const httpBackendDeclared = computed(() => {
   if (props.hasHTTPBackend) return true
   return packageDeclaresHTTPBackend(props.packageDetail)
 })
 const usesCanonicalLocalTarget = computed(() => props.targetEligibility?.agent_targets_allowed === false)
+const usesAgentExecutionTargets = computed(() => props.targetEligibility?.agent_targets_allowed === true)
 const canonicalLocalTargetID = computed(() => String(props.targetEligibility?.canonical_local_target_id || '').trim())
-const targetAuthorityBlocker = computed(() => usesCanonicalLocalTarget.value && !canonicalLocalTargetID.value
-  ? '本地管理面部署目标不可用，请刷新详情后重试。'
-  : '')
+const hasLocalManagementFace = computed(() => props.faces.some((face) => face?.face_id === 'local-management'))
+const hasAgentExecutionFace = computed(() => props.faces.some((face) => face?.face_id === 'agent-execution'))
+const dualFaceRuntime = computed(() => hasLocalManagementFace.value && hasAgentExecutionFace.value)
+const showingAgentExecutionFace = computed(() => !dualFaceRuntime.value || activeFace.value === 'agent-execution')
+const sortedAgents = computed(() => props.agents
+  .filter((agent) => !dualFaceRuntime.value || String(agent?.id || '') !== canonicalLocalTargetID.value)
+  .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
+const targetAuthorityBlocker = computed(() => {
+  if (usesCanonicalLocalTarget.value && !canonicalLocalTargetID.value) return '本地管理面部署目标不可用，请刷新详情后重试。'
+  return ''
+})
 const instanceTargets = computed(() => {
   if (usesCanonicalLocalTarget.value) return canonicalLocalTargetID.value ? [canonicalLocalTargetID.value] : []
-  return [...new Set((props.instance?.targets || []).map((target) => String(target || '').trim()).filter(Boolean))]
+  return editableTargets.value
 })
 const instanceEntries = computed(() => (Array.isArray(props.publishedEntries) ? props.publishedEntries : []).filter((entry) => {
   if (!entry || typeof entry !== 'object') return false
@@ -101,9 +114,15 @@ watch(() => props.modelValue, (open) => {
     loadedHttpRules.value = []
     return
   }
+  activeFace.value = dualFaceRuntime.value
+    ? (props.initialFace === 'agent-execution' ? 'agent-execution' : 'local-management')
+    : (hasAgentExecutionFace.value ? 'agent-execution' : 'local-management')
+  editableTargets.value = [...new Set((props.instance?.targets || [])
+    .map((target) => String(target || '').trim())
+    .filter((target) => target && (!dualFaceRuntime.value || target !== canonicalLocalTargetID.value)))]
   resetPublishForm()
   void loadVisibleHttpRules()
-})
+}, { immediate: true })
 
 watch(publishHost, (value) => {
   if (/^https:\/\//i.test(value)) publishHTTPS.value = true
@@ -357,10 +376,14 @@ async function save(payload) {
   busy.value = true
   try {
     const instance = props.instance
+    const persistedTargets = [...new Set((instance.targets || []).map((target) => String(target || '').trim()).filter(Boolean))]
+    const configureTargets = dualFaceRuntime.value && activeFace.value === 'local-management'
+      ? persistedTargets
+      : instanceTargets.value
     await configurePlugin(props.pluginId, {
       instance_id: instance.id,
       resource_group_id: instance.resource_group_id,
-      targets: instanceTargets.value,
+      targets: configureTargets,
       policy_chains: instance.policy_chains || [],
       bindings: persistableConfigureBindings(instance, props.packageDetail, props.hasHTTPBackend),
       config: stripReadOnlyConfigValues(props.configSchema, payload.config),
@@ -374,6 +397,10 @@ async function save(payload) {
   } finally {
     busy.value = false
   }
+}
+
+async function saveExecutionFace() {
+  await save({ config: props.config, secret_replacements: {} })
 }
 
 async function publish() {
@@ -435,6 +462,26 @@ async function runDynamicAction({ action, target_id, confirmed }) {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <section class="plugin-instance-config" :aria-label="httpBackendDeclared && (intent === 'publish' || needsPublish) ? '发布到域名' : '编辑实例配置'">
+      <div v-if="dualFaceRuntime" class="plugin-face-switch" role="tablist" aria-label="选择插件运行面" data-test="plugin-config-face-switch">
+        <button
+          type="button"
+          role="tab"
+          data-test="plugin-config-face-local"
+          :aria-selected="activeFace === 'local-management'"
+          :class="{ 'plugin-face-switch__button--active': activeFace === 'local-management' }"
+          :disabled="busy"
+          @click="activeFace = 'local-management'"
+        >本地管理面</button>
+        <button
+          type="button"
+          role="tab"
+          data-test="plugin-config-face-agent"
+          :aria-selected="activeFace === 'agent-execution'"
+          :class="{ 'plugin-face-switch__button--active': activeFace === 'agent-execution' }"
+          :disabled="busy"
+          @click="activeFace = 'agent-execution'"
+        >Agent 执行面</button>
+      </div>
       <p
         v-if="usesCanonicalLocalTarget"
         class="plugin-target-authority"
@@ -442,6 +489,46 @@ async function runDynamicAction({ action, target_id, confirmed }) {
       >
         本地管理面 · 目标固定为 {{ canonicalLocalTargetID || '不可用' }}，不会提交远端 Agent。
       </p>
+      <fieldset
+        v-else-if="usesAgentExecutionTargets && showingAgentExecutionFace"
+        class="plugin-execution-targets"
+        data-test="plugin-config-agent-targets"
+      >
+        <legend>Agent 执行面目标</legend>
+        <p v-if="dualFaceRuntime" class="plugin-execution-targets__hint" data-test="plugin-config-dual-face-note">
+          本地管理面自动固定在当前控制面；这里只选择承载执行面的 Agent。
+        </p>
+        <p v-else class="plugin-execution-targets__hint">选择承载插件执行面的 Agent。</p>
+        <div v-if="sortedAgents.length" class="plugin-execution-targets__list" role="group" aria-label="Agent 执行面目标">
+          <label
+            v-for="agent in sortedAgents"
+            :key="agent.id"
+            class="plugin-execution-targets__item"
+            :class="{ 'plugin-execution-targets__item--selected': editableTargets.includes(agent.id) }"
+          >
+            <input
+              v-model="editableTargets"
+              type="checkbox"
+              :value="agent.id"
+              data-test="plugin-config-agent-target"
+              :disabled="!canWrite || busy"
+            >
+            <span>
+              <strong>{{ agent.name || agent.id }}</strong>
+              <small>{{ agent.status === 'online' ? '在线' : agent.status === 'offline' ? '离线' : (agent.status || '状态未知') }}</small>
+            </span>
+          </label>
+        </div>
+        <p v-else class="plugin-execution-targets__hint">当前没有可选择的 Agent。</p>
+        <button
+          v-if="canWrite"
+          class="btn btn-primary"
+          type="button"
+          data-test="plugin-save-agent-face"
+          :disabled="busy"
+          @click="saveExecutionFace"
+        >保存 Agent 执行面</button>
+      </fieldset>
       <p v-if="httpRuleBlocker" class="plugin-next-step" role="status" data-test="plugin-http-rule-empty">{{ httpRuleBlocker }}</p>
       <p v-if="targetAuthorityBlocker" class="plugin-next-step" role="alert">{{ targetAuthorityBlocker }}</p>
 
@@ -533,7 +620,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
       </section>
 
       <PluginDeclarativeUI
-        v-if="instance"
+        v-if="instance && (!dualFaceRuntime || activeFace === 'local-management')"
         :document="boundDocument"
         :config="config"
         :secret-fields="secretFields"
@@ -561,6 +648,9 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 
 <style scoped>
 .plugin-instance-config { display: grid; gap: var(--space-4); min-width: 0; }
+.plugin-face-switch { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; padding: .3rem; border-radius: var(--radius-lg); background: var(--color-bg-subtle); }
+.plugin-face-switch button { min-height: 2.35rem; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-text-secondary); font: inherit; font-weight: 600; cursor: pointer; }
+.plugin-face-switch__button--active { background: var(--color-bg-surface) !important; color: var(--color-primary) !important; box-shadow: var(--shadow-sm); }
 .plugin-target-authority {
   margin: 0;
   padding: var(--space-3);
@@ -570,6 +660,21 @@ async function runDynamicAction({ action, target_id, confirmed }) {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
 }
+.plugin-execution-targets { display: grid; gap: var(--space-2); margin: 0; padding: 0; border: 0; }
+.plugin-execution-targets legend { color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
+.plugin-execution-targets__hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); }
+.plugin-execution-targets__list { display: grid; max-height: 12rem; overflow: auto; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
+.plugin-execution-targets__item {
+  display: flex; align-items: center; gap: var(--space-2); min-height: 2.5rem; padding: .4rem .7rem;
+  border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-surface); cursor: pointer;
+}
+.plugin-execution-targets__item:last-child { border-bottom: 0; }
+.plugin-execution-targets__item--selected { background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface)); }
+.plugin-execution-targets__item input { flex-shrink: 0; accent-color: var(--color-primary); }
+.plugin-execution-targets__item span { min-width: 0; display: flex; flex: 1; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.plugin-execution-targets__item strong, .plugin-execution-targets__item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-execution-targets__item strong { font-size: var(--text-sm); }
+.plugin-execution-targets__item small { color: var(--color-text-muted); font-size: var(--text-xs); }
 .plugin-publish { display: grid; gap: var(--space-4); min-width: 0; }
 .plugin-next-step { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .plugin-published-entries { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }

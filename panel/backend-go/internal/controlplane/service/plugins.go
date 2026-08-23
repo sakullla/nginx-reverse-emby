@@ -1848,13 +1848,10 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 	prospectiveInstance.PendingResourceGroupID = request.ResourceGroupID
 	prospectiveInstance.PendingVersion = version
 	prospectiveInstance.PendingOperationID = operation.ID
-	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) && len(targetIDs) > 0 {
 		agentID := ""
 		if len(targetIDs) > 0 {
 			agentID = strings.TrimSpace(targetIDs[0])
-		}
-		if agentID == "" {
-			return "", fmt.Errorf("%w: plugin generation target is required", ErrInvalidArgument)
 		}
 		platform, err := s.pluginGenerationTargetPlatform(ctx, agentID)
 		if err != nil {
@@ -1870,7 +1867,7 @@ func (s *PluginService) pluginLifecycleGenerationID(ctx context.Context, install
 		}
 		return generation.ID, nil
 	}
-	if strings.TrimSpace(manifest.Runtime.HostScope) == "control-plane" {
+	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
 		artifact, err := pluginSelectControlPlaneGenerationArtifact(artifacts, manifest)
 		if err != nil {
 			return "", err
@@ -2072,7 +2069,12 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}
-	targetIDs, err := pluginTargetIDs(requestedTargetJSON, defaultTargetID)
+	var targetIDs []string
+	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+		targetIDs, err = pluginExplicitTargetIDs(requestedTargetJSON)
+	} else {
+		targetIDs, err = pluginTargetIDs(requestedTargetJSON, defaultTargetID)
+	}
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrInvalidArgument, err))
 	}
@@ -4080,15 +4082,24 @@ func (s *PluginService) validatePluginTargets(ctx context.Context, manifest plug
 	if err != nil {
 		return err
 	}
-	targetIDs, err := pluginTargetIDs(raw, defaultTargetID)
+	targetIDs, err := pluginExplicitTargetIDs(raw)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+		if len(targetIDs) == 0 {
+			targetIDs = []string{defaultTargetID}
+		}
 		if len(targetIDs) != 1 || targetIDs[0] != defaultTargetID {
 			return fmt.Errorf("%w: plugin %s only accepts the canonical local target %s", ErrPluginTargetIneligible, manifest.ID, defaultTargetID)
 		}
 		return nil
+	}
+	if len(targetIDs) == 0 {
+		if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
+			return nil
+		}
+		return fmt.Errorf("%w: plugin %s requires at least one Agent target", ErrPluginTargetIneligible, manifest.ID)
 	}
 	if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, raw); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
@@ -4217,12 +4228,9 @@ func (s *PluginService) defaultPluginTargetID(ctx context.Context) (string, erro
 }
 
 func pluginTargetIDs(raw json.RawMessage, defaultTargetID string) ([]string, error) {
-	var targetIDs []string
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed != "" && trimmed != "null" {
-		if err := json.Unmarshal(raw, &targetIDs); err != nil {
-			return nil, errors.New("plugin targets must be an array of agent IDs")
-		}
+	targetIDs, err := pluginExplicitTargetIDs(raw)
+	if err != nil {
+		return nil, err
 	}
 	if len(targetIDs) == 0 {
 		defaultTargetID = strings.TrimSpace(defaultTargetID)
@@ -4230,6 +4238,17 @@ func pluginTargetIDs(raw json.RawMessage, defaultTargetID string) ([]string, err
 			return nil, errors.New("default plugin target agent ID is unavailable")
 		}
 		targetIDs = []string{defaultTargetID}
+	}
+	return targetIDs, nil
+}
+
+func pluginExplicitTargetIDs(raw json.RawMessage) ([]string, error) {
+	var targetIDs []string
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed != "" && trimmed != "null" {
+		if err := json.Unmarshal(raw, &targetIDs); err != nil {
+			return nil, errors.New("plugin targets must be an array of agent IDs")
+		}
 	}
 	return targetIDs, nil
 }
@@ -4311,14 +4330,10 @@ func pluginSummary(row storage.InstalledPluginRow) PluginSummary {
 }
 
 func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storage.PluginInstanceRow) ([]PluginInstanceDetail, error) {
-	defaultTargetID, err := s.defaultPluginTargetID(ctx)
-	if err != nil {
-		return nil, err
-	}
 	result := make([]PluginInstanceDetail, 0, len(rows))
 	schemas := make(map[string]map[string]any)
 	for _, row := range rows {
-		targets, err := pluginTargetIDs(json.RawMessage(row.TargetJSON), defaultTargetID)
+		targets, err := pluginExplicitTargetIDs(json.RawMessage(row.TargetJSON))
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
@@ -4370,7 +4385,7 @@ func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storag
 			}
 		}
 		if strings.TrimSpace(row.PendingTargetJSON) != "" || strings.TrimSpace(row.PendingResourceGroupID) != "" {
-			detail.PendingTargets, err = pluginTargetIDs(json.RawMessage(row.PendingTargetJSON), defaultTargetID)
+			detail.PendingTargets, err = pluginExplicitTargetIDs(json.RawMessage(row.PendingTargetJSON))
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}
@@ -4497,10 +4512,6 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 	if err != nil {
 		return nil, err
 	}
-	defaultTargetID, err := s.defaultPluginTargetID(ctx)
-	if err != nil {
-		return nil, err
-	}
 	operationsByID := make(map[string]storage.PluginOperationRow, len(operations))
 	runtimeStatuses := make(map[string]storage.PluginAgentRuntimeStatusRow)
 	for _, operation := range operations {
@@ -4521,7 +4532,7 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 		if err != nil {
 			return nil, err
 		}
-		activeTargets, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON), defaultTargetID)
+		activeTargets, err := pluginExplicitTargetIDs(json.RawMessage(instance.TargetJSON))
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
@@ -4536,7 +4547,7 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 		}
 		statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, runtimeStatuses, installed, instance, activeTargets, "active", activeOperationID, summary)
 		if pendingScope {
-			pendingTargets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), defaultTargetID)
+			pendingTargets, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}
