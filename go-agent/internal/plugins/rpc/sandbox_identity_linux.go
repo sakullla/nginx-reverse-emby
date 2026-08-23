@@ -4,6 +4,7 @@ package rpc
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"io/fs"
@@ -16,33 +17,71 @@ import (
 
 var attemptSandboxUIDs = struct {
 	sync.Mutex
-	active map[int]struct{}
-}{active: make(map[int]struct{})}
+	active map[int]sandboxUIDLease
+}{active: make(map[int]sandboxUIDLease)}
 
-func allocateAttemptSandboxUID() (int, func(), error) {
+type sandboxUIDLease struct {
+	identity string
+	refs     int
+}
+
+func allocateAttemptSandboxUID(identities ...string) (int, func(), error) {
 	if os.Geteuid() != 0 {
 		return 0, func() {}, nil
 	}
+	identity := ""
+	if len(identities) > 0 {
+		identity = strings.TrimSpace(identities[0])
+	}
 	for attempt := 0; attempt < 128; attempt++ {
-		var value [4]byte
-		if _, err := rand.Read(value[:]); err != nil {
-			return 0, nil, err
+		var value uint32
+		if identity != "" {
+			digest := sha256.Sum256([]byte(identity + "\x00" + strconv.Itoa(attempt)))
+			value = binary.LittleEndian.Uint32(digest[:4])
+		} else {
+			var random [4]byte
+			if _, err := rand.Read(random[:]); err != nil {
+				return 0, nil, err
+			}
+			value = binary.LittleEndian.Uint32(random[:])
 		}
-		uid := 100000 + int(binary.LittleEndian.Uint32(value[:])%2000000000)
+		uid := 100000 + int(value%2000000000)
 		attemptSandboxUIDs.Lock()
-		_, allocated := attemptSandboxUIDs.active[uid]
-		inUse := linuxUIDInUse(uid)
-		if !allocated && !inUse {
-			attemptSandboxUIDs.active[uid] = struct{}{}
+		lease, allocated := attemptSandboxUIDs.active[uid]
+		if allocated && identity != "" && lease.identity == identity {
+			lease.refs++
+			attemptSandboxUIDs.active[uid] = lease
 			attemptSandboxUIDs.Unlock()
 			var once sync.Once
 			return uid, func() {
-				once.Do(func() { attemptSandboxUIDs.Lock(); delete(attemptSandboxUIDs.active, uid); attemptSandboxUIDs.Unlock() })
+				once.Do(func() { releaseAttemptSandboxUID(uid, identity) })
 			}, nil
+		}
+		inUse := linuxUIDInUse(uid)
+		if !allocated && !inUse {
+			attemptSandboxUIDs.active[uid] = sandboxUIDLease{identity: identity, refs: 1}
+			attemptSandboxUIDs.Unlock()
+			var once sync.Once
+			return uid, func() { once.Do(func() { releaseAttemptSandboxUID(uid, identity) }) }, nil
 		}
 		attemptSandboxUIDs.Unlock()
 	}
 	return 0, nil, errors.New("allocate collision-free plugin sandbox uid")
+}
+
+func releaseAttemptSandboxUID(uid int, identity string) {
+	attemptSandboxUIDs.Lock()
+	defer attemptSandboxUIDs.Unlock()
+	lease, ok := attemptSandboxUIDs.active[uid]
+	if !ok || lease.identity != identity {
+		return
+	}
+	lease.refs--
+	if lease.refs <= 0 {
+		delete(attemptSandboxUIDs.active, uid)
+		return
+	}
+	attemptSandboxUIDs.active[uid] = lease
 }
 
 func linuxUIDInUse(uid int) bool {

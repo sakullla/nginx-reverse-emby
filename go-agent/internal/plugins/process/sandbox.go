@@ -22,6 +22,16 @@ type Security struct {
 	EndpointDirectory, CredentialDirectory, GuestEndpoint string
 	ArtifactDigest, Generation, CookieDigest              string
 	SandboxUID                                            int
+	DirectoryBindings                                     []DirectoryBinding
+}
+
+// DirectoryBinding is a Host-authorized directory exposed at the same
+// absolute location inside an isolated plugin process. The Host opens the
+// source before launch so path replacement cannot retarget the mount.
+type DirectoryBinding struct {
+	HostPath  string
+	GuestPath string
+	ReadOnly  bool
 }
 
 type SandboxDecision struct {

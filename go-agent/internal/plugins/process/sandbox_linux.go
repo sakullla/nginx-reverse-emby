@@ -48,33 +48,41 @@ type linuxFDIdentity struct {
 	Size   int64  `json:"size"`
 }
 
+type linuxDirectoryBinding struct {
+	FD        int             `json:"fd"`
+	Identity  linuxFDIdentity `json:"identity"`
+	GuestPath string          `json:"guest_path"`
+	ReadOnly  bool            `json:"read_only"`
+}
+
 type linuxLaunchProtocol struct {
-	Version                int               `json:"version"`
-	ParentPID              int               `json:"parent_pid"`
-	Generation             string            `json:"generation"`
-	ArtifactDigest         string            `json:"artifact_digest"`
-	LauncherDigest         string            `json:"launcher_digest"`
-	CookieDigest           string            `json:"cookie_digest,omitempty"`
-	GenerationCookieDigest string            `json:"generation_cookie_digest,omitempty"`
-	Artifact               linuxFDIdentity   `json:"artifact"`
-	Launcher               linuxFDIdentity   `json:"launcher"`
-	Endpoint               linuxFDIdentity   `json:"endpoint,omitempty"`
-	Credential             linuxFDIdentity   `json:"credential,omitempty"`
-	Temp                   linuxFDIdentity   `json:"temp"`
-	ArtifactFD             int               `json:"artifact_fd"`
-	LauncherFD             int               `json:"launcher_fd"`
-	EndpointFD             int               `json:"endpoint_fd,omitempty"`
-	CredentialFD           int               `json:"credential_fd,omitempty"`
-	TempFD                 int               `json:"temp_fd"`
-	Arguments              []string          `json:"arguments,omitempty"`
-	Environment            []string          `json:"environment"`
-	Budget                 Budget            `json:"budget"`
-	EndpointRequired       bool              `json:"endpoint_required,omitempty"`
-	Namespaces             bool              `json:"namespaces"`
-	SandboxRoot            string            `json:"sandbox_root,omitempty"`
-	SandboxUID             int               `json:"sandbox_uid,omitempty"`
-	ParentNamespaces       map[string]string `json:"parent_namespaces,omitempty"`
-	HardRlimits            bool              `json:"hard_rlimits,omitempty"`
+	Version                int                     `json:"version"`
+	ParentPID              int                     `json:"parent_pid"`
+	Generation             string                  `json:"generation"`
+	ArtifactDigest         string                  `json:"artifact_digest"`
+	LauncherDigest         string                  `json:"launcher_digest"`
+	CookieDigest           string                  `json:"cookie_digest,omitempty"`
+	GenerationCookieDigest string                  `json:"generation_cookie_digest,omitempty"`
+	Artifact               linuxFDIdentity         `json:"artifact"`
+	Launcher               linuxFDIdentity         `json:"launcher"`
+	Endpoint               linuxFDIdentity         `json:"endpoint,omitempty"`
+	Credential             linuxFDIdentity         `json:"credential,omitempty"`
+	Temp                   linuxFDIdentity         `json:"temp"`
+	ArtifactFD             int                     `json:"artifact_fd"`
+	LauncherFD             int                     `json:"launcher_fd"`
+	EndpointFD             int                     `json:"endpoint_fd,omitempty"`
+	CredentialFD           int                     `json:"credential_fd,omitempty"`
+	TempFD                 int                     `json:"temp_fd"`
+	Directories            []linuxDirectoryBinding `json:"directories,omitempty"`
+	Arguments              []string                `json:"arguments,omitempty"`
+	Environment            []string                `json:"environment"`
+	Budget                 Budget                  `json:"budget"`
+	EndpointRequired       bool                    `json:"endpoint_required,omitempty"`
+	Namespaces             bool                    `json:"namespaces"`
+	SandboxRoot            string                  `json:"sandbox_root,omitempty"`
+	SandboxUID             int                     `json:"sandbox_uid,omitempty"`
+	ParentNamespaces       map[string]string       `json:"parent_namespaces,omitempty"`
+	HardRlimits            bool                    `json:"hard_rlimits,omitempty"`
 }
 
 func init() {
@@ -162,6 +170,14 @@ func (linuxSandbox) Validate(security Security) error {
 	if security.CredentialDirectory != "" && !validSHA256(security.CookieDigest) {
 		return errors.New("linux plugin isolation requires a cookie digest binding")
 	}
+	if len(security.DirectoryBindings) > 0 && !security.Requirement.Filesystem() {
+		return errors.New("plugin directory bindings require an authorized storage permission")
+	}
+	for _, binding := range security.DirectoryBindings {
+		if err := validateDirectoryBinding(binding); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -233,6 +249,17 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 		SandboxUID:     sandboxUID,
 	}
 	nextFD := 4
+	for _, binding := range security.DirectoryBindings {
+		directory, identity, openErr := openLinuxDirectoryBinding(binding, sandboxUID)
+		if openErr != nil {
+			return fail(openErr)
+		}
+		files = append(files, directory)
+		protocol.Directories = append(protocol.Directories, linuxDirectoryBinding{
+			FD: nextFD, Identity: identity, GuestPath: binding.GuestPath, ReadOnly: binding.ReadOnly,
+		})
+		nextFD++
+	}
 	var endpoint *os.File
 	if security.EndpointDirectory != "" {
 		var openErr error
@@ -446,7 +473,7 @@ func runLinuxLauncherChild(protocolFD int, final bool) error {
 	if protocol.Version != linuxLauncherVersion || protocol.ParentPID <= 0 || strings.TrimSpace(protocol.Generation) == "" || !validSHA256(protocol.ArtifactDigest) || !validSHA256(protocol.LauncherDigest) {
 		return errors.New("launcher protocol identity is invalid")
 	}
-	if protocol.ArtifactFD != 3 || protocol.TempFD < 4 || protocol.LauncherFD < 4 || !distinctLinuxFDs(protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD, protocolFD) {
+	if protocol.ArtifactFD != 3 || protocol.TempFD < 4 || protocol.LauncherFD < 4 || !distinctLinuxProtocolFDs(protocol, protocolFD) {
 		return errors.New("launcher protocol descriptor binding is invalid")
 	}
 	launcher := os.NewFile(uintptr(protocol.LauncherFD), "plugin-host-launcher")
@@ -493,6 +520,14 @@ func runLinuxLauncherChild(protocolFD int, final bool) error {
 	}
 	if err := verifyLinuxDirectoryFD(protocol.TempFD, protocol.Temp); err != nil {
 		return fmt.Errorf("temporary descriptor: %w", err)
+	}
+	for _, binding := range protocol.Directories {
+		if err := verifyLinuxDirectoryFD(binding.FD, binding.Identity); err != nil {
+			return fmt.Errorf("storage directory descriptor: %w", err)
+		}
+		if err := validateGuestDirectoryPath(binding.GuestPath); err != nil {
+			return err
+		}
 	}
 	if err := validateLinuxBudget(protocol.Budget); err != nil {
 		return err
@@ -586,6 +621,89 @@ func distinctLinuxFDs(values ...int) bool {
 		seen[value] = struct{}{}
 	}
 	return true
+}
+
+func distinctLinuxProtocolFDs(protocol linuxLaunchProtocol, protocolFD int) bool {
+	values := []int{protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD, protocolFD}
+	for _, binding := range protocol.Directories {
+		values = append(values, binding.FD)
+	}
+	return distinctLinuxFDs(values...)
+}
+
+func validateDirectoryBinding(binding DirectoryBinding) error {
+	if err := validateGuestDirectoryPath(binding.GuestPath); err != nil {
+		return err
+	}
+	host := filepath.Clean(strings.TrimSpace(binding.HostPath))
+	if !filepath.IsAbs(host) || host == string(filepath.Separator) || host != filepath.Clean(binding.GuestPath) {
+		return errors.New("plugin storage binding must use the same non-root absolute Host and guest path")
+	}
+	return nil
+}
+
+func validateGuestDirectoryPath(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value || value == string(filepath.Separator) || strings.ContainsRune(value, '\x00') {
+		return errors.New("plugin storage guest path must be a canonical non-root absolute path")
+	}
+	for _, protected := range []string{"/dev", "/proc", "/sys", "/run/nre-plugin", "/run/nre-plugin-credentials", "/plugin"} {
+		if value == protected || strings.HasPrefix(value, protected+"/") {
+			return errors.New("plugin storage guest path overlaps a protected sandbox path")
+		}
+	}
+	return nil
+}
+
+func openLinuxDirectoryBinding(binding DirectoryBinding, sandboxUID int) (*os.File, linuxFDIdentity, error) {
+	if err := validateDirectoryBinding(binding); err != nil {
+		return nil, linuxFDIdentity{}, err
+	}
+	path := filepath.Clean(binding.HostPath)
+	_, statErr := os.Lstat(path)
+	created := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !created {
+		return nil, linuxFDIdentity{}, fmt.Errorf("inspect plugin storage directory: %w", statErr)
+	}
+	if created {
+		if binding.ReadOnly {
+			return nil, linuxFDIdentity{}, errors.New("read-only plugin storage directory does not exist")
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return nil, linuxFDIdentity{}, fmt.Errorf("create plugin storage directory: %w", err)
+		}
+		if sandboxUID != 0 {
+			if err := os.Chown(path, sandboxUID, sandboxUID); err != nil {
+				return nil, linuxFDIdentity{}, fmt.Errorf("own plugin storage directory: %w", err)
+			}
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || filepath.Clean(resolved) != path {
+		return nil, linuxFDIdentity{}, errors.New("plugin storage directory must not contain symbolic links")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return nil, linuxFDIdentity{}, errors.New("plugin storage binding is not a directory")
+	}
+	if !binding.ReadOnly && sandboxUID != 0 {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		writable := ok && int(stat.Uid) == sandboxUID && info.Mode().Perm()&0o200 != 0 || info.Mode().Perm()&0o002 != 0
+		if !writable {
+			return nil, linuxFDIdentity{}, errors.New("plugin storage directory is not writable by the stable plugin identity")
+		}
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, linuxFDIdentity{}, fmt.Errorf("open plugin storage directory: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), "plugin-storage-directory")
+	identity, err := linuxFileIdentity(file)
+	if err != nil || identity.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = file.Close()
+		return nil, linuxFDIdentity{}, errors.New("plugin storage descriptor is not a directory")
+	}
+	return file, identity, nil
 }
 
 func setLinuxEnvironment(environment []string, key, value string) []string {

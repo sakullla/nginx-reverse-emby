@@ -45,10 +45,18 @@ type attemptSecurityOps struct {
 }
 
 func provisionAttemptSecurity(runtimeDirectory string, dial DialConfig) (attemptSecurity, error) {
-	return provisionAttemptSecurityWithOps(runtimeDirectory, dial, attemptSecurityOps{})
+	return provisionAttemptSecurityForIdentity(runtimeDirectory, dial, "")
 }
 
 func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, ops attemptSecurityOps) (attemptSecurity, error) {
+	return provisionAttemptSecurityForIdentityWithOps(runtimeDirectory, dial, "", ops)
+}
+
+func provisionAttemptSecurityForIdentity(runtimeDirectory string, dial DialConfig, identity string) (attemptSecurity, error) {
+	return provisionAttemptSecurityForIdentityWithOps(runtimeDirectory, dial, identity, attemptSecurityOps{})
+}
+
+func provisionAttemptSecurityForIdentityWithOps(runtimeDirectory string, dial DialConfig, identity string, ops attemptSecurityOps) (attemptSecurity, error) {
 	runtimeDirectory, err := filepath.Abs(runtimeDirectory)
 	if err != nil || strings.TrimSpace(runtimeDirectory) == "" {
 		return attemptSecurity{}, errors.New("RPC plugin attempt requires a managed runtime directory")
@@ -61,7 +69,7 @@ func provisionAttemptSecurityWithOps(runtimeDirectory string, dial DialConfig, o
 	if cleanup == nil {
 		cleanup = cleanupAttemptDirectory
 	}
-	sandboxUID, releaseSandboxUID, err := allocateAttemptSandboxUID()
+	sandboxUID, releaseSandboxUID, err := allocateAttemptSandboxUID(identity)
 	if err != nil {
 		_ = cleanup(runtimeDirectory, root)
 		return attemptSecurity{}, err

@@ -136,6 +136,8 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 }
 
 func (r SandboxRequirement) Budget() Budget { return r.budget }
+
+func (r SandboxRequirement) Filesystem() bool { return r.filesystem }
 func (r SandboxRequirement) HighRisk() bool {
 	return r.privileged || r.networkBound || r.budget.Processes > 0 || r.budget.Files > 0
 }

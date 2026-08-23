@@ -560,6 +560,10 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 	if err != nil {
 		return HostCandidate{}, err
 	}
+	directoryBindings, err := pluginStorageDirectoryBindings(generation.Grants, generation.Config)
+	if err != nil {
+		return HostCandidate{}, err
+	}
 	deadline := time.Duration(generation.ResourceBudget.TimeoutMS) * time.Millisecond
 	grace := deadline
 	if grace < time.Second {
@@ -577,7 +581,8 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 		Requirement: requirement, Scopes: scopes, SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
 		Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), generation.HTTPBackendProviders...),
-		Process:              pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute},
+		Process: pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute,
+			Security: pluginprocess.Security{DirectoryBindings: directoryBindings}},
 		Dial: DialConfig{Network: generationEndpointNetwork(), Deadline: deadline,
 			UIRoute:              hasUIRoute(generation.ExtensionPoints),
 			HTTPBackendProviders: httpBackendProviderIdentities(generation.InstanceID, generationID, generation.HTTPBackendProviders)},

@@ -589,11 +589,17 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 
 func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt), activate bool) (*hostAttempt, error) {
 	redeemer := h.secretRedeemer()
-	provision := h.provision
-	if provision == nil {
-		provision = provisionAttemptSecurity
+	var security attemptSecurity
+	var err error
+	if h.provision != nil {
+		security, err = h.provision(filepath.Dir(candidate.Process.Executable), candidate.Dial)
+	} else {
+		identity := ""
+		if len(candidate.Process.Security.DirectoryBindings) > 0 {
+			identity = candidate.InstanceID
+		}
+		security, err = provisionAttemptSecurityForIdentity(filepath.Dir(candidate.Process.Executable), candidate.Dial, identity)
 	}
-	security, err := provision(filepath.Dir(candidate.Process.Executable), candidate.Dial)
 	var attempt *hostAttempt
 	if security.cleanup != nil {
 		attempt = &hostAttempt{cleanup: security.cleanup}

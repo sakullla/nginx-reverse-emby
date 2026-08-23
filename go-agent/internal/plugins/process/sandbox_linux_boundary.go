@@ -168,6 +168,15 @@ func prepareLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 		return err
 	}
 	defer tempMount.Close()
+	directoryMounts := make([]*os.File, 0, len(protocol.Directories))
+	for _, binding := range protocol.Directories {
+		mount, err := openMount(binding.FD, binding.Identity, "plugin storage directory")
+		if err != nil {
+			return err
+		}
+		directoryMounts = append(directoryMounts, mount)
+		defer mount.Close()
+	}
 	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
 		return fmt.Errorf("create plugin mount namespace: %w", err)
 	}
@@ -228,6 +237,18 @@ func prepareLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 	if err != nil || mountedTempIdentity != protocol.Temp {
 		return errors.New("mounted plugin temporary directory identity mismatch")
 	}
+	for index, binding := range protocol.Directories {
+		target := filepath.Join(protocol.SandboxRoot, strings.TrimPrefix(binding.GuestPath, "/"))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := attachLinuxSandboxMount(int(directoryMounts[index].Fd()), target, true, binding.ReadOnly); err != nil {
+			return fmt.Errorf("attach plugin storage directory: %w", err)
+		}
+		if mounted, err := linuxPathIdentity(target); err != nil || mounted != binding.Identity {
+			return errors.New("mounted plugin storage directory identity mismatch")
+		}
+	}
 	for _, binding := range linuxReadOnlySystemBindings(protocol.Budget.Network) {
 		target := filepath.Join(protocol.SandboxRoot, strings.TrimPrefix(binding, "/"))
 		if err := bindLinuxSandboxPath(binding, target, isLinuxDirectory(binding), true); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -275,6 +296,12 @@ func enterLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 	if mounted, err := linuxPathIdentity(filepath.Join(protocol.SandboxRoot, "tmp")); err != nil || mounted != protocol.Temp {
 		return errors.New("final mounted plugin temporary directory identity mismatch")
 	}
+	for _, binding := range protocol.Directories {
+		target := filepath.Join(protocol.SandboxRoot, strings.TrimPrefix(binding.GuestPath, "/"))
+		if mounted, err := linuxPathIdentity(target); err != nil || mounted != binding.Identity {
+			return errors.New("final mounted plugin storage directory identity mismatch")
+		}
+	}
 	procRoot := filepath.Join(protocol.SandboxRoot, "proc")
 	if err := unix.Mount("proc", procRoot, "proc", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "hidepid=2"); err != nil {
 		return fmt.Errorf("mount final plugin proc: %w", err)
@@ -288,7 +315,11 @@ func enterLinuxMinimalRoot(protocol linuxLaunchProtocol) error {
 	if err := os.Chdir("/plugin"); err != nil {
 		return err
 	}
-	for _, fd := range []int{protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD} {
+	fds := []int{protocol.ArtifactFD, protocol.EndpointFD, protocol.CredentialFD, protocol.TempFD, protocol.LauncherFD}
+	for _, binding := range protocol.Directories {
+		fds = append(fds, binding.FD)
+	}
+	for _, fd := range fds {
 		if fd != 0 {
 			unix.CloseOnExec(fd)
 		}
@@ -610,6 +641,15 @@ func applyLinuxLandlock(protocol linuxLaunchProtocol) error {
 	tempAllowed := handled &^ uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE|unix.LANDLOCK_ACCESS_FS_MAKE_CHAR|unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK)
 	if err := addLinuxLandlockRule(int(ruleset), protocol.TempFD, tempAllowed); err != nil {
 		return err
+	}
+	for _, binding := range protocol.Directories {
+		allowed := readDirectory
+		if !binding.ReadOnly {
+			allowed = handled &^ uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE|unix.LANDLOCK_ACCESS_FS_MAKE_CHAR|unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK)
+		}
+		if err := addLinuxLandlockRule(int(ruleset), binding.FD, allowed); err != nil {
+			return err
+		}
 	}
 	for _, device := range []struct {
 		path    string

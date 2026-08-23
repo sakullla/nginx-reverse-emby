@@ -2,5 +2,5 @@
 
 package rpc
 
-func allocateAttemptSandboxUID() (int, func(), error) { return 0, func() {}, nil }
-func ownAttemptSandboxPaths(string, int) error        { return nil }
+func allocateAttemptSandboxUID(...string) (int, func(), error) { return 0, func() {}, nil }
+func ownAttemptSandboxPaths(string, int) error                 { return nil }
