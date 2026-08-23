@@ -69,6 +69,12 @@ func HandleChannelTask(ctx context.Context, manager ChannelManager, task TaskMes
 	if manager == nil {
 		return nil, errors.New("channel session manager is unavailable")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch strings.TrimSpace(task.TaskType) {
 	case TaskTypeChannelEnsure:
 		var spec ChannelSessionSpec

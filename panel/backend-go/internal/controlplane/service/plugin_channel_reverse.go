@@ -60,8 +60,10 @@ func (manager *PluginCapabilityManager) pluginHostChannelReverse(ctx context.Con
 	switch input.Action {
 	case pluginsdk.ChannelReverseActionEnsure:
 		return manager.pluginHostChannelEnsure(ctx, sessions, input)
-	case pluginsdk.ChannelReverseActionStatus, pluginsdk.ChannelReverseActionTeardown:
+	case pluginsdk.ChannelReverseActionStatus:
 		return manager.pluginHostChannelLookup(ctx, sessions, input)
+	case pluginsdk.ChannelReverseActionTeardown:
+		return manager.pluginHostChannelTeardown(ctx, sessions, input)
 	default:
 		return nil, errPluginHostInvalid
 	}
@@ -164,18 +166,67 @@ func (manager *PluginCapabilityManager) pluginHostChannelLookup(ctx context.Cont
 	if err != nil {
 		return nil, err
 	}
-	taskType := TaskTypeChannelStatus
-	if input.Action == pluginsdk.ChannelReverseActionTeardown {
-		taskType = TaskTypeChannelTeardown
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	lookupCtx, cancelLookup := context.WithCancel(ctx)
+	defer cancelLookup()
+	payload := map[string]any{"session_id": sessionID}
+	type endResult struct {
+		role   string
+		status map[string]any
+		err    error
+	}
+	results := make(chan endResult, 2)
+	query := func(role, agentID string) {
+		status, dispatchErr := sessions.DispatchAgentTask(lookupCtx, agentID, TaskTypeChannelStatus, payload)
+		if dispatchErr != nil {
+			if errors.Is(dispatchErr, errTaskSessionUnavailable) {
+				dispatchErr = errPluginHostUnavailable
+			}
+			results <- endResult{role: role, err: dispatchErr}
+			return
+		}
+		results <- endResult{role: role, status: status}
+	}
+	go query("entry", entryID)
+	go query("exit", exitID)
+	var entryStatus, exitStatus map[string]any
+	for remaining := 2; remaining > 0; remaining-- {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case got := <-results:
+			if got.err != nil {
+				return nil, got.err
+			}
+			if got.role == "entry" {
+				entryStatus = got.status
+			} else {
+				exitStatus = got.status
+			}
+		}
+	}
+	return pluginHostChannelCombinedResult(sessionID, entryStatus, exitStatus), nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostChannelTeardown(ctx context.Context, sessions pluginHostChannelSessions, input pluginsdk.ChannelReverseRequest) (map[string]any, error) {
+	sessionID := strings.TrimSpace(input.SessionRef)
+	entryID, exitID, err := manager.pluginHostChannelSessionOwners(ctx, sessionID)
+	if err != nil {
+		return nil, err
 	}
 	payload := map[string]any{"session_id": sessionID}
-	if _, err := sessions.DispatchAgentTask(ctx, entryID, taskType, payload); err != nil {
+	if _, err := sessions.DispatchAgentTask(ctx, entryID, TaskTypeChannelTeardown, payload); err != nil {
 		if errors.Is(err, errTaskSessionUnavailable) {
 			return nil, errPluginHostUnavailable
 		}
 		return nil, err
 	}
-	exitStatus, err := sessions.DispatchAgentTask(ctx, exitID, taskType, payload)
+	exitStatus, err := sessions.DispatchAgentTask(ctx, exitID, TaskTypeChannelTeardown, payload)
 	if err != nil {
 		if errors.Is(err, errTaskSessionUnavailable) {
 			return nil, errPluginHostUnavailable
@@ -384,6 +435,33 @@ func pluginHostChannelState(result map[string]any) string {
 	return strings.TrimSpace(state)
 }
 
+func pluginHostChannelCombinedResult(sessionID string, entry, exit map[string]any) map[string]any {
+	entryState := pluginHostChannelState(entry)
+	exitState := pluginHostChannelState(exit)
+	state := pluginsdk.ChannelReverseStateOffline
+	if entryState == pluginsdk.ChannelReverseStateOnline && exitState == pluginsdk.ChannelReverseStateOnline {
+		state = pluginsdk.ChannelReverseStateOnline
+	}
+	output := map[string]any{
+		"session_ref": sessionID,
+		"state":       state,
+	}
+	if host, port, err := pluginHostChannelHostPort(entry["bridge_address"]); err == nil {
+		output["bridge_host"] = host
+		output["bridge_port"] = port
+	}
+	if state != pluginsdk.ChannelReverseStateOnline {
+		lastError := pluginHostChannelLastError(entry)
+		if lastError == "" || entryState == pluginsdk.ChannelReverseStateOnline {
+			lastError = pluginHostChannelLastError(exit)
+		}
+		if lastError != "" {
+			output["last_error"] = lastError
+		}
+	}
+	return output
+}
+
 func pluginHostChannelResult(sessionID string, result map[string]any) map[string]any {
 	state := pluginHostChannelState(result)
 	if state != pluginsdk.ChannelReverseStateOnline {
@@ -393,12 +471,18 @@ func pluginHostChannelResult(sessionID string, result map[string]any) map[string
 		"session_ref": sessionID,
 		"state":       state,
 	}
-	if result != nil {
-		if lastError, ok := result["last_error"].(string); ok && strings.TrimSpace(lastError) != "" {
-			output["last_error"] = strings.TrimSpace(lastError)
-		}
+	if lastError := pluginHostChannelLastError(result); lastError != "" {
+		output["last_error"] = lastError
 	}
 	return output
+}
+
+func pluginHostChannelLastError(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	lastError, _ := result["last_error"].(string)
+	return strings.TrimSpace(lastError)
 }
 
 // pluginHostChannelSessionID mints a stable, owner-encoding session

@@ -152,10 +152,17 @@ func (m *Manager) Teardown(_ context.Context, sessionID string) error {
 	return nil
 }
 
-// Status reports the live state of one session.
-func (m *Manager) Status(sessionID string) (SessionStatus, error) {
+// Status reports the live state of one session. A canceled or expired caller
+// context fails the lookup instead of returning a guessed online snapshot.
+func (m *Manager) Status(ctx context.Context, sessionID string) (SessionStatus, error) {
 	if m == nil {
 		return SessionStatus{}, errors.New("channel manager is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return SessionStatus{}, err
 	}
 	if err := validateSessionID(sessionID); err != nil {
 		return SessionStatus{}, err
@@ -163,6 +170,9 @@ func (m *Manager) Status(sessionID string) (SessionStatus, error) {
 	m.mu.Lock()
 	existing, ok := m.sessions[sessionID]
 	m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return SessionStatus{}, err
+	}
 	if !ok {
 		return SessionStatus{SessionID: sessionID, State: StateOffline, LastError: "session is not tracked"}, nil
 	}

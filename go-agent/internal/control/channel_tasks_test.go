@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -137,6 +138,68 @@ func TestHandleChannelTaskTeardownAndStatus(t *testing.T) {
 	}); err == nil {
 		t.Fatal("status without session_id should fail")
 	}
+}
+
+func TestHandleChannelTaskStatusStopsOnCancel(t *testing.T) {
+	manager := &blockingStatusChannelManager{started: make(chan struct{})}
+	canceled, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := HandleChannelTask(canceled, manager, TaskMessage{
+			TaskID:     "task-status-cancel",
+			TaskType:   TaskTypeChannelStatus,
+			RawPayload: map[string]any{"session_id": "session-1"},
+		})
+		done <- err
+	}()
+	select {
+	case <-manager.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("status task did not start waiting")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("status cancel error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("status wait did not stop after cancel")
+	}
+
+	deadline, cancelDeadline := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelDeadline()
+	if _, err := HandleChannelTask(deadline, &blockingStatusChannelManager{}, TaskMessage{
+		TaskID:     "task-status-deadline",
+		TaskType:   TaskTypeChannelStatus,
+		RawPayload: map[string]any{"session_id": "session-1"},
+	}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("status deadline error = %v", err)
+	}
+}
+
+type blockingStatusChannelManager struct {
+	started chan struct{}
+}
+
+func (b *blockingStatusChannelManager) EnsureChannelSession(context.Context, ChannelSessionSpec) (ChannelSessionStatus, error) {
+	return ChannelSessionStatus{}, errors.New("ensure is unused")
+}
+
+func (b *blockingStatusChannelManager) TeardownChannelSession(context.Context, string) error {
+	return errors.New("teardown is unused")
+}
+
+func (b *blockingStatusChannelManager) ChannelSessionStatus(ctx context.Context, _ string) (ChannelSessionStatus, error) {
+	if b != nil && b.started != nil {
+		select {
+		case <-b.started:
+		default:
+			close(b.started)
+		}
+	}
+	<-ctx.Done()
+	return ChannelSessionStatus{}, ctx.Err()
 }
 
 func TestHandleChannelTaskUnsupportedType(t *testing.T) {

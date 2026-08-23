@@ -33,7 +33,7 @@ func (a channelSessionManager) TeardownChannelSession(ctx context.Context, sessi
 }
 
 func (a channelSessionManager) ChannelSessionStatus(ctx context.Context, sessionID string) (control.ChannelSessionStatus, error) {
-	status, err := a.manager.Status(sessionID)
+	status, err := a.manager.Status(ctx, sessionID)
 	if err != nil {
 		return control.ChannelSessionStatus{}, err
 	}

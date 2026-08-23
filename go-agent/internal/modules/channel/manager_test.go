@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -143,7 +144,7 @@ func waitForStatus(t *testing.T, manager *Manager, sessionID, want string) Sessi
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		status, err := manager.Status(sessionID)
+		status, err := manager.Status(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("status: %v", err)
 		}
@@ -152,7 +153,7 @@ func waitForStatus(t *testing.T, manager *Manager, sessionID, want string) Sessi
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	status, _ := manager.Status(sessionID)
+	status, _ := manager.Status(context.Background(), sessionID)
 	t.Fatalf("session %s did not reach state %q, last %+v", sessionID, want, status)
 	return SessionStatus{}
 }
@@ -318,7 +319,7 @@ func TestChannelConcurrentEnsureKeepsSingleRuntime(t *testing.T) {
 	}
 	waitForStatus(t, rig.entry, "session-1", StateOffline)
 	time.Sleep(500 * time.Millisecond)
-	status, err := rig.entry.Status("session-1")
+	status, err := rig.entry.Status(context.Background(), "session-1")
 	if err != nil {
 		t.Fatalf("entry status: %v", err)
 	}
@@ -408,7 +409,7 @@ func TestChannelRejectsNonMTLSHandshake(t *testing.T) {
 		expectTLSAlert(t, foreignConn, "handshake with foreign credential")
 	}
 
-	status, err := rig.entry.Status("session-1")
+	status, err := rig.entry.Status(context.Background(), "session-1")
 	if err != nil {
 		t.Fatalf("entry status: %v", err)
 	}
@@ -473,7 +474,7 @@ func TestChannelEnsureIsIdempotentAndTeardownReleases(t *testing.T) {
 	if err := rig.exit.Teardown(context.Background(), "session-1"); err != nil {
 		t.Fatalf("exit teardown: %v", err)
 	}
-	status, err := rig.exit.Status("session-1")
+	status, err := rig.exit.Status(context.Background(), "session-1")
 	if err != nil {
 		t.Fatalf("exit status: %v", err)
 	}
@@ -541,4 +542,45 @@ func freeTCPPort(t *testing.T) int {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func TestChannelStatusObservesCallerCancel(t *testing.T) {
+	ca := newTestCA(t, "domain-1")
+	pki := newTestTunnelPKI(t, ca)
+	pki.issueAgent("entry-agent")
+	manager, err := NewManager(testManagerConfig("entry-agent", pki))
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.Status(canceled, "session-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled status error = %v", err)
+	}
+
+	deadline, cancelDeadline := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelDeadline()
+	<-deadline.Done()
+	if _, err := manager.Status(deadline, "session-1"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline status error = %v", err)
+	}
+
+	if _, err := manager.Ensure(context.Background(), SessionSpec{
+		SessionID: "session-1", Role: RoleEntry, Protocol: ProtocolTCP,
+		EntryAgentID: "entry-agent", ExitAgentID: "exit-agent",
+	}); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	status, err := manager.Status(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("live status: %v", err)
+	}
+	if status.SessionID != "session-1" || status.State == "" {
+		t.Fatalf("live status = %+v", status)
+	}
+	if _, err := manager.Status(canceled, "session-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled live status error = %v", err)
+	}
 }

@@ -62,6 +62,21 @@ func TestPluginHostMutationsRequireDurableOperationID(t *testing.T) {
 	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimePluginCall}) {
 		t.Fatal("plugin.call unexpectedly required a mutation operation id")
 	}
+	statusPayload, _ := json.Marshal(pluginsdk.ChannelReverseRequest{Action: pluginsdk.ChannelReverseActionStatus, SessionRef: "channel/entry-a/exit-b"})
+	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeChannelReverse, Payload: statusPayload}) {
+		t.Fatal("channel.reverse status unexpectedly required a mutation operation id")
+	}
+	ensurePayload, _ := json.Marshal(pluginsdk.ChannelReverseRequest{
+		Action: pluginsdk.ChannelReverseActionEnsure, EntryAgentID: "entry-a", ExitAgentID: "exit-b",
+		Protocol: pluginsdk.L4RuleProtocolTCP, BackendHost: "127.0.0.1", BackendPort: 9000,
+	})
+	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeChannelReverse, Payload: ensurePayload}) {
+		t.Fatal("channel.reverse ensure did not require a durable operation id")
+	}
+	teardownPayload, _ := json.Marshal(pluginsdk.ChannelReverseRequest{Action: pluginsdk.ChannelReverseActionTeardown, SessionRef: "channel/entry-a/exit-b"})
+	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeChannelReverse, Payload: teardownPayload}) {
+		t.Fatal("channel.reverse teardown did not require a durable operation id")
+	}
 }
 
 func TestPluginHostSecretRevealPreservesMaterialUntilResponseEncoding(t *testing.T) {
