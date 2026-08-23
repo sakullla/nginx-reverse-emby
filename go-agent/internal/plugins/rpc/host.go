@@ -8,10 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -479,7 +477,7 @@ func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedIn
 	if err != nil {
 		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 	}
-	if err := response.Validate(); err != nil {
+	if err := validateLifecycleSuccess(response); err != nil {
 		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 	}
 	if err := processAttemptError(attempt.handle); err != nil {
@@ -677,7 +675,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	if err != nil {
 		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
 	}
-	if err := prepared.Validate(); err != nil {
+	if err := validateLifecycleSuccess(prepared); err != nil {
 		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
 	}
 	if activate {
@@ -690,7 +688,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		if err != nil {
 			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 		}
-		if err := activated.Validate(); err != nil {
+		if err := validateLifecycleSuccess(activated); err != nil {
 			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
 		}
 		if err := attempt.readyHTTPBackendProviders(ctx); err != nil {
@@ -711,6 +709,16 @@ func pluginLifecycleCallError(phase string, transientSecrets bool, err error) er
 		return fmt.Errorf("Agent RPC plugin %s failed", phase)
 	}
 	return fmt.Errorf("Agent RPC plugin %s: %w", phase, err)
+}
+
+func validateLifecycleSuccess(response pluginsdk.LifecycleResponse) error {
+	if err := response.Validate(); err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return response.Error
+	}
+	return nil
 }
 
 func transientLifecycleRequest(ctx context.Context, redeemer SecretRedeemer, candidate HostCandidate, handle *pluginprocess.Handle) (pluginsdk.LifecycleRequest, func(), error) {
@@ -1165,7 +1173,6 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	log.Printf("[plugin-rpc-stop-trace] instance=%s generation=%s status=%s pid=%d\n%s", i.candidate.InstanceID, i.candidate.Generation, i.Status().State, i.Status().PID, debug.Stack())
 	i.stopMu.Lock()
 	defer i.stopMu.Unlock()
 	i.mu.Lock()
@@ -1413,7 +1420,7 @@ func (i *HostedInstance) stopRPC(ctx context.Context, attempt *hostAttempt) erro
 	go func() {
 		response, err := attempt.client.Stop(rpcCtx, pluginsdk.LifecycleRequest{Generation: i.candidate.Generation})
 		if err == nil {
-			err = response.Validate()
+			err = validateLifecycleSuccess(response)
 		}
 		result <- err
 	}()

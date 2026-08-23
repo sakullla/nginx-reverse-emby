@@ -5,6 +5,7 @@ package rpc
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,5 +80,19 @@ func TestRPCLifecycleRejectsFalseReadinessAndUnknownError(t *testing.T) {
 	}
 	if err := response.Validate(); err == nil {
 		t.Fatal("unknown runtime error code accepted")
+	}
+}
+
+func TestLifecycleRuntimeErrorIsNotHostSuccess(t *testing.T) {
+	failure := &pluginsdk.RuntimeError{Code: pluginsdk.ErrorInvalidArgument, Message: "prepare rejected"}
+	response := pluginsdk.LifecycleResponse{Error: failure}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("valid failure envelope = %v", err)
+	}
+	if err := validateLifecycleSuccess(response); !errors.Is(err, failure) {
+		t.Fatalf("validateLifecycleSuccess() = %v, want runtime failure", err)
+	}
+	if err := validateLifecycleSuccess(pluginsdk.LifecycleResponse{Success: &pluginsdk.LifecycleSuccess{Ready: true}}); err != nil {
+		t.Fatalf("ready lifecycle response = %v", err)
 	}
 }
