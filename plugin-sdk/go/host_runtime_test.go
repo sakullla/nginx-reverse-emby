@@ -90,3 +90,121 @@ func TestPluginCallAndHTTPRuleRequestsValidateWithoutInterpretingActionNames(t *
 		t.Fatalf("event.emit host operation: %v", err)
 	}
 }
+
+func TestL4RuleRequestCoversFullLifecycle(t *testing.T) {
+	enabled := true
+	create := L4RuleRequest{
+		Action:     L4RuleActionCreate,
+		AgentID:    "edge-a",
+		Name:       "mapping-1",
+		Protocol:   L4RuleProtocolTCP,
+		ListenPort: 18096,
+		Backends:   []L4RuleBackend{{Host: "127.0.0.1", Port: 19096}},
+		Tuning:     &L4RuleTuning{ProxyProtocol: L4RuleProxyProtocolTuning{Send: true}},
+		Enabled:    &enabled,
+		Tags:       []string{"plugin/example", "mapping-1"},
+	}
+	if err := create.Validate(); err != nil {
+		t.Fatalf("l4.rule create: %v", err)
+	}
+	encoded, err := json.Marshal(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded L4RuleRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("l4.rule create round-trip: %v", err)
+	}
+	if decoded.Backends[0].Port != 19096 || decoded.Enabled == nil || !*decoded.Enabled {
+		t.Fatal("l4.rule create round-trip lost fields")
+	}
+	for _, action := range []string{L4RuleActionUpdate, L4RuleActionEnable, L4RuleActionDisable, L4RuleActionDelete} {
+		if err := (L4RuleRequest{Action: action, RuleRef: "12"}).Validate(); err != nil {
+			t.Fatalf("l4.rule %s: %v", action, err)
+		}
+		if err := (L4RuleRequest{Action: action}).Validate(); err == nil {
+			t.Fatalf("l4.rule %s without rule_ref was accepted", action)
+		}
+	}
+	if err := (L4RuleRequest{Action: L4RuleActionCreate, AgentID: "edge-a", Protocol: L4RuleProtocolTCP, ListenPort: 18096, RuleRef: "12"}).Validate(); err == nil {
+		t.Fatal("l4.rule create accepted a rule_ref")
+	}
+	if err := (L4RuleRequest{Action: L4RuleActionCreate, AgentID: "edge-a", Protocol: "icmp", ListenPort: 18096}).Validate(); err == nil {
+		t.Fatal("l4.rule accepted an unsupported protocol")
+	}
+	if err := (L4RuleRequest{Action: L4RuleActionCreate, AgentID: "edge-a", Protocol: L4RuleProtocolUDP, ListenPort: 53, Backends: []L4RuleBackend{{Host: "127.0.0.1"}}}).Validate(); err == nil {
+		t.Fatal("l4.rule accepted a backend without a port")
+	}
+	if err := (L4RuleRequest{Action: "retire", RuleRef: "12"}).Validate(); err == nil {
+		t.Fatal("l4.rule accepted an unsupported action")
+	}
+	if err := (L4RuleResponse{RuleRef: "12", Enabled: true}).Validate(); err != nil {
+		t.Fatalf("l4.rule response: %v", err)
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeL4Rule, Payload: encoded}).Validate(); err != nil {
+		t.Fatalf("l4.rule host operation: %v", err)
+	}
+}
+
+func TestChannelReverseRequestLifecycleAndStatus(t *testing.T) {
+	ensure := ChannelReverseRequest{
+		Action:       ChannelReverseActionEnsure,
+		EntryAgentID: "edge-a",
+		ExitAgentID:  "edge-b",
+		Protocol:     L4RuleProtocolUDP,
+		BackendHost:  "192.168.1.10",
+		BackendPort:  8096,
+		RelayChain:   []int{3, 4},
+	}
+	if err := ensure.Validate(); err != nil {
+		t.Fatalf("channel.reverse ensure: %v", err)
+	}
+	encoded, err := json.Marshal(ensure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ChannelReverseRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("channel.reverse ensure round-trip: %v", err)
+	}
+	if len(decoded.RelayChain) != 2 || decoded.BackendPort != 8096 {
+		t.Fatal("channel.reverse ensure round-trip lost fields")
+	}
+	for _, action := range []string{ChannelReverseActionStatus, ChannelReverseActionTeardown} {
+		if err := (ChannelReverseRequest{Action: action, SessionRef: "session-1"}).Validate(); err != nil {
+			t.Fatalf("channel.reverse %s: %v", action, err)
+		}
+		if err := (ChannelReverseRequest{Action: action}).Validate(); err == nil {
+			t.Fatalf("channel.reverse %s without session_ref was accepted", action)
+		}
+	}
+	if err := (ChannelReverseRequest{Action: ChannelReverseActionEnsure, EntryAgentID: "edge-a", ExitAgentID: "edge-b", Protocol: L4RuleProtocolTCP, BackendPort: 8096}).Validate(); err == nil {
+		t.Fatal("channel.reverse ensure accepted a missing backend host")
+	}
+	if err := (ChannelReverseRequest{Action: "hold", SessionRef: "session-1"}).Validate(); err == nil {
+		t.Fatal("channel.reverse accepted an unsupported action")
+	}
+	for _, state := range []string{ChannelReverseStateOnline, ChannelReverseStateOffline} {
+		if err := (ChannelReverseResponse{SessionRef: "session-1", State: state}).Validate(); err != nil {
+			t.Fatalf("channel.reverse status %s: %v", state, err)
+		}
+	}
+	if err := (ChannelReverseResponse{SessionRef: "session-1", State: "degraded"}).Validate(); err == nil {
+		t.Fatal("channel.reverse accepted an unsupported state")
+	}
+	if err := (ChannelReverseResponse{SessionRef: "session-1", State: ChannelReverseStateOnline, BridgeHost: "127.0.0.1", BridgePort: 19096}).Validate(); err != nil {
+		t.Fatalf("channel.reverse bridge endpoint: %v", err)
+	}
+	if err := (ChannelReverseResponse{SessionRef: "session-1", State: ChannelReverseStateOffline, BridgePort: 19096}).Validate(); err == nil {
+		t.Fatal("channel.reverse accepted a bridge port without a bridge host")
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeChannelReverse, Payload: encoded}).Validate(); err != nil {
+		t.Fatalf("channel.reverse host operation: %v", err)
+	}
+}

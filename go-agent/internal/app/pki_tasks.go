@@ -20,6 +20,9 @@ type remoteAgentTaskHandler struct {
 
 	reconcileMu sync.RWMutex
 	reconcile   func(context.Context) error
+
+	channelMu sync.RWMutex
+	channels  control.ChannelManager
 }
 
 func newRemoteAgentTaskHandler(diagnostics control.TaskHandler, pki *remotePKIHeartbeatHandler) *remoteAgentTaskHandler {
@@ -44,6 +47,8 @@ func (h *remoteAgentTaskHandler) HandleTask(ctx context.Context, task control.Ta
 		return h.handlePKISecurityUpdate(ctx, task.RawPayload)
 	case control.TaskTypePKIForceRotation:
 		return h.handlePKIForceRotation(ctx, task.RawPayload)
+	case control.TaskTypeChannelEnsure, control.TaskTypeChannelTeardown, control.TaskTypeChannelStatus:
+		return h.handleChannelTask(ctx, task)
 	default:
 		if h.diagnostics == nil {
 			return nil, fmt.Errorf("unsupported task type %q", task.TaskType)

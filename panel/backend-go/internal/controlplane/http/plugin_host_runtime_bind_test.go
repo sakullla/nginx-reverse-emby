@@ -3,6 +3,7 @@
 package http
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestProductionPluginCapabilityManagerBindsTaskAndRuleServices(t *testing.T) {
@@ -63,5 +65,26 @@ func TestProductionPluginCapabilityManagerBindsTaskAndRuleServices(t *testing.T)
 	tasksBound, rulesBound := manager.HostRuntimeServicesBound()
 	if !tasksBound || !rulesBound {
 		t.Fatal("production composition left TaskService/RuleService unbound")
+	}
+	candidate := pluginhost.Candidate{
+		InstanceID:      "control-1",
+		ResourceGroupID: "default",
+		Identity:        pluginhost.Identity{PluginID: "example.plugin", Generation: "generation-1"},
+		Grants:          []string{pluginsdk.PermissionL4Rule},
+	}
+	payload, err := json.Marshal(pluginsdk.L4RuleRequest{
+		Action: pluginsdk.L4RuleActionCreate, AgentID: "missing-agent", Protocol: pluginsdk.L4RuleProtocolTCP,
+		ListenPort: 9000, Backends: []pluginsdk.L4RuleBackend{{Host: "127.0.0.1", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeL4Rule,
+		OperationID: "l4-rule-bind-probe",
+		Payload:     payload,
+	})
+	if response.Error == nil || response.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("production composition left L4RuleService unbound: %v", response.Error)
 	}
 }

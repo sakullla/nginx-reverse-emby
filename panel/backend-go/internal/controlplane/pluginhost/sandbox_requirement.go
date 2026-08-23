@@ -44,7 +44,7 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		case string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
 			string(pluginsdk.CapabilityUIDynamicActions),
-			string(pluginsdk.CapabilityHTTPRule),
+			string(pluginsdk.CapabilityHTTPRule), string(pluginsdk.CapabilityL4Rule),
 			string(pluginsdk.CapabilityUIDynamic):
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.

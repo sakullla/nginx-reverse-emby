@@ -19,6 +19,8 @@ const (
 	CapabilityUIDynamicActions               HostCapability = "ui.dynamic-actions"
 	CapabilityHTTPOutbound                   HostCapability = PermissionHTTPOutbound
 	CapabilityHTTPRule                       HostCapability = "http.rule"
+	CapabilityL4Rule                         HostCapability = "l4.rule"
+	CapabilityChannelReverse                 HostCapability = "channel.reverse"
 	CapabilityUIDynamic                      HostCapability = "ui.dynamic"
 )
 
@@ -32,7 +34,7 @@ func (capability HostCapability) Validate() error {
 	switch capability {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
-		CapabilityHTTPRule, CapabilityUIDynamic:
+		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic:
 		return nil
 	default:
 		return fmt.Errorf("host capability %q is not in the canonical catalog", value)

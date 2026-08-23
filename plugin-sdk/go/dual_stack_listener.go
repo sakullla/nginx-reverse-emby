@@ -46,7 +46,7 @@ func JoinShareHostPort(host string, port int) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
-// ValidL4BackendHost is the same bound used by reverse-l4 backend_host.
+// ValidL4BackendHost reports whether value is usable as an L4 backend host.
 func ValidL4BackendHost(value string) bool {
 	value = strings.TrimSpace(value)
 	return value != "" && len(value) <= 253 && !strings.Contains(value, "://") && !strings.ContainsAny(value, "/\\ \t\r\n\x00")

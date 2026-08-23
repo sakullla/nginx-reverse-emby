@@ -11,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulechannel "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/channel"
 	moduleddns "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/ddns"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
@@ -71,6 +72,7 @@ type App struct {
 	updater                Updater
 	runtime                *core.Runtime
 	taskClient             *control.TaskClient
+	channelManager         *modulechannel.Manager
 	moduleRegistry         *agentmodule.Registry
 	diagnosticModule       *modulediagnostics.Module
 	trafficReports         core.TrafficReporter
@@ -485,6 +487,15 @@ func New(cfg Config) (*App, error) {
 	app.pkiStore = pkiStore
 	app.remotePKIHeartbeat = pkiHeartbeatHandler
 	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
+	channelManager, channelErr := modulechannel.NewManager(modulechannel.Config{
+		AgentID:     cfg.AgentID,
+		Credentials: app.relayTunnelCredentials,
+	})
+	if channelErr != nil {
+		return nil, fmt.Errorf("initialize channel session manager: %w", channelErr)
+	}
+	app.channelManager = channelManager
+	taskHandler.setChannelManager(newChannelSessionManager(channelManager))
 	taskHandler.setTunnelSecurityReconciler(app.reconcileTunnelSecurityAfterTask)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
@@ -1070,6 +1081,13 @@ func (a *App) GenerationDrainSnapshot() model.GenerationDrainSnapshot {
 
 func (a *App) closeLocalRuntimes() error {
 	var errs []error
+	if a.channelManager != nil {
+		if err := a.channelManager.Close(); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.channelManager = nil
+		}
+	}
 	if a.generations != nil {
 		if err := a.generations.Close(context.Background()); err != nil {
 			errs = append(errs, err)

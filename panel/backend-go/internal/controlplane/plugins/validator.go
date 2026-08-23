@@ -171,6 +171,8 @@ func NewValidator(options ValidatorOptions) *Validator {
 			"l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use",
 			"storage.read", "storage.write", "dns.manage",
 			string(pluginsdk.CapabilityHTTPRule),
+			string(pluginsdk.CapabilityL4Rule),
+			string(pluginsdk.CapabilityChannelReverse),
 			string(pluginsdk.CapabilityUIDynamic),
 			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),

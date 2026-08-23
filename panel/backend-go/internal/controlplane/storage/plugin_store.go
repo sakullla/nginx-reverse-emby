@@ -3240,6 +3240,10 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 		}
 	}
 	if mutation.DeletePlugin {
+		l4RulesRemoved, err := cascadePluginL4RulesTx(tx, mutation.PluginID, "", mutation.Operation.CreatedAt)
+		if err != nil {
+			return err
+		}
 		if mutation.DeleteInstances {
 			var instanceIDs []string
 			if err := tx.Model(&PluginInstanceRow{}).Where("plugin_id = ?", mutation.PluginID).Pluck("id", &instanceIDs).Error; err != nil {
@@ -3256,6 +3260,14 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 			if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginInstanceRow{}).Error; err != nil {
 				return err
 			}
+			quotaUpdatedAt := mutation.Operation.CreatedAt
+			if quotaUpdatedAt.IsZero() {
+				quotaUpdatedAt = time.Now().UTC()
+			}
+			if err := recomputeCountQuotaUsageTx(tx, quotaUpdatedAt); err != nil {
+				return err
+			}
+		} else if l4RulesRemoved {
 			quotaUpdatedAt := mutation.Operation.CreatedAt
 			if quotaUpdatedAt.IsZero() {
 				quotaUpdatedAt = time.Now().UTC()
@@ -3386,6 +3398,9 @@ func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation)
 		if err := cascadePluginInstanceHTTPRulesTx(tx, instanceID, mutation.Operation.CreatedAt); err != nil {
 			return err
 		}
+		if _, err := cascadePluginL4RulesTx(tx, mutation.PluginID, pluginL4RuleInstanceTag(instanceID), mutation.Operation.CreatedAt); err != nil {
+			return err
+		}
 		if err := tx.Where("id = ? AND plugin_id = ?", instanceID, mutation.PluginID).First(&current).Error; err != nil {
 			return err
 		}
@@ -3451,6 +3466,72 @@ func cascadePluginInstanceHTTPRulesTx(tx *gorm.DB, instanceID string, now time.T
 		}
 	}
 	return nil
+}
+
+const (
+	pluginL4RuleTagPrefix         = "plugin:"
+	pluginL4RuleInstanceTagPrefix = "plugin-instance:"
+)
+
+func pluginL4RuleInstanceTag(instanceID string) string {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return ""
+	}
+	return pluginL4RuleInstanceTagPrefix + instanceID
+}
+
+// cascadePluginL4RulesTx removes host-owned L4 rules attributed to a plugin
+// through the attribution tags written by the host l4.rule dispatch. An empty
+// instanceTag cascades every rule owned by the plugin (plugin uninstall);
+// an instance tag narrows the cascade to rules created by that instance.
+func cascadePluginL4RulesTx(tx *gorm.DB, pluginID, instanceTag string, now time.Time) (bool, error) {
+	pluginTag := pluginL4RuleTagPrefix + strings.TrimSpace(pluginID)
+	if pluginTag == pluginL4RuleTagPrefix {
+		return false, errors.New("plugin identity is required")
+	}
+	var rules []L4RuleRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("agent_id, id").Find(&rules).Error; err != nil {
+		return false, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	removed := false
+	for _, rule := range rules {
+		if !pluginL4RuleMatchesAttribution(rule.TagsJSON, pluginTag, instanceTag) {
+			continue
+		}
+		resourceID := rule.AgentID + ":" + strconv.Itoa(rule.ID)
+		if err := detachPluginConsumerBindingsTx(tx, PluginDependencyConsumerL4Rule, resourceID, now); err != nil {
+			return false, err
+		}
+		if err := tx.Where("resource_kind = ? AND resource_id = ?", PluginDependencyConsumerL4Rule, resourceID).Delete(&QuotaAllocationRow{}).Error; err != nil {
+			return false, err
+		}
+		if err := tx.Where("resource_kind = ? AND resource_id = ?", PluginDependencyConsumerL4Rule, resourceID).Delete(&ResourceBindingRow{}).Error; err != nil {
+			return false, err
+		}
+		if err := tx.Where("agent_id = ? AND id = ?", rule.AgentID, rule.ID).Delete(&L4RuleRow{}).Error; err != nil {
+			return false, err
+		}
+		removed = true
+	}
+	return removed, nil
+}
+
+func pluginL4RuleMatchesAttribution(tagsJSON, pluginTag, instanceTag string) bool {
+	pluginMatched := false
+	instanceMatched := instanceTag == ""
+	for _, tag := range parseStringSlice(tagsJSON) {
+		if tag == pluginTag {
+			pluginMatched = true
+		}
+		if tag == instanceTag {
+			instanceMatched = true
+		}
+	}
+	return pluginMatched && instanceMatched
 }
 
 func completePluginAgentRuntimeAuthorityTx(tx *gorm.DB, operation PluginOperationRow) error {

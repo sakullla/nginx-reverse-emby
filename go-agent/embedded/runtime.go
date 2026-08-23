@@ -292,6 +292,22 @@ func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req D
 	return diagnoser.DiagnoseSnapshot(ctx, sanitizeSnapshot(snapshot), req.TaskType, req.RuleID)
 }
 
+// HandleChannelTask executes one reverse channel session task against the
+// embedded agent's channel data plane. It backs the in-process task bridge the
+// co-located control plane uses for the local agent.
+func (r *Runtime) HandleChannelTask(ctx context.Context, taskType string, payload map[string]any) (map[string]any, error) {
+	if r == nil || r.app == nil {
+		return nil, errors.New("embedded runtime is not initialized")
+	}
+	handler, ok := r.app.(interface {
+		HandleChannelTask(context.Context, string, map[string]any) (map[string]any, error)
+	})
+	if !ok {
+		return nil, errors.New("embedded channel session handling is unavailable")
+	}
+	return handler.HandleChannelTask(ctx, taskType, payload)
+}
+
 func (r *Runtime) Close() error {
 	if r == nil || r.app == nil {
 		return nil

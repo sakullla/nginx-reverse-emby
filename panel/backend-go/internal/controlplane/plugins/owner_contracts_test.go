@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestDeclarativeUIProjectionRejectsExecutableMarkupAndWriteOnlyMismatch(t *testing.T) {
@@ -271,6 +273,34 @@ func TestValidatePackageAllowsResourceGroupExtension(t *testing.T) {
 	refreshOwnerPackage(t, root)
 	if _, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{}); err != nil {
 		t.Fatalf("package with resource.group extension = %v", err)
+	}
+}
+
+func TestValidatePackageAllowsHostRuleCapabilitiesByDefault(t *testing.T) {
+	t.Parallel()
+
+	// Packages reach install, market import, and validator CLI paths through
+	// validators built without an explicit AllowedPermissions list, so the
+	// default catalog must accept every published host-mediated rule
+	// capability. A capability dropped here strands its plugins with
+	// permission "..." is not allowed before any grant can be issued.
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]",
+		fmt.Sprintf("permissions: [http.inspect, %s, %s, %s]", pluginsdk.CapabilityHTTPRule, pluginsdk.CapabilityL4Rule, pluginsdk.CapabilityChannelReverse), 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package declaring l4.rule and channel.reverse = %v", err)
+	}
+	declared := map[string]struct{}{}
+	for _, permission := range got.Manifest.Permissions {
+		declared[permission.Name] = struct{}{}
+	}
+	for _, capability := range []pluginsdk.HostCapability{pluginsdk.CapabilityHTTPRule, pluginsdk.CapabilityL4Rule, pluginsdk.CapabilityChannelReverse} {
+		if _, ok := declared[string(capability)]; !ok {
+			t.Fatalf("validated manifest lost %q: %+v", string(capability), got.Manifest.Permissions)
+		}
 	}
 }
 
