@@ -193,20 +193,27 @@ func hasLegacyHeartbeatApplyError(metadata map[string]string) bool {
 }
 
 func isLegacyHeartbeatTransportError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
 	const methodPrefix = `post "`
-	if !strings.HasPrefix(message, methodPrefix) {
+	if strings.HasPrefix(normalized, methodPrefix) {
+		remainder := strings.TrimPrefix(normalized, methodPrefix)
+		quote := strings.IndexByte(remainder, '"')
+		if quote >= 0 && strings.HasPrefix(remainder[quote+1:], ":") {
+			endpoint, err := url.Parse(remainder[:quote])
+			if err == nil && strings.HasSuffix(strings.TrimRight(endpoint.Path, "/"), "/api/agents/heartbeat") {
+				return true
+			}
+		}
+	}
+	if !strings.HasPrefix(normalized, "read tcp ") && !strings.HasPrefix(normalized, "write tcp ") && !strings.HasPrefix(normalized, "dial tcp ") {
 		return false
 	}
-	remainder := strings.TrimPrefix(message, methodPrefix)
-	quote := strings.IndexByte(remainder, '"')
-	if quote < 0 || !strings.HasPrefix(remainder[quote+1:], ":") {
-		return false
+	for _, marker := range []string{"connection reset by peer", "broken pipe", "i/o timeout", "use of closed network connection", "connection refused"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
 	}
-	endpoint, err := url.Parse(remainder[:quote])
-	if err != nil {
-		return false
-	}
-	return strings.HasSuffix(strings.TrimRight(endpoint.Path, "/"), "/api/agents/heartbeat")
+	return false
 }
 
 func (c *SyncController) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {

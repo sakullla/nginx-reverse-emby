@@ -204,6 +204,7 @@ type Instance struct {
 	killAccepted               bool
 	rpcStopOnce                sync.Once
 	rpcStopErr                 error
+	rpcStopEligible            bool
 	closeOnce                  sync.Once
 	closeErr                   error
 	ID, Generation, Executable string
@@ -427,11 +428,17 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if err := lifecycleResponseError(prepareResponse); err != nil {
 		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err)
 	}
+	instance.mu.Lock()
+	instance.rpcStopEligible = true
+	instance.mu.Unlock()
 	activateResponse, err := client.Activate(attemptCtx, request)
 	if err != nil {
 		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
 	}
 	if err := lifecycleResponseError(activateResponse); err != nil {
+		instance.mu.Lock()
+		instance.rpcStopEligible = false
+		instance.mu.Unlock()
 		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
 	}
 	if hasExtension(candidate.Declaration.ExtensionPoints, extensionUIRoute) {
@@ -914,9 +921,12 @@ func (i *Instance) stop(ctx context.Context) error {
 		i.mu.Unlock()
 		return nil
 	}
+	rpcStopEligible := i.rpcStopEligible
 	i.State = "stopping"
 	i.mu.Unlock()
-	i.rpcStopOnce.Do(func() { i.rpcStopErr = i.stopRPC(ctx) })
+	if rpcStopEligible {
+		i.rpcStopOnce.Do(func() { i.rpcStopErr = i.stopRPC(ctx) })
+	}
 	var signalErr, killErr, joinErr, waitErr error
 	terminated := false
 	if i.process != nil {

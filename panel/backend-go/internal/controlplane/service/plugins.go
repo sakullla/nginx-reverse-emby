@@ -1692,12 +1692,30 @@ func (s *PluginService) RecoverControlPlaneRuntimes(ctx context.Context, runtime
 				recoveryErrors = append(recoveryErrors, fmt.Errorf("plugin runtime %s active operation is not a durable success", instance.ID))
 				continue
 			}
+			strictDurableCandidate := true
+			if latestID := strings.TrimSpace(plugin.LastOperationID); latestID != "" && latestID != active.ActiveOperationID {
+				latest, latestFound, latestErr := store.GetPluginOperation(ctx, latestID)
+				if latestErr != nil {
+					recoveryErrors = append(recoveryErrors, fmt.Errorf("read plugin runtime %s latest operation for recovery: %w", instance.ID, latestErr))
+					continue
+				}
+				if latestFound && latest.Status == "succeeded" {
+					operation = latest
+					strictDurableCandidate = false
+				}
+			}
 			plan, planErr := s.controlPlaneRuntimePlan(ctx, operation)
 			if planErr != nil {
 				recoveryErrors = append(recoveryErrors, fmt.Errorf("plan plugin runtime %s recovery: %w", instance.ID, planErr))
 				continue
 			}
-			candidate, selectErr := controlPlaneRuntimeRecoveryCandidate(active, plan.Candidates)
+			var candidate pluginhost.Candidate
+			var selectErr error
+			if strictDurableCandidate {
+				candidate, selectErr = controlPlaneRuntimeRecoveryCandidate(active, plan.Candidates)
+			} else {
+				candidate, selectErr = controlPlaneRuntimeDesiredRecoveryCandidate(plugin, instance, operation, plan.Candidates)
+			}
 			if selectErr != nil {
 				recoveryErrors = append(recoveryErrors, selectErr)
 				continue
@@ -1718,6 +1736,22 @@ func (s *PluginService) RecoverControlPlaneRuntimes(ctx context.Context, runtime
 		}
 	}
 	return errors.Join(recoveryErrors...)
+}
+
+func controlPlaneRuntimeDesiredRecoveryCandidate(installed storage.InstalledPluginRow, instance storage.PluginInstanceRow, operation storage.PluginOperationRow, candidates []pluginhost.Candidate) (pluginhost.Candidate, error) {
+	for _, candidate := range candidates {
+		if candidate.InstanceID != instance.ID {
+			continue
+		}
+		if operation.Status != "succeeded" || candidate.OperationID != operation.ID || candidate.Revision != operation.TargetRevision ||
+			candidate.Identity.PluginID != installed.PluginID || candidate.Identity.PluginID != instance.PluginID ||
+			!strings.EqualFold(candidate.Identity.PackageDigest, installed.ActivePackageDigest) ||
+			candidate.ResourceGroupID != instance.ResourceGroupID {
+			return pluginhost.Candidate{}, fmt.Errorf("plugin runtime %s desired recovery projection is inconsistent", instance.ID)
+		}
+		return candidate, nil
+	}
+	return pluginhost.Candidate{}, fmt.Errorf("plugin runtime %s has no desired recovery candidate", instance.ID)
 }
 
 func controlPlaneRuntimeRecoveryCandidate(active storage.PluginRuntimeInstanceRow, candidates []pluginhost.Candidate) (pluginhost.Candidate, error) {

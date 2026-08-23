@@ -160,3 +160,32 @@ func (a *capabilityAuditStub) AuditHostCapability(_ context.Context, event Capab
 	a.outcome = event.Outcome
 	return nil
 }
+
+type stopEligibilityRPCClient struct{ stops int }
+
+func (*stopEligibilityRPCClient) Handshake(context.Context, pluginsdk.RPCHandshakeRequest) (pluginsdk.RPCHandshakeResponse, error) {
+	return pluginsdk.RPCHandshakeResponse{}, nil
+}
+func (*stopEligibilityRPCClient) Prepare(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	return pluginsdk.LifecycleResponse{}, nil
+}
+func (*stopEligibilityRPCClient) Activate(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	return pluginsdk.LifecycleResponse{}, nil
+}
+func (client *stopEligibilityRPCClient) Stop(context.Context, pluginsdk.LifecycleRequest) (pluginsdk.LifecycleResponse, error) {
+	client.stops++
+	return pluginsdk.LifecycleResponse{}, nil
+}
+
+func TestPluginHostSkipsRPCStopBeforePreparedLifecycle(t *testing.T) {
+	client := &stopEligibilityRPCClient{}
+	setupDone := make(chan struct{})
+	close(setupDone)
+	instance := &Instance{ID: "instance", Generation: "generation", State: "starting", client: client, setupDone: setupDone}
+	if err := instance.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if client.stops != 0 || instance.State != "stopped" {
+		t.Fatalf("handshaken cleanup stops=%d state=%q, want process-only stopped cleanup", client.stops, instance.State)
+	}
+}

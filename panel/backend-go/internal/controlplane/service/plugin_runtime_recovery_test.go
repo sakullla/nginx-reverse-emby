@@ -62,6 +62,24 @@ func TestControlPlaneRuntimeRecoveryCandidateRejectsMissingInstance(t *testing.T
 	}
 }
 
+func TestControlPlaneRuntimeDesiredRecoveryCandidateAdvancesStaleDurableFence(t *testing.T) {
+	installed := storage.InstalledPluginRow{PluginID: "docker-app", ActivePackageDigest: strings.Repeat("b", 64)}
+	instance := storage.PluginInstanceRow{ID: "docker-app-default", PluginID: installed.PluginID, ResourceGroupID: "default"}
+	operation := storage.PluginOperationRow{ID: "configure-current", PluginID: installed.PluginID, Status: "succeeded", TargetRevision: 457}
+	candidate := pluginhost.Candidate{
+		InstanceID: instance.ID, OperationID: operation.ID, ResourceGroupID: instance.ResourceGroupID, Revision: operation.TargetRevision,
+		Identity: pluginhost.Identity{PluginID: installed.PluginID, PackageDigest: installed.ActivePackageDigest, Generation: strings.Repeat("c", 64)},
+	}
+	got, err := controlPlaneRuntimeDesiredRecoveryCandidate(installed, instance, operation, []pluginhost.Candidate{candidate})
+	if err != nil || got.Identity.Generation != candidate.Identity.Generation {
+		t.Fatalf("desired recovery candidate = %+v, %v", got, err)
+	}
+	candidate.ResourceGroupID = "other"
+	if _, err := controlPlaneRuntimeDesiredRecoveryCandidate(installed, instance, operation, []pluginhost.Candidate{candidate}); err == nil {
+		t.Fatal("inconsistent desired recovery candidate was accepted")
+	}
+}
+
 func TestStopOrphanedPluginRuntimeUsesExactDurableGeneration(t *testing.T) {
 	row := storage.PluginRuntimeInstanceRow{InstanceID: "instance-1", ActiveGeneration: strings.Repeat("a", 64)}
 	recorder := &runtimeStopRecorder{}
