@@ -40,6 +40,7 @@ var (
 	ErrPluginReadProjection         = errors.New("plugin read projection is invalid")
 	ErrPluginConflict               = storage.ErrPluginConflict
 	ErrPluginArtifactUnavailable    = errors.New("plugin artifact is unavailable for agent")
+	ErrPluginTargetIneligible       = fmt.Errorf("%w: plugin target is ineligible for declared runtime faces", ErrInvalidArgument)
 )
 
 type PluginPackageCandidate struct {
@@ -637,6 +638,9 @@ func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID s
 }
 
 func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
+	if err := s.validatePluginConfigureTargetAuthority(ctx, request); err != nil {
+		return PluginInstanceDetail{}, err
+	}
 	if s.mutationExecutor != nil && !s.revisionMutation {
 		if err := s.reconcilePendingPluginOperation(ctx, request.PluginID); err != nil {
 			return PluginInstanceDetail{}, err
@@ -680,6 +684,9 @@ func (s *PluginService) PublishMutation(ctx context.Context, request PluginConfi
 	request.PublishDesiredEnabled = true
 	request.FrontendURL = frontendURL
 	request.RuleID = ruleID
+	if err := s.validatePluginConfigureTargetAuthority(ctx, request); err != nil {
+		return PluginInstanceDetail{}, HTTPRule{}, err
+	}
 	if s.mutationExecutor != nil && !s.revisionMutation {
 		if err := s.reconcilePendingPluginOperation(ctx, request.PluginID); err != nil {
 			return PluginInstanceDetail{}, HTTPRule{}, err
@@ -1247,7 +1254,7 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 		for _, instance := range instances {
-			if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
+			if err := s.validatePluginTargets(ctx, manifest, json.RawMessage(instance.TargetJSON)); err != nil {
 				return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 			}
 		}
@@ -1882,6 +1889,9 @@ func pluginGenerationArtifact(artifact storage.PluginArtifactRow, packageRow sto
 }
 
 func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRequest) (storage.PluginInstanceRow, error) {
+	if err := s.validatePluginConfigureTargetAuthority(ctx, request); err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
 	return s.configureWithProspectiveDetail(ctx, request, nil)
 }
 
@@ -2034,8 +2044,10 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if strings.TrimSpace(request.ResourceGroupID) == "" {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance resource group is required", ErrInvalidArgument))
 	}
-	if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, targetJSON); err != nil {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+	if err := s.validatePluginTargets(ctx, manifest, targetJSON); err != nil {
+		// Target eligibility is request authority, not a lifecycle attempt. Reject
+		// it before instance, secret, operation, revision, or runtime-status writes.
+		return storage.PluginInstanceRow{}, err
 	}
 	for _, targetID := range targetIDs {
 		if err := authorizeReferencedResource(ctx, s.store, "agent", targetID); err != nil {
@@ -3122,7 +3134,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	for _, instance := range instances {
-		if err := s.validateAgentTargets(ctx, request.Package.Package.Manifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
+		if err := s.validatePluginTargets(ctx, request.Package.Package.Manifest, json.RawMessage(instance.TargetJSON)); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 		}
 		if err := s.validateStoredPluginBindings(ctx, instance, request.Package.Package.Manifest); err != nil {
@@ -3357,7 +3369,7 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 		return storage.InstalledPluginRow{}, err
 	}
 	for _, instance := range instances {
-		if err := s.validateAgentTargets(ctx, rollbackManifest.Compatibility.Agent, json.RawMessage(instance.TargetJSON)); err != nil {
+		if err := s.validatePluginTargets(ctx, rollbackManifest, json.RawMessage(instance.TargetJSON)); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 		if err := s.validateStoredPluginBindings(ctx, instance, rollbackManifest); err != nil {
@@ -3991,6 +4003,58 @@ func (s *PluginService) failPendingPackagePromotion(ctx context.Context, install
 		return errors.Join(cause, err)
 	}
 	return cause
+}
+
+func (s *PluginService) validatePluginConfigureTargetAuthority(ctx context.Context, request PluginConfigureRequest) error {
+	installed, ok, err := s.store.GetInstalledPlugin(ctx, strings.TrimSpace(request.PluginID))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrPluginNotInstalled
+	}
+	packageRow, ok, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("active plugin package is unavailable")
+	}
+	// Target authority comes from the complete verified package manifest. The
+	// installed and market host_scope projections deliberately are not inputs.
+	if err := s.validateStoredPackageIntegrity(ctx, packageRow); err != nil {
+		return err
+	}
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return err
+	}
+	rawTargets, err := json.Marshal(request.Targets)
+	if err != nil {
+		return fmt.Errorf("%w: plugin targets must be an array of agent IDs", ErrInvalidArgument)
+	}
+	return s.validatePluginTargets(ctx, manifest, rawTargets)
+}
+
+func (s *PluginService) validatePluginTargets(ctx context.Context, manifest plugins.Manifest, raw json.RawMessage) error {
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return err
+	}
+	targetIDs, err := pluginTargetIDs(raw, defaultTargetID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+		if len(targetIDs) != 1 || strings.TrimSpace(targetIDs[0]) != defaultTargetID {
+			return fmt.Errorf("%w: plugin %s only accepts the canonical local target %s", ErrPluginTargetIneligible, manifest.ID, defaultTargetID)
+		}
+		return nil
+	}
+	if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, raw); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	return nil
 }
 
 func (s *PluginService) validateAgentTargets(ctx context.Context, constraint string, raw json.RawMessage) error {
