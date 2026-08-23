@@ -882,7 +882,7 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 				ArtifactDigest: row.ArtifactDigest, State: row.State, Sequence: row.ReportSequence,
 				ErrorCode: row.ErrorCode, Details: json.RawMessage(row.DetailsJSON), Budget: json.RawMessage(row.BudgetJSON),
 			}
-			if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil {
+			if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !errors.Is(err, storage.ErrPluginGenerationStale) {
 				return err
 			}
 			continue

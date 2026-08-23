@@ -348,12 +348,16 @@ func TestHeartbeatRevisionRebasesPendingPluginGeneration(t *testing.T) {
 		RuntimeKind: generation.Runtime.Kind, State: "active", Sequence: 1,
 		Details: json.RawMessage(`{}`), Budget: json.RawMessage(`{}`),
 	}
-	if _, err := api.ReportRemoteRevision(ctx, "local", RemoteRevisionReport{
+	report := RemoteRevisionReport{
 		AgentID: "local", Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt,
 		LeaseID: lease.LeaseID, GenerationID: runtimeGenerationID, Status: storage.AgentRevisionStateApplied,
 		PluginStatuses: []storage.PluginRuntimeStatus{status},
-	}); err != nil {
+	}
+	if _, err := api.ReportRemoteRevision(ctx, "local", report); err != nil {
 		t.Fatalf("ReportRemoteRevision() error = %v", err)
+	}
+	if _, err := api.ReportRemoteRevision(ctx, "local", report); err != nil {
+		t.Fatalf("ReportRemoteRevision() replay error = %v", err)
 	}
 
 	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
