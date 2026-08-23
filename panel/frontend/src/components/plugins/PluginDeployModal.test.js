@@ -5,6 +5,7 @@ import PluginDeployModal from './PluginDeployModal.vue'
 const mocks = vi.hoisted(() => ({
   configurePlugin: vi.fn(),
   enablePlugin: vi.fn(),
+  waitForPluginOperation: vi.fn(),
   publishPlugin: vi.fn(),
   success: vi.fn(),
   error: vi.fn()
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/plugins', () => ({
   configurePlugin: mocks.configurePlugin,
   enablePlugin: mocks.enablePlugin,
+  waitForPluginOperation: mocks.waitForPluginOperation,
   publishPlugin: mocks.publishPlugin
 }))
 
@@ -62,6 +64,8 @@ describe('PluginDeployModal target authority', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.configurePlugin.mockResolvedValue({ id: 'official.plugin-default' })
+    mocks.enablePlugin.mockResolvedValue({})
+    mocks.waitForPluginOperation.mockResolvedValue({ status: 'succeeded' })
   })
 
   it('fixes a control-plane-only deployment to the canonical local target', async () => {
@@ -130,5 +134,26 @@ describe('PluginDeployModal target authority', () => {
     await flushPromises()
 
     expect(mocks.error).toHaveBeenCalledWith('invalid argument: plugin target is ineligible')
+  })
+
+  it('waits for accepted configuration to complete before enabling the plugin', async () => {
+    let finishConfigure
+    mocks.configurePlugin.mockResolvedValueOnce({ id: 'official.plugin-default', pending_operation_id: 'op-configure' })
+    mocks.waitForPluginOperation.mockImplementationOnce(() => new Promise((resolve) => { finishConfigure = resolve }))
+    const wrapper = mountModal({
+      currentLifecycle: 'disabled',
+      desiredLifecycle: 'disabled',
+      targetEligibility: { canonical_local_target_id: 'local', agent_targets_allowed: false }
+    })
+    await openModal(wrapper)
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(mocks.waitForPluginOperation).toHaveBeenCalledWith('official.plugin', 'op-configure')
+    expect(mocks.enablePlugin).not.toHaveBeenCalled()
+
+    finishConfigure({ status: 'succeeded' })
+    await flushPromises()
+    expect(mocks.enablePlugin).toHaveBeenCalledWith('official.plugin')
   })
 })

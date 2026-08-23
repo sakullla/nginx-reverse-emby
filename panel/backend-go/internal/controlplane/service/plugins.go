@@ -994,32 +994,24 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 		return err
 	}
 	applied := true
+	terminalStatuses := make([]storage.PluginAgentRuntimeStatusRow, len(statuses))
 	instanceID := ""
 	configVersion := uint64(0)
-	for _, status := range statuses {
+	for index, status := range statuses {
 		if status.OperationID != operation.ID || status.PluginID != pluginID || status.Revision <= 0 {
 			return storage.ErrPluginGenerationConflict
-		}
-		switch status.State {
-		case "active", "drained":
-		case "degraded", "failed":
-			applied = false
-		default:
-			return nil
 		}
 		revision, found, err := revisionStore.GetCoordinatorRevision(ctx, status.AgentID, status.Revision)
 		if err != nil {
 			return err
 		}
-		if !found {
+		terminalStatus, terminal, statusApplied := terminalPluginRuntimeStatus(status, revision, found)
+		if !terminal {
 			return nil
 		}
-		switch revision.State {
-		case storage.AgentRevisionStateApplied:
-		case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
+		terminalStatuses[index] = terminalStatus
+		if !statusApplied {
 			applied = false
-		default:
-			return nil
 		}
 		if instanceID == "" {
 			instanceID, configVersion = status.InstanceID, status.ConfigVersion
@@ -1027,7 +1019,7 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 			return storage.ErrPluginGenerationConflict
 		}
 	}
-	agentResults, err := pluginRuntimeAgentResults(statuses)
+	agentResults, err := pluginRuntimeAgentResults(terminalStatuses)
 	if err != nil {
 		return err
 	}
@@ -1049,9 +1041,39 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 	return err
 }
 
+func terminalPluginRuntimeStatus(status storage.PluginAgentRuntimeStatusRow, revision storage.AgentRevisionRow, found bool) (storage.PluginAgentRuntimeStatusRow, bool, bool) {
+	if !found {
+		return status, false, false
+	}
+	switch revision.State {
+	case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
+		status.State = "failed"
+		status.ErrorCode = strings.TrimSpace(revision.ErrorCode)
+		if status.ErrorCode == "" {
+			status.ErrorCode = "revision_" + revision.State
+		}
+		status.DetailsJSON = "{}"
+		return status, true, false
+	case storage.AgentRevisionStateApplied:
+		switch status.State {
+		case "active", "drained":
+			return status, true, true
+		case "degraded", "failed":
+			return status, true, false
+		default:
+			return status, false, false
+		}
+	default:
+		return status, false, false
+	}
+}
+
 func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request PluginDeleteInstanceRequest) error {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.DeleteInstance(ctx, request)
+	}
+	if err := s.reconcilePendingPluginOperation(ctx, request.PluginID); err != nil {
+		return err
 	}
 	return s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.delete-instance", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
 		return txService.DeleteInstance(mutationCtx, request)
@@ -1106,8 +1128,15 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 	dependencyAction := revision.DependencyActionApply
 	if strings.HasSuffix(kind, ".disable") || strings.HasSuffix(kind, ".delete-instance") || strings.HasSuffix(kind, ".unpublish") {
 		dependencyAction = revision.DependencyActionDelete
+		targetIDs, err = s.existingPluginLifecycleTargetIDs(ctx, targetIDs)
+		if err != nil {
+			return err
+		}
 	}
 	mutationCtx := context.WithValue(ctx, pluginLifecycleOperationContextKey{}, operationID)
+	if dependencyAction == revision.DependencyActionDelete && len(targetIDs) == 0 {
+		return mutate(s, mutationCtx)
+	}
 	_, err = s.mutationExecutor.Execute(mutationCtx, revision.MutationRequest{
 		OperationID:      operationID,
 		Kind:             kind,
@@ -1139,6 +1168,28 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 		},
 	})
 	return err
+}
+
+func (s *PluginService) existingPluginLifecycleTargetIDs(ctx context.Context, targetIDs []string) ([]string, error) {
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]struct{}, len(agents)+1)
+	for _, agent := range agents {
+		existing[strings.TrimSpace(agent.ID)] = struct{}{}
+	}
+	if s.cfg.EnableLocalAgent {
+		existing[strings.TrimSpace(s.cfg.LocalAgentID)] = struct{}{}
+	}
+	filtered := make([]string, 0, len(targetIDs))
+	for _, targetID := range targetIDs {
+		targetID = strings.TrimSpace(targetID)
+		if _, ok := existing[targetID]; ok {
+			filtered = append(filtered, targetID)
+		}
+	}
+	return uniqueAgentIDs(filtered), nil
 }
 
 func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID string, configure *PluginConfigureRequest) ([]string, error) {
@@ -2061,6 +2112,16 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
+	requireSingleInstance := pluginManifestOwnsSingletonControlPlaneSurface(manifest)
+	if requireSingleInstance && !exists {
+		instances, err := s.store.ListPluginInstances(ctx, request.PluginID)
+		if err != nil {
+			return storage.PluginInstanceRow{}, err
+		}
+		if len(instances) > 0 {
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin control-plane application already has an instance", ErrPluginConflict))
+		}
+	}
 	requestedTargetJSON, err := json.Marshal(request.Targets)
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin targets", ErrInvalidArgument))
@@ -2089,6 +2150,15 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 		// Target eligibility is request authority, not a lifecycle attempt. Reject
 		// it before instance, secret, operation, revision, or runtime-status writes.
 		return storage.PluginInstanceRow{}, err
+	}
+	if exists && len(manifest.HTTPBackendProviders) > 0 {
+		currentTargets, err := pluginConfiguredTargetIDs(manifest, json.RawMessage(instance.TargetJSON), defaultTargetID)
+		if err != nil {
+			return storage.PluginInstanceRow{}, ErrPluginReadProjection
+		}
+		if !samePluginTargetSet(currentTargets, targetIDs) {
+			return storage.PluginInstanceRow{}, fmt.Errorf("%w: HTTP backend instance target cannot be changed through configuration", ErrInvalidArgument)
+		}
 	}
 	for _, targetID := range targetIDs {
 		if err := authorizeReferencedResource(ctx, s.store, "agent", targetID); err != nil {
@@ -2283,11 +2353,31 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}
-	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance, ValidateInstanceScope: true, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), SecretWrites: secretWrites})
+	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance, RequireSingleInstance: requireSingleInstance, ValidateInstanceScope: true, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), SecretWrites: secretWrites})
 	if err == nil && prospective != nil {
 		*prospective = details[0]
 	}
 	return instance, err
+}
+
+func pluginManifestOwnsSingletonControlPlaneSurface(manifest plugins.Manifest) bool {
+	return hasPluginExtension(manifest.ExtensionPoints, pluginsdk.ExtensionUIRoute) ||
+		hasPluginExtension(manifest.ExtensionPoints, pluginsdk.ExtensionResourceGroup)
+}
+
+func pluginConfiguredTargetIDs(manifest plugins.Manifest, raw json.RawMessage, defaultTargetID string) ([]string, error) {
+	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+		return pluginExplicitTargetIDs(raw)
+	}
+	return pluginTargetIDs(raw, defaultTargetID)
+}
+
+func samePluginTargetSet(left, right []string) bool {
+	left = uniqueAgentIDs(left)
+	right = uniqueAgentIDs(right)
+	sort.Strings(left)
+	sort.Strings(right)
+	return reflect.DeepEqual(left, right)
 }
 
 func (s *PluginService) publish(ctx context.Context, request PluginConfigureRequest, frontendURL string, ruleID int) (PluginInstanceDetail, HTTPRule, error) {
@@ -4598,6 +4688,7 @@ func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]sto
 		agent, available := agents[target]
 		status := PluginAgentStatus{FaceID: "agent-execution", InstanceID: instance.ID, AgentID: target, TargetScope: scope, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, OperationID: operationID, OperationKind: operation.Kind, OperationStatus: operation.Status, TargetRevision: targetRevision, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage}
 		if runtimeStatus, found := runtimeStatuses[operationID+"\x00"+target+"\x00"+instance.ID]; found {
+			status.TargetRevision = runtimeStatus.Revision
 			status.GenerationID, status.PackageDigest, status.ArtifactDigest = runtimeStatus.GenerationID, runtimeStatus.PackageDigest, runtimeStatus.ArtifactDigest
 			status.RuntimeState, status.RuntimeErrorCode, status.ReportedAt = runtimeStatus.State, runtimeStatus.ErrorCode, runtimeStatus.ReportedAt
 			status.RuntimeDetails, status.RuntimeBudget = json.RawMessage(runtimeStatus.DetailsJSON), json.RawMessage(runtimeStatus.BudgetJSON)

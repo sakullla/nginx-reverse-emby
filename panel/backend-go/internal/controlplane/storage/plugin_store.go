@@ -633,6 +633,9 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 			return err
 		}
 		now := time.Now().UTC()
+		if err := normalizeDeletedPluginAgentTargetsTx(tx, now, defaultTargetID); err != nil {
+			return err
+		}
 		if err := backfillPluginInstanceOwnershipTx(tx, now, defaultTargetID); err != nil {
 			return err
 		}
@@ -784,6 +787,95 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 	})
 }
 
+func normalizeDeletedPluginAgentTargetsTx(tx *gorm.DB, now time.Time, defaultTargetID string) error {
+	defaultTargetID = strings.TrimSpace(defaultTargetID)
+	if defaultTargetID == "" {
+		return errors.New("canonical local plugin target is unavailable")
+	}
+	var agents []AgentRow
+	if err := tx.Select("id").Find(&agents).Error; err != nil {
+		return err
+	}
+	existing := make(map[string]struct{}, len(agents)+1)
+	existing[defaultTargetID] = struct{}{}
+	for _, agent := range agents {
+		if id := strings.TrimSpace(agent.ID); id != "" {
+			existing[id] = struct{}{}
+		}
+	}
+	var pendingPlugins []string
+	if err := tx.Model(&InstalledPluginRow{}).Where("pending_operation_id <> ?", "").Pluck("plugin_id", &pendingPlugins).Error; err != nil {
+		return err
+	}
+	pendingByPlugin := make(map[string]struct{}, len(pendingPlugins))
+	for _, pluginID := range pendingPlugins {
+		pendingByPlugin[pluginID] = struct{}{}
+	}
+	var instances []PluginInstanceRow
+	if err := tx.Order("plugin_id, id").Find(&instances).Error; err != nil {
+		return err
+	}
+	filter := func(raw string) ([]string, []string, error) {
+		targets, err := pluginInstanceExplicitTargets(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		kept := make([]string, 0, len(targets))
+		removed := make([]string, 0)
+		for _, target := range targets {
+			if _, ok := existing[target]; ok {
+				kept = append(kept, target)
+			} else {
+				removed = append(removed, target)
+			}
+		}
+		return kept, removed, nil
+	}
+	for _, instance := range instances {
+		active, removedActive, err := filter(instance.TargetJSON)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s active targets: %w", instance.ID, err)
+		}
+		pendingRaw := strings.TrimSpace(instance.PendingTargetJSON)
+		pending, removedPending := []string(nil), []string(nil)
+		if pendingRaw != "" {
+			pending, removedPending, err = filter(instance.PendingTargetJSON)
+			if err != nil {
+				return fmt.Errorf("plugin instance %s pending targets: %w", instance.ID, err)
+			}
+		} else if _, ok := pendingByPlugin[instance.PluginID]; ok && len(removedActive) > 0 {
+			pending = append([]string(nil), active...)
+		}
+		if len(removedActive) == 0 && len(removedPending) == 0 {
+			continue
+		}
+		activeJSON, err := json.Marshal(active)
+		if err != nil {
+			return err
+		}
+		updates := map[string]any{"target_json": string(activeJSON), "state_version": gorm.Expr("state_version + 1"), "updated_at": now}
+		if pendingRaw != "" || pending != nil {
+			pendingJSON, err := json.Marshal(pending)
+			if err != nil {
+				return err
+			}
+			updates["pending_target_json"] = string(pendingJSON)
+		}
+		if err := tx.Model(&PluginInstanceRow{}).Where("id = ? AND plugin_id = ?", instance.ID, instance.PluginID).Updates(updates).Error; err != nil {
+			return err
+		}
+		removed := append(append([]string(nil), removedActive...), removedPending...)
+		if len(removed) > 0 {
+			if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+				Where("plugin_id = ? AND instance_id = ? AND agent_id IN ? AND authority_slot IN ?", instance.PluginID, instance.ID, removed, []string{"active", "pending"}).
+				Update("authority_slot", "retired").Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func pluginGrantKey(row PluginGrantRow) string {
 	return pluginStorageDigest(row.PluginID, strings.ToLower(row.PackageDigest), row.Permission, row.ResourceSelector)
 }
@@ -829,7 +921,7 @@ func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time, defaultTarget
 		if err := tx.Where("id = ?", groupID).First(&group).Error; err != nil {
 			return fmt.Errorf("plugin instance %s resource group %s is unavailable", instance.ID, groupID)
 		}
-		targets, err := pluginInstanceTargets(instance.TargetJSON, defaultTargetID)
+		targets, err := pluginInstanceExplicitTargets(instance.TargetJSON)
 		if err != nil {
 			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 		}
@@ -3362,6 +3454,7 @@ type PluginMutation struct {
 	ReplaceGrants              []PluginGrantRow
 	ReplaceInstance            *PluginInstanceRow
 	ReplaceInstances           []PluginInstanceRow
+	RequireSingleInstance      bool
 	DeleteInstanceID           string
 	DeleteInstanceHTTPRules    bool
 	ExpectedInstanceVersion    uint64
@@ -3535,6 +3628,15 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 	if mutation.Package != nil {
 		if err := ensurePluginPackageTx(tx, *mutation.Package, mutation.Artifacts); err != nil {
 			return err
+		}
+	}
+	if mutation.RequireSingleInstance && mutation.ReplaceInstance != nil {
+		var otherInstances int64
+		if err := tx.Model(&PluginInstanceRow{}).Where("plugin_id = ? AND id <> ?", mutation.PluginID, mutation.ReplaceInstance.ID).Count(&otherInstances).Error; err != nil {
+			return err
+		}
+		if otherInstances > 0 {
+			return fmt.Errorf("%w: plugin control-plane application already has an instance", ErrPluginConflict)
 		}
 	}
 	if mutation.DeletePlugin {

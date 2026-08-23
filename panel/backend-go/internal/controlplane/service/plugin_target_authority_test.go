@@ -150,6 +150,41 @@ func TestPluginConfigureAllowsDualFaceManifestToFormRemoteAgentGeneration(t *tes
 	}
 }
 
+func TestPluginDeleteInstanceIgnoresTargetAgentDeletedOutOfBand(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.stale-agent", true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+	instanceID := strings.Repeat("f", 64)
+
+	if _, err := fixture.service.ConfigureMutation(ctx, fixture.configureRequest("edge-a", instanceID)); err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	instance := mustPluginInstanceByID(t, fixture.store, instanceID)
+	installed, ok, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !ok {
+		t.Fatalf("GetInstalledPlugin() ok=%v err=%v", ok, err)
+	}
+	if _, err := fixture.service.CompleteConfigure(ctx, PluginApplyResult{
+		PluginID: fixture.pluginID, InstanceID: instance.ID, OperationID: instance.PendingOperationID,
+		TargetRevision: installed.PendingRevision, TargetDigest: installed.PendingTargetDigest,
+		ConfigVersion: instance.PendingVersion, ActorID: "admin", Applied: true, AgentResults: map[string]any{},
+	}); err != nil {
+		t.Fatalf("CompleteConfigure() error = %v", err)
+	}
+	if err := fixture.store.DeleteAgent(ctx, "edge-a"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+
+	err = fixture.service.DeleteInstanceMutation(ctx, PluginDeleteInstanceRequest{
+		PluginID: fixture.pluginID, InstanceID: instanceID, ActorID: "admin", Actor: pluginPublishAdmin(),
+	})
+	if err != nil {
+		t.Fatalf("DeleteInstanceMutation() error = %v", err)
+	}
+	if _, found, err := fixture.store.GetPluginInstance(ctx, instanceID); err != nil || found {
+		t.Fatalf("GetPluginInstance() after delete = (_, %v, %v), want deleted", found, err)
+	}
+}
+
 func TestPluginConfigureAllowsDualFaceManagementOnlyWithoutAgentGeneration(t *testing.T) {
 	fixture := newPluginTargetAuthorityFixture(t, "official.dual-management-only", true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
@@ -171,6 +206,25 @@ func TestPluginConfigureAllowsDualFaceManagementOnlyWithoutAgentGeneration(t *te
 		if len(generations) != 0 {
 			t.Fatalf("management-only Agent generations for %s = %+v", agentID, generations)
 		}
+	}
+}
+
+func TestPluginConfigureRejectsSecondGlobalControlPlaneInstance(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.singleton-app", true, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+
+	if _, err := fixture.service.ConfigureMutation(ctx, fixture.configureRequest("edge-a", "singleton-a")); err != nil {
+		t.Fatalf("first ConfigureMutation() error = %v", err)
+	}
+	completePluginTargetConfigure(t, fixture, "singleton-a")
+
+	_, err := fixture.service.ConfigureMutation(ctx, fixture.configureRequest("edge-a", "singleton-b"))
+	if !errors.Is(err, ErrPluginConflict) || !strings.Contains(err.Error(), "already has an instance") {
+		t.Fatalf("second ConfigureMutation() error = %v, want singleton conflict", err)
+	}
+	instances, listErr := fixture.store.ListPluginInstances(ctx, fixture.pluginID)
+	if listErr != nil || len(instances) != 1 || instances[0].ID != "singleton-a" {
+		t.Fatalf("instances after rejected configure = %+v, err=%v", instances, listErr)
 	}
 }
 
@@ -229,6 +283,23 @@ func TestPluginAgentFaceStatusSummaryExcludesControlPlaneRuntimeFailure(t *testi
 	}
 }
 
+func TestPluginAgentStatusUsesPerAgentRuntimeRevision(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	statuses := appendPluginAgentStatuses(nil,
+		map[string]storage.AgentRow{"edge-a": {ID: "edge-a", CurrentRevision: 439, DesiredRevision: 1}},
+		map[string]storage.PluginOperationRow{"operation": {ID: "operation", Kind: "configure", Status: "succeeded", TargetRevision: 457}},
+		map[string]storage.PluginAgentRuntimeStatusRow{"operation\x00edge-a\x00instance": {
+			OperationID: "operation", AgentID: "edge-a", InstanceID: "instance", Revision: 439,
+			GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "active",
+		}},
+		storage.InstalledPluginRow{}, storage.PluginInstanceRow{ID: "instance", CurrentState: "active"},
+		[]string{"edge-a"}, "active", "operation", json.RawMessage(`{}`),
+	)
+	if len(statuses) != 1 || statuses[0].TargetRevision != 439 || statuses[0].CurrentRevision != 439 {
+		t.Fatalf("Agent status revisions = %+v, want per-Agent target/current revision 439", statuses)
+	}
+}
+
 type pluginTargetAuthorityFixture struct {
 	pluginID string
 	store    *storage.GormStore
@@ -248,7 +319,7 @@ func pluginRuntimeStatusCount(t *testing.T, store *storage.GormStore, operations
 	return total
 }
 
-func newPluginTargetAuthorityFixture(t *testing.T, pluginID string, dualFace bool) pluginTargetAuthorityFixture {
+func newPluginTargetAuthorityFixture(t *testing.T, pluginID string, dualFace bool, singletonSurface ...bool) pluginTargetAuthorityFixture {
 	t.Helper()
 	store := newServiceOwnerStore(t)
 	now := time.Date(2026, 8, 23, 8, 0, 0, 0, time.UTC)
@@ -274,7 +345,7 @@ func newPluginTargetAuthorityFixture(t *testing.T, pluginID string, dualFace boo
 	}
 	trust := marketplace.SignatureTrust{SourceID: "target-authority-fixture", SourceKind: marketplace.SourceKindCustom, KeyID: "test-fixture", PublicKey: publicKey, Fingerprint: fingerprint}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": key.Public().(ed25519.PublicKey)}, TrustedSignerPolicy: plugins.TrustedSignerPolicyExact, TargetGOOS: runtime.GOOS, TargetGOARCH: runtime.GOARCH})
-	candidate := importPackageCandidate(t, cacheRoot, writePluginTargetAuthorityPackage(t, pluginID, dualFace, key), validator, trust)
+	candidate := importPackageCandidate(t, cacheRoot, writePluginTargetAuthorityPackage(t, pluginID, dualFace, key, len(singletonSurface) > 0 && singletonSurface[0]), validator, trust)
 	service := NewPluginServiceWithValidator(store, validator, cacheRoot)
 	if _, err := service.Install(t.Context(), PluginInstallRequest{Package: candidate, ActorID: "admin", RiskAccepted: true}); err != nil {
 		t.Fatalf("Install() error = %v", err)
@@ -292,12 +363,28 @@ func newPluginTargetAuthorityFixture(t *testing.T, pluginID string, dualFace boo
 	return pluginTargetAuthorityFixture{pluginID: pluginID, store: store, service: service}
 }
 
+func completePluginTargetConfigure(t *testing.T, fixture pluginTargetAuthorityFixture, instanceID string) {
+	t.Helper()
+	instance := mustPluginInstanceByID(t, fixture.store, instanceID)
+	installed, ok, err := fixture.store.GetInstalledPlugin(t.Context(), fixture.pluginID)
+	if err != nil || !ok {
+		t.Fatalf("GetInstalledPlugin() ok=%v err=%v", ok, err)
+	}
+	if _, err := fixture.service.CompleteConfigure(t.Context(), PluginApplyResult{
+		PluginID: fixture.pluginID, InstanceID: instance.ID, OperationID: instance.PendingOperationID,
+		TargetRevision: installed.PendingRevision, TargetDigest: installed.PendingTargetDigest,
+		ConfigVersion: instance.PendingVersion, ActorID: "admin", Applied: true, AgentResults: map[string]any{},
+	}); err != nil {
+		t.Fatalf("CompleteConfigure() error = %v", err)
+	}
+}
+
 func (f pluginTargetAuthorityFixture) configureRequest(target, instanceID string) PluginConfigureRequest {
 	chains := []string{}
 	return PluginConfigureRequest{PluginID: f.pluginID, InstanceID: instanceID, ResourceGroupID: "default", Targets: []string{target}, PolicyChains: &chains, Config: json.RawMessage(`{}`), SecretReplacements: map[string]json.RawMessage{"/token": json.RawMessage(`"fixture-secret"`)}, ActorID: "admin", Actor: pluginPublishAdmin()}
 }
 
-func writePluginTargetAuthorityPackage(t *testing.T, pluginID string, dualFace bool, key ed25519.PrivateKey) string {
+func writePluginTargetAuthorityPackage(t *testing.T, pluginID string, dualFace bool, key ed25519.PrivateKey, singletonSurface bool) string {
 	t.Helper()
 	root := t.TempDir()
 	writePublishFile(t, root, plugins.ConfigSchemaFile, targetAuthorityConfigSchema)
@@ -306,6 +393,10 @@ func writePluginTargetAuthorityPackage(t *testing.T, pluginID string, dualFace b
 	hostScopes := ""
 	if dualFace {
 		hostScopes = "  host_scopes: [control-plane, agent]\n"
+	}
+	extensions := "extension_points: [dns.provider]\n"
+	if singletonSurface {
+		extensions = "extension_points: [dns.provider, ui.route]\nui_route_id: singleton-app\n"
 	}
 	manifest := fmt.Sprintf(`schema_version: 1
 id: %s
@@ -326,8 +417,7 @@ artifacts:
     mode: executable
     goos: %s
     goarch: %s
-extension_points: [dns.provider]
-permissions: []
+%spermissions: []
 config_schema: config.schema.json
 resource_budget:
   timeout_ms: 2000
@@ -353,7 +443,7 @@ cleanup:
   grants: delete
   shared_refs: retain
   audit_events: retain
-`, pluginID, hostScopes, artifactPath, hex.EncodeToString(digest[:]), len(artifact), runtime.GOOS, runtime.GOARCH)
+`, pluginID, hostScopes, artifactPath, hex.EncodeToString(digest[:]), len(artifact), runtime.GOOS, runtime.GOARCH, extensions)
 	writePublishFile(t, root, plugins.PackageManifestFile, manifest)
 	packageDigest, err := plugins.ComputePackageDigest(root)
 	if err != nil {

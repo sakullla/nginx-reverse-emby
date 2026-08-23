@@ -1,7 +1,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import * as hostApi from '../../api'
-import { configurePlugin, enablePlugin, publishPlugin } from '../../api/plugins'
+import { configurePlugin, enablePlugin, publishPlugin, waitForPluginOperation } from '../../api/plugins'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
 import { pickDefaultResourceGroupID, resourceGroupDisplayName } from '../../context/useAccessControl'
 import BaseModal from '../base/BaseModal.vue'
@@ -415,8 +415,13 @@ async function deploy(payload) {
       return
     }
     const created = await configurePlugin(props.pluginId, { ...request, bindings: [] })
+    if (props.desiredLifecycle !== 'enabled' && props.currentLifecycle !== 'active') {
+      const operationID = String(created?.pending_operation_id || '').trim()
+      if (operationID) await waitForPluginOperation(props.pluginId, operationID)
+      configured = true
+      await enablePlugin(props.pluginId)
+    }
     configured = true
-    if (props.desiredLifecycle !== 'enabled' && props.currentLifecycle !== 'active') await enablePlugin(props.pluginId)
     messageStore.success('插件已部署')
     emit('deployed', created?.id || instanceID)
     emit('update:modelValue', false)

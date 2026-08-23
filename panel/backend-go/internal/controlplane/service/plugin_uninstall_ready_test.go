@@ -64,3 +64,17 @@ func TestSupersedePendingPlugin(t *testing.T) {
 		t.Fatalf("instance pending was not cleared: %+v", instances[0])
 	}
 }
+
+func TestTerminalPluginRuntimeStatusUsesCoordinatorTerminalState(t *testing.T) {
+	status := storage.PluginAgentRuntimeStatusRow{State: "applying", ErrorCode: "", DetailsJSON: `{}`}
+	revision := storage.AgentRevisionRow{State: storage.AgentRevisionStateSuperseded, ErrorCode: "agent_deleted"}
+
+	terminalStatus, terminal, applied := terminalPluginRuntimeStatus(status, revision, true)
+	if !terminal || applied || terminalStatus.State != "failed" || terminalStatus.ErrorCode != "agent_deleted" {
+		t.Fatalf("terminalPluginRuntimeStatus() = (%+v, %t, %t), want failed agent_deleted terminal", terminalStatus, terminal, applied)
+	}
+
+	if _, terminal, _ := terminalPluginRuntimeStatus(status, storage.AgentRevisionRow{State: storage.AgentRevisionStateApplying}, true); terminal {
+		t.Fatal("applying coordinator revision was treated as terminal")
+	}
+}

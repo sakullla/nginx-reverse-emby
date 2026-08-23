@@ -46,6 +46,12 @@ describe('plugin administration API', () => {
     expect(del).toHaveBeenCalledWith('/plugins/official.rpc/instances/instance%2Fa', longRunningRequest)
   })
 
+  it('waits on the exact lifecycle operation before continuing', async () => {
+    get.mockResolvedValueOnce({ data: { operations: [{ id: 'op-configure', status: 'succeeded', completed_at: '2026-08-23T10:55:12Z' }] } })
+    await expect(plugins.waitForPluginOperation('official.rpc', 'op-configure')).resolves.toMatchObject({ status: 'succeeded' })
+    expect(get).toHaveBeenCalledWith('/plugins/official.rpc/operations')
+  })
+
   it('redacts secret-bearing read projections and rejects arbitrary actions', async () => {
     get.mockResolvedValue({ data: {
       plugin: {},

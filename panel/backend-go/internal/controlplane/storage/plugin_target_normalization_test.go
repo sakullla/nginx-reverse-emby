@@ -10,6 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	"gorm.io/gorm"
 )
 
 func TestPluginLegacyTargetNormalizationIsManifestBoundAndIdempotent(t *testing.T) {
@@ -136,6 +137,92 @@ func TestPluginLegacyTargetNormalizationIsManifestBoundAndIdempotent(t *testing.
 	second := pluginTargetNormalizationSnapshot(t, store)
 	if !reflect.DeepEqual(second, first) {
 		t.Fatalf("normalization is not idempotent:\nfirst=%+v\nsecond=%+v", first, second)
+	}
+}
+
+func TestPluginOwnershipBackfillPrunesDeletedAgentTargets(t *testing.T) {
+	store := newStorageMigrationTestStore(t, "local")
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertBuiltinResourceGroup(t.Context(), ResourceGroupRow{ID: "default", Name: "default", Builtin: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{ID: "edge-live", Name: "edge-live"}); err != nil {
+		t.Fatal(err)
+	}
+	instances := []PluginInstanceRow{
+		pluginTargetNormalizationInstance("instance-partial", "official.partial", now),
+		pluginTargetNormalizationInstance("instance-orphan", "official.orphan", now),
+	}
+	instances[0].TargetJSON = `["edge-live","edge-deleted"]`
+	instances[0].PendingTargetJSON = `["edge-live","edge-deleted"]`
+	instances[1].TargetJSON = `["edge-deleted"]`
+	instances[1].PendingTargetJSON = `["edge-deleted"]`
+	if err := store.db.Create(&instances).Error; err != nil {
+		t.Fatal(err)
+	}
+	statuses := []PluginAgentRuntimeStatusRow{
+		pluginTargetNormalizationStatus("op-partial-live", "edge-live", instances[0], "active", now),
+		pluginTargetNormalizationStatus("op-partial-deleted", "edge-deleted", instances[0], "active", now),
+		pluginTargetNormalizationStatus("op-orphan-deleted", "edge-deleted", instances[1], "pending", now),
+	}
+	if err := store.db.Create(&statuses).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Transaction(func(tx *gorm.DB) error {
+		if err := normalizeDeletedPluginAgentTargetsTx(tx, now, "local"); err != nil {
+			return err
+		}
+		return backfillPluginInstanceOwnershipTx(tx, now, "local")
+	}); err != nil {
+		t.Fatalf("plugin ownership backfill error = %v", err)
+	}
+
+	var got []PluginInstanceRow
+	if err := store.db.Order("id").Find(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]PluginInstanceRow{got[0].ID: got[0], got[1].ID: got[1]}
+	if row := byID["instance-partial"]; row.TargetJSON != `["edge-live"]` || row.PendingTargetJSON != `["edge-live"]` || row.StateVersion != 3 {
+		t.Fatalf("partially pruned instance = %+v", row)
+	}
+	if row := byID["instance-orphan"]; row.TargetJSON != `[]` || row.PendingTargetJSON != `[]` || row.StateVersion != 3 {
+		t.Fatalf("orphan-pruned instance = %+v", row)
+	}
+	var bindings []ResourceBindingRow
+	if err := store.db.Where("resource_kind = ?", "plugin_instance").Order("resource_id").Find(&bindings).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range bindings {
+		if binding.ResourceID == "instance-partial" && (binding.ParentResourceKind != "agent" || binding.ParentResourceID != "edge-live") {
+			t.Fatalf("partial instance binding = %+v", binding)
+		}
+		if binding.ResourceID == "instance-orphan" && (binding.ParentResourceKind != "" || binding.ParentResourceID != "") {
+			t.Fatalf("orphan instance binding = %+v", binding)
+		}
+	}
+	var gotStatuses []PluginAgentRuntimeStatusRow
+	if err := store.db.Order("operation_id").Find(&gotStatuses).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range gotStatuses {
+		want := "retired"
+		if status.AgentID == "edge-live" {
+			want = "active"
+		}
+		if status.AuthoritySlot != want {
+			t.Fatalf("status %s authority = %q, want %q", status.OperationID, status.AuthoritySlot, want)
+		}
+	}
+
+	first := pluginTargetNormalizationSnapshot(t, store)
+	if err := store.db.Transaction(func(tx *gorm.DB) error {
+		return normalizeDeletedPluginAgentTargetsTx(tx, now.Add(time.Minute), "local")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := pluginTargetNormalizationSnapshot(t, store)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("deleted-target normalization is not idempotent:\nfirst=%+v\nsecond=%+v", first, second)
 	}
 }
 

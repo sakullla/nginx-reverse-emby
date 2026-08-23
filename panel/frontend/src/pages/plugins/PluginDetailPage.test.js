@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(), deletePluginInstance: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(), fetchHttpRulesPage: vi.fn(),
   fetchAllAgentsRules: vi.fn(), fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
+  waitForPluginOperation: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' } }), useRouter: () => ({ push: mocks.push }) }))
@@ -21,7 +22,8 @@ vi.mock('../../api/plugins', () => ({
   fetchPluginDetail: mocks.fetchPluginDetail, fetchPluginOperations: mocks.fetchPluginOperations, configurePlugin: mocks.configurePlugin,
   publishPlugin: mocks.publishPlugin, unpublishPlugin: mocks.unpublishPlugin,
   enablePlugin: mocks.enablePlugin, disablePlugin: mocks.disablePlugin, rollbackPlugin: mocks.rollbackPlugin, uninstallPlugin: mocks.uninstallPlugin, deletePluginInstance: mocks.deletePluginInstance,
-  invokePluginDynamicAction: mocks.invokePluginDynamicAction, fetchPluginLogs: mocks.fetchPluginLogs
+  invokePluginDynamicAction: mocks.invokePluginDynamicAction, fetchPluginLogs: mocks.fetchPluginLogs,
+  waitForPluginOperation: mocks.waitForPluginOperation
 }))
 vi.mock('../../api/operations', () => ({ retryRevision: mocks.retryRevision }))
 vi.mock('../../context/useAccessControl', async (original) => {
@@ -278,6 +280,7 @@ beforeEach(() => {
   mocks.rollbackPlugin.mockReset().mockResolvedValue({})
   mocks.uninstallPlugin.mockReset().mockResolvedValue({})
   mocks.deletePluginInstance.mockReset().mockResolvedValue(true)
+  mocks.waitForPluginOperation.mockReset().mockResolvedValue({ status: 'succeeded' })
   mocks.invokePluginDynamicAction.mockReset()
   mocks.fetchPluginLogs.mockReset().mockResolvedValue({ entries: [], next_cursor: '' })
   mocks.fetchAgents.mockReset().mockResolvedValue([
@@ -1250,5 +1253,18 @@ describe('PluginDetailPage', () => {
     expect(more.text()).toMatch(/运行日志/)
     expect(more.text()).toMatch(/生命周期操作与审计/)
     expect(buttonByText(more, '导出脱敏诊断')).toBeTruthy()
+  })
+
+  it('does not offer a second instance for a plugin that owns a global control-plane surface', async () => {
+    const base = makeDetail()
+    const wrapper = await mountPage({
+      ...base,
+      package: {
+        ...base.package,
+        manifest: { ...base.package.manifest, extension_points: ['ui.route', 'resource.group'] }
+      }
+    })
+    expect(buttonByText(wrapper, '部署')).toBeFalsy()
+    expect(buttonByText(wrapper, '编辑配置')).toBeTruthy()
   })
 })

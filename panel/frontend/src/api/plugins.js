@@ -50,6 +50,50 @@ export async function fetchPluginOperations(pluginID) {
   return Array.isArray(data?.operations) ? data.operations.map((item) => redactPluginProjection(item)) : []
 }
 
+export const PLUGIN_OPERATION_POLL_INTERVAL_MS = 500
+export const PLUGIN_OPERATION_WAIT_TIMEOUT_MS = 120000
+
+function waitForNextPluginOperationPoll(delay, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('plugin operation wait was cancelled'))
+      return
+    }
+    const onAbort = () => {
+      globalThis.clearTimeout(timer)
+      reject(new Error('plugin operation wait was cancelled'))
+    }
+    const timer = globalThis.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delay)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+export async function waitForPluginOperation(pluginID, operationID, options = {}) {
+  const id = String(operationID || '').trim()
+  if (!id) throw new Error('plugin operation id is required')
+  const timeout = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : PLUGIN_OPERATION_WAIT_TIMEOUT_MS
+  const interval = Number(options.pollIntervalMs) > 0 ? Number(options.pollIntervalMs) : PLUGIN_OPERATION_POLL_INTERVAL_MS
+  const deadline = Date.now() + timeout
+  let lastStatus = 'not found'
+  do {
+    const operations = await fetchPluginOperations(pluginID)
+    const operation = operations.find((item) => String(item?.id || '').trim() === id)
+    if (operation) {
+      lastStatus = String(operation.status || '').trim().toLowerCase() || 'unknown'
+      if (lastStatus === 'succeeded') return operation
+      if (operation.completed_at || ['failed', 'cancelled', 'superseded'].includes(lastStatus)) {
+        throw new Error(operation.error || `plugin operation ${lastStatus}`)
+      }
+    }
+    if (Date.now() >= deadline) break
+    await waitForNextPluginOperationPoll(interval, options.signal)
+  } while (Date.now() < deadline)
+  throw new Error(`plugin operation did not complete before timeout (last status: ${lastStatus})`)
+}
+
 export const PLUGIN_PACKAGE_DETAIL_TIMEOUT_MS = 180000
 
 export async function fetchPluginPackageDetail(selection) {

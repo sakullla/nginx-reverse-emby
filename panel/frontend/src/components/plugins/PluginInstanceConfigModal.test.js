@@ -122,6 +122,27 @@ describe('PluginInstanceConfigModal target authority', () => {
     }))
   })
 
+  it('keeps an HTTP-backed instance target fixed while editing configuration', async () => {
+    const wrapper = mountModal(
+      { canonical_local_target_id: 'local-control', agent_targets_allowed: true },
+      {
+        hasHTTPBackend: true,
+        faces: [{ face_id: 'local-management' }, { face_id: 'agent-execution' }],
+        packageDetail: { manifest: { extension_points: [], http_backend_providers: [{ id: 'default' }] } },
+        publishedEntries: [{ rule_id: 1, agent_id: 'edge-a', frontend_url: 'https://example.test', enabled: true }]
+      }
+    )
+    expect(wrapper.find('[data-test="plugin-config-face-switch"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-config-agent-targets"]').exists()).toBe(false)
+
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.plugin', expect.objectContaining({
+      targets: ['edge-a']
+    }))
+  })
+
   it('blocks a local save when the canonical target is missing', async () => {
     const wrapper = mountModal({ canonical_local_target_id: '', agent_targets_allowed: false })
     await wrapper.get('[data-test="save-config"]').trigger('click')

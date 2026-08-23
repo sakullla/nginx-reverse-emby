@@ -1580,11 +1580,15 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 				// lease and pull response.
 				durable.Snapshot.PKISecurity = nil
 				durable.Snapshot = heartbeatRevisionSnapshot(durable.Snapshot)
-				_, durableComparableDigest, compareErr := revision.CanonicalSnapshotPayload(durable.Snapshot)
+				_, durableComparableDigest, compareErr := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(durable.Snapshot))
 				if compareErr != nil {
 					return "", compareErr
 				}
-				if !strings.EqualFold(durableComparableDigest, digest) {
+				_, liveComparableDigest, compareErr := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(revisionSnapshot))
+				if compareErr != nil {
+					return "", compareErr
+				}
+				if !strings.EqualFold(durableComparableDigest, liveComparableDigest) {
 					return "", errors.New("heartbeat snapshot differs from its durable revision")
 				}
 				if strings.TrimSpace(durable.Revision.SnapshotDigest) == "" {
@@ -1630,6 +1634,16 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 
 func heartbeatRevisionSnapshot(snapshot storage.Snapshot) storage.Snapshot {
 	snapshot.VersionPackage = nil
+	return snapshot
+}
+
+func heartbeatComparableSnapshot(snapshot storage.Snapshot) storage.Snapshot {
+	snapshot = heartbeatRevisionSnapshot(snapshot)
+	for index := range snapshot.RelayListeners {
+		snapshot.RelayListeners[index].PKIIdentityID = ""
+		snapshot.RelayListeners[index].PKIIdentityState = ""
+		snapshot.RelayListeners[index].PKICertificateID = ""
+	}
 	return snapshot
 }
 

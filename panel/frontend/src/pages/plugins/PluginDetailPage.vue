@@ -199,6 +199,11 @@ const deployModalInstance = computed(() => (deployIntent.value === 'deploy' ? nu
 
 const hasPendingOperation = computed(() => Boolean(String(detail.value?.plugin?.pending_operation_id || '').trim()))
 const hasInstances = computed(() => (detail.value?.instances || []).length > 0)
+const ownsSingletonControlPlaneSurface = computed(() => {
+  const points = detail.value?.package?.manifest?.extension_points
+  return Array.isArray(points) && (points.includes('ui.route') || points.includes('resource.group'))
+})
+const canCreateInstance = computed(() => !ownsSingletonControlPlaneSurface.value || !hasInstances.value)
 const showUninstallOnTask = computed(() => admin.value && !hasInstances.value)
 const uninstallNeedsDisable = computed(() => hasInstances.value && detail.value?.plugin?.current_lifecycle !== 'disabled' && detail.value?.plugin?.desired_lifecycle !== 'disabled')
 
@@ -430,6 +435,9 @@ function cancelConfirm() {
 
 function humanPluginError(cause, fallback) {
   const raw = sanitizePluginText(cause?.message || fallback || '').trim()
+  if (/control-plane application already has an instance/i.test(raw)) {
+    return '这个控制面应用已经有一个实例，请编辑现有实例。'
+  }
   if (/already pending|plugin state conflict/i.test(raw)) {
     return '这个插件还有未完成的操作，所以这次没有提交。等当前停用/升级结束后再试。'
   }
@@ -673,7 +681,7 @@ async function retryAgent(status) {
             <h2>实例</h2>
             <p>查看实例状态；部署与配置编辑在弹窗中完成。</p>
           </div>
-          <button v-if="admin" class="btn btn-secondary" type="button" :disabled="!!busy" @click="openDeployModal('deploy')">
+          <button v-if="admin && canCreateInstance" class="btn btn-secondary" type="button" :disabled="!!busy" @click="openDeployModal('deploy')">
             部署
           </button>
         </div>

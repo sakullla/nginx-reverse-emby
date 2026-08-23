@@ -183,6 +183,29 @@ func TestPluginPublishWritesSingleEnabledHTTPRuleWithoutLiveCatalog(t *testing.T
 	}
 }
 
+func TestPluginConfigureCannotRetargetHTTPBackendInstance(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	addPluginPublishAgent(t, fixture.store, "edge-b")
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	if _, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "https://emby.example.com", 0)); err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	completePublishedConfigure(t, fixture)
+	chains := []string{}
+
+	_, err := fixture.service.ConfigureMutation(ctx, PluginConfigureRequest{
+		PluginID: fixture.pluginID, InstanceID: "provider-1", ResourceGroupID: "default",
+		Targets: []string{"edge-b"}, PolicyChains: &chains, Config: json.RawMessage(`{}`),
+		ActorID: "admin", Actor: pluginPublishAdmin(),
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "target cannot be changed") {
+		t.Fatalf("ConfigureMutation() error = %v, want immutable HTTP target rejection", err)
+	}
+	if targets := instanceTargets(t, mustPluginInstanceByID(t, fixture.store, "provider-1")); len(targets) != 1 || targets[0] != "local" {
+		t.Fatalf("HTTP backend targets after rejection = %v, want [local]", targets)
+	}
+}
+
 func TestPluginListProjectsInstalledVersionForMarketplaceComparison(t *testing.T) {
 	t.Parallel()
 	fixture := newPluginPublishFixture(t, true)

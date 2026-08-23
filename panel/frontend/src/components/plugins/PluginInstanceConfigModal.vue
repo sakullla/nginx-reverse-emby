@@ -52,6 +52,7 @@ const canonicalLocalTargetID = computed(() => String(props.targetEligibility?.ca
 const hasLocalManagementFace = computed(() => props.faces.some((face) => face?.face_id === 'local-management'))
 const hasAgentExecutionFace = computed(() => props.faces.some((face) => face?.face_id === 'agent-execution'))
 const dualFaceRuntime = computed(() => hasLocalManagementFace.value && hasAgentExecutionFace.value)
+const canEditExecutionTargets = computed(() => usesAgentExecutionTargets.value && !httpBackendDeclared.value)
 const showingAgentExecutionFace = computed(() => !dualFaceRuntime.value || activeFace.value === 'agent-execution')
 const sortedAgents = computed(() => props.agents
   .filter((agent) => !dualFaceRuntime.value || String(agent?.id || '') !== canonicalLocalTargetID.value)
@@ -114,9 +115,9 @@ watch(() => props.modelValue, (open) => {
     loadedHttpRules.value = []
     return
   }
-  activeFace.value = dualFaceRuntime.value
+  activeFace.value = dualFaceRuntime.value && !httpBackendDeclared.value
     ? (props.initialFace === 'agent-execution' ? 'agent-execution' : 'local-management')
-    : (hasAgentExecutionFace.value ? 'agent-execution' : 'local-management')
+    : 'local-management'
   editableTargets.value = [...new Set((props.instance?.targets || [])
     .map((target) => String(target || '').trim())
     .filter((target) => target && (!dualFaceRuntime.value || target !== canonicalLocalTargetID.value)))]
@@ -377,7 +378,7 @@ async function save(payload) {
   try {
     const instance = props.instance
     const persistedTargets = [...new Set((instance.targets || []).map((target) => String(target || '').trim()).filter(Boolean))]
-    const configureTargets = dualFaceRuntime.value && activeFace.value === 'local-management'
+    const configureTargets = httpBackendDeclared.value || (dualFaceRuntime.value && activeFace.value === 'local-management')
       ? persistedTargets
       : instanceTargets.value
     await configurePlugin(props.pluginId, {
@@ -462,7 +463,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <section class="plugin-instance-config" :aria-label="httpBackendDeclared && (intent === 'publish' || needsPublish) ? '发布到域名' : '编辑实例配置'">
-      <div v-if="dualFaceRuntime" class="plugin-face-switch" role="tablist" aria-label="选择插件运行面" data-test="plugin-config-face-switch">
+      <div v-if="dualFaceRuntime && !httpBackendDeclared" class="plugin-face-switch" role="tablist" aria-label="选择插件运行面" data-test="plugin-config-face-switch">
         <button
           type="button"
           role="tab"
@@ -490,7 +491,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
         本地管理面 · 目标固定为 {{ canonicalLocalTargetID || '不可用' }}，不会提交远端 Agent。
       </p>
       <fieldset
-        v-else-if="usesAgentExecutionTargets && showingAgentExecutionFace"
+        v-else-if="canEditExecutionTargets && showingAgentExecutionFace"
         class="plugin-execution-targets"
         data-test="plugin-config-agent-targets"
       >
