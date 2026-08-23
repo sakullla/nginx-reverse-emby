@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,6 +147,61 @@ func TestPluginConfigureAllowsDualFaceManifestToFormRemoteAgentGeneration(t *tes
 	}
 	if generation.Artifact.GOOS != runtime.GOOS || generation.Artifact.GOARCH != runtime.GOARCH || !generation.Artifact.SignatureVerified {
 		t.Fatalf("Agent generation artifact = %+v", generation.Artifact)
+	}
+}
+
+func TestPluginDetailProjectsManifestDerivedFacesAndTargetEligibility(t *testing.T) {
+	t.Run("control-plane only", func(t *testing.T) {
+		fixture := newPluginTargetAuthorityFixture(t, "official.detail-control", false)
+		ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+		if _, err := fixture.service.ConfigureMutation(ctx, fixture.configureRequest("local", "detail-control-instance")); err != nil {
+			t.Fatalf("ConfigureMutation() error = %v", err)
+		}
+		detail, err := fixture.service.Detail(ctx, fixture.pluginID)
+		if err != nil {
+			t.Fatalf("Detail() error = %v", err)
+		}
+		wantFaces := []PluginDeploymentFace{{FaceID: "local-management", HostScope: "control-plane"}}
+		if !reflect.DeepEqual(detail.Faces, wantFaces) || detail.TargetEligibility.CanonicalLocalTargetID != "local" || detail.TargetEligibility.AgentTargetsAllowed {
+			t.Fatalf("control-plane detail projection = faces:%+v eligibility:%+v", detail.Faces, detail.TargetEligibility)
+		}
+		if len(detail.AgentStatuses) != 0 {
+			t.Fatalf("control-plane Agent statuses = %+v", detail.AgentStatuses)
+		}
+	})
+
+	t.Run("dual face", func(t *testing.T) {
+		fixture := newPluginTargetAuthorityFixture(t, "official.detail-dual", true)
+		ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+		if _, err := fixture.service.ConfigureMutation(ctx, fixture.configureRequest("edge-a", "detail-dual-instance")); err != nil {
+			t.Fatalf("ConfigureMutation() error = %v", err)
+		}
+		detail, err := fixture.service.Detail(ctx, fixture.pluginID)
+		if err != nil {
+			t.Fatalf("Detail() error = %v", err)
+		}
+		wantFaces := []PluginDeploymentFace{{FaceID: "local-management", HostScope: "control-plane"}, {FaceID: "agent-execution", HostScope: "agent"}}
+		if !reflect.DeepEqual(detail.Faces, wantFaces) || detail.TargetEligibility.CanonicalLocalTargetID != "local" || !detail.TargetEligibility.AgentTargetsAllowed {
+			t.Fatalf("dual-face detail projection = faces:%+v eligibility:%+v", detail.Faces, detail.TargetEligibility)
+		}
+		if len(detail.AgentStatuses) == 0 {
+			t.Fatal("dual-face detail omitted Agent execution statuses")
+		}
+		for _, status := range detail.AgentStatuses {
+			if status.FaceID != "agent-execution" {
+				t.Fatalf("Agent status face_id = %q", status.FaceID)
+			}
+		}
+	})
+}
+
+func TestPluginAgentFaceStatusSummaryExcludesControlPlaneRuntimeFailure(t *testing.T) {
+	summary, err := pluginAgentFaceStatusSummary(`{"control-plane-runtime":{"state":"failed"},"edge-a/instance-a":{"state":"active"}}`)
+	if err != nil {
+		t.Fatalf("pluginAgentFaceStatusSummary() error = %v", err)
+	}
+	if strings.Contains(string(summary), "control-plane-runtime") || !strings.Contains(string(summary), "edge-a/instance-a") {
+		t.Fatalf("Agent face status summary = %s", summary)
 	}
 }
 

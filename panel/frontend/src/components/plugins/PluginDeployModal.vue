@@ -23,6 +23,7 @@ const props = defineProps({
   currentLifecycle: { type: String, default: '' },
   declaresHTTPBackend: { type: Boolean, required: false },
   packageDetail: { type: Object, default: null },
+  targetEligibility: { type: Object, default: null },
   instance: { type: Object, default: null },
   publishedEntry: { type: Object, default: null },
   intent: { type: String, default: '' },
@@ -49,6 +50,11 @@ const hasHTTPBackend = computed(() => {
   if (props.declaresHTTPBackend === false) return false
   return packageDeclaresHTTPBackend(props.packageDetail)
 })
+const usesCanonicalLocalTarget = computed(() => props.targetEligibility?.agent_targets_allowed === false)
+const canonicalLocalTargetID = computed(() => String(props.targetEligibility?.canonical_local_target_id || '').trim())
+const localTargetAuthorityBlocker = computed(() => usesCanonicalLocalTarget.value && !canonicalLocalTargetID.value
+  ? '本地管理面部署目标不可用，请刷新详情后重试。'
+  : '')
 const publishedRuleID = computed(() => {
   const ruleID = Number(props.publishedEntry?.rule_id)
   return Number.isInteger(ruleID) && ruleID > 0 ? ruleID : 0
@@ -70,6 +76,7 @@ const visibleAgents = computed(() => {
 })
 const singleAgent = computed(() => hasHTTPBackend.value)
 const selectedTargets = computed(() => {
+  if (usesCanonicalLocalTarget.value) return canonicalLocalTargetID.value ? [canonicalLocalTargetID.value] : []
   if (lockedScope.value) {
     const pinned = String((mode.value === 'update' ? props.publishedEntry?.agent_id : '') || props.instance?.targets?.[0] || '').trim()
     return pinned ? [pinned] : []
@@ -102,6 +109,7 @@ const modalTitle = computed(() => {
 const modalSubtitle = computed(() => {
   if (mode.value === 'update') return '更新已发布入口的地址或是否 HTTPS，不会新建入口。'
   if (mode.value === 'publish') return '填写一条入口地址，把已部署的插件发布到所选节点。'
+  if (usesCanonicalLocalTarget.value) return '选择资源组并填写配置；部署目标固定为本地管理面。'
   if (hasHTTPBackend.value) return '选择一个节点并填写入口地址，一次完成部署和发布。'
   return '选择资源组和节点，把插件部署到当前身份可见的范围。'
 })
@@ -113,7 +121,8 @@ const visibleHttpRuleOptions = computed(() => httpRuleSelectOptions(
 ))
 const persistentBlocker = computed(() => {
   if (!props.resourceGroups.length) return '当前身份没有可见的资源组，无法部署。'
-  if (!sortedAgents.value.length) return '当前没有可选择的节点。'
+  if (localTargetAuthorityBlocker.value) return localTargetAuthorityBlocker.value
+  if (!usesCanonicalLocalTarget.value && !sortedAgents.value.length) return '当前没有可选择的节点。'
   if (needsHttpRuleOptions.value && !httpRulesLoading.value && !visibleHttpRuleOptions.value.length) {
     return '当前身份没有可见的 HTTP 规则，无法绑定规则。'
   }
@@ -279,7 +288,9 @@ function resetForm() {
     ? preferredGroup
     : pickDefaultResourceGroupID(props.resourceGroups)
   const pinned = String(props.publishedEntry?.agent_id || '').trim()
-  if (mode.value === 'update' && sortedAgents.value.some((agent) => agent.id === pinned)) {
+  if (usesCanonicalLocalTarget.value) {
+    deployment.targets = canonicalLocalTargetID.value ? [canonicalLocalTargetID.value] : []
+  } else if (mode.value === 'update' && sortedAgents.value.some((agent) => agent.id === pinned)) {
     deployment.targets = [pinned]
   } else if (sortedAgents.value.length === 1) {
     deployment.targets = [sortedAgents.value[0].id]
@@ -316,7 +327,7 @@ function resolveConfig(payload) {
 }
 
 function toggleVisibleAgents() {
-  if (!props.canSubmit || lockedScope.value || busy.value || singleAgent.value) return
+  if (!props.canSubmit || usesCanonicalLocalTarget.value || lockedScope.value || busy.value || singleAgent.value) return
   const ids = visibleAgents.value.map((agent) => agent.id)
   if (allVisibleSelected.value) {
     deployment.targets = deployment.targets.filter((id) => !ids.includes(id))
@@ -422,9 +433,20 @@ async function deploy(payload) {
         </label>
       </div>
       <fieldset class="plugin-deployment__agents">
-        <legend>节点</legend>
-        <p class="plugin-deployment__agent-hint">{{ singleAgent ? '发布入口只选一个节点。' : '可同时选多个节点。' }}</p>
-        <div v-if="lockedScope && selectedAgent" class="plugin-deployment__picker">
+        <legend>{{ usesCanonicalLocalTarget ? '部署目标' : '节点' }}</legend>
+        <div
+          v-if="usesCanonicalLocalTarget"
+          class="plugin-deployment__local-target"
+          data-test="plugin-deployment-local-target"
+        >
+          <span class="plugin-deployment__local-target-dot" aria-hidden="true" />
+          <span>
+            <strong>本地管理面</strong>
+            <small>固定目标 {{ canonicalLocalTargetID || '不可用' }}，不会提交远端 Agent</small>
+          </span>
+        </div>
+        <p v-if="!usesCanonicalLocalTarget" class="plugin-deployment__agent-hint">{{ singleAgent ? '发布入口只选一个节点。' : '可同时选多个节点。' }}</p>
+        <div v-if="!usesCanonicalLocalTarget && lockedScope && selectedAgent" class="plugin-deployment__picker">
           <div class="plugin-deployment__agent plugin-deployment__agent--locked">
             <span
               class="plugin-deployment__agent-dot"
@@ -437,7 +459,7 @@ async function deploy(payload) {
             </span>
           </div>
         </div>
-        <div v-else-if="sortedAgents.length" class="plugin-deployment__picker">
+        <div v-else-if="!usesCanonicalLocalTarget && sortedAgents.length" class="plugin-deployment__picker">
           <div class="plugin-deployment__picker-toolbar">
             <label class="plugin-deployment__agent-search">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -519,7 +541,7 @@ async function deploy(payload) {
           </div>
           <p v-else class="plugin-deployment__picker-empty">没有匹配的节点。</p>
         </div>
-        <p v-else class="plugin-deployment__empty">当前没有可选择的节点。</p>
+        <p v-else-if="!usesCanonicalLocalTarget" class="plugin-deployment__empty">当前没有可选择的节点。</p>
       </fieldset>
       <fieldset v-if="hasHTTPBackend" class="plugin-deployment__entry">
         <legend>入口地址</legend>
@@ -589,6 +611,19 @@ async function deploy(payload) {
 .plugin-deployment__metadata select:focus-visible, .plugin-deployment__entry-fields input[type="text"]:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
 .plugin-deployment__agents, .plugin-deployment__entry { display: grid; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
 .plugin-deployment__agents legend, .plugin-deployment__entry legend { margin-bottom: var(--space-1); color: var(--color-text-primary); font-weight: 600; font-size: var(--text-sm); }
+.plugin-deployment__local-target {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
+.plugin-deployment__local-target > span:last-child { display: grid; gap: 0.15rem; min-width: 0; }
+.plugin-deployment__local-target strong { color: var(--color-text-primary); font-size: var(--text-sm); }
+.plugin-deployment__local-target small { color: var(--color-text-muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.plugin-deployment__local-target-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--color-success); }
 .plugin-deployment__agent-hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); }
 .plugin-deployment__picker {
   min-width: 0; overflow: hidden;
