@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -1163,6 +1165,7 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	log.Printf("[plugin-rpc-stop-trace] instance=%s generation=%s status=%s pid=%d\n%s", i.candidate.InstanceID, i.candidate.Generation, i.Status().State, i.Status().PID, debug.Stack())
 	i.stopMu.Lock()
 	defer i.stopMu.Unlock()
 	i.mu.Lock()
