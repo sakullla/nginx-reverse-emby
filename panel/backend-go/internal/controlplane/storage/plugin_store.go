@@ -337,6 +337,242 @@ func pluginStorageDigest(parts ...string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(parts, "\x00"))))
 }
 
+func normalizeLegacyControlPlanePluginTargets(ctx context.Context, db *gorm.DB, defaultTargetID string) error {
+	defaultTargetID = strings.TrimSpace(defaultTargetID)
+	if defaultTargetID == "" {
+		return errors.New("canonical local plugin target is unavailable")
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var installed []InstalledPluginRow
+		if err := tx.Order("plugin_id").Find(&installed).Error; err != nil {
+			return err
+		}
+		for index := range installed {
+			if err := normalizeLegacyInstalledPluginTargetsTx(tx, &installed[index], defaultTargetID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPluginRow, defaultTargetID string) error {
+	pendingOperationID, pendingKind := installed.PendingOperationID, installed.PendingKind
+	var instances []PluginInstanceRow
+	if err := tx.Where("plugin_id = ?", installed.PluginID).Order("id").Find(&instances).Error; err != nil {
+		return err
+	}
+	if len(instances) == 0 {
+		return nil
+	}
+	canonicalTargetJSON, err := json.Marshal([]string{defaultTargetID})
+	if err != nil {
+		return err
+	}
+	var activeManifest, pendingManifest plugins.Manifest
+	var activeManifestErr, pendingManifestErr error
+	activeLoaded, pendingLoaded := false, false
+	loadActive := func() (plugins.Manifest, error) {
+		if !activeLoaded {
+			activeManifest, activeManifestErr = loadAuthoritativePluginManifestTx(tx, installed.PluginID, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+			activeLoaded = true
+		}
+		return activeManifest, activeManifestErr
+	}
+	loadPending := func() (plugins.Manifest, error) {
+		if strings.TrimSpace(installed.StagedPackageIdentity) == "" || strings.TrimSpace(installed.StagedPackageDigest) == "" {
+			return loadActive()
+		}
+		if !pendingLoaded {
+			pendingManifest, pendingManifestErr = loadAuthoritativePluginManifestTx(tx, installed.PluginID, installed.StagedPackageIdentity, installed.StagedPackageDigest)
+			pendingLoaded = true
+		}
+		return pendingManifest, pendingManifestErr
+	}
+
+	cancelInstalledPending := false
+	stalePendingOperations := make(map[string]struct{})
+	clearPendingInstances := make(map[string]struct{})
+	retireAgentStatusInstances := make(map[string]struct{})
+	for index := range instances {
+		activeTargetJSON := instances[index].TargetJSON
+		activeTargets, err := pluginInstanceTargets(activeTargetJSON, defaultTargetID)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s active targets: %w", instances[index].ID, err)
+		}
+		activeNeedsAuthority := !canonicalPluginLocalTargets(activeTargets, defaultTargetID)
+		if activeNeedsAuthority {
+			manifest, err := loadActive()
+			if err != nil {
+				return fmt.Errorf("plugin %s active target authority: %w", installed.PluginID, err)
+			}
+			if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+				instances[index].TargetJSON = string(canonicalTargetJSON)
+				retireAgentStatusInstances[instances[index].ID] = struct{}{}
+			}
+		}
+
+		hasInstalledPending := installed.PendingOperationID != ""
+		hasInstancePending := instances[index].PendingOperationID != "" || strings.TrimSpace(instances[index].PendingTargetJSON) != "" || strings.TrimSpace(instances[index].PendingResourceGroupID) != ""
+		if !hasInstalledPending && !hasInstancePending {
+			continue
+		}
+		pendingTargetJSON := instances[index].PendingTargetJSON
+		if strings.TrimSpace(pendingTargetJSON) == "" {
+			// The pending operation was created against the pre-normalization
+			// active scope, not the canonical replacement above.
+			pendingTargetJSON = activeTargetJSON
+		}
+		pendingTargets, err := pluginInstanceTargets(pendingTargetJSON, defaultTargetID)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s pending targets: %w", instances[index].ID, err)
+		}
+		if canonicalPluginLocalTargets(pendingTargets, defaultTargetID) {
+			continue
+		}
+		manifest, err := loadPending()
+		if err != nil {
+			return fmt.Errorf("plugin %s pending target authority: %w", installed.PluginID, err)
+		}
+		if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+			continue
+		}
+		clearPendingInstances[instances[index].ID] = struct{}{}
+		retireAgentStatusInstances[instances[index].ID] = struct{}{}
+		if hasInstalledPending {
+			cancelInstalledPending = true
+		}
+		if instances[index].PendingOperationID != "" {
+			stalePendingOperations[instances[index].PendingOperationID] = struct{}{}
+		}
+	}
+
+	if cancelInstalledPending {
+		stalePendingOperations[installed.PendingOperationID] = struct{}{}
+		clearLegacyInstalledPluginPending(installed)
+		if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed.PluginID).Updates(map[string]any{
+			"current_lifecycle": installed.CurrentLifecycle, "pending_operation_id": "", "pending_kind": "", "pending_target_digest": "", "pending_target_identity": "", "pending_revision": 0,
+			"staged_package_digest": "", "staged_package_identity": "", "staged_source_id": "", "staged_source_kind": "", "staged_source_risk_label": "", "staged_source_revision": 0,
+			"staged_source_ref_kind": "", "staged_source_ref_name": "", "staged_source_resolved_oid": "", "staged_signature_key_id": "", "staged_signature_public_key": "", "staged_signature_fingerprint": "", "pending_grants_json": "[]",
+		}).Error; err != nil {
+			return err
+		}
+	}
+
+	for index := range instances {
+		_, retireAgentStatuses := retireAgentStatusInstances[instances[index].ID]
+		_, clearStale := stalePendingOperations[instances[index].PendingOperationID]
+		_, clearPending := clearPendingInstances[instances[index].ID]
+		clearInstalled := cancelInstalledPending && (pendingKind == "enable" || pendingKind == "disable")
+		if cancelInstalledPending && pendingOperationID != "" && instances[index].PendingOperationID == pendingOperationID {
+			clearInstalled = true
+		}
+		if clearPending || clearStale || clearInstalled {
+			clearLegacyPluginInstancePending(&instances[index])
+		}
+		updates := map[string]any{}
+		if retireAgentStatuses {
+			updates["target_json"] = instances[index].TargetJSON
+		}
+		if clearPending || clearStale || clearInstalled {
+			updates["current_state"] = instances[index].CurrentState
+			updates["pending_config_json"] = ""
+			updates["pending_version"] = 0
+			updates["pending_operation_id"] = ""
+			updates["pending_resource_group_id"] = ""
+			updates["pending_target_json"] = ""
+			updates["pending_policy_chains_json"] = "[]"
+			updates["pending_bindings_json"] = "[]"
+			updates["pending_secret_handles_json"] = "[]"
+		}
+		if len(updates) > 0 {
+			if err := tx.Model(&PluginInstanceRow{}).Where("id = ?", instances[index].ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+	}
+	for instanceID := range retireAgentStatusInstances {
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("plugin_id = ? AND instance_id = ? AND authority_slot IN ?", installed.PluginID, instanceID, []string{"pending", "active"}).
+			Update("authority_slot", "retired").Error; err != nil {
+			return err
+		}
+	}
+	for operationID := range stalePendingOperations {
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("plugin_id = ? AND operation_id = ? AND authority_slot IN ?", installed.PluginID, operationID, []string{"pending", "active"}).
+			Update("authority_slot", "retired").Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func canonicalPluginLocalTargets(targets []string, defaultTargetID string) bool {
+	return len(targets) == 1 && targets[0] == defaultTargetID
+}
+
+func loadAuthoritativePluginManifestTx(tx *gorm.DB, pluginID, identity, digest string) (plugins.Manifest, error) {
+	identity, digest = strings.TrimSpace(identity), strings.ToLower(strings.TrimSpace(digest))
+	if identity == "" || digest == "" {
+		return plugins.Manifest{}, errors.New("authoritative package identity is incomplete")
+	}
+	var packageRow PluginPackageRow
+	if err := tx.Where("identity = ? AND digest = ?", identity, digest).First(&packageRow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return plugins.Manifest{}, errors.New("authoritative package is unavailable")
+		}
+		return plugins.Manifest{}, err
+	}
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return plugins.Manifest{}, fmt.Errorf("authoritative manifest is invalid: %w", err)
+	}
+	if manifest.ID != pluginID || manifest.ID != packageRow.PluginID || manifest.Version != packageRow.Version || manifest.Runtime.Kind != packageRow.RuntimeKind || manifest.Runtime.ABI != packageRow.RuntimeABI || manifest.Runtime.HostScope != packageRow.HostScope {
+		return plugins.Manifest{}, errors.New("authoritative manifest differs from its verified package projection")
+	}
+	if packageRow.SignatureVerdict != "verified" || strings.TrimSpace(packageRow.SignatureKeyID) == "" || !ValidPluginGenerationDigest(packageRow.SignatureFingerprint) {
+		return plugins.Manifest{}, errors.New("authoritative package signature projection is not verified")
+	}
+	seenScopes := make(map[string]struct{}, 2)
+	for _, scope := range append([]string{manifest.Runtime.HostScope}, manifest.Runtime.HostScopes...) {
+		if scope != strings.TrimSpace(scope) || (scope != pluginsdk.HostScopeAgent && scope != pluginsdk.HostScopeControlPlane) {
+			return plugins.Manifest{}, errors.New("authoritative manifest host scopes are invalid")
+		}
+		if _, duplicate := seenScopes[scope]; duplicate {
+			return plugins.Manifest{}, errors.New("authoritative manifest host scopes are duplicated")
+		}
+		seenScopes[scope] = struct{}{}
+	}
+	return manifest, nil
+}
+
+func clearLegacyInstalledPluginPending(installed *InstalledPluginRow) {
+	installed.PendingOperationID, installed.PendingKind = "", ""
+	installed.PendingTargetDigest, installed.PendingTargetIdentity, installed.PendingRevision = "", "", 0
+	installed.StagedPackageIdentity, installed.StagedPackageDigest = "", ""
+	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = "", "", ""
+	installed.StagedSourceRevision, installed.StagedSourceRefKind, installed.StagedSourceRefName, installed.StagedSourceResolvedOID = 0, "", "", ""
+	installed.StagedSignatureKeyID, installed.StagedSignaturePublicKey, installed.StagedSignatureFingerprint = "", "", ""
+	installed.PendingGrantsJSON = "[]"
+	if installed.DesiredLifecycle == "disabled" {
+		installed.CurrentLifecycle = "disabled"
+	} else {
+		installed.CurrentLifecycle = "active"
+	}
+}
+
+func clearLegacyPluginInstancePending(instance *PluginInstanceRow) {
+	instance.PendingConfigJSON, instance.PendingResourceGroupID, instance.PendingTargetJSON = "", "", ""
+	instance.PendingPolicyChainsJSON, instance.PendingBindingsJSON, instance.PendingSecretHandlesJSON = "[]", "[]", "[]"
+	instance.PendingVersion, instance.PendingOperationID = 0, ""
+	if instance.DesiredEnabled {
+		instance.CurrentState = "active"
+	} else {
+		instance.CurrentState = "disabled"
+	}
+}
+
 func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, defaultTargetID string) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&PluginInstanceRow{}).Where("state_version = 0").Update("state_version", 1).Error; err != nil {
