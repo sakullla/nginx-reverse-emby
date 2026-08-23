@@ -223,7 +223,7 @@ describe('PluginMarketplacePage', () => {
   })
 
   it('labels an installed package as open-detail on the card', async () => {
-    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: entry.sha256 }])
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_version: entry.version, active_package_digest: entry.sha256 }])
     const wrapper = mountPage()
     await flushPromises()
     expect(wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).attributes('title')).toBe('打开详情')
@@ -291,7 +291,7 @@ describe('PluginMarketplacePage', () => {
   })
 
   it('confirms an upgrade through the same modal with the upgrade payload', async () => {
-    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_version: '1.1.0', active_package_digest: 'c'.repeat(64) }])
     const wrapper = mountPage()
     await flushPromises()
     await openFirstPackage(wrapper)
@@ -318,7 +318,7 @@ describe('PluginMarketplacePage', () => {
   })
 
   it('disables install and shows the installed notice when the current digest is already present', async () => {
-    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: entry.sha256 }])
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_version: entry.version, active_package_digest: entry.sha256 }])
     const wrapper = mountPage()
     await flushPromises()
     await openFirstPackage(wrapper)
@@ -331,6 +331,20 @@ describe('PluginMarketplacePage', () => {
     await install.trigger('click')
     expect(wrapper.find('.modal-title').text()).not.toBe('确认安装插件')
     expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('does not advertise an upgrade when the version is unchanged but the catalog digest was rebuilt', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{
+      plugin_id: entry.id,
+      active_version: entry.version,
+      active_package_digest: 'c'.repeat(64)
+    }])
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已安装')
+    expect(wrapper.text()).not.toContain('可升级')
+    expect(wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).attributes('title')).toBe('打开详情')
   })
 
   it('previews publish as the next step when the package declares an HTTP backend', async () => {

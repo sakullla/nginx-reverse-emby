@@ -183,6 +183,28 @@ func TestPluginPublishWritesSingleEnabledHTTPRuleWithoutLiveCatalog(t *testing.T
 	}
 }
 
+func TestPluginListProjectsInstalledVersionForMarketplaceComparison(t *testing.T) {
+	t.Parallel()
+	fixture := newPluginPublishFixture(t, true)
+	summaries, err := fixture.service.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := fixture.service.Detail(t.Context(), fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range summaries {
+		if summary.PluginID == fixture.pluginID {
+			if summary.ActiveVersion == "" || summary.ActiveVersion != detail.Package.Version {
+				t.Fatalf("active version = %q, package version = %q", summary.ActiveVersion, detail.Package.Version)
+			}
+			return
+		}
+	}
+	t.Fatalf("plugin %q missing from list", fixture.pluginID)
+}
+
 func TestPluginPublishReconcilesSupersededConfigureBeforeNextMutation(t *testing.T) {
 	fixture := newPluginPublishFixture(t, true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")

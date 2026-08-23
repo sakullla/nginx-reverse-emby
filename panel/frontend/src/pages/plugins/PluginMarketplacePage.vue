@@ -58,7 +58,7 @@ const downloadHint = computed(() => (
 
 const source = computed(() => selected.value?.source || {})
 const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
-const isUpgrade = computed(() => installedPlugin.value && installedPlugin.value.active_package_digest !== selected.value?.plugin.sha256)
+const isUpgrade = computed(() => pluginHasUpgrade(installedPlugin.value, selected.value))
 const requiredPermissions = computed(() => detail.value?.permissions || [])
 const alreadyInstalled = computed(() => !!installedPlugin.value && !isUpgrade.value)
 const selectedPluginID = computed(() => String(selected.value?.plugin.id || '').trim())
@@ -331,8 +331,18 @@ function sourceKindLabel(kind) {
 function installedStatus(item) {
   const current = installed.value.find((plugin) => plugin.plugin_id === item?.plugin.id)
   if (!current) return '未安装'
-  if (current.active_package_digest && current.active_package_digest !== item?.plugin.sha256) return '可升级'
+  if (pluginHasUpgrade(current, item)) return '可升级'
   return '已安装'
+}
+
+function pluginHasUpgrade(current, item) {
+  if (!current) return false
+  const installedVersion = String(current.active_version || '').trim()
+  const marketVersion = String(item?.plugin?.version || '').trim()
+  if (installedVersion && marketVersion) return installedVersion !== marketVersion
+  const installedDigest = String(current.active_package_digest || '').trim().toLowerCase()
+  const marketDigest = String(item?.plugin?.sha256 || '').trim().toLowerCase()
+  return Boolean(installedDigest && marketDigest && installedDigest !== marketDigest)
 }
 
 function statusTone(item) {

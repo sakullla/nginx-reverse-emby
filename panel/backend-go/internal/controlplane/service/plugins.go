@@ -185,6 +185,7 @@ type PluginAgentStatus struct {
 type PluginSummary struct {
 	PluginID                  string    `json:"plugin_id"`
 	ActivePackageDigest       string    `json:"active_package_digest"`
+	ActiveVersion             string    `json:"active_version"`
 	RuntimeKind               string    `json:"runtime_kind"`
 	RuntimeABI                string    `json:"runtime_abi"`
 	HostScope                 string    `json:"host_scope"`
@@ -406,7 +407,16 @@ func (s *PluginService) List(ctx context.Context) ([]PluginSummary, error) {
 	}
 	result := make([]PluginSummary, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, pluginSummary(row))
+		packageRow, found, err := s.storedPackage(ctx, row.ActivePackageIdentity, row.ActivePackageDigest)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errors.New("active plugin package is unavailable")
+		}
+		summary := pluginSummary(row)
+		summary.ActiveVersion = packageRow.Version
+		result = append(result, summary)
 	}
 	return result, nil
 }
@@ -466,7 +476,9 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	return PluginDetail{Plugin: pluginSummary(installed), Package: packageDetail, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses, PublishedEntries: publishedEntries}, nil
+	summary := pluginSummary(installed)
+	summary.ActiveVersion = packageRow.Version
+	return PluginDetail{Plugin: summary, Package: packageDetail, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses, PublishedEntries: publishedEntries}, nil
 }
 
 func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPackageCandidate, pluginID string) (PluginPackageDetail, error) {
