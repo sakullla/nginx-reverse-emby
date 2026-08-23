@@ -583,6 +583,11 @@ func (s *PluginService) InstallMutation(ctx context.Context, request PluginInsta
 }
 
 func (s *PluginService) EnableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
+	if s.mutationExecutor != nil && !s.revisionMutation {
+		if err := s.reconcilePendingPluginOperation(ctx, pluginID); err != nil {
+			return PluginSummary{}, err
+		}
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Enable(ctx, pluginID, actorID)
 		return pluginSummary(row), err
@@ -599,6 +604,11 @@ func (s *PluginService) EnableMutation(ctx context.Context, pluginID, actorID st
 }
 
 func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
+	if s.mutationExecutor != nil && !s.revisionMutation {
+		if err := s.reconcilePendingPluginOperation(ctx, pluginID); err != nil {
+			return PluginSummary{}, err
+		}
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Disable(ctx, pluginID, actorID)
 		return pluginSummary(row), err
@@ -616,7 +626,7 @@ func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID s
 
 func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
 	if s.mutationExecutor != nil && !s.revisionMutation {
-		if err := s.reconcileSupersededConfigure(ctx, request.PluginID); err != nil {
+		if err := s.reconcilePendingPluginOperation(ctx, request.PluginID); err != nil {
 			return PluginInstanceDetail{}, err
 		}
 		var prospective PluginInstanceDetail
@@ -659,7 +669,7 @@ func (s *PluginService) PublishMutation(ctx context.Context, request PluginConfi
 	request.FrontendURL = frontendURL
 	request.RuleID = ruleID
 	if s.mutationExecutor != nil && !s.revisionMutation {
-		if err := s.reconcileSupersededConfigure(ctx, request.PluginID); err != nil {
+		if err := s.reconcilePendingPluginOperation(ctx, request.PluginID); err != nil {
 			return PluginInstanceDetail{}, HTTPRule{}, err
 		}
 		var instance PluginInstanceDetail
@@ -704,7 +714,7 @@ func (s *PluginService) UnpublishMutation(ctx context.Context, request PluginUnp
 		PublishDesiredEnabled: true,
 	}
 	if s.mutationExecutor != nil && !s.revisionMutation {
-		if err := s.reconcileSupersededConfigure(ctx, request.PluginID); err != nil {
+		if err := s.reconcilePendingPluginOperation(ctx, request.PluginID); err != nil {
 			return PluginInstanceDetail{}, HTTPRule{}, err
 		}
 		var instance PluginInstanceDetail
@@ -869,6 +879,116 @@ func (s *PluginService) RecoverSupersededConfigures(ctx context.Context) error {
 		}
 	}
 	return errors.Join(recoveryErrors...)
+}
+
+// RecoverPendingPluginOperations closes already-terminal Agent work before a
+// new user mutation checks the pending-operation fence. Reports and revision
+// states remain generation-fenced; genuinely in-flight work stays exclusive.
+func (s *PluginService) RecoverPendingPluginOperations(ctx context.Context) error {
+	installed, err := s.store.ListInstalledPlugins(ctx)
+	if err != nil {
+		return err
+	}
+	var recoveryErrors []error
+	for _, plugin := range installed {
+		if plugin.PendingOperationID == "" {
+			continue
+		}
+		if err := s.reconcilePendingPluginOperation(ctx, plugin.PluginID); err != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover pending plugin operation %q: %w", plugin.PluginID, err))
+		}
+	}
+	return errors.Join(recoveryErrors...)
+}
+
+func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, pluginID string) error {
+	if err := s.reconcileSupersededConfigure(ctx, pluginID); err != nil {
+		return err
+	}
+	installed, found, err := s.store.GetInstalledPlugin(ctx, pluginID)
+	if err != nil || !found || installed.PendingOperationID == "" {
+		return err
+	}
+	statusStore, ok := s.store.(pluginRuntimeStatusStore)
+	if !ok {
+		return nil
+	}
+	revisionStore, ok := s.store.(pluginCoordinatorRevisionStore)
+	if !ok {
+		return nil
+	}
+	operations, err := s.store.ListPluginOperations(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	var operation storage.PluginOperationRow
+	for _, candidate := range operations {
+		if candidate.ID == installed.PendingOperationID {
+			operation = candidate
+			break
+		}
+	}
+	if operation.ID == "" || operation.CompletedAt != nil || (operation.Status != "applying" && operation.Status != "staged") {
+		return nil
+	}
+	statuses, err := statusStore.ListPluginAgentRuntimeStatuses(ctx, operation.ID)
+	if err != nil || len(statuses) == 0 {
+		return err
+	}
+	applied := true
+	instanceID := ""
+	configVersion := uint64(0)
+	for _, status := range statuses {
+		if status.OperationID != operation.ID || status.PluginID != pluginID || status.Revision <= 0 {
+			return storage.ErrPluginGenerationConflict
+		}
+		switch status.State {
+		case "active", "drained":
+		case "degraded", "failed":
+			applied = false
+		default:
+			return nil
+		}
+		revision, found, err := revisionStore.GetCoordinatorRevision(ctx, status.AgentID, status.Revision)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		switch revision.State {
+		case storage.AgentRevisionStateApplied:
+		case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
+			applied = false
+		default:
+			return nil
+		}
+		if instanceID == "" {
+			instanceID, configVersion = status.InstanceID, status.ConfigVersion
+		} else if operation.Kind == "configure" && (instanceID != status.InstanceID || configVersion != status.ConfigVersion) {
+			return storage.ErrPluginGenerationConflict
+		}
+	}
+	agentResults, err := pluginRuntimeAgentResults(statuses)
+	if err != nil {
+		return err
+	}
+	result := PluginApplyResult{PluginID: pluginID, InstanceID: instanceID, OperationID: operation.ID,
+		TargetRevision: operation.TargetRevision, TargetDigest: operation.TargetPackageDigest,
+		ConfigVersion: configVersion, ActorID: operation.ActorID, Applied: applied, AgentResults: agentResults}
+	switch operation.Kind {
+	case "enable", "disable":
+		_, err = s.CompleteLifecycleApply(ctx, result)
+	case "configure":
+		_, err = s.CompleteConfigure(ctx, result)
+	case "upgrade":
+		_, err = s.CompleteUpgrade(ctx, result)
+	case "rollback":
+		_, err = s.CompleteRollback(ctx, result)
+	default:
+		return nil
+	}
+	return err
 }
 
 func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request PluginDeleteInstanceRequest) error {

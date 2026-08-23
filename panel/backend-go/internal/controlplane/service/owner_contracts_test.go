@@ -321,6 +321,29 @@ func TestPluginLifecycleReconcilerWaitsForEveryExactAgentReport(t *testing.T) {
 	}
 }
 
+func TestPluginLifecycleReconcilerCompletesFailedAgentReport(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("a", 64)
+	store := &lifecycleReconcileStore{
+		operation: storage.PluginOperationRow{ID: "operation", PluginID: "plugin", Kind: "configure", Status: "applying", TargetPackageDigest: digest, TargetRevision: 8, ActorID: "admin"},
+		statuses: []storage.PluginAgentRuntimeStatusRow{{
+			OperationID: "operation", AgentID: "edge-a", InstanceID: "instance", PluginID: "plugin", Revision: 8,
+			GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, ConfigVersion: 2, State: "applying", DetailsJSON: `{}`,
+		}},
+	}
+	completion := &lifecycleCompletionRecorder{}
+	reconciler, err := NewPluginLifecycleReconciler(store, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := storage.PluginGenerationReport{OperationID: "operation", AgentID: "edge-a", InstanceID: "instance", PluginID: "plugin",
+		Revision: 8, GenerationID: digest, PackageDigest: digest, ArtifactDigest: digest, State: "failed", Sequence: 1}
+	result, err := reconciler.Reconcile(t.Context(), report, "agent:edge-a")
+	if err != nil || !result.Completed || result.Applied || completion.kind != "configure" || completion.result.Applied {
+		t.Fatalf("failed reconcile = %+v completion=%+v err=%v", result, completion, err)
+	}
+}
+
 func TestPluginLifecycleReconcilerClosesOperationWhenControlPlaneActivationFails(t *testing.T) {
 	t.Parallel()
 	activationErr := errors.New("canonical plugin handshake failed")

@@ -63,6 +63,12 @@ func (r *PluginLifecycleReconciler) RecoverSupersededOperations(ctx context.Cont
 	if r == nil || r.plugins == nil {
 		return nil
 	}
+	pending, ok := r.plugins.(interface {
+		RecoverPendingPluginOperations(context.Context) error
+	})
+	if ok {
+		return pending.RecoverPendingPluginOperations(ctx)
+	}
 	recoverer, ok := r.plugins.(interface {
 		RecoverSupersededConfigures(context.Context) error
 	})
