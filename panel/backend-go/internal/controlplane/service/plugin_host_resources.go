@@ -87,6 +87,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostPluginCall(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeHTTPRule:
 		payload, err = manager.pluginHostHTTPRule(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeHTTPBackendOffer:
+		payload, err = manager.pluginHostHTTPBackendOffer(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeL4Rule:
 		payload, err = manager.pluginHostL4Rule(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeChannelReverse:
@@ -130,7 +132,7 @@ func pluginHostOperationPermission(operation string) string {
 		return "event.emit"
 	case "operation.inspect":
 		return "storage.read"
-	case pluginsdk.HostRuntimeHTTPRule:
+	case pluginsdk.HostRuntimeHTTPRule, pluginsdk.HostRuntimeHTTPBackendOffer:
 		return pluginsdk.PermissionHTTPRule
 	case pluginsdk.HostRuntimeL4Rule:
 		return pluginsdk.PermissionL4Rule
@@ -151,9 +153,16 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
-	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule || call.Operation == pluginsdk.HostRuntimeL4Rule ||
+	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule ||
 		call.Operation == pluginsdk.HostRuntimeChannelReverse {
 		return true
+	}
+	if call.Operation == pluginsdk.HostRuntimeHTTPRule {
+		var input pluginsdk.HTTPRuleRequest
+		if decodePluginHostPayload(call.Payload, &input) != nil {
+			return true
+		}
+		return input.Action != pluginsdk.HTTPRuleActionList
 	}
 	if call.Operation != "http.secret-request" {
 		return false
@@ -814,15 +823,61 @@ func (manager *PluginCapabilityManager) pluginHostHTTPRule(ctx context.Context, 
 	if rules == nil {
 		return nil, errPluginHostUnavailable
 	}
-	ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
 	switch input.Action {
 	case pluginsdk.HTTPRuleActionCreate:
+		ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
 		return manager.pluginHostHTTPRuleCreate(ctx, rules, input)
 	case pluginsdk.HTTPRuleActionCutover:
+		ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
 		return manager.pluginHostHTTPRuleCutover(ctx, rules, input)
+	case pluginsdk.HTTPRuleActionList:
+		return manager.pluginHostHTTPRuleList(ctx, rules, input)
 	default:
 		return nil, errPluginHostInvalid
 	}
+}
+
+func (manager *PluginCapabilityManager) pluginHostHTTPRuleList(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (map[string]any, error) {
+	listed, err := rules.List(ctx, input.AgentID)
+	if err != nil {
+		if errors.Is(err, ErrAgentNotFound) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	items := make([]pluginsdk.HTTPRuleListItem, 0, len(listed))
+	for _, rule := range listed {
+		items = append(items, pluginsdk.HTTPRuleListItem{
+			RuleRef:     strconv.Itoa(rule.ID),
+			FrontendURL: rule.FrontendURL,
+			Backend:     pluginHostHTTPRuleBackend(rule),
+			Enabled:     rule.Enabled,
+		})
+	}
+	return map[string]any{"rules": items}, nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostHTTPBackendOffer(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (map[string]any, error) {
+	var input pluginsdk.HTTPBackendOfferReplaceRequest
+	store, ok := manager.store.(pluginHostResourceStore)
+	if !ok || decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return nil, errPluginHostInvalid
+	}
+	if input.Offers == nil {
+		input.Offers = []pluginsdk.HTTPBackendOffer{}
+	}
+	encoded, err := json.Marshal(pluginsdk.HTTPBackendOfferReplaceRequest{Offers: input.Offers})
+	if err != nil || len(encoded) > pluginsdk.PluginHostPayloadMaxBytes {
+		return nil, errPluginHostInvalid
+	}
+	err = store.PutPluginRuntimeState(ctx, storage.PluginRuntimeStateRow{
+		InstanceID:      candidate.InstanceID,
+		Key:             pluginsdk.HTTPBackendOfferCatalogKey,
+		PluginID:        candidate.Identity.PluginID,
+		ResourceGroupID: candidate.ResourceGroupID,
+		Value:           encoded,
+	})
+	return map[string]any{"stored": err == nil, "count": len(input.Offers)}, err
 }
 
 func (manager *PluginCapabilityManager) pluginHostHTTPRuleCreate(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (map[string]any, error) {
@@ -937,16 +992,19 @@ func pluginHostInstanceTargetsAgent(raw, agentID string) bool {
 }
 
 func pluginHostHTTPRuleResult(rule HTTPRule) map[string]any {
-	backend := ""
-	if len(rule.Backends) > 0 {
-		backend = strings.TrimSpace(rule.Backends[0].URL)
-	}
 	return map[string]any{
 		"rule_ref":     strconv.Itoa(rule.ID),
 		"agent_id":     rule.AgentID,
 		"frontend_url": rule.FrontendURL,
-		"backend_url":  backend,
+		"backend_url":  pluginHostHTTPRuleBackend(rule),
 	}
+}
+
+func pluginHostHTTPRuleBackend(rule HTTPRule) string {
+	if len(rule.Backends) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(rule.Backends[0].URL)
 }
 
 const (

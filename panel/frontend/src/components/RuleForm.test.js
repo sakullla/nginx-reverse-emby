@@ -149,7 +149,7 @@ describe('RuleForm HTTP backend provider', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('请选择当前可用的插件提供商')
+    expect(wrapper.text()).toContain('请选择当前可用的后端')
     expect(mocks.updateMutateAsync).not.toHaveBeenCalled()
   })
 
@@ -367,7 +367,97 @@ describe('RuleForm HTTP backend provider', () => {
 
     expect(mocks.createMutateAsync.mock.calls[0][0].backends).toEqual(backends)
   })
+
+  it('lists published-port offers in the same picker and submits a host URL backend', async () => {
+    mocks.query.data.value = {
+      agentId: 'edge-a',
+      providers: [
+        providerFixture('edge-a'),
+        publishedPortFixture('edge-a', { resource_id: 'hubproxy', port: 5000, display_name: 'hubproxy' }),
+        publishedPortFixture('edge-a', { resource_id: 'hubproxy', port: 5001, display_name: 'hubproxy', state: 'unavailable' })
+      ]
+    }
+    const wrapper = mountForm()
+    await fillFrontend(wrapper)
+    await switchToProvider(wrapper)
+
+    expect(wrapper.text()).toContain('hubproxy · 5000')
+    expect(wrapper.text()).toContain('hubproxy · 5001')
+    expect(wrapper.text()).toContain('（当前不可用）')
+    const select = wrapper.get('select[name="http-backend-provider"]')
+    const unavailable = select.findAll('option').find((option) => option.text().includes('5001'))
+    expect(unavailable.attributes('disabled')).toBeDefined()
+
+    await select.setValue('port:control-1:hubproxy:5000')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    const payload = mocks.createMutateAsync.mock.calls[0][0]
+    expect(payload.frontend_url).toBe('https://media.example.com')
+    expect(payload.backends).toEqual([{ url: 'http://127.0.0.1:5000' }])
+    expect(JSON.stringify(payload.backends)).not.toMatch(/plugin_provider/)
+  })
+
+  it('drops the previous Agent published-port offers after switching nodes', async () => {
+    mocks.query.data.value = {
+      agentId: 'edge-a',
+      providers: [publishedPortFixture('edge-a', { resource_id: 'hubproxy', port: 5000, display_name: 'hubproxy' })]
+    }
+    const wrapper = mountForm()
+    await fillFrontend(wrapper)
+    await switchToProvider(wrapper)
+    expect(wrapper.text()).toContain('hubproxy · 5000')
+
+    mocks.query.isFetching.value = true
+    await wrapper.setProps({ agentId: 'edge-b' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('hubproxy · 5000')
+    await wrapper.get('form').trigger('submit')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+
+    mocks.query.data.value = {
+      agentId: 'edge-b',
+      providers: [publishedPortFixture('edge-b', { resource_id: 'other', port: 8080, display_name: 'other', instance_id: 'control-2' })]
+    }
+    mocks.query.isFetching.value = false
+    await flushPromises()
+    expect(wrapper.text()).toContain('other · 8080')
+    expect(wrapper.text()).not.toContain('hubproxy · 5000')
+    await wrapper.get('select[name="http-backend-provider"]').setValue('port:control-2:other:8080')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mocks.createMutateAsync.mock.calls[0][0].backends).toEqual([{ url: 'http://127.0.0.1:8080' }])
+  })
+
+  it('does not submit an unavailable published-port offer', async () => {
+    mocks.query.data.value = {
+      agentId: 'edge-a',
+      providers: [publishedPortFixture('edge-a', { resource_id: 'hubproxy', port: 5000, display_name: 'hubproxy', state: 'unavailable' })]
+    }
+    const wrapper = mountForm()
+    await fillFrontend(wrapper)
+    await switchToProvider(wrapper)
+    await wrapper.get('select[name="http-backend-provider"]').setValue('port:control-1:hubproxy:5000')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('请选择当前可用的后端')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+  })
 })
+
+function publishedPortFixture(agentId, extra = {}) {
+  return {
+    kind: 'published_port',
+    instance_id: extra.instance_id || 'control-1',
+    plugin_id: extra.plugin_id || 'sample.plugin',
+    display_name: extra.display_name || 'hubproxy',
+    agent_id: agentId,
+    state: extra.state || 'active',
+    resource_id: extra.resource_id || 'hubproxy',
+    port: extra.port || 5000
+  }
+}
 
 function providerFixture(agentId) {
   return {

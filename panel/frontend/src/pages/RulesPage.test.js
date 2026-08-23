@@ -322,4 +322,45 @@ describe('RulesPage filter integration', () => {
       label: 'Provider edge-b', state: 'inactive', generation: 'generation-edge-b'
     })
   })
+
+  it('keeps published-port catalog entries on their reporting Agent', async () => {
+    route.query = { agentId: '__all__' }
+    selectedAgentId = '__all__'
+    agentsData = [{ id: 'edge-a', name: 'A' }, { id: 'edge-b', name: 'B' }]
+    rulesData = [{
+      id: 1,
+      agent_id: 'edge-a',
+      enabled: true,
+      backends: [{ url: 'http://127.0.0.1:5000' }]
+    }]
+    fetchHTTPBackendProviders.mockImplementation(async (targetAgentId) => (
+      targetAgentId === 'edge-a'
+        ? [{
+            kind: 'published_port',
+            instance_id: 'control-1',
+            display_name: 'hubproxy',
+            resource_id: 'hubproxy',
+            port: 5000,
+            state: 'active'
+          }]
+        : []
+    ))
+
+    const wrapper = mountPage()
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent({ name: 'RuleTable' }).props('providerCatalogStatus')).toBe('ready')
+    })
+    const catalog = wrapper.findComponent({ name: 'RuleTable' }).props('providerCatalog')
+    expect(catalog).toEqual([expect.objectContaining({
+      agent_id: 'edge-a',
+      kind: 'published_port',
+      resource_id: 'hubproxy',
+      port: 5000
+    })])
+    expect(catalog.some((item) => item.agent_id === 'edge-b')).toBe(false)
+    expect(describeHTTPBackends(rulesData[0], catalog, 'ready')[0]).toMatchObject({
+      kind: 'url',
+      label: 'http://127.0.0.1:5000'
+    })
+  })
 })

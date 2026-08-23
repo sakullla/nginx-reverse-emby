@@ -17,6 +17,10 @@ const (
 	HTTPBackendKindURL            = "url"
 	HTTPBackendKindPluginProvider = "plugin_provider"
 	ProviderIDMaxBytes            = 64
+
+	HTTPBackendCatalogKindPluginProvider = HTTPBackendKindPluginProvider
+	HTTPBackendCatalogKindPublishedPort  = "published_port"
+	HTTPBackendOfferMaxEntries           = 256
 )
 
 var httpBackendProviderIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`)
@@ -169,4 +173,55 @@ func validHTTPBackendURL(raw string) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")
+}
+
+// HTTPBackendOffer is a published-port catalog candidate reported by a
+// control-plane plugin. Identity is the resource (app or equivalent), target
+// Agent, and port. Runtime endpoints and credentials are absent.
+type HTTPBackendOffer struct {
+	ResourceID  string `json:"resource_id"`
+	AgentID     string `json:"agent_id"`
+	Port        int    `json:"port"`
+	DisplayName string `json:"display_name"`
+	Available   bool   `json:"available"`
+}
+
+func (offer HTTPBackendOffer) Validate() error {
+	if err := ValidatePolicyIdentity(offer.ResourceID); err != nil {
+		return fmt.Errorf("resource_id: %w", err)
+	}
+	if err := ValidatePolicyIdentity(offer.AgentID); err != nil {
+		return fmt.Errorf("agent_id: %w", err)
+	}
+	if offer.Port <= 0 || offer.Port > 65535 {
+		return errors.New("port is invalid")
+	}
+	if offer.DisplayName != strings.TrimSpace(offer.DisplayName) || offer.DisplayName == "" || len(offer.DisplayName) > 128 || strings.ContainsAny(offer.DisplayName, "\r\n\x00") {
+		return errors.New("display_name is invalid")
+	}
+	return nil
+}
+
+// HTTPBackendOfferReplaceRequest replaces one plugin instance's published-port
+// catalog. An empty list clears previously reported offers.
+type HTTPBackendOfferReplaceRequest struct {
+	Offers []HTTPBackendOffer `json:"offers"`
+}
+
+func (request HTTPBackendOfferReplaceRequest) Validate() error {
+	if len(request.Offers) > HTTPBackendOfferMaxEntries {
+		return fmt.Errorf("http.backend-offer exceeds %d entries", HTTPBackendOfferMaxEntries)
+	}
+	seen := make(map[string]struct{}, len(request.Offers))
+	for index, offer := range request.Offers {
+		if err := offer.Validate(); err != nil {
+			return fmt.Errorf("http.backend-offer %d: %w", index, err)
+		}
+		key := offer.AgentID + "\x00" + offer.ResourceID + "\x00" + fmt.Sprintf("%d", offer.Port)
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("http.backend-offer %d is duplicated", index)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }

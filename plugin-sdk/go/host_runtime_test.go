@@ -77,17 +77,59 @@ func TestPluginCallAndHTTPRuleRequestsValidateWithoutInterpretingActionNames(t *
 	if err := (HTTPRuleRequest{Action: HTTPRuleActionCreate, AgentID: "edge-a", Domain: "app.example.com", Port: 8096}).Validate(); err != nil {
 		t.Fatalf("http.rule create: %v", err)
 	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCreate, AgentID: "edge-a", Domain: "https://app.example.com/path", Port: 8096}).Validate(); err != nil {
+		t.Fatalf("http.rule create https url: %v", err)
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCreate, AgentID: "edge-a", Domain: "https://", Port: 8096}).Validate(); err == nil {
+		t.Fatal("http.rule create accepted an empty https url")
+	}
 	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: ""}).Validate(); err == nil {
 		t.Fatal("empty rule_ref cutover was accepted")
 	}
 	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: "12"}).Validate(); err != nil {
 		t.Fatalf("http.rule cutover: %v", err)
 	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionList, AgentID: "edge-a"}).Validate(); err != nil {
+		t.Fatalf("http.rule list: %v", err)
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionList, AgentID: "edge-a", Domain: "app.example.com"}).Validate(); err == nil {
+		t.Fatal("http.rule list accepted a domain")
+	}
 	if err := (HostRuntimeCall{Operation: HostRuntimeHTTPRule}).Validate(); err != nil {
 		t.Fatalf("http.rule host operation: %v", err)
 	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeHTTPBackendOffer}).Validate(); err != nil {
+		t.Fatalf("http.backend-offer host operation: %v", err)
+	}
 	if err := (HostRuntimeCall{Operation: HostRuntimeEventEmit}).Validate(); err != nil {
 		t.Fatalf("event.emit host operation: %v", err)
+	}
+}
+
+func TestNormalizeHTTPRuleFrontendPreservesHTTPSAndStripsPath(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "app.example.com", want: "http://app.example.com"},
+		{input: "http://app.example.com", want: "http://app.example.com"},
+		{input: "https://app.example.com", want: "https://app.example.com"},
+		{input: "https://app.example.com/path?q=1", want: "https://app.example.com"},
+		{input: "https://app.example.com:8443/ingress", want: "https://app.example.com:8443"},
+		{input: "app.example.com/root", want: "http://app.example.com"},
+	} {
+		got, err := NormalizeHTTPRuleFrontend(test.input)
+		if err != nil {
+			t.Fatalf("NormalizeHTTPRuleFrontend(%q): %v", test.input, err)
+		}
+		if got != test.want {
+			t.Fatalf("NormalizeHTTPRuleFrontend(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+	for _, input := range []string{"", "https://", "https:///", "ftp://app.example.com", "/app.example.com"} {
+		if _, err := NormalizeHTTPRuleFrontend(input); err == nil {
+			t.Fatalf("NormalizeHTTPRuleFrontend(%q) was accepted", input)
+		}
 	}
 }
 

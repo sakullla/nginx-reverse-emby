@@ -56,6 +56,16 @@ func TestPluginHostMutationsRequireDurableOperationID(t *testing.T) {
 	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeHTTPRule}) {
 		t.Fatal("http.rule did not require a durable operation id")
 	}
+	listPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionList, AgentID: "edge-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeHTTPRule, Payload: listPayload}) {
+		t.Fatal("http.rule list unexpectedly required a mutation operation id")
+	}
+	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeHTTPBackendOffer}) {
+		t.Fatal("http.backend-offer unexpectedly required a mutation operation id")
+	}
 	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeL4Rule}) {
 		t.Fatal("l4.rule did not require a durable operation id")
 	}
@@ -317,6 +327,142 @@ func TestPluginHostHTTPRuleCreateAndEmptyCutover(t *testing.T) {
 	still, err := rules.List(t.Context(), "edge-a")
 	if err != nil || len(still) != 1 || still[0].ID != listed[0].ID {
 		t.Fatalf("unknown cutover mutated rules = %+v err=%v", still, err)
+	}
+
+	listPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionList, AgentID: "edge-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listedResult := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeHTTPRule,
+		Payload:   listPayload,
+	})
+	if listedResult.Error != nil {
+		t.Fatalf("http.rule list error = %v", listedResult.Error)
+	}
+	var listedRules pluginsdk.HTTPRuleListResponse
+	if err := json.Unmarshal(listedResult.Payload, &listedRules); err != nil {
+		t.Fatal(err)
+	}
+	if len(listedRules.Rules) != 1 || listedRules.Rules[0].RuleRef != createdResult.RuleRef || listedRules.Rules[0].FrontendURL != "http://app.example.com" || listedRules.Rules[0].Backend != "http://127.0.0.1:8096" || !listedRules.Rules[0].Enabled {
+		t.Fatalf("http.rule list = %+v", listedRules)
+	}
+}
+
+func TestPluginHostHTTPRuleCreatePreservesHTTPSFrontendAndRejectsInvalid(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a", Name: "edge-a", CapabilitiesJSON: `["http_rules","local_acme","cert_install"]`}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager := &PluginCapabilityManager{store: store}
+	manager.SetRuleService(rules)
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionHTTPRule}
+
+	createPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionCreate, AgentID: "edge-a", Domain: "https://hub.example.com/path", Port: 5000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-https-1",
+		Payload:     createPayload,
+	})
+	if created.Error != nil {
+		t.Fatalf("https create error = %v", created.Error)
+	}
+	var createdResult struct {
+		FrontendURL string `json:"frontend_url"`
+		BackendURL  string `json:"backend_url"`
+	}
+	if err := json.Unmarshal(created.Payload, &createdResult); err != nil {
+		t.Fatal(err)
+	}
+	if createdResult.FrontendURL != "https://hub.example.com" || createdResult.BackendURL != "http://127.0.0.1:5000" {
+		t.Fatalf("https create result = %+v", createdResult)
+	}
+
+	invalidPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionCreate, AgentID: "edge-a", Domain: "https://", Port: 5000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-https-invalid",
+		Payload:     invalidPayload,
+	})
+	if denied.Error == nil || denied.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("invalid https error = %v", denied.Error)
+	}
+	listed, err := rules.List(t.Context(), "edge-a")
+	if err != nil || len(listed) != 1 || listed[0].FrontendURL != "https://hub.example.com" {
+		t.Fatalf("invalid https mutated rules = %+v err=%v", listed, err)
+	}
+}
+
+func TestPluginHostHTTPBackendOfferReplaceFeedsAgentCatalog(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-b", Name: "edge-b"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := &PluginCapabilityManager{store: store}
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionHTTPRule}
+	seedHTTPBackendOfferInstance(t, store, candidate)
+	payload, err := json.Marshal(pluginsdk.HTTPBackendOfferReplaceRequest{Offers: []pluginsdk.HTTPBackendOffer{
+		{ResourceID: "hubproxy", AgentID: "edge-a", Port: 5000, DisplayName: "hubproxy", Available: true},
+		{ResourceID: "hubproxy", AgentID: "edge-a", Port: 5001, DisplayName: "hubproxy", Available: false},
+		{ResourceID: "other", AgentID: "edge-b", Port: 8080, DisplayName: "other", Available: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeHTTPBackendOffer,
+		Payload:   payload,
+	})
+	if replaced.Error != nil {
+		t.Fatalf("http.backend-offer error = %v", replaced.Error)
+	}
+
+	svc := NewPluginService(store, t.TempDir())
+	listed, err := svc.ListHTTPBackendProvidersForActor(t.Context(), "edge-a", pluginPublishAdmin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("edge-a catalog = %+v", listed)
+	}
+	if listed[0].Kind != pluginsdk.HTTPBackendCatalogKindPublishedPort || listed[0].ResourceID != "hubproxy" || listed[0].Port != 5000 || listed[0].State != "active" || listed[0].DisplayName != "hubproxy" {
+		t.Fatalf("available offer = %+v", listed[0])
+	}
+	if listed[1].Port != 5001 || listed[1].State != "unavailable" {
+		t.Fatalf("unavailable offer = %+v", listed[1])
+	}
+	other, err := svc.ListHTTPBackendProvidersForActor(t.Context(), "edge-b", pluginPublishAdmin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other) != 1 || other[0].AgentID != "edge-b" || other[0].ResourceID != "other" || other[0].Port != 8080 {
+		t.Fatalf("edge-b catalog mixed previous agent: %+v", other)
+	}
+
+	cleared := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeHTTPBackendOffer,
+		Payload:   json.RawMessage(`{"offers":[]}`),
+	})
+	if cleared.Error != nil {
+		t.Fatalf("clear offers error = %v", cleared.Error)
+	}
+	empty, err := svc.ListHTTPBackendProvidersForActor(t.Context(), "edge-a", pluginPublishAdmin())
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("cleared catalog = %+v err=%v", empty, err)
 	}
 }
 
@@ -661,6 +807,41 @@ func TestPluginHostL4RuleUninstallCascadeLeavesNoOrphanRules(t *testing.T) {
 	}
 	if _, err := store.GetResourceBinding(t.Context(), "l4_rule", "local:"+ownedResult.RuleRef); err == nil {
 		t.Fatal("orphan resource binding survived the uninstall cascade")
+	}
+}
+
+func seedHTTPBackendOfferInstance(t *testing.T, store *storage.GormStore, candidate pluginhost.Candidate) {
+	t.Helper()
+	installPluginForUninstall(t, store, candidate.Identity.PluginID)
+	installed, found, err := store.GetInstalledPlugin(t.Context(), candidate.Identity.PluginID)
+	if err != nil || !found {
+		t.Fatalf("installed plugin = %+v found=%v err=%v", installed, found, err)
+	}
+	now := time.Now().UTC()
+	nextInstalled := installed
+	nextInstalled.LastOperationID = "op-offer-" + candidate.InstanceID
+	nextInstalled.UpdatedAt = now
+	instance := storage.PluginInstanceRow{
+		ID: candidate.InstanceID, PluginID: candidate.Identity.PluginID, ResourceGroupID: candidate.ResourceGroupID,
+		TargetJSON: `[]`, PolicyChainsJSON: `[]`, SecretHandlesJSON: `[]`, BindingsJSON: `[]`, ConfigJSON: `{}`,
+		ConfigVersion: 1, PendingConfigJSON: "", PendingTargetJSON: "", PendingPolicyChainsJSON: `[]`,
+		PendingBindingsJSON: `[]`, PendingSecretHandlesJSON: `[]`, RollbackConfigJSON: "",
+		RollbackPolicyChainsJSON: `[]`, RollbackBindingsJSON: `[]`, RollbackSecretHandlesJSON: `[]`,
+		DesiredEnabled: true, CurrentState: "active", StatusSummaryJSON: `{}`, UpdatedAt: now,
+	}
+	if err := store.ApplyPluginMutation(t.Context(), storage.PluginMutation{
+		PluginID: candidate.Identity.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
+		Installed: &nextInstalled, ReplaceInstance: &instance,
+		Operation: storage.PluginOperationRow{
+			ID: "op-offer-" + candidate.InstanceID, PluginID: candidate.Identity.PluginID, Kind: "configure", Status: "succeeded",
+			ActorID: "admin", AgentResultsJSON: `[]`, CreatedAt: now, CompletedAt: &now,
+		},
+		Audit: storage.AuditEventRow{
+			ID: "audit-offer-" + candidate.InstanceID, ActorID: "admin", Action: "plugin.configure",
+			TargetKind: "plugin", TargetID: candidate.Identity.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now,
+		},
+	}); err != nil {
+		t.Fatalf("seed offer instance: %v", err)
 	}
 }
 

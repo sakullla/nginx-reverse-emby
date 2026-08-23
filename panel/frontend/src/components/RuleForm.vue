@@ -175,7 +175,7 @@
               :disabled="!providerCatalogReady"
               @change="handleProviderSelectionChange"
             >
-              <option value="">{{ providersLoading ? '正在加载...' : '选择当前节点的插件' }}</option>
+              <option value="">{{ providersLoading ? '正在加载...' : '选择当前节点的后端' }}</option>
               <option
                 v-for="provider in providerOptions"
                 :key="providerKey(provider)"
@@ -187,7 +187,7 @@
             </select>
             <div v-if="selectedProvider && providerCatalogReady" class="provider-picker__status" role="status">
               <span class="provider-picker__dot" aria-hidden="true"></span>
-              已就绪 · {{ selectedProvider.display_name || selectedProvider.provider_id }}
+              已就绪 · {{ providerLabel(selectedProvider) }}
             </div>
             <div v-else-if="providerCatalogError" class="provider-picker__error" role="alert">
               <span :title="providerCatalogErrorTitle">插件列表加载失败</span>
@@ -953,13 +953,34 @@ function createFormState(initialData) {
   }
 }
 
+function isPublishedPortOffer(provider) {
+  return String(provider?.kind || '').trim() === 'published_port'
+}
+
+function publishedPortBackendURL(provider) {
+  const port = Number(provider?.port)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return ''
+  return `http://127.0.0.1:${port}`
+}
+
 function providerKey(provider) {
+  if (isPublishedPortOffer(provider)) {
+    const instanceId = String(provider?.instance_id || '').trim()
+    const resourceId = String(provider?.resource_id || '').trim()
+    const port = Number(provider?.port) || 0
+    return `port:${encodeURIComponent(instanceId)}:${encodeURIComponent(resourceId)}:${port}`
+  }
   const instanceId = String(provider?.instance_id || '').trim()
   const providerId = String(provider?.provider_id || '').trim()
   return `${encodeURIComponent(instanceId)}:${encodeURIComponent(providerId)}`
 }
 
 function providerLabel(provider) {
+  if (isPublishedPortOffer(provider)) {
+    const displayName = String(provider?.display_name || provider?.resource_id || '').trim()
+    const port = Number(provider?.port)
+    return Number.isInteger(port) && port > 0 ? `${displayName} · ${port}` : displayName
+  }
   const displayName = String(provider?.display_name || provider?.provider_id || '').trim()
   const instanceId = String(provider?.instance_id || '').trim()
   return instanceId ? `${displayName} · ${instanceId}` : displayName
@@ -1191,7 +1212,9 @@ function validateBasicFields() {
     } else if (!providerCatalogReady.value) {
       errors.value.backend = '插件列表尚未加载完成'
     } else if (!selectedProvider.value) {
-      errors.value.backend = '请选择当前可用的插件提供商'
+      errors.value.backend = '请选择当前可用的后端'
+    } else if (isPublishedPortOffer(selectedProvider.value) && !publishedPortBackendURL(selectedProvider.value)) {
+      errors.value.backend = '所选发布端口不可用'
     }
   } else {
     const validBackends = form.value.backends
@@ -1278,13 +1301,15 @@ async function handleSubmit() {
                 ? { kind: 'plugin_provider', plugin_provider: { ...backend.plugin_provider } }
                 : { url: backend.url }
             ))
-          : [{
-              kind: 'plugin_provider',
-              plugin_provider: {
-                instance_id: selectedProvider.value.instance_id,
-                provider_id: selectedProvider.value.provider_id
-              }
-            }])
+          : (isPublishedPortOffer(selectedProvider.value)
+              ? [{ url: publishedPortBackendURL(selectedProvider.value) }]
+              : [{
+                  kind: 'plugin_provider',
+                  plugin_provider: {
+                    instance_id: selectedProvider.value.instance_id,
+                    provider_id: selectedProvider.value.provider_id
+                  }
+                }]))
       : form.value.backends
           .map((backend) => ({ url: String(backend?.url || '').trim() }))
           .filter((backend) => backend.url)

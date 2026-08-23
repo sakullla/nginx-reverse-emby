@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -19,11 +20,13 @@ const (
 	PluginHostCallPath         = "/nre.plugin.host.v1/call"
 	PluginHostPayloadMaxBytes  = 1 << 20
 
-	HostRuntimePluginCall     = "plugin.call"
-	HostRuntimeHTTPRule       = "http.rule"
-	HostRuntimeL4Rule         = "l4.rule"
-	HostRuntimeChannelReverse = "channel.reverse"
-	HostRuntimeEventEmit      = "event.emit"
+	HostRuntimePluginCall       = "plugin.call"
+	HostRuntimeHTTPRule         = "http.rule"
+	HostRuntimeHTTPBackendOffer = "http.backend-offer"
+	HostRuntimeL4Rule           = "l4.rule"
+	HostRuntimeChannelReverse   = "channel.reverse"
+	HostRuntimeEventEmit        = "event.emit"
+	HTTPBackendOfferCatalogKey  = "http.backend-offers"
 )
 
 type HostRuntimeCall struct {
@@ -171,10 +174,13 @@ func (request PluginCallRequest) Validate() error {
 const (
 	HTTPRuleActionCreate  = "create"
 	HTTPRuleActionCutover = "cutover"
+	HTTPRuleActionList    = "list"
 )
 
-// HTTPRuleRequest creates or switches a control-plane HTTP rule. Cutover with
-// an empty RuleRef is an explicit error and must not rewrite other rules.
+// HTTPRuleRequest creates, lists, or switches a control-plane HTTP rule.
+// Cutover with an empty RuleRef is an explicit error and must not rewrite
+// other rules. Create Domain accepts a hostname or an http(s) URL; the host
+// normalizes by stripping a path and preserving the frontend scheme.
 type HTTPRuleRequest struct {
 	Action  string `json:"action"`
 	AgentID string `json:"agent_id,omitempty"`
@@ -189,7 +195,7 @@ func (request HTTPRuleRequest) Validate() error {
 		if err := ValidatePolicyIdentity(request.AgentID); err != nil {
 			return fmt.Errorf("http.rule agent id: %w", err)
 		}
-		if strings.TrimSpace(request.Domain) == "" || request.Domain != strings.TrimSpace(request.Domain) || len(request.Domain) > 253 || strings.ContainsAny(request.Domain, "\r\n\x00 /") {
+		if _, err := NormalizeHTTPRuleFrontend(request.Domain); err != nil {
 			return errors.New("http.rule domain is invalid")
 		}
 		if request.Port <= 0 || request.Port > 65535 {
@@ -211,13 +217,80 @@ func (request HTTPRuleRequest) Validate() error {
 				return fmt.Errorf("http.rule agent id: %w", err)
 			}
 		}
+		if request.Domain != "" {
+			if _, err := NormalizeHTTPRuleFrontend(request.Domain); err != nil {
+				return errors.New("http.rule domain is invalid")
+			}
+		}
 		if request.Port < 0 || request.Port > 65535 {
 			return errors.New("http.rule port is invalid")
+		}
+		return nil
+	case HTTPRuleActionList:
+		if err := ValidatePolicyIdentity(request.AgentID); err != nil {
+			return fmt.Errorf("http.rule agent id: %w", err)
+		}
+		if request.Domain != "" || request.Port != 0 || strings.TrimSpace(request.RuleRef) != "" {
+			return errors.New("http.rule list does not accept domain, port, or rule_ref")
 		}
 		return nil
 	default:
 		return fmt.Errorf("http.rule action %q is unsupported", request.Action)
 	}
+}
+
+// HTTPRuleListItem is one host-owned HTTP rule as returned by http.rule list.
+type HTTPRuleListItem struct {
+	RuleRef     string `json:"rule_ref"`
+	FrontendURL string `json:"frontend_url"`
+	Backend     string `json:"backend"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// HTTPRuleListResponse is the http.rule list payload.
+type HTTPRuleListResponse struct {
+	Rules []HTTPRuleListItem `json:"rules"`
+}
+
+// NormalizeHTTPRuleFrontend accepts a hostname or an http(s) URL, strips any
+// path/query/fragment, and returns a canonical frontend URL. A bare hostname
+// becomes an http frontend; an https:// input keeps an HTTPS frontend.
+func NormalizeHTTPRuleFrontend(domain string) (string, error) {
+	if domain == "" || domain != strings.TrimSpace(domain) || strings.ContainsAny(domain, "\r\n\x00") {
+		return "", errors.New("http.rule domain is invalid")
+	}
+	scheme := "http"
+	host := domain
+	lower := strings.ToLower(domain)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		scheme = "https"
+		host = domain[len("https://"):]
+	case strings.HasPrefix(lower, "http://"):
+		scheme = "http"
+		host = domain[len("http://"):]
+	case strings.Contains(domain, "://"):
+		return "", errors.New("http.rule domain is invalid")
+	}
+	if cut := strings.IndexAny(host, "/?#"); cut >= 0 {
+		if cut == 0 {
+			return "", errors.New("http.rule domain is invalid")
+		}
+		host = host[:cut]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || len(host) > 253 || strings.ContainsAny(host, " \r\n\x00/") {
+		return "", errors.New("http.rule domain is invalid")
+	}
+	frontend := scheme + "://" + host
+	parsed, err := url.Parse(frontend)
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("http.rule domain is invalid")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return "", errors.New("http.rule domain is invalid")
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + parsed.Host, nil
 }
 
 const (

@@ -2313,15 +2313,8 @@ func isValidHTTPURL(raw string) bool {
 }
 
 func pluginHostRuleFrontendURL(domain string) (string, error) {
-	domain = strings.TrimSpace(domain)
-	if domain == "" || domain != strings.TrimSpace(domain) || strings.ContainsAny(domain, "\r\n\x00 /") {
-		return "", fmt.Errorf("%w: domain is invalid", ErrInvalidArgument)
-	}
-	frontend := domain
-	if !strings.Contains(domain, "://") {
-		frontend = "http://" + domain
-	}
-	if !isValidHTTPURL(frontend) {
+	frontend, err := pluginsdk.NormalizeHTTPRuleFrontend(domain)
+	if err != nil {
 		return "", fmt.Errorf("%w: domain is not a valid HTTP frontend", ErrInvalidArgument)
 	}
 	return frontend, nil

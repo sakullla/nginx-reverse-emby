@@ -100,6 +100,30 @@ func TestValidateHTTPBackendProviderManifestRequiresIndivisibleContract(t *testi
 	}
 }
 
+func TestHTTPBackendOfferReplaceRequestRejectsInvalidAndDuplicateEntries(t *testing.T) {
+	valid := HTTPBackendOffer{ResourceID: "hubproxy", AgentID: "edge-a", Port: 5000, DisplayName: "hubproxy", Available: true}
+	if err := (HTTPBackendOfferReplaceRequest{Offers: []HTTPBackendOffer{valid, {ResourceID: "hubproxy", AgentID: "edge-a", Port: 5001, DisplayName: "hubproxy", Available: false}}}).Validate(); err != nil {
+		t.Fatalf("valid offers rejected: %v", err)
+	}
+	if err := (HTTPBackendOfferReplaceRequest{}).Validate(); err != nil {
+		t.Fatalf("empty replace rejected: %v", err)
+	}
+	for name, request := range map[string]HTTPBackendOfferReplaceRequest{
+		"missing resource": {Offers: []HTTPBackendOffer{{AgentID: "edge-a", Port: 5000, DisplayName: "hubproxy"}}},
+		"invalid port":     {Offers: []HTTPBackendOffer{{ResourceID: "hubproxy", AgentID: "edge-a", Port: 0, DisplayName: "hubproxy"}}},
+		"duplicate port": {Offers: []HTTPBackendOffer{
+			valid,
+			{ResourceID: "hubproxy", AgentID: "edge-a", Port: 5000, DisplayName: "hubproxy copy"},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := request.Validate(); err == nil {
+				t.Fatal("invalid offer replace was accepted")
+			}
+		})
+	}
+}
+
 func TestHTTPBackendProviderIDByteLimitAppliesToDescriptorsAndDurableRefs(t *testing.T) {
 	for _, test := range []struct {
 		name    string
