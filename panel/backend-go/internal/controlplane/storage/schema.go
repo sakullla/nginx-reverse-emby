@@ -170,10 +170,10 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := backfillPluginOperationScopes(ctx, db); err != nil {
 		return err
 	}
-	if err := normalizeLegacyControlPlanePluginTargets(ctx, db, defaultPluginTargetID); err != nil {
+	if err := backfillPluginAgentRuntimeAuthority(ctx, db); err != nil {
 		return err
 	}
-	if err := backfillPluginAgentRuntimeAuthority(ctx, db); err != nil {
+	if err := normalizeLegacyControlPlanePluginTargets(ctx, db, defaultPluginTargetID); err != nil {
 		return err
 	}
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, db, defaultPluginTargetID); err != nil {

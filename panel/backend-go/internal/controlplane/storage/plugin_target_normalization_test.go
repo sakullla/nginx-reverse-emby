@@ -166,13 +166,139 @@ func TestPluginLegacyTargetNormalizationFailsClosedWithoutAuthoritativeManifest(
 	}
 }
 
+func TestPluginLegacyTargetNormalizationPreservesOppositeValidFace(t *testing.T) {
+	store := newStorageMigrationTestStore(t, "local")
+	now := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+
+	seedPluginTargetNormalizationPackage(t, store, "official.active-dual", "1", true, now)
+	seedPluginTargetNormalizationPackage(t, store, "official.active-dual", "2", false, now)
+	activeDual := pluginTargetNormalizationInstalled("official.active-dual", "1", now)
+	stagePluginTargetNormalizationPackage(&activeDual, "2", "op-pending-control")
+	activeDualInstance := pluginTargetNormalizationInstance("instance-active-dual", activeDual.PluginID, now)
+	activeDualInstance.PendingOperationID = activeDual.PendingOperationID
+	activeDualInstance.PendingConfigJSON = `{}`
+	activeDualInstance.PendingTargetJSON = `["edge-a"]`
+	activeDualInstance.PendingResourceGroupID = "default"
+	activeDualInstance.PendingVersion = 2
+
+	seedPluginTargetNormalizationPackage(t, store, "official.pending-dual", "3", false, now)
+	seedPluginTargetNormalizationPackage(t, store, "official.pending-dual", "4", true, now)
+	pendingDual := pluginTargetNormalizationInstalled("official.pending-dual", "3", now)
+	stagePluginTargetNormalizationPackage(&pendingDual, "4", "op-pending-dual")
+	pendingDualInstance := pluginTargetNormalizationInstance("instance-pending-dual", pendingDual.PluginID, now)
+	pendingDualInstance.PendingOperationID = pendingDual.PendingOperationID
+	pendingDualInstance.PendingConfigJSON = `{}`
+	pendingDualInstance.PendingResourceGroupID = "default"
+	pendingDualInstance.PendingVersion = 2
+
+	if err := store.db.Create(&[]InstalledPluginRow{activeDual, pendingDual}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&[]PluginInstanceRow{activeDualInstance, pendingDualInstance}).Error; err != nil {
+		t.Fatal(err)
+	}
+	statuses := []PluginAgentRuntimeStatusRow{
+		pluginTargetNormalizationStatus("op-active-dual", "edge-a", activeDualInstance, "active", now),
+		pluginTargetNormalizationStatus(activeDual.PendingOperationID, "edge-a", activeDualInstance, "pending", now),
+		pluginTargetNormalizationStatus("op-active-control", "edge-a", pendingDualInstance, "active", now),
+		pluginTargetNormalizationStatus(pendingDual.PendingOperationID, "edge-a", pendingDualInstance, "pending", now),
+	}
+	if err := store.db.Create(&statuses).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := normalizeLegacyControlPlanePluginTargets(t.Context(), store.db, "local"); err != nil {
+		t.Fatalf("normalizeLegacyControlPlanePluginTargets() error = %v", err)
+	}
+	var gotActiveDual, gotPendingDual PluginInstanceRow
+	if err := store.db.Where("id = ?", activeDualInstance.ID).First(&gotActiveDual).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Where("id = ?", pendingDualInstance.ID).First(&gotPendingDual).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gotActiveDual.TargetJSON != `["edge-a"]` || gotActiveDual.PendingOperationID != "" || gotActiveDual.PendingTargetJSON != "" {
+		t.Fatalf("active dual/pending control instance = %+v", gotActiveDual)
+	}
+	if gotPendingDual.TargetJSON != `["local"]` || gotPendingDual.PendingOperationID != pendingDual.PendingOperationID || gotPendingDual.PendingTargetJSON != `["edge-a"]` {
+		t.Fatalf("active control/pending dual instance = %+v", gotPendingDual)
+	}
+
+	wantAuthority := map[string]string{
+		"op-active-dual":               "active",
+		activeDual.PendingOperationID:  "retired",
+		"op-active-control":            "retired",
+		pendingDual.PendingOperationID: "pending",
+	}
+	var gotStatuses []PluginAgentRuntimeStatusRow
+	if err := store.db.Order("operation_id").Find(&gotStatuses).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range gotStatuses {
+		if status.AuthoritySlot != wantAuthority[status.OperationID] {
+			t.Fatalf("status %s authority = %q, want %q", status.OperationID, status.AuthoritySlot, wantAuthority[status.OperationID])
+		}
+	}
+	generations, err := store.LoadAgentPluginGenerations(t.Context(), "edge-a", runtime.GOOS+"-"+runtime.GOARCH)
+	if err != nil {
+		t.Fatalf("LoadAgentPluginGenerations() error = %v", err)
+	}
+	if len(generations) != 2 {
+		t.Fatalf("mixed-face generations = %+v", generations)
+	}
+	for _, generation := range generations {
+		if generation.Target.ID != "edge-a" || generation.Runtime.HostScope != pluginsdk.HostScopeAgent {
+			t.Fatalf("preserved generation = %+v", generation)
+		}
+	}
+}
+
+func TestPluginBootstrapAuthorityBackfillPrecedesFaceNormalization(t *testing.T) {
+	store := newStorageMigrationTestStore(t, "local")
+	now := time.Date(2026, 8, 23, 10, 30, 0, 0, time.UTC)
+	seedPluginTargetNormalizationPackage(t, store, "official.bootstrap-control", "5", false, now)
+	installed := pluginTargetNormalizationInstalled("official.bootstrap-control", "5", now)
+	instance := pluginTargetNormalizationInstance("instance-bootstrap-control", installed.PluginID, now)
+	instance.TargetJSON = `["local"]`
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	status := pluginTargetNormalizationStatus("op-bootstrap-control", "local", instance, "", now)
+	status.PackageDigest = installed.ActivePackageDigest
+	if err := store.db.Create(&status).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backfillPluginAgentRuntimeAuthority(t.Context(), store.db); err != nil {
+		t.Fatalf("backfillPluginAgentRuntimeAuthority() error = %v", err)
+	}
+	if err := store.db.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", status.OperationID, status.AgentID, status.InstanceID).First(&status).Error; err != nil {
+		t.Fatal(err)
+	}
+	if status.AuthoritySlot != "active" {
+		t.Fatalf("authority backfill slot = %q, want active", status.AuthoritySlot)
+	}
+	if err := normalizeLegacyControlPlanePluginTargets(t.Context(), store.db, "local"); err != nil {
+		t.Fatalf("normalizeLegacyControlPlanePluginTargets() error = %v", err)
+	}
+	if err := store.db.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", status.OperationID, status.AgentID, status.InstanceID).First(&status).Error; err != nil {
+		t.Fatal(err)
+	}
+	if status.AuthoritySlot != "retired" {
+		t.Fatalf("post-normalization authority slot = %q, want retired", status.AuthoritySlot)
+	}
+}
+
 func seedPluginTargetNormalizationPackage(t *testing.T, store *GormStore, pluginID, digestSeed string, agentFace bool, now time.Time) {
 	t.Helper()
 	digest := strings.Repeat(digestSeed, 64)
 	identity := strings.Repeat(strings.ToUpper(digestSeed), 64)
 	hostScopes := []string(nil)
 	if agentFace {
-		hostScopes = []string{pluginsdk.HostScopeAgent}
+		hostScopes = []string{pluginsdk.HostScopeControlPlane, pluginsdk.HostScopeAgent}
 	}
 	artifactDigest := strings.Repeat("f", 64)
 	manifest := plugins.Manifest{
@@ -201,6 +327,18 @@ func seedPluginTargetNormalizationPackage(t *testing.T, store *GormStore, plugin
 
 func pluginTargetNormalizationInstalled(pluginID, digestSeed string, now time.Time) InstalledPluginRow {
 	return InstalledPluginRow{PluginID: pluginID, ActivePackageDigest: strings.Repeat(digestSeed, 64), ActivePackageIdentity: strings.Repeat(strings.ToUpper(digestSeed), 64), RuntimeKind: pluginsdk.RuntimeRPCService, RuntimeABI: pluginsdk.RPCABIV1, HostScope: pluginsdk.HostScopeControlPlane, DesiredLifecycle: "enabled", CurrentLifecycle: "active", CleanupPolicyJSON: `{}`, LastOperationID: "install-" + pluginID, StateVersion: 3, InstalledAt: now, UpdatedAt: now}
+}
+
+func stagePluginTargetNormalizationPackage(installed *InstalledPluginRow, digestSeed, operationID string) {
+	installed.StagedPackageDigest = strings.Repeat(digestSeed, 64)
+	installed.StagedPackageIdentity = strings.Repeat(strings.ToUpper(digestSeed), 64)
+	installed.PendingOperationID = operationID
+	installed.PendingKind = "upgrade"
+	installed.PendingTargetDigest = installed.StagedPackageDigest
+	installed.PendingTargetIdentity = installed.StagedPackageIdentity
+	installed.PendingRevision = 19
+	installed.PendingGrantsJSON = `[]`
+	installed.CurrentLifecycle = "upgrading"
 }
 
 func pluginTargetNormalizationInstance(id, pluginID string, now time.Time) PluginInstanceRow {

@@ -365,6 +365,23 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 	if len(instances) == 0 {
 		return nil
 	}
+	var authorityStatuses []PluginAgentRuntimeStatusRow
+	if err := tx.Where("plugin_id = ? AND authority_slot IN ?", installed.PluginID, []string{"active", "pending"}).Order("instance_id, operation_id, agent_id").Find(&authorityStatuses).Error; err != nil {
+		return err
+	}
+	activeStatusInstances := make(map[string]struct{})
+	pendingStatusOperations := make(map[string]map[string]struct{})
+	for _, status := range authorityStatuses {
+		switch status.AuthoritySlot {
+		case "active":
+			activeStatusInstances[status.InstanceID] = struct{}{}
+		case "pending":
+			if pendingStatusOperations[status.InstanceID] == nil {
+				pendingStatusOperations[status.InstanceID] = make(map[string]struct{})
+			}
+			pendingStatusOperations[status.InstanceID][status.OperationID] = struct{}{}
+		}
+	}
 	canonicalTargetJSON, err := json.Marshal([]string{defaultTargetID})
 	if err != nil {
 		return err
@@ -391,9 +408,11 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 	}
 
 	cancelInstalledPending := false
-	stalePendingOperations := make(map[string]struct{})
+	retirePendingOperations := make(map[string]struct{})
 	clearPendingInstances := make(map[string]struct{})
-	retireAgentStatusInstances := make(map[string]struct{})
+	retireActiveStatusInstances := make(map[string]struct{})
+	retirePendingStatusInstances := make(map[string]struct{})
+	preservedPendingTargets := make(map[string]string)
 	for index := range instances {
 		activeTargetJSON := instances[index].TargetJSON
 		activeTargets, err := pluginInstanceTargets(activeTargetJSON, defaultTargetID)
@@ -401,20 +420,24 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 			return fmt.Errorf("plugin instance %s active targets: %w", instances[index].ID, err)
 		}
 		activeNeedsAuthority := !canonicalPluginLocalTargets(activeTargets, defaultTargetID)
-		if activeNeedsAuthority {
+		_, hasActiveStatus := activeStatusInstances[instances[index].ID]
+		if activeNeedsAuthority || hasActiveStatus {
 			manifest, err := loadActive()
 			if err != nil {
 				return fmt.Errorf("plugin %s active target authority: %w", installed.PluginID, err)
 			}
 			if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
-				instances[index].TargetJSON = string(canonicalTargetJSON)
-				retireAgentStatusInstances[instances[index].ID] = struct{}{}
+				if activeNeedsAuthority {
+					instances[index].TargetJSON = string(canonicalTargetJSON)
+				}
+				retireActiveStatusInstances[instances[index].ID] = struct{}{}
 			}
 		}
 
 		hasInstalledPending := installed.PendingOperationID != ""
 		hasInstancePending := instances[index].PendingOperationID != "" || strings.TrimSpace(instances[index].PendingTargetJSON) != "" || strings.TrimSpace(instances[index].PendingResourceGroupID) != ""
-		if !hasInstalledPending && !hasInstancePending {
+		statusOperations := pendingStatusOperations[instances[index].ID]
+		if !hasInstalledPending && !hasInstancePending && len(statusOperations) == 0 {
 			continue
 		}
 		pendingTargetJSON := instances[index].PendingTargetJSON
@@ -427,7 +450,8 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 		if err != nil {
 			return fmt.Errorf("plugin instance %s pending targets: %w", instances[index].ID, err)
 		}
-		if canonicalPluginLocalTargets(pendingTargets, defaultTargetID) {
+		pendingTargetsNoncanonical := !canonicalPluginLocalTargets(pendingTargets, defaultTargetID)
+		if !pendingTargetsNoncanonical && len(statusOperations) == 0 {
 			continue
 		}
 		manifest, err := loadPending()
@@ -435,20 +459,33 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 			return fmt.Errorf("plugin %s pending target authority: %w", installed.PluginID, err)
 		}
 		if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+			if pendingTargetsNoncanonical && activeNeedsAuthority && strings.TrimSpace(instances[index].PendingTargetJSON) == "" && instances[index].TargetJSON != activeTargetJSON {
+				instances[index].PendingTargetJSON = activeTargetJSON
+				preservedPendingTargets[instances[index].ID] = activeTargetJSON
+			}
 			continue
 		}
-		clearPendingInstances[instances[index].ID] = struct{}{}
-		retireAgentStatusInstances[instances[index].ID] = struct{}{}
-		if hasInstalledPending {
-			cancelInstalledPending = true
+		for operationID := range statusOperations {
+			if operationID != "" {
+				retirePendingOperations[operationID] = struct{}{}
+			}
 		}
-		if instances[index].PendingOperationID != "" {
-			stalePendingOperations[instances[index].PendingOperationID] = struct{}{}
+		if len(statusOperations) == 0 {
+			retirePendingStatusInstances[instances[index].ID] = struct{}{}
+		}
+		if pendingTargetsNoncanonical {
+			clearPendingInstances[instances[index].ID] = struct{}{}
+			if hasInstalledPending {
+				cancelInstalledPending = true
+			}
+			if instances[index].PendingOperationID != "" {
+				retirePendingOperations[instances[index].PendingOperationID] = struct{}{}
+			}
 		}
 	}
 
 	if cancelInstalledPending {
-		stalePendingOperations[installed.PendingOperationID] = struct{}{}
+		retirePendingOperations[installed.PendingOperationID] = struct{}{}
 		clearLegacyInstalledPluginPending(installed)
 		if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed.PluginID).Updates(map[string]any{
 			"current_lifecycle": installed.CurrentLifecycle, "pending_operation_id": "", "pending_kind": "", "pending_target_digest": "", "pending_target_identity": "", "pending_revision": 0,
@@ -460,9 +497,10 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 	}
 
 	for index := range instances {
-		_, retireAgentStatuses := retireAgentStatusInstances[instances[index].ID]
-		_, clearStale := stalePendingOperations[instances[index].PendingOperationID]
+		_, normalizeActive := retireActiveStatusInstances[instances[index].ID]
+		_, clearStale := retirePendingOperations[instances[index].PendingOperationID]
 		_, clearPending := clearPendingInstances[instances[index].ID]
+		preservedPendingTarget, preservePending := preservedPendingTargets[instances[index].ID]
 		clearInstalled := cancelInstalledPending && (pendingKind == "enable" || pendingKind == "disable")
 		if cancelInstalledPending && pendingOperationID != "" && instances[index].PendingOperationID == pendingOperationID {
 			clearInstalled = true
@@ -471,8 +509,11 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 			clearLegacyPluginInstancePending(&instances[index])
 		}
 		updates := map[string]any{}
-		if retireAgentStatuses {
+		if normalizeActive {
 			updates["target_json"] = instances[index].TargetJSON
+		}
+		if preservePending && !clearPending && !clearStale && !clearInstalled {
+			updates["pending_target_json"] = preservedPendingTarget
 		}
 		if clearPending || clearStale || clearInstalled {
 			updates["current_state"] = instances[index].CurrentState
@@ -491,16 +532,23 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 			}
 		}
 	}
-	for instanceID := range retireAgentStatusInstances {
+	for instanceID := range retireActiveStatusInstances {
 		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
-			Where("plugin_id = ? AND instance_id = ? AND authority_slot IN ?", installed.PluginID, instanceID, []string{"pending", "active"}).
+			Where("plugin_id = ? AND instance_id = ? AND authority_slot = ?", installed.PluginID, instanceID, "active").
 			Update("authority_slot", "retired").Error; err != nil {
 			return err
 		}
 	}
-	for operationID := range stalePendingOperations {
+	for instanceID := range retirePendingStatusInstances {
 		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
-			Where("plugin_id = ? AND operation_id = ? AND authority_slot IN ?", installed.PluginID, operationID, []string{"pending", "active"}).
+			Where("plugin_id = ? AND instance_id = ? AND authority_slot = ?", installed.PluginID, instanceID, "pending").
+			Update("authority_slot", "retired").Error; err != nil {
+			return err
+		}
+	}
+	for operationID := range retirePendingOperations {
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("plugin_id = ? AND operation_id = ? AND authority_slot = ?", installed.PluginID, operationID, "pending").
 			Update("authority_slot", "retired").Error; err != nil {
 			return err
 		}
@@ -534,8 +582,11 @@ func loadAuthoritativePluginManifestTx(tx *gorm.DB, pluginID, identity, digest s
 	if packageRow.SignatureVerdict != "verified" || strings.TrimSpace(packageRow.SignatureKeyID) == "" || !ValidPluginGenerationDigest(packageRow.SignatureFingerprint) {
 		return plugins.Manifest{}, errors.New("authoritative package signature projection is not verified")
 	}
-	seenScopes := make(map[string]struct{}, 2)
-	for _, scope := range append([]string{manifest.Runtime.HostScope}, manifest.Runtime.HostScopes...) {
+	if manifest.Runtime.HostScope != strings.TrimSpace(manifest.Runtime.HostScope) || (manifest.Runtime.HostScope != pluginsdk.HostScopeAgent && manifest.Runtime.HostScope != pluginsdk.HostScopeControlPlane) {
+		return plugins.Manifest{}, errors.New("authoritative manifest primary host scope is invalid")
+	}
+	seenScopes := make(map[string]struct{}, len(manifest.Runtime.HostScopes))
+	for _, scope := range manifest.Runtime.HostScopes {
 		if scope != strings.TrimSpace(scope) || (scope != pluginsdk.HostScopeAgent && scope != pluginsdk.HostScopeControlPlane) {
 			return plugins.Manifest{}, errors.New("authoritative manifest host scopes are invalid")
 		}

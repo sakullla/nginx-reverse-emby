@@ -147,6 +147,9 @@ func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, jo
 	if err := reconcilePluginVariantReferences(ctx, target.db); err != nil {
 		return err
 	}
+	if err := backfillPluginAgentRuntimeAuthority(ctx, target.db); err != nil {
+		return err
+	}
 	if err := normalizeLegacyControlPlanePluginTargets(ctx, target.db, target.LocalAgentID()); err != nil {
 		return err
 	}
