@@ -9,7 +9,8 @@ const (
 	PermissionStorageWrite = "storage.write"
 
 	// StorageResourceConfigPath identifies a permission resource whose ID is a
-	// JSON Pointer to an absolute Host directory in the instance configuration.
-	// The Host resolves and mounts the directory; plugins only consume the path.
+	// JSON Pointer to an absolute Host directory or an array of absolute Host
+	// directories in the instance configuration. The Host resolves and mounts
+	// each directory; plugins only consume the configured paths.
 	StorageResourceConfigPath = "config-path"
 )
