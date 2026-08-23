@@ -254,7 +254,7 @@ function expectOpsOnlyInMore(wrapper, { allowUninstall = false } = {}) {
     expect(firstScreenButtons(wrapper).some((button) => button.text() === label)).toBe(false)
   }
   expect(screen).not.toContain('导出脱敏诊断')
-  expect(screen).not.toMatch(/逐 Agent 状态/)
+  expect(screen).not.toMatch(/Agent 执行面状态/)
   expect(screen).not.toMatch(/运行日志/)
   expect(screen).not.toMatch(/生命周期操作与审计|操作时间线/)
   const more = morePanel(wrapper)
@@ -825,7 +825,7 @@ describe('PluginDetailPage', () => {
       expect(buttonByText(more, label)).toBeTruthy()
     }
     expect(more.find('.plugin-technical').exists()).toBe(true)
-    expect(more.text()).toMatch(/逐 Agent 状态/)
+    expect(more.text()).toMatch(/Agent 执行面状态/)
     expect(more.text()).toMatch(/运行日志|操作时间线|生命周期/)
   })
 
@@ -1246,7 +1246,7 @@ describe('PluginDetailPage', () => {
     expect(wrapper.find('[data-test="plugin-task-center"] .declarative-field').exists()).toBe(false)
     expectOpsOnlyInMore(wrapper)
     const more = await openMore(wrapper)
-    expect(more.text()).toContain('逐 Agent 状态')
+    expect(more.text()).toContain('Agent 执行面状态')
     expect(more.text()).toMatch(/运行日志/)
     expect(more.text()).toMatch(/生命周期操作与审计/)
     expect(buttonByText(more, '导出脱敏诊断')).toBeTruthy()
