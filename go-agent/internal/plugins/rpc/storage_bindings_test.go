@@ -2,12 +2,25 @@ package rpc
 
 import (
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+func TestNewHostUsesIdentityAwareDefaultProvisioning(t *testing.T) {
+	supervisor := pluginprocess.NewSupervisor(hostRunner{}, hostTestSandbox{}, io.Discard)
+	host, err := NewHost(pluginprocess.Installer{RuntimeRoot: t.TempDir()}, supervisor, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.provision != nil {
+		t.Fatal("default Host provisioner bypasses candidate storage identity")
+	}
+}
 
 func TestPluginStorageDirectoryBindingsResolveAuthorizedConfigPath(t *testing.T) {
 	base := t.TempDir()

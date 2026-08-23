@@ -195,7 +195,7 @@ func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Superv
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, provision: provisionAttemptSecurity, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
+	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
 }
 
 func (h *Host) SetSecretRedeemer(redeemer SecretRedeemer) {
