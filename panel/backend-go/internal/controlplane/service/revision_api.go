@@ -230,6 +230,20 @@ func (s *RevisionAPI) SetPluginLifecycleReconciler(reconciler *PluginLifecycleRe
 	}
 }
 
+func (s *RevisionAPI) reconcileStartup(ctx context.Context) error {
+	if s == nil || s.coordinator == nil {
+		return nil
+	}
+	_, coordinatorErr := s.coordinator.ReconcileStartup(ctx)
+	var pluginErr error
+	if s.pluginLifecycle != nil {
+		pluginErr = s.pluginLifecycle.RecoverSupersededOperations(
+			WithSystemMutationPrincipal(ctx, "system:revision-reconciler"),
+		)
+	}
+	return errors.Join(coordinatorErr, pluginErr)
+}
+
 func (s *RevisionAPI) GetOperationStatus(ctx context.Context, operationID string) (OperationStatus, error) {
 	operationID = strings.TrimSpace(operationID)
 	if operationID == "" {

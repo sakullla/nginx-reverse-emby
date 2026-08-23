@@ -789,6 +789,31 @@ func (s *PluginService) reconcileSupersededConfigure(ctx context.Context, plugin
 	return nil
 }
 
+// RecoverSupersededConfigures closes configure operations whose coordinator
+// revision was superseded before an Agent could report the staged generation.
+// Recovery must not depend on another user mutation: otherwise the plugin and
+// its instance remain permanently applying while the Agent has already moved
+// to a newer immutable revision.
+func (s *PluginService) RecoverSupersededConfigures(ctx context.Context) error {
+	if s == nil || s.revisionMutation {
+		return nil
+	}
+	installed, err := s.store.ListInstalledPlugins(ctx)
+	if err != nil {
+		return err
+	}
+	var recoveryErrors []error
+	for _, plugin := range installed {
+		if plugin.PendingOperationID == "" || plugin.PendingKind != "configure" {
+			continue
+		}
+		if err := s.reconcileSupersededConfigure(ctx, plugin.PluginID); err != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover superseded plugin configure %q: %w", plugin.PluginID, err))
+		}
+	}
+	return errors.Join(recoveryErrors...)
+}
+
 func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request PluginDeleteInstanceRequest) error {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.DeleteInstance(ctx, request)

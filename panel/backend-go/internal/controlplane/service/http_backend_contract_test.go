@@ -221,6 +221,41 @@ func TestPluginPublishReconcilesSupersededConfigureBeforeNextMutation(t *testing
 	t.Fatalf("superseded operation was not failed: %+v", operations)
 }
 
+func TestPluginLifecycleReconcilerRecoversSupersededConfigureWithoutNextMutation(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "https://superseded-background.example.com", 0))
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingOperationID == "" || installed.PendingRevision <= 0 {
+		t.Fatalf("pending installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	store := supersededPluginPublishStore{
+		GormStore: fixture.store,
+		revision: storage.AgentRevisionRow{
+			AgentID: "local", Revision: installed.PendingRevision, State: storage.AgentRevisionStateSuperseded,
+		},
+	}
+	fixture.service.store = store
+	reconciler, err := NewPluginLifecycleReconciler(store, fixture.service)
+	if err != nil {
+		t.Fatalf("NewPluginLifecycleReconciler() error = %v", err)
+	}
+	if err := reconciler.RecoverSupersededOperations(ctx); err != nil {
+		t.Fatalf("RecoverSupersededOperations() error = %v", err)
+	}
+	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingOperationID != "" {
+		t.Fatalf("recovered installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	row := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	if row.PendingOperationID != "" || row.CurrentState != "degraded" {
+		t.Fatalf("recovered instance = %+v", row)
+	}
+}
+
 type supersededPluginPublishStore struct {
 	*storage.GormStore
 	revision storage.AgentRevisionRow

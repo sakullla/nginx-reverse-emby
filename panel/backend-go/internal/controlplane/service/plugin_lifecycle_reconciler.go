@@ -59,6 +59,19 @@ func (r *PluginLifecycleReconciler) SetControlPlaneRuntime(runtime PluginControl
 	}
 }
 
+func (r *PluginLifecycleReconciler) RecoverSupersededOperations(ctx context.Context) error {
+	if r == nil || r.plugins == nil {
+		return nil
+	}
+	recoverer, ok := r.plugins.(interface {
+		RecoverSupersededConfigures(context.Context) error
+	})
+	if !ok {
+		return nil
+	}
+	return recoverer.RecoverSupersededConfigures(ctx)
+}
+
 func (r *PluginLifecycleReconciler) completeTrustedRevisionOperation(ctx context.Context, operation storage.PluginOperationRow, applied bool, agentResults any) error {
 	if applied {
 		if planner, ok := r.plugins.(interface {
