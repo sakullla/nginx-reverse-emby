@@ -31,6 +31,7 @@ const (
 type attemptSecurity struct {
 	dial                DialConfig
 	endpointDirectory   string
+	endpointRoot        string
 	credentialDirectory string
 	guestEndpoint       string
 	environment         []string
@@ -125,6 +126,7 @@ func provisionAttemptSecurityForIdentityWithOps(runtimeDirectory string, dial Di
 				return security, err
 			}
 			dial.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+			security.endpointRoot = fmt.Sprintf("/proc/self/fd/%d", endpointHandle.Fd())
 		} else if runtime.GOOS != "windows" && len(dial.Address) >= 104 {
 			return security, errors.New("RPC plugin managed unix endpoint path is too long")
 		}
@@ -138,6 +140,9 @@ func provisionAttemptSecurityForIdentityWithOps(runtimeDirectory string, dial Di
 					return security, err
 				}
 				dial.Address = fmt.Sprintf("/proc/self/fd/%d/%s", endpointHandle.Fd(), socketName)
+			}
+			if security.endpointRoot == "" && runtime.GOOS == "linux" {
+				security.endpointRoot = fmt.Sprintf("/proc/self/fd/%d", endpointHandle.Fd())
 			}
 			uiSocketName := "u-" + cookie[:16] + ".sock"
 			uiAddress := filepath.Join(endpointDirectory, uiSocketName)
@@ -158,6 +163,9 @@ func provisionAttemptSecurityForIdentityWithOps(runtimeDirectory string, dial Di
 			if err != nil {
 				return security, err
 			}
+		}
+		if security.endpointRoot == "" && runtime.GOOS == "linux" {
+			security.endpointRoot = fmt.Sprintf("/proc/self/fd/%d", endpointHandle.Fd())
 		}
 		providerConfig := pluginsdk.HTTPBackendProviderEndpointConfig{Version: pluginsdk.HTTPBackendProviderEndpointConfigVersion}
 		security.providers = make(map[string]httpBackendProviderSecurity, len(dial.HTTPBackendProviders))

@@ -563,6 +563,7 @@ func newAppWithAllDeps(
 	rpcProcesses := pluginprocess.NewSupervisor(nil, nil, nil)
 	rpcProcesses.SetRuntimeLogSink(core.NewPluginRuntimeLogSink(st))
 	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: rpcProcessRuntimeRoot(cfg.DataDir, os.Getpid())}, rpcProcesses, nil)
+	rpcHost.SetDockerProxy(filepath.Join(cfg.DataDir, "plugin-resources", "docker-compose"), nil)
 	if redeemer, ok := client.(pluginrpc.SecretRedeemer); ok {
 		rpcHost.SetSecretRedeemer(redeemer)
 	}

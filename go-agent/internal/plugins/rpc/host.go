@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/dockerproxy"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -87,6 +88,7 @@ type HostCandidate struct {
 	Artifact                                                                    pluginprocess.Artifact
 	Requirement                                                                 pluginprocess.SandboxRequirement
 	Scopes                                                                      []string
+	Grants                                                                      []model.PluginGrantProjection
 	SecretHandles                                                               []model.PluginSecretHandle
 	Restart                                                                     string
 	Config                                                                      []byte
@@ -133,46 +135,50 @@ type hostAttempt struct {
 }
 
 type HostedInstance struct {
-	mu             sync.RWMutex
-	candidate      HostCandidate
-	supervisor     *pluginprocess.Supervisor
-	dial           DialFunc
-	provision      func(string, DialConfig) (attemptSecurity, error)
-	redeemer       SecretRedeemer
-	attempt        *hostAttempt
-	status         RuntimeStatus
-	exits          []time.Time
-	backoff        time.Duration
-	cancel         context.CancelFunc
-	done           chan struct{}
-	runStarted     bool
-	runContext     context.Context
-	prepared       bool
-	activated      bool
-	cleanupRuntime bool
-	runtimeDir     string
-	stopMu         sync.Mutex
-	stopErr        error
-	stoppedAttempt *hostAttempt
-	afterStartOnce func()
+	mu              sync.RWMutex
+	candidate       HostCandidate
+	supervisor      *pluginprocess.Supervisor
+	dial            DialFunc
+	provision       func(string, DialConfig) (attemptSecurity, error)
+	redeemer        SecretRedeemer
+	attempt         *hostAttempt
+	status          RuntimeStatus
+	exits           []time.Time
+	backoff         time.Duration
+	cancel          context.CancelFunc
+	done            chan struct{}
+	runStarted      bool
+	runContext      context.Context
+	prepared        bool
+	activated       bool
+	cleanupRuntime  bool
+	runtimeDir      string
+	stopMu          sync.Mutex
+	stopErr         error
+	stoppedAttempt  *hostAttempt
+	afterStartOnce  func()
+	dockerProxyRoot string
+	dockerRunner    dockerproxy.Runner
 }
 
 type Host struct {
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	closed         bool
-	activationWG   sync.WaitGroup
-	installer      pluginprocess.Installer
-	install        func(context.Context, string, pluginprocess.Artifact) (string, error)
-	supervisor     *pluginprocess.Supervisor
-	dial           DialFunc
-	provision      func(string, DialConfig) (attemptSecurity, error)
-	redeemer       SecretRedeemer
-	active         map[string]*HostedInstance
-	pending        map[*HostedInstance]struct{}
-	locks          sync.Map
-	afterStartOnce func()
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	closed          bool
+	activationWG    sync.WaitGroup
+	installer       pluginprocess.Installer
+	install         func(context.Context, string, pluginprocess.Artifact) (string, error)
+	supervisor      *pluginprocess.Supervisor
+	dial            DialFunc
+	provision       func(string, DialConfig) (attemptSecurity, error)
+	redeemer        SecretRedeemer
+	active          map[string]*HostedInstance
+	pending         map[*HostedInstance]struct{}
+	locks           sync.Map
+	afterStartOnce  func()
+	dockerProxyRoot string
+	dockerRunner    dockerproxy.Runner
 }
 
 type PreparedHostGeneration struct {
@@ -204,6 +210,16 @@ func (h *Host) SetSecretRedeemer(redeemer SecretRedeemer) {
 	}
 	h.mu.Lock()
 	h.redeemer = redeemer
+	h.mu.Unlock()
+}
+
+func (h *Host) SetDockerProxy(root string, runner dockerproxy.Runner) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.dockerProxyRoot = filepath.Clean(strings.TrimSpace(root))
+	h.dockerRunner = runner
 	h.mu.Unlock()
 }
 
@@ -288,10 +304,12 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 			Generation: candidate.Generation,
 			State:      "starting",
 		},
-		backoff:        candidate.Process.InitialBackoff,
-		cancel:         cancel,
-		done:           make(chan struct{}),
-		afterStartOnce: h.afterStartOnce,
+		backoff:         candidate.Process.InitialBackoff,
+		cancel:          cancel,
+		done:            make(chan struct{}),
+		afterStartOnce:  h.afterStartOnce,
+		dockerProxyRoot: h.dockerProxyRoot,
+		dockerRunner:    h.dockerRunner,
 	}
 	attempt, err := h.startAttempt(activationCtx, candidate, func(attempt *hostAttempt) {
 		instance.mu.Lock()
@@ -410,6 +428,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*
 			Revision: candidate.Revision, PackageDigest: candidate.PackageDigest, State: "preparing"},
 		backoff: candidate.Process.InitialBackoff, cancel: cancel, done: make(chan struct{}), runContext: runCtx,
 		cleanupRuntime: true, runtimeDir: filepath.Dir(executable), afterStartOnce: h.afterStartOnce,
+		dockerProxyRoot: h.dockerProxyRoot, dockerRunner: h.dockerRunner,
 	}
 	attempt, err := h.startAttemptMode(ctx, candidate, func(attempt *hostAttempt) {
 		instance.mu.Lock()
@@ -612,6 +631,23 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	}
 	if attempt == nil {
 		return nil, errors.New("RPC plugin attempt security has no cleanup owner")
+	}
+	if dockerproxy.Eligible(candidate.Grants) {
+		environment, closeProxy, proxyErr := dockerproxy.Start(dockerproxy.Config{
+			EndpointDirectory: security.endpointDirectory,
+			EndpointRoot:      security.endpointRoot,
+			Cookie:            security.dial.Cookie,
+			SandboxUID:        security.sandboxUID,
+			WorkspaceRoot:     filepath.Join(h.dockerProxyRoot, candidate.InstanceID),
+			Runner:            h.dockerRunner,
+		})
+		if proxyErr != nil {
+			return attempt, proxyErr
+		}
+		security.environment = append(security.environment, environment...)
+		candidate.Process.Security.AllowProcessExec = true
+		baseCleanup := attempt.cleanup
+		attempt.cleanup = func() error { return errors.Join(closeProxy(), baseCleanup()) }
 	}
 	candidate.Dial = security.dial
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
@@ -1316,7 +1352,7 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.State = "starting"
 			i.mu.Unlock()
 
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce, dockerProxyRoot: i.dockerProxyRoot, dockerRunner: i.dockerRunner}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()

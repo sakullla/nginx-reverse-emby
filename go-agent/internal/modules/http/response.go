@@ -22,6 +22,11 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 	}
 	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.WriteHeader(resp.StatusCode)
+	if proxyResponseNeedsImmediateFlush(resp) {
+		if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return 0, err
+		}
+	}
 	var written int64
 	if resp.Body != nil {
 		trafficWriter := newHTTPStreamingResponseWriterWithThreshold(w, recorder, httpResponseTrafficFlushThresholdFor(resp))
@@ -33,6 +38,21 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 		}
 	}
 	return written, nil
+}
+
+func proxyResponseNeedsImmediateFlush(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.ContentLength < 0 {
+		return true
+	}
+	switch httpResponseMediaType(resp.Header.Get("Content-Type")) {
+	case "application/x-ndjson", "text/event-stream":
+		return true
+	default:
+		return false
+	}
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, recorder *traffic.Recorder) error {
@@ -143,6 +163,9 @@ const (
 )
 
 func httpResponseTrafficFlushThresholdFor(resp *http.Response) uint64 {
+	if proxyResponseNeedsImmediateFlush(resp) {
+		return 1
+	}
 	if isBulkHTTPResponse(resp) {
 		return httpResponseBulkTrafficFlushThreshold
 	}

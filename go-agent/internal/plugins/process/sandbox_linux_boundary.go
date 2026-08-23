@@ -629,6 +629,9 @@ func applyLinuxLandlock(protocol linuxLaunchProtocol) error {
 	}
 	if protocol.EndpointFD != 0 {
 		allowed := uint64(unix.LANDLOCK_ACCESS_FS_READ_DIR | unix.LANDLOCK_ACCESS_FS_REMOVE_FILE | unix.LANDLOCK_ACCESS_FS_MAKE_SOCK)
+		if protocol.AllowProcessExec {
+			allowed |= unix.LANDLOCK_ACCESS_FS_EXECUTE | unix.LANDLOCK_ACCESS_FS_READ_FILE
+		}
 		if err := addLinuxLandlockRule(int(ruleset), protocol.EndpointFD, allowed); err != nil {
 			return err
 		}

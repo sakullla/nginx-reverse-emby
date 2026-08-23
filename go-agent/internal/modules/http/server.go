@@ -360,6 +360,11 @@ func (s *Server) routeFor(host string, requestPath string) *routeEntry {
 }
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
+	if req.Body != nil && req.Body != http.NoBody {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("enable full-duplex proxy request: %w", err)
+		}
+	}
 	recorder := traffic.NewHTTPRuleRecorder(e.rule.ID)
 	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req), recorder)
 	if err != nil {

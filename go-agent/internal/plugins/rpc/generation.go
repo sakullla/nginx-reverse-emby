@@ -578,7 +578,7 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 		ProviderGenerationID: generation.ID, AgentID: generation.Target.ID,
 		Artifact: pluginprocess.Artifact{CachePath: generation.Artifact.LocalPath, SHA256: generation.Artifact.SHA256,
 			GOOS: generation.Artifact.GOOS, GOARCH: generation.Artifact.GOARCH},
-		Requirement: requirement, Scopes: scopes, SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
+		Requirement: requirement, Scopes: scopes, Grants: append([]model.PluginGrantProjection(nil), generation.Grants...), SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
 		Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), generation.HTTPBackendProviders...),
 		Process: pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute,

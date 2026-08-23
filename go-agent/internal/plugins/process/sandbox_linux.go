@@ -81,6 +81,7 @@ type linuxLaunchProtocol struct {
 	Namespaces             bool                    `json:"namespaces"`
 	SandboxRoot            string                  `json:"sandbox_root,omitempty"`
 	SandboxUID             int                     `json:"sandbox_uid,omitempty"`
+	AllowProcessExec       bool                    `json:"allow_process_exec,omitempty"`
 	ParentNamespaces       map[string]string       `json:"parent_namespaces,omitempty"`
 	HardRlimits            bool                    `json:"hard_rlimits,omitempty"`
 }
@@ -236,17 +237,18 @@ func (s linuxSandbox) Configure(cmd *exec.Cmd, security Security) (func() error,
 	}
 
 	protocol := linuxLaunchProtocol{
-		Version:        linuxLauncherVersion,
-		ParentPID:      os.Getpid(),
-		Generation:     security.Generation,
-		ArtifactDigest: security.ArtifactDigest,
-		CookieDigest:   security.CookieDigest,
-		Artifact:       artifactIdentity,
-		ArtifactFD:     3,
-		Arguments:      append([]string(nil), cmd.Args[1:]...),
-		Environment:    append([]string(nil), cmd.Env...),
-		Budget:         security.Requirement.Budget(),
-		SandboxUID:     sandboxUID,
+		Version:          linuxLauncherVersion,
+		ParentPID:        os.Getpid(),
+		Generation:       security.Generation,
+		ArtifactDigest:   security.ArtifactDigest,
+		CookieDigest:     security.CookieDigest,
+		Artifact:         artifactIdentity,
+		ArtifactFD:       3,
+		Arguments:        append([]string(nil), cmd.Args[1:]...),
+		Environment:      append([]string(nil), cmd.Env...),
+		Budget:           security.Requirement.Budget(),
+		SandboxUID:       sandboxUID,
+		AllowProcessExec: security.AllowProcessExec,
 	}
 	nextFD := 4
 	for _, binding := range security.DirectoryBindings {
@@ -570,7 +572,7 @@ func runLinuxLauncherChild(protocolFD int, final bool) error {
 			return err
 		}
 	}
-	if err := installLinuxSeccomp(protocol.Budget.Network); err != nil {
+	if err := installLinuxSeccomp(protocol.Budget.Network, protocol.AllowProcessExec); err != nil {
 		return err
 	}
 	if protocol.EndpointFD != 0 && !protocol.Namespaces {
@@ -805,6 +807,9 @@ func linuxChildEnvironment(environment []string, endpointFD, credentialFD int, g
 		values["NRE_PLUGIN_TLS_CERT_FILE"] = root + "/server.crt"
 		values["NRE_PLUGIN_TLS_KEY_FILE"] = root + "/server.key"
 	}
+	if cli := strings.TrimSpace(values["NRE_PLUGIN_DOCKER_CLI"]); filepath.IsAbs(cli) {
+		values["PATH"] = filepath.Dir(cli) + ":/usr/bin:/bin"
+	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -968,8 +973,8 @@ func applyLinuxNamespaces(network, required bool) error {
 	return nil
 }
 
-func installLinuxSeccomp(network bool) error {
-	filters := linuxSeccompFilters(network)
+func installLinuxSeccomp(network, allowProcessExec bool) error {
+	filters := linuxSeccompFilters(network, allowProcessExec)
 	program := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("enable plugin no-new-privileges: %w", err)
@@ -980,9 +985,12 @@ func installLinuxSeccomp(network bool) error {
 	return nil
 }
 
-func linuxSeccompFilters(network bool) []unix.SockFilter {
+func linuxSeccompFilters(network, allowProcessExec bool) []unix.SockFilter {
 	// RPC guests are single-OS-process binaries. CLONE_THREAD remains available to the Go runtime.
-	denied := append([]uint32{}, linuxSeccompProcessCreationSyscalls...)
+	denied := []uint32{}
+	if !allowProcessExec {
+		denied = append(denied, linuxSeccompProcessCreationSyscalls...)
+	}
 	denied = append(denied, unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG, unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR, unix.SYS_PTRACE, unix.SYS_BPF, unix.SYS_KEXEC_LOAD, unix.SYS_OPEN_BY_HANDLE_AT, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF, unix.SYS_SETSID, unix.SYS_SETPGID, unix.SYS_UNSHARE, unix.SYS_SETNS, unix.SYS_KILL, unix.SYS_PIDFD_SEND_SIGNAL, unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV, unix.SYS_KCMP, unix.SYS_SETUID, unix.SYS_SETGID, unix.SYS_SETRESUID, unix.SYS_SETRESGID)
 	if !network {
 		denied = append(denied, unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER)
@@ -1006,14 +1014,16 @@ func linuxSeccompFilters(network bool) []unix.SockFilter {
 			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
 		)
 	}
-	filters = append(filters,
-		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: unix.SYS_CLONE},
-		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
-		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, Jt: 1, Jf: 0, K: unix.CLONE_THREAD},
-		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
-		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
-		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
-	)
+	if !allowProcessExec {
+		filters = append(filters,
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 0, Jf: 4, K: unix.SYS_CLONE},
+			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, Jt: 1, Jf: 0, K: unix.CLONE_THREAD},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+		)
+	}
 	if !network {
 		for _, syscallNumber := range []uint32{unix.SYS_SOCKET, unix.SYS_SOCKETPAIR} {
 			filters = append(filters,

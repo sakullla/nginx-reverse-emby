@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -708,6 +709,16 @@ func (manager *PluginCapabilityManager) pluginHostPluginCall(ctx context.Context
 	}
 	record, err = tasks.WaitForTask(ctx, record.ID)
 	if err != nil {
+		reason := "task_failed"
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			reason = "deadline_exceeded"
+		case errors.Is(err, context.Canceled):
+			reason = "canceled"
+		case errors.Is(err, ErrTaskNotFound):
+			reason = "task_not_found"
+		}
+		log.Printf("[plugin.call] task failed plugin=%q agent=%q name=%q task=%q reason=%q", candidate.Identity.PluginID, input.AgentID, input.Name, record.ID, reason)
 		return nil, errors.Join(err, errPluginHostUnavailable)
 	}
 	if record.Result == nil {

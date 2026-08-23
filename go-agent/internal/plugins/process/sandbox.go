@@ -22,6 +22,7 @@ type Security struct {
 	EndpointDirectory, CredentialDirectory, GuestEndpoint string
 	ArtifactDigest, Generation, CookieDigest              string
 	SandboxUID                                            int
+	AllowProcessExec                                      bool
 	DirectoryBindings                                     []DirectoryBinding
 }
 
