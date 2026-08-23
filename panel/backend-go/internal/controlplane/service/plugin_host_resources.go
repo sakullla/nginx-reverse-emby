@@ -157,6 +157,8 @@ func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
 	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeHTTPRule || call.Operation == pluginsdk.HostRuntimeL4Rule {
 		return true
 	}
+	// channel.reverse status lookup is read-only: it must not require an
+	// operation id or enter the durable mutation outcome cache.
 	if call.Operation == pluginsdk.HostRuntimeChannelReverse {
 		return !pluginHostChannelReverseIsLookup(call)
 	}
