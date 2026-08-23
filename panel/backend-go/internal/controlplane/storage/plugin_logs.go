@@ -165,6 +165,9 @@ func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authentica
 		var status PluginAgentRuntimeStatusRow
 		if err := tx.Where("agent_id = ? AND instance_id = ? AND generation_id = ? AND revision = ? AND plugin_id = ? AND package_digest = ? AND artifact_digest = ?",
 			report.AgentID, report.InstanceID, report.GenerationID, report.Revision, report.PluginID, report.PackageDigest, report.ArtifactDigest).Order("updated_at DESC").First(&status).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("plugin runtime log generation is not authoritative: %w", ErrPluginGenerationStale)
+			}
 			return fmt.Errorf("plugin runtime log generation is not authoritative: %w", err)
 		}
 		if err := pluginRuntimeLogStatusCurrentTx(tx, status); err != nil {
