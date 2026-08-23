@@ -729,6 +729,12 @@ type pluginCoordinatorRevisionStore interface {
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 }
 
+type pluginSupersededRevisionRebaseStore interface {
+	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
+	LoadCoordinatorRuntimeSnapshot(context.Context, string, int64) (storage.CoordinatorRuntimeSnapshot, bool, error)
+	RebaseInheritedPluginAgentRuntimeStatuses(context.Context, string, int64, []storage.PluginGeneration, time.Time) error
+}
+
 func (s *PluginService) reconcileSupersededConfigure(ctx context.Context, pluginID string) error {
 	if s == nil || s.revisionMutation || strings.TrimSpace(pluginID) == "" {
 		return nil
@@ -758,6 +764,57 @@ func (s *PluginService) reconcileSupersededConfigure(ctx context.Context, plugin
 	instances, err := s.store.ListPluginInstances(ctx, pluginID)
 	if err != nil {
 		return err
+	}
+	if rebaseStore, ok := s.store.(pluginSupersededRevisionRebaseStore); ok {
+		for _, instance := range instances {
+			if instance.PendingOperationID != operation.ID || instance.PendingVersion == 0 {
+				continue
+			}
+			targets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), strings.TrimSpace(s.cfg.LocalAgentID))
+			if err != nil {
+				return err
+			}
+			for _, agentID := range targets {
+				pointer, found, err := rebaseStore.GetAgentRevisionPointer(ctx, agentID)
+				if err != nil {
+					return err
+				}
+				if !found || pointer.DesiredRevision <= operation.TargetRevision {
+					continue
+				}
+				runtimeSnapshot, found, err := rebaseStore.LoadCoordinatorRuntimeSnapshot(ctx, agentID, pointer.DesiredRevision)
+				if err != nil {
+					return err
+				}
+				if !found {
+					continue
+				}
+				inherited := false
+				for _, generation := range runtimeSnapshot.Snapshot.PluginGenerations {
+					if generation.OperationID == operation.ID && generation.InstanceID == instance.ID {
+						inherited = true
+						break
+					}
+				}
+				if !inherited {
+					continue
+				}
+				if err := rebaseStore.RebaseInheritedPluginAgentRuntimeStatuses(
+					ctx, agentID, pointer.DesiredRevision, runtimeSnapshot.Snapshot.PluginGenerations, s.now().UTC(),
+				); err != nil {
+					return err
+				}
+			}
+		}
+		rebasedOperations, err := s.store.ListPluginOperations(ctx, pluginID)
+		if err != nil {
+			return err
+		}
+		for _, rebased := range rebasedOperations {
+			if rebased.ID == operation.ID && rebased.TargetRevision > operation.TargetRevision {
+				return nil
+			}
+		}
 	}
 	for _, instance := range instances {
 		if instance.PendingOperationID != operation.ID || instance.PendingVersion == 0 {

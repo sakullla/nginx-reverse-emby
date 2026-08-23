@@ -838,6 +838,18 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 	} else if len(input.PluginLogs) > 0 {
 		return errors.New("plugin runtime log ingestion is unavailable")
 	}
+	for _, status := range input.PluginStatuses {
+		report := storage.PluginGenerationReport{
+			OperationID: status.OperationID, AgentID: agentID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+			Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest,
+			ArtifactDigest: status.ArtifactDigest, State: status.State, Sequence: status.Sequence,
+			ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail,
+			Details: append(json.RawMessage(nil), status.Details...), Budget: append(json.RawMessage(nil), status.Budget...),
+		}
+		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !errors.Is(err, storage.ErrPluginGenerationStale) {
+			return err
+		}
+	}
 	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, input.Revision)
 	if err != nil || !found {
 		return err

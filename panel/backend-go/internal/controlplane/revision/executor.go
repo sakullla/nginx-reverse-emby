@@ -495,6 +495,9 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			if statusErr != nil {
 				return storage.RevisionMutationDecision{}, statusErr
 			}
+			if statusErr = tx.RebaseInheritedPluginAgentRuntimeStatuses(ctx, target.AgentID, revision, snapshot.PluginGenerations, now); statusErr != nil {
+				return storage.RevisionMutationDecision{}, statusErr
+			}
 			if statusErr = tx.StagePluginAgentRuntimeStatuses(ctx, statusRows); statusErr != nil {
 				return storage.RevisionMutationDecision{}, statusErr
 			}

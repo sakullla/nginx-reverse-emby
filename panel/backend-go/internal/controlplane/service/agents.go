@@ -1401,7 +1401,23 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 				ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail, Details: append(json.RawMessage(nil), status.Details...),
 				Budget: append(json.RawMessage(nil), status.Budget...), ReportedAt: s.now().UTC(),
 			}
-			if _, _, err := reportStore.RecordPluginAgentRuntimeReport(ctx, report); err != nil {
+			var err error
+			complete := false
+			if s.revisionAPI != nil && s.revisionAPI.pluginLifecycle != nil && s.revisionAPI.repository != nil {
+				revisionRow, found, revisionErr := s.revisionAPI.repository.GetCoordinatorRevision(ctx, row.ID, report.Revision)
+				if revisionErr != nil {
+					return HeartbeatReply{}, revisionErr
+				}
+				complete = found && revisionRow.State == storage.AgentRevisionStateApplied
+			}
+			if complete {
+				_, err = s.revisionAPI.pluginLifecycle.Reconcile(
+					WithSystemMutationPrincipal(ctx, "system:agent-plugin-report:"+row.ID), report, row.ID,
+				)
+			} else {
+				_, _, err = reportStore.RecordPluginAgentRuntimeReport(ctx, report)
+			}
+			if err != nil {
 				if discardPluginHeartbeatTelemetryError(err) {
 					continue
 				}

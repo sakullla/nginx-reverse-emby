@@ -21,8 +21,10 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	revisionpkg "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -253,6 +255,280 @@ func TestPluginLifecycleReconcilerRecoversSupersededConfigureWithoutNextMutation
 	row := mustPluginInstanceByID(t, fixture.store, instance.ID)
 	if row.PendingOperationID != "" || row.CurrentState != "degraded" {
 		t.Fatalf("recovered instance = %+v", row)
+	}
+}
+
+func TestHeartbeatRevisionRebasesPendingPluginGeneration(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "https://heartbeat-rebase.example.com", 0))
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingRevision <= 0 {
+		t.Fatalf("pending installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	originalRevision := installed.PendingRevision
+	pendingBefore := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	runtimeSnapshot, found, err := fixture.store.LoadCoordinatorRuntimeSnapshot(ctx, "local", originalRevision)
+	if err != nil || !found || len(runtimeSnapshot.Snapshot.PluginGenerations) != 1 {
+		t.Fatalf("pending runtime snapshot = %+v, found=%t err=%v", runtimeSnapshot, found, err)
+	}
+
+	const heartbeatRevision = int64(432)
+	heartbeatSnapshot := runtimeSnapshot.Snapshot
+	heartbeatSnapshot.Revision = heartbeatRevision
+	for index := range heartbeatSnapshot.PluginGenerations {
+		heartbeatSnapshot.PluginGenerations[index].Revision = heartbeatRevision
+	}
+	payload, digest, err := revisionpkg.CanonicalSnapshotPayload(heartbeatSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.EnsureAgentHeartbeatRevision(ctx, "local", heartbeatSnapshot, payload, digest, time.Now().UTC()); err != nil {
+		t.Fatalf("EnsureAgentHeartbeatRevision() error = %v", err)
+	}
+	pendingAfter := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	if pendingAfter.PendingOperationID != pendingBefore.PendingOperationID ||
+		pendingAfter.PendingConfigJSON != pendingBefore.PendingConfigJSON ||
+		pendingAfter.PendingSecretHandlesJSON != pendingBefore.PendingSecretHandlesJSON {
+		t.Fatalf("heartbeat rebase changed pending configuration: before=%+v after=%+v", pendingBefore, pendingAfter)
+	}
+
+	coord, err := coordinator.New(fixture.store, coordinator.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(fixture.store, coord)
+	reconciler, err := NewPluginLifecycleReconciler(fixture.store, fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.SetPluginLifecycleReconciler(reconciler)
+	pull, err := api.PullRemoteRevision(ctx, "local")
+	if err != nil || pull.Lease == nil || pull.Snapshot == nil || pull.Lease.Revision != heartbeatRevision {
+		t.Fatalf("PullRemoteRevision() = %+v, %v", pull, err)
+	}
+	lease := pull.Lease
+	const runtimeGenerationID = "generation-432-heartbeat-rebase"
+	if _, err := api.StartRemoteRevision(ctx, "local", RemoteRevisionStart{
+		AgentID: "local", Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt,
+		LeaseID: lease.LeaseID, GenerationID: runtimeGenerationID,
+	}); err != nil {
+		t.Fatalf("StartRemoteRevision() error = %v", err)
+	}
+	generation := pull.Snapshot.PluginGenerations[0]
+	status := storage.PluginRuntimeStatus{
+		InstanceID: generation.InstanceID, PluginID: generation.PluginID, OperationID: generation.OperationID,
+		Revision: heartbeatRevision, GenerationID: generation.ID, PackageDigest: generation.PackageDigest,
+		ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion,
+		RuntimeKind: generation.Runtime.Kind, State: "active", Sequence: 1,
+		Details: json.RawMessage(`{}`), Budget: json.RawMessage(`{}`),
+	}
+	if _, err := api.ReportRemoteRevision(ctx, "local", RemoteRevisionReport{
+		AgentID: "local", Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt,
+		LeaseID: lease.LeaseID, GenerationID: runtimeGenerationID, Status: storage.AgentRevisionStateApplied,
+		PluginStatuses: []storage.PluginRuntimeStatus{status},
+	}); err != nil {
+		t.Fatalf("ReportRemoteRevision() error = %v", err)
+	}
+
+	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingOperationID != "" {
+		t.Fatalf("rebased installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	row := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	if row.PendingOperationID != "" || row.ConfigVersion != 1 || row.CurrentState != "active" {
+		t.Fatalf("rebased instance = %+v", row)
+	}
+	operations, err := fixture.store.ListPluginOperations(ctx, fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range operations {
+		if operation.ID == installed.LastOperationID && operation.Status == "succeeded" && operation.TargetRevision == heartbeatRevision {
+			return
+		}
+	}
+	t.Fatalf("rebased operation did not succeed at revision %d: %+v", heartbeatRevision, operations)
+}
+
+func TestHeartbeatRevisionRejectsChangedInheritedPluginGeneration(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "http://heartbeat-mismatch.example.com", 0))
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingRevision <= 0 {
+		t.Fatalf("pending installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	originalRevision := installed.PendingRevision
+	pendingBefore := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	runtimeSnapshot, found, err := fixture.store.LoadCoordinatorRuntimeSnapshot(ctx, "local", originalRevision)
+	if err != nil || !found || len(runtimeSnapshot.Snapshot.PluginGenerations) != 1 {
+		t.Fatalf("pending runtime snapshot = %+v, found=%t err=%v", runtimeSnapshot, found, err)
+	}
+	const heartbeatRevision = int64(432)
+	heartbeatSnapshot := runtimeSnapshot.Snapshot
+	heartbeatSnapshot.Revision = heartbeatRevision
+	for index := range heartbeatSnapshot.PluginGenerations {
+		heartbeatSnapshot.PluginGenerations[index].Revision = heartbeatRevision
+		heartbeatSnapshot.PluginGenerations[index].ID = strings.Repeat("f", sha256.Size*2)
+	}
+	payload, digest, err := revisionpkg.CanonicalSnapshotPayload(heartbeatSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.EnsureAgentHeartbeatRevision(ctx, "local", heartbeatSnapshot, payload, digest, time.Now().UTC()); !errors.Is(err, storage.ErrPluginGenerationConflict) {
+		t.Fatalf("EnsureAgentHeartbeatRevision() error = %v, want generation conflict", err)
+	}
+	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingRevision != originalRevision {
+		t.Fatalf("conflicting heartbeat changed installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	pendingAfter := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	if pendingAfter.PendingOperationID != pendingBefore.PendingOperationID ||
+		pendingAfter.PendingConfigJSON != pendingBefore.PendingConfigJSON ||
+		pendingAfter.PendingSecretHandlesJSON != pendingBefore.PendingSecretHandlesJSON {
+		t.Fatalf("conflicting heartbeat changed pending configuration: before=%+v after=%+v", pendingBefore, pendingAfter)
+	}
+	pointer, found, err := fixture.store.GetAgentRevisionPointer(ctx, "local")
+	if err != nil || !found || pointer.DesiredRevision != originalRevision {
+		t.Fatalf("conflicting heartbeat advanced pointer = %+v, found=%t err=%v", pointer, found, err)
+	}
+}
+
+func TestLaterConfigRevisionRebasesPendingPluginGeneration(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	instance, err := callPluginPublish(t, fixture.service, ctx, pluginPublishFields(fixture.pluginID, "provider-1", "http://provider-pending.example.com", 0))
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingRevision <= 0 {
+		t.Fatalf("pending installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	originalRevision := installed.PendingRevision
+	frontend := "http://unrelated.example.com"
+	backends := []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}}
+	enabled := true
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, fixture.store)
+	unrelated, err := rules.Create(ctx, "local", HTTPRuleInput{FrontendURL: &frontend, Backends: &backends, Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("Create() unrelated rule error = %v", err)
+	}
+	if int64(unrelated.Revision) <= originalRevision {
+		t.Fatalf("unrelated rule revision = %d, want > %d", unrelated.Revision, originalRevision)
+	}
+	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingRevision != int64(unrelated.Revision) {
+		t.Fatalf("rebased installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	fence, found, err := fixture.store.GetPluginAgentRuntimeStatusFence(ctx, installed.PendingOperationID, "local", instance.ID)
+	if err != nil || !found || fence.Revision != int64(unrelated.Revision) || fence.GenerationID == "" {
+		t.Fatalf("rebased runtime fence = %+v, found=%t err=%v", fence, found, err)
+	}
+}
+
+func TestAppliedHeartbeatCompletesPreviouslyRebasedPluginGeneration(t *testing.T) {
+	fixture := newPluginPublishFixture(t, true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:owner")
+	const agentID = "edge-heartbeat-rebase"
+	const agentToken = "heartbeat-rebase-agent-token"
+	if err := fixture.store.SaveAgent(ctx, storage.AgentRow{
+		ID: agentID, Name: agentID, AgentToken: agentToken, Version: "1.0.0",
+		Platform: runtime.GOOS + "-" + runtime.GOARCH, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fields := pluginPublishFields(fixture.pluginID, "provider-1", "http://heartbeat-report.example.com", 0)
+	fields["Targets"] = []string{agentID}
+	instance, err := callPluginPublish(t, fixture.service, ctx, fields)
+	if err != nil {
+		t.Fatalf("PublishMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingRevision <= 0 {
+		t.Fatalf("pending installed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	runtimeSnapshot, found, err := fixture.store.LoadCoordinatorRuntimeSnapshot(ctx, agentID, installed.PendingRevision)
+	if err != nil || !found || len(runtimeSnapshot.Snapshot.PluginGenerations) != 1 {
+		t.Fatalf("pending runtime snapshot = %+v, found=%t err=%v", runtimeSnapshot, found, err)
+	}
+	const heartbeatRevision = int64(432)
+	heartbeatSnapshot := runtimeSnapshot.Snapshot
+	heartbeatSnapshot.Revision = heartbeatRevision
+	for index := range heartbeatSnapshot.PluginGenerations {
+		heartbeatSnapshot.PluginGenerations[index].Revision = heartbeatRevision
+	}
+	payload, digest, err := revisionpkg.CanonicalSnapshotPayload(heartbeatSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.EnsureAgentHeartbeatRevision(ctx, agentID, heartbeatSnapshot, payload, digest, time.Now().UTC()); err != nil {
+		t.Fatalf("EnsureAgentHeartbeatRevision() error = %v", err)
+	}
+	coord, err := coordinator.New(fixture.store, coordinator.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(fixture.store, coord)
+	reconciler, err := NewPluginLifecycleReconciler(fixture.store, fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.SetPluginLifecycleReconciler(reconciler)
+	pull, err := api.PullRemoteRevision(ctx, agentID)
+	if err != nil || pull.Lease == nil || pull.Snapshot == nil {
+		t.Fatalf("PullRemoteRevision() = %+v, %v", pull, err)
+	}
+	lease := pull.Lease
+	const runtimeGenerationID = "generation-432-heartbeat-report"
+	if _, err := api.StartRemoteRevision(ctx, agentID, RemoteRevisionStart{
+		AgentID: agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt,
+		LeaseID: lease.LeaseID, GenerationID: runtimeGenerationID,
+	}); err != nil {
+		t.Fatalf("StartRemoteRevision() error = %v", err)
+	}
+	if _, err := coord.Applied(ctx, coordinator.AppliedReport{
+		Lease: coordinator.Lease{
+			AgentID: agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt,
+			LeaseID: lease.LeaseID, SnapshotArtifactID: "snapshot-" + lease.SnapshotDigest,
+			SnapshotDigest: lease.SnapshotDigest, DesiredVersion: lease.DesiredVersion,
+			ApplyTimeoutSeconds: lease.ApplyTimeoutSeconds, DrainTimeoutSeconds: lease.DrainTimeoutSeconds,
+		},
+		GenerationID: runtimeGenerationID,
+	}); err != nil {
+		t.Fatalf("Coordinator.Applied() error = %v", err)
+	}
+
+	agentService := NewAgentService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, fixture.store)
+	agentService.revisionAPI.SetPluginLifecycleReconciler(reconciler)
+	generation := pull.Snapshot.PluginGenerations[0]
+	status := storage.PluginRuntimeStatus{
+		InstanceID: generation.InstanceID, PluginID: generation.PluginID, OperationID: generation.OperationID,
+		Revision: heartbeatRevision, GenerationID: generation.ID, PackageDigest: generation.PackageDigest,
+		ArtifactDigest: generation.Artifact.SHA256, ConfigVersion: generation.ConfigVersion,
+		RuntimeKind: generation.Runtime.Kind, State: "active", Sequence: 1,
+		Details: json.RawMessage(`{}`), Budget: json.RawMessage(`{}`),
+	}
+	if _, err := agentService.Heartbeat(ctx, HeartbeatRequest{
+		AgentID: agentID, CurrentRevision: heartbeatRevision, LastApplyRevision: heartbeatRevision,
+		LastApplyStatus: "success", PluginStatuses: []storage.PluginRuntimeStatus{status},
+	}, agentToken); err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingOperationID != "" {
+		t.Fatalf("heartbeat-completed plugin = %+v, found=%t err=%v", installed, found, err)
+	}
+	row := mustPluginInstanceByID(t, fixture.store, instance.ID)
+	if row.PendingOperationID != "" || row.ConfigVersion != 1 || row.CurrentState != "active" {
+		t.Fatalf("heartbeat-completed instance = %+v", row)
 	}
 }
 

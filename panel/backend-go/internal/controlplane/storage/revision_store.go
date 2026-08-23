@@ -353,6 +353,9 @@ func (s *GormStore) EnsureAgentHeartbeatRevision(ctx context.Context, agentID st
 					return err
 				}
 			}
+			if err := rebaseInheritedPluginAgentRuntimeStatusesTx(ctx, tx, agentID, snapshot.Revision, snapshot.PluginGenerations, now); err != nil {
+				return err
+			}
 			if err := ensureHeartbeatRevisionPointer(tx, agentID, snapshot.Revision, now); err != nil {
 				return err
 			}
@@ -400,6 +403,9 @@ func (s *GormStore) EnsureAgentHeartbeatRevision(ctx context.Context, agentID st
 			return err
 		}
 		if err := createRevisionArtifactRefs(tx, policyRefs); err != nil {
+			return err
+		}
+		if err := rebaseInheritedPluginAgentRuntimeStatusesTx(ctx, tx, agentID, snapshot.Revision, snapshot.PluginGenerations, now); err != nil {
 			return err
 		}
 		return ensureHeartbeatRevisionPointer(tx, agentID, snapshot.Revision, now)

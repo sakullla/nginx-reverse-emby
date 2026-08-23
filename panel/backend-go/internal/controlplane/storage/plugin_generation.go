@@ -546,6 +546,122 @@ func (s *GormStore) StagePluginAgentRuntimeStatuses(ctx context.Context, rows []
 	})
 }
 
+// RebaseInheritedPluginAgentRuntimeStatuses moves an existing pending runtime
+// fence to a newer immutable revision when that revision carries the exact
+// same plugin generation. This preserves two-phase plugin configuration across
+// a superseding heartbeat or an unrelated configuration mutation without
+// changing generation, config, secret, package, or target authority.
+func (s *GormStore) RebaseInheritedPluginAgentRuntimeStatuses(ctx context.Context, agentID string, revision int64, generations []PluginGeneration, now time.Time) error {
+	if s == nil {
+		return gorm.ErrInvalidDB
+	}
+	if s.transactionScoped {
+		return rebaseInheritedPluginAgentRuntimeStatusesTx(ctx, s.db, s.resolveAgentID(agentID), revision, generations, now)
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		return rebaseInheritedPluginAgentRuntimeStatusesTx(ctx, tx, s.resolveAgentID(agentID), revision, generations, now)
+	})
+}
+
+func rebaseInheritedPluginAgentRuntimeStatusesTx(ctx context.Context, tx *gorm.DB, agentID string, revision int64, generations []PluginGeneration, now time.Time) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || revision <= 0 {
+		return errors.New("inherited plugin runtime rebase Agent and revision are required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	rows, err := BuildPluginAgentRuntimeStatuses(agentID, revision, generations)
+	if err != nil {
+		return err
+	}
+	for _, expected := range rows {
+		var current PluginAgentRuntimeStatusRow
+		err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("operation_id = ? AND agent_id = ? AND instance_id = ?", expected.OperationID, expected.AgentID, expected.InstanceID).
+			First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if current.Revision == revision {
+			comparable := expected
+			comparable.AuthoritySlot = current.AuthoritySlot
+			if !samePluginAgentRuntimeFence(current, comparable) {
+				return ErrPluginGenerationConflict
+			}
+			continue
+		}
+		if current.Revision > revision || current.AuthoritySlot != "pending" || current.State != "applying" {
+			continue
+		}
+		comparable := expected
+		comparable.Revision = current.Revision
+		if !samePluginAgentRuntimeFence(current, comparable) {
+			return ErrPluginGenerationConflict
+		}
+		var operation PluginOperationRow
+		if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", current.OperationID).First(&operation).Error; err != nil {
+			return err
+		}
+		if operation.PluginID != current.PluginID || (operation.Status != "applying" && operation.Status != "staged") || operation.CompletedAt != nil {
+			continue
+		}
+		var installed InstalledPluginRow
+		if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("plugin_id = ?", current.PluginID).First(&installed).Error; err != nil {
+			return err
+		}
+		if installed.PendingOperationID != operation.ID || installed.PendingRevision != operation.TargetRevision {
+			return ErrPluginGenerationConflict
+		}
+		var instance PluginInstanceRow
+		if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND plugin_id = ?", current.InstanceID, current.PluginID).First(&instance).Error; err != nil {
+			return err
+		}
+		if instance.PendingOperationID != operation.ID || instance.PendingVersion != current.ConfigVersion {
+			return ErrPluginGenerationConflict
+		}
+		result := tx.WithContext(ctx).Model(&PluginAgentRuntimeStatusRow{}).
+			Where("operation_id = ? AND agent_id = ? AND instance_id = ? AND revision = ? AND authority_slot = ?", current.OperationID, current.AgentID, current.InstanceID, current.Revision, "pending").
+			Updates(map[string]any{
+				"revision": revision, "state": "applying", "report_sequence": 0, "report_digest": "",
+				"error_code": "", "details_json": "{}", "budget_json": "{}", "reported_at": nil, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrPluginGenerationConflict
+		}
+		if operation.TargetRevision < revision {
+			result := tx.WithContext(ctx).Model(&PluginOperationRow{}).
+				Where("id = ? AND target_revision = ? AND completed_at IS NULL", operation.ID, operation.TargetRevision).
+				Update("target_revision", revision)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrPluginGenerationConflict
+			}
+			operation.TargetRevision = revision
+		}
+		if installed.PendingRevision < revision {
+			result := tx.WithContext(ctx).Model(&InstalledPluginRow{}).
+				Where("plugin_id = ? AND pending_operation_id = ? AND pending_revision < ?", installed.PluginID, operation.ID, revision).
+				Updates(map[string]any{"pending_revision": revision, "updated_at": now})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrPluginGenerationConflict
+			}
+		}
+	}
+	return nil
+}
+
 func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report PluginGenerationReport) (PluginAgentRuntimeStatusRow, bool, error) {
 	report.State = strings.ToLower(strings.TrimSpace(report.State))
 	report.OperationID = strings.TrimSpace(report.OperationID)
