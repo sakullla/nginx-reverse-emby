@@ -34,6 +34,7 @@ type diagnosticHTTPBackendProviderResolver interface {
 type diagnosticHTTPBackendProvider interface {
 	InstanceID() string
 	ProviderID() string
+	Generation() string
 	Acquire() (io.Closer, error)
 	RoundTrip(*http.Request, pluginrpc.HTTPBackendProviderAuthority) (*http.Response, error)
 }
@@ -63,6 +64,10 @@ func (provider rpcDiagnosticHTTPBackendProvider) InstanceID() string {
 
 func (provider rpcDiagnosticHTTPBackendProvider) ProviderID() string {
 	return provider.handle.ProviderID()
+}
+
+func (provider rpcDiagnosticHTTPBackendProvider) Generation() string {
+	return provider.handle.Generation()
 }
 
 func (provider rpcDiagnosticHTTPBackendProvider) Acquire() (io.Closer, error) {
@@ -328,7 +333,7 @@ func httpCandidatesWithProviders(ctx context.Context, cache *model.Cache, rule m
 		target := parsed[indices[idx]]
 		provider := providerHandles[indices[idx]]
 		if provider != nil {
-			label := fmt.Sprintf("插件提供商 %s / %s", provider.InstanceID(), provider.ProviderID())
+			label := fmt.Sprintf("插件提供商 %s / %s @ %s", provider.InstanceID(), provider.ProviderID(), provider.Generation())
 			observationKey := pluginrpc.ProviderObservationKey(provider.InstanceID(), provider.ProviderID())
 			out = append(out, httpProbeCandidate{
 				targetURL:             target,
@@ -817,11 +822,11 @@ func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []mo
 	}
 
 	return &http.Client{
-			Timeout:   p.timeout,
-			Transport: baseTransport,
-		}, func() diagnosticRelaySelection {
-			return selected
-		}, nil
+		Timeout:   p.timeout,
+		Transport: baseTransport,
+	}, func() diagnosticRelaySelection {
+		return selected
+	}, nil
 }
 
 func httpPortWithDefault(target *url.URL) int {
