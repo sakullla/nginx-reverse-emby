@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -18,23 +21,53 @@ type recordedAgentTask struct {
 }
 
 type fakeChannelTaskDispatcher struct {
-	results  map[string]map[string]any
-	failWith error
-	tasks    []recordedAgentTask
+	mu          sync.Mutex
+	results     map[string]map[string]any
+	failWith    error
+	failFor     map[string]error
+	blockFor    map[string]struct{}
+	started     chan struct{}
+	startedOnce sync.Once
+	tasks       []recordedAgentTask
 }
 
-func (f *fakeChannelTaskDispatcher) DispatchAgentTask(_ context.Context, agentID, taskType string, payload map[string]any) (map[string]any, error) {
-	f.tasks = append(f.tasks, recordedAgentTask{agentID: agentID, taskType: taskType, payload: payload})
-	if f.failWith != nil {
-		return nil, f.failWith
+func (f *fakeChannelTaskDispatcher) DispatchAgentTask(ctx context.Context, agentID, taskType string, payload map[string]any) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if result, ok := f.results[agentID+"/"+taskType]; ok {
+	f.mu.Lock()
+	f.tasks = append(f.tasks, recordedAgentTask{agentID: agentID, taskType: taskType, payload: payload})
+	key := agentID + "/" + taskType
+	fail := f.failWith
+	if per, ok := f.failFor[key]; ok {
+		fail = per
+	}
+	_, block := f.blockFor[key]
+	result, ok := f.results[key]
+	started := f.started
+	f.mu.Unlock()
+	if started != nil {
+		f.startedOnce.Do(func() { close(started) })
+	}
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if fail != nil {
+		return nil, fail
+	}
+	if ok {
 		return result, nil
 	}
 	return map[string]any{"session_id": payload["session_id"], "state": pluginsdk.ChannelReverseStateOffline, "last_error": "no session"}, nil
 }
 
 func (f *fakeChannelTaskDispatcher) dispatchedTo(agentID, taskType string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var payloads []map[string]any
 	for _, task := range f.tasks {
 		if task.agentID == agentID && task.taskType == taskType {
@@ -42,6 +75,12 @@ func (f *fakeChannelTaskDispatcher) dispatchedTo(agentID, taskType string) []map
 		}
 	}
 	return payloads
+}
+
+func (f *fakeChannelTaskDispatcher) taskCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.tasks)
 }
 
 func newChannelReverseManager(t *testing.T) (*PluginCapabilityManager, *fakeChannelTaskDispatcher, *storage.GormStore) {
@@ -73,15 +112,44 @@ func channelReverseCandidate() pluginhost.Candidate {
 
 func dispatchChannelReverse(t *testing.T, manager *PluginCapabilityManager, operationID string, request pluginsdk.ChannelReverseRequest) pluginsdk.HostRuntimeResponse {
 	t.Helper()
+	return dispatchChannelReverseContext(t, t.Context(), manager, operationID, request)
+}
+
+func dispatchChannelReverseContext(t *testing.T, ctx context.Context, manager *PluginCapabilityManager, operationID string, request pluginsdk.ChannelReverseRequest) pluginsdk.HostRuntimeResponse {
+	t.Helper()
 	payload, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return manager.DispatchPluginHostResource(t.Context(), channelReverseCandidate(), pluginsdk.HostRuntimeCall{
+	return manager.DispatchPluginHostResource(ctx, channelReverseCandidate(), pluginsdk.HostRuntimeCall{
 		Operation:   pluginsdk.HostRuntimeChannelReverse,
 		OperationID: operationID,
 		Payload:     payload,
 	})
+}
+
+func decodeChannelReverseResult(t *testing.T, response pluginsdk.HostRuntimeResponse) struct {
+	SessionRef string `json:"session_ref"`
+	State      string `json:"state"`
+	BridgeHost string `json:"bridge_host"`
+	BridgePort int    `json:"bridge_port"`
+	LastError  string `json:"last_error"`
+} {
+	t.Helper()
+	if response.Error != nil {
+		t.Fatalf("channel.reverse error = %v", response.Error)
+	}
+	var result struct {
+		SessionRef string `json:"session_ref"`
+		State      string `json:"state"`
+		BridgeHost string `json:"bridge_host"`
+		BridgePort int    `json:"bridge_port"`
+		LastError  string `json:"last_error"`
+	}
+	if err := json.Unmarshal(response.Payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestPluginHostChannelReverseEnsureAppliesBothRoles(t *testing.T) {
@@ -280,6 +348,20 @@ func TestPluginHostChannelReverseRequiresGrantOperationAndDispatcher(t *testing.
 		t.Fatalf("channel.reverse without operation id error = %v", missingOperation.Error)
 	}
 
+	statusWithoutOperation := dispatchChannelReverse(t, manager, "", pluginsdk.ChannelReverseRequest{
+		Action: pluginsdk.ChannelReverseActionStatus, SessionRef: "channel/entry-a/exit-b",
+	})
+	if statusWithoutOperation.Error != nil {
+		t.Fatalf("status without operation id error = %v", statusWithoutOperation.Error)
+	}
+
+	teardownWithoutOperation := dispatchChannelReverse(t, manager, "", pluginsdk.ChannelReverseRequest{
+		Action: pluginsdk.ChannelReverseActionTeardown, SessionRef: "channel/entry-a/exit-b",
+	})
+	if teardownWithoutOperation.Error == nil || teardownWithoutOperation.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("teardown without operation id error = %v", teardownWithoutOperation.Error)
+	}
+
 	unknownAgent := dispatchChannelReverse(t, manager, "channel-deny-2", pluginsdk.ChannelReverseRequest{
 		Action:       pluginsdk.ChannelReverseActionEnsure,
 		EntryAgentID: "entry-a", ExitAgentID: "ghost-agent",
@@ -302,6 +384,226 @@ func TestPluginHostChannelReverseRequiresGrantOperationAndDispatcher(t *testing.
 	})
 	if unboundResponse.Error == nil || unboundResponse.Error.Code != pluginsdk.ErrorUnavailable {
 		t.Fatalf("unbound dispatcher error = %v", unboundResponse.Error)
+	}
+}
+
+func TestPluginHostChannelReverseStatusSynthesizesBothEnds(t *testing.T) {
+	t.Parallel()
+	manager, sessions, _ := newChannelReverseManager(t)
+	sessionRef := "channel/entry-a/exit-b"
+
+	for _, tc := range []struct {
+		name           string
+		results        map[string]map[string]any
+		wantState      string
+		wantBridgeHost string
+		wantBridgePort int
+	}{
+		{
+			name: "both online uses entry bridge",
+			results: map[string]map[string]any{
+				"entry-a/" + TaskTypeChannelStatus: {
+					"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+					"bridge_address": "127.0.0.1:6000",
+				},
+				"exit-b/" + TaskTypeChannelStatus: {
+					"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+					"bridge_address": "10.0.0.1:1",
+				},
+			},
+			wantState: pluginsdk.ChannelReverseStateOnline, wantBridgeHost: "127.0.0.1", wantBridgePort: 6000,
+		},
+		{
+			name: "entry missing is offline",
+			results: map[string]map[string]any{
+				"exit-b/" + TaskTypeChannelStatus: {
+					"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+					"bridge_address": "10.0.0.1:1",
+				},
+			},
+			wantState: pluginsdk.ChannelReverseStateOffline,
+		},
+		{
+			name: "exit missing is offline and keeps entry bridge",
+			results: map[string]map[string]any{
+				"entry-a/" + TaskTypeChannelStatus: {
+					"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+					"bridge_address": "127.0.0.1:6000",
+				},
+			},
+			wantState: pluginsdk.ChannelReverseStateOffline, wantBridgeHost: "127.0.0.1", wantBridgePort: 6000,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions.mu.Lock()
+			sessions.results = tc.results
+			sessions.mu.Unlock()
+			result := decodeChannelReverseResult(t, dispatchChannelReverse(t, manager, "", pluginsdk.ChannelReverseRequest{
+				Action: pluginsdk.ChannelReverseActionStatus, SessionRef: sessionRef,
+			}))
+			if result.State != tc.wantState {
+				t.Fatalf("state = %q, want %q", result.State, tc.wantState)
+			}
+			if result.BridgeHost != tc.wantBridgeHost || result.BridgePort != tc.wantBridgePort {
+				t.Fatalf("bridge = %s:%d, want %s:%d", result.BridgeHost, result.BridgePort, tc.wantBridgeHost, tc.wantBridgePort)
+			}
+			if result.SessionRef != sessionRef {
+				t.Fatalf("session_ref = %q", result.SessionRef)
+			}
+		})
+	}
+}
+
+func TestPluginHostChannelReverseStatusErrorsAndCancel(t *testing.T) {
+	t.Parallel()
+	manager, sessions, _ := newChannelReverseManager(t)
+	sessionRef := "channel/entry-a/exit-b"
+	request := pluginsdk.ChannelReverseRequest{Action: pluginsdk.ChannelReverseActionStatus, SessionRef: sessionRef}
+
+	sessions.mu.Lock()
+	sessions.results = map[string]map[string]any{
+		"entry-a/" + TaskTypeChannelStatus: {
+			"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+			"bridge_address": "127.0.0.1:6000",
+		},
+		"exit-b/" + TaskTypeChannelStatus: {
+			"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+		},
+	}
+	sessions.failFor = map[string]error{"entry-a/" + TaskTypeChannelStatus: errors.New("entry lookup failed")}
+	sessions.mu.Unlock()
+	entryFailed := dispatchChannelReverse(t, manager, "", request)
+	if entryFailed.Error == nil {
+		t.Fatal("entry lookup error returned success")
+	}
+
+	sessions.mu.Lock()
+	sessions.failFor = map[string]error{"exit-b/" + TaskTypeChannelStatus: errors.New("exit lookup failed")}
+	sessions.mu.Unlock()
+	exitFailed := dispatchChannelReverse(t, manager, "", request)
+	if exitFailed.Error == nil {
+		t.Fatal("exit lookup error returned success")
+	}
+
+	sessions.mu.Lock()
+	sessions.failFor = nil
+	sessions.blockFor = map[string]struct{}{
+		"entry-a/" + TaskTypeChannelStatus: {},
+		"exit-b/" + TaskTypeChannelStatus:  {},
+	}
+	sessions.started = make(chan struct{})
+	sessions.startedOnce = sync.Once{}
+	sessions.mu.Unlock()
+
+	canceled, cancel := context.WithCancel(context.Background())
+	done := make(chan pluginsdk.HostRuntimeResponse, 1)
+	go func() {
+		done <- dispatchChannelReverseContext(t, canceled, manager, "", request)
+	}()
+	select {
+	case <-sessions.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("status lookup did not start waiting")
+	}
+	cancel()
+	select {
+	case response := <-done:
+		if response.Error == nil {
+			t.Fatal("canceled status lookup returned success")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled status lookup did not stop waiting")
+	}
+
+	deadline, cancelDeadline := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelDeadline()
+	timedOut := dispatchChannelReverseContext(t, deadline, manager, "", request)
+	if timedOut.Error == nil {
+		t.Fatal("deadline status lookup returned success")
+	}
+}
+
+func TestPluginHostChannelReverseStatusSkipsMutationOutcome(t *testing.T) {
+	t.Parallel()
+	manager, sessions, store := newChannelReverseManager(t)
+	sessionRef := "channel/entry-a/exit-b"
+	operationID := "channel-status-cached-1"
+	sessions.mu.Lock()
+	sessions.results = map[string]map[string]any{
+		"entry-a/" + TaskTypeChannelStatus: {
+			"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+			"bridge_address": "127.0.0.1:6000",
+		},
+		"exit-b/" + TaskTypeChannelStatus: {
+			"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+		},
+	}
+	sessions.mu.Unlock()
+
+	first := decodeChannelReverseResult(t, dispatchChannelReverse(t, manager, operationID, pluginsdk.ChannelReverseRequest{
+		Action: pluginsdk.ChannelReverseActionStatus, SessionRef: sessionRef,
+	}))
+	if first.State != pluginsdk.ChannelReverseStateOnline {
+		t.Fatalf("first status = %+v", first)
+	}
+
+	sessions.mu.Lock()
+	sessions.results = map[string]map[string]any{
+		"entry-a/" + TaskTypeChannelStatus: {
+			"session_id": sessionRef, "state": pluginsdk.ChannelReverseStateOnline,
+			"bridge_address": "127.0.0.1:6000",
+		},
+	}
+	sessions.mu.Unlock()
+	second := decodeChannelReverseResult(t, dispatchChannelReverse(t, manager, operationID, pluginsdk.ChannelReverseRequest{
+		Action: pluginsdk.ChannelReverseActionStatus, SessionRef: sessionRef,
+	}))
+	if second.State != pluginsdk.ChannelReverseStateOffline {
+		t.Fatalf("repeated status reused a mutation outcome: %+v", second)
+	}
+
+	record, found, err := store.GetIdempotencyRecord(t.Context(), pluginHostOperationScope, pluginHostOperationKey(channelReverseCandidate(), operationID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatalf("status lookup stored mutation outcome: %+v", record)
+	}
+}
+
+func TestPluginHostChannelReverseMutationsReplayOperation(t *testing.T) {
+	t.Parallel()
+	manager, sessions, _ := newChannelReverseManager(t)
+	ensure := pluginsdk.ChannelReverseRequest{
+		Action:       pluginsdk.ChannelReverseActionEnsure,
+		EntryAgentID: "entry-a", ExitAgentID: "exit-b",
+		Protocol: pluginsdk.L4RuleProtocolTCP, BackendHost: "127.0.0.1", BackendPort: 9000,
+	}
+	first := decodeChannelReverseResult(t, dispatchChannelReverse(t, manager, "channel-ensure-replay", ensure))
+	if first.State != pluginsdk.ChannelReverseStateOnline {
+		t.Fatalf("ensure result = %+v", first)
+	}
+	afterEnsure := sessions.taskCount()
+	replayed := decodeChannelReverseResult(t, dispatchChannelReverse(t, manager, "channel-ensure-replay", ensure))
+	if replayed != first {
+		t.Fatalf("replayed ensure = %+v, want %+v", replayed, first)
+	}
+	if sessions.taskCount() != afterEnsure {
+		t.Fatalf("ensure replay dispatched extra tasks: %d -> %d", afterEnsure, sessions.taskCount())
+	}
+
+	teardown := pluginsdk.ChannelReverseRequest{Action: pluginsdk.ChannelReverseActionTeardown, SessionRef: first.SessionRef}
+	tornDown := dispatchChannelReverse(t, manager, "channel-teardown-replay", teardown)
+	if tornDown.Error != nil {
+		t.Fatalf("teardown error = %v", tornDown.Error)
+	}
+	afterTeardown := sessions.taskCount()
+	replayedTeardown := dispatchChannelReverse(t, manager, "channel-teardown-replay", teardown)
+	if replayedTeardown.Error != nil {
+		t.Fatalf("replayed teardown error = %v", replayedTeardown.Error)
+	}
+	if sessions.taskCount() != afterTeardown {
+		t.Fatalf("teardown replay dispatched extra tasks: %d -> %d", afterTeardown, sessions.taskCount())
 	}
 }
 

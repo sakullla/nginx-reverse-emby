@@ -56,6 +56,9 @@ func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.C
 	if permission == "" || !pluginCandidateHasGrant(candidate, permission) {
 		return pluginHostRuntimeFailure(pluginsdk.ErrorPermissionDenied, "host resource permission was not granted", false)
 	}
+	if pluginHostChannelReverseIsLookup(call) {
+		return manager.dispatchPluginHostResource(ctx, candidate, call)
+	}
 	if pluginHostCallRequiresOperation(call) && call.OperationID == "" {
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation id is required", false)
 	}
@@ -153,8 +156,7 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
-	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule ||
-		call.Operation == pluginsdk.HostRuntimeChannelReverse {
+	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule {
 		return true
 	}
 	if call.Operation == pluginsdk.HostRuntimeHTTPRule {
@@ -164,6 +166,9 @@ func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
 		}
 		return input.Action != pluginsdk.HTTPRuleActionList
 	}
+	if call.Operation == pluginsdk.HostRuntimeChannelReverse {
+		return !pluginHostChannelReverseIsLookup(call)
+	}
 	if call.Operation != "http.secret-request" {
 		return false
 	}
@@ -172,6 +177,17 @@ func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
 		return false
 	}
 	return strings.ToUpper(strings.TrimSpace(input.Method)) != http.MethodGet
+}
+
+func pluginHostChannelReverseIsLookup(call pluginsdk.HostRuntimeCall) bool {
+	if call.Operation != pluginsdk.HostRuntimeChannelReverse {
+		return false
+	}
+	var input pluginsdk.ChannelReverseRequest
+	if decodePluginHostPayload(call.Payload, &input) != nil {
+		return false
+	}
+	return input.Action == pluginsdk.ChannelReverseActionStatus
 }
 
 type pluginHostDurableOutcome struct {
