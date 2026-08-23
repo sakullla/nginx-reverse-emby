@@ -409,6 +409,7 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 
 	cancelInstalledPending := false
 	retirePendingOperations := make(map[string]struct{})
+	cancelPendingOperations := make(map[string]struct{})
 	clearPendingInstances := make(map[string]struct{})
 	retireActiveStatusInstances := make(map[string]struct{})
 	retirePendingStatusInstances := make(map[string]struct{})
@@ -480,12 +481,14 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 			}
 			if instances[index].PendingOperationID != "" {
 				retirePendingOperations[instances[index].PendingOperationID] = struct{}{}
+				cancelPendingOperations[instances[index].PendingOperationID] = struct{}{}
 			}
 		}
 	}
 
 	if cancelInstalledPending {
 		retirePendingOperations[installed.PendingOperationID] = struct{}{}
+		cancelPendingOperations[installed.PendingOperationID] = struct{}{}
 		clearLegacyInstalledPluginPending(installed)
 		if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed.PluginID).Updates(map[string]any{
 			"current_lifecycle": installed.CurrentLifecycle, "pending_operation_id": "", "pending_kind": "", "pending_target_digest": "", "pending_target_identity": "", "pending_revision": 0,
@@ -498,7 +501,7 @@ func normalizeLegacyInstalledPluginTargetsTx(tx *gorm.DB, installed *InstalledPl
 
 	for index := range instances {
 		_, normalizeActive := retireActiveStatusInstances[instances[index].ID]
-		_, clearStale := retirePendingOperations[instances[index].PendingOperationID]
+		_, clearStale := cancelPendingOperations[instances[index].PendingOperationID]
 		_, clearPending := clearPendingInstances[instances[index].ID]
 		preservedPendingTarget, preservePending := preservedPendingTargets[instances[index].ID]
 		clearInstalled := cancelInstalledPending && (pendingKind == "enable" || pendingKind == "disable")

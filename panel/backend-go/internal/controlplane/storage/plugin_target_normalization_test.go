@@ -292,6 +292,56 @@ func TestPluginBootstrapAuthorityBackfillPrecedesFaceNormalization(t *testing.T)
 	}
 }
 
+func TestPluginLegacyTargetNormalizationRetiresStrayStatusWithoutClearingCanonicalPending(t *testing.T) {
+	store := newStorageMigrationTestStore(t, "local")
+	now := time.Date(2026, 8, 23, 11, 0, 0, 0, time.UTC)
+	seedPluginTargetNormalizationPackage(t, store, "official.canonical-pending", "6", false, now)
+	installed := pluginTargetNormalizationInstalled("official.canonical-pending", "6", now)
+	installed.PendingOperationID = "op-canonical-pending"
+	installed.PendingKind = "configure"
+	installed.PendingRevision = 23
+	installed.CurrentLifecycle = "applying"
+	instance := pluginTargetNormalizationInstance("instance-canonical-pending", installed.PluginID, now)
+	instance.TargetJSON = `["local"]`
+	instance.PendingConfigJSON = `{"token":"pending"}`
+	instance.PendingVersion = 2
+	instance.PendingOperationID = installed.PendingOperationID
+	instance.PendingResourceGroupID = "default"
+	instance.PendingTargetJSON = `["local"]`
+	instance.CurrentState = "applying"
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	status := pluginTargetNormalizationStatus(installed.PendingOperationID, "edge-a", instance, "pending", now)
+	if err := store.db.Create(&status).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := normalizeLegacyControlPlanePluginTargets(t.Context(), store.db, "local"); err != nil {
+		t.Fatalf("normalizeLegacyControlPlanePluginTargets() error = %v", err)
+	}
+	var gotInstalled InstalledPluginRow
+	if err := store.db.Where("plugin_id = ?", installed.PluginID).First(&gotInstalled).Error; err != nil {
+		t.Fatal(err)
+	}
+	var gotInstance PluginInstanceRow
+	if err := store.db.Where("id = ?", instance.ID).First(&gotInstance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotInstalled, installed) || !reflect.DeepEqual(gotInstance, instance) {
+		t.Fatalf("canonical pending scope changed:\ninstalled got=%+v want=%+v\ninstance got=%+v want=%+v", gotInstalled, installed, gotInstance, instance)
+	}
+	if err := store.db.Where("operation_id = ? AND agent_id = ? AND instance_id = ?", status.OperationID, status.AgentID, status.InstanceID).First(&status).Error; err != nil {
+		t.Fatal(err)
+	}
+	if status.AuthoritySlot != "retired" {
+		t.Fatalf("stray pending status authority = %q, want retired", status.AuthoritySlot)
+	}
+}
+
 func seedPluginTargetNormalizationPackage(t *testing.T, store *GormStore, pluginID, digestSeed string, agentFace bool, now time.Time) {
 	t.Helper()
 	digest := strings.Repeat(digestSeed, 64)
