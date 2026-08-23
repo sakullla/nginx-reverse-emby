@@ -60,10 +60,21 @@ func TestPluginConfigureRejectsRemoteTargetForControlPlaneOnlyManifestWithoutSid
 		t.Fatal(err)
 	}
 
-	_, err = fixture.service.ConfigureMutation(ctx, fixture.configureRequest("edge-a", "remote-instance"))
 	wantError := "invalid argument: plugin target is ineligible for declared runtime faces: plugin official.control-plane-only only accepts the canonical local target local"
-	if !errors.Is(err, ErrPluginTargetIneligible) || err.Error() != wantError {
-		t.Fatalf("ConfigureMutation() error = %v, want %q", err, wantError)
+	for _, test := range []struct {
+		name       string
+		target     string
+		instanceID string
+	}{
+		{name: "remote", target: "edge-a", instanceID: "remote-instance"},
+		{name: "whitespace alias", target: " local ", instanceID: "alias-instance"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err = fixture.service.ConfigureMutation(ctx, fixture.configureRequest(test.target, test.instanceID))
+			if !errors.Is(err, ErrPluginTargetIneligible) || err.Error() != wantError {
+				t.Fatalf("ConfigureMutation() error = %v, want %q", err, wantError)
+			}
+		})
 	}
 
 	afterInstalled, ok, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)

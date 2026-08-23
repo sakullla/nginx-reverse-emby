@@ -4046,7 +4046,7 @@ func (s *PluginService) validatePluginTargets(ctx context.Context, manifest plug
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
-		if len(targetIDs) != 1 || strings.TrimSpace(targetIDs[0]) != defaultTargetID {
+		if len(targetIDs) != 1 || targetIDs[0] != defaultTargetID {
 			return fmt.Errorf("%w: plugin %s only accepts the canonical local target %s", ErrPluginTargetIneligible, manifest.ID, defaultTargetID)
 		}
 		return nil
