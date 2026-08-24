@@ -542,6 +542,7 @@ type pluginHostHTTPRuleService interface {
 	Create(context.Context, string, HTTPRuleInput) (HTTPRule, error)
 	Get(context.Context, string, int) (HTTPRule, error)
 	Update(context.Context, string, int, HTTPRuleInput) (HTTPRule, error)
+	Delete(context.Context, string, int) (HTTPRule, error)
 	List(context.Context, string) ([]HTTPRule, error)
 }
 
@@ -848,6 +849,9 @@ func (manager *PluginCapabilityManager) pluginHostHTTPRule(ctx context.Context, 
 	case pluginsdk.HTTPRuleActionCutover:
 		ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
 		return manager.pluginHostHTTPRuleCutover(ctx, rules, input)
+	case pluginsdk.HTTPRuleActionDelete:
+		ctx = WithSystemMutationPrincipal(ctx, "plugin/"+candidate.Identity.PluginID)
+		return manager.pluginHostHTTPRuleDelete(ctx, rules, input)
 	case pluginsdk.HTTPRuleActionList:
 		return manager.pluginHostHTTPRuleList(ctx, rules, input)
 	default:
@@ -956,6 +960,24 @@ func (manager *PluginCapabilityManager) pluginHostHTTPRuleCutover(ctx context.Co
 		return nil, err
 	}
 	return pluginHostHTTPRuleResult(updated), nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostHTTPRuleDelete(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (map[string]any, error) {
+	if strings.TrimSpace(input.RuleRef) == "" {
+		return nil, errPluginHostInvalid
+	}
+	rule, err := manager.resolvePluginHostHTTPRule(ctx, rules, input)
+	if err != nil {
+		return nil, err
+	}
+	deleted, err := rules.Delete(ctx, rule.AgentID, rule.ID)
+	if err != nil {
+		if errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrAgentNotFound) || errors.Is(err, ErrInvalidArgument) {
+			return nil, errPluginHostInvalid
+		}
+		return nil, err
+	}
+	return pluginHostHTTPRuleResult(deleted), nil
 }
 
 func (manager *PluginCapabilityManager) resolvePluginHostHTTPRule(ctx context.Context, rules pluginHostHTTPRuleService, input pluginsdk.HTTPRuleRequest) (HTTPRule, error) {

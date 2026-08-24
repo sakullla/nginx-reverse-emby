@@ -362,6 +362,93 @@ func TestPluginHostHTTPRuleCreateAndEmptyCutover(t *testing.T) {
 	if len(listedRules.Rules) != 1 || listedRules.Rules[0].RuleRef != createdResult.RuleRef || listedRules.Rules[0].FrontendURL != "http://app.example.com" || listedRules.Rules[0].Backend != "http://127.0.0.1:8096" || !listedRules.Rules[0].Enabled {
 		t.Fatalf("http.rule list = %+v", listedRules)
 	}
+
+	unknownAction, err := json.Marshal(map[string]any{"action": "retire", "agent_id": "edge-a", "rule_ref": createdResult.RuleRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupported := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-delete-unsupported",
+		Payload:     unknownAction,
+	})
+	if unsupported.Error == nil || unsupported.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("unsupported action error = %v", unsupported.Error)
+	}
+
+	emptyDelete, err := json.Marshal(map[string]any{"action": "delete", "agent_id": "edge-a", "rule_ref": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRef := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-delete-empty",
+		Payload:     emptyDelete,
+	})
+	if missingRef.Error == nil || missingRef.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("empty rule_ref delete error = %v", missingRef.Error)
+	}
+
+	deleteWithDomain, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionDelete, AgentID: "edge-a", RuleRef: createdResult.RuleRef, Domain: "app.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedDelete := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-delete-domain",
+		Payload:     deleteWithDomain,
+	})
+	if deniedDelete.Error == nil || deniedDelete.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("delete with domain error = %v", deniedDelete.Error)
+	}
+	beforeDelete, err := rules.List(t.Context(), "edge-a")
+	if err != nil || len(beforeDelete) != 1 || beforeDelete[0].ID != listed[0].ID {
+		t.Fatalf("rejected delete mutated rules = %+v err=%v", beforeDelete, err)
+	}
+
+	unknownDelete, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionDelete, AgentID: "edge-a", RuleRef: "404"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRule := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-delete-unknown",
+		Payload:     unknownDelete,
+	})
+	if missingRule.Error == nil || missingRule.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("unknown rule_ref delete error = %v", missingRule.Error)
+	}
+
+	deletePayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionDelete, AgentID: "edge-a", RuleRef: createdResult.RuleRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-delete-1",
+		Payload:     deletePayload,
+	})
+	if deleted.Error != nil {
+		t.Fatalf("http.rule delete error = %v", deleted.Error)
+	}
+	remaining, err := rules.List(t.Context(), "edge-a")
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("delete left rules = %+v err=%v", remaining, err)
+	}
+	listedAfterDelete := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeHTTPRule,
+		Payload:   listPayload,
+	})
+	if listedAfterDelete.Error != nil {
+		t.Fatalf("http.rule list after delete error = %v", listedAfterDelete.Error)
+	}
+	var remainingRules pluginsdk.HTTPRuleListResponse
+	if err := json.Unmarshal(listedAfterDelete.Payload, &remainingRules); err != nil {
+		t.Fatal(err)
+	}
+	if len(remainingRules.Rules) != 0 {
+		t.Fatalf("http.rule list after delete = %+v", remainingRules)
+	}
 }
 
 func TestPluginHostHTTPRuleCreatePreservesHTTPSFrontendAndRejectsInvalid(t *testing.T) {
@@ -389,6 +476,7 @@ func TestPluginHostHTTPRuleCreatePreservesHTTPSFrontendAndRejectsInvalid(t *test
 		t.Fatalf("https create error = %v", created.Error)
 	}
 	var createdResult struct {
+		RuleRef     string `json:"rule_ref"`
 		FrontendURL string `json:"frontend_url"`
 		BackendURL  string `json:"backend_url"`
 	}
@@ -414,6 +502,40 @@ func TestPluginHostHTTPRuleCreatePreservesHTTPSFrontendAndRejectsInvalid(t *test
 	listed, err := rules.List(t.Context(), "edge-a")
 	if err != nil || len(listed) != 1 || listed[0].FrontendURL != "https://hub.example.com" {
 		t.Fatalf("invalid https mutated rules = %+v err=%v", listed, err)
+	}
+
+	deleteWithPort, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionDelete, AgentID: "edge-a", RuleRef: createdResult.RuleRef, Port: 5000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedDelete := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-https-delete-port",
+		Payload:     deleteWithPort,
+	})
+	if deniedDelete.Error == nil || deniedDelete.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("delete with port error = %v", deniedDelete.Error)
+	}
+	stillListed, err := rules.List(t.Context(), "edge-a")
+	if err != nil || len(stillListed) != 1 || stillListed[0].ID != listed[0].ID {
+		t.Fatalf("delete with port mutated rules = %+v err=%v", stillListed, err)
+	}
+
+	deletePayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionDelete, AgentID: "edge-a", RuleRef: createdResult.RuleRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-https-delete-1",
+		Payload:     deletePayload,
+	})
+	if deleted.Error != nil {
+		t.Fatalf("https delete error = %v", deleted.Error)
+	}
+	remaining, err := rules.List(t.Context(), "edge-a")
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("https delete left rules = %+v err=%v", remaining, err)
 	}
 }
 

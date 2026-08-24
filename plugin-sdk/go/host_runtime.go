@@ -175,11 +175,13 @@ const (
 	HTTPRuleActionCreate  = "create"
 	HTTPRuleActionCutover = "cutover"
 	HTTPRuleActionList    = "list"
+	HTTPRuleActionDelete  = "delete"
 )
 
-// HTTPRuleRequest creates, lists, or switches a control-plane HTTP rule.
+// HTTPRuleRequest creates, lists, switches, or deletes a control-plane HTTP rule.
 // Cutover with an empty RuleRef is an explicit error and must not rewrite
-// other rules. Create Domain accepts a hostname or an http(s) URL; the host
+// other rules. Delete requires a legal RuleRef and does not accept domain or
+// port. Create Domain accepts a hostname or an http(s) URL; the host
 // normalizes by stripping a path and preserving the frontend scheme.
 type HTTPRuleRequest struct {
 	Action  string `json:"action"`
@@ -224,6 +226,22 @@ func (request HTTPRuleRequest) Validate() error {
 		}
 		if request.Port < 0 || request.Port > 65535 {
 			return errors.New("http.rule port is invalid")
+		}
+		return nil
+	case HTTPRuleActionDelete:
+		if strings.TrimSpace(request.RuleRef) == "" {
+			return errors.New("http.rule delete rule_ref is required")
+		}
+		if err := ValidatePolicyIdentity(request.RuleRef); err != nil {
+			return fmt.Errorf("http.rule rule_ref: %w", err)
+		}
+		if request.AgentID != "" {
+			if err := ValidatePolicyIdentity(request.AgentID); err != nil {
+				return fmt.Errorf("http.rule agent id: %w", err)
+			}
+		}
+		if request.Domain != "" || request.Port != 0 {
+			return errors.New("http.rule delete does not accept domain or port")
 		}
 		return nil
 	case HTTPRuleActionList:

@@ -89,6 +89,27 @@ func TestPluginCallAndHTTPRuleRequestsValidateWithoutInterpretingActionNames(t *
 	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: "12"}).Validate(); err != nil {
 		t.Fatalf("http.rule cutover: %v", err)
 	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete, RuleRef: "12"}).Validate(); err != nil {
+		t.Fatalf("http.rule delete: %v", err)
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete, AgentID: "edge-a", RuleRef: "12"}).Validate(); err != nil {
+		t.Fatalf("http.rule delete with agent: %v", err)
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete}).Validate(); err == nil {
+		t.Fatal("http.rule delete without rule_ref was accepted")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete, RuleRef: ""}).Validate(); err == nil {
+		t.Fatal("empty rule_ref delete was accepted")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete, RuleRef: "12", Domain: "app.example.com"}).Validate(); err == nil {
+		t.Fatal("http.rule delete accepted a domain")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete, RuleRef: "12", Port: 8096}).Validate(); err == nil {
+		t.Fatal("http.rule delete accepted a port")
+	}
+	if err := (HTTPRuleRequest{Action: "retire", RuleRef: "12"}).Validate(); err == nil {
+		t.Fatal("http.rule accepted an unsupported action")
+	}
 	if err := (HTTPRuleRequest{Action: HTTPRuleActionList, AgentID: "edge-a"}).Validate(); err != nil {
 		t.Fatalf("http.rule list: %v", err)
 	}
