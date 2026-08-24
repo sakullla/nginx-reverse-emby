@@ -123,6 +123,69 @@ func TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish(t *
 	_ = relayModule.Close()
 }
 
+func TestRelayGenerationPortMoveReleasesRetiredListenerWithoutConnections(t *testing.T) {
+	t.Parallel()
+	certificateID := 1
+	certificate := mustIssueTestTLSCertificate(t)
+	provider := &fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: certificate}}
+	registry := module.NewRegistry()
+	relayModule := relaymodule.NewModule(relaymodule.Config{
+		AgentID: "agent-a", AgentName: "node-a", GenerationSelector: registry, ExternalDrainLifecycle: true,
+	})
+	defer relayModule.Close()
+	mustRegister(t, registry, generationProviderModule{name: "certs", ref: module.ProviderTLSMaterial, provider: provider})
+	mustRegister(t, registry, relayModule)
+
+	oldPort := pickFreeTCPPort(t)
+	newPort := pickFreeTCPPort(t)
+	firstListener := testRelayListener(71, "agent-a", "node-a", oldPort, certificateID)
+	first := model.Snapshot{Revision: 1, RelayListeners: []model.RelayListener{firstListener}}
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
+	if err != nil {
+		t.Fatalf("first NewGenerationContext() error = %v", err)
+	}
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
+	if err != nil {
+		t.Fatalf("prepare first relay generation: %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("ready first relay generation: %v", err)
+	}
+	firstView, _ := firstCandidate.Publish()
+	defer firstView.Destroy(context.Background())
+
+	secondListener := firstListener
+	secondListener.ListenPort = newPort
+	secondListener.Revision = 2
+	second := model.Snapshot{Revision: 2, RelayListeners: []model.RelayListener{secondListener}}
+	secondContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("second NewGenerationContext() error = %v", err)
+	}
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
+	if err != nil {
+		t.Fatalf("prepare second relay generation: %v", err)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("ready second relay generation: %v", err)
+	}
+	secondView, previousView := secondCandidate.Publish()
+	defer secondView.Destroy(context.Background())
+	if previousView != firstView {
+		t.Fatal("second relay publish did not retire the first generation")
+	}
+	if got := dialServedCertificate(t, newPort); !certificateDEREqual(got, certificate) {
+		t.Fatal("new relay port served the wrong certificate")
+	}
+
+	oldAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(oldPort))
+	replacement, err := net.Listen("tcp", oldAddress)
+	if err != nil {
+		t.Fatalf("retired relay listener still owns %s: %v", oldAddress, err)
+	}
+	_ = replacement.Close()
+}
+
 func assertRelayTLSDialFails(t *testing.T, port int) {
 	t.Helper()
 	assertRelayTLSDialFailsAt(t, "127.0.0.1", port)

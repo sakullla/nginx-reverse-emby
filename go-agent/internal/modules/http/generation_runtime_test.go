@@ -205,6 +205,79 @@ func TestIntegrationHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t 
 	defer secondView.Destroy(context.Background())
 }
 
+func TestIntegrationHTTPGenerationPortMoveReleasesRetiredListenerWithoutConnections(t *testing.T) {
+	t.Parallel()
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "active")
+	}))
+	defer backend.Close()
+
+	registry := module.NewRegistry()
+	if err := registry.Register(&generationTestTLSModule{provider: &testTLSProvider{}}); err != nil {
+		t.Fatalf("register TLS module: %v", err)
+	}
+	mod := NewModule(Config{
+		GenerationSelector: registry,
+		SessionRegistrar:   generationTestNoopSessionRegistrar{},
+	})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("register HTTP module: %v", err)
+	}
+
+	oldPort := pickFreeTCPUDPPort(t)
+	newPort := pickFreeTCPUDPPort(t)
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 41, Enabled: true, FrontendURL: fmt.Sprintf("http://127.0.0.1:%d", oldPort),
+		Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: []model.HTTPRule{{
+		ID: 41, Enabled: true, FrontendURL: fmt.Sprintf("http://127.0.0.1:%d", newPort),
+		Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
+	if err != nil {
+		t.Fatalf("first NewGenerationContext() error = %v", err)
+	}
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
+	if err != nil {
+		t.Fatalf("first PrepareGeneration() error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("first Ready() error = %v", err)
+	}
+	firstView, _ := firstCandidate.Publish()
+	defer firstView.Destroy(context.Background())
+
+	secondContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("second NewGenerationContext() error = %v", err)
+	}
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
+	if err != nil {
+		t.Fatalf("second PrepareGeneration() error = %v", err)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("second Ready() error = %v", err)
+	}
+	secondView, previousView := secondCandidate.Publish()
+	defer secondView.Destroy(context.Background())
+	if previousView != firstView {
+		t.Fatal("second Publish() did not retire the first HTTP view")
+	}
+	if got := generationTestGET(t, fmt.Sprintf("http://127.0.0.1:%d/", newPort)); got != "active" {
+		t.Fatalf("new port response = %q, want active", got)
+	}
+
+	oldAddress := fmt.Sprintf("0.0.0.0:%d", oldPort)
+	replacement, err := net.Listen("tcp", oldAddress)
+	if err != nil {
+		t.Fatalf("retired HTTP listener still owns %s: %v", oldAddress, err)
+	}
+	_ = replacement.Close()
+}
+
 type generationTestGatedListener struct {
 	net.Listener
 	accepted chan struct{}

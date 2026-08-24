@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"reflect"
 	"strconv"
@@ -317,7 +318,7 @@ func (l *relayIngressLease) release() error {
 		}
 		m.mu.Lock()
 		l.binding.refs--
-		if l.binding.refs == 0 {
+		if l.binding.refs == 0 && m.bindings[l.binding.key] == l.binding {
 			delete(m.bindings, l.binding.key)
 			if l.binding.stream != nil {
 				l.err = errors.Join(l.err, l.binding.stream.Close())
@@ -329,6 +330,38 @@ func (l *relayIngressLease) release() error {
 		m.mu.Unlock()
 	})
 	return l.err
+}
+
+func (m *relayIngressManager) retireExcept(activeKeys []string) error {
+	if m == nil {
+		return nil
+	}
+	active := make(map[string]struct{}, len(activeKeys))
+	for _, key := range activeKeys {
+		active[key] = struct{}{}
+	}
+
+	m.mu.Lock()
+	retired := make([]*relayIngressBinding, 0)
+	for key, binding := range m.bindings {
+		if _, keep := active[key]; keep {
+			continue
+		}
+		delete(m.bindings, key)
+		retired = append(retired, binding)
+	}
+	m.mu.Unlock()
+
+	var closeErr error
+	for _, binding := range retired {
+		if binding.stream != nil {
+			closeErr = errors.Join(closeErr, binding.stream.Close())
+		}
+		if binding.packet != nil {
+			closeErr = errors.Join(closeErr, binding.packet.Close())
+		}
+	}
+	return closeErr
 }
 
 func (m *relayIngressManager) close() error {
@@ -655,8 +688,25 @@ func (t *relayGenerationTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.finalized = true
+	t.retireInactiveIngressBindings()
 	if t.previousRuntime != nil && t.previousRuntime != t.runtime {
 		t.previousRuntime.BeginDrain()
+	}
+}
+
+func (t *relayGenerationTransaction) FinalizeGenerationPublication() {
+	if t == nil || !t.ownsRuntime {
+		return
+	}
+	t.retireInactiveIngressBindings()
+}
+
+func (t *relayGenerationTransaction) retireInactiveIngressBindings() {
+	if t == nil || t.module == nil || t.module.ingress == nil || t.runtime == nil {
+		return
+	}
+	if err := t.module.ingress.retireExcept(t.runtime.BindingKeys()); err != nil {
+		log.Printf("[relay] retire inactive generation ingress: %v", err)
 	}
 }
 

@@ -329,6 +329,38 @@ func (l *httpIngressLease) release() error {
 	return l.releaseErr
 }
 
+func (m *httpIngressManager) retireExcept(activeKeys []string) error {
+	if m == nil {
+		return nil
+	}
+	active := make(map[string]struct{}, len(activeKeys))
+	for _, key := range activeKeys {
+		active[key] = struct{}{}
+	}
+
+	m.mu.Lock()
+	retired := make([]*httpIngressBinding, 0)
+	for key, binding := range m.bindings {
+		if _, keep := active[key]; keep {
+			continue
+		}
+		delete(m.bindings, key)
+		retired = append(retired, binding)
+	}
+	m.mu.Unlock()
+
+	var closeErr error
+	for _, binding := range retired {
+		if binding.packet != nil {
+			closeErr = errors.Join(closeErr, binding.packet.Close())
+		}
+		if binding.stream != nil {
+			closeErr = errors.Join(closeErr, binding.stream.Close())
+		}
+	}
+	return closeErr
+}
+
 func (m *httpIngressManager) close() error {
 	if m == nil {
 		return nil
@@ -1506,9 +1538,26 @@ func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.finalizedSuccess = true
+	t.retireInactiveIngressBindings()
 	if t.previousRuntime != nil {
 		t.previousRuntime.revokeRules(t.revokedEntities)
 		t.previousRuntime.BeginDrain()
+	}
+}
+
+func (t *httpGenerationTransaction) FinalizeGenerationPublication() {
+	if t == nil {
+		return
+	}
+	t.retireInactiveIngressBindings()
+}
+
+func (t *httpGenerationTransaction) retireInactiveIngressBindings() {
+	if t == nil || t.module == nil || t.module.ingress == nil || t.runtime == nil {
+		return
+	}
+	if err := t.module.ingress.retireExcept(t.runtime.BindingKeys()); err != nil {
+		log.Printf("[proxy] retire inactive generation ingress: %v", err)
 	}
 }
 
