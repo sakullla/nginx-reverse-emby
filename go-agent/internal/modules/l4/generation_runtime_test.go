@@ -69,6 +69,47 @@ func TestIntegrationL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 	}
 }
 
+func TestIntegrationL4GenerationTCPPortMoveReleasesRetiredListenerWithoutConnections(t *testing.T) {
+	t.Parallel()
+	oldBackend := startL4GenerationTCPBackend(t, "old")
+	newBackend := startL4GenerationTCPBackend(t, "new")
+	oldFrontendPort := pickFreeTCPPort(t)
+	newFrontendPort := pickFreeTCPPort(t)
+	first := l4GenerationSnapshot(1, "tcp", oldFrontendPort, oldBackend)
+	second := l4GenerationSnapshot(2, "tcp", newFrontendPort, newBackend)
+
+	registry := module.NewRegistry()
+	mod := NewModule(Config{
+		GenerationSelector:     registry,
+		SessionRegistrar:       l4GenerationNoopRegistrar{},
+		ExternalDrainLifecycle: true,
+	})
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	firstCandidate := prepareL4GenerationCandidate(t, registry, model.Snapshot{}, first)
+	firstView, _ := firstCandidate.Publish()
+	defer firstView.Destroy(context.Background())
+
+	secondCandidate := prepareL4GenerationCandidate(t, registry, first, second)
+	secondView, retired := secondCandidate.Publish()
+	defer secondView.Destroy(context.Background())
+	if retired != firstView {
+		t.Fatal("second publication did not retire the first generation")
+	}
+
+	if got, err := l4GenerationTCPExchange(newFrontendPort, "fresh"); err != nil || got != "new:fresh" {
+		t.Fatalf("new port did not use active generation: %q, %v", got, err)
+	}
+
+	oldAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(oldFrontendPort))
+	replacement, err := net.Listen("tcp", oldAddress)
+	if err != nil {
+		t.Fatalf("retired listener still owns %s: %v", oldAddress, err)
+	}
+	_ = replacement.Close()
+}
+
 func TestIntegrationL4GenerationCandidateDestroyAndPrepareFailurePreserveActive(t *testing.T) {
 	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")

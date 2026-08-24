@@ -193,8 +193,29 @@ func (t *l4GenerationTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.finalizedSuccess = true
+	t.retireInactiveIngressBindings()
 	if t.previousServer != nil {
 		t.previousServer.revokeRules(t.revokedEntities)
+	}
+}
+
+// FinalizeGenerationPublication runs after the immutable generation view has
+// become active. Retired generations may keep established sessions alive, but
+// bindings that disappeared from the active server must stop accepting and
+// occupying their old listen addresses immediately.
+func (t *l4GenerationTransaction) FinalizeGenerationPublication() {
+	if t == nil {
+		return
+	}
+	t.retireInactiveIngressBindings()
+}
+
+func (t *l4GenerationTransaction) retireInactiveIngressBindings() {
+	if t == nil || t.module == nil || t.module.ingress == nil || t.server == nil {
+		return
+	}
+	if err := t.module.ingress.retireExcept(t.server.BindingKeys()); err != nil {
+		log.Printf("[l4] retire inactive generation ingress: %v", err)
 	}
 }
 
@@ -719,6 +740,38 @@ func (l *l4IngressLease) release() error {
 		}
 	})
 	return l.releaseErr
+}
+
+func (m *l4IngressManager) retireExcept(activeKeys []string) error {
+	if m == nil {
+		return nil
+	}
+	active := make(map[string]struct{}, len(activeKeys))
+	for _, key := range activeKeys {
+		active[key] = struct{}{}
+	}
+
+	m.mu.Lock()
+	retired := make([]*l4IngressBinding, 0)
+	for key, binding := range m.bindings {
+		if _, keep := active[key]; keep {
+			continue
+		}
+		delete(m.bindings, key)
+		retired = append(retired, binding)
+	}
+	m.mu.Unlock()
+
+	var closeErr error
+	for _, binding := range retired {
+		if binding.stream != nil {
+			closeErr = errors.Join(closeErr, binding.stream.Close())
+		}
+		if binding.packet != nil {
+			closeErr = errors.Join(closeErr, binding.packet.Close())
+		}
+	}
+	return closeErr
 }
 
 func (m *l4IngressManager) close() error {
