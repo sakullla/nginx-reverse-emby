@@ -38,4 +38,47 @@ describe('PluginLogViewer', () => {
 		expect(wrapper.text()).not.toContain('stale')
 		expect(wrapper.find('button').exists()).toBe(false)
 	})
+
+  it('shows agent names in the body and filter and still filters by agent id', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'edge-a', level: 'info', message: 'hello', created_at: '2026-08-01T00:00:00Z' }],
+      next_cursor: ''
+    })
+    const wrapper = mount(PluginLogViewer, {
+      props: {
+        pluginId: 'official.rpc',
+        instanceId: 'rpc-a',
+        agents: [
+          { id: 'edge-a', name: 'Edge A' },
+          { id: 'edge-b', name: '' },
+          { id: 'edge-c' }
+        ]
+      }
+    })
+    await flushPromises()
+    const options = wrapper.findAll('select option')
+    expect(options.map((option) => option.text())).toEqual(['全部可见 Agent', 'Edge A', 'edge-b', 'edge-c'])
+    expect(options.map((option) => option.element.value)).toEqual(['', 'edge-a', 'edge-b', 'edge-c'])
+    expect(wrapper.get('li strong').text()).toBe('Edge A')
+    await wrapper.get('select').setValue('edge-a')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 5 }))
+  })
+
+  it('falls back to the agent id when the name is missing', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'edge-z', level: 'info', message: 'solo', created_at: '2026-08-01T00:00:00Z' }],
+      next_cursor: ''
+    })
+    const wrapper = mount(PluginLogViewer, {
+      props: {
+        pluginId: 'official.rpc',
+        instanceId: 'rpc-a',
+        agents: [{ id: 'edge-z' }]
+      }
+    })
+    await flushPromises()
+    expect(wrapper.get('li strong').text()).toBe('edge-z')
+    expect(wrapper.get('select option[value="edge-z"]').text()).toBe('edge-z')
+  })
 })

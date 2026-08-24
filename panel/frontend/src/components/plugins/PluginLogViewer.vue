@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchPluginLogs } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 import BaseBadge from '../base/BaseBadge.vue'
@@ -8,6 +8,18 @@ const props = defineProps({
   pluginId: { type: String, required: true },
   instanceId: { type: String, required: true },
   agents: { type: Array, default: () => [] }
+})
+
+const agentOptions = computed(() => {
+  const options = []
+  const seen = new Set()
+  for (const item of props.agents || []) {
+    const record = agentRecord(item)
+    if (!record.id || seen.has(record.id)) continue
+    seen.add(record.id)
+    options.push(record)
+  }
+  return options
 })
 
 const entries = ref([])
@@ -61,6 +73,20 @@ function levelTone(level) {
   return 'primary'
 }
 
+function agentRecord(value) {
+  if (value && typeof value === 'object') {
+    return { id: String(value.id || '').trim(), name: String(value.name || '').trim() }
+  }
+  return { id: String(value || '').trim(), name: '' }
+}
+
+function agentLabel(agentID) {
+  const id = String(agentID || '').trim()
+  const match = agentOptions.value.find((item) => item.id === id)
+  const name = String(match?.name || '').trim()
+  return name || id
+}
+
 function formatStamp(value) {
   const parsed = Date.parse(value || '')
   if (!Number.isFinite(parsed) || parsed <= 0) return value || '—'
@@ -85,7 +111,7 @@ function formatStamp(value) {
       <span>Agent 过滤</span>
       <select v-model="agentID">
         <option value="">全部可见 Agent</option>
-        <option v-for="agent in agents" :key="agent" :value="agent">{{ agent }}</option>
+        <option v-for="agent in agentOptions" :key="agent.id" :value="agent.id">{{ agentLabel(agent.id) }}</option>
       </select>
     </label>
 
@@ -95,7 +121,7 @@ function formatStamp(value) {
       <li v-for="(entry, index) in entries" :key="`${entry.created_at}-${index}`" :data-level="entry.level">
         <header>
           <BaseBadge :tone="levelTone(entry.level)" size="sm">{{ entry.level || 'info' }}</BaseBadge>
-          <strong>{{ entry.agent_id }}</strong>
+          <strong>{{ agentLabel(entry.agent_id) }}</strong>
           <time :datetime="entry.created_at" :title="entry.created_at">{{ formatStamp(entry.created_at) }}</time>
         </header>
         <span>{{ entry.message }}</span>

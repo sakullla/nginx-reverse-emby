@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   fetchPluginDetail: vi.fn(), fetchPluginOperations: vi.fn(), configurePlugin: vi.fn(), publishPlugin: vi.fn(), unpublishPlugin: vi.fn(),
   enablePlugin: vi.fn(), disablePlugin: vi.fn(), rollbackPlugin: vi.fn(), uninstallPlugin: vi.fn(), deletePluginInstance: vi.fn(),
   invokePluginDynamicAction: vi.fn(), fetchPluginLogs: vi.fn(), fetchAgents: vi.fn(), fetchHttpRulesPage: vi.fn(),
-  fetchAllAgentsRules: vi.fn(), fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
+  fetchAllAgentsRules: vi.fn(), fetchPluginUIRoutes: vi.fn(), fetchResourceGroups: vi.fn(), retryRevision: vi.fn(), push: vi.fn(), refreshActor: vi.fn(),
   waitForPluginOperation: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
@@ -15,7 +15,8 @@ vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'official.waf' }
 vi.mock('../../api', () => ({
   fetchAgents: mocks.fetchAgents,
   fetchHttpRulesPage: mocks.fetchHttpRulesPage,
-  fetchAllAgentsRules: mocks.fetchAllAgentsRules
+  fetchAllAgentsRules: mocks.fetchAllAgentsRules,
+  fetchPluginUIRoutes: mocks.fetchPluginUIRoutes
 }))
 vi.mock('../../api/access', () => ({ fetchResourceGroups: mocks.fetchResourceGroups }))
 vi.mock('../../api/plugins', () => ({
@@ -292,6 +293,7 @@ beforeEach(() => {
     { id: 'team', name: '团队组' }
   ])
   mocks.fetchHttpRulesPage.mockReset().mockResolvedValue({ items: [], total: 0 })
+  mocks.fetchPluginUIRoutes.mockReset().mockResolvedValue([])
   mocks.fetchAllAgentsRules.mockReset().mockResolvedValue([])
   mocks.retryRevision.mockReset().mockResolvedValue({})
   mocks.push.mockReset()
@@ -1266,5 +1268,79 @@ describe('PluginDetailPage', () => {
     })
     expect(buttonByText(wrapper, '部署')).toBeFalsy()
     expect(buttonByText(wrapper, '编辑配置')).toBeTruthy()
+  })
+
+  it('opens the in-page management href in the current window instead of the published frontend url', async () => {
+    mocks.fetchPluginUIRoutes.mockResolvedValue([
+      { id: 'official.waf', label: 'WAF', href: '/panel-api/plugins/official.waf/' }
+    ])
+    const wrapper = await mountPage(publishedHTTPDetail())
+    const manage = wrapper.get('[data-test="plugin-task-center"] [data-test="plugin-open-manage"]')
+    expect(manage.text()).toBe('打开管理页')
+    expect(manage.attributes('href')).toBe('/panel-api/plugins/official.waf/')
+    expect(manage.attributes('href')).not.toBe('https://media.example.com')
+    expect(manage.attributes('target')).toBeUndefined()
+    const entry = wrapper.get('[data-test="plugin-published-entry"] a.plugin-http-entry__url')
+    expect(entry.attributes('href')).toBe('https://media.example.com')
+    expect(entry.attributes('target')).toBe('_blank')
+  })
+
+  it('resolves the management href from ui_route_id when it differs from plugin id', async () => {
+    mocks.fetchPluginUIRoutes.mockResolvedValue([
+      { id: 'docker-app', href: '/panel-api/plugins/docker-app/' }
+    ])
+    const wrapper = await mountPage(makeDetail({
+      plugin: { ...makeDetail().plugin, plugin_id: 'official.docker-app' },
+      package: {
+        ...makeDetail().package,
+        manifest: { ...makeDetail().package.manifest, ui_route_id: 'docker-app', extension_points: ['ui.route'] }
+      }
+    }))
+    expect(wrapper.get('[data-test="plugin-open-manage"]').attributes('href')).toBe('/panel-api/plugins/docker-app/')
+    expect(wrapper.find('[data-test="plugin-published-entries"]').exists()).toBe(false)
+  })
+
+  it('hides the management entry when the plugin has no ui route', async () => {
+    const wrapper = await mountPage(publishedHTTPDetail())
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-manage-open"]').exists()).toBe(false)
+  })
+
+  it('hides the management entry when ui routes fail to load', async () => {
+    mocks.fetchPluginUIRoutes.mockRejectedValue(new Error('ui routes unavailable'))
+    const wrapper = await mountPage(makeDetail())
+    expect(wrapper.find('[data-test="plugin-open-manage"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="plugin-task-center"]').exists()).toBe(true)
+  })
+
+  it('shows named agents in logs and still filters by agent id', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'edge-a', level: 'info', message: 'hello', created_at: '2026-08-01T00:00:00Z' }],
+      next_cursor: ''
+    })
+    const wrapper = await mountPage()
+    const more = await openMore(wrapper)
+    const logs = more.get('.plugin-log-viewer')
+    expect(logs.get('select option[value="edge-a"]').text()).toBe('Edge A')
+    expect(logs.get('li strong').text()).toBe('Edge A')
+    await logs.get('select').setValue('edge-a')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'edge-a' }))
+  })
+
+  it('falls back to agent id in logs when the agent has no name', async () => {
+    mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', status: 'online' }])
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [
+        { agent_id: 'edge-a', level: 'info', message: 'hello', created_at: '2026-08-02T00:00:00Z' },
+        { agent_id: 'ghost', level: 'info', message: 'unknown', created_at: '2026-08-01T00:00:00Z' }
+      ],
+      next_cursor: ''
+    })
+    const wrapper = await mountPage()
+    const more = await openMore(wrapper)
+    const logs = more.get('.plugin-log-viewer')
+    expect(logs.get('select option[value="edge-a"]').text()).toBe('edge-a')
+    expect(logs.findAll('li strong').map((node) => node.text())).toEqual(['edge-a', 'ghost'])
   })
 })

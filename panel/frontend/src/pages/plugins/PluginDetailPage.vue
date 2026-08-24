@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchAgents, fetchHttpRulesPage } from '../../api'
+import { fetchAgents, fetchHttpRulesPage, fetchPluginUIRoutes } from '../../api'
 import { fetchResourceGroups } from '../../api/access'
 import {
   deletePluginInstance,
@@ -38,6 +38,7 @@ const error = ref('')
 const detail = ref(null)
 const operations = ref([])
 const agents = ref([])
+const uiRoutes = ref([])
 const resourceGroups = ref([])
 const httpRules = ref([])
 const selectedInstanceID = ref('')
@@ -170,6 +171,15 @@ const taskStateLabel = computed(() => ({
   available: '已可用',
   deployed: '已部署'
 }[taskState.value] || ''))
+const manageHref = computed(() => {
+  const pluginID = String(detail.value?.plugin?.plugin_id || '').trim()
+  const routeID = String(detail.value?.package?.manifest?.ui_route_id || '').trim()
+  const route = (uiRoutes.value || []).find((item) => {
+    const id = String(item?.id || '').trim()
+    return id && ((pluginID && id === pluginID) || (routeID && id === routeID))
+  })
+  return String(route?.href || '').trim()
+})
 const pluginPurpose = computed(() => {
   const description = String(detail.value?.package?.manifest?.description || '').trim()
   if (description) return description
@@ -274,6 +284,16 @@ async function refreshHttpRules() {
   }
 }
 
+async function loadPluginUIRoutes() {
+  if (typeof fetchPluginUIRoutes !== 'function') return []
+  try {
+    const routes = await fetchPluginUIRoutes()
+    return Array.isArray(routes) ? routes : []
+  } catch {
+    return []
+  }
+}
+
 async function load({ background = false } = {}) {
   if (refreshInFlight) return
   refreshInFlight = true
@@ -284,11 +304,12 @@ async function load({ background = false } = {}) {
   try {
     if (!actor.value) await refreshActor()
     const pluginID = String(route.params.id || '')
-    const [nextDetail, nextOperations, nextAgents, nextGroups] = await Promise.all([
+    const [nextDetail, nextOperations, nextAgents, nextGroups, nextRoutes] = await Promise.all([
       fetchPluginDetail(pluginID),
       fetchPluginOperations(pluginID),
       fetchAgents(),
-      fetchResourceGroups().catch(() => [])
+      fetchResourceGroups().catch(() => []),
+      loadPluginUIRoutes()
     ])
     await refreshHttpRules()
     const visibleDetail = filterPluginDetailForActor(nextDetail, actor.value)
@@ -297,6 +318,7 @@ async function load({ background = false } = {}) {
     detail.value = visibleDetail
     operations.value = nextOperations
     agents.value = (Array.isArray(nextAgents) ? nextAgents : []).filter((agent) => String(agent?.id || '').trim())
+    uiRoutes.value = Array.isArray(nextRoutes) ? nextRoutes : []
     resourceGroups.value = Array.isArray(nextGroups) ? nextGroups : []
     selectedInstanceID.value = visibleDetail.instances.some((instance) => instance.id === previousInstanceID)
       ? previousInstanceID
@@ -579,6 +601,24 @@ async function retryAgent(status) {
           当前身份可以看懂下一步，但不能提交部署或发布。
         </p>
 
+        <div v-if="manageHref" class="plugin-http-entries" data-test="plugin-manage-open">
+          <header class="plugin-http-entries__head">
+            <div>
+              <h2>管理页</h2>
+              <p>在当前窗口打开此插件的站内管理页。</p>
+            </div>
+          </header>
+          <div class="plugin-http-entry">
+            <div class="plugin-http-entry__main">
+              <a
+                class="plugin-http-entry__url"
+                data-test="plugin-open-manage"
+                :href="manageHref"
+              >打开管理页</a>
+            </div>
+          </div>
+        </div>
+
         <div v-if="publishedEntries.length" class="plugin-http-entries" data-test="plugin-published-entries">
           <header class="plugin-http-entries__head">
             <div>
@@ -805,7 +845,7 @@ async function retryAgent(status) {
                 <p>最近 5 条宿主持久化日志，按时间从新到旧。</p>
               </div>
             </header>
-            <PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="selectedInstance.targets || []" />
+            <PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="agents" />
           </section>
 
           <section class="plugin-ops-panel">
