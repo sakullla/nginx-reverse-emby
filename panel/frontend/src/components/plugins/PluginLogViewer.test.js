@@ -1,12 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PluginLogViewer from './PluginLogViewer.vue'
+import { setPanelTimeZone } from '../../utils/panelDateTime.js'
 
 const mocks = vi.hoisted(() => ({ fetchPluginLogs: vi.fn() }))
 vi.mock('../../api/plugins', () => ({ fetchPluginLogs: mocks.fetchPluginLogs }))
 
 describe('PluginLogViewer', () => {
-  beforeEach(() => mocks.fetchPluginLogs.mockReset())
+  beforeEach(() => {
+    mocks.fetchPluginLogs.mockReset()
+    setPanelTimeZone('Asia/Shanghai')
+  })
+  afterEach(() => setPanelTimeZone('UTC'))
 
   it('filters and shows only five newest host logs without credentials', async () => {
     mocks.fetchPluginLogs
@@ -57,8 +62,8 @@ describe('PluginLogViewer', () => {
     })
     await flushPromises()
     const options = wrapper.findAll('select option')
-    expect(options.map((option) => option.text())).toEqual(['全部可见 Agent', 'Edge A', 'edge-b', 'edge-c'])
-    expect(options.map((option) => option.element.value)).toEqual(['', 'edge-a', 'edge-b', 'edge-c'])
+    expect(options.map((option) => option.text())).toEqual(['全部可见 Agent', 'Edge A', 'edge-b', 'edge-c', '控制面'])
+    expect(options.map((option) => option.element.value)).toEqual(['', 'edge-a', 'edge-b', 'edge-c', 'control-plane'])
     expect(wrapper.get('li strong').text()).toBe('Edge A')
     await wrapper.get('select').setValue('edge-a')
     await flushPromises()
@@ -80,5 +85,45 @@ describe('PluginLogViewer', () => {
     await flushPromises()
     expect(wrapper.get('li strong').text()).toBe('edge-z')
     expect(wrapper.get('select option[value="edge-z"]').text()).toBe('edge-z')
+  })
+
+  it('lets the filter select control-plane logs by name and agent id', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'control-plane', level: 'info', message: 'http: Accept error', created_at: '2026-08-24T06:55:53Z' }],
+      next_cursor: ''
+    })
+    const wrapper = mount(PluginLogViewer, {
+      props: {
+        pluginId: 'official.rpc',
+        instanceId: 'rpc-a',
+        agents: [{ id: '903d5dedb9b03336d0b37ce394a0e31b', name: 'zouter-hk' }]
+      }
+    })
+    await flushPromises()
+    expect(wrapper.get('select option[value="903d5dedb9b03336d0b37ce394a0e31b"]').text()).toBe('zouter-hk')
+    expect(wrapper.get('select option[value="control-plane"]').text()).toBe('控制面')
+    expect(wrapper.get('li strong').text()).toBe('控制面')
+    expect(wrapper.get('time').text()).toBe('2026/08/24 14:55:53')
+    await wrapper.get('select').setValue('control-plane')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'control-plane', cursor: '', limit: 5 }))
+  })
+
+  it('re-renders host log stamps after /info applies NRE_TIMEZONE', async () => {
+    setPanelTimeZone('UTC')
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'control-plane', level: 'info', message: '2026/08/24 06:55:53 http: Accept error', created_at: '2026-08-24T06:55:53Z' }],
+      next_cursor: ''
+    })
+    const wrapper = mount(PluginLogViewer, {
+      props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [] }
+    })
+    await flushPromises()
+    expect(wrapper.get('time').text()).toBe('2026/08/24 06:55:53')
+    expect(wrapper.get('li > span').text()).toBe('http: Accept error')
+    setPanelTimeZone('Asia/Shanghai')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('time').text()).toBe('2026/08/24 14:55:53')
+    expect(wrapper.get('time').attributes('data-timezone')).toBe('Asia/Shanghai')
   })
 })

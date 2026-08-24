@@ -2,6 +2,7 @@ import { defineComponent, h, provide, inject, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import { fetchSystemInfo } from '../api'
+import { setPanelTimeZone } from '../utils/panelDateTime.js'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { useAuthState } from './useAuthState'
 import { reconcileSelectedAgent } from './agentSelection.js'
@@ -56,6 +57,7 @@ export const AgentProvider = defineComponent({
 	    try {
 		  const info = await fetchSystemInfo()
 		  if (credentialVersion.value !== generation) return
+		  setPanelTimeZone(info?.timezone)
 		  systemInfo.value = info
 	    } catch (err) {
 		  if (credentialVersion.value !== generation) return

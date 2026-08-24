@@ -9,6 +9,13 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 )
 
+func panelTimezone(value string) string {
+	if timezone := strings.TrimSpace(value); timezone != "" {
+		return timezone
+	}
+	return "UTC"
+}
+
 func (d Dependencies) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
@@ -74,6 +81,7 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"online_agents":                   onlineAgents,
 		"total_agents":                    len(agents),
 		"traffic_stats_enabled":           info.TrafficStatsEnabled,
+		"timezone":                        panelTimezone(info.Timezone),
 	}
 	if hasActor && actor.Has(authz.PermissionSystemAdmin) {
 		payload["data_dir"] = info.DataDir

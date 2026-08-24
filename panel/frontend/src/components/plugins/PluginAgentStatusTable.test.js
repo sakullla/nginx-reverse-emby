@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import PluginAgentStatusTable from './PluginAgentStatusTable.vue'
+import { setPanelTimeZone } from '../../utils/panelDateTime.js'
 
 describe('PluginAgentStatusTable', () => {
+  afterEach(() => setPanelTimeZone('UTC'))
+
   it('shows the agent name instead of the raw id when a matching agent is provided', () => {
     const wrapper = mount(PluginAgentStatusTable, {
       props: {
@@ -16,6 +19,39 @@ describe('PluginAgentStatusTable', () => {
     expect(wrapper.text()).toContain('nosla-hk')
     expect(wrapper.text()).toContain('Agent 执行面')
     expect(wrapper.find('.agent-status-card__name').text()).not.toContain('a4ae8a0d7d39f1f94d0dd862196784a8')
+  })
+
+  it('formats the last report time in the panel timezone', () => {
+    setPanelTimeZone('Asia/Shanghai')
+    const wrapper = mount(PluginAgentStatusTable, {
+      props: {
+        agents: [{ id: 'edge-a', name: 'zouter-hk' }],
+        statuses: [{
+          face_id: 'agent-execution', instance_id: 'docker-app-default', agent_id: 'edge-a', target_scope: 'active',
+          runtime_state: 'active', reported_at: '2026-08-24T12:06:27.499614715Z'
+        }]
+      }
+    })
+    expect(wrapper.text()).toContain('2026/08/24 20:06:27')
+    expect(wrapper.text()).not.toContain('2026-08-24T12:06:27')
+  })
+
+  it('re-renders the last report time after /info applies NRE_TIMEZONE', async () => {
+    setPanelTimeZone('UTC')
+    const wrapper = mount(PluginAgentStatusTable, {
+      props: {
+        agents: [{ id: 'edge-a', name: 'zouter-hk' }],
+        statuses: [{
+          face_id: 'agent-execution', instance_id: 'docker-app-default', agent_id: 'edge-a', target_scope: 'active',
+          runtime_state: 'active', reported_at: '2026-08-24T12:06:27.499614715Z'
+        }]
+      }
+    })
+    expect(wrapper.text()).toContain('2026/08/24 12:06:27')
+    setPanelTimeZone('Asia/Shanghai')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('2026/08/24 20:06:27')
+    expect(wrapper.get('dd[data-timezone]').attributes('data-timezone')).toBe('Asia/Shanghai')
   })
 
   it('shows per-Agent runtime, budget and crash state without credential material', () => {

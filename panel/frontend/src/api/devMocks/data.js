@@ -733,7 +733,8 @@ export async function fetchSystemInfo() {
       default_agent_id: 'local',
       local_agent_enabled: true,
       proxy_headers_globally_disabled: false,
-      traffic_stats_enabled: flags.trafficStatsEnabled === false ? false : true
+      traffic_stats_enabled: flags.trafficStatsEnabled === false ? false : true,
+      timezone: 'Asia/Shanghai'
     }
   }
   const { data } = await api.get('/info')

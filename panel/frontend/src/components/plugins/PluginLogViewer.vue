@@ -2,7 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchPluginLogs } from '../../api/plugins'
 import { sanitizePluginText } from '../../api/pluginSecurity'
+import { formatPanelDateTime, panelTimeZone } from '../../utils/panelDateTime.js'
 import BaseBadge from '../base/BaseBadge.vue'
+
+const CONTROL_PLANE_AGENT_ID = 'control-plane'
+const CONTROL_PLANE_LABEL = '控制面'
 
 const props = defineProps({
   pluginId: { type: String, required: true },
@@ -13,11 +17,19 @@ const props = defineProps({
 const agentOptions = computed(() => {
   const options = []
   const seen = new Set()
+  const push = (id, name) => {
+    const key = String(id || '').trim()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    options.push({ id: key, name: String(name || '').trim() })
+  }
   for (const item of props.agents || []) {
     const record = agentRecord(item)
-    if (!record.id || seen.has(record.id)) continue
-    seen.add(record.id)
-    options.push(record)
+    push(record.id, record.name)
+  }
+  push(CONTROL_PLANE_AGENT_ID, CONTROL_PLANE_LABEL)
+  for (const entry of entries.value) {
+    push(entry?.agent_id, '')
   }
   return options
 })
@@ -82,26 +94,18 @@ function agentRecord(value) {
 
 function agentLabel(agentID) {
   const id = String(agentID || '').trim()
+  if (id === CONTROL_PLANE_AGENT_ID) return CONTROL_PLANE_LABEL
   const match = agentOptions.value.find((item) => item.id === id)
   const name = String(match?.name || '').trim()
   return name || id
 }
 
 function formatStamp(value) {
-  const parsed = Date.parse(value || '')
-  if (!Number.isFinite(parsed) || parsed <= 0) return value || '—'
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    }).format(new Date(parsed))
-  } catch {
-    return value || '—'
-  }
+  return formatPanelDateTime(value)
+}
+
+function displayMessage(value) {
+  return String(value || '').replace(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+/, '')
 }
 </script>
 
@@ -122,9 +126,9 @@ function formatStamp(value) {
         <header>
           <BaseBadge :tone="levelTone(entry.level)" size="sm">{{ entry.level || 'info' }}</BaseBadge>
           <strong>{{ agentLabel(entry.agent_id) }}</strong>
-          <time :datetime="entry.created_at" :title="entry.created_at">{{ formatStamp(entry.created_at) }}</time>
+          <time :datetime="entry.created_at" :title="entry.created_at" :data-timezone="panelTimeZone">{{ formatStamp(entry.created_at) }}</time>
         </header>
-        <span>{{ entry.message }}</span>
+        <span>{{ displayMessage(entry.message) }}</span>
         <em v-if="entry.truncated">已截断</em>
       </li>
     </ol>

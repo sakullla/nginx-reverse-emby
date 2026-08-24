@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { safePluginJSON, sanitizePluginText } from '../../api/pluginSecurity'
+import { formatPanelDateTime, panelTimeZone } from '../../utils/panelDateTime.js'
 import BaseBadge from '../base/BaseBadge.vue'
 
 const props = defineProps({ operations: { type: Array, default: () => [] } })
@@ -22,19 +23,7 @@ function statusTone(status) {
 }
 
 function formatStamp(value) {
-  const parsed = Date.parse(value || '')
-  if (!Number.isFinite(parsed) || parsed <= 0) return value || ''
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date(parsed))
-  } catch {
-    return value || ''
-  }
+  return formatPanelDateTime(value, '')
 }
 </script>
 
@@ -45,7 +34,7 @@ function formatStamp(value) {
       <div class="plugin-operation-timeline__heading">
         <strong>{{ operation.kind }}</strong>
         <BaseBadge :tone="statusTone(operation.status)">{{ operation.status }}</BaseBadge>
-        <time :datetime="operation.completed_at || operation.created_at" :title="operation.completed_at || operation.created_at">{{ formatStamp(operation.completed_at || operation.created_at) }}</time>
+        <time :datetime="operation.completed_at || operation.created_at" :title="operation.completed_at || operation.created_at" :data-timezone="panelTimeZone">{{ formatStamp(operation.completed_at || operation.created_at) }}</time>
       </div>
       <p>操作人 {{ operation.actor_id || 'system' }} · revision {{ operation.target_revision || '—' }}</p>
       <p v-if="operation.error" class="plugin-operation-timeline__error">{{ sanitizePluginText(operation.error) }}</p>

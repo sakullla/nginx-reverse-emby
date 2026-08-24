@@ -1322,6 +1322,7 @@ describe('PluginDetailPage', () => {
     const more = await openMore(wrapper)
     const logs = more.get('.plugin-log-viewer')
     expect(logs.get('select option[value="edge-a"]').text()).toBe('Edge A')
+    expect(logs.get('select option[value="control-plane"]').text()).toBe('控制面')
     expect(logs.get('li strong').text()).toBe('Edge A')
     await logs.get('select').setValue('edge-a')
     await flushPromises()
@@ -1342,5 +1343,20 @@ describe('PluginDetailPage', () => {
     const logs = more.get('.plugin-log-viewer')
     expect(logs.get('select option[value="edge-a"]').text()).toBe('edge-a')
     expect(logs.findAll('li strong').map((node) => node.text())).toEqual(['edge-a', 'ghost'])
+  })
+
+  it('filters host control-plane logs from the named agent dropdown', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'control-plane', level: 'info', message: 'http: Accept error', created_at: '2026-08-24T06:55:53Z' }],
+      next_cursor: ''
+    })
+    const wrapper = await mountPage()
+    const more = await openMore(wrapper)
+    const logs = more.get('.plugin-log-viewer')
+    expect(logs.get('select option[value="control-plane"]').text()).toBe('控制面')
+    expect(logs.get('li strong').text()).toBe('控制面')
+    await logs.get('select').setValue('control-plane')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'control-plane' }))
   })
 })

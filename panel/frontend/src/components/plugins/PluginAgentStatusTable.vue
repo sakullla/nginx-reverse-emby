@@ -1,5 +1,6 @@
 <script setup>
 import { safePluginJSON, sanitizePluginText } from '../../api/pluginSecurity'
+import { formatPanelDateTime, panelTimeZone } from '../../utils/panelDateTime.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseListCard from '../base/BaseListCard.vue'
 
@@ -120,7 +121,7 @@ function syncLabel(status) {
         </div>
         <div>
           <dt>最近回报</dt>
-          <dd>{{ status.reported_at || '—' }}</dd>
+          <dd :data-timezone="panelTimeZone">{{ formatPanelDateTime(status.reported_at) }}</dd>
         </div>
         <div>
           <dt>执行面错误码</dt>

@@ -99,6 +99,9 @@ func TestPanelAuthInfoRulesAndMonitorUseExactResourceScope(t *testing.T) {
 	if _, hasToken := infoBody["master_register_token"]; hasToken {
 		t.Fatalf("scoped actor received register token: %v", infoBody)
 	}
+	if infoBody["timezone"] != "UTC" {
+		t.Fatalf("info timezone = %#v", infoBody["timezone"])
+	}
 
 	kind, id, ok := deps.requestResource(http.MethodPut, "/panel-api/agents/visible-edge/rules/1")
 	if !ok || kind != "http_rule" || id != "visible-edge:1" {

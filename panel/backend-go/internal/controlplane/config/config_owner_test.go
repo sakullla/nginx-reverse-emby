@@ -51,6 +51,32 @@ func TestLoadFromEnvDefaultsAndRejectsUnsafeCombinations(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvTimezoneUsesNRETimezone(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("NRE_TIMEZONE", "")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Timezone != "UTC" {
+		t.Fatalf("default timezone = %q", cfg.Timezone)
+	}
+
+	t.Setenv("NRE_TIMEZONE", "Asia/Shanghai")
+	cfg, err = LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Timezone != "Asia/Shanghai" {
+		t.Fatalf("NRE_TIMEZONE timezone = %q", cfg.Timezone)
+	}
+
+	t.Setenv("NRE_TIMEZONE", "Not/AZone")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "NRE_TIMEZONE") {
+		t.Fatalf("invalid timezone err=%v", err)
+	}
+}
+
 func TestLoadFromEnvSupportsLegacyAliases(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "")
 	t.Setenv("NRE_REGISTER_TOKEN", "")
