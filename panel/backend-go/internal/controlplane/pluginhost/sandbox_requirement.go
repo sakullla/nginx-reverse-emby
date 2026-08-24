@@ -77,12 +77,21 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 	if processes < 8 {
 		processes = 8
 	}
-	files := processes*4 + 16
-	if files < 64 {
-		files = 64
-	}
+	files := pluginFileLimit(processes)
 	requirement.budget = ProcessBudget{CPUMillis: budget.CPUMillis, MemoryBytes: budget.MemoryBytes, Processes: processes, Files: files, Network: network}
 	return requirement, nil
+}
+
+func pluginFileLimit(processes int) int {
+	files := 64 + processes*8
+	if files < 256 {
+		files = 256
+	}
+	result := 1
+	for result < files {
+		result <<= 1
+	}
+	return result
 }
 
 func (r SandboxRequirement) Budget() ProcessBudget { return r.budget }

@@ -19,6 +19,7 @@ import (
 )
 
 const pluginUIBodyLimit = 1 << 20
+const pluginUITransportIdleTimeout = 60 * time.Second
 
 const internalDNSResolvePath = "/.nre/providers/dns/token"
 const internalDNSProviderVersionHeader = "X-NRE-DNS-Provider-Version"
@@ -28,17 +29,25 @@ var (
 	ErrDNSTokenNotMapped      = errors.New("DNS provider has no token mapping for domain")
 )
 
-func waitPluginUIReady(ctx context.Context, endpoint Endpoint, timeout time.Duration) error {
+type pluginUIHTTPClient struct {
+	client    *http.Client
+	transport *http.Transport
+}
+
+func waitPluginUIReady(ctx context.Context, client *http.Client, cookie string, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	if client == nil {
+		return errors.New("plugin UI client is required")
 	}
 	readyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var lastErr error
 	for {
 		request, _ := http.NewRequestWithContext(readyCtx, http.MethodGet, "http://plugin-ui"+pluginsdk.PluginUIReadyPath, nil)
-		request.Header.Set(pluginsdk.HeaderPluginUICredential, endpoint.Cookie)
-		response, err := pluginUIClient(endpoint).Do(request)
+		request.Header.Set(pluginsdk.HeaderPluginUICredential, cookie)
+		response, err := client.Do(request)
 		if err == nil {
 			_ = response.Body.Close()
 			if response.StatusCode == http.StatusNoContent {
@@ -56,11 +65,47 @@ func waitPluginUIReady(ctx context.Context, endpoint Endpoint, timeout time.Dura
 	}
 }
 
-func pluginUIClient(endpoint Endpoint) *http.Client {
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, endpoint.Network, endpoint.Address)
-	}}
-	return &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func newPluginUIHTTPClient(endpoint Endpoint, maxConnections int) *pluginUIHTTPClient {
+	if maxConnections < 1 {
+		maxConnections = 1
+	}
+	maxIdleConnections := min(maxConnections, 4)
+	transport := &http.Transport{
+		MaxIdleConns:        maxIdleConnections,
+		MaxIdleConnsPerHost: maxIdleConnections,
+		MaxConnsPerHost:     maxConnections,
+		IdleConnTimeout:     pluginUITransportIdleTimeout,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, endpoint.Network, endpoint.Address)
+		},
+	}
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &pluginUIHTTPClient{client: client, transport: transport}
+}
+
+func (instance *Instance) pluginUIClient() *http.Client {
+	instance.uiMu.Lock()
+	defer instance.uiMu.Unlock()
+	if instance.uiHTTP == nil {
+		maxConnections := instance.candidate.Requirement.Budget().Processes - 4
+		if maxConnections < 1 {
+			maxConnections = 4
+		}
+		instance.uiHTTP = newPluginUIHTTPClient(instance.candidate.uiEndpoint, maxConnections)
+	}
+	return instance.uiHTTP.client
+}
+
+func (instance *Instance) closePluginUIIdleConnections() {
+	if instance == nil {
+		return
+	}
+	instance.uiMu.Lock()
+	client := instance.uiHTTP
+	instance.uiMu.Unlock()
+	if client != nil {
+		client.transport.CloseIdleConnections()
+	}
 }
 
 func (h *Host) publishPluginUI(instance *Instance) {
@@ -77,6 +122,7 @@ func (h *Host) unpublishPluginUI(instance *Instance) {
 		return
 	}
 	Unregister(instance.candidate.Declaration.UIRouteID)
+	instance.closePluginUIIdleConnections()
 }
 
 func (h *Host) proxyPluginUI(instance *Instance, writer http.ResponseWriter, request *http.Request) {
@@ -99,7 +145,7 @@ func (h *Host) proxyPluginUI(instance *Instance, writer http.ResponseWriter, req
 	forward.Header = request.Header.Clone()
 	forward.Header.Set(pluginsdk.HeaderPluginUICredential, instance.candidate.uiEndpoint.Cookie)
 	forward.Body = http.MaxBytesReader(writer, request.Body, pluginUIBodyLimit)
-	response, err := pluginUIClient(instance.candidate.uiEndpoint).Do(forward)
+	response, err := instance.pluginUIClient().Do(forward)
 	if err != nil {
 		http.Error(writer, "plugin UI is unavailable", http.StatusBadGateway)
 		return
@@ -211,7 +257,7 @@ func (h *Host) resolveDNSTokenFromInstance(ctx context.Context, instance *Instan
 		return "", err
 	}
 	request.Header.Set("X-NRE-Operation-Key", "operation/dns-resolve/"+hex.EncodeToString(nonce[:]))
-	response, err := pluginUIClient(instance.candidate.uiEndpoint).Do(request)
+	response, err := instance.pluginUIClient().Do(request)
 	if err != nil {
 		return "", fmt.Errorf("DNS provider request: %w", err)
 	}

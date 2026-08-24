@@ -216,6 +216,8 @@ type Instance struct {
 	process                    Process
 	client                     RPCClient
 	closer                     io.Closer
+	uiMu                       sync.Mutex
+	uiHTTP                     *pluginUIHTTPClient
 	grace                      time.Duration
 	logCloser                  io.Closer
 	done                       chan struct{}
@@ -442,7 +444,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
 	}
 	if hasExtension(candidate.Declaration.ExtensionPoints, extensionUIRoute) {
-		if err := waitPluginUIReady(attemptCtx, candidate.uiEndpoint, candidate.Deadline); err != nil {
+		if err := waitPluginUIReady(attemptCtx, instance.pluginUIClient(), candidate.uiEndpoint.Cookie, candidate.Deadline); err != nil {
 			return nil, err
 		}
 	}
@@ -552,6 +554,7 @@ func (p *PreparedPublication) Publish() {
 		entry.instance.control = entry.control
 		h.active[entry.instance.ID] = entry.instance
 		delete(h.prepared, entry.instance)
+		h.publishPluginUI(entry.instance)
 	}
 	p.done = true
 	h.mu.Unlock()
@@ -559,8 +562,8 @@ func (p *PreparedPublication) Publish() {
 		entry := p.entries[index]
 		h.notifyOwned(entry.instance, entry.control, false)
 		go h.watch(entry.control, entry.instance)
-		h.publishPluginUI(entry.instance)
 		if entry.previous != nil && entry.previous != entry.instance {
+			entry.previous.closePluginUIIdleConnections()
 			go h.cleanupPreviousGeneration(entry)
 		}
 	}
@@ -924,6 +927,7 @@ func (i *Instance) stop(ctx context.Context) error {
 	rpcStopEligible := i.rpcStopEligible
 	i.State = "stopping"
 	i.mu.Unlock()
+	i.closePluginUIIdleConnections()
 	if rpcStopEligible {
 		i.rpcStopOnce.Do(func() { i.rpcStopErr = i.stopRPC(ctx) })
 	}
@@ -1222,8 +1226,10 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 		}
 		h.active[instance.ID] = replacement
 		delete(h.prepared, replacement)
+		h.publishPluginUI(replacement)
 		h.mu.Unlock()
 		control.launchMu.Unlock()
+		instance.closePluginUIIdleConnections()
 		if instance.closer != nil {
 			_ = instance.closer.Close()
 		}

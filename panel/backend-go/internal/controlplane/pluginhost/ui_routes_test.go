@@ -95,3 +95,17 @@ func TestSplitPluginUIPath(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginUIClientBoundsReusableConnections(t *testing.T) {
+	t.Parallel()
+	client := newPluginUIHTTPClient(Endpoint{Network: "unix", Address: "/unused"}, 8)
+	if client.transport.DisableKeepAlives {
+		t.Fatal("plugin UI transport disabled bounded connection reuse")
+	}
+	if client.transport.MaxConnsPerHost != 8 || client.transport.MaxIdleConns != 4 || client.transport.MaxIdleConnsPerHost != 4 {
+		t.Fatalf("transport limits = total:%d idle:%d idle_per_host:%d", client.transport.MaxConnsPerHost, client.transport.MaxIdleConns, client.transport.MaxIdleConnsPerHost)
+	}
+	if client.transport.IdleConnTimeout != pluginUITransportIdleTimeout {
+		t.Fatalf("idle timeout = %s", client.transport.IdleConnTimeout)
+	}
+}

@@ -5,6 +5,7 @@ package pluginhost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,6 +25,26 @@ func TestPluginHostSandboxRequirement(t *testing.T) {
 	}
 	if err := requirement.validatePackageDigest(digest); err != nil {
 		t.Fatalf("sandbox package digest binding = %v", err)
+	}
+}
+
+func TestPluginHostSandboxFileBudgetScalesFromSafeFloor(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		concurrency int
+		wantFiles   int
+	}{{2, 256}, {8, 256}, {16, 256}, {32, 512}, {64, 1024}} {
+		t.Run(fmt.Sprintf("concurrency_%d", test.concurrency), func(t *testing.T) {
+			pkg := validatedSandboxPackage(strings.Repeat("f", 64), nil, []string{pluginsdk.ExtensionUIRoute})
+			pkg.Manifest.ResourceBudget.Concurrency = test.concurrency
+			requirement, err := SandboxRequirementFromValidatedPackage(pkg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := requirement.Budget().Files; got != test.wantFiles {
+				t.Fatalf("file budget = %d, want %d", got, test.wantFiles)
+			}
+		})
 	}
 }
 
