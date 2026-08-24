@@ -35,3 +35,14 @@ func TestPluginUIMiddlewareAuthenticatesAndStripsCredential(t *testing.T) {
 		t.Fatalf("business status=%d called=%v", business.Code, called)
 	}
 }
+
+func TestPluginUIServerBoundsHeaderAndIdleWaits(t *testing.T) {
+	t.Parallel()
+	server := newPluginUIServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout != pluginUIReadHeaderTimeout {
+		t.Fatalf("read header timeout = %s", server.ReadHeaderTimeout)
+	}
+	if server.IdleTimeout != pluginUIIdleTimeout {
+		t.Fatalf("idle timeout = %s", server.IdleTimeout)
+	}
+}

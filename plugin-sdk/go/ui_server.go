@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
-	EnvPluginUIEndpoint      = "NRE_PLUGIN_UI_ENDPOINT"
-	HeaderPluginUICredential = "X-NRE-Plugin-UI-Credential"
-	PluginUIReadyPath        = "/.nre/plugin-ui/ready"
+	EnvPluginUIEndpoint       = "NRE_PLUGIN_UI_ENDPOINT"
+	HeaderPluginUICredential  = "X-NRE-Plugin-UI-Credential"
+	PluginUIReadyPath         = "/.nre/plugin-ui/ready"
+	pluginUIReadHeaderTimeout = 5 * time.Second
+	pluginUIIdleTimeout       = 60 * time.Second
 )
 
 // ServePluginUI exposes a plugin-owned HTTP handler on the private,
@@ -37,7 +40,7 @@ func ServePluginUI(ctx context.Context, handler http.Handler) error {
 		return err
 	}
 	defer listener.Close()
-	server := &http.Server{Handler: authenticatedPluginUI(strings.TrimSpace(string(credential)), handler)}
+	server := newPluginUIServer(authenticatedPluginUI(strings.TrimSpace(string(credential)), handler))
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	select {
@@ -53,6 +56,14 @@ func ServePluginUI(ctx context.Context, handler http.Handler) error {
 			return nil
 		}
 		return err
+	}
+}
+
+func newPluginUIServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: pluginUIReadHeaderTimeout,
+		IdleTimeout:       pluginUIIdleTimeout,
 	}
 }
 
