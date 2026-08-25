@@ -2095,7 +2095,19 @@ func securityID(prefix string) string {
 }
 
 func (s *GormStore) AppendAuditEvent(ctx context.Context, row AuditEventRow) error {
+	if discardAuditAction(row.Action) {
+		return nil
+	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error { return tx.Create(&row).Error })
+}
+
+func discardAuditAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "auth.bootstrap", "plugin.audit.token-resolve", "plugin.event.token-resolve":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *GormStore) ListAuditEvents(ctx context.Context, limit int) ([]AuditEventRow, error) {

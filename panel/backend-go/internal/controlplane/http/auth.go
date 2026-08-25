@@ -108,13 +108,7 @@ func (d Dependencies) authenticatePanelRequest(r *http.Request) (authz.Actor, er
 	}
 	bootstrapEnabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("PANEL_BOOTSTRAP_TOKEN_ENABLED")), "false")
 	if bootstrapEnabled && d.Config.PanelToken != "" && tokenMatches(d.Config.PanelToken, presentedPanelToken(r)) {
-		actor := authz.BootstrapActor()
-		if d.AccessManager != nil {
-			if err := d.AccessManager.Audit(r.Context(), actor, "auth.bootstrap", "api", r.URL.Path, "", "success", "", nil); err != nil {
-				return authz.Actor{}, err
-			}
-		}
-		return actor, nil
+		return authz.BootstrapActor(), nil
 	}
 	if d.Config.PanelToken == "" && d.AccessManager == nil {
 		return authz.BootstrapActor(), nil

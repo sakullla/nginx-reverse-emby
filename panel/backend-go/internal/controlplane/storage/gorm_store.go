@@ -254,6 +254,25 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 			_ = store.Close()
 			return nil, err
 		}
+		if _, err := store.ExternalizeRuntimeArtifacts(context.Background()); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		compact, err := store.runtimeArtifactCompactionPending(context.Background())
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		if compact {
+			if err := store.compactExternalizedSQLite(context.Background()); err != nil {
+				_ = store.Close()
+				return nil, err
+			}
+			if err := store.markRuntimeArtifactCompactionComplete(context.Background()); err != nil {
+				_ = store.Close()
+				return nil, err
+			}
+		}
 	}
 	return store, nil
 }

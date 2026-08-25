@@ -364,12 +364,13 @@ type IdempotencyRecordRow struct {
 }
 
 type GenerationArtifactRow struct {
-	ID        string    `gorm:"column:id;primaryKey"`
-	Kind      string    `gorm:"column:kind;not null;index:idx_generation_artifacts_kind"`
-	SHA256    string    `gorm:"column:sha256;not null;uniqueIndex:idx_generation_artifacts_sha256"`
-	Payload   []byte    `gorm:"column:payload;not null"`
-	SizeBytes int64     `gorm:"column:size_bytes;not null"`
-	CreatedAt time.Time `gorm:"column:created_at;not null"`
+	ID           string    `gorm:"column:id;primaryKey"`
+	Kind         string    `gorm:"column:kind;not null;index:idx_generation_artifacts_kind"`
+	SHA256       string    `gorm:"column:sha256;not null;uniqueIndex:idx_generation_artifacts_sha256"`
+	Payload      []byte    `gorm:"column:payload;not null"`
+	ExternalPath string    `gorm:"column:external_path;not null;default:''"`
+	SizeBytes    int64     `gorm:"column:size_bytes;not null"`
+	CreatedAt    time.Time `gorm:"column:created_at;not null"`
 }
 
 type AgentRevisionArtifactRow struct {

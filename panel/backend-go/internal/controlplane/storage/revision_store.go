@@ -72,10 +72,10 @@ type revisionRuntimeArtifactIdentity struct {
 // issued snapshot into the immutable revision ledger. The copy makes retries
 // independent of later package lifecycle and cache cleanup.
 func (s *GormStore) BuildAgentRevisionPolicyArtifacts(ctx context.Context, agentID string, revision int64, snapshot Snapshot, now time.Time) ([]GenerationArtifactRow, []AgentRevisionArtifactRow, error) {
-	return buildAgentRevisionPolicyArtifacts(ctx, s.db, agentID, revision, snapshot, now)
+	return buildAgentRevisionPolicyArtifacts(ctx, s.db, s.dataRoot, agentID, revision, snapshot, now)
 }
 
-func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, agentID string, revision int64, snapshot Snapshot, now time.Time) ([]GenerationArtifactRow, []AgentRevisionArtifactRow, error) {
+func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, dataRoot, agentID string, revision int64, snapshot Snapshot, now time.Time) ([]GenerationArtifactRow, []AgentRevisionArtifactRow, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" || revision <= 0 || snapshot.Revision != revision {
 		return nil, nil, fmt.Errorf("agent revision policy artifact identity is invalid")
@@ -166,10 +166,14 @@ func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, agentID
 		if err != nil {
 			return nil, nil, err
 		}
+		externalPath, err := writeGenerationArtifactFile(dataRoot, identity.ArtifactDigest, payload)
+		if err != nil {
+			return nil, nil, fmt.Errorf("persist plugin runtime artifact %q: %w", artifactID, err)
+		}
 		blobID := revisionRuntimeArtifactBlobID(identity.ArtifactDigest)
-		blob := GenerationArtifactRow{ID: blobID, Kind: revisionRuntimeArtifactKind, SHA256: identity.ArtifactDigest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}
+		blob := GenerationArtifactRow{ID: blobID, Kind: revisionRuntimeArtifactKind, SHA256: identity.ArtifactDigest, Payload: []byte{}, ExternalPath: externalPath, SizeBytes: int64(len(payload)), CreatedAt: now}
 		if existing, found := blobs[blobID]; found {
-			if existing.Kind != blob.Kind || existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || !bytes.Equal(existing.Payload, blob.Payload) {
+			if existing.Kind != blob.Kind || existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || existing.ExternalPath != blob.ExternalPath {
 				return nil, nil, fmt.Errorf("plugin runtime artifact blob %q has conflicting content", blobID)
 			}
 		} else {
@@ -335,12 +339,12 @@ func (s *GormStore) EnsureAgentHeartbeatRevision(ctx context.Context, agentID st
 			if err := verifyRevisionSnapshotArtifact(tx, existing); err != nil {
 				return err
 			}
-			complete, err := verifyRevisionPolicyArtifactRefs(tx, existing, snapshot)
+			complete, err := s.verifyRevisionPolicyArtifactRefs(tx, existing, snapshot)
 			if err != nil {
 				return err
 			}
 			if !complete {
-				policyArtifacts, policyRefs, err := buildAgentRevisionPolicyArtifacts(ctx, tx, agentID, snapshot.Revision, snapshot, now)
+				policyArtifacts, policyRefs, err := buildAgentRevisionPolicyArtifacts(ctx, tx, s.dataRoot, agentID, snapshot.Revision, snapshot, now)
 				if err != nil {
 					return err
 				}
@@ -366,7 +370,7 @@ func (s *GormStore) EnsureAgentHeartbeatRevision(ctx context.Context, agentID st
 			return err
 		}
 
-		policyArtifacts, policyRefs, err := buildAgentRevisionPolicyArtifacts(ctx, tx, agentID, snapshot.Revision, snapshot, now)
+		policyArtifacts, policyRefs, err := buildAgentRevisionPolicyArtifacts(ctx, tx, s.dataRoot, agentID, snapshot.Revision, snapshot, now)
 		if err != nil {
 			return err
 		}
@@ -442,7 +446,7 @@ func verifyRevisionSnapshotArtifact(tx *gorm.DB, revision AgentRevisionRow) erro
 	return nil
 }
 
-func verifyRevisionPolicyArtifactRefs(tx *gorm.DB, revision AgentRevisionRow, snapshot Snapshot) (bool, error) {
+func (s *GormStore) verifyRevisionPolicyArtifactRefs(tx *gorm.DB, revision AgentRevisionRow, snapshot Snapshot) (bool, error) {
 	identities := make(map[string]revisionPolicyArtifactIdentity)
 	for _, policy := range snapshot.PluginPolicies {
 		for _, stage := range policy.Stages {
@@ -497,6 +501,9 @@ func verifyRevisionPolicyArtifactRefs(tx *gorm.DB, revision AgentRevisionRow, sn
 			return false, fmt.Errorf("revision plugin runtime artifact %q identity is inconsistent", identity.ArtifactID)
 		}
 		if err := validateGenerationArtifact(blob); err != nil {
+			return false, err
+		}
+		if _, err := s.materializeGenerationArtifact(blob); err != nil {
 			return false, err
 		}
 	}
@@ -572,7 +579,11 @@ func (s *GormStore) ResolveAgentRevisionPolicyArtifact(ctx context.Context, agen
 	if err := validateGenerationArtifact(blob); err != nil {
 		return GenerationArtifactRow{}, false, err
 	}
-	return blob, true, nil
+	materialized, err := s.materializeGenerationArtifact(blob)
+	if err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	return materialized, true, nil
 }
 
 func policyArtifactIdentityFromSnapshot(snapshot Snapshot, artifactID string) (revisionPolicyArtifactIdentity, bool, error) {
@@ -636,11 +647,12 @@ func revisionRuntimeArtifactRole(artifactID string) string {
 }
 
 type RevisionRetentionPolicy struct {
-	Now             time.Time
-	MaxAge          time.Duration
-	OperationMaxAge time.Duration
-	AuditMaxAge     time.Duration
-	MaxPerAgent     int
+	Now                   time.Time
+	MaxAge                time.Duration
+	OperationMaxAge       time.Duration
+	AuditMaxAge           time.Duration
+	AuditDiagnosticMaxAge time.Duration
+	MaxPerAgent           int
 }
 
 type RevisionPruneResult struct {
@@ -892,7 +904,8 @@ func (s *GormStore) GetGenerationArtifact(ctx context.Context, artifactID string
 	var row GenerationArtifactRow
 	err := s.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(artifactID)).First(&row).Error
 	if err == nil {
-		return row, true, nil
+		materialized, materializeErr := s.materializeGenerationArtifact(row)
+		return materialized, materializeErr == nil, materializeErr
 	}
 	if err == gorm.ErrRecordNotFound {
 		return GenerationArtifactRow{}, false, nil
@@ -1185,29 +1198,34 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 	}
 	maxAge := policy.MaxAge
 	if maxAge <= 0 {
-		maxAge = 30 * 24 * time.Hour
+		maxAge = 7 * 24 * time.Hour
 	}
 	maxPerAgent := policy.MaxPerAgent
 	if maxPerAgent <= 0 {
-		maxPerAgent = 500
+		maxPerAgent = 5
 	}
 	operationMaxAge := policy.OperationMaxAge
 	if operationMaxAge <= 0 {
-		operationMaxAge = 3 * maxAge
+		operationMaxAge = 30 * 24 * time.Hour
 	}
 	if operationMaxAge < maxAge {
 		operationMaxAge = maxAge
 	}
 	auditMaxAge := policy.AuditMaxAge
 	if auditMaxAge <= 0 {
-		auditMaxAge = 365 * 24 * time.Hour
+		auditMaxAge = 30 * 24 * time.Hour
 	}
-	if auditMaxAge < operationMaxAge {
-		auditMaxAge = operationMaxAge
+	auditDiagnosticMaxAge := policy.AuditDiagnosticMaxAge
+	if auditDiagnosticMaxAge <= 0 {
+		auditDiagnosticMaxAge = 7 * 24 * time.Hour
+	}
+	if auditDiagnosticMaxAge > auditMaxAge {
+		auditDiagnosticMaxAge = auditMaxAge
 	}
 	cutoff := now.Add(-maxAge)
 	operationCutoff := now.Add(-operationMaxAge)
 	auditCutoff := now.Add(-auditMaxAge)
+	auditDiagnosticCutoff := now.Add(-auditDiagnosticMaxAge)
 	result := RevisionPruneResult{}
 
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
@@ -1267,11 +1285,19 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		}
 		result.SessionsDeleted = deletedSessions.RowsAffected
 
+		deletedDiagnosticAuditEvents := tx.
+			Where("created_at <= ?", auditDiagnosticCutoff).
+			Where("result IN ?", []string{"accepted", "allowed", "success"}).
+			Where("action IN ? OR action LIKE ? OR action LIKE ? OR action LIKE ?", []string{"authorization.check", "quota.consume", "plugin.host_capability"}, "plugin.audit.%", "plugin.event.%", "plugin.ui.%").
+			Delete(&AuditEventRow{})
+		if deletedDiagnosticAuditEvents.Error != nil {
+			return deletedDiagnosticAuditEvents.Error
+		}
 		deletedAuditEvents := tx.Where("created_at <= ?", auditCutoff).Delete(&AuditEventRow{})
 		if deletedAuditEvents.Error != nil {
 			return deletedAuditEvents.Error
 		}
-		result.AuditEventsDeleted = deletedAuditEvents.RowsAffected
+		result.AuditEventsDeleted = deletedDiagnosticAuditEvents.RowsAffected + deletedAuditEvents.RowsAffected
 
 		var expiredRefreshOperationIDs []string
 		if err := tx.Model(&MarketplaceRefreshOperationRow{}).
@@ -1416,12 +1442,26 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		result.ArtifactsDeleted = deletedArtifacts.RowsAffected
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	_, fileErr := s.PruneGenerationArtifactFiles(ctx, now.Add(-24*time.Hour))
+	return result, fileErr
 }
 
 func validateGenerationArtifact(row GenerationArtifactRow) error {
 	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.SHA256) == "" {
 		return fmt.Errorf("generation artifact identity is required")
+	}
+	if strings.TrimSpace(row.ExternalPath) != "" {
+		if row.Kind != revisionRuntimeArtifactKind || len(row.Payload) != 0 || row.SizeBytes <= 0 || !validSHA256(row.SHA256) {
+			return fmt.Errorf("generation artifact %q external identity is invalid", row.ID)
+		}
+		expected, err := generationArtifactRelativePath(row.SHA256)
+		if err != nil || filepath.ToSlash(filepath.Clean(filepath.FromSlash(row.ExternalPath))) != expected {
+			return fmt.Errorf("generation artifact %q external path is invalid", row.ID)
+		}
+		return nil
 	}
 	digest := sha256.Sum256(row.Payload)
 	if !strings.EqualFold(row.SHA256, hex.EncodeToString(digest[:])) {
@@ -1447,6 +1487,17 @@ func createImmutableArtifact(tx *gorm.DB, row GenerationArtifactRow) error {
 	}
 	if existing.SHA256 != row.SHA256 || existing.SizeBytes != row.SizeBytes {
 		return fmt.Errorf("generation artifact %q is immutable", row.ID)
+	}
+	if existing.Kind != row.Kind {
+		return fmt.Errorf("generation artifact %q is immutable", row.ID)
+	}
+	if existing.ExternalPath == "" && row.ExternalPath != "" {
+		result := tx.Model(&GenerationArtifactRow{}).
+			Where("id = ? AND external_path = ?", row.ID, "").
+			Updates(map[string]any{"payload": []byte{}, "external_path": row.ExternalPath})
+		if result.Error != nil {
+			return result.Error
+		}
 	}
 	return nil
 }

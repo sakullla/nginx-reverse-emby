@@ -345,6 +345,7 @@ var managedCertificateAutoRenewInitialDelay = 10 * time.Second
 var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
 var revisionRetentionInterval = 24 * time.Hour
+var pluginRuntimeRetentionAge = 24 * time.Hour
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger, resolver *service.PluginDNSTokenResolver) {
 	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
@@ -466,6 +467,7 @@ func startTrafficCleanupLoop(ctx context.Context, cfg config.Config, logger *log
 
 type revisionRetentionStore interface {
 	PruneRevisionHistory(context.Context, storage.RevisionRetentionPolicy) (storage.RevisionPruneResult, error)
+	ListPluginRuntimeDirectoryReferences(context.Context) ([]storage.PluginRuntimeDirectoryReference, error)
 	Close() error
 }
 
@@ -478,15 +480,35 @@ var runRevisionRetentionPass = func(ctx context.Context, cfg config.Config) erro
 	if err != nil {
 		return fmt.Errorf("open revision retention store: %w", err)
 	}
-	_, pruneErr := store.PruneRevisionHistory(ctx, storage.RevisionRetentionPolicy{})
+	now := time.Now().UTC()
+	_, pruneErr := store.PruneRevisionHistory(ctx, storage.RevisionRetentionPolicy{Now: now})
+	references, referenceErr := store.ListPluginRuntimeDirectoryReferences(ctx)
 	closeErr := store.Close()
 	if pruneErr != nil {
 		pruneErr = fmt.Errorf("prune revision history: %w", pruneErr)
 	}
+	if referenceErr != nil {
+		referenceErr = fmt.Errorf("list protected plugin runtimes: %w", referenceErr)
+	}
 	if closeErr != nil {
 		closeErr = fmt.Errorf("close revision retention store: %w", closeErr)
 	}
-	return errors.Join(pruneErr, closeErr)
+	var runtimePruneErr error
+	if referenceErr == nil {
+		protected := make([]pluginhost.RuntimeDirectoryReference, 0, len(references))
+		for _, reference := range references {
+			protected = append(protected, pluginhost.RuntimeDirectoryReference{InstanceID: reference.InstanceID, Generation: reference.Generation})
+		}
+		age := pluginRuntimeRetentionAge
+		if age <= 0 {
+			age = 24 * time.Hour
+		}
+		_, runtimePruneErr = pluginhost.PruneRuntimeDirectories(filepath.Join(cfg.DataDir, "plugins", "rpc-runtime"), protected, now.Add(-age))
+		if runtimePruneErr != nil {
+			runtimePruneErr = fmt.Errorf("prune plugin runtime directories: %w", runtimePruneErr)
+		}
+	}
+	return errors.Join(pruneErr, referenceErr, runtimePruneErr, closeErr)
 }
 
 func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *log.Logger) <-chan struct{} {

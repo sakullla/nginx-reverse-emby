@@ -50,6 +50,11 @@ type PluginRuntimeCandidateFailure struct {
 	Failure    error
 }
 
+type PluginRuntimeDirectoryReference struct {
+	InstanceID string
+	Generation string
+}
+
 func (PluginRuntimeInstanceRow) TableName() string { return "plugin_runtime_instances" }
 
 func (s *GormStore) ensurePluginRuntimeSchema(ctx context.Context) error {
@@ -255,6 +260,28 @@ func (s *GormStore) GetPluginRuntime(ctx context.Context, instanceID string) (Pl
 		return PluginRuntimeInstanceRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+func (s *GormStore) ListPluginRuntimeDirectoryReferences(ctx context.Context) ([]PluginRuntimeDirectoryReference, error) {
+	if err := s.ensurePluginRuntimeSchema(ctx); err != nil {
+		return nil, err
+	}
+	var rows []PluginRuntimeInstanceRow
+	if err := s.db.WithContext(ctx).
+		Select("instance_id", "active_generation", "candidate_generation").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	references := make([]PluginRuntimeDirectoryReference, 0, len(rows)*2)
+	for _, row := range rows {
+		if generation := strings.TrimSpace(row.ActiveGeneration); generation != "" {
+			references = append(references, PluginRuntimeDirectoryReference{InstanceID: row.InstanceID, Generation: generation})
+		}
+		if generation := strings.TrimSpace(row.CandidateGeneration); generation != "" {
+			references = append(references, PluginRuntimeDirectoryReference{InstanceID: row.InstanceID, Generation: generation})
+		}
+	}
+	return references, nil
 }
 
 func (s *GormStore) UpdatePluginRuntimeHealth(ctx context.Context, instanceID, generation, state string, pid, restartCount int, circuitOpen bool, lastError string) error {
