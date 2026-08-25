@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   fetchAgents: vi.fn(),
   fetchRules: vi.fn(),
   fetchHttpRulesPage: vi.fn(),
+  fetchPluginUIRoutes: vi.fn(),
   refreshActor: vi.fn(),
   actor: { permissions: ['*'], visible_resource_groups: [] }
 }))
@@ -15,7 +16,8 @@ vi.mock('../../api/client', () => ({ api: { get: mocks.get, post: mocks.post }, 
 vi.mock('../../api', () => ({
   fetchAgents: mocks.fetchAgents,
   fetchRules: mocks.fetchRules,
-  fetchHttpRulesPage: mocks.fetchHttpRulesPage
+  fetchHttpRulesPage: mocks.fetchHttpRulesPage,
+  fetchPluginUIRoutes: mocks.fetchPluginUIRoutes
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'rpc.plugin' } }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../api/operations', () => ({ retryRevision: vi.fn() }))
@@ -269,6 +271,7 @@ async function mountDetail(detail) {
   ])
   mocks.fetchRules.mockResolvedValue(visibleHttpRules())
   mocks.fetchHttpRulesPage.mockResolvedValue({ items: visibleHttpRules(), total: 2 })
+  mocks.fetchPluginUIRoutes.mockResolvedValue([])
   const wrapper = mount(PluginDetailPage, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
   await flushPromises()
   return wrapper
@@ -291,6 +294,7 @@ describe('PluginDetailPage production API projection', () => {
     mocks.fetchAgents.mockReset()
     mocks.fetchRules.mockReset()
     mocks.fetchHttpRulesPage.mockReset()
+    mocks.fetchPluginUIRoutes.mockReset().mockResolvedValue([])
     mocks.refreshActor.mockReset()
     mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
     mocks.fetchRules.mockResolvedValue(visibleHttpRules())
@@ -485,6 +489,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     mocks.fetchAgents.mockReset()
     mocks.fetchRules.mockReset()
     mocks.fetchHttpRulesPage.mockReset()
+    mocks.fetchPluginUIRoutes.mockReset().mockResolvedValue([])
     mocks.refreshActor.mockReset()
     mocks.actor = { permissions: ['*'], visible_resource_groups: [] }
     mocks.fetchRules.mockResolvedValue(visibleHttpRules())
