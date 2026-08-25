@@ -329,19 +329,21 @@ func (l *httpIngressLease) release() error {
 	return l.releaseErr
 }
 
-func (m *httpIngressManager) retireExcept(activeKeys []string) error {
+func (m *httpIngressManager) retireExcept(activeBindings []*httpIngressBinding) error {
 	if m == nil {
 		return nil
 	}
-	active := make(map[string]struct{}, len(activeKeys))
-	for _, key := range activeKeys {
-		active[key] = struct{}{}
+	active := make(map[*httpIngressBinding]struct{}, len(activeBindings))
+	for _, binding := range activeBindings {
+		if binding != nil {
+			active[binding] = struct{}{}
+		}
 	}
 
 	m.mu.Lock()
 	retired := make([]*httpIngressBinding, 0)
 	for key, binding := range m.bindings {
-		if _, keep := active[key]; keep {
+		if _, keep := active[binding]; keep {
 			continue
 		}
 		delete(m.bindings, key)
@@ -940,6 +942,21 @@ func (r *Runtime) packetEndpoint(bindingKey string) *ingress.PacketEndpoint {
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) ingressBindings() []*httpIngressBinding {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bindings := make([]*httpIngressBinding, 0, len(r.ingressLeases))
+	for _, lease := range r.ingressLeases {
+		if lease != nil && lease.binding != nil {
+			bindings = append(bindings, lease.binding)
+		}
+	}
+	return bindings
 }
 
 func (r *Runtime) BeginDrain() {
@@ -1556,7 +1573,7 @@ func (t *httpGenerationTransaction) retireInactiveIngressBindings() {
 	if t == nil || t.module == nil || t.module.ingress == nil || t.runtime == nil {
 		return
 	}
-	if err := t.module.ingress.retireExcept(t.runtime.BindingKeys()); err != nil {
+	if err := t.module.ingress.retireExcept(t.runtime.ingressBindings()); err != nil {
 		log.Printf("[proxy] retire inactive generation ingress: %v", err)
 	}
 }

@@ -69,7 +69,7 @@ func TestIntegrationL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 	}
 }
 
-func TestIntegrationL4GenerationTCPPortMoveReleasesRetiredListenerWithoutConnections(t *testing.T) {
+func TestIntegrationL4GenerationTCPPortMoveReleasesInactiveBinding(t *testing.T) {
 	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")
 	newBackend := startL4GenerationTCPBackend(t, "new")

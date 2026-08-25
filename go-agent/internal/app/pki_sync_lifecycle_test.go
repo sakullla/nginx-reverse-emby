@@ -208,3 +208,148 @@ func TestRunHotRestartChildBindsTunnelCredentialBeforeRestoringPKIMTLSRuntime(t 
 		t.Fatalf("RunHotRestartChild() applied pki_mtls runtime before credential binding: %v", err)
 	}
 }
+
+func TestHotRestartRelayListenerSurvivesParentDrain(t *testing.T) {
+	if stdruntime.GOOS != "linux" {
+		t.Skip("hot restart descriptor handoff is supported on Linux")
+	}
+	fixture := newLifecycleRelayMTLSFixture(t)
+	listener := fixture.listener(lifecyclePickFreeTCPPort(t))
+	desired := Snapshot{
+		Rules:               []model.HTTPRule{},
+		L4Rules:             []model.L4Rule{},
+		RelayListeners:      []model.RelayListener{listener},
+		EgressProfiles:      []model.EgressProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+
+	parentConfig := Config{
+		AgentID: fixture.agentID, AgentName: fixture.agentID,
+		CurrentVersion: "1.0.0", DataDir: t.TempDir(),
+	}
+	parentModules, err := newConfiguredModules(parentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &App{cfg: parentConfig, relayTunnelCredentials: fixture.provider}
+	parent.setConfiguredModules(parentModules)
+	parent.bindRelayTunnelCredentialProvider()
+	parentClosed := false
+	t.Cleanup(func() {
+		if !parentClosed {
+			_ = parent.Close()
+		}
+	})
+	if err := parent.runtime.Apply(t.Context(), Snapshot{}, desired); err != nil {
+		t.Fatalf("prepare hot restart parent relay: %v", err)
+	}
+	streamBundle, err := parent.processStreams.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childConfig := parentConfig
+	childConfig.DataDir = t.TempDir()
+	childModules, err := newConfiguredModules(childConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := &App{cfg: childConfig, relayTunnelCredentials: fixture.provider}
+	child.setConfiguredModules(childModules)
+	child.bindRelayTunnelCredentialProvider()
+	t.Cleanup(func() { _ = child.Close() })
+	streamSet, err := child.processStreams.Import(streamBundle.Descriptors, streamBundle.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamBundle.Files = nil
+	_ = streamBundle.Close()
+	t.Cleanup(func() { _ = streamSet.Close() })
+	if err := child.runtime.Apply(t.Context(), Snapshot{}, desired); err != nil {
+		t.Fatalf("prepare hot restart child relay: %v", err)
+	}
+	if err := child.processStreams.ValidateImported(); err != nil {
+		t.Fatalf("validate inherited relay listener: %v", err)
+	}
+	if err := parent.processStreams.Pause(); err != nil {
+		t.Fatalf("pause hot restart parent relay: %v", err)
+	}
+	if err := child.processStreams.ActivateImported(); err != nil {
+		t.Fatalf("activate hot restart child relay: %v", err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatalf("drain hot restart parent relay: %v", err)
+	}
+	parentClosed = true
+
+	connection, err := net.DialTimeout(
+		"tcp",
+		net.JoinHostPort("127.0.0.1", lifecyclePortString(listener.ListenPort)),
+		250*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("hot restart parent drain closed the child relay listener: %v", err)
+	}
+	_ = connection.Close()
+}
+
+func TestRelayPortMovesKeepHotRestartDescriptorsBounded(t *testing.T) {
+	fixture := newLifecycleRelayMTLSFixture(t)
+	cfg := Config{
+		AgentID: fixture.agentID, AgentName: fixture.agentID,
+		CurrentVersion: "1.0.0", DataDir: t.TempDir(),
+	}
+	modules, err := newConfiguredModules(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := &App{cfg: cfg, relayTunnelCredentials: fixture.provider}
+	application.setConfiguredModules(modules)
+	application.bindRelayTunnelCredentialProvider()
+	t.Cleanup(func() { _ = application.Close() })
+
+	usedPorts := make(map[int]struct{})
+	previous := Snapshot{}
+	previousPort := 0
+	for revision := int64(1); revision <= 70; revision++ {
+		port := 0
+		for port == 0 {
+			candidate := lifecyclePickFreeTCPPort(t)
+			if _, used := usedPorts[candidate]; !used {
+				port = candidate
+				usedPorts[port] = struct{}{}
+			}
+		}
+		next := Snapshot{Revision: revision, RelayListeners: []model.RelayListener{fixture.listener(port)}}
+		if err := application.runtime.Apply(t.Context(), previous, next); err != nil {
+			t.Fatalf("apply relay port move %d: %v", revision, err)
+		}
+		connection, err := net.DialTimeout(
+			"tcp", net.JoinHostPort("127.0.0.1", lifecyclePortString(port)), 250*time.Millisecond,
+		)
+		if err != nil {
+			t.Fatalf("active relay port %d is unavailable after move %d: %v", port, revision, err)
+		}
+		_ = connection.Close()
+		if previousPort != 0 {
+			oldAddress := net.JoinHostPort("127.0.0.1", lifecyclePortString(previousPort))
+			replacement, err := net.Listen("tcp", oldAddress)
+			if err != nil {
+				t.Fatalf("retired relay port %d still owns an FD after move %d: %v", previousPort, revision, err)
+			}
+			_ = replacement.Close()
+		}
+		previous = next
+		previousPort = port
+	}
+
+	bundle, err := application.processStreams.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	if len(bundle.Descriptors) != 1 {
+		t.Fatalf("relay port moves exported %d listener FDs, want 1", len(bundle.Descriptors))
+	}
+}

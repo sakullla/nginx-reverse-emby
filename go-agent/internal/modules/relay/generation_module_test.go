@@ -123,7 +123,7 @@ func TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish(t *
 	_ = relayModule.Close()
 }
 
-func TestRelayGenerationPortMoveReleasesRetiredListenerWithoutConnections(t *testing.T) {
+func TestRelayGenerationPortMoveReleasesInactiveBinding(t *testing.T) {
 	t.Parallel()
 	certificateID := 1
 	certificate := mustIssueTestTLSCertificate(t)

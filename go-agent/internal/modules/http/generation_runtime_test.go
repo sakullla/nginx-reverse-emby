@@ -205,7 +205,7 @@ func TestIntegrationHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t 
 	defer secondView.Destroy(context.Background())
 }
 
-func TestIntegrationHTTPGenerationPortMoveReleasesRetiredListenerWithoutConnections(t *testing.T) {
+func TestIntegrationHTTPGenerationPortMoveReleasesInactiveBinding(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "active")

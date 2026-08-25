@@ -199,10 +199,6 @@ func (t *l4GenerationTransaction) FinalizeCommitSuccess() {
 	}
 }
 
-// FinalizeGenerationPublication runs after the immutable generation view has
-// become active. Retired generations may keep established sessions alive, but
-// bindings that disappeared from the active server must stop accepting and
-// occupying their old listen addresses immediately.
 func (t *l4GenerationTransaction) FinalizeGenerationPublication() {
 	if t == nil {
 		return
@@ -214,7 +210,7 @@ func (t *l4GenerationTransaction) retireInactiveIngressBindings() {
 	if t == nil || t.module == nil || t.module.ingress == nil || t.server == nil {
 		return
 	}
-	if err := t.module.ingress.retireExcept(t.server.BindingKeys()); err != nil {
+	if err := t.module.ingress.retireExcept(t.server.ingressBindings()); err != nil {
 		log.Printf("[l4] retire inactive generation ingress: %v", err)
 	}
 }
@@ -742,19 +738,21 @@ func (l *l4IngressLease) release() error {
 	return l.releaseErr
 }
 
-func (m *l4IngressManager) retireExcept(activeKeys []string) error {
+func (m *l4IngressManager) retireExcept(activeBindings []*l4IngressBinding) error {
 	if m == nil {
 		return nil
 	}
-	active := make(map[string]struct{}, len(activeKeys))
-	for _, key := range activeKeys {
-		active[key] = struct{}{}
+	active := make(map[*l4IngressBinding]struct{}, len(activeBindings))
+	for _, binding := range activeBindings {
+		if binding != nil {
+			active[binding] = struct{}{}
+		}
 	}
 
 	m.mu.Lock()
 	retired := make([]*l4IngressBinding, 0)
 	for key, binding := range m.bindings {
-		if _, keep := active[key]; keep {
+		if _, keep := active[binding]; keep {
 			continue
 		}
 		delete(m.bindings, key)
@@ -846,6 +844,21 @@ func (s *Server) packetEndpoint(bindingKey string) *ingress.PacketEndpoint {
 		}
 	}
 	return nil
+}
+
+func (s *Server) ingressBindings() []*l4IngressBinding {
+	if s == nil {
+		return nil
+	}
+	s.ingressMu.Lock()
+	defer s.ingressMu.Unlock()
+	bindings := make([]*l4IngressBinding, 0, len(s.ingressLeases))
+	for _, lease := range s.ingressLeases {
+		if lease != nil && lease.binding != nil {
+			bindings = append(bindings, lease.binding)
+		}
+	}
+	return bindings
 }
 
 func closeL4StreamEndpoint(endpoint *ingress.StreamEndpoint) error {

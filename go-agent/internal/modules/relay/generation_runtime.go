@@ -332,19 +332,25 @@ func (l *relayIngressLease) release() error {
 	return l.err
 }
 
-func (m *relayIngressManager) retireExcept(activeKeys []string) error {
+// retireExcept closes only bindings not leased by the published runtime.
+// Binding keys may change across inherited-descriptor aliases during hot
+// restart, so pointer identity—not a reconstructed string key—is the authority
+// for whether the active generation still owns a physical listener.
+func (m *relayIngressManager) retireExcept(activeBindings []*relayIngressBinding) error {
 	if m == nil {
 		return nil
 	}
-	active := make(map[string]struct{}, len(activeKeys))
-	for _, key := range activeKeys {
-		active[key] = struct{}{}
+	active := make(map[*relayIngressBinding]struct{}, len(activeBindings))
+	for _, binding := range activeBindings {
+		if binding != nil {
+			active[binding] = struct{}{}
+		}
 	}
 
 	m.mu.Lock()
 	retired := make([]*relayIngressBinding, 0)
 	for key, binding := range m.bindings {
-		if _, keep := active[key]; keep {
+		if _, keep := active[binding]; keep {
 			continue
 		}
 		delete(m.bindings, key)
@@ -502,6 +508,21 @@ func (s *Server) Activate() error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) ingressBindings() []*relayIngressBinding {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bindings := make([]*relayIngressBinding, 0, len(s.ingressLeases))
+	for _, lease := range s.ingressLeases {
+		if lease != nil && lease.binding != nil {
+			bindings = append(bindings, lease.binding)
+		}
+	}
+	return bindings
 }
 
 type relayGenerationProvider struct {
@@ -705,7 +726,7 @@ func (t *relayGenerationTransaction) retireInactiveIngressBindings() {
 	if t == nil || t.module == nil || t.module.ingress == nil || t.runtime == nil {
 		return
 	}
-	if err := t.module.ingress.retireExcept(t.runtime.BindingKeys()); err != nil {
+	if err := t.module.ingress.retireExcept(t.runtime.ingressBindings()); err != nil {
 		log.Printf("[relay] retire inactive generation ingress: %v", err)
 	}
 }
