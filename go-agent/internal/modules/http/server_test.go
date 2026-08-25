@@ -100,6 +100,107 @@ func TestIntegrationServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	}
 }
 
+func TestStreamingResponseEOFDoesNotPoisonSharedBackendHealth(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/stream" {
+			_, _ = io.WriteString(writer, "healthy")
+			return
+		}
+		connection, buffered, err := writer.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack streaming backend: %v", err)
+			return
+		}
+		_, _ = io.WriteString(buffered, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 128\r\n\r\ndata: partial\n\n")
+		_ = buffered.Flush()
+		_ = connection.Close()
+	}))
+	defer backend.Close()
+
+	proxy := httptest.NewServer(NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		ID: 1, Enabled: true, FrontendURL: "http://frontend.example", Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}))
+	defer proxy.Close()
+
+	streamRequest, err := http.NewRequest(http.MethodGet, proxy.URL+"/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamRequest.Host = "frontend.example"
+	if response, requestErr := proxy.Client().Do(streamRequest); requestErr == nil {
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}
+
+	healthRequest, err := http.NewRequest(http.MethodGet, proxy.URL+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthRequest.Host = "frontend.example"
+	healthResponse, err := proxy.Client().Do(healthRequest)
+	if err != nil {
+		t.Fatalf("healthy request after stream EOF: %v", err)
+	}
+	defer healthResponse.Body.Close()
+	body, err := io.ReadAll(healthResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if healthResponse.StatusCode != http.StatusOK || string(body) != "healthy" {
+		t.Fatalf("healthy response after stream EOF = status %d body %q", healthResponse.StatusCode, body)
+	}
+}
+
+func TestSoleBackendBackoffAllowsRecoveryProbe(t *testing.T) {
+	var attempts atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			connection, _, err := writer.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack failed backend: %v", err)
+				return
+			}
+			_ = connection.Close()
+			return
+		}
+		_, _ = io.WriteString(writer, "recovered")
+	}))
+	defer backend.Close()
+
+	proxy := httptest.NewServer(NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		ID: 1, Enabled: true, FrontendURL: "http://frontend.example", Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}))
+	defer proxy.Close()
+
+	failedRequest, err := http.NewRequest(http.MethodPost, proxy.URL+"/fail", strings.NewReader("one-shot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedRequest.Host = "frontend.example"
+	if failedResponse, requestErr := proxy.Client().Do(failedRequest); requestErr == nil {
+		_, _ = io.Copy(io.Discard, failedResponse.Body)
+		_ = failedResponse.Body.Close()
+	}
+
+	recoveryRequest, err := http.NewRequest(http.MethodGet, proxy.URL+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryRequest.Host = "frontend.example"
+	recoveryResponse, err := proxy.Client().Do(recoveryRequest)
+	if err != nil {
+		t.Fatalf("recovery probe request: %v", err)
+	}
+	defer recoveryResponse.Body.Close()
+	body, err := io.ReadAll(recoveryResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveryResponse.StatusCode != http.StatusOK || string(body) != "recovered" {
+		t.Fatalf("recovery response = status %d body %q", recoveryResponse.StatusCode, body)
+	}
+}
+
 func TestIntegrationHTTPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

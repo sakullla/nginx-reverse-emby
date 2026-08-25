@@ -127,6 +127,7 @@ type httpCandidate struct {
 	relayChain            []int
 	provider              HTTPBackendProvider
 	providerKey           string
+	probeBackoff          bool
 }
 
 func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
@@ -148,6 +149,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	strategy := e.rule.LoadBalancing.Strategy
 	orderedBackends := e.backendCache.Order(e.selectionScope, strategy, placeholders)
 	out := make([]httpCandidate, 0, len(e.backends))
+	backedOff := make([]httpCandidate, 0, len(e.backends))
 	for _, ordered := range orderedBackends {
 		indexes := indexesByID[ordered.Address]
 		if len(indexes) == 0 {
@@ -165,15 +167,17 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			if e.backendCache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
-				continue
-			}
-			out = append(out, httpCandidate{
+			resolvedCandidate := httpCandidate{
 				target:                cloneURL(backend.target),
 				dialAddress:           dialAddress,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
-			})
+			}
+			if e.backendCache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
+				backedOff = append(backedOff, resolvedCandidate)
+				continue
+			}
+			out = append(out, resolvedCandidate)
 			continue
 		}
 		endpoint := model.Endpoint{
@@ -191,16 +195,26 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		}
 		resolved = e.backendCache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
-			if e.backendCache.IsInBackoff(candidate.Address) {
-				continue
-			}
-			out = append(out, httpCandidate{
+			resolvedCandidate := httpCandidate{
 				target:                cloneURL(backend.target),
 				dialAddress:           candidate.Address,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
-			})
+			}
+			if e.backendCache.IsInBackoff(candidate.Address) {
+				backedOff = append(backedOff, resolvedCandidate)
+				continue
+			}
+			out = append(out, resolvedCandidate)
 		}
+	}
+	if len(out) == 0 && len(backedOff) > 0 {
+		// Backoff ranks unhealthy candidates but must not turn a transient or
+		// stale observation into a hard outage. Probe the best-ranked candidate;
+		// success clears its backoff immediately, while failure reapplies it.
+		probe := backedOff[0]
+		probe.probeBackoff = true
+		return []httpCandidate{probe}, nil
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no healthy backend candidates for %s", e.rule.FrontendURL)

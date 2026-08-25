@@ -310,9 +310,8 @@ func TestTaskClientHTTP2StreamStopsOnCancellation(t *testing.T) {
 	}
 }
 
-func TestTaskClientFallsBackToStickySSEWhenTaskStreamStopsAcknowledgingPings(t *testing.T) {
+func TestTaskClientReconnectsWhenTaskStreamStopsAcknowledgingPings(t *testing.T) {
 	streamOpened := make(chan struct{}, 4)
-	sseOpened := make(chan struct{}, 2)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodHead && request.URL.Path == "/api/agents/task-stream":
@@ -328,13 +327,6 @@ func TestTaskClientFallsBackToStickySSEWhenTaskStreamStopsAcknowledgingPings(t *
 			writer.(http.Flusher).Flush()
 			streamOpened <- struct{}{}
 			_, _ = io.Copy(io.Discard, request.Body)
-		case request.Method == http.MethodGet && request.URL.Path == "/api/agents/task-session":
-			writer.Header().Set("Content-Type", "text/event-stream")
-			writer.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(writer, ": task-session-open\n\n")
-			writer.(http.Flusher).Flush()
-			sseOpened <- struct{}{}
-			<-request.Context().Done()
 		default:
 			http.NotFound(writer, request)
 		}
@@ -362,20 +354,12 @@ func TestTaskClientFallsBackToStickySSEWhenTaskStreamStopsAcknowledgingPings(t *
 		}
 	}()
 
-	select {
-	case <-streamOpened:
-	case <-time.After(time.Second):
-		t.Fatal("task stream did not open")
-	}
-	select {
-	case <-sseOpened:
-	case <-time.After(time.Second):
-		t.Fatal("task client did not fall back to SSE after ping acknowledgement timeout")
-	}
-	select {
-	case <-streamOpened:
-		t.Fatal("task client retried the broken full-duplex stream after SSE fallback")
-	case <-time.After(100 * time.Millisecond):
+	for opened := 0; opened < 2; opened++ {
+		select {
+		case <-streamOpened:
+		case <-time.After(time.Second):
+			t.Fatalf("task stream opened %d times, want reconnect", opened)
+		}
 	}
 }
 

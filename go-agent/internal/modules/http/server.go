@@ -399,8 +399,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		if ruleUsesRelay(e.rule) {
 			backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
 		}
-		if e.backendCache.IsInBackoff(backoffAddr) {
+		if e.backendCache.IsInBackoff(backoffAddr) && !candidate.probeBackoff {
 			continue
+		}
+		if candidate.probeBackoff {
+			maxSameBackendAttempts = 1
 		}
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
 			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath, recorder)
@@ -411,7 +414,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			// Re-check backoff between same-backend retries: a failed attempt
 			// marks the address failed and may flip it into backoff, in which
 			// case the remaining attempts should bail out rather than redial.
-			if e.backendCache.IsInBackoff(backoffAddr) {
+			if e.backendCache.IsInBackoff(backoffAddr) && !candidate.probeBackoff {
 				break
 			}
 			attemptReq, providerLease, providerScope, err := e.acquireProviderRequest(w, attemptReq, candidate)
@@ -457,6 +460,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				rpc.WrapHTTPBackendProviderResponseLease(attemptReq.Context(), resp, providerLease)
 			}
 			headerLatency := time.Since(start)
+			if isLongLivedStreamingResponse(resp) {
+				// A valid streaming response proves reachability. Clear any stale
+				// session-local failure before the long-lived transfer completes.
+				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, headerLatency, 0)
+			}
 			if e.modifyResp != nil && candidate.provider == nil {
 				var relativeLocationBase *url.URL
 				if _, ok := parseInternalRedirectTarget(req.URL.Path, e.frontendPath); ok {
@@ -510,6 +518,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			}
 			written, err := copyResponse(responseWriter, resp, recorder)
 			if err != nil {
+				if isBenignStreamingResponseTermination(resp, err) {
+					return nil
+				}
 				if attemptReq.Context().Err() == nil {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)

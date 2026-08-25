@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +54,26 @@ func proxyResponseNeedsImmediateFlush(resp *http.Response) bool {
 	default:
 		return false
 	}
+}
+
+func isLongLivedStreamingResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	switch httpResponseMediaType(resp.Header.Get("Content-Type")) {
+	case "application/x-ndjson", "text/event-stream":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBenignStreamingResponseTermination(resp *http.Response, err error) bool {
+	if !isLongLivedStreamingResponse(resp) || err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe)
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, recorder *traffic.Recorder) error {

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -58,8 +57,6 @@ type streamStatusError struct {
 	probe      bool
 }
 
-var errTaskStreamLiveness = errors.New("task stream liveness failed")
-
 func (e streamStatusError) Error() string {
 	return fmt.Sprintf("task stream failed: %s", e.status)
 }
@@ -105,21 +102,13 @@ func (c *TaskClient) PluginCaller() PluginCaller {
 }
 
 func (c *TaskClient) Run(ctx context.Context) error {
-	preferSSE := false
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		var err error
-		if preferSSE {
+		err := c.runStreamSession(ctx)
+		if err != nil && ctx.Err() == nil && isStreamUnavailable(err) {
 			err = c.runSSESession(ctx)
-		} else {
-			err = c.runStreamSession(ctx)
-			if err != nil && ctx.Err() == nil && isStreamUnavailable(err) {
-				preferSSE = true
-				log.Printf("[agent] task stream unavailable; falling back to SSE: %v", err)
-				err = c.runSSESession(ctx)
-			}
 		}
 		if err != nil && ctx.Err() == nil {
 			timer := time.NewTimer(c.cfg.ReconnectWait)
@@ -326,7 +315,7 @@ func (c *TaskClient) monitorTaskStream(
 		case now := <-livenessTicker.C:
 			last := time.Unix(0, lastReceived.Load())
 			if now.Sub(last) >= c.cfg.TaskStreamLivenessTimeout {
-				report(fmt.Errorf("%w: ping acknowledgement timed out", errTaskStreamLiveness))
+				report(errors.New("task stream liveness timeout"))
 				return
 			}
 		}
@@ -644,9 +633,6 @@ func (c *TaskClient) updateURL(taskID string) string {
 }
 
 func isStreamUnavailable(err error) bool {
-	if errors.Is(err, errTaskStreamLiveness) {
-		return true
-	}
 	var streamErr streamStatusError
 	if !errors.As(err, &streamErr) {
 		return false
