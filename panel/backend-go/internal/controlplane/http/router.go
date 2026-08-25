@@ -76,6 +76,7 @@ type TaskService interface {
 	CreateAndDispatch(service.TaskCreateRequest) (service.TaskRecord, error)
 	Get(context.Context, string, string) (service.TaskRecord, error)
 	RegisterSession(service.TaskSessionRegistration) error
+	UnregisterSession(string, service.TaskSession)
 	ApplyUpdate(context.Context, service.TaskUpdateInput) error
 }
 

@@ -256,9 +256,10 @@ type fakeSystemService struct {
 func (f fakeSystemService) Info(context.Context) service.SystemInfo { return f.info }
 
 type fakeOwnerAgentService struct {
-	agents   []service.AgentSummary
-	snapshot service.AgentMonitorSnapshot
-	updates  chan service.AgentMonitorUpdate
+	agents        []service.AgentSummary
+	authenticated service.AgentSummary
+	snapshot      service.AgentMonitorSnapshot
+	updates       chan service.AgentMonitorUpdate
 }
 
 func (f fakeOwnerAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -268,6 +269,9 @@ func (f fakeOwnerAgentService) Get(context.Context, string) (service.AgentSummar
 	return service.AgentSummary{}, service.ErrAgentNotFound
 }
 func (f fakeOwnerAgentService) GetByToken(context.Context, string) (service.AgentSummary, error) {
+	if f.authenticated.ID != "" {
+		return f.authenticated, nil
+	}
 	return service.AgentSummary{}, service.ErrAgentUnauthorized
 }
 func (f fakeOwnerAgentService) Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error) {

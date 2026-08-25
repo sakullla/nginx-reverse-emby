@@ -254,7 +254,10 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, status, body)
 		return
 	}
-	defer session.Close()
+	defer func() {
+		d.TaskService.UnregisterSession(agent.ID, session)
+		_ = session.Close()
+	}()
 
 	fmt.Fprintf(w, ": task-session-open %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	flusher.Flush()
@@ -285,9 +288,13 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, errorPayload("streaming unsupported"))
 		return
 	}
-	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorPayload("streaming unsupported"))
-		return
+	// HTTP/2 is full duplex by definition. ResponseController's opt-in is for
+	// HTTP/1 and may be unsupported by an otherwise valid HTTP/2 writer.
+	if r.ProtoMajor < 2 {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			writeJSON(w, http.StatusNotImplemented, errorPayload("streaming unsupported"))
+			return
+		}
 	}
 
 	sessionCtx, cancelSession := context.WithCancel(r.Context())
@@ -308,7 +315,10 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		_ = session.Close()
 		return
 	}
-	defer session.Close()
+	defer func() {
+		d.TaskService.UnregisterSession(agent.ID, session)
+		_ = session.Close()
+	}()
 
 	_ = d.readTaskStreamUpdates(r, agent.ID)
 }

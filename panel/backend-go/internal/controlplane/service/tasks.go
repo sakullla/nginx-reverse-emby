@@ -270,6 +270,21 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 	return nil
 }
 
+// UnregisterSession removes a task stream only when it is still the current
+// session for the agent. A superseded handler may finish after its replacement
+// registered, so unconditional removal would discard the healthy replacement.
+func (s *TaskService) UnregisterSession(agentID string, session TaskSession) {
+	agentID = strings.TrimSpace(agentID)
+	if s == nil || agentID == "" || session == nil {
+		return
+	}
+	s.mu.Lock()
+	if current, ok := s.sessions[agentID]; ok && current.session == session {
+		delete(s.sessions, agentID)
+	}
+	s.mu.Unlock()
+}
+
 // AllowAgentSessions clears the revocation fence only after a successful
 // lease-fenced re-enrollment restored the stable control credential.
 func (s *TaskService) AllowAgentSessions(agentID string) {
