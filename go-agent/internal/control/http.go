@@ -55,5 +55,9 @@ func newHTTPTransport(cfg model.HTTPTransportConfig) *http.Transport {
 		IdleConnTimeout:       transportCfg.IdleConnTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: defaultTaskStreamPingInterval,
+			PingTimeout:     defaultTaskStreamPingAckTimeout,
+		},
 	}
 }

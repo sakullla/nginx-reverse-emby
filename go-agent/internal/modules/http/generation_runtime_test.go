@@ -3,6 +3,7 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -98,6 +100,145 @@ func TestIntegrationHTTPGenerationCandidatePublishesNewSessionsWithoutInterrupti
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("old in-flight request did not finish")
+	}
+}
+
+func TestIntegrationTaskClientReconnectsAfterOldHTTPGenerationIsForced(t *testing.T) {
+	streamOpened := make(chan struct{}, 8)
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+		switch request.Method {
+		case stdhttp.MethodHead:
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(stdhttp.StatusOK)
+		case stdhttp.MethodPost:
+			if err := stdhttp.NewResponseController(writer).EnableFullDuplex(); err != nil {
+				stdhttp.Error(writer, err.Error(), stdhttp.StatusInternalServerError)
+				return
+			}
+			reader := bufio.NewReader(request.Body)
+			line, err := reader.ReadString('\n')
+			if err != nil || !strings.Contains(line, `"type":"hello"`) {
+				stdhttp.Error(writer, "task stream hello is required", stdhttp.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(stdhttp.StatusOK)
+			writer.(stdhttp.Flusher).Flush()
+			streamOpened <- struct{}{}
+			for {
+				line, err = reader.ReadString('\n')
+				if err != nil {
+					return
+				}
+				if strings.Contains(line, `"type":"ping"`) {
+					_, _ = io.WriteString(writer, "{\"type\":\"ping\",\"ping\":{\"sent_at\":\"2026-08-25T00:00:00Z\"}}\n")
+					writer.(stdhttp.Flusher).Flush()
+				}
+			}
+		default:
+			stdhttp.NotFound(writer, request)
+		}
+	}))
+	defer backend.Close()
+
+	port := pickFreeTCPUDPPort(t)
+	host := "task-stream.example.test"
+	frontend := fmt.Sprintf("https://%s:%d", host, port)
+	provider := &testTLSProvider{certificates: map[string]tls.Certificate{
+		host: mustIssueProxyTLSCertificate(t, host),
+	}}
+	newTaskClient := func(agentID string) *control.TaskClient {
+		transport := &stdhttp.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", port))
+			},
+			TLSClientConfig:   &tls.Config{ServerName: host, InsecureSkipVerify: true},
+			ForceAttemptHTTP2: true,
+		}
+		t.Cleanup(transport.CloseIdleConnections)
+		return control.NewTaskClient(control.TaskClientConfig{
+			MasterURL: frontend, AgentToken: "token", AgentID: agentID, ReconnectWait: 10 * time.Millisecond,
+			TaskStreamPingInterval: 20 * time.Millisecond, TaskStreamLivenessTimeout: 100 * time.Millisecond,
+			HTTPClient: &stdhttp.Client{Transport: transport},
+		})
+	}
+	rule := model.HTTPRule{ID: 1, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: backend.URL}}}
+	snapshots := []model.Snapshot{
+		{Revision: 1, Rules: []model.HTTPRule{rule}},
+		{Revision: 2, Rules: []model.HTTPRule{rule}},
+		{Revision: 3, Rules: []model.HTTPRule{rule}},
+	}
+
+	mod := NewModule(Config{})
+	defer mod.Close()
+	resolver := generationTestResolver{module.ProviderTLSMaterial: provider}
+	previous := model.Snapshot{}
+	first := prepareHTTPGenerationForTest(t, mod, resolver, previous, snapshots[0])
+	if err := first.Commit(); err != nil {
+		t.Fatalf("commit first generation: %v", err)
+	}
+	first.FinalizeCommitSuccess()
+	previous = snapshots[0]
+
+	client := newTaskClient("edge-a")
+	clientCtx, cancelClient := context.WithCancel(t.Context())
+	clientDone := make(chan error, 1)
+	go func() { clientDone <- client.Run(clientCtx) }()
+	defer func() {
+		cancelClient()
+		select {
+		case err := <-clientDone:
+			if err != nil {
+				t.Errorf("task client shutdown: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("task client did not stop")
+		}
+	}()
+
+	select {
+	case <-streamOpened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("initial task stream did not open")
+	}
+
+	second := prepareHTTPGenerationForTest(t, mod, resolver, previous, snapshots[1])
+	if err := second.Commit(); err != nil {
+		t.Fatalf("commit second generation: %v", err)
+	}
+	second.FinalizeCommitSuccess()
+	previous = snapshots[1]
+	pinClient := newTaskClient("edge-b")
+	pinCtx, cancelPin := context.WithCancel(t.Context())
+	pinDone := make(chan error, 1)
+	go func() { pinDone <- pinClient.Run(pinCtx) }()
+	defer func() {
+		cancelPin()
+		select {
+		case err := <-pinDone:
+			if err != nil {
+				t.Errorf("pin task client shutdown: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("pin task client did not stop")
+		}
+	}()
+	select {
+	case <-streamOpened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second-generation task stream did not open")
+	}
+
+	third := prepareHTTPGenerationForTest(t, mod, resolver, previous, snapshots[2])
+	if err := third.Commit(); err != nil {
+		t.Fatalf("commit third generation: %v", err)
+	}
+	third.FinalizeCommitSuccess()
+
+	select {
+	case <-streamOpened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("task client did not reconnect after oldest HTTP generation was forced")
 	}
 }
 

@@ -18,23 +18,27 @@ import (
 )
 
 const (
-	maxTaskMessageLineBytes       = 4 * 1024 * 1024
-	maxConcurrentTaskExecutions   = 4
-	taskStreamMessageWriteTimeout = 5 * time.Second
+	maxTaskMessageLineBytes         = 4 * 1024 * 1024
+	maxConcurrentTaskExecutions     = 4
+	taskStreamMessageWriteTimeout   = 5 * time.Second
+	defaultTaskStreamPingInterval   = time.Minute
+	defaultTaskStreamPingAckTimeout = 20 * time.Second
 )
 
 type TaskClientConfig struct {
-	MasterURL     string
-	AgentToken    string
-	AgentID       string
-	AgentName     string
-	Version       string
-	Capabilities  []string
-	ReconnectWait time.Duration
-	HTTPTransport HTTPTransportConfig
-	HTTPClient    *http.Client
-	Handler       TaskHandler
-	PluginCaller  PluginCaller
+	MasterURL                 string
+	AgentToken                string
+	AgentID                   string
+	AgentName                 string
+	Version                   string
+	Capabilities              []string
+	ReconnectWait             time.Duration
+	TaskStreamPingInterval    time.Duration
+	TaskStreamLivenessTimeout time.Duration
+	HTTPTransport             HTTPTransportConfig
+	HTTPClient                *http.Client
+	Handler                   TaskHandler
+	PluginCaller              PluginCaller
 }
 
 type TaskHandler interface {
@@ -66,6 +70,12 @@ type TaskClient struct {
 func NewTaskClient(cfg TaskClientConfig) *TaskClient {
 	if cfg.ReconnectWait <= 0 {
 		cfg.ReconnectWait = time.Second
+	}
+	if cfg.TaskStreamPingInterval <= 0 {
+		cfg.TaskStreamPingInterval = defaultTaskStreamPingInterval
+	}
+	if cfg.TaskStreamLivenessTimeout <= cfg.TaskStreamPingInterval {
+		cfg.TaskStreamLivenessTimeout = cfg.TaskStreamPingInterval + defaultTaskStreamPingAckTimeout
 	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
 	cfg.MasterURL = normalizeMasterBaseURL(cfg.MasterURL)
@@ -191,6 +201,10 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 	if err := <-helloWritten; err != nil {
 		return err
 	}
+	lastReceived := atomic.Int64{}
+	lastReceived.Store(time.Now().UnixNano())
+	healthErrs := make(chan error, 1)
+	go c.monitorTaskStream(sessionCtx, cancelSession, writeMessage, &lastReceived, healthErrs)
 
 	update := func(ctx context.Context, taskID string, payload map[string]any) error {
 		msg := Message{
@@ -230,6 +244,7 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		if line == "" {
 			continue
 		}
+		lastReceived.Store(time.Now().UnixNano())
 		var msg Message
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			return err
@@ -245,16 +260,66 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 	scanErr := scanner.Err()
 	cancelSession()
 	taskErr := executions.Wait()
+	var healthErr error
+	select {
+	case healthErr = <-healthErrs:
+	default:
+	}
 	if ctx.Err() != nil {
 		return nil
 	}
 	if taskErr != nil {
 		return taskErr
 	}
+	if healthErr != nil {
+		return healthErr
+	}
 	if scanErr != nil {
 		return scanErr
 	}
 	return nil
+}
+
+func (c *TaskClient) monitorTaskStream(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	writeMessage func(context.Context, Message) error,
+	lastReceived *atomic.Int64,
+	errs chan<- error,
+) {
+	pingTicker := time.NewTicker(c.cfg.TaskStreamPingInterval)
+	defer pingTicker.Stop()
+	checkInterval := c.cfg.TaskStreamPingInterval
+	if third := c.cfg.TaskStreamLivenessTimeout / 3; third > 0 && third < checkInterval {
+		checkInterval = third
+	}
+	livenessTicker := time.NewTicker(checkInterval)
+	defer livenessTicker.Stop()
+	report := func(err error) {
+		select {
+		case errs <- err:
+		default:
+		}
+		cancel()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-pingTicker.C:
+			err := writeMessage(ctx, Message{Type: "ping", Ping: &PingMessage{SentAt: now.UTC().Format(time.RFC3339Nano)}})
+			if err != nil {
+				report(fmt.Errorf("task stream ping failed: %w", err))
+				return
+			}
+		case now := <-livenessTicker.C:
+			last := time.Unix(0, lastReceived.Load())
+			if now.Sub(last) >= c.cfg.TaskStreamLivenessTimeout {
+				report(errors.New("task stream liveness timeout"))
+				return
+			}
+		}
+	}
 }
 
 func (c *TaskClient) probeStreamSession(ctx context.Context, sessionID string) error {

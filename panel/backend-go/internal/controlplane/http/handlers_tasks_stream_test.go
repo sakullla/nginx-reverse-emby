@@ -51,3 +51,17 @@ func TestTaskStreamSignalsUnsupportedHTTP1WriterForSSEFallback(t *testing.T) {
 		t.Fatalf("unsupported HTTP/1 task stream status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestTaskStreamEchoesPingForBidirectionalLiveness(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	session := newNDJSONTaskSession(recorder, recorder, func() {}, nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream", strings.NewReader("{\"type\":\"ping\",\"ping\":{\"sent_at\":\"2026-08-25T00:00:00Z\"}}\n"))
+
+	if err := (Dependencies{}).readTaskStreamUpdates(request, "edge-a", session); err != nil {
+		t.Fatal(err)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"type":"ping"`) || !strings.Contains(body, `"sent_at":`) {
+		t.Fatalf("ping response = %q", body)
+	}
+}

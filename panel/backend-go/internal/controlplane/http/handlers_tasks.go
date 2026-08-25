@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -312,6 +314,7 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		Session:    session,
 		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
+		log.Printf("[tasks] register stream failed for agent %q: %v", agent.ID, err)
 		_ = session.Close()
 		return
 	}
@@ -320,10 +323,12 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		_ = session.Close()
 	}()
 
-	_ = d.readTaskStreamUpdates(r, agent.ID)
+	if err := d.readTaskStreamUpdates(r, agent.ID, session); err != nil && sessionCtx.Err() == nil {
+		log.Printf("[tasks] stream ended for agent %q: %v", agent.ID, err)
+	}
 }
 
-func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string) error {
+func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string, session *ndjsonTaskSession) error {
 	scanner := bufio.NewScanner(r.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxTaskStreamLineBytes)
 	for scanner.Scan() {
@@ -334,6 +339,15 @@ func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string) err
 		var message taskStreamMessage
 		if err := json.Unmarshal([]byte(line), &message); err != nil {
 			return err
+		}
+		if message.Type == "ping" {
+			if session == nil {
+				return errors.New("task stream session is unavailable")
+			}
+			if err := session.SendPingContext(r.Context(), time.Now().UTC()); err != nil {
+				return err
+			}
+			continue
 		}
 		if message.Type != "update" || message.Update == nil {
 			continue
@@ -531,7 +545,27 @@ func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.Ta
 	if err != nil {
 		return err
 	}
+	return s.sendPayloadContext(ctx, payload)
+}
 
+func (s *ndjsonTaskSession) SendPingContext(ctx context.Context, sentAt time.Time) error {
+	payload, err := json.Marshal(map[string]any{
+		"type": "ping",
+		"ping": map[string]any{"sent_at": sentAt.UTC().Format(time.RFC3339Nano)},
+	})
+	if err != nil {
+		return err
+	}
+	return s.sendPayloadContext(ctx, payload)
+}
+
+func (s *ndjsonTaskSession) sendPayloadContext(ctx context.Context, payload []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	controller := http.NewResponseController(s.writer)
 	deadline := time.Now().Add(taskSessionWriteTimeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {

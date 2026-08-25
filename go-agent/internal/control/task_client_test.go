@@ -310,6 +310,71 @@ func TestTaskClientHTTP2StreamStopsOnCancellation(t *testing.T) {
 	}
 }
 
+func TestTaskClientReconnectsWhenTaskStreamStopsAcknowledgingPings(t *testing.T) {
+	streamOpened := make(chan struct{}, 4)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodHead:
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			if _, err := bufio.NewReader(request.Body).ReadString('\n'); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+			writer.(http.Flusher).Flush()
+			streamOpened <- struct{}{}
+			_, _ = io.Copy(io.Discard, request.Body)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	client := NewTaskClient(TaskClientConfig{
+		MasterURL: server.URL, AgentToken: "token", AgentID: "edge-a", ReconnectWait: 5 * time.Millisecond,
+		TaskStreamPingInterval: 10 * time.Millisecond, TaskStreamLivenessTimeout: 50 * time.Millisecond, HTTPClient: server.Client(),
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("TaskClient.Run() error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("task client did not stop")
+		}
+	}()
+
+	for opened := 0; opened < 2; opened++ {
+		select {
+		case <-streamOpened:
+		case <-time.After(time.Second):
+			t.Fatalf("task stream opened %d times, want reconnect", opened)
+		}
+	}
+}
+
+func TestHTTPTransportConfiguresHTTP2LivenessChecks(t *testing.T) {
+	transport := newHTTPTransport(HTTPTransportConfig{})
+	defer transport.CloseIdleConnections()
+	if transport.HTTP2 == nil {
+		t.Fatal("HTTP/2 liveness configuration is missing")
+	}
+	if transport.HTTP2.SendPingTimeout != defaultTaskStreamPingInterval ||
+		transport.HTTP2.PingTimeout != defaultTaskStreamPingAckTimeout {
+		t.Fatalf("HTTP/2 liveness = idle %s ping %s", transport.HTTP2.SendPingTimeout, transport.HTTP2.PingTimeout)
+	}
+}
+
 func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	updates := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
