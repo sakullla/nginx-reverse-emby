@@ -295,6 +295,9 @@ func TestHotRestartRelayListenerSurvivesParentDrain(t *testing.T) {
 }
 
 func TestRelayPortMovesKeepHotRestartDescriptorsBounded(t *testing.T) {
+	if stdruntime.GOOS != "linux" {
+		t.Skip("hot restart descriptor export is supported on Linux")
+	}
 	fixture := newLifecycleRelayMTLSFixture(t)
 	cfg := Config{
 		AgentID: fixture.agentID, AgentName: fixture.agentID,
