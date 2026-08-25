@@ -243,6 +243,73 @@ func TestWriteTaskStreamPayloadStopsBlockedWriteAtContextDeadline(t *testing.T) 
 	}
 }
 
+func TestTaskClientHTTP2StreamStopsOnCancellation(t *testing.T) {
+	streamOpened := make(chan struct{}, 1)
+	releaseServer := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseServer)
+		}
+	}()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodHead:
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+			writer.(http.Flusher).Flush()
+			scanner := bufio.NewScanner(request.Body)
+			if scanner.Scan() {
+				streamOpened <- struct{}{}
+			}
+			select {
+			case <-request.Context().Done():
+			case <-releaseServer:
+			}
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	client := NewTaskClient(TaskClientConfig{
+		MasterURL:  server.URL,
+		AgentToken: "token",
+		AgentID:    "edge-a",
+		HTTPClient: server.Client(),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	select {
+	case <-streamOpened:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("HTTP/2 task stream did not open")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseServer)
+		released = true
+		server.CloseClientConnections()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("HTTP/2 task stream did not stop after cancellation")
+	}
+}
+
 func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	updates := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -123,6 +123,10 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 	defer cancelSession()
 	pr, pw := io.Pipe()
 	defer pw.Close()
+	stopRequestBodyClose := context.AfterFunc(sessionCtx, func() {
+		_ = pw.CloseWithError(sessionCtx.Err())
+	})
+	defer stopRequestBodyClose()
 	var writeMu sync.Mutex
 	writeMessage := func(ctx context.Context, msg Message) error {
 		data, err := encodeMessage(msg)
@@ -162,6 +166,10 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	stopResponseBodyClose := context.AfterFunc(sessionCtx, func() {
+		_ = resp.Body.Close()
+	})
+	defer stopResponseBodyClose()
 
 	if resp.StatusCode != http.StatusOK {
 		_ = pw.Close()
