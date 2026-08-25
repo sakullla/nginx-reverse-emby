@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,6 +106,9 @@ func TestIntegrationHTTPGenerationCandidatePublishesNewSessionsWithoutInterrupti
 
 func TestIntegrationTaskClientReconnectsAfterOldHTTPGenerationIsForced(t *testing.T) {
 	streamOpened := make(chan struct{}, 8)
+	sseOpened := make(chan struct{}, 8)
+	var echoPings atomic.Bool
+	echoPings.Store(true)
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
 		switch request.Method {
 		case stdhttp.MethodHead:
@@ -115,26 +119,32 @@ func TestIntegrationTaskClientReconnectsAfterOldHTTPGenerationIsForced(t *testin
 				stdhttp.Error(writer, err.Error(), stdhttp.StatusInternalServerError)
 				return
 			}
-			reader := bufio.NewReader(request.Body)
-			line, err := reader.ReadString('\n')
-			if err != nil || !strings.Contains(line, `"type":"hello"`) {
-				stdhttp.Error(writer, "task stream hello is required", stdhttp.StatusBadRequest)
-				return
-			}
 			writer.Header().Set("Content-Type", "application/x-ndjson")
 			writer.WriteHeader(stdhttp.StatusOK)
 			writer.(stdhttp.Flusher).Flush()
+			reader := bufio.NewReader(request.Body)
+			line, err := reader.ReadString('\n')
+			if err != nil || !strings.Contains(line, `"type":"hello"`) {
+				return
+			}
 			streamOpened <- struct{}{}
 			for {
 				line, err = reader.ReadString('\n')
 				if err != nil {
 					return
 				}
-				if strings.Contains(line, `"type":"ping"`) {
+				if strings.Contains(line, `"type":"ping"`) && echoPings.Load() {
 					_, _ = io.WriteString(writer, "{\"type\":\"ping\",\"ping\":{\"sent_at\":\"2026-08-25T00:00:00Z\"}}\n")
 					writer.(stdhttp.Flusher).Flush()
 				}
 			}
+		case stdhttp.MethodGet:
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.WriteHeader(stdhttp.StatusOK)
+			_, _ = io.WriteString(writer, ": task-session-open\n\n")
+			writer.(stdhttp.Flusher).Flush()
+			sseOpened <- struct{}{}
+			<-request.Context().Done()
 		default:
 			stdhttp.NotFound(writer, request)
 		}
@@ -239,6 +249,13 @@ func TestIntegrationTaskClientReconnectsAfterOldHTTPGenerationIsForced(t *testin
 	case <-streamOpened:
 	case <-time.After(3 * time.Second):
 		t.Fatal("task client did not reconnect after oldest HTTP generation was forced")
+	}
+
+	echoPings.Store(false)
+	select {
+	case <-sseOpened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("task client did not fall back to SSE through the HTTP proxy after ping acknowledgements stopped")
 	}
 }
 

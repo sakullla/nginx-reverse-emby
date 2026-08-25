@@ -323,8 +323,12 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		_ = session.Close()
 	}()
 
-	if err := d.readTaskStreamUpdates(r, agent.ID, session); err != nil && sessionCtx.Err() == nil {
-		log.Printf("[tasks] stream ended for agent %q: %v", agent.ID, err)
+	if err := d.readTaskStreamUpdates(r, agent.ID, session); sessionCtx.Err() == nil {
+		if err == nil {
+			log.Printf("[tasks] stream request body reached EOF for agent %q", agent.ID)
+		} else {
+			log.Printf("[tasks] stream ended for agent %q: %v", agent.ID, err)
+		}
 	}
 }
 
