@@ -487,10 +487,10 @@ func NewPKITaskSessionCloser(tasks *TaskService) (*PKITaskSessionCloser, error) 
 func (c *PKITaskSessionCloser) CloseRevokedPKISessions(ctx context.Context, commit PKIRevocationCommit) error {
 	var closeErr error
 	seen := make(map[string]struct{})
-	targets := make([]string, 0, len(commit.ControlSessionTargets)+len(commit.RelaySessionTargets))
-	targets = append(targets, commit.ControlSessionTargets...)
-	targets = append(targets, commit.RelaySessionTargets...)
-	for _, agentID := range targets {
+	// TaskService owns only authenticated control streams. Relay session targets
+	// converge through the relay data plane and must never fence a still-valid
+	// Agent control token.
+	for _, agentID := range commit.ControlSessionTargets {
 		agentID = strings.TrimSpace(agentID)
 		if agentID == "" {
 			continue

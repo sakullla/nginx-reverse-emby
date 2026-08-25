@@ -293,13 +293,14 @@ func (s *PKIRevocationService) ReconcilePendingConvergence(ctx context.Context, 
 				serials = append(serials, certificate.SerialHex)
 			}
 		}
+		controlTargets, relayTargets := recoveredPKIRevocationSessionTargets(identity)
 		commit := PKIRevocationCommit{
 			Facts: PKIRevocationFacts{
 				PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch,
 				SecurityRevision: persisted.SecurityRevision, IdentityID: identity.ID, IdentityKind: identity.Kind, RevokedSerials: serials,
 			},
 			Snapshot: signed, IdentityRevoked: true, CertificatesRevoked: len(serials),
-			ControlSessionTargets: []string{identity.AgentID}, RelaySessionTargets: []string{identity.AgentID},
+			ControlSessionTargets: controlTargets, RelaySessionTargets: relayTargets,
 			ConvergenceJobID: job.ID,
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, s.convergence)
@@ -309,6 +310,18 @@ func (s *PKIRevocationService) ReconcilePendingConvergence(ctx context.Context, 
 		result = errors.Join(result, convergenceErr, recordErr)
 	}
 	return result
+}
+
+func recoveredPKIRevocationSessionTargets(identity storage.PKIIdentityRow) (control, relay []string) {
+	agentID := strings.TrimSpace(identity.AgentID)
+	if agentID == "" {
+		return nil, nil
+	}
+	relay = []string{agentID}
+	if identity.Kind == storage.PKIIdentityKindAgent {
+		control = []string{agentID}
+	}
+	return control, relay
 }
 
 func signedPKISecuritySnapshotFromStorage(snapshot storage.PKISecuritySnapshot) PKISignedSecuritySnapshot {
