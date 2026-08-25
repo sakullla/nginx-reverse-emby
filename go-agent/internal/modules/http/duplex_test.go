@@ -165,3 +165,72 @@ func TestServerFlushesStreamingHeadersBeforeFirstBody(t *testing.T) {
 		t.Fatal("proxy withheld streaming response headers until the first body write")
 	}
 }
+
+func TestServerStreamsHTTP2ResponseBeforeRequestBodyEOF(t *testing.T) {
+	releaseBackend := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := http.NewResponseController(writer).EnableFullDuplex(); err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if _, err := bufio.NewReader(request.Body).ReadString('\n'); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(writer, "{\"type\":\"ready\"}\n")
+		writer.(http.Flusher).Flush()
+		select {
+		case <-request.Context().Done():
+		case <-releaseBackend:
+		}
+	}))
+	defer backend.Close()
+	defer close(releaseBackend)
+
+	proxy := httptest.NewUnstartedServer(NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		FrontendURL: "http://panel.example",
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
+	}}}))
+	proxy.EnableHTTP2 = true
+	proxy.StartTLS()
+	defer proxy.Close()
+
+	requestBody, requestWriter := io.Pipe()
+	defer requestWriter.Close()
+	request, err := http.NewRequest(http.MethodPost, proxy.URL+"/api/agents/task-stream", requestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "panel.example"
+	responseCh := make(chan *http.Response, 1)
+	errorCh := make(chan error, 1)
+	go func() {
+		response, requestErr := proxy.Client().Do(request)
+		if requestErr != nil {
+			errorCh <- requestErr
+			return
+		}
+		responseCh <- response
+	}()
+	if _, err := io.WriteString(requestWriter, "{\"type\":\"hello\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errorCh:
+		t.Fatalf("HTTP/2 stream request failed: %v", err)
+	case response := <-responseCh:
+		defer response.Body.Close()
+		line, err := bufio.NewReader(response.Body).ReadString('\n')
+		if err != nil {
+			t.Fatalf("read HTTP/2 streaming response: %v", err)
+		}
+		if line != "{\"type\":\"ready\"}\n" {
+			t.Fatalf("HTTP/2 streaming response = %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		_ = requestWriter.CloseWithError(io.ErrClosedPipe)
+		t.Fatal("proxy withheld HTTP/2 response until the streaming request body closed")
+	}
+}
