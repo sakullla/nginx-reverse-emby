@@ -243,22 +243,26 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 	sessionCtx, cancelSession := context.WithCancel(r.Context())
 	defer cancelSession()
 	session := newSSETaskSession(w, flusher, cancelSession)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
 		AgentID:    agent.ID,
-		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
+		SessionID:  sessionID,
 		Session:    session,
 		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
+		log.Printf("[tasks] register SSE session failed agent=%q session=%q: %v", agent.ID, sessionID, err)
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
 		return
 	}
+	log.Printf("[tasks] registered SSE session agent=%q session=%q", agent.ID, sessionID)
 	defer func() {
 		d.TaskService.UnregisterSession(agent.ID, session)
 		_ = session.Close()
+		log.Printf("[tasks] unregistered SSE session agent=%q session=%q", agent.ID, sessionID)
 	}()
 
 	fmt.Fprintf(w, ": task-session-open %s\n\n", time.Now().UTC().Format(time.RFC3339))
@@ -303,6 +307,7 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 	defer cancelSession()
 	r = r.WithContext(sessionCtx)
 	session := newNDJSONTaskSession(w, flusher, cancelSession, r.Body)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -310,17 +315,19 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 	flusher.Flush()
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
 		AgentID:    agent.ID,
-		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
+		SessionID:  sessionID,
 		Session:    session,
 		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
-		log.Printf("[tasks] register stream failed for agent %q: %v", agent.ID, err)
+		log.Printf("[tasks] register stream failed agent=%q session=%q: %v", agent.ID, sessionID, err)
 		_ = session.Close()
 		return
 	}
+	log.Printf("[tasks] registered stream session agent=%q session=%q", agent.ID, sessionID)
 	defer func() {
 		d.TaskService.UnregisterSession(agent.ID, session)
 		_ = session.Close()
+		log.Printf("[tasks] unregistered stream session agent=%q session=%q", agent.ID, sessionID)
 	}()
 
 	if err := d.readTaskStreamUpdates(r, agent.ID, session); sessionCtx.Err() == nil {
