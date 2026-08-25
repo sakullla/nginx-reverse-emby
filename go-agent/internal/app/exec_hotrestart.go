@@ -62,6 +62,11 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	if err := process.TransferAuthority(activationCtx); err != nil {
 		return abort(fmt.Errorf("transfer hot restart authority: %w", err))
 	}
+	// Authority transfer makes the child the only control-plane owner. Stop
+	// this process's TaskClient before waiting for data-plane drain; otherwise
+	// old and new workers replace each other's authenticated task session for
+	// the entire drain window.
+	a.stopTaskClient()
 	ctx := a.hotRestartContext()
 	if a.hotRestartDrain != nil {
 		if err := a.hotRestartDrain(ctx, identity); err != nil && !errors.Is(err, context.Canceled) {
@@ -78,7 +83,6 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	// stable supervisor while every authoritative hot-restart child remains a
 	// replaceable worker. Intermediate children exit after their own handoff,
 	// preventing parent/child/grandchild chains from accumulating.
-	a.stopTaskClient()
 	a.closeLocalRuntimes()
 	journalPath := filepath.Join(a.cfg.DataDir, "hot-restart", "authority.json")
 	supervise := a.hotRestartSupervise

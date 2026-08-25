@@ -99,6 +99,10 @@ func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testi
 	var order []string
 	process := &recordingHotRestartProcess{order: &order}
 	app := &App{cfg: Config{DataDir: t.TempDir()}, store: store, runCtx: t.Context()}
+	taskDone := make(chan struct{})
+	close(taskDone)
+	app.taskRunCancel = func() { order = append(order, "task-stop") }
+	app.taskRunDone = taskDone
 	app.hotRestartStart = func(_ context.Context, launch hotrestart.Launch) (hotRestartProcess, error) {
 		order = append(order, "start")
 		if launch.Binary != "/staged/nre-agent" || launch.Identity.Revision != 18 || launch.Identity.GenerationID != "runtime-generation-18" ||
@@ -119,7 +123,7 @@ func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testi
 	if !errors.Is(err, core.ErrRestartRequested) {
 		t.Fatalf("hotRestartReplacement() error = %v, want restart requested", err)
 	}
-	if want := []string{"start", "activate", "authority", "drain", "wait"}; !reflect.DeepEqual(order, want) {
+	if want := []string{"start", "activate", "authority", "task-stop", "drain", "wait"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("replacement order = %v, want %v", order, want)
 	}
 }
