@@ -35,6 +35,27 @@ func TestEligibleRequiresScopedRevocableHandleGrant(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDirectoryBindingIsWritableWorkspaceRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	binding := WorkspaceDirectoryBinding(root)
+	if binding.HostPath != filepath.Clean(root) || binding.GuestPath != filepath.Clean(root) || binding.ReadOnly {
+		t.Fatalf("workspace binding = %+v", binding)
+	}
+}
+
+func TestGuestEnvironmentIncludesDockerAppWorkDir(t *testing.T) {
+	root := filepath.Clean(t.TempDir())
+	env := guestEnvironment(root)
+	want := []string{
+		CLIEnv + "=" + guestCLIPath,
+		EndpointEnv + "=unix:" + guestEndpointPath,
+		WorkDirEnv + "=" + root,
+	}
+	if !reflect.DeepEqual(env, want) {
+		t.Fatalf("guest environment = %q want %q", env, want)
+	}
+}
+
 func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 	allowed := [][]string{
 		{"version", "--format", "{{.Server.Version}}"},

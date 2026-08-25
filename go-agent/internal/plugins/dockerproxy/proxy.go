@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 )
 
 const (
@@ -28,6 +29,7 @@ const (
 	EndpointEnv          = "NRE_PLUGIN_DOCKER_PROXY_ENDPOINT"
 	CLIEnv               = "NRE_PLUGIN_DOCKER_CLI"
 	CookieFileEnv        = "NRE_PLUGIN_COOKIE_FILE"
+	WorkDirEnv           = "NRE_DOCKER_APP_WORKDIR"
 	guestCLIPath         = "/run/nre-plugin/docker"
 	guestEndpointPath    = "/run/nre-plugin/docker-proxy.sock"
 	proxyPath            = "/v1/exec"
@@ -80,6 +82,15 @@ func Eligible(grants []model.PluginGrantProjection) bool {
 	return false
 }
 
+func WorkspaceDirectoryBinding(workspaceRoot string) pluginprocess.DirectoryBinding {
+	path := filepath.Clean(strings.TrimSpace(workspaceRoot))
+	return pluginprocess.DirectoryBinding{HostPath: path, GuestPath: path, ReadOnly: false}
+}
+
+func guestEnvironment(workspaceRoot string) []string {
+	return []string{CLIEnv + "=" + guestCLIPath, EndpointEnv + "=unix:" + guestEndpointPath, WorkDirEnv + "=" + workspaceRoot}
+}
+
 func Start(config Config) ([]string, func() error, error) {
 	if runtime.GOOS != "linux" {
 		return nil, nil, errors.New("Docker plugin command proxy is available only on Linux")
@@ -92,6 +103,11 @@ func Start(config Config) ([]string, func() error, error) {
 	}
 	if err := os.MkdirAll(workspaceRoot, 0o700); err != nil {
 		return nil, nil, err
+	}
+	if config.SandboxUID != 0 {
+		if err := os.Chown(workspaceRoot, config.SandboxUID, config.SandboxUID); err != nil {
+			return nil, nil, err
+		}
 	}
 	helper := strings.TrimSpace(config.HelperExecutable)
 	if helper == "" {
@@ -157,7 +173,7 @@ func Start(config Config) ([]string, func() error, error) {
 		})
 		return closeErr
 	}
-	return []string{CLIEnv + "=" + guestCLIPath, EndpointEnv + "=unix:" + guestEndpointPath}, closeProxy, nil
+	return guestEnvironment(workspaceRoot), closeProxy, nil
 }
 
 type handler struct {

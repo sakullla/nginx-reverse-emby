@@ -610,11 +610,12 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	redeemer := h.secretRedeemer()
 	var security attemptSecurity
 	var err error
+	dockerProxy := dockerproxy.Eligible(candidate.Grants)
 	if h.provision != nil {
 		security, err = h.provision(filepath.Dir(candidate.Process.Executable), candidate.Dial)
 	} else {
 		identity := ""
-		if len(candidate.Process.Security.DirectoryBindings) > 0 {
+		if len(candidate.Process.Security.DirectoryBindings) > 0 || dockerProxy {
 			identity = candidate.InstanceID
 		}
 		security, err = provisionAttemptSecurityForIdentity(filepath.Dir(candidate.Process.Executable), candidate.Dial, identity)
@@ -632,13 +633,14 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	if attempt == nil {
 		return nil, errors.New("RPC plugin attempt security has no cleanup owner")
 	}
-	if dockerproxy.Eligible(candidate.Grants) {
+	if dockerProxy {
+		workspaceRoot := filepath.Join(h.dockerProxyRoot, candidate.InstanceID)
 		environment, closeProxy, proxyErr := dockerproxy.Start(dockerproxy.Config{
 			EndpointDirectory: security.endpointDirectory,
 			EndpointRoot:      security.endpointRoot,
 			Cookie:            security.dial.Cookie,
 			SandboxUID:        security.sandboxUID,
-			WorkspaceRoot:     filepath.Join(h.dockerProxyRoot, candidate.InstanceID),
+			WorkspaceRoot:     workspaceRoot,
 			Runner:            h.dockerRunner,
 		})
 		if proxyErr != nil {
@@ -646,6 +648,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		}
 		security.environment = append(security.environment, environment...)
 		candidate.Process.Security.AllowProcessExec = true
+		candidate.Process.Security.DirectoryBindings = append(candidate.Process.Security.DirectoryBindings, dockerproxy.WorkspaceDirectoryBinding(workspaceRoot))
 		baseCleanup := attempt.cleanup
 		attempt.cleanup = func() error { return errors.Join(closeProxy(), baseCleanup()) }
 	}
