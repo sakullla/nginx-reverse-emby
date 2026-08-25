@@ -308,11 +308,22 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 	r = r.WithContext(sessionCtx)
 	session := newNDJSONTaskSession(w, flusher, cancelSession, r.Body)
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	scanner := newTaskStreamScanner(r.Body)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			log.Printf("[tasks] read stream hello failed agent=%q session=%q: %v", agent.ID, sessionID, err)
+		}
+		writeJSON(w, http.StatusBadRequest, errorPayload("task stream hello is required"))
+		return
+	}
+	var hello taskStreamMessage
+	if err := json.Unmarshal([]byte(strings.TrimSpace(scanner.Text())), &hello); err != nil || hello.Type != "hello" {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid task stream hello"))
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
 		AgentID:    agent.ID,
 		SessionID:  sessionID,
@@ -323,14 +334,17 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		_ = session.Close()
 		return
 	}
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 	log.Printf("[tasks] registered stream session agent=%q session=%q", agent.ID, sessionID)
 	defer func() {
 		d.TaskService.UnregisterSession(agent.ID, session)
+		log.Printf("[tasks] unregistering stream session agent=%q session=%q", agent.ID, sessionID)
 		_ = session.Close()
 		log.Printf("[tasks] unregistered stream session agent=%q session=%q", agent.ID, sessionID)
 	}()
 
-	if err := d.readTaskStreamUpdates(r, agent.ID, session); sessionCtx.Err() == nil {
+	if err := d.readTaskStreamUpdatesFromScanner(r, scanner, agent.ID, session); sessionCtx.Err() == nil {
 		if err == nil {
 			log.Printf("[tasks] stream request body reached EOF for agent %q", agent.ID)
 		} else {
@@ -340,8 +354,16 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 }
 
 func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string, session *ndjsonTaskSession) error {
-	scanner := bufio.NewScanner(r.Body)
+	return d.readTaskStreamUpdatesFromScanner(r, newTaskStreamScanner(r.Body), agentID, session)
+}
+
+func newTaskStreamScanner(body io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxTaskStreamLineBytes)
+	return scanner
+}
+
+func (d Dependencies) readTaskStreamUpdatesFromScanner(r *http.Request, scanner *bufio.Scanner, agentID string, session *ndjsonTaskSession) error {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
