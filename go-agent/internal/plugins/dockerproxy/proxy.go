@@ -23,19 +23,20 @@ import (
 )
 
 const (
-	RequiredGrant        = "service.revocable-resource-handle"
-	RequiredResourceKind = "docker-compose"
-	RequiredResourceID   = "managed"
-	EndpointEnv          = "NRE_PLUGIN_DOCKER_PROXY_ENDPOINT"
-	CLIEnv               = "NRE_PLUGIN_DOCKER_CLI"
-	CookieFileEnv        = "NRE_PLUGIN_COOKIE_FILE"
-	WorkDirEnv           = "NRE_DOCKER_APP_WORKDIR"
-	guestCLIPath         = "/run/nre-plugin/docker"
-	guestEndpointPath    = "/run/nre-plugin/docker-proxy.sock"
-	proxyPath            = "/v1/exec"
-	credentialHeader     = "X-NRE-Docker-Proxy-Credential"
-	maxPayloadBytes      = 3 << 20
-	maxOutputBytes       = 1 << 20
+	RequiredGrant            = "service.revocable-resource-handle"
+	RequiredResourceKind     = "docker-compose"
+	RequiredResourceID       = "managed"
+	EndpointEnv              = "NRE_PLUGIN_DOCKER_PROXY_ENDPOINT"
+	CLIEnv                   = "NRE_PLUGIN_DOCKER_CLI"
+	CookieFileEnv            = "NRE_PLUGIN_COOKIE_FILE"
+	WorkDirEnv               = "NRE_DOCKER_APP_WORKDIR"
+	guestCLIPath             = "/run/nre-plugin/docker"
+	guestEndpointPath        = "/run/nre-plugin/docker-proxy.sock"
+	proxyPath                = "/v1/exec"
+	credentialHeader         = "X-NRE-Docker-Proxy-Credential"
+	maxPayloadBytes          = 3 << 20
+	maxOutputBytes           = 1 << 20
+	workspaceTombstonePrefix = "-workspace-gc-"
 )
 
 type Request struct {
@@ -102,6 +103,13 @@ func Start(config Config) ([]string, func() error, error) {
 		return nil, nil, errors.New("Docker plugin command proxy configuration is invalid")
 	}
 	if err := os.MkdirAll(workspaceRoot, 0o700); err != nil {
+		return nil, nil, err
+	}
+	workspaceInfo, err := os.Lstat(workspaceRoot)
+	if err != nil || !workspaceInfo.IsDir() || workspaceInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, errors.New("Docker plugin workspace root must be a real directory")
+	}
+	if err := cleanupWorkspaceTombstones(workspaceRoot); err != nil {
 		return nil, nil, err
 	}
 	if config.SandboxUID != 0 {
@@ -204,6 +212,14 @@ func (handler *handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		writeResponse(writer, http.StatusBadRequest, Response{Error: "Docker command proxy request is invalid"})
 		return
 	}
+	if workspaceRemoveRequest(input.Args) {
+		if err := handler.removeWorkspace(input); err != nil {
+			writeResponse(writer, http.StatusBadRequest, Response{Error: err.Error()})
+			return
+		}
+		writeResponse(writer, http.StatusOK, Response{})
+		return
+	}
 	dir, err := handler.prepare(input)
 	if err != nil {
 		writeResponse(writer, http.StatusBadRequest, Response{Error: err.Error()})
@@ -222,6 +238,73 @@ func (handler *handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result.Error = boundedError(runErr)
 	}
 	writeResponse(writer, http.StatusOK, result)
+}
+
+func (handler *handler) removeWorkspace(input Request) error {
+	if err := validateArgs(input.Args); err != nil {
+		return err
+	}
+	if !workspaceRemoveRequest(input.Args) || input.Compose != "" || input.Env != "" || !validIdentity(input.AppID) {
+		return errors.New("Docker workspace removal request is invalid")
+	}
+	root, err := filepath.Abs(handler.workspaceRoot)
+	if err != nil || root == string(filepath.Separator) {
+		return errors.New("Docker workspace root is invalid")
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Docker workspace root is not a managed directory")
+	}
+	target := filepath.Join(root, input.AppID)
+	if filepath.Dir(target) != root {
+		return errors.New("Docker compose workspace escapes the managed root")
+	}
+	targetInfo, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !targetInfo.IsDir() || targetInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Docker compose workspace is not a managed directory")
+	}
+	tombstone, err := os.MkdirTemp(root, workspaceTombstonePrefix)
+	if err != nil {
+		return errors.New("Docker compose workspace cleanup could not be prepared")
+	}
+	if err := os.Remove(tombstone); err != nil {
+		return errors.New("Docker compose workspace cleanup could not be prepared")
+	}
+	if err := os.Rename(target, tombstone); err != nil {
+		return errors.New("Docker compose workspace cleanup could not take ownership")
+	}
+	if err := os.RemoveAll(tombstone); err != nil {
+		restoreErr := os.Rename(tombstone, target)
+		return errors.Join(errors.New("Docker compose workspace cleanup failed"), restoreErr)
+	}
+	return nil
+}
+
+func workspaceRemoveRequest(args []string) bool {
+	return len(args) == 2 && args[0] == "workspace" && args[1] == "remove"
+}
+
+func cleanupWorkspaceTombstones(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), workspaceTombstonePrefix) {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if filepath.Dir(path) != root {
+			return errors.New("Docker workspace tombstone escapes the managed root")
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return errors.New("Docker workspace tombstone cleanup failed")
+		}
+	}
+	return nil
 }
 
 func (handler *handler) prepare(input Request) (string, error) {
@@ -294,6 +377,10 @@ func validateArgs(args []string) error {
 			return nil
 		}
 		if len(args) == 4 && args[1] == "logs" && args[2] == "--no-color" && validIdentity(args[3]) {
+			return nil
+		}
+	case "workspace":
+		if workspaceRemoveRequest(args) {
 			return nil
 		}
 	case "image":
@@ -413,29 +500,31 @@ func RunCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	request := Request{Args: append([]string(nil), args...)}
-	if len(args) > 0 && args[0] == "compose" {
+	if len(args) > 0 && (args[0] == "compose" || args[0] == "workspace") {
 		cwd, err := os.Getwd()
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		request.AppID = filepath.Base(cwd)
-		for _, name := range []string{"compose.yaml", "docker-compose.yml", "docker-compose.yaml"} {
-			payload, readErr := os.ReadFile(filepath.Join(cwd, name))
-			if readErr == nil {
-				request.Compose = string(payload)
-				break
+		if args[0] == "compose" {
+			for _, name := range []string{"compose.yaml", "docker-compose.yml", "docker-compose.yaml"} {
+				payload, readErr := os.ReadFile(filepath.Join(cwd, name))
+				if readErr == nil {
+					request.Compose = string(payload)
+					break
+				}
+				if !errors.Is(readErr, os.ErrNotExist) {
+					_, _ = fmt.Fprintln(stderr, readErr)
+					return 1
+				}
 			}
-			if !errors.Is(readErr, os.ErrNotExist) {
+			if environment, readErr := os.ReadFile(filepath.Join(cwd, ".env")); readErr == nil {
+				request.Env = string(environment)
+			} else if !errors.Is(readErr, os.ErrNotExist) {
 				_, _ = fmt.Fprintln(stderr, readErr)
 				return 1
 			}
-		}
-		if environment, readErr := os.ReadFile(filepath.Join(cwd, ".env")); readErr == nil {
-			request.Env = string(environment)
-		} else if !errors.Is(readErr, os.ErrNotExist) {
-			_, _ = fmt.Fprintln(stderr, readErr)
-			return 1
 		}
 	}
 	payload, err := json.Marshal(request)

@@ -1,8 +1,12 @@
 package dockerproxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,6 +65,7 @@ func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 		{"version", "--format", "{{.Server.Version}}"},
 		{"compose", "up", "-d"},
 		{"compose", "logs", "--no-color", "web"},
+		{"workspace", "remove"},
 		{"image", "inspect", "--format", "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}", "nginx:latest"},
 		{"buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", "nginx:latest"},
 		{"manifest", "inspect", "--verbose", "nginx:latest"},
@@ -81,6 +86,102 @@ func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 		if err := validateArgs(args); err == nil {
 			t.Fatalf("validateArgs(%q) succeeded", args)
 		}
+	}
+}
+
+func TestHandlerRemovesOnlyManagedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	managed := filepath.Join(root, "media")
+	other := filepath.Join(root, "other")
+	for _, path := range []string{managed, other} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := &handler{workspaceRoot: root, runner: &recordingRunner{}}
+	request := Request{Args: []string{"workspace", "remove"}, AppID: "media"}
+	if err := handler.removeWorkspace(request); err != nil {
+		t.Fatalf("remove workspace: %v", err)
+	}
+	if _, err := os.Stat(managed); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed workspace still exists: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("sibling workspace was removed: %v", err)
+	}
+	if err := handler.removeWorkspace(request); err != nil {
+		t.Fatalf("idempotent remove workspace: %v", err)
+	}
+	if err := handler.removeWorkspace(Request{Args: request.Args, AppID: "other", Compose: "services: {}"}); err == nil {
+		t.Fatal("workspace remove accepted compose content")
+	}
+}
+
+func TestHandlerRejectsSymlinkWorkspaceRemoval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is not reliably available on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "media")); err != nil {
+		t.Fatal(err)
+	}
+	handler := &handler{workspaceRoot: root, runner: &recordingRunner{}}
+	if err := handler.removeWorkspace(Request{Args: []string{"workspace", "remove"}, AppID: "media"}); err == nil {
+		t.Fatal("workspace remove followed a symlink")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside directory changed: %v", err)
+	}
+}
+
+func TestHandlerServesWorkspaceRemovalWithoutDocker(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "media")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	handler := &handler{cookie: "secret", workspaceRoot: root, runner: runner}
+	payload, err := json.Marshal(Request{Args: []string{"workspace", "remove"}, AppID: "media"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, proxyPath, bytes.NewReader(payload))
+	request.Header.Set(credentialHeader, "secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace remove status=%d body=%s", response.Code, response.Body.String())
+	}
+	if runner.args != nil {
+		t.Fatalf("workspace remove invoked Docker: %q", runner.args)
+	}
+	if _, err := os.Stat(workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace still exists: %v", err)
+	}
+}
+
+func TestCleanupWorkspaceTombstonesKeepsApplications(t *testing.T) {
+	root := t.TempDir()
+	tombstone := filepath.Join(root, workspaceTombstonePrefix+"abandoned")
+	application := filepath.Join(root, "media")
+	for _, path := range []string{tombstone, application} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanupWorkspaceTombstones(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tombstone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tombstone still exists: %v", err)
+	}
+	if _, err := os.Stat(application); err != nil {
+		t.Fatalf("application workspace was removed: %v", err)
 	}
 }
 
