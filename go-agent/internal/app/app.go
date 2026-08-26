@@ -70,6 +70,7 @@ type App struct {
 	relayTunnelCredentials modulerelay.TunnelCredentialProvider
 	store                  core.Store
 	updater                Updater
+	packageStages          *core.PackageStageCoordinator
 	runtime                *core.Runtime
 	taskClient             *control.TaskClient
 	channelManager         *modulechannel.Manager
@@ -575,6 +576,7 @@ func newAppWithAllDeps(
 		store:          st,
 		syncClient:     client,
 		updater:        updater,
+		packageStages:  core.NewPackageStageCoordinator(),
 		taskClient:     taskClient,
 		runCtx:         context.Background(),
 		processStreams: ingress.NewProcessStreamRegistry(),
@@ -1082,6 +1084,10 @@ func (a *App) GenerationDrainSnapshot() model.GenerationDrainSnapshot {
 
 func (a *App) closeLocalRuntimes() error {
 	var errs []error
+	if a.packageStages != nil {
+		a.packageStages.Close()
+		a.packageStages = nil
+	}
 	if a.channelManager != nil {
 		if err := a.channelManager.Close(); err != nil {
 			errs = append(errs, err)

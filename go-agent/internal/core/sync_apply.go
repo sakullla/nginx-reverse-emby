@@ -67,6 +67,9 @@ func (c *SyncController) performLegacySyncPlan(ctx context.Context, plan SyncPla
 		return c.recordRuntimeError(err)
 	}
 	if err := c.handlePendingUpdate(ctx, persistedSnapshot); err != nil {
+		if errors.Is(err, errPackageStagePending) {
+			return c.clearLastSyncErrorAfterSuccessfulSync()
+		}
 		return err
 	}
 

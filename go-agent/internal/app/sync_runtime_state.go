@@ -11,6 +11,7 @@ func (a *App) syncController() *core.SyncController {
 		Runtime:              a.runtime,
 		SyncClient:           a.relayMTLSSyncClient(),
 		Updater:              a.updater,
+		PackageStages:        a.packageStages,
 		Traffic:              a.trafficReporter(),
 		HostMetrics:          a.hostMetricsReporter(),
 		CertReports:          a.certReports,

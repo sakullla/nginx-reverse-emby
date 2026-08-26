@@ -26,8 +26,139 @@ import (
 	"reflect"
 
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+type slowPackageSyncClient struct {
+	snapshot Snapshot
+	calls    atomic.Int32
+}
+
+func (c *slowPackageSyncClient) Sync(context.Context, SyncRequest) (Snapshot, error) {
+	c.calls.Add(1)
+	return c.snapshot, nil
+}
+
+type blockingPackageUpdater struct {
+	started       chan struct{}
+	release       chan struct{}
+	startedOnce   sync.Once
+	stageCalls    atomic.Int32
+	activateCalls atomic.Int32
+}
+
+func (u *blockingPackageUpdater) Preflight(model.VersionPackage) error { return nil }
+
+func (u *blockingPackageUpdater) Stage(ctx context.Context, _ model.VersionPackage) (string, error) {
+	u.stageCalls.Add(1)
+	u.startedOnce.Do(func() { close(u.started) })
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-u.release:
+		return "staged/nre-agent", nil
+	}
+}
+
+func (u *blockingPackageUpdater) Activate(context.Context, string, string) error {
+	u.activateCalls.Add(1)
+	return core.ErrRestartRequested
+}
+
+func TestSlowPackageStageDoesNotBlockPeriodicHeartbeats(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSnapshot := Snapshot{
+		Revision: 7, DesiredVersion: "1.0.0",
+		Rules: []model.HTTPRule{{ID: 41}}, L4Rules: []model.L4Rule{{ID: 42}},
+		EgressProfiles: []model.EgressProfile{}, RelayListeners: []model.RelayListener{},
+		Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+		PluginPolicies: []model.PluginPolicy{}, PluginGenerations: []model.PluginGeneration{},
+		PluginDependencies: []model.PluginDependencyEdge{},
+	}
+	if err := store.SaveDesiredSnapshot(oldSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAppliedSnapshot(oldSnapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	packageSnapshot := oldSnapshot
+	packageSnapshot.Revision = 8
+	packageSnapshot.DesiredVersion = "2.0.0"
+	packageSnapshot.VersionPackage = &model.VersionPackage{
+		URL: "https://updates.example.test/nre-agent", SHA256: strings.Repeat("a", sha256.Size*2),
+		Platform: "linux-amd64", Filename: "nre-agent-linux-amd64", Size: 1024,
+	}
+	client := &slowPackageSyncClient{snapshot: packageSnapshot}
+	updater := &blockingPackageUpdater{started: make(chan struct{}), release: make(chan struct{})}
+	app := newAppWithAllDeps(Config{
+		DataDir: t.TempDir(), HeartbeatInterval: 5 * time.Millisecond,
+		RuntimePackageSHA256: strings.Repeat("b", sha256.Size*2),
+	}, store, client, updater, nil)
+	if err := app.runtime.Apply(t.Context(), Snapshot{}, oldSnapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.runControlLoop(runCtx, oldSnapshot) }()
+
+	select {
+	case <-updater.started:
+	case <-time.After(time.Second):
+		t.Fatal("package Stage did not start")
+	}
+	waitForAppCondition(t, time.Second, func() bool { return client.calls.Load() >= 4 })
+	if got := updater.stageCalls.Load(); got != 1 {
+		t.Fatalf("Stage calls during slow download = %d, want 1", got)
+	}
+	if got := updater.activateCalls.Load(); got != 0 {
+		t.Fatalf("Activate calls before package ready = %d, want 0", got)
+	}
+	applied, err := store.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Revision != oldSnapshot.Revision || app.runtime.ActiveSnapshot().Revision != oldSnapshot.Revision {
+		t.Fatalf("staging changed applied/runtime revision: durable=%d runtime=%d", applied.Revision, app.runtime.ActiveSnapshot().Revision)
+	}
+	if !reflect.DeepEqual(app.runtime.ActiveSnapshot().Rules, oldSnapshot.Rules) ||
+		!reflect.DeepEqual(app.runtime.ActiveSnapshot().L4Rules, oldSnapshot.L4Rules) {
+		t.Fatal("staging changed the active HTTP/L4 data plane")
+	}
+
+	close(updater.release)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("runControlLoop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ready package was not activated by a later heartbeat")
+	}
+	if got := updater.activateCalls.Load(); got != 1 {
+		t.Fatalf("Activate calls after package ready = %d, want 1", got)
+	}
+}
+
+func waitForAppCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
+}
 
 func TestNewWiresRPCHostAsPluginCaller(t *testing.T) {
 	t.Parallel()

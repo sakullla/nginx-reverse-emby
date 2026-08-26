@@ -53,6 +53,7 @@ type SyncController struct {
 	Runtime              *Runtime
 	SyncClient           SyncClient
 	Updater              Updater
+	PackageStages        *PackageStageCoordinator
 	Traffic              TrafficReporter
 	HostMetrics          HostMetricsReporter
 	CertReports          ManagedCertificateReporter

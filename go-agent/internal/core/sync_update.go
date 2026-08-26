@@ -15,10 +15,23 @@ func (c *SyncController) HandlePendingUpdate(ctx context.Context, snapshot model
 func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model.Snapshot) error {
 	pkg, pending := c.pendingUpdatePackage(snapshot)
 	if !pending {
+		if c.PackageStages != nil {
+			c.PackageStages.Cancel()
+		}
 		return nil
 	}
 	if err := c.preflightPendingUpdate(snapshot); err != nil {
 		return c.recordRuntimeError(err)
+	}
+	if c.PackageStages != nil {
+		err := c.PackageStages.Handle(ctx, c.Updater, *pkg, snapshot.DesiredVersion)
+		if errors.Is(err, errPackageStagePending) || errors.Is(err, ErrRestartRequested) {
+			return err
+		}
+		if err != nil {
+			return c.recordRuntimeError(err)
+		}
+		return ErrRestartRequested
 	}
 
 	stagedPath, err := c.Updater.Stage(ctx, *pkg)

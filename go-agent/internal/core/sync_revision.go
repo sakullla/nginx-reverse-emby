@@ -75,6 +75,12 @@ func (c *SyncController) performRevisionSyncPlan(
 		// a package-only heartbeat must be handled when there is no revision to
 		// apply or existing agents will never adopt control-plane upgrades.
 		updateErr := c.handlePendingUpdate(ctx, heartbeatSnapshot)
+		if errors.Is(updateErr, errPackageStagePending) {
+			if acknowledgementErr != nil {
+				return c.recordRuntimeError(acknowledgementErr)
+			}
+			return c.clearLastSyncErrorAfterSuccessfulSync()
+		}
 		if errors.Is(updateErr, ErrRestartRequested) {
 			if acknowledgementErr != nil {
 				c.recordRuntimeError(acknowledgementErr)
