@@ -29,7 +29,7 @@ const (
 	EndpointEnv              = "NRE_PLUGIN_DOCKER_PROXY_ENDPOINT"
 	CLIEnv                   = "NRE_PLUGIN_DOCKER_CLI"
 	CookieFileEnv            = "NRE_PLUGIN_COOKIE_FILE"
-	WorkDirEnv               = "NRE_APP_WORKDIR"
+	WorkDirEnv               = "NRE_PLUGIN_APP_WORKDIR"
 	guestCLIPath             = "/run/nre-plugin/docker"
 	guestEndpointPath        = "/run/nre-plugin/docker-proxy.sock"
 	proxyPath                = "/v1/exec"
