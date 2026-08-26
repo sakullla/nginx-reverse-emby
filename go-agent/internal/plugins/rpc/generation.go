@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
 	"sort"
 	"strings"
@@ -119,7 +120,7 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 			if required {
 				return nil, errors.Join(fmt.Errorf("required RPC plugin instance %q: host is unavailable", generation.InstanceID), transaction.Destroy(context.WithoutCancel(ctx)))
 			}
-			transaction.failOptionalCandidate(index, "prepare")
+			transaction.failOptionalCandidate(index, "prepare", errors.New("RPC plugin host is unavailable"))
 			continue
 		}
 		candidate, candidateErr := hostCandidateFromGeneration(generation, generationContext.ID())
@@ -127,7 +128,7 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 			if required {
 				return nil, errors.Join(fmt.Errorf("required RPC plugin instance %q: %w", generation.InstanceID, candidateErr), transaction.Destroy(context.WithoutCancel(ctx)))
 			}
-			transaction.failOptionalCandidate(index, "prepare")
+			transaction.failOptionalCandidate(index, "prepare", candidateErr)
 			continue
 		}
 		instance, prepareErr := host.PrepareCandidate(ctx, candidate)
@@ -135,7 +136,7 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 			if required {
 				return nil, errors.Join(fmt.Errorf("prepare required RPC plugin instance %q: %w", generation.InstanceID, prepareErr), transaction.Destroy(context.WithoutCancel(ctx)))
 			}
-			transaction.failOptionalCandidate(index, "prepare")
+			transaction.failOptionalCandidate(index, "prepare", prepareErr)
 			continue
 		}
 		transaction.candidates[index].instance = instance
@@ -218,7 +219,7 @@ func (t *generationTransaction) Ready(_ context.Context) error {
 				return errors.Join(fmt.Errorf("optional RPC plugin instance %q readiness: %w", candidate.spec.InstanceID, err), cleanupErr)
 			}
 			candidate.instance = nil
-			t.failOptionalCandidate(index, "readiness")
+			t.failOptionalCandidate(index, "readiness", err)
 		}
 	}
 	return nil
@@ -271,7 +272,7 @@ func (t *generationTransaction) PrepareGenerationPublication(ctx context.Context
 				return errors.Join(fmt.Errorf("activate optional RPC plugin instance %q: %w", candidate.spec.InstanceID, err), cleanupErr)
 			}
 			candidate.instance = nil
-			t.failOptionalCandidate(index, "activation")
+			t.failOptionalCandidate(index, "activation", err)
 			continue
 		}
 		instances = append(instances, candidate.instance)
@@ -481,7 +482,7 @@ func (t *generationTransaction) PluginRuntimeStatuses() []model.PluginRuntimeSta
 	return statuses
 }
 
-func (t *generationTransaction) failOptionalCandidate(index int, phase string) {
+func (t *generationTransaction) failOptionalCandidate(index int, phase string, cause error) {
 	if index < 0 || index >= len(t.candidates) {
 		return
 	}
@@ -501,6 +502,9 @@ func (t *generationTransaction) failOptionalCandidate(index int, phase string) {
 		ArtifactDigest: candidate.spec.Artifact.SHA256, ConfigVersion: candidate.spec.ConfigVersion, RuntimeKind: candidate.spec.Runtime.Kind,
 		State: state, Sequence: 1, ErrorCode: "rpc_" + phase + "_failed",
 		SafeDetail: "Optional RPC plugin candidate failed and was excluded from publication", Details: details, Budget: budget,
+	}
+	if cause != nil {
+		log.Printf("[plugin-rpc] optional candidate excluded plugin=%q instance=%q phase=%q err=%q", candidate.spec.PluginID, candidate.spec.InstanceID, phase, cause.Error())
 	}
 	candidate.failure = &status
 }
