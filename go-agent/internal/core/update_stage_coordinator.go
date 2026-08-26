@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -21,18 +20,21 @@ const (
 	packageStageFailed
 )
 
-type packageStageTarget struct {
-	URL            string
-	SHA256         string
-	Platform       string
-	Filename       string
-	Size           int64
-	DesiredVersion string
+// packageStageIdentity mirrors the immutable manifest identity. URL is only a
+// locator, while desired version is checked from the current heartbeat when a
+// ready path is activated.
+type packageStageIdentity struct {
+	Platform string
+	SHA256   string
+	Filename string
+	Size     int64
 }
 
 type packageStageAttempt struct {
-	target     packageStageTarget
+	identity   packageStageIdentity
 	cancel     context.CancelFunc
+	done       chan struct{}
+	discarded  bool
 	state      packageStageState
 	stagedPath string
 	err        error
@@ -67,7 +69,10 @@ func (c *PackageStageCoordinator) Handle(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	target := newPackageStageTarget(pkg, desiredVersion)
+	identity, err := newPackageStageIdentity(pkg)
+	if err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	if c.closed {
@@ -75,12 +80,28 @@ func (c *PackageStageCoordinator) Handle(
 		return context.Canceled
 	}
 	attempt := c.attempt
-	if attempt == nil || attempt.target != target {
-		if attempt != nil {
-			attempt.cancel()
+	if attempt != nil && (attempt.discarded || attempt.identity != identity) {
+		// Keep the canceled attempt installed until its worker closes done. This
+		// lets heartbeats remain non-blocking without overlapping Stage calls.
+		attempt.discarded = true
+		attempt.cancel()
+		select {
+		case <-attempt.done:
+			c.attempt = nil
+			attempt = nil
+		default:
+			c.mu.Unlock()
+			return errPackageStagePending
 		}
+	}
+	if attempt == nil {
 		stageCtx, cancel := context.WithCancel(ctx)
-		attempt = &packageStageAttempt{target: target, cancel: cancel, state: packageStageRunning}
+		attempt = &packageStageAttempt{
+			identity: identity,
+			cancel:   cancel,
+			done:     make(chan struct{}),
+			state:    packageStageRunning,
+		}
 		c.attempt = attempt
 		c.mu.Unlock()
 		go c.stage(stageCtx, updater, pkg, attempt)
@@ -133,11 +154,12 @@ func (c *PackageStageCoordinator) stage(
 	pkg model.VersionPackage,
 	attempt *packageStageAttempt,
 ) {
+	defer close(attempt.done)
 	stagedPath, err := updater.Stage(ctx, pkg)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if attempt.state != packageStageRunning {
+	if attempt.state != packageStageRunning || attempt.discarded {
 		return
 	}
 	if err != nil {
@@ -162,9 +184,15 @@ func (c *PackageStageCoordinator) Cancel() {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.attempt != nil {
-		c.attempt.cancel()
+	if c.attempt == nil {
+		return
+	}
+	c.attempt.discarded = true
+	c.attempt.cancel()
+	select {
+	case <-c.attempt.done:
 		c.attempt = nil
+	default:
 	}
 }
 
@@ -173,21 +201,35 @@ func (c *PackageStageCoordinator) Close() {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.closed = true
-	if c.attempt != nil {
-		c.attempt.cancel()
+	attempt := c.attempt
+	if attempt != nil {
+		attempt.discarded = true
+		attempt.cancel()
+	}
+	c.mu.Unlock()
+
+	if attempt != nil {
+		// Shutdown is the convergence boundary: temporary package resources may
+		// not outlive the process-local coordinator that owns their worker.
+		<-attempt.done
+	}
+	c.mu.Lock()
+	if c.attempt == attempt {
 		c.attempt = nil
 	}
+	c.mu.Unlock()
 }
 
-func newPackageStageTarget(pkg model.VersionPackage, desiredVersion string) packageStageTarget {
-	return packageStageTarget{
-		URL:            strings.TrimSpace(pkg.URL),
-		SHA256:         strings.ToLower(strings.TrimSpace(pkg.SHA256)),
-		Platform:       strings.ToLower(strings.TrimSpace(pkg.Platform)),
-		Filename:       strings.TrimSpace(pkg.Filename),
-		Size:           pkg.Size,
-		DesiredVersion: strings.TrimSpace(desiredVersion),
+func newPackageStageIdentity(pkg model.VersionPackage) (packageStageIdentity, error) {
+	manifest, err := versionPackageManifest(pkg, pkg.Platform)
+	if err != nil {
+		return packageStageIdentity{}, err
 	}
+	return packageStageIdentity{
+		Platform: manifest.Platform,
+		SHA256:   manifest.SHA256,
+		Filename: manifest.Filename,
+		Size:     manifest.Size,
+	}, nil
 }
