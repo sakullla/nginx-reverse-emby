@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build exhaustive && !integration
 
 package service
 
@@ -689,6 +689,9 @@ var serviceOwnerStoreTemplate struct {
 
 func newServiceOwnerStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed service scenarios run in the full test tier")
+	}
 	serviceOwnerStoreTemplate.once.Do(func() {
 		root, err := os.MkdirTemp("", "nre-service-owner-template-")
 		if err != nil {

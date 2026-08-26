@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build !fast && !integration
 
 package coordinator
 
@@ -53,6 +53,9 @@ func newTestCoordinatorWithClock(t *testing.T, store *storage.GormStore, clock *
 
 func newCoordinatorTestStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed coordinator scenarios run in the full test tier")
+	}
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
 	if err := ensureCoordinatorSQLiteFixture(dbPath); err != nil {
 		t.Fatal(err)

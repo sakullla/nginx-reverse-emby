@@ -3,31 +3,36 @@
 Run tests by module. The fast commands are:
 
 ```sh
-cd go-agent && go test -p=16 -short -count=1 -timeout=30s ./...
-cd panel/backend-go && go test -p=16 -short -count=1 -timeout=30s ./...
+cd go-agent && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/model ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/service ./internal/controlplane/storage
 cd panel/frontend && npm test
 ```
 
 Run the affected Go module's complete untagged tier before release:
 
 ```sh
-cd go-agent && go test -p=16 -count=1 -timeout=30s ./...
-cd panel/backend-go && go test -p=16 -count=1 -timeout=30s ./...
+cd go-agent && go test -p=16 -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/model ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -count=1 -timeout=30s ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/service ./internal/controlplane/storage
 ```
 
 Run the integration packages when changing persistence, certificate lifecycle, or process handoff:
 
 ```sh
-cd go-agent && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/platform ./pkg/acmeflow
-cd panel/backend-go && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./cmd/nre-control-plane ./internal/controlplane/coordinator ./internal/controlplane/cutover ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
+cd go-agent && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/http ./internal/modules/l4 ./pkg/acmeflow
+cd panel/backend-go && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./internal/controlplane/storage
 ```
 
-The frontend has one behavior suite rather than separate fast and full commands. The Go full tier includes tests that opt out under `testing.Short`. The integration tier selects only packages that own `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages. The cutover soak is Linux-only and runs in the scheduled CI integration tier.
+The frontend has one behavior suite rather than separate fast and full commands. The Go fast and full tiers use an explicit package manifest so packages with no canonical tests do not pay a test-binary link and startup cost. The `fast` tag also prevents full-tier SQLite and filesystem fixtures from being compiled into the fast binaries. The integration tier selects only packages that own canonical `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages.
 
-The canonical Go commands use 16 package workers so package compilation and
-execution overlap on developer and CI machines. Tests that own isolated
-temporary stores use `t.Parallel`; process environment, fixed-port, and shared
-router-state tests remain serial.
+Large compatibility matrices removed from the time-bounded tiers remain available for focused investigations with the `exhaustive` tag. They are not release gates and have no runtime SLA:
+
+```sh
+cd go-agent && go test -tags=exhaustive -count=1 ./...
+cd panel/backend-go && go test -tags=exhaustive -count=1 ./...
+cd panel/backend-go && go test -tags='exhaustive integration' -count=1 -run '^TestIntegration' ./internal/controlplane/storage
+```
+
+The canonical Go commands use 16 package workers so package compilation and execution overlap on developer and CI machines. Tests that own isolated temporary stores use `t.Parallel`; process environment, fixed-port, and shared router-state tests remain serial. On constrained machines, reduce `-p` to the logical CPU count; the package manifest, not oversubscription, is the primary speedup.
 
 ## Official Plugin Market
 
@@ -80,6 +85,8 @@ go test -tags=integration -count=1 ./...
 ```
 
 The harness builds the control-plane and agent integration-tag binaries, starts them below `t.TempDir()` on dynamically allocated loopback ports, and observes only public CLI, HTTP, listener, exit-status, and persisted-file boundaries. It owns the multi-process assertions for enrollment replay, remote/embedded identity separation, relay mTLS attacks and convergence, crash-safe generations, protected backup and migration, epoch fencing, cooperative single-active behavior, and the token-authenticated control-protocol boundary. Product binaries do not expose the harness clock or fault barriers in release builds.
+
+The product binaries are built once in parallel per harness process and shared read-only by all scenarios; per-test data and processes remain isolated. This standalone multi-process acceptance suite is not part of the 10-second package-integration SLA because product compilation and real process convergence are intentional parts of its contract.
 
 On POSIX systems, `scripts/test-internal-pki-e2e.sh` is only a convenience adapter: it resolves the repository root, changes to the standalone module, and `exec`s the canonical Go command. Windows runs the Go command directly. The scheduled and manually dispatched CI integration tier uses a separate Ubuntu job for this module; it is not added to the two-product-module matrix and does not share the Pebble Docker fixture.
 

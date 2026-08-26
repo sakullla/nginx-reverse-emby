@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build !fast && !integration
 
 package revision
 
@@ -15,6 +15,9 @@ import (
 
 func newRevisionTestStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed revision scenarios run in the full test tier")
+	}
 	store, err := newRevisionSQLiteStore(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)

@@ -1,3 +1,5 @@
+//go:build exhaustive && !integration
+
 package service
 
 import (

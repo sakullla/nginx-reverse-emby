@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build integration && !windows
 
 package app
 
@@ -63,7 +63,7 @@ func TestHotRestartListenerProcessHelper(t *testing.T) {
 	}
 }
 
-func TestHotRestartParentDrainPreservesChildRelayListener(t *testing.T) {
+func TestIntegrationHotRestartParentDrainPreservesChildRelayListener(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real hot restart process coverage is not a short test")
 	}

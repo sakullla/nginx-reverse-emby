@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build exhaustive && !integration
 
 package http
 
@@ -222,6 +222,9 @@ func newScopedAccessManager(t *testing.T) scopedAccess {
 
 func newHTTPAuthzStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed HTTP authorization scenarios run in the full test tier")
+	}
 	root := t.TempDir()
 	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local"})
 	if err != nil {

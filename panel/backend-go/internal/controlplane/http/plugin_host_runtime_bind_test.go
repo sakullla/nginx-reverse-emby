@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build !fast && !integration
 
 package http
 
@@ -18,6 +18,9 @@ import (
 
 func TestProductionPluginCapabilityManagerBindsTaskAndRuleServices(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("real SQLite and runtime host binding runs in the full test tier")
+	}
 	dataDir, err := os.MkdirTemp("", "nre-plugin-host-bind-")
 	if err != nil {
 		t.Fatal(err)

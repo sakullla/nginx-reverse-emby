@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build !fast && !integration
 
 package authz_test
 
@@ -227,6 +227,9 @@ func TestConsumeQuotaUsesStrictestPolicyAtomically(t *testing.T) {
 
 func TestAuthorizationPersistsAcrossReopenAndNestedGroupsFailClosed(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("SQLite reopen scenario runs in the full test tier")
+	}
 	root := t.TempDir()
 	open := func() *storage.GormStore {
 		t.Helper()
@@ -1003,6 +1006,9 @@ var securityStoreTemplate struct {
 
 func newSecurityStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed authorization scenarios run in the full test tier")
+	}
 	securityStoreTemplate.once.Do(func() {
 		root, err := os.MkdirTemp("", "nre-authz-template-")
 		if err != nil {

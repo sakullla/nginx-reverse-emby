@@ -73,6 +73,22 @@ type lockedBuffer struct {
 	b  bytes.Buffer
 }
 
+var sharedProducts struct {
+	once       sync.Once
+	root       string
+	controlBin string
+	agentBin   string
+	err        error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedProducts.root != "" {
+		_ = os.RemoveAll(sharedProducts.root)
+	}
+	os.Exit(code)
+}
+
 func (b *lockedBuffer) Write(value []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -230,29 +246,23 @@ func newTestHarness(t *testing.T, ctx context.Context) *testHarness {
 		t.Fatalf("resolve repository root: %v", err)
 	}
 	tempRoot := t.TempDir()
-	binDir := filepath.Join(tempRoot, "bin")
-	if err := os.MkdirAll(binDir, 0o700); err != nil {
-		t.Fatalf("create binary directory: %v", err)
-	}
-	suffix := ""
-	if runtime.GOOS == "windows" {
-		suffix = ".exe"
+	controlBin, agentBin, err := sharedProductBinaries(repoRoot)
+	if err != nil {
+		t.Fatal(err)
 	}
 	h := &testHarness{
 		t:             t,
 		ctx:           ctx,
 		repoRoot:      repoRoot,
 		tempRoot:      tempRoot,
-		controlBin:    filepath.Join(binDir, "nre-control-plane"+suffix),
-		agentBin:      filepath.Join(binDir, "nre-agent"+suffix),
+		controlBin:    controlBin,
+		agentBin:      agentBin,
 		panelToken:    randomSecret(t, "panel"),
 		registerToken: randomSecret(t, "register"),
 		client: &http.Client{Transport: &http.Transport{
 			DisableKeepAlives: true,
 		}, Timeout: 8 * time.Second},
 	}
-	h.buildProduct("panel/backend-go", "./cmd/nre-control-plane", h.controlBin)
-	h.buildProduct("go-agent", "./cmd/nre-agent", h.agentBin)
 	t.Cleanup(func() {
 		h.childrenMu.Lock()
 		children := append([]*childProcess(nil), h.children...)
@@ -264,24 +274,65 @@ func newTestHarness(t *testing.T, ctx context.Context) *testHarness {
 	return h
 }
 
-func (h *testHarness) buildProduct(module, pkg, output string) {
-	h.t.Helper()
-	goBinary, err := exec.LookPath("go")
-	if err != nil {
-		h.t.Fatalf("find Go executable: %v", err)
-	}
-	goBinary, err = filepath.Abs(goBinary)
-	if err != nil {
-		h.t.Fatalf("resolve Go executable: %v", err)
-	}
-	buildCtx, cancel := context.WithTimeout(h.ctx, 3*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(buildCtx, goBinary, "build", "-tags=integration", "-trimpath", "-o", output, pkg)
-	cmd.Dir = filepath.Join(h.repoRoot, filepath.FromSlash(module))
-	outputBytes, err := cmd.CombinedOutput()
-	if err != nil {
-		h.t.Fatalf("build %s: %v\n%s", module, err, sanitizeLog(string(outputBytes), h.panelToken, h.registerToken))
-	}
+func sharedProductBinaries(repoRoot string) (string, string, error) {
+	sharedProducts.once.Do(func() {
+		sharedProducts.root, sharedProducts.err = os.MkdirTemp("", "nre-internal-pki-products-")
+		if sharedProducts.err != nil {
+			return
+		}
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
+		}
+		sharedProducts.controlBin = filepath.Join(sharedProducts.root, "nre-control-plane"+suffix)
+		sharedProducts.agentBin = filepath.Join(sharedProducts.root, "nre-agent"+suffix)
+		goBinary, err := exec.LookPath("go")
+		if err != nil {
+			sharedProducts.err = fmt.Errorf("find Go executable: %w", err)
+			return
+		}
+		goBinary, err = filepath.Abs(goBinary)
+		if err != nil {
+			sharedProducts.err = fmt.Errorf("resolve Go executable: %w", err)
+			return
+		}
+
+		type buildSpec struct {
+			module string
+			pkg    string
+			output string
+		}
+		builds := []buildSpec{
+			{module: "panel/backend-go", pkg: "./cmd/nre-control-plane", output: sharedProducts.controlBin},
+			{module: "go-agent", pkg: "./cmd/nre-agent", output: sharedProducts.agentBin},
+		}
+		buildCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		var wait sync.WaitGroup
+		var errorsMu sync.Mutex
+		var buildErrors []string
+		for _, build := range builds {
+			build := build
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				cmd := exec.CommandContext(buildCtx, goBinary, "build", "-tags=integration", "-trimpath", "-o", build.output, build.pkg)
+				cmd.Dir = filepath.Join(repoRoot, filepath.FromSlash(build.module))
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					errorsMu.Lock()
+					buildErrors = append(buildErrors, fmt.Sprintf("build %s: %v\n%s", build.module, err, output))
+					errorsMu.Unlock()
+				}
+			}()
+		}
+		wait.Wait()
+		if len(buildErrors) != 0 {
+			sort.Strings(buildErrors)
+			sharedProducts.err = errors.New(strings.Join(buildErrors, "\n"))
+		}
+	})
+	return sharedProducts.controlBin, sharedProducts.agentBin, sharedProducts.err
 }
 
 func (h *testHarness) startControl(dataDir string) controlInstance {
