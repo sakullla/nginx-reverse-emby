@@ -29,6 +29,19 @@ type coordinatorActivation struct {
 	desiredVersion string
 }
 
+type coordinatorContextLifecycleUpdater struct {
+	stageContextDone chan (<-chan struct{})
+}
+
+func (u *coordinatorContextLifecycleUpdater) Stage(ctx context.Context, _ model.VersionPackage) (string, error) {
+	u.stageContextDone <- ctx.Done()
+	return "staged/context-lifecycle", nil
+}
+
+func (u *coordinatorContextLifecycleUpdater) Activate(context.Context, string, string) error {
+	return nil
+}
+
 func (u *coordinatorTestUpdater) Preflight(model.VersionPackage) error { return nil }
 
 func newCoordinatorTestUpdater(targets ...string) *coordinatorTestUpdater {
@@ -119,6 +132,26 @@ func TestPackageStageCoordinatorReusesCanonicalIdentityAcrossLocatorAndVersionCh
 	if got := updater.activations(); len(got) != 1 || got[0].stagedPath != "staged/"+oldURL || got[0].desiredVersion != "3.0.0" {
 		t.Fatalf("activations = %+v, want reused old locator staged path fenced by current version", got)
 	}
+}
+
+func TestPackageStageCoordinatorCancelsStageContextAfterWorkerExit(t *testing.T) {
+	updater := &coordinatorContextLifecycleUpdater{stageContextDone: make(chan (<-chan struct{}), 1)}
+	coordinator := NewPackageStageCoordinator()
+	pkg := coordinatorTestPackage("https://updates.example.test/context-agent", "f")
+
+	if err := coordinator.Ensure(t.Context(), updater, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
+	}
+	var stageContextDone <-chan struct{}
+	select {
+	case stageContextDone = <-updater.stageContextDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stage did not receive its child context")
+	}
+	waitForCoordinatorResult(t, func() error {
+		return coordinator.Ensure(t.Context(), updater, pkg)
+	}, nil)
+	waitForCoordinatorSignal(t, stageContextDone)
 }
 
 func TestPackageStageCoordinatorWaitsForCanceledWorkerBeforeReplacement(t *testing.T) {

@@ -223,6 +223,7 @@ func (c *PackageStageCoordinator) stage(
 	attempt *packageStageAttempt,
 ) {
 	defer close(attempt.done)
+	defer attempt.cancel()
 	stagedPath, err := updater.Stage(ctx, pkg)
 
 	c.mu.Lock()
