@@ -1497,10 +1497,15 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
-	snapshotDigest, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
+	// VersionPackage is a live overlay outside the immutable revision. Bind
+	// configuration to the durable snapshot when rematerialization drifted so
+	// the overlay still ships instead of failing the entire heartbeat.
+	versionPackage := snapshot.VersionPackage
+	snapshotDigest, snapshot, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
+	snapshot.VersionPackage = versionPackage
 	s.broadcastMonitorUpdate(ctx, row)
 	reply := HeartbeatReply{
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(snapshotMetadata.LastApplyStatus, "success"),
@@ -1544,9 +1549,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	return reply, nil
 }
 
-func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID string, snapshot storage.Snapshot) (string, error) {
+func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID string, snapshot storage.Snapshot) (string, storage.Snapshot, error) {
 	if snapshot.Revision <= 0 {
-		return "", nil
+		return "", heartbeatRevisionSnapshot(snapshot), nil
 	}
 	// The bundled runtime package is a live heartbeat delivery overlay. It is
 	// sent outside the immutable configuration snapshot and may change when the
@@ -1556,43 +1561,32 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 	revisionSnapshot := heartbeatRevisionSnapshot(snapshot)
 	payload, digest, err := revision.CanonicalSnapshotPayload(revisionSnapshot)
 	if err != nil {
-		return "", err
+		return "", storage.Snapshot{}, err
 	}
 	foundRevision := false
 	if s.revisionActions != nil {
 		row, found, err := s.revisionActions.GetCoordinatorRevision(ctx, agentID, snapshot.Revision)
 		if err != nil {
-			return "", err
+			return "", storage.Snapshot{}, err
 		}
 		if found {
 			if durableStore, ok := s.store.(agentDurableRevisionSnapshotStore); ok {
 				durable, durableFound, loadErr := durableStore.LoadCoordinatorRuntimeSnapshot(ctx, agentID, snapshot.Revision)
 				if loadErr != nil {
-					return "", loadErr
+					return "", storage.Snapshot{}, loadErr
 				}
 				if !durableFound {
-					return "", errors.New("heartbeat durable revision snapshot is missing")
+					return "", storage.Snapshot{}, errors.New("heartbeat durable revision snapshot is missing")
 				}
-				// Older immutable artifacts may contain a PKI security projection.
-				// Version packages are likewise delivered outside the immutable
-				// configuration contract. Compare those live overlays out while
-				// preserving and returning the original artifact digest used by its
-				// lease and pull response.
-				durable.Snapshot.PKISecurity = nil
-				durable.Snapshot = heartbeatRevisionSnapshot(durable.Snapshot)
-				_, durableComparableDigest, compareErr := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(durable.Snapshot))
-				if compareErr != nil {
-					return "", compareErr
+				boundDigest, boundSnapshot, drifted, bindErr := bindHeartbeatRevision(revisionSnapshot, durable.Snapshot, durable.Revision.SnapshotDigest)
+				if bindErr != nil {
+					return "", storage.Snapshot{}, bindErr
 				}
-				_, liveComparableDigest, compareErr := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(revisionSnapshot))
-				if compareErr != nil {
-					return "", compareErr
-				}
-				if !strings.EqualFold(durableComparableDigest, liveComparableDigest) {
-					return "", errors.New("heartbeat snapshot differs from its durable revision")
-				}
-				if strings.TrimSpace(durable.Revision.SnapshotDigest) == "" {
-					return "", errors.New("heartbeat durable revision has no snapshot digest")
+				if drifted {
+					// Keep the durable identity and body. A rematerialized live
+					// snapshot must not fail-close the heartbeat channel that
+					// delivers VersionPackage.
+					return boundDigest, boundSnapshot, nil
 				}
 				if issuer, ok := s.store.(agentHeartbeatRevisionIssuer); ok {
 					issued, issueErr := issuer.EnsureAgentHeartbeatRevision(
@@ -1600,17 +1594,17 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 						durable.Revision.SnapshotDigest, s.now().UTC(),
 					)
 					if issueErr != nil {
-						return "", issueErr
+						return "", storage.Snapshot{}, issueErr
 					}
 					if issued.Revision != durable.Revision.Revision ||
 						!strings.EqualFold(issued.SnapshotDigest, durable.Revision.SnapshotDigest) {
-						return "", errors.New("heartbeat revision issuer returned a conflicting durable identity")
+						return "", storage.Snapshot{}, errors.New("heartbeat revision issuer returned a conflicting durable identity")
 					}
 				}
-				return strings.ToLower(durable.Revision.SnapshotDigest), nil
+				return boundDigest, boundSnapshot, nil
 			}
 			if !strings.EqualFold(strings.TrimSpace(row.SnapshotDigest), digest) {
-				return "", errors.New("heartbeat snapshot differs from its durable revision")
+				return "", storage.Snapshot{}, errors.New("heartbeat snapshot differs from its durable revision")
 			}
 			foundRevision = true
 		}
@@ -1618,18 +1612,44 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 	issuer, ok := s.store.(agentHeartbeatRevisionIssuer)
 	if !ok {
 		if len(snapshot.PluginPolicies) > 0 || len(snapshot.PluginGenerations) > 0 || len(snapshot.PluginDependencies) > 0 || !foundRevision {
-			return "", errors.New("heartbeat snapshot has no durable revision issuer")
+			return "", storage.Snapshot{}, errors.New("heartbeat snapshot has no durable revision issuer")
 		}
-		return strings.ToLower(digest), nil
+		return strings.ToLower(digest), revisionSnapshot, nil
 	}
 	issued, err := issuer.EnsureAgentHeartbeatRevision(ctx, agentID, revisionSnapshot, payload, digest, s.now().UTC())
 	if err != nil {
-		return "", err
+		return "", storage.Snapshot{}, err
 	}
 	if issued.Revision != snapshot.Revision || !strings.EqualFold(issued.SnapshotDigest, digest) {
-		return "", errors.New("heartbeat revision issuer returned a conflicting identity")
+		return "", storage.Snapshot{}, errors.New("heartbeat revision issuer returned a conflicting identity")
 	}
-	return strings.ToLower(digest), nil
+	return strings.ToLower(digest), revisionSnapshot, nil
+}
+
+func bindHeartbeatRevision(live, durable storage.Snapshot, durableDigest string) (string, storage.Snapshot, bool, error) {
+	if strings.TrimSpace(durableDigest) == "" {
+		return "", storage.Snapshot{}, false, errors.New("heartbeat durable revision has no snapshot digest")
+	}
+	// Older immutable artifacts may contain a PKI security projection.
+	// Version packages are likewise delivered outside the immutable
+	// configuration contract. Compare those live overlays out while
+	// preserving and returning the original artifact digest used by its
+	// lease and pull response.
+	durable.PKISecurity = nil
+	durable = heartbeatRevisionSnapshot(durable)
+	live = heartbeatRevisionSnapshot(live)
+	_, durableComparableDigest, err := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(durable))
+	if err != nil {
+		return "", storage.Snapshot{}, false, err
+	}
+	_, liveComparableDigest, err := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(live))
+	if err != nil {
+		return "", storage.Snapshot{}, false, err
+	}
+	if !strings.EqualFold(durableComparableDigest, liveComparableDigest) {
+		return strings.ToLower(durableDigest), durable, true, nil
+	}
+	return strings.ToLower(durableDigest), live, false, nil
 }
 
 func heartbeatRevisionSnapshot(snapshot storage.Snapshot) storage.Snapshot {
