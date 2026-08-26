@@ -60,6 +60,20 @@ func (c *PackageStageCoordinator) Handle(
 	pkg model.VersionPackage,
 	desiredVersion string,
 ) error {
+	if err := c.Ensure(ctx, updater, pkg); err != nil {
+		return err
+	}
+	return c.Activate(ctx, updater, pkg, desiredVersion)
+}
+
+// Ensure starts or observes the process-local Stage attempt without activating
+// it. Revision sync uses this before pulling an apply lease so package transfer
+// time is never charged to that lease.
+func (c *PackageStageCoordinator) Ensure(
+	ctx context.Context,
+	updater Updater,
+	pkg model.VersionPackage,
+) error {
 	if c == nil {
 		return errors.New("package stage coordinator is unavailable")
 	}
@@ -108,6 +122,60 @@ func (c *PackageStageCoordinator) Handle(
 		return errPackageStagePending
 	}
 
+	switch attempt.state {
+	case packageStageRunning, packageStageActivating:
+		c.mu.Unlock()
+		return errPackageStagePending
+	case packageStageFailed:
+		err := attempt.err
+		c.attempt = nil
+		c.mu.Unlock()
+		return err
+	case packageStageActivated:
+		c.mu.Unlock()
+		return nil
+	case packageStageReady:
+		c.mu.Unlock()
+		return nil
+	default:
+		c.mu.Unlock()
+		return errors.New("package stage attempt has an invalid state")
+	}
+}
+
+// Activate consumes only a verified-ready attempt whose immutable identity
+// still matches the current snapshot. desiredVersion is deliberately supplied
+// at activation time rather than being part of the Stage identity.
+func (c *PackageStageCoordinator) Activate(
+	ctx context.Context,
+	updater Updater,
+	pkg model.VersionPackage,
+	desiredVersion string,
+) error {
+	if c == nil {
+		return errors.New("package stage coordinator is unavailable")
+	}
+	if updater == nil {
+		return errors.New("updater unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	identity, err := newPackageStageIdentity(pkg)
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return context.Canceled
+	}
+	attempt := c.attempt
+	if attempt == nil || attempt.discarded || attempt.identity != identity {
+		c.mu.Unlock()
+		return errPackageStagePending
+	}
 	switch attempt.state {
 	case packageStageRunning, packageStageActivating:
 		c.mu.Unlock()

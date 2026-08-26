@@ -29,6 +29,8 @@ type coordinatorActivation struct {
 	desiredVersion string
 }
 
+func (u *coordinatorTestUpdater) Preflight(model.VersionPackage) error { return nil }
+
 func newCoordinatorTestUpdater(targets ...string) *coordinatorTestUpdater {
 	updater := &coordinatorTestUpdater{
 		started:    make(map[string]chan struct{}, len(targets)),

@@ -262,11 +262,154 @@ func TestRevisionSyncPullFailureDoesNotStartAttempt(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncStagesPackageBeforePullingFreshLease(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	previous := revisionSnapshot(6)
+	store.applied = previous
+	store.lkg = previous
+	store.runtime = RuntimeState{CurrentRevision: 6, Metadata: map[string]string{
+		"current_revision": "6", "last_apply_revision": "6", "last_apply_status": "success",
+	}}
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, previous); err != nil {
+		t.Fatal(err)
+	}
+	packageURL := "https://updates.example.test/nre-agent-linux-amd64"
+	pkg := coordinatorTestPackage(packageURL, "a")
+	heartbeat := revisionSnapshot(7)
+	heartbeat.VersionPackage = &pkg
+	updater := newCoordinatorTestUpdater(packageURL)
+	client := &revisionClientStub{
+		events: &events, heartbeatSnapshot: heartbeat,
+		pullFunc: func() model.RevisionPull { return revisionPull(7, "fresh-lease-7", "digest-7") },
+	}
+	controller := &SyncController{
+		Store: store, Runtime: runtime, SyncClient: client, Updater: updater,
+		PackageStages: NewPackageStageCoordinator(), CurrentPackageSHA256: strings.Repeat("f", 64),
+	}
+
+	for heartbeatIndex := 0; heartbeatIndex < 4; heartbeatIndex++ {
+		if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+			t.Fatalf("PerformSync(staging %d) error = %v", heartbeatIndex, err)
+		}
+		if heartbeatIndex == 0 {
+			waitForCoordinatorSignal(t, updater.started[packageURL])
+		}
+	}
+	if countRevisionEvent(events, "heartbeat") != 4 || countRevisionEvent(events, "pull") != 0 {
+		t.Fatalf("staging heartbeat/pull events = %v, want four heartbeats and no lease pull", events)
+	}
+	if updater.calls(packageURL) != 1 || len(updater.activations()) != 0 {
+		t.Fatalf("staging Stage/Activate calls = %d/%d, want 1/0", updater.calls(packageURL), len(updater.activations()))
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 || store.journal.Candidate != nil {
+		t.Fatalf("staging started/reported/journaled revision = %d/%d/%+v", len(client.starts), len(client.reports), store.journal.Candidate)
+	}
+	if store.applied.Revision != 6 || runtime.ActiveSnapshot().Revision != 6 || store.runtime.CurrentRevision != 6 {
+		t.Fatalf("staging advanced durable/runtime/state revision = %d/%d/%d", store.applied.Revision, runtime.ActiveSnapshot().Revision, store.runtime.CurrentRevision)
+	}
+	if store.runtime.Metadata["last_apply_revision"] != "6" || store.runtime.Metadata["last_apply_status"] != "success" ||
+		controller.CurrentPackageSHA256 != strings.Repeat("f", 64) {
+		t.Fatalf("staging changed apply/package facts: metadata=%v package=%q", store.runtime.Metadata, controller.CurrentPackageSHA256)
+	}
+
+	close(updater.release[packageURL])
+	waitForRevisionRestart(t, func() error {
+		return controller.PerformSync(t.Context(), control.SyncRequest{})
+	})
+	if countRevisionEvent(events, "pull") != 1 || len(client.starts) != 1 || len(client.reports) != 0 {
+		t.Fatalf("ready pull/start/report = %d/%d/%d, want 1/1/0", countRevisionEvent(events, "pull"), len(client.starts), len(client.reports))
+	}
+	if client.starts[0].LeaseID != "fresh-lease-7" {
+		t.Fatalf("started lease = %+v, want fresh-lease-7", client.starts[0])
+	}
+	if got := updater.activations(); len(got) != 1 || got[0].desiredVersion != "v7" {
+		t.Fatalf("ready activations = %+v, want current revision desired version", got)
+	}
+}
+
+func TestRevisionSyncStageFailureDoesNotConsumeLeaseOrApplyAttempt(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	previous := revisionSnapshot(6)
+	store.applied = previous
+	store.lkg = previous
+	packageURL := "https://updates.example.test/bad-agent"
+	pkg := coordinatorTestPackage(packageURL, "b")
+	heartbeat := revisionSnapshot(7)
+	heartbeat.VersionPackage = &pkg
+	stageErr := errors.New("sha256 mismatch")
+	updater := newCoordinatorTestUpdater(packageURL)
+	updater.stageErr[packageURL] = stageErr
+	client := &revisionClientStub{
+		events: &events, heartbeatSnapshot: heartbeat,
+		pullFunc: func() model.RevisionPull { return revisionPull(7, "unused-lease", "digest-7") },
+	}
+	controller := &SyncController{
+		Store: store, Runtime: NewRuntime(), SyncClient: client, Updater: updater,
+		PackageStages: NewPackageStageCoordinator(), CurrentPackageSHA256: strings.Repeat("f", 64),
+	}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync(start Stage) error = %v", err)
+	}
+	waitForCoordinatorSignal(t, updater.started[packageURL])
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := controller.PerformSync(t.Context(), control.SyncRequest{})
+		if errors.Is(err, stageErr) || (err != nil && strings.Contains(err.Error(), stageErr.Error())) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("PerformSync(failed Stage) error = %v, want %v", err, stageErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stage failure was not consumed before timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if countRevisionEvent(events, "pull") != 0 || len(client.starts) != 0 || len(client.reports) != 0 || store.journal.Candidate != nil {
+		t.Fatalf("failed Stage pulled/started/reported/journaled = %d/%d/%d/%+v",
+			countRevisionEvent(events, "pull"), len(client.starts), len(client.reports), store.journal.Candidate)
+	}
+	if store.applied.Revision != previous.Revision {
+		t.Fatalf("failed Stage changed applied revision = %d, want %d", store.applied.Revision, previous.Revision)
+	}
+}
+
+func countRevisionEvent(events []string, want string) int {
+	count := 0
+	for _, event := range events {
+		if event == want {
+			count++
+		}
+	}
+	return count
+}
+
+func waitForRevisionRestart(t *testing.T, operation func() error) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		err := operation()
+		if errors.Is(err, ErrRestartRequested) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("revision ready result = %v, want restart requested", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("ready revision package was not activated before timeout")
+}
+
 type revisionClientStub struct {
 	events            *[]string
 	heartbeatSnapshot model.Snapshot
 	heartbeatErr      error
 	pull              model.RevisionPull
+	pullFunc          func() model.RevisionPull
 	pullErr           error
 	startErr          error
 	reportErr         error
@@ -281,6 +424,9 @@ func (c *revisionClientStub) Sync(context.Context, control.SyncRequest) (model.S
 
 func (c *revisionClientStub) PullRevision(context.Context) (model.RevisionPull, error) {
 	c.record("pull")
+	if c.pullFunc != nil {
+		return c.pullFunc(), c.pullErr
+	}
 	return c.pull, c.pullErr
 }
 

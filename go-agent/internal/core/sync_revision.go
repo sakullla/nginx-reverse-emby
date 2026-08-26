@@ -65,6 +65,15 @@ func (c *SyncController) performRevisionSyncPlan(
 			return c.recordRuntimeError(err)
 		}
 	}
+	if err := c.ensurePendingUpdate(ctx, heartbeatSnapshot); err != nil {
+		if errors.Is(err, errPackageStagePending) {
+			if acknowledgementErr != nil {
+				return c.recordRuntimeError(acknowledgementErr)
+			}
+			return c.clearLastSyncErrorAfterSuccessfulSync()
+		}
+		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
+	}
 	pull, err := client.PullRevision(ctx)
 	if err != nil {
 		return c.recordSyncError(errors.Join(acknowledgementErr, err))
@@ -97,6 +106,19 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err != nil {
 		return c.recordRuntimeError(err)
 	}
+	activationSnapshot, current := revisionActivationSnapshot(heartbeatSnapshot, snapshot)
+	if !current {
+		// The desired revision changed between heartbeat delivery and lease pull.
+		// Do not start that stale lease; the next heartbeat will provide the
+		// authoritative target and drive package staging again.
+		return c.clearLastSyncErrorAfterSuccessfulSync()
+	}
+	if err := c.ensurePendingUpdate(ctx, activationSnapshot); err != nil {
+		if errors.Is(err, errPackageStagePending) {
+			return c.clearLastSyncErrorAfterSuccessfulSync()
+		}
+		return c.recordRuntimeError(err)
+	}
 	leaseCtx, cancelLease := context.WithDeadline(ctx, lease.DeadlineAt)
 	defer cancelLease()
 	if journal.Version == 0 {
@@ -124,9 +146,6 @@ func (c *SyncController) performRevisionSyncPlan(
 	if failed := journal.Candidate; failed != nil && failed.Phase == model.GenerationPhaseFailed &&
 		sameGenerationLease(*failed, lease) && strings.EqualFold(failed.SnapshotDigest, digest) {
 		return c.replayFailedRevisionReport(ctx, client, store, journal, *failed)
-	}
-	if err := c.preflightPendingUpdate(snapshot); err != nil {
-		return c.recordRuntimeError(err)
 	}
 	runtimeSnapshotHash := durableRuntimeSnapshotHashForRevision(journal, snapshot.Revision, digest)
 	runtimeIdentity, managedGeneration, err := c.Runtime.CandidateGenerationIdentityWithSnapshotHash(previousApplied, snapshot, runtimeSnapshotHash)
@@ -280,7 +299,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
-	if err := c.handlePendingUpdate(leaseCtx, snapshot); err != nil {
+	if err := c.handlePendingUpdate(leaseCtx, activationSnapshot); err != nil {
 		if errors.Is(err, ErrRestartRequested) {
 			return err
 		}
@@ -358,6 +377,20 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	return c.finishRevisionAcknowledgement(ctx, client, store, journal, candidate, candidateApplied)
+}
+
+func revisionActivationSnapshot(heartbeatSnapshot, revisionSnapshot model.Snapshot) (model.Snapshot, bool) {
+	activation := revisionSnapshot
+	if heartbeatSnapshot.VersionPackage == nil {
+		return activation, true
+	}
+	if heartbeatSnapshot.Revision != revisionSnapshot.Revision ||
+		strings.TrimSpace(heartbeatSnapshot.DesiredVersion) != strings.TrimSpace(revisionSnapshot.DesiredVersion) {
+		return model.Snapshot{}, false
+	}
+	pkg := *heartbeatSnapshot.VersionPackage
+	activation.VersionPackage = &pkg
+	return activation, true
 }
 
 func heartbeatTrafficRuntime(snapshot model.Snapshot) (model.AgentConfig, bool) {

@@ -3,19 +3,124 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
+
+func TestIntegrationPackageCoordinatorStagesThrottledHTTPWithoutBlockingHeartbeats(t *testing.T) {
+	payload := bytes.Repeat([]byte("verified-package-block"), 4096)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		flusher, _ := w.(http.Flusher)
+		chunkSize := len(payload) / 8
+		for offset := 0; offset < len(payload); offset += chunkSize {
+			end := min(offset+chunkSize, len(payload))
+			if _, err := w.Write(payload[offset:end]); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(8 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+	pkg := model.VersionPackage{
+		URL: server.URL, SHA256: sumSHA256(payload), Platform: "linux-amd64",
+		Filename: "nre-agent-linux-amd64", Size: int64(len(payload)),
+	}
+	coordinator := NewPackageStageCoordinator()
+	if err := coordinator.Ensure(t.Context(), mgr, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
+	}
+
+	heartbeats := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := coordinator.Ensure(t.Context(), mgr, pkg)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errPackageStagePending) {
+			t.Fatalf("Ensure(staging) error = %v", err)
+		}
+		heartbeats++
+		time.Sleep(5 * time.Millisecond)
+	}
+	if heartbeats < 3 {
+		t.Fatalf("heartbeat opportunities during throttled Stage = %d, want at least 3", heartbeats)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("throttled package requests = %d, want 1", requests.Load())
+	}
+	coordinator.mu.Lock()
+	attempt := coordinator.attempt
+	coordinator.mu.Unlock()
+	if attempt == nil || attempt.state != packageStageReady || attempt.stagedPath == "" {
+		t.Fatalf("verified Stage attempt = %+v, want ready path", attempt)
+	}
+}
+
+func TestIntegrationPackageCoordinatorCloseWaitsForHTTPStageCancellation(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+	pkg := model.VersionPackage{
+		URL: server.URL, SHA256: strings.Repeat("a", 64), Platform: "linux-amd64",
+		Filename: "nre-agent-linux-amd64", Size: 1024,
+	}
+	coordinator := NewPackageStageCoordinator()
+	if err := coordinator.Ensure(t.Context(), mgr, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP Stage request did not start")
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		coordinator.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator Close did not converge after HTTP cancellation")
+	}
+	if err := coordinator.Ensure(t.Context(), mgr, pkg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ensure(after Close) error = %v, want context cancellation", err)
+	}
+}
 
 func TestIntegrationStageVerifiesHashAndExactSize(t *testing.T) {
 	t.Parallel()
