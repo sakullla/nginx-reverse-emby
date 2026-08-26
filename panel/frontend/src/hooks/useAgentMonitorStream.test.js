@@ -204,6 +204,49 @@ describe('useAgentMonitorStream', () => {
     wrapper.unmount()
   })
 
+  it('updates cached runtime package identity from an upgrade heartbeat', async () => {
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['agents'], [{
+      id: 'edge-1',
+      runtime_package_version: '1.0.0',
+      runtime_package_platform: 'linux',
+      runtime_package_arch: 'amd64',
+      runtime_package_sha256: 'a'.repeat(64),
+      desired_package_sha256: 'b'.repeat(64),
+      package_sync_status: 'pending'
+    }])
+    api.consumeAgentMonitorStream.mockImplementation(async ({ onMessage }) => {
+      onMessage({
+        type: 'update',
+        payload: {
+          agent: {
+            id: 'edge-1',
+            runtime_package_version: '2.0.0',
+            runtime_package_platform: 'linux',
+            runtime_package_arch: 'amd64',
+            runtime_package_sha256: 'b'.repeat(64),
+            desired_package_sha256: 'b'.repeat(64),
+            package_sync_status: 'aligned'
+          }
+        }
+      })
+    })
+
+    const { wrapper } = mountHarness(queryClient, { reconnectDelay: -1 })
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    expect(queryClient.getQueryData(['agents'])[0]).toMatchObject({
+      runtime_package_version: '2.0.0',
+      runtime_package_platform: 'linux',
+      runtime_package_arch: 'amd64',
+      runtime_package_sha256: 'b'.repeat(64),
+      desired_package_sha256: 'b'.repeat(64),
+      package_sync_status: 'aligned'
+    })
+    wrapper.unmount()
+  })
+
   it('merges DDNS fields carried by a monitor snapshot into the agents cache', async () => {
     const queryClient = createQueryClient()
     queryClient.setQueryData(['agents'], [{ id: 'edge-1', name: 'Edge 1', status: 'offline' }])

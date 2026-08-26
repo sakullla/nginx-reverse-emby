@@ -23,22 +23,28 @@ type AgentMonitorUpdate struct {
 }
 
 type AgentMonitorAgent struct {
-	ID           string               `json:"id"`
-	Name         string               `json:"name"`
-	Status       string               `json:"status"`
-	LastSeenAt   string               `json:"last_seen_at"`
-	LastSeenIP   string               `json:"last_seen_ip"`
-	LastSeenIPv4 string               `json:"last_seen_ipv4"`
-	LastSeenIPv6 string               `json:"last_seen_ipv6"`
-	DdnsDomain   string               `json:"ddns_domain"`
-	DdnsStatus   storage.DdnsStatus   `json:"ddns_status,omitempty"`
-	Version      string               `json:"version"`
-	Platform     string               `json:"platform"`
-	Mode         string               `json:"mode"`
-	Tags         []string             `json:"tags"`
-	IsLocal      bool                 `json:"is_local"`
-	Metrics      AgentMonitorMetrics  `json:"metrics"`
-	Traffic      *AgentMonitorTraffic `json:"traffic"`
+	ID                     string               `json:"id"`
+	Name                   string               `json:"name"`
+	Status                 string               `json:"status"`
+	LastSeenAt             string               `json:"last_seen_at"`
+	LastSeenIP             string               `json:"last_seen_ip"`
+	LastSeenIPv4           string               `json:"last_seen_ipv4"`
+	LastSeenIPv6           string               `json:"last_seen_ipv6"`
+	DdnsDomain             string               `json:"ddns_domain"`
+	DdnsStatus             storage.DdnsStatus   `json:"ddns_status,omitempty"`
+	Version                string               `json:"version"`
+	Platform               string               `json:"platform"`
+	RuntimePackageVersion  string               `json:"runtime_package_version"`
+	RuntimePackagePlatform string               `json:"runtime_package_platform"`
+	RuntimePackageArch     string               `json:"runtime_package_arch"`
+	RuntimePackageSHA256   string               `json:"runtime_package_sha256"`
+	DesiredPackageSHA256   string               `json:"desired_package_sha256"`
+	PackageSyncStatus      string               `json:"package_sync_status"`
+	Mode                   string               `json:"mode"`
+	Tags                   []string             `json:"tags"`
+	IsLocal                bool                 `json:"is_local"`
+	Metrics                AgentMonitorMetrics  `json:"metrics"`
+	Traffic                *AgentMonitorTraffic `json:"traffic"`
 }
 
 type AgentMonitorMetrics struct {
@@ -192,8 +198,8 @@ func (s *agentService) refreshLocalMonitorStatsBestEffort(ctx context.Context) {
 	_ = s.refreshLocalMonitorStats(ctx)
 }
 
-func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.AgentRow) {
-	summary := s.monitorSummaryForRow(row)
+func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.AgentRow, desiredPackage *storage.VersionPackage) {
+	summary := s.monitorSummaryForRow(row, desiredPackage)
 	update := AgentMonitorUpdate{
 		GeneratedAt: s.now().UTC().Format(time.RFC3339),
 		Agent:       s.monitorAgentFromSummary(ctx, summary, parseAgentStats(row.LastReportedStatsJSON)),
@@ -209,26 +215,34 @@ func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.A
 	}
 }
 
-func (s *agentService) monitorSummaryForRow(row storage.AgentRow) AgentSummary {
+func (s *agentService) monitorSummaryForRow(row storage.AgentRow, desiredPackage *storage.VersionPackage) AgentSummary {
 	// Heartbeat-triggered monitor updates must carry the same DDNS/display
 	// fields as summaryForRow: the panel merges these payloads over the agent
 	// list, and an empty ddns_domain here would make the address flap between
 	// the configured domain and the last-seen IP on every heartbeat.
 	summary := AgentSummary{
-		ID:           row.ID,
-		Name:         row.Name,
-		Version:      row.Version,
-		Platform:     row.Platform,
-		Tags:         parseStringArray(row.TagsJSON),
-		Mode:         defaultString(row.Mode, "pull"),
-		LastSeenAt:   row.LastSeenAt,
-		Status:       s.agentStatus(row),
-		IsLocal:      row.IsLocal,
-		LastSeenIP:   row.LastSeenIP,
-		LastSeenIPv4: row.LastSeenIPv4,
-		LastSeenIPv6: row.LastSeenIPv6,
-		DdnsStatus:   parseDdnsStatus(row.DdnsStatusJSON),
-		Capabilities: parseStringArray(row.CapabilitiesJSON),
+		ID:                     row.ID,
+		Name:                   row.Name,
+		Version:                row.Version,
+		Platform:               row.Platform,
+		RuntimePackageVersion:  row.RuntimePackageVersion,
+		RuntimePackagePlatform: row.RuntimePackagePlatform,
+		RuntimePackageArch:     row.RuntimePackageArch,
+		RuntimePackageSHA256:   row.RuntimePackageSHA256,
+		Tags:                   parseStringArray(row.TagsJSON),
+		Mode:                   defaultString(row.Mode, "pull"),
+		LastSeenAt:             row.LastSeenAt,
+		Status:                 s.agentStatus(row),
+		IsLocal:                row.IsLocal,
+		LastSeenIP:             row.LastSeenIP,
+		LastSeenIPv4:           row.LastSeenIPv4,
+		LastSeenIPv6:           row.LastSeenIPv6,
+		DdnsStatus:             parseDdnsStatus(row.DdnsStatusJSON),
+		Capabilities:           parseStringArray(row.CapabilitiesJSON),
+	}
+	if desiredPackage != nil {
+		summary.DesiredPackageSHA256 = strings.TrimSpace(desiredPackage.SHA256)
+		summary.PackageSyncStatus = derivePackageSyncStatus(row, desiredPackage)
 	}
 	if ddnsConfig := parseDDNSConfig(row.DdnsConfigJSON); ddnsConfig != nil {
 		summary.DdnsDomain = strings.TrimSpace(ddnsConfig.Domain)
@@ -239,22 +253,28 @@ func (s *agentService) monitorSummaryForRow(row storage.AgentRow) AgentSummary {
 func (s *agentService) monitorAgentFromSummary(ctx context.Context, summary AgentSummary, stats AgentStats) AgentMonitorAgent {
 	metrics := monitorMetricsFromStats(stats, summary.Status)
 	return AgentMonitorAgent{
-		ID:           summary.ID,
-		Name:         summary.Name,
-		Status:       summary.Status,
-		LastSeenAt:   summary.LastSeenAt,
-		LastSeenIP:   summary.LastSeenIP,
-		LastSeenIPv4: summary.LastSeenIPv4,
-		LastSeenIPv6: summary.LastSeenIPv6,
-		DdnsDomain:   summary.DdnsDomain,
-		DdnsStatus:   summary.DdnsStatus,
-		Version:      summary.Version,
-		Platform:     summary.Platform,
-		Mode:         summary.Mode,
-		Tags:         append([]string(nil), summary.Tags...),
-		IsLocal:      summary.IsLocal,
-		Metrics:      metrics,
-		Traffic:      s.monitorTraffic(ctx, summary.ID),
+		ID:                     summary.ID,
+		Name:                   summary.Name,
+		Status:                 summary.Status,
+		LastSeenAt:             summary.LastSeenAt,
+		LastSeenIP:             summary.LastSeenIP,
+		LastSeenIPv4:           summary.LastSeenIPv4,
+		LastSeenIPv6:           summary.LastSeenIPv6,
+		DdnsDomain:             summary.DdnsDomain,
+		DdnsStatus:             summary.DdnsStatus,
+		Version:                summary.Version,
+		Platform:               summary.Platform,
+		RuntimePackageVersion:  summary.RuntimePackageVersion,
+		RuntimePackagePlatform: summary.RuntimePackagePlatform,
+		RuntimePackageArch:     summary.RuntimePackageArch,
+		RuntimePackageSHA256:   summary.RuntimePackageSHA256,
+		DesiredPackageSHA256:   summary.DesiredPackageSHA256,
+		PackageSyncStatus:      summary.PackageSyncStatus,
+		Mode:                   summary.Mode,
+		Tags:                   append([]string(nil), summary.Tags...),
+		IsLocal:                summary.IsLocal,
+		Metrics:                metrics,
+		Traffic:                s.monitorTraffic(ctx, summary.ID),
 	}
 }
 

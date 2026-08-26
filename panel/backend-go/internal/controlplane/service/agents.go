@@ -1506,7 +1506,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		return HeartbeatReply{}, err
 	}
 	snapshot.VersionPackage = versionPackage
-	s.broadcastMonitorUpdate(ctx, row)
+	s.broadcastMonitorUpdate(ctx, row, versionPackage)
 	reply := HeartbeatReply{
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(snapshotMetadata.LastApplyStatus, "success"),
 		DesiredVersion:       snapshot.DesiredVersion,

@@ -24,6 +24,12 @@ function mergeAgentList(previous, monitorAgent) {
         ddns_status: monitorAgent.ddns_status || agent.ddns_status,
         version: monitorAgent.version || agent.version,
         platform: monitorAgent.platform || agent.platform,
+        runtime_package_version: monitorAgent.runtime_package_version || agent.runtime_package_version,
+        runtime_package_platform: monitorAgent.runtime_package_platform || agent.runtime_package_platform,
+        runtime_package_arch: monitorAgent.runtime_package_arch || agent.runtime_package_arch,
+        runtime_package_sha256: monitorAgent.runtime_package_sha256 || agent.runtime_package_sha256,
+        desired_package_sha256: monitorAgent.desired_package_sha256 || agent.desired_package_sha256,
+        package_sync_status: monitorAgent.package_sync_status || agent.package_sync_status,
         mode: monitorAgent.mode || agent.mode,
         tags: Array.isArray(monitorAgent.tags) ? monitorAgent.tags : agent.tags,
         monitor: monitorAgent
