@@ -104,13 +104,14 @@ func (s *PluginService) OpenUIAsset(ctx context.Context, routeID, suffix string)
 		if !pluginManifestOwnsUIRoute(manifest, routeID) {
 			continue
 		}
-		if !pluginManifestDeclaresAsset(manifest, logical) {
+		declared := firstDeclaredPluginUIAsset(manifest, logical)
+		if declared == "" {
 			return "", nil, ErrPluginUIAssetNotFound
 		}
 		if err := marketplace.ValidateCachePath(s.cacheRoot, packageRow.CachePath, packageRow.Digest, packageRow.SignatureFingerprint); err != nil {
 			return "", nil, err
 		}
-		full, err := joinPluginPackageFile(packageRow.CachePath, logical)
+		full, err := joinPluginPackageFile(packageRow.CachePath, declared)
 		if err != nil {
 			return "", nil, err
 		}
@@ -152,6 +153,26 @@ func pluginManifestDeclaresAsset(manifest plugins.Manifest, logical string) bool
 		}
 	}
 	return false
+}
+
+func pluginUIAssetCandidates(logical string) []string {
+	logical = strings.TrimSpace(filepath.ToSlash(logical))
+	if logical == "" {
+		return nil
+	}
+	if strings.HasPrefix(logical, "ui/") {
+		return []string{logical, path.Join("assets", logical)}
+	}
+	return []string{logical}
+}
+
+func firstDeclaredPluginUIAsset(manifest plugins.Manifest, logical string) string {
+	for _, candidate := range pluginUIAssetCandidates(logical) {
+		if pluginManifestDeclaresAsset(manifest, candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func hasPluginExtension(points []string, want string) bool {

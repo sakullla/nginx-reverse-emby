@@ -204,11 +204,37 @@ func TestHandlerPreparesManagedComposeWorkspace(t *testing.T) {
 	if err != nil || string(environment) != "DATABASE_PASSWORD=test-only-secret\n" {
 		t.Fatalf("environment=%q error=%v", environment, err)
 	}
-	if info, err := os.Stat(filepath.Join(dir, ".env")); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(filepath.Join(dir, ".env")); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("environment mode=%v error=%v", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "compose.yaml")); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
+		t.Fatalf("compose mode=%v error=%v", info, err)
 	}
 	if _, err := handler.prepare(Request{Args: []string{"compose", "start"}, AppID: "../escape"}); err == nil {
 		t.Fatal("workspace escape was accepted")
+	}
+}
+
+func TestHandlerReplacesEmptyFileBindDirectory(t *testing.T) {
+	root := t.TempDir()
+	app := filepath.Join(root, "media")
+	if err := os.MkdirAll(filepath.Join(app, "config.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handler := &handler{workspaceRoot: root, runner: &recordingRunner{}}
+	dir, err := handler.prepare(Request{
+		Args: []string{"compose", "up", "-d"}, AppID: "media",
+		Compose: "services:\n  web:\n    image: nginx\n    volumes:\n      - ./config.yaml:/app/config.yaml\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsDir() {
+		t.Fatal("empty config.yaml directory was not replaced with a file")
 	}
 }
 

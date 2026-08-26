@@ -152,7 +152,7 @@ func Start(config Config) ([]string, func() error, error) {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
-	handler := &handler{cookie: config.Cookie, workspaceRoot: workspaceRoot, runner: runner}
+	handler := &handler{cookie: config.Cookie, workspaceRoot: workspaceRoot, sandboxUID: config.SandboxUID, runner: runner}
 	serverCtx, cancelServer := context.WithCancel(context.Background())
 	server := &http.Server{ReadHeaderTimeout: 2 * time.Second, Handler: handler, BaseContext: func(net.Listener) context.Context { return serverCtx }}
 	go func() { _ = server.Serve(listener) }()
@@ -187,6 +187,7 @@ func Start(config Config) ([]string, func() error, error) {
 type handler struct {
 	cookie        string
 	workspaceRoot string
+	sandboxUID    int
 	runner        Runner
 }
 
@@ -327,11 +328,14 @@ func (handler *handler) prepare(input Request) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	if err := chownIfSandbox(dir, handler.sandboxUID); err != nil {
+		return "", err
+	}
 	if input.Compose != "" {
 		if len(input.Compose) > 1<<20 {
 			return "", errors.New("Docker compose document exceeds the limit")
 		}
-		if err := writeComposeFile(dir, input.Compose); err != nil {
+		if err := writeComposeFile(dir, input.Compose, handler.sandboxUID); err != nil {
 			return "", err
 		}
 	}
@@ -339,9 +343,12 @@ func (handler *handler) prepare(input Request) (string, error) {
 		if len(input.Env) > 1<<20 || strings.ContainsRune(input.Env, '\x00') {
 			return "", errors.New("Docker compose environment exceeds the limit")
 		}
-		if err := writeEnvironmentFile(dir, input.Env); err != nil {
+		if err := writeEnvironmentFile(dir, input.Env, handler.sandboxUID); err != nil {
 			return "", err
 		}
+	}
+	if err := repairEmptyFileBindDirectories(dir, handler.sandboxUID); err != nil {
+		return "", err
 	}
 	if _, err := os.Stat(filepath.Join(dir, "compose.yaml")); err != nil {
 		return "", errors.New("Docker compose workspace is not initialized")
@@ -419,43 +426,26 @@ func validImage(value string) bool {
 	return true
 }
 
-func writeComposeFile(dir, compose string) error {
-	temporary, err := os.CreateTemp(dir, ".compose-*.yaml")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := io.WriteString(temporary, compose); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, filepath.Join(dir, "compose.yaml"))
+func writeComposeFile(dir, compose string, uid int) error {
+	return writeWorkspaceDocument(dir, ".compose-*.yaml", "compose.yaml", compose, 0o644, uid)
 }
 
-func writeEnvironmentFile(dir, value string) error {
-	temporary, err := os.CreateTemp(dir, ".env-*")
+func writeEnvironmentFile(dir, value string, uid int) error {
+	return writeWorkspaceDocument(dir, ".env-*", ".env", value, 0o640, uid)
+}
+
+func writeWorkspaceDocument(dir, pattern, name, contents string, mode os.FileMode, uid int) error {
+	temporary, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := temporary.Chmod(mode); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := io.WriteString(temporary, value); err != nil {
+	if _, err := io.WriteString(temporary, contents); err != nil {
 		_ = temporary.Close()
 		return err
 	}
@@ -466,7 +456,58 @@ func writeEnvironmentFile(dir, value string) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, filepath.Join(dir, ".env"))
+	target := filepath.Join(dir, name)
+	if err := os.Rename(temporaryPath, target); err != nil {
+		return err
+	}
+	return chownIfSandbox(target, uid)
+}
+
+func chownIfSandbox(path string, uid int) error {
+	if uid <= 0 {
+		return nil
+	}
+	if err := os.Chown(path, uid, uid); err != nil {
+		return errors.New("Docker compose workspace ownership could not be assigned")
+	}
+	return nil
+}
+
+func repairEmptyFileBindDirectories(dir string, uid int) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) == "" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		children, readErr := os.ReadDir(path)
+		if readErr != nil {
+			return readErr
+		}
+		if len(children) > 0 {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return errors.New("Docker file bind could not replace an empty directory")
+		}
+		file, createErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+		if createErr != nil {
+			return createErr
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		if err := chownIfSandbox(path, uid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyExecutable(source, target string) error {

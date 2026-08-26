@@ -8,6 +8,14 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 )
 
+func TestPluginUIAssetCandidatesIncludePackagedAssetsPrefix(t *testing.T) {
+	t.Parallel()
+	got := pluginUIAssetCandidates("ui/index.html")
+	if len(got) != 2 || got[0] != "ui/index.html" || got[1] != "assets/ui/index.html" {
+		t.Fatalf("candidates = %#v", got)
+	}
+}
+
 func TestPluginUIAssetNameMapsMountedPaths(t *testing.T) {
 	t.Parallel()
 	name, err := PluginUIAssetName("/")
