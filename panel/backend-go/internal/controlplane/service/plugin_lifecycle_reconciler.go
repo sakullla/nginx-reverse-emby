@@ -79,43 +79,53 @@ func (r *PluginLifecycleReconciler) RecoverSupersededOperations(ctx context.Cont
 }
 
 func (r *PluginLifecycleReconciler) completeTrustedRevisionOperation(ctx context.Context, operation storage.PluginOperationRow, applied bool, agentResults any) error {
-	if applied {
-		if planner, ok := r.plugins.(interface {
-			controlPlaneRuntimePlan(context.Context, storage.PluginOperationRow) (controlPlanePluginRuntimePlan, error)
-		}); ok {
-			plan, err := planner.controlPlaneRuntimePlan(ctx, operation)
-			if err != nil {
-				return err
-			}
-			if plan.Controlled {
-				if r.runtime == nil {
-					return errors.New("control-plane plugin runtime is unavailable")
-				}
-				for _, instanceID := range plan.StopInstanceIDs {
-					if err := r.runtime.Stop(ctx, instanceID); err != nil {
-						return err
-					}
-				}
-				pending := make([]pluginhost.Candidate, 0, len(plan.Candidates))
-				for _, candidate := range plan.Candidates {
-					if active, ok := r.runtime.ActiveGeneration(candidate.InstanceID); ok && active == candidate.Identity.Generation {
-						continue
-					}
-					pending = append(pending, candidate)
-				}
-				if len(pending) > 0 {
-					if _, err := r.runtime.ActivateBatch(ctx, pending); err != nil {
-						failureResults := controlPlaneRuntimeFailureResults(agentResults, err)
-						if completeErr := r.plugins.CompleteTrustedRevisionOperation(ctx, operation, false, failureResults); completeErr != nil {
-							return errors.Join(err, completeErr)
-						}
-						return nil
-					}
-				}
-			}
-		}
+	var err error
+	applied, agentResults, err = r.reconcileControlPlaneRuntime(ctx, operation, applied, agentResults)
+	if err != nil {
+		return err
 	}
 	return r.plugins.CompleteTrustedRevisionOperation(ctx, operation, applied, agentResults)
+}
+
+func (r *PluginLifecycleReconciler) reconcileControlPlaneRuntime(ctx context.Context, operation storage.PluginOperationRow, applied bool, agentResults any) (bool, any, error) {
+	if !applied {
+		return false, agentResults, nil
+	}
+	planner, ok := r.plugins.(interface {
+		controlPlaneRuntimePlan(context.Context, storage.PluginOperationRow) (controlPlanePluginRuntimePlan, error)
+	})
+	if !ok {
+		return true, agentResults, nil
+	}
+	plan, err := planner.controlPlaneRuntimePlan(ctx, operation)
+	if err != nil {
+		return false, agentResults, err
+	}
+	if !plan.Controlled {
+		return true, agentResults, nil
+	}
+	if r.runtime == nil {
+		return false, agentResults, errors.New("control-plane plugin runtime is unavailable")
+	}
+	for _, instanceID := range plan.StopInstanceIDs {
+		if err := r.runtime.Stop(ctx, instanceID); err != nil {
+			return false, agentResults, err
+		}
+	}
+	pending := make([]pluginhost.Candidate, 0, len(plan.Candidates))
+	for _, candidate := range plan.Candidates {
+		if active, ok := r.runtime.ActiveGeneration(candidate.InstanceID); ok && active == candidate.Identity.Generation {
+			continue
+		}
+		pending = append(pending, candidate)
+	}
+	if len(pending) == 0 {
+		return true, agentResults, nil
+	}
+	if _, err := r.runtime.ActivateBatch(ctx, pending); err != nil {
+		return false, controlPlaneRuntimeFailureResults(agentResults, err), nil
+	}
+	return true, agentResults, nil
 }
 
 func controlPlaneRuntimeFailureResults(agentResults any, cause error) map[string]any {
@@ -184,7 +194,11 @@ func (r *PluginLifecycleReconciler) Reconcile(ctx context.Context, report storag
 	if strings.TrimSpace(operation.ActorID) == "" {
 		return PluginLifecycleReconcileResult{}, storage.ErrPluginGenerationConflict
 	}
-	applyResult := PluginApplyResult{PluginID: operation.PluginID, InstanceID: report.InstanceID, OperationID: operation.ID, TargetRevision: operation.TargetRevision, TargetDigest: operation.TargetPackageDigest, ActorID: operation.ActorID, Applied: applied, AgentResults: agentResults}
+	applied, reconciledResults, err := r.reconcileControlPlaneRuntime(ctx, operation, applied, agentResults)
+	if err != nil {
+		return PluginLifecycleReconcileResult{}, err
+	}
+	applyResult := PluginApplyResult{PluginID: operation.PluginID, InstanceID: report.InstanceID, OperationID: operation.ID, TargetRevision: operation.TargetRevision, TargetDigest: operation.TargetPackageDigest, ActorID: operation.ActorID, Applied: applied, AgentResults: reconciledResults}
 	for _, status := range statuses {
 		if status.InstanceID == report.InstanceID {
 			applyResult.ConfigVersion = status.ConfigVersion
