@@ -6,7 +6,8 @@ import {
   dailyBudget,
   quotaColorThreshold,
   formatPercentage,
-  summaryBucketForObject
+  summaryBucketForObject,
+  agentTrafficBytes
 } from './trafficStats.js'
 
 describe('summaryBucketForObject', () => {
@@ -22,6 +23,37 @@ describe('summaryBucketForObject', () => {
     ['relay_listeners', 11, 49152]
   ])('selects %s usage by normalized resource id', (mapName, id, accountedBytes) => {
     expect(summaryBucketForObject(summary, mapName, id)?.accounted_bytes).toBe(accountedBytes)
+  })
+})
+
+describe('agentTrafficBytes', () => {
+  const hostGib = 20 * 1024 ** 3
+  const groupGib = 360 * 1024 ** 3
+
+  it('prefers this agent accounted_bytes over group used_bytes', () => {
+    expect(agentTrafficBytes({
+      used_bytes: groupGib,
+      accounted_bytes: hostGib,
+      host_total: { accounted_bytes: hostGib, rx_bytes: hostGib / 2, tx_bytes: hostGib / 2 }
+    })).toBe(hostGib)
+  })
+
+  it('falls back to host_total when accounted_bytes is absent', () => {
+    expect(agentTrafficBytes({
+      used_bytes: groupGib,
+      host_total: { accounted_bytes: hostGib }
+    })).toBe(hostGib)
+  })
+
+  it('falls back to used_bytes when agent accounted fields are absent', () => {
+    expect(agentTrafficBytes({ used_bytes: 300 })).toBe(300)
+  })
+
+  it('keeps a real zero accounted total instead of substituting group used_bytes', () => {
+    expect(agentTrafficBytes({
+      used_bytes: groupGib,
+      accounted_bytes: 0
+    })).toBe(0)
   })
 })
 

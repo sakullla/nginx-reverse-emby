@@ -675,6 +675,36 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
   })
 
+  it('shows this agent accounted traffic instead of group used_bytes', async () => {
+    const hostBytes = 20 * 1024 ** 3
+    const groupBytes = 360 * 1024 ** 3
+    apiCalls.fetchTrafficSummary.mockResolvedValue({
+      used_bytes: groupBytes,
+      accounted_bytes: hostBytes,
+      rx_bytes: hostBytes / 2,
+      tx_bytes: hostBytes / 2,
+      monthly_quota_bytes: 2 * 1024 ** 4,
+      remaining_bytes: 2 * 1024 ** 4 - groupBytes,
+      blocked: false,
+      host_total: { scope_type: 'host_total', scope_id: '', rx_bytes: hostBytes / 2, tx_bytes: hostBytes / 2, accounted_bytes: hostBytes },
+      host_interfaces: [{ scope_type: 'host_interface', scope_id: 'eth0', rx_bytes: hostBytes / 2, tx_bytes: hostBytes / 2, accounted_bytes: hostBytes }],
+      http_rules: [],
+      l4_rules: [],
+      relay_listeners: []
+    })
+    const wrapper = await mountPage()
+
+    expect(wrapper.get('[data-testid="traffic-summary-used"]').text()).toBe('20.0 GiB')
+    expect(wrapper.get('[data-testid="traffic-summary-used"]').text()).not.toContain('360')
+
+    await wrapper.get('[data-testid="traffic-summary-open-analysis"]').trigger('click')
+    await nextTick()
+    const context = wrapper.find('[data-testid="traffic-analysis-context"]')
+    expect(context.text()).toContain('当前总流量')
+    expect(context.text()).toContain('20.0 GiB')
+    expect(context.text()).not.toContain('360')
+  })
+
   it('opens total-traffic analysis modal with breakdown composition', async () => {
     const wrapper = await mountPage()
     await wrapper.get('[data-testid="traffic-summary-open-analysis"]').trigger('click')

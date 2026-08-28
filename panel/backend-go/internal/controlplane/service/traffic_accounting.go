@@ -97,6 +97,29 @@ func quotaRemaining(used uint64, quota *int64) *int64 {
 	return &remaining
 }
 
+type unifiedTrafficQuota struct {
+	Limit             int64
+	Allowed           bool
+	ExceedAction      string
+	RecoveryCondition string
+}
+
+// applyUnifiedTrafficQuota may adopt a tighter group limit and block state, but
+// never replaces this agent's used total with the shared group current.
+func applyUnifiedTrafficQuota(used uint64, policy TrafficPolicy, unified unifiedTrafficQuota) (uint64, TrafficPolicy, bool, string) {
+	if unified.Limit >= 0 && (policy.MonthlyQuotaBytes == nil || unified.Limit < *policy.MonthlyQuotaBytes) {
+		limit := unified.Limit
+		policy.MonthlyQuotaBytes = &limit
+	}
+	blocked := false
+	reason := ""
+	if !unified.Allowed && unified.ExceedAction == "disable" {
+		blocked = true
+		reason = defaultString(unified.RecoveryCondition, "unified traffic quota exceeded")
+	}
+	return used, policy, blocked, reason
+}
+
 func quotaBlocked(used uint64, policy TrafficPolicy) (bool, string) {
 	if !policy.BlockWhenExceeded || !quotaOverLimit(used, policy.MonthlyQuotaBytes) {
 		return false, ""
