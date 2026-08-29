@@ -63,6 +63,19 @@ func TestHostRuntimeCallRejectsUnboundedOrInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestNewPluginCallRequestEncodesOpaqueInnerPayload(t *testing.T) {
+	request, err := NewPluginCallRequest("edge-a", "listen.report", map[string]any{"agent_id": "edge-a"})
+	if err != nil {
+		t.Fatalf("NewPluginCallRequest() error = %v", err)
+	}
+	if request.AgentID != "edge-a" || request.Name != "listen.report" || !json.Valid(request.Payload) {
+		t.Fatalf("plugin.call request = %+v", request)
+	}
+	if _, err := NewPluginCallRequest("edge-a", "contains\nnewline", nil); err == nil {
+		t.Fatal("NewPluginCallRequest accepted a non-canonical name")
+	}
+}
+
 func TestPluginCallAndHTTPRuleRequestsValidateWithoutInterpretingActionNames(t *testing.T) {
 	call := PluginCallRequest{AgentID: "edge-a", Name: "compose.apply", Payload: json.RawMessage(`{"yaml":"services:\n  app:\n    image: example\n"}`)}
 	if err := call.Validate(); err != nil {

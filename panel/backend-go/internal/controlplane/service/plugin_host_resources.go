@@ -796,11 +796,16 @@ func (manager *PluginCapabilityManager) resolvePluginCallTarget(ctx context.Cont
 	if err != nil {
 		return pluginCallTarget{}, err
 	}
+	runtimeFace, err := manager.pluginCallRuntime(ctx, installed)
+	if err != nil {
+		return pluginCallTarget{}, err
+	}
+	localAgentID := pluginCallLocalAgentID(manager.store)
 	for _, instance := range instances {
 		if !instance.DesiredEnabled {
 			continue
 		}
-		if !pluginHostInstanceTargetsAgent(instance.TargetJSON, agentID) {
+		if !pluginHostInstanceTargetsAgent(runtimeFace, instance.TargetJSON, agentID, localAgentID) {
 			continue
 		}
 		operationID := strings.TrimSpace(instance.PendingOperationID)
@@ -1014,21 +1019,44 @@ func (manager *PluginCapabilityManager) resolvePluginHostHTTPRule(ctx context.Co
 	return HTTPRule{}, errPluginHostInvalid
 }
 
-func pluginHostInstanceTargetsAgent(raw, agentID string) bool {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" || strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+func (manager *PluginCapabilityManager) pluginCallRuntime(ctx context.Context, installed storage.InstalledPluginRow) (pluginsdk.Runtime, error) {
+	if manager == nil || manager.store == nil {
+		return pluginsdk.Runtime{}, errPluginHostUnavailable
+	}
+	identity := strings.TrimSpace(installed.ActivePackageIdentity)
+	if identity == "" {
+		return pluginsdk.Runtime{}, errPluginHostUnavailable
+	}
+	packageRow, found, err := manager.store.GetPluginPackageByIdentity(ctx, identity)
+	if err != nil {
+		return pluginsdk.Runtime{}, err
+	}
+	if !found {
+		return pluginsdk.Runtime{}, errPluginHostUnavailable
+	}
+	var manifest pluginsdk.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return pluginsdk.Runtime{}, errPluginHostUnavailable
+	}
+	return manifest.Runtime, nil
+}
+
+func pluginCallLocalAgentID(store any) string {
+	type localAgentIDStore interface {
+		LocalAgentID() string
+	}
+	if local, ok := store.(localAgentIDStore); ok {
+		return local.LocalAgentID()
+	}
+	return ""
+}
+
+func pluginHostInstanceTargetsAgent(runtime pluginsdk.Runtime, raw, agentID, localAgentID string) bool {
+	targets, err := pluginExplicitTargetIDs(json.RawMessage(raw))
+	if err != nil {
 		return false
 	}
-	var targets []string
-	if json.Unmarshal([]byte(raw), &targets) != nil {
-		return false
-	}
-	for _, target := range targets {
-		if strings.TrimSpace(target) == agentID {
-			return true
-		}
-	}
-	return false
+	return pluginsdk.InstanceTargetsRemoteAgent(runtime, targets, agentID, localAgentID)
 }
 
 func pluginHostHTTPRuleResult(rule HTTPRule) map[string]any {
