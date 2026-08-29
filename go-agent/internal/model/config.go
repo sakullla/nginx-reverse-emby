@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -309,9 +310,16 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 		return Config{}, errors.New("NRE_BACKEND_FAILURE_BACKOFF_BASE must be less than or equal to NRE_BACKEND_FAILURE_BACKOFF_LIMIT")
 	}
 
-	cfg.RuntimePackageSHA256 = executableSHA256(executablePath)
+	cfg.RuntimePackageSHA256 = RunningExecutableSHA256(executablePath)
 
 	return cfg, nil
+}
+
+// RunningExecutableSHA256 hashes the process image that is actually running.
+// On Linux that is /proc/self/exe, so replacing the on-disk install path
+// during a staged upgrade cannot make heartbeats claim the candidate digest.
+func RunningExecutableSHA256(executablePath string) string {
+	return executableSHA256(executablePath)
 }
 
 func parsePositiveDurationEnv(name, value string) (time.Duration, error) {
@@ -366,6 +374,9 @@ func parseNonNegativeIntEnv(name, value string) (int, error) {
 }
 
 func executableSHA256(executablePath string) string {
+	if digest := hashFile(runningImagePath()); digest != "" {
+		return digest
+	}
 	resolvedPath := strings.TrimSpace(executablePath)
 	if resolvedPath == "" {
 		path, err := os.Executable()
@@ -383,16 +394,26 @@ func executableSHA256(executablePath string) string {
 			}
 		}
 	}
-	if strings.TrimSpace(resolvedPath) == "" {
+	return hashFile(resolvedPath)
+}
+
+func runningImagePath() string {
+	if stdruntime.GOOS == "linux" {
+		return "/proc/self/exe"
+	}
+	return ""
+}
+
+func hashFile(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return ""
 	}
-
-	file, err := os.Open(resolvedPath)
+	file, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
 	defer file.Close()
-
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return ""

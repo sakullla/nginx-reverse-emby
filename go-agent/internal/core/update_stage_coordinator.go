@@ -265,6 +265,26 @@ func (c *PackageStageCoordinator) Cancel() {
 	}
 }
 
+// Pending reports that this process still owns an unfinished candidate package
+// (download, verified-ready, or activating). Heartbeats must keep the running
+// image identity until a new process takes over.
+func (c *PackageStageCoordinator) Pending() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.attempt == nil || c.attempt.discarded {
+		return false
+	}
+	switch c.attempt.state {
+	case packageStageRunning, packageStageReady, packageStageActivating:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *PackageStageCoordinator) Close() {
 	if c == nil {
 		return

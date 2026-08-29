@@ -267,6 +267,7 @@ type RuntimePackageInfo struct {
 	Platform string `json:"platform"`
 	Arch     string `json:"arch"`
 	SHA256   string `json:"sha256"`
+	Staging  bool   `json:"staging,omitempty"`
 }
 
 type RegisterRequest struct {
@@ -1324,10 +1325,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	previousRow := row
 	row.Version = defaultString(request.Version, row.Version)
 	row.Platform = defaultString(request.Platform, row.Platform)
-	row.RuntimePackageVersion = defaultString(request.RuntimePackage.Version, row.RuntimePackageVersion)
-	row.RuntimePackagePlatform = defaultString(request.RuntimePackage.Platform, row.RuntimePackagePlatform)
-	row.RuntimePackageArch = defaultString(request.RuntimePackage.Arch, row.RuntimePackageArch)
-	row.RuntimePackageSHA256 = defaultString(request.RuntimePackage.SHA256, row.RuntimePackageSHA256)
+	applyHeartbeatRuntimePackage(&row, previousRow, request)
 	hasAgentURL := request.HasAgentURL || strings.TrimSpace(request.AgentURL) != ""
 	if hasAgentURL {
 		agentURL := trimTrailingSlash(request.AgentURL)
@@ -2062,6 +2060,22 @@ func parseDdnsStatus(raw string) storage.DdnsStatus {
 		return storage.DdnsStatus{}
 	}
 	return status
+}
+
+func applyHeartbeatRuntimePackage(row *storage.AgentRow, previous storage.AgentRow, request HeartbeatRequest) {
+	incomingSHA := strings.TrimSpace(request.RuntimePackage.SHA256)
+	storedSHA := strings.TrimSpace(previous.RuntimePackageSHA256)
+	if request.RuntimePackage.Staging && storedSHA != "" && incomingSHA != "" && !strings.EqualFold(incomingSHA, storedSHA) {
+		row.RuntimePackageVersion = previous.RuntimePackageVersion
+		row.RuntimePackagePlatform = previous.RuntimePackagePlatform
+		row.RuntimePackageArch = previous.RuntimePackageArch
+		row.RuntimePackageSHA256 = storedSHA
+		return
+	}
+	row.RuntimePackageVersion = defaultString(request.RuntimePackage.Version, previous.RuntimePackageVersion)
+	row.RuntimePackagePlatform = defaultString(request.RuntimePackage.Platform, previous.RuntimePackagePlatform)
+	row.RuntimePackageArch = defaultString(request.RuntimePackage.Arch, previous.RuntimePackageArch)
+	row.RuntimePackageSHA256 = defaultString(incomingSHA, storedSHA)
 }
 
 func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) string {

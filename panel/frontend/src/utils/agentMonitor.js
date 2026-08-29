@@ -75,13 +75,20 @@ export function overlayMonitorOnAgent(agent, monitor) {
   return preserveRunningPackage(agent, { ...agent, ...monitor })
 }
 
+export function mergeFetchedAgents(previous, next) {
+  if (!Array.isArray(next)) return Array.isArray(previous) ? previous : []
+  if (!Array.isArray(previous) || previous.length === 0) return next
+  const previousById = new Map(previous.map((agent) => [agent?.id, agent]))
+  return next.map((agent) => preserveRunningPackage(previousById.get(agent?.id), agent))
+}
+
 export function mergeMonitorAgents(previous = [], update) {
   const nextAgent = quantizeLastSeenAt(update?.agent || update)
   if (!nextAgent?.id) return Array.isArray(previous) ? previous : []
   const agents = Array.isArray(previous) ? [...previous] : []
   const index = agents.findIndex((agent) => agent?.id === nextAgent.id)
   if (index >= 0) {
-    agents[index] = { ...agents[index], ...nextAgent }
+    agents[index] = preserveRunningPackage(agents[index], { ...agents[index], ...nextAgent })
     return agents
   }
   agents.push(nextAgent)

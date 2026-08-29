@@ -100,6 +100,32 @@ func (u *coordinatorTestUpdater) activations() []coordinatorActivation {
 	return append([]coordinatorActivation(nil), u.activateCalls...)
 }
 
+func TestPackageStageCoordinatorPendingWhileDownloadOrActivationRuns(t *testing.T) {
+	t.Parallel()
+	if NewPackageStageCoordinator().Pending() {
+		t.Fatal("empty coordinator must not report pending")
+	}
+
+	url := "https://updates.example.test/pending-agent"
+	updater := newCoordinatorTestUpdater(url)
+	coordinator := NewPackageStageCoordinator()
+	pkg := coordinatorTestPackage(url, "c")
+	if err := coordinator.Ensure(t.Context(), updater, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
+	}
+	waitForCoordinatorSignal(t, updater.started[url])
+	if !coordinator.Pending() {
+		t.Fatal("running stage must report pending")
+	}
+	close(updater.release[url])
+	waitForCoordinatorResult(t, func() error {
+		return coordinator.Ensure(t.Context(), updater, pkg)
+	}, nil)
+	if !coordinator.Pending() {
+		t.Fatal("verified-ready stage must report pending until a new process takes over")
+	}
+}
+
 func TestPackageStageCoordinatorReusesCanonicalIdentityAcrossLocatorAndVersionChanges(t *testing.T) {
 	oldURL := "https://old.example.test/nre-agent"
 	newURL := "https://new.example.test/nre-agent"
