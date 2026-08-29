@@ -168,6 +168,7 @@ func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError strin
 	normalizedError := strings.ToLower(strings.TrimSpace(lastSyncError))
 	restartRequested := strings.ToLower(ErrRestartRequested.Error())
 	recovered := isLegacyHeartbeatSyncError(normalizedError) ||
+		isRevisionReportAckError(normalizedError) ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
 		strings.HasPrefix(normalizedError, "durable generation does not match the desired runtime snapshot") ||
 		strings.HasPrefix(normalizedError, "start hot restart child:") ||
@@ -185,6 +186,11 @@ func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError strin
 func isLegacyHeartbeatSyncError(message string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	return strings.HasPrefix(normalized, "heartbeat failed:") || isLegacyHeartbeatTransportError(normalized)
+}
+
+func isRevisionReportAckError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(normalized, "/api/agent-revisions/") && strings.Contains(normalized, "/report failed")
 }
 
 func hasLegacyHeartbeatApplyError(metadata map[string]string) bool {
