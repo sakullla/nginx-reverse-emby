@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -172,3 +173,47 @@ func (r *mixedScopeControlPlaneRuntime) ActivateBatch(_ context.Context, candida
 
 func (*mixedScopeControlPlaneRuntime) ActiveGeneration(string) (string, bool) { return "", false }
 func (*mixedScopeControlPlaneRuntime) Stop(context.Context, string) error     { return nil }
+
+func TestPluginLifecycleReconcilerAcksSucceededUpgradeWhenRuntimeReportConflicts(t *testing.T) {
+	t.Parallel()
+
+	digest := strings.Repeat("c", 64)
+	store := &conflictingSucceededLifecycleStore{
+		operation: storage.PluginOperationRow{
+			ID: "pluginop-docker-app", PluginID: "docker-app", Kind: "upgrade", Status: "succeeded",
+			TargetPackageDigest: digest, TargetRevision: 478, ActorID: "admin",
+		},
+	}
+	reconciler, err := NewPluginLifecycleReconciler(store, &mixedScopeLifecycleCompletion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reconciler.Reconcile(t.Context(), storage.PluginGenerationReport{
+		OperationID: "pluginop-docker-app", AgentID: "edge-a", InstanceID: "docker-app-default",
+		PluginID: "docker-app", Revision: 478, GenerationID: digest,
+		PackageDigest: digest, ArtifactDigest: digest, State: "active", Sequence: 1,
+		Details: json.RawMessage(`{"sandbox_provider":"linux-reexec-kernel-v1"}`),
+	}, "agent:edge-a")
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.Completed || !result.Applied || !result.Replayed {
+		t.Fatalf("Reconcile() result = %+v", result)
+	}
+}
+
+type conflictingSucceededLifecycleStore struct {
+	operation storage.PluginOperationRow
+}
+
+func (*conflictingSucceededLifecycleStore) RecordPluginAgentRuntimeReport(context.Context, storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error) {
+	return storage.PluginAgentRuntimeStatusRow{}, false, storage.ErrPluginGenerationConflict
+}
+
+func (*conflictingSucceededLifecycleStore) ListPluginAgentRuntimeStatuses(context.Context, string) ([]storage.PluginAgentRuntimeStatusRow, error) {
+	return nil, nil
+}
+
+func (s *conflictingSucceededLifecycleStore) GetPluginOperation(context.Context, string) (storage.PluginOperationRow, bool, error) {
+	return s.operation, true, nil
+}

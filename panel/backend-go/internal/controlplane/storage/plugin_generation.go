@@ -714,6 +714,9 @@ func (s *GormStore) RecordPluginAgentRuntimeReport(ctx context.Context, report P
 	replayed := false
 	err = s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND agent_id = ? AND instance_id = ?", report.OperationID, report.AgentID, report.InstanceID).First(&result).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPluginGenerationStale
+			}
 			return err
 		}
 		if result.AuthoritySlot == "retired" {

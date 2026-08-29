@@ -2,40 +2,41 @@ import { useQueryClient } from '@tanstack/vue-query'
 import { computed, onScopeDispose, ref, unref, watch } from 'vue'
 import * as api from '../api'
 import { useAuthState } from '../context/useAuthState'
-import { mergeMonitorAgents, monitorSnapshotAgents } from '../utils/agentMonitor'
+import { mergeMonitorAgents, monitorSnapshotAgents, preserveRunningPackage } from '../utils/agentMonitor'
 
 export const AGENT_MONITOR_QUERY_KEY = ['agent-monitor']
 export const AGENT_MONITOR_RECONNECT_DELAY_MS = 2000
 
 function mergeAgentList(previous, monitorAgent) {
   if (!monitorAgent?.id || !Array.isArray(previous)) return previous
-  return previous.map((agent) => agent?.id === monitorAgent.id
-    ? {
-        ...agent,
-        name: monitorAgent.name || agent.name,
-        status: monitorAgent.status || agent.status,
-        last_seen_at: monitorAgent.last_seen_at || agent.last_seen_at,
-        last_seen_ip: monitorAgent.last_seen_ip || agent.last_seen_ip,
-        // DDNS display fields (T7): these must be in the whitelist so a monitor
-        // SSE message that omits them never regresses cached v4/v6/domain/status.
-        last_seen_ipv4: monitorAgent.last_seen_ipv4 || agent.last_seen_ipv4,
-        last_seen_ipv6: monitorAgent.last_seen_ipv6 || agent.last_seen_ipv6,
-        ddns_domain: monitorAgent.ddns_domain || agent.ddns_domain,
-        ddns_status: monitorAgent.ddns_status || agent.ddns_status,
-        version: monitorAgent.version || agent.version,
-        platform: monitorAgent.platform || agent.platform,
-        runtime_package_version: monitorAgent.runtime_package_version || agent.runtime_package_version,
-        runtime_package_platform: monitorAgent.runtime_package_platform || agent.runtime_package_platform,
-        runtime_package_arch: monitorAgent.runtime_package_arch || agent.runtime_package_arch,
-        runtime_package_sha256: monitorAgent.runtime_package_sha256 || agent.runtime_package_sha256,
-        desired_package_sha256: monitorAgent.desired_package_sha256 || agent.desired_package_sha256,
-        package_sync_status: monitorAgent.package_sync_status || agent.package_sync_status,
-        mode: monitorAgent.mode || agent.mode,
-        tags: Array.isArray(monitorAgent.tags) ? monitorAgent.tags : agent.tags,
-        monitor: monitorAgent
-      }
-    : agent
-  )
+  return previous.map((agent) => {
+    if (agent?.id !== monitorAgent.id) return agent
+    const merged = {
+      ...agent,
+      name: monitorAgent.name || agent.name,
+      status: monitorAgent.status || agent.status,
+      last_seen_at: monitorAgent.last_seen_at || agent.last_seen_at,
+      last_seen_ip: monitorAgent.last_seen_ip || agent.last_seen_ip,
+      // DDNS display fields (T7): these must be in the whitelist so a monitor
+      // SSE message that omits them never regresses cached v4/v6/domain/status.
+      last_seen_ipv4: monitorAgent.last_seen_ipv4 || agent.last_seen_ipv4,
+      last_seen_ipv6: monitorAgent.last_seen_ipv6 || agent.last_seen_ipv6,
+      ddns_domain: monitorAgent.ddns_domain || agent.ddns_domain,
+      ddns_status: monitorAgent.ddns_status || agent.ddns_status,
+      version: monitorAgent.version || agent.version,
+      platform: monitorAgent.platform || agent.platform,
+      runtime_package_version: monitorAgent.runtime_package_version || agent.runtime_package_version,
+      runtime_package_platform: monitorAgent.runtime_package_platform || agent.runtime_package_platform,
+      runtime_package_arch: monitorAgent.runtime_package_arch || agent.runtime_package_arch,
+      runtime_package_sha256: monitorAgent.runtime_package_sha256 || agent.runtime_package_sha256,
+      desired_package_sha256: monitorAgent.desired_package_sha256 || agent.desired_package_sha256,
+      package_sync_status: monitorAgent.package_sync_status || agent.package_sync_status,
+      mode: monitorAgent.mode || agent.mode,
+      tags: Array.isArray(monitorAgent.tags) ? monitorAgent.tags : agent.tags,
+      monitor: monitorAgent
+    }
+    return preserveRunningPackage(agent, merged)
+  })
 }
 
 export function applyAgentMonitorMessage(queryClient, message) {
