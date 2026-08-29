@@ -1,3 +1,20 @@
+export function isRevisionReportAckFailure(message) {
+  const text = String(message || '').toLowerCase()
+  return text.includes('/api/agent-revisions/') && text.includes('/report failed')
+}
+
+export function agentApplyFailed(agent) {
+  if (!agent) return false
+  const applyStatus = agent.last_apply_status
+  if (applyStatus == null || applyStatus === '' || applyStatus === 'success') return false
+  if (isRevisionReportAckFailure(agent.last_apply_message)) {
+    const current = normalizeRevision(agent.current_revision)
+    const lastApply = normalizeRevision(agent.last_apply_revision, current)
+    if (lastApply <= current) return false
+  }
+  return true
+}
+
 export function getAgentStatus(agent) {
   if (!agent) return 'offline'
   if (agent.status === 'offline') return 'offline'
@@ -5,8 +22,7 @@ export function getAgentStatus(agent) {
   const desired = normalizeRevision(agent.desired_revision)
   const current = normalizeRevision(agent.current_revision)
   const lastApplyRevision = normalizeRevision(agent.last_apply_revision, current)
-  const applyStatus = agent.last_apply_status
-  const applyFailed = applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success'
+  const applyFailed = agentApplyFailed(agent)
 
   if (desired > current) {
     if (applyFailed && lastApplyRevision >= desired) return 'failed'

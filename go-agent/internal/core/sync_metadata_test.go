@@ -34,6 +34,20 @@ func TestRecoverableSyncApplyErrorClearsLegacySchemaIdentityMismatch(t *testing.
 	}
 }
 
+func TestRecoverableSyncApplyErrorClearsRevisionReportAckFailure(t *testing.T) {
+	message := `revision request /api/agent-revisions/478/report failed: 500 Internal Server Error: {"message":"internal server error","ok":false}`
+	metadata := map[string]string{
+		"last_apply_status":  "error",
+		"last_apply_message": message,
+	}
+	if !isRecoverableSyncApplyError(metadata, message) {
+		t.Fatal("revision report ACK failure was not cleared after a later successful sync")
+	}
+	if isRevisionReportAckError("nginx config test failed") {
+		t.Fatal("unrelated apply failure was treated as a revision report ACK error")
+	}
+}
+
 func TestRecoverableSyncApplyErrorClearsBareHeartbeatSocketFailure(t *testing.T) {
 	message := "read tcp 172.31.143.160:33608->23.138.76.10:443: read: connection reset by peer"
 	metadata := map[string]string{"last_apply_status": "error", "last_apply_message": message}

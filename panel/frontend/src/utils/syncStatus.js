@@ -1,3 +1,5 @@
+import { agentApplyFailed } from './agentHelpers.js'
+
 function normalizeRevision(value, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
@@ -10,8 +12,7 @@ export function getAgentSyncStatus(agent) {
   const desired = normalizeRevision(agent.desired_revision)
   const current = normalizeRevision(agent.current_revision)
   const lastApplyRevision = normalizeRevision(agent.last_apply_revision, current)
-  const applyStatus = agent.last_apply_status
-  const applyFailed = applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success'
+  const applyFailed = agentApplyFailed(agent)
 
   if (desired > current) {
     if (applyFailed && lastApplyRevision >= desired) return 'failed'
@@ -29,8 +30,7 @@ export function getRuleEffectiveStatus(rule, agent) {
   const targetRevision = normalizeRevision(rule.revision)
   const currentRevision = normalizeRevision(agent.current_revision)
   const lastApplyRevision = normalizeRevision(agent.last_apply_revision, currentRevision)
-  const applyStatus = agent.last_apply_status
-  const applyFailed = applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success'
+  const applyFailed = agentApplyFailed(agent)
 
   if (targetRevision <= currentRevision) return 'active'
   if (applyFailed && lastApplyRevision >= targetRevision) return 'failed'

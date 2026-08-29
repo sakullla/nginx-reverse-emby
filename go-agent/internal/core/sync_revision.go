@@ -169,7 +169,7 @@ func (c *SyncController) performRevisionSyncPlan(
 			}
 		}
 		if journal.Active.Acknowledged || journal.Active.AppliedReportRejected {
-			return nil
+			return c.clearLastSyncErrorAfterSuccessfulSync()
 		}
 		if err := c.resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
 			return c.recordRuntimeError(err)
