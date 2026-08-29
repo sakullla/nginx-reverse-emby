@@ -171,6 +171,33 @@ func (request PluginCallRequest) Validate() error {
 	return nil
 }
 
+// EncodePluginCallPayload encodes the opaque inner plugin.call payload.
+func EncodePluginCallPayload(inner any) (json.RawMessage, error) {
+	switch typed := inner.(type) {
+	case nil:
+		return nil, nil
+	case json.RawMessage:
+		return typed, nil
+	case []byte:
+		return typed, nil
+	default:
+		return json.Marshal(typed)
+	}
+}
+
+// NewPluginCallRequest builds the canonical control-plane → Agent envelope.
+func NewPluginCallRequest(agentID, name string, inner any) (PluginCallRequest, error) {
+	payload, err := EncodePluginCallPayload(inner)
+	if err != nil {
+		return PluginCallRequest{}, err
+	}
+	request := PluginCallRequest{AgentID: agentID, Name: name, Payload: payload}
+	if err := request.Validate(); err != nil {
+		return PluginCallRequest{}, err
+	}
+	return request, nil
+}
+
 const (
 	HTTPRuleActionCreate  = "create"
 	HTTPRuleActionCutover = "cutover"

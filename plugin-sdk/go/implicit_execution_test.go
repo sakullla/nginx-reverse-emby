@@ -1,0 +1,73 @@
+package pluginsdk
+
+import (
+	"testing"
+)
+
+func TestRuntimeImplicitRemoteAgentExecution(t *testing.T) {
+	t.Parallel()
+	dual := Runtime{
+		Kind: RuntimeRPCService, ABI: RPCABIV1,
+		HostScope: HostScopeControlPlane, HostScopes: []string{HostScopeAgent},
+	}
+	if !RuntimeProjectsAgentRPC(dual) || !RuntimeImplicitRemoteAgentExecution(dual) {
+		t.Fatalf("dual-face runtime = %+v", dual)
+	}
+	agentOnly := Runtime{Kind: RuntimeRPCService, HostScope: HostScopeAgent}
+	if !RuntimeProjectsAgentRPC(agentOnly) || RuntimeImplicitRemoteAgentExecution(agentOnly) {
+		t.Fatalf("agent-only runtime = %+v", agentOnly)
+	}
+	controlOnly := Runtime{Kind: RuntimeRPCService, HostScope: HostScopeControlPlane}
+	if RuntimeProjectsAgentRPC(controlOnly) || RuntimeImplicitRemoteAgentExecution(controlOnly) {
+		t.Fatalf("control-plane-only runtime = %+v", controlOnly)
+	}
+	wasm := Runtime{Kind: RuntimeWASMPolicy, HostScope: HostScopeAgent, HostScopes: []string{HostScopeControlPlane}}
+	if RuntimeProjectsAgentRPC(wasm) || RuntimeImplicitRemoteAgentExecution(wasm) {
+		t.Fatalf("wasm runtime = %+v", wasm)
+	}
+}
+
+func TestInstanceTargetsRemoteAgent(t *testing.T) {
+	t.Parallel()
+	dual := Runtime{
+		Kind: RuntimeRPCService, HostScope: HostScopeControlPlane, HostScopes: []string{HostScopeAgent},
+	}
+	controlOnly := Runtime{Kind: RuntimeRPCService, HostScope: HostScopeControlPlane}
+
+	if InstanceTargetsRemoteAgent(dual, nil, "edge-a", "local") != true {
+		t.Fatal("empty dual-face targets must include remote Agents")
+	}
+	if InstanceTargetsRemoteAgent(dual, nil, "local", "local") {
+		t.Fatal("empty dual-face targets must skip the embedded local Agent")
+	}
+	if InstanceTargetsRemoteAgent(dual, nil, "", "local") {
+		t.Fatal("empty agent id must not match")
+	}
+	if InstanceTargetsRemoteAgent(controlOnly, nil, "edge-a", "local") {
+		t.Fatal("control-plane-only empty targets must not imply Agent execution")
+	}
+	if InstanceTargetsRemoteAgent(dual, []string{"edge-b"}, "edge-a", "local") {
+		t.Fatal("explicit targets must remain an allowlist")
+	}
+	if !InstanceTargetsRemoteAgent(dual, []string{"edge-a"}, "edge-a", "local") {
+		t.Fatal("explicit target must include that Agent")
+	}
+	if !InstanceTargetsRemoteAgent(agentOnlyRuntime(), []string{"local"}, "local", "local") {
+		t.Fatal("explicit local target on an agent-only plugin must still match")
+	}
+}
+
+func agentOnlyRuntime() Runtime {
+	return Runtime{Kind: RuntimeRPCService, HostScope: HostScopeAgent}
+}
+
+func TestAgentExecutionFace(t *testing.T) {
+	t.Setenv(EnvPluginHostEndpoint, "")
+	if !AgentExecutionFace() {
+		t.Fatal("missing host runtime endpoint must be the Agent execution face")
+	}
+	t.Setenv(EnvPluginHostEndpoint, "unix:/run/nre-plugin/host.sock")
+	if AgentExecutionFace() {
+		t.Fatal("control-plane host runtime endpoint still classified as Agent face")
+	}
+}
