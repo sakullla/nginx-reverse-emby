@@ -631,7 +631,20 @@ func (s *PluginService) ResolveAgentPluginArtifact(ctx context.Context, agentID 
 
 func (s *PluginService) InstallMutation(ctx context.Context, request PluginInstallRequest) (PluginSummary, error) {
 	row, err := s.Install(ctx, request)
-	return pluginSummary(row), err
+	if err != nil {
+		return pluginSummary(row), err
+	}
+	if err := s.autostartControlPlanePlugin(ctx, request); err != nil {
+		return pluginSummary(row), err
+	}
+	updated, found, lookupErr := s.store.GetInstalledPlugin(ctx, row.PluginID)
+	if lookupErr != nil {
+		return pluginSummary(row), lookupErr
+	}
+	if found {
+		row = updated
+	}
+	return pluginSummary(row), nil
 }
 
 func (s *PluginService) EnableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
@@ -990,8 +1003,11 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 		return nil
 	}
 	statuses, err := statusStore.ListPluginAgentRuntimeStatuses(ctx, operation.ID)
-	if err != nil || len(statuses) == 0 {
+	if err != nil {
 		return err
+	}
+	if len(statuses) == 0 {
+		return s.completePendingConfigureWithoutAgentRuntime(ctx, installed, operation)
 	}
 	applied := true
 	terminalStatuses := make([]storage.PluginAgentRuntimeStatusRow, len(statuses))
@@ -1038,6 +1054,70 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 	default:
 		return nil
 	}
+	return err
+}
+
+func (s *PluginService) completePendingConfigureWithoutAgentRuntime(ctx context.Context, installed storage.InstalledPluginRow, operation storage.PluginOperationRow) error {
+	if operation.Kind != "configure" {
+		return nil
+	}
+	instances, err := s.store.ListPluginInstances(ctx, installed.PluginID)
+	if err != nil {
+		return err
+	}
+	foundPending := false
+	for _, instance := range instances {
+		if instance.PendingOperationID != operation.ID {
+			continue
+		}
+		foundPending = true
+		targets, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
+		if err != nil {
+			return err
+		}
+		if len(targets) > 0 {
+			return nil
+		}
+	}
+	if !foundPending {
+		return nil
+	}
+	return s.CompleteTrustedRevisionOperation(ctx, operation, true, map[string]any{})
+}
+
+func (s *PluginService) autostartControlPlanePlugin(ctx context.Context, request PluginInstallRequest) error {
+	manifest := request.Package.Package.Manifest
+	if !pluginManifestOwnsSingletonControlPlaneSurface(manifest) ||
+		!pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
+		return nil
+	}
+	instances, err := s.store.ListPluginInstances(ctx, manifest.ID)
+	if err != nil {
+		return err
+	}
+	if len(instances) > 0 {
+		return nil
+	}
+	instanceID := strings.TrimSpace(manifest.ID) + "-default"
+	if err := storage.ValidatePluginPolicyIdentity(instanceID); err != nil {
+		instanceID = "plugin-default"
+	}
+	_, err = s.ConfigureMutation(ctx, PluginConfigureRequest{
+		PluginID:        manifest.ID,
+		InstanceID:      instanceID,
+		ResourceGroupID: "default",
+		Targets:         []string{},
+		Config:          json.RawMessage(`{}`),
+		ActorID:         request.ActorID,
+		Actor:           authz.Actor{ID: request.ActorID, Bootstrap: true, Permissions: []string{"*"}},
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.reconcilePendingPluginOperation(ctx, manifest.ID); err != nil {
+		return err
+	}
+	_, err = s.EnableMutation(ctx, manifest.ID, request.ActorID)
 	return err
 }
 
@@ -1134,7 +1214,7 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 		}
 	}
 	mutationCtx := context.WithValue(ctx, pluginLifecycleOperationContextKey{}, operationID)
-	if dependencyAction == revision.DependencyActionDelete && len(targetIDs) == 0 {
+	if len(targetIDs) == 0 {
 		return mutate(s, mutationCtx)
 	}
 	_, err = s.mutationExecutor.Execute(mutationCtx, revision.MutationRequest{

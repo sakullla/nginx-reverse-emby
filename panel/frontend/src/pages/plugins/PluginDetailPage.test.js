@@ -1270,6 +1270,18 @@ describe('PluginDetailPage', () => {
     expect(buttonByText(wrapper, '编辑配置')).toBeTruthy()
   })
 
+  it('does not offer a deploy action for an undeployed control-plane managed plugin', async () => {
+    const wrapper = await mountPage(undeployedDetail({
+      package: {
+        ...makeDetail().package,
+        manifest: { id: 'shadowsocks-server', name: 'Shadowsocks 服务', extension_points: ['ui.route', 'resource.group'] }
+      }
+    }))
+    expect(buttonByText(wrapper, '开始部署')).toBeFalsy()
+    expect(buttonByText(wrapper, '部署')).toBeFalsy()
+    expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
+  })
+
   it('opens the in-page management href in the current window instead of the published frontend url', async () => {
     mocks.fetchPluginUIRoutes.mockResolvedValue([
       { id: 'official.waf', label: 'WAF', href: '/panel-api/plugins/official.waf/' }
