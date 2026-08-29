@@ -185,7 +185,7 @@ func TestPluginDeleteInstanceIgnoresTargetAgentDeletedOutOfBand(t *testing.T) {
 	}
 }
 
-func TestPluginConfigureAllowsDualFaceManagementOnlyWithoutAgentGeneration(t *testing.T) {
+func TestPluginConfigureAllowsDualFaceEmptyTargetsToFormRemoteAgentGeneration(t *testing.T) {
 	fixture := newPluginTargetAuthorityFixture(t, "official.dual-management-only", true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
 	request := fixture.configureRequest("edge-a", "management-only-instance")
@@ -196,16 +196,25 @@ func TestPluginConfigureAllowsDualFaceManagementOnlyWithoutAgentGeneration(t *te
 		t.Fatalf("ConfigureMutation() error = %v", err)
 	}
 	if len(instance.PendingTargets) != 0 {
-		t.Fatalf("management-only pending targets = %v", instance.PendingTargets)
+		t.Fatalf("implicit dual-face pending targets = %v", instance.PendingTargets)
 	}
-	for _, agentID := range []string{"local", "edge-a"} {
-		generations, err := fixture.store.LoadAgentPluginGenerations(ctx, agentID, runtime.GOOS+"-"+runtime.GOARCH)
-		if err != nil {
-			t.Fatalf("LoadAgentPluginGenerations(%s) error = %v", agentID, err)
-		}
-		if len(generations) != 0 {
-			t.Fatalf("management-only Agent generations for %s = %+v", agentID, generations)
-		}
+	localGenerations, err := fixture.store.LoadAgentPluginGenerations(ctx, "local", runtime.GOOS+"-"+runtime.GOARCH)
+	if err != nil {
+		t.Fatalf("LoadAgentPluginGenerations(local) error = %v", err)
+	}
+	if len(localGenerations) != 0 {
+		t.Fatalf("embedded local Agent generations = %+v", localGenerations)
+	}
+	generations, err := fixture.store.LoadAgentPluginGenerations(ctx, "edge-a", runtime.GOOS+"-"+runtime.GOARCH)
+	if err != nil {
+		t.Fatalf("LoadAgentPluginGenerations(edge-a) error = %v", err)
+	}
+	if len(generations) != 1 {
+		t.Fatalf("implicit remote Agent generations = %+v", generations)
+	}
+	generation := generations[0]
+	if generation.InstanceID != "management-only-instance" || generation.Target.ID != "edge-a" || generation.Runtime.HostScope != "agent" {
+		t.Fatalf("implicit remote Agent generation authority = %+v", generation)
 	}
 }
 

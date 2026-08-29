@@ -74,6 +74,7 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 			return nil, err
 		}
 		targetedInstances := make([]PluginInstanceRow, 0, len(instances))
+		implicitInstances := make([]PluginInstanceRow, 0)
 		for _, instance := range instances {
 			hasPendingGeneration := instance.PendingOperationID != "" && instance.PendingOperationID == plugin.PendingOperationID && instance.PendingVersion > 0
 			if instance.ConfigVersion == 0 && !hasPendingGeneration {
@@ -91,11 +92,15 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 			if err != nil {
 				return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 			}
+			if len(targets) == 0 {
+				implicitInstances = append(implicitInstances, instance)
+				continue
+			}
 			if pluginGenerationContainsString(targets, agentID) {
 				targetedInstances = append(targetedInstances, instance)
 			}
 		}
-		if len(targetedInstances) == 0 {
+		if len(targetedInstances) == 0 && len(implicitInstances) == 0 {
 			continue
 		}
 		packageIdentity, packageDigest := plugin.ActivePackageIdentity, plugin.ActivePackageDigest
@@ -125,7 +130,13 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 		}
 		// WASM execution remains owned by the existing PluginPolicies projection.
 		// Publishing it through both contracts would instantiate it twice.
-		if !pluginManifestProjectsAgentRPC(manifest) {
+		if !pluginsdk.RuntimeProjectsAgentRPC(manifest.Runtime) {
+			continue
+		}
+		if pluginsdk.RuntimeImplicitRemoteAgentExecution(manifest.Runtime) && !pluginsdk.ImplicitRemoteAgentExecutionSkipsAgent(s.LocalAgentID(), agentID) {
+			targetedInstances = append(targetedInstances, implicitInstances...)
+		}
+		if len(targetedInstances) == 0 {
 			continue
 		}
 		artifact, err := s.selectPluginGenerationArtifact(ctx, packageRow, manifest, platform)
@@ -281,10 +292,6 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 		return PluginGeneration{}, err
 	}
 	return generation, nil
-}
-
-func pluginManifestProjectsAgentRPC(manifest plugins.Manifest) bool {
-	return strings.TrimSpace(manifest.Runtime.Kind) == pluginsdk.RuntimeRPCService && pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent)
 }
 
 func pluginGenerationRequiredFeatures(grants []PluginGenerationGrant, extensionPoints []string) []string {
