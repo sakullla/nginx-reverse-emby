@@ -74,7 +74,6 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 			return nil, err
 		}
 		targetedInstances := make([]PluginInstanceRow, 0, len(instances))
-		implicitInstances := make([]PluginInstanceRow, 0)
 		for _, instance := range instances {
 			hasPendingGeneration := instance.PendingOperationID != "" && instance.PendingOperationID == plugin.PendingOperationID && instance.PendingVersion > 0
 			if instance.ConfigVersion == 0 && !hasPendingGeneration {
@@ -93,14 +92,15 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 				return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 			}
 			if len(targets) == 0 {
-				implicitInstances = append(implicitInstances, instance)
+				// Dual-face management stays on the control plane until the
+				// selected Agent is ensured as an execution target.
 				continue
 			}
 			if pluginGenerationContainsString(targets, agentID) {
 				targetedInstances = append(targetedInstances, instance)
 			}
 		}
-		if len(targetedInstances) == 0 && len(implicitInstances) == 0 {
+		if len(targetedInstances) == 0 {
 			continue
 		}
 		packageIdentity, packageDigest := plugin.ActivePackageIdentity, plugin.ActivePackageDigest
@@ -132,9 +132,6 @@ func (s *GormStore) loadAgentPluginGenerations(ctx context.Context, agentID, pla
 		// Publishing it through both contracts would instantiate it twice.
 		if !pluginsdk.RuntimeProjectsAgentRPC(manifest.Runtime) {
 			continue
-		}
-		if pluginsdk.RuntimeImplicitRemoteAgentExecution(manifest.Runtime) && !pluginsdk.ImplicitRemoteAgentExecutionSkipsAgent(s.LocalAgentID(), agentID) {
-			targetedInstances = append(targetedInstances, implicitInstances...)
 		}
 		if len(targetedInstances) == 0 {
 			continue

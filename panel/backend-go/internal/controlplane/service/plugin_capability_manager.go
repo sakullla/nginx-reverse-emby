@@ -76,6 +76,7 @@ type PluginCapabilityManager struct {
 	store              PluginCapabilityManagerStore
 	resourceAuthorizer PluginCapabilityResourceAuthorizer
 	runtime            PluginCapabilityRuntime
+	plugins            *PluginService
 	loadPackage        func(context.Context, storage.PluginPackageRow) (plugins.ValidatedPackage, error)
 	handles            *pluginhost.ResourceHandleBroker
 	actions            *pluginhost.DynamicActionRegistry
@@ -94,7 +95,7 @@ func NewPluginCapabilityManager(store PluginCapabilityManagerStore, resourceAuth
 	if store == nil || resourceAuthorizer == nil || runtime == nil || packages == nil {
 		return nil, errors.New("plugin capability durable store, authorization owner, package validator, and runtime are required")
 	}
-	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock)}
+	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, plugins: packages, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock)}
 	manager.loadPackage = packages.loadValidatedCapabilityPackage
 	return manager, nil
 }

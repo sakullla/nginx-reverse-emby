@@ -11,11 +11,11 @@ func RuntimeProjectsAgentRPC(runtime Runtime) bool {
 	return strings.TrimSpace(runtime.Kind) == RuntimeRPCService && RuntimeDeclaresHostScope(runtime, HostScopeAgent)
 }
 
-// RuntimeImplicitRemoteAgentExecution is the dual-face control-plane contract:
-// empty instance targets deliver the Agent execution face to every remote
-// Agent. The embedded local management Agent is never an implicit target.
-// Plugins declare this by host_scope: control-plane plus host_scopes: [agent];
-// they do not list Agents in instance TargetJSON.
+// RuntimeImplicitRemoteAgentExecution is the dual-face control-plane contract.
+// The host auto-starts the management face. Saving configuration for an Agent
+// on that page installs the execution face on that Agent only. The plugin UI
+// does not configure the package onto the Agent as an HTTP backend. The
+// embedded local management Agent is never an execution target.
 func RuntimeImplicitRemoteAgentExecution(runtime Runtime) bool {
 	return RuntimeProjectsAgentRPC(runtime) && RuntimeDeclaresHostScope(runtime, HostScopeControlPlane)
 }
@@ -28,9 +28,10 @@ func ImplicitRemoteAgentExecutionSkipsAgent(localAgentID, agentID string) bool {
 	return agentID == "" || (localAgentID != "" && agentID == localAgentID)
 }
 
-// InstanceTargetsRemoteAgent reports whether plugin.call and Agent generation
-// projection include this Agent. Explicit targets remain an allowlist. Empty
-// targets on an implicit-execution runtime mean every remote Agent.
+// InstanceTargetsRemoteAgent reports whether plugin.call may address this
+// Agent. Explicit targets remain an allowlist. Empty targets on an
+// implicit-execution runtime allow the Agent that a management-page save
+// addresses; they do not mean every Agent.
 func InstanceTargetsRemoteAgent(runtime Runtime, explicitTargets []string, agentID, localAgentID string) bool {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
