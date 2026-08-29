@@ -192,7 +192,9 @@ const taskHint = computed(() => {
     case 'upgrading':
       return '新版本正在应用到节点。完成前请等待，不要重复提交升级。'
     case 'undeployed':
-      return '下一步：选择节点开始部署。'
+      return ownsSingletonControlPlaneSurface.value
+        ? '安装后控制面会自动启用管理面，请打开管理页。'
+        : '下一步：选择节点开始部署。'
     case 'unpublished':
       return '还差发布：填写一条入口域名。'
     case 'published-unavailable':
@@ -204,7 +206,10 @@ const taskHint = computed(() => {
   }
 })
 const primaryTaskLabel = computed(() => (taskState.value === 'unpublished' ? '发布到域名' : '开始部署'))
-const showPrimaryTask = computed(() => taskState.value === 'undeployed' || taskState.value === 'unpublished')
+const showPrimaryTask = computed(() => {
+  if (ownsSingletonControlPlaneSurface.value && taskState.value !== 'unpublished') return false
+  return taskState.value === 'undeployed' || taskState.value === 'unpublished'
+})
 const deployModalInstance = computed(() => (deployIntent.value === 'deploy' ? null : selectedInstance.value))
 
 const hasPendingOperation = computed(() => Boolean(String(detail.value?.plugin?.pending_operation_id || '').trim()))
@@ -213,7 +218,7 @@ const ownsSingletonControlPlaneSurface = computed(() => {
   const points = detail.value?.package?.manifest?.extension_points
   return Array.isArray(points) && (points.includes('ui.route') || points.includes('resource.group'))
 })
-const canCreateInstance = computed(() => !ownsSingletonControlPlaneSurface.value || !hasInstances.value)
+const canCreateInstance = computed(() => !ownsSingletonControlPlaneSurface.value && !hasInstances.value)
 const showUninstallOnTask = computed(() => admin.value && !hasInstances.value)
 const uninstallNeedsDisable = computed(() => hasInstances.value && detail.value?.plugin?.current_lifecycle !== 'disabled' && detail.value?.plugin?.desired_lifecycle !== 'disabled')
 
