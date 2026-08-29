@@ -198,23 +198,14 @@ func TestPluginConfigureAllowsDualFaceEmptyTargetsToFormRemoteAgentGeneration(t 
 	if len(instance.PendingTargets) != 0 {
 		t.Fatalf("implicit dual-face pending targets = %v", instance.PendingTargets)
 	}
-	localGenerations, err := fixture.store.LoadAgentPluginGenerations(ctx, "local", runtime.GOOS+"-"+runtime.GOARCH)
-	if err != nil {
-		t.Fatalf("LoadAgentPluginGenerations(local) error = %v", err)
-	}
-	if len(localGenerations) != 0 {
-		t.Fatalf("embedded local Agent generations = %+v", localGenerations)
-	}
-	generations, err := fixture.store.LoadAgentPluginGenerations(ctx, "edge-a", runtime.GOOS+"-"+runtime.GOARCH)
-	if err != nil {
-		t.Fatalf("LoadAgentPluginGenerations(edge-a) error = %v", err)
-	}
-	if len(generations) != 1 {
-		t.Fatalf("implicit remote Agent generations = %+v", generations)
-	}
-	generation := generations[0]
-	if generation.InstanceID != "management-only-instance" || generation.Target.ID != "edge-a" || generation.Runtime.HostScope != "agent" {
-		t.Fatalf("implicit remote Agent generation authority = %+v", generation)
+	for _, agentID := range []string{"local", "edge-a"} {
+		generations, err := fixture.store.LoadAgentPluginGenerations(ctx, agentID, runtime.GOOS+"-"+runtime.GOARCH)
+		if err != nil {
+			t.Fatalf("LoadAgentPluginGenerations(%s) error = %v", agentID, err)
+		}
+		if len(generations) != 0 {
+			t.Fatalf("unselected Agent %s generations = %+v", agentID, generations)
+		}
 	}
 }
 

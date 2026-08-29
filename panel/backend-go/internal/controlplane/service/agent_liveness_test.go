@@ -71,6 +71,15 @@ func TestAgentHeartbeatLivenessAndPackageStateRemainIndependent(t *testing.T) {
 	}
 	assertAgentListAndDetailState(t, service, agentID, "online", now.Format(time.RFC3339), oldSHA256, targetSHA256, "pending")
 
+	stagingHeartbeat := heartbeat
+	stagingHeartbeat.RuntimePackage = RuntimePackageInfo{
+		Version: desiredVersion, Platform: "linux", Arch: "amd64", SHA256: targetSHA256, Staging: true,
+	}
+	if _, err := service.Heartbeat(t.Context(), stagingHeartbeat, agentToken); err != nil {
+		t.Fatalf("Heartbeat(staging package) error = %v", err)
+	}
+	assertAgentListAndDetailState(t, service, agentID, "online", now.Format(time.RFC3339), oldSHA256, targetSHA256, "pending")
+
 	alignedHeartbeat := heartbeat
 	alignedHeartbeat.RuntimePackage = RuntimePackageInfo{
 		Version: desiredVersion, Platform: "linux", Arch: "amd64", SHA256: targetSHA256,

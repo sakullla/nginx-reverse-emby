@@ -2,12 +2,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import * as api from '../api'
 import { useAuthState } from '../context/useAuthState'
 import { messageStore } from '../stores/messages'
+import { mergeFetchedAgents } from '../utils/agentMonitor'
 
 export function useAgents() {
   const { hasToken } = useAuthState()
+  const queryClient = useQueryClient()
   return useQuery({
     queryKey: ['agents'],
-    queryFn: api.fetchAgents,
+    queryFn: async () => {
+      const next = await api.fetchAgents()
+      return mergeFetchedAgents(queryClient.getQueryData(['agents']), next)
+    },
     refetchInterval: () => hasToken.value ? 10_000 : false,
     enabled: () => !!hasToken.value,
   })

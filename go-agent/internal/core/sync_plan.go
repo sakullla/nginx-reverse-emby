@@ -130,6 +130,9 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 		plan.Request.LastSeenIPv4, plan.Request.LastSeenIPv6 = c.DDNSReporter.LastSeenIPs(ctx)
 	}
 
+	plan.Request.RuntimePackageSHA256 = model.RunningExecutableSHA256("")
+	plan.Request.PackageStaging = c.PackageStages.Pending()
+
 	return plan, nil
 }
 

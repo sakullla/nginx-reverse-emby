@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from 'vitest'
-import { createNDJSONParser, mergeAgentsWithMonitor, mergeMonitorAgents, monitorSnapshotAgents, quantizeLastSeenAt } from './agentMonitor.js'
+import { createNDJSONParser, mergeAgentsWithMonitor, mergeFetchedAgents, mergeMonitorAgents, monitorSnapshotAgents, quantizeLastSeenAt } from './agentMonitor.js'
 
 describe('agent monitor utils', () => {
   it('parses split NDJSON chunks', () => {
@@ -17,6 +17,29 @@ describe('agent monitor utils', () => {
       { type: 'snapshot', payload: { agents: [] } },
       { type: 'update', payload: { agent: { id: 'edge-1' } } }
     ])
+  })
+
+  it('keeps the running package when a list refetch copies the target digest', () => {
+    const running = 'a'.repeat(64)
+    const target = 'b'.repeat(64)
+    const previous = [{
+      id: 'edge-1',
+      runtime_package_sha256: running,
+      desired_package_sha256: target,
+      package_sync_status: 'pending'
+    }]
+    const next = [{
+      id: 'edge-1',
+      runtime_package_sha256: target,
+      desired_package_sha256: target,
+      package_sync_status: 'aligned'
+    }]
+    expect(mergeFetchedAgents(previous, next)).toEqual([{
+      id: 'edge-1',
+      runtime_package_sha256: running,
+      desired_package_sha256: target,
+      package_sync_status: 'pending'
+    }])
   })
 
   it('merges monitor updates by agent id', () => {

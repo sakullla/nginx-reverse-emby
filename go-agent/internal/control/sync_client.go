@@ -68,6 +68,8 @@ type SyncRequest struct {
 	PluginStatuses            []model.PluginRuntimeStatus
 	PluginLogs                []model.PluginRuntimeLogReport
 	PluginLogsAcknowledged    func() error
+	RuntimePackageSHA256      string
+	PackageStaging            bool
 }
 
 func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
@@ -127,7 +129,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		Capabilities:   append([]string(nil), c.cfg.Capabilities...),
 		Version:        c.cfg.CurrentVersion,
 		Platform:       c.cfg.Platform,
-		RuntimePackage: c.cfg.RuntimePackage,
+		RuntimePackage: overlayRuntimePackage(c.cfg.RuntimePackage, request),
 		PKISecurityAck: pkiState.SecurityAcknowledgement,
 		PKIEnrollmentRequests: append(
 			[]model.PKIEnrollmentRequest(nil), pkiState.EnrollmentRequests...,
@@ -250,6 +252,14 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	}
 
 	return snapshot, nil
+}
+
+func overlayRuntimePackage(base model.RuntimePackage, request SyncRequest) model.RuntimePackage {
+	if sha := strings.TrimSpace(request.RuntimePackageSHA256); sha != "" {
+		base.SHA256 = sha
+	}
+	base.Staging = request.PackageStaging
+	return base
 }
 
 func acknowledgePluginLogs(request SyncRequest) error {

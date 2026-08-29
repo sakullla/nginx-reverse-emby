@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -362,16 +363,18 @@ type pluginDependencyConsumerStore interface {
 }
 
 type PluginService struct {
-	store             pluginLifecycleStore
-	validator         *plugins.Validator
-	cacheRoot         string
-	now               func() time.Time
-	cfg               config.Config
-	mutationExecutor  *revision.Executor
-	revisionMutation  bool
-	revisionNumbers   map[string]int64
-	secretVault       *secrets.Vault
-	postCommitActions *[]func()
+	store                pluginLifecycleStore
+	validator            *plugins.Validator
+	cacheRoot            string
+	now                  func() time.Time
+	cfg                  config.Config
+	mutationExecutor     *revision.Executor
+	revisionMutation     bool
+	revisionNumbers      map[string]int64
+	secretVault          *secrets.Vault
+	postCommitActions    *[]func()
+	controlPlaneRuntime  PluginControlPlaneRuntime
+	ensureExecutionFaces sync.Map
 }
 
 func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
@@ -1090,7 +1093,10 @@ func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.
 	if operation.Kind == "configure" && !foundPendingConfigure {
 		return nil
 	}
-	return s.CompleteTrustedRevisionOperation(ctx, operation, true, map[string]any{})
+	if err := s.CompleteTrustedRevisionOperation(ctx, operation, true, map[string]any{}); err != nil {
+		return err
+	}
+	return s.activateControlPlaneRuntime(ctx, operation)
 }
 
 func (s *PluginService) autostartControlPlanePlugin(ctx context.Context, request PluginInstallRequest) error {
@@ -1347,6 +1353,113 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 		ids = []string{defaultTargetID}
 	}
 	return ids, nil
+}
+
+func (s *PluginService) EnsureSelectedAgentExecutionFace(ctx context.Context, pluginID, agentID string) error {
+	if s == nil {
+		return errors.New("plugin service is unavailable")
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	agentID = strings.TrimSpace(agentID)
+	if pluginID == "" || agentID == "" {
+		return fmt.Errorf("%w: plugin and agent identities are required", ErrInvalidArgument)
+	}
+	implicit, err := s.pluginImplicitRemoteExecution(ctx, pluginID)
+	if err != nil || !implicit {
+		return err
+	}
+	if pluginsdk.ImplicitRemoteAgentExecutionSkipsAgent(s.cfg.LocalAgentID, agentID) {
+		return nil
+	}
+	instances, err := s.store.ListPluginInstances(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	var instance storage.PluginInstanceRow
+	for _, candidate := range instances {
+		if !candidate.DesiredEnabled {
+			continue
+		}
+		instance = candidate
+		break
+	}
+	if instance.ID == "" {
+		return ErrPluginInstanceNotFound
+	}
+	targets, err := pluginExplicitTargetIDs(json.RawMessage(instance.TargetJSON))
+	if err != nil {
+		return err
+	}
+	if pluginGenerationContainsString(targets, agentID) {
+		return nil
+	}
+	if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+		pending, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
+		if err != nil {
+			return err
+		}
+		if pluginGenerationContainsString(pending, agentID) {
+			return nil
+		}
+	}
+	key := pluginID + "\x00" + agentID
+	if _, loaded := s.ensureExecutionFaces.LoadOrStore(key, struct{}{}); loaded {
+		return nil
+	}
+	defer s.ensureExecutionFaces.Delete(key)
+	_, err = s.ConfigureMutation(ctx, PluginConfigureRequest{
+		PluginID:        pluginID,
+		InstanceID:      instance.ID,
+		ResourceGroupID: instance.ResourceGroupID,
+		Targets:         append(append([]string{}, targets...), agentID),
+		Config:          json.RawMessage(`{}`),
+		ActorID:         "system:plugin-call",
+		Actor:           authz.Actor{ID: "system:plugin-call", Bootstrap: true, Permissions: []string{"*"}},
+	})
+	if err != nil {
+		return err
+	}
+	return s.reconcilePendingPluginOperation(ctx, pluginID)
+}
+
+func pluginGenerationContainsString(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *PluginService) activateControlPlaneRuntime(ctx context.Context, operation storage.PluginOperationRow) error {
+	if s == nil || s.controlPlaneRuntime == nil {
+		return nil
+	}
+	plan, err := s.controlPlaneRuntimePlan(ctx, operation)
+	if err != nil || !plan.Controlled {
+		return err
+	}
+	for _, instanceID := range plan.StopInstanceIDs {
+		if err := s.controlPlaneRuntime.Stop(ctx, instanceID); err != nil {
+			return err
+		}
+	}
+	pending := make([]pluginhost.Candidate, 0, len(plan.Candidates))
+	for _, candidate := range plan.Candidates {
+		if active, ok := s.controlPlaneRuntime.ActiveGeneration(candidate.InstanceID); ok && active == candidate.Identity.Generation {
+			continue
+		}
+		pending = append(pending, candidate)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	_, err = s.controlPlaneRuntime.ActivateBatch(ctx, pending)
+	return err
 }
 
 func (s *PluginService) pluginImplicitRemoteExecution(ctx context.Context, pluginID string) (bool, error) {
@@ -1768,6 +1881,7 @@ func (s *PluginService) RecoverControlPlaneRuntimes(ctx context.Context, runtime
 	if s == nil || runtime == nil {
 		return errors.New("plugin runtime recovery service and runtime are required")
 	}
+	s.controlPlaneRuntime = runtime
 	store, ok := s.store.(pluginControlPlaneRuntimeRecoveryStore)
 	if !ok {
 		return errors.New("plugin lifecycle store does not support runtime recovery")
