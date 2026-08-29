@@ -33,7 +33,7 @@
               <span class="agent-detail__header-meta" data-testid="detail-header-ipv4">{{ detailLabels.ddns.metaIpv4 }} {{ displayIPv4 }}</span>
             </template>
             <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
-            <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ agent.version || agent.runtime_package_version || '—' }}</span>
+            <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ runningPackageVersion }}</span>
           </div>
         </div>
       </template>
@@ -331,12 +331,12 @@
             <div class="info-sections">
               <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
                 <div class="info-grid">
-                  <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>版本</span><span>{{ runningPackageVersion }}</span></div>
                   <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
                   <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
-                  <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+                  <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="runningPackageSha">{{ shortSha(runningPackageSha) }}</span></div>
                   <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
-                  <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
+                  <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(runningPackageStatus) }}</span></div>
                 </div>
               </BaseListCard>
 
@@ -657,6 +657,15 @@ const detailLabels = agentDetailLabels
 
 const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const runningPackageSha = computed(() => String(agent.value?.runtime_package_sha256 || '').trim())
+const desiredPackageSha = computed(() => String(agent.value?.desired_package_sha256 || '').trim())
+const runningPackageVersion = computed(() => agent.value?.runtime_package_version || agent.value?.version || '—')
+const runningPackageStatus = computed(() => {
+  const running = runningPackageSha.value
+  const desired = desiredPackageSha.value
+  if (running && desired && running.toLowerCase() !== desired.toLowerCase()) return 'pending'
+  return agent.value?.package_sync_status
+})
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 const outboundProxyURL = ref('')

@@ -88,6 +88,62 @@ describe('agent monitor utils', () => {
       expect(merged[0]).not.toBe(a)
     })
 
+    it('keeps the running package while staging heartbeats report the target digest', () => {
+      const running = 'a'.repeat(64)
+      const target = 'b'.repeat(64)
+      const a = {
+        id: 'edge-1',
+        version: '1.0.0',
+        runtime_package_version: '1.0.0',
+        runtime_package_sha256: running,
+        desired_package_sha256: target,
+        package_sync_status: 'pending'
+      }
+      const monitor = {
+        id: 'edge-1',
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        desired_package_sha256: target,
+        package_sync_status: 'aligned'
+      }
+      const merged = mergeAgentsWithMonitor([a], [monitor])
+      expect(merged[0]).toMatchObject({
+        version: '1.0.0',
+        runtime_package_version: '1.0.0',
+        runtime_package_sha256: running,
+        desired_package_sha256: target,
+        package_sync_status: 'pending'
+      })
+      expect(merged[0].monitor).toEqual(monitor)
+    })
+
+    it('accepts the new running package after the durable agent record has switched', () => {
+      const target = 'b'.repeat(64)
+      const a = {
+        id: 'edge-1',
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        desired_package_sha256: target,
+        package_sync_status: 'aligned'
+      }
+      const merged = mergeAgentsWithMonitor([a], [{
+        id: 'edge-1',
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        desired_package_sha256: target,
+        package_sync_status: 'aligned'
+      }])
+      expect(merged[0]).toMatchObject({
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        package_sync_status: 'aligned'
+      })
+    })
+
     it('falls back to inline agent.monitor when no monitor entry matches', () => {
       const a = { id: 'a', monitor: { status: 'online' } }
       const merged = mergeAgentsWithMonitor([a], [])

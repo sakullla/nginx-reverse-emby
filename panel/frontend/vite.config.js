@@ -20,7 +20,6 @@ export default defineConfig({
       'src/pages/outboundProxyURL.test.js',
       'src/utils/agentFilter.test.js',
       'src/utils/agentMetrics.test.js',
-      'src/utils/agentMonitor.test.mjs',
       'src/utils/resolveResourceAgent.test.js',
       'src/utils/resourceCardStatus.test.js',
       'src/utils/trafficStats.test.mjs',

@@ -34,6 +34,47 @@ export function quantizeLastSeenAt(agent) {
   return { ...agent, last_seen_at: date.toISOString() }
 }
 
+function packageSha(value) {
+  return String(value || '').trim()
+}
+
+function samePackageSha(left, right) {
+  const a = packageSha(left)
+  const b = packageSha(right)
+  return Boolean(a) && Boolean(b) && a.toLowerCase() === b.toLowerCase()
+}
+
+// Heartbeats stay alive while a new package is only staged. A monitor payload
+// that copies the target digest into runtime_* would make the panel show the
+// candidate as already running. Keep the last known running identity until
+// the durable agent record itself has switched.
+export function preserveRunningPackage(agent, next) {
+  if (!agent || !next) return next
+  const runningSha = packageSha(agent.runtime_package_sha256)
+  const desiredSha = packageSha(agent.desired_package_sha256 || next.desired_package_sha256)
+  const nextRuntimeSha = packageSha(next.runtime_package_sha256)
+  if (runningSha && desiredSha && !samePackageSha(runningSha, desiredSha) && samePackageSha(nextRuntimeSha, desiredSha)) {
+    return {
+      ...next,
+      runtime_package_sha256: runningSha,
+      runtime_package_version: agent.runtime_package_version,
+      runtime_package_platform: agent.runtime_package_platform,
+      runtime_package_arch: agent.runtime_package_arch,
+      version: agent.version || agent.runtime_package_version,
+      package_sync_status: 'pending'
+    }
+  }
+  if (runningSha && desiredSha && !samePackageSha(runningSha, desiredSha)) {
+    return { ...next, package_sync_status: 'pending' }
+  }
+  return next
+}
+
+export function overlayMonitorOnAgent(agent, monitor) {
+  if (!agent || !monitor) return agent
+  return preserveRunningPackage(agent, { ...agent, ...monitor })
+}
+
 export function mergeMonitorAgents(previous = [], update) {
   const nextAgent = quantizeLastSeenAt(update?.agent || update)
   if (!nextAgent?.id) return Array.isArray(previous) ? previous : []
@@ -55,7 +96,7 @@ export function mergeAgentsWithMonitor(agents, monitorAgents) {
     const monitor = monitorById.get(agent.id) || agent.monitor
     if (!monitor) return agent
     changed = true
-    return { ...agent, ...monitor, monitor }
+    return { ...overlayMonitorOnAgent(agent, monitor), monitor }
   })
   return changed ? merged : baseAgents
 }

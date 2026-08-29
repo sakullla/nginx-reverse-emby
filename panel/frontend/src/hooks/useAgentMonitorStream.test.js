@@ -48,6 +48,7 @@ describe('useAgentMonitorStream', () => {
 
   afterEach(() => {
     clearAuthToken()
+    vi.clearAllTimers()
     vi.useRealTimers()
   })
 
@@ -204,7 +205,7 @@ describe('useAgentMonitorStream', () => {
     wrapper.unmount()
   })
 
-  it('updates cached runtime package identity from an upgrade heartbeat', async () => {
+  it('keeps the running package identity while an upgrade heartbeat reports the target digest', async () => {
     const queryClient = createQueryClient()
     queryClient.setQueryData(['agents'], [{
       id: 'edge-1',
@@ -237,11 +238,53 @@ describe('useAgentMonitorStream', () => {
     await vi.dynamicImportSettled()
 
     expect(queryClient.getQueryData(['agents'])[0]).toMatchObject({
+      runtime_package_version: '1.0.0',
+      runtime_package_platform: 'linux',
+      runtime_package_arch: 'amd64',
+      runtime_package_sha256: 'a'.repeat(64),
+      desired_package_sha256: 'b'.repeat(64),
+      package_sync_status: 'pending'
+    })
+    wrapper.unmount()
+  })
+
+  it('accepts a completed upgrade once the cached running digest already matches the target', async () => {
+    const digest = 'b'.repeat(64)
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['agents'], [{
+      id: 'edge-1',
       runtime_package_version: '2.0.0',
       runtime_package_platform: 'linux',
       runtime_package_arch: 'amd64',
-      runtime_package_sha256: 'b'.repeat(64),
-      desired_package_sha256: 'b'.repeat(64),
+      runtime_package_sha256: digest,
+      desired_package_sha256: digest,
+      package_sync_status: 'aligned'
+    }])
+    api.consumeAgentMonitorStream.mockImplementation(async ({ onMessage }) => {
+      onMessage({
+        type: 'update',
+        payload: {
+          agent: {
+            id: 'edge-1',
+            runtime_package_version: '2.0.0',
+            runtime_package_platform: 'linux',
+            runtime_package_arch: 'amd64',
+            runtime_package_sha256: digest,
+            desired_package_sha256: digest,
+            package_sync_status: 'aligned'
+          }
+        }
+      })
+    })
+
+    const { wrapper } = mountHarness(queryClient, { reconnectDelay: -1 })
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    expect(queryClient.getQueryData(['agents'])[0]).toMatchObject({
+      runtime_package_version: '2.0.0',
+      runtime_package_sha256: digest,
+      desired_package_sha256: digest,
       package_sync_status: 'aligned'
     })
     wrapper.unmount()
