@@ -1007,7 +1007,7 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 		return err
 	}
 	if len(statuses) == 0 {
-		return s.completePendingConfigureWithoutAgentRuntime(ctx, installed, operation)
+		return s.completePendingOperationWithoutAgentRuntime(ctx, installed, operation)
 	}
 	applied := true
 	terminalStatuses := make([]storage.PluginAgentRuntimeStatusRow, len(statuses))
@@ -1057,29 +1057,37 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 	return err
 }
 
-func (s *PluginService) completePendingConfigureWithoutAgentRuntime(ctx context.Context, installed storage.InstalledPluginRow, operation storage.PluginOperationRow) error {
-	if operation.Kind != "configure" {
+func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.Context, installed storage.InstalledPluginRow, operation storage.PluginOperationRow) error {
+	switch operation.Kind {
+	case "configure", "enable", "disable":
+	default:
 		return nil
 	}
 	instances, err := s.store.ListPluginInstances(ctx, installed.PluginID)
 	if err != nil {
 		return err
 	}
-	foundPending := false
+	foundPendingConfigure := false
 	for _, instance := range instances {
-		if instance.PendingOperationID != operation.ID {
-			continue
-		}
-		foundPending = true
-		targets, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
+		targets, err := pluginExplicitTargetIDs(json.RawMessage(instance.TargetJSON))
 		if err != nil {
 			return err
+		}
+		if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+			pendingTargets, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
+			if err != nil {
+				return err
+			}
+			targets = append(targets, pendingTargets...)
 		}
 		if len(targets) > 0 {
 			return nil
 		}
+		if instance.PendingOperationID == operation.ID {
+			foundPendingConfigure = true
+		}
 	}
-	if !foundPending {
+	if operation.Kind == "configure" && !foundPendingConfigure {
 		return nil
 	}
 	return s.CompleteTrustedRevisionOperation(ctx, operation, true, map[string]any{})
@@ -1117,8 +1125,10 @@ func (s *PluginService) autostartControlPlanePlugin(ctx context.Context, request
 	if err := s.reconcilePendingPluginOperation(ctx, manifest.ID); err != nil {
 		return err
 	}
-	_, err = s.EnableMutation(ctx, manifest.ID, request.ActorID)
-	return err
+	if _, err = s.EnableMutation(ctx, manifest.ID, request.ActorID); err != nil {
+		return err
+	}
+	return s.reconcilePendingPluginOperation(ctx, manifest.ID)
 }
 
 func terminalPluginRuntimeStatus(status storage.PluginAgentRuntimeStatusRow, revision storage.AgentRevisionRow, found bool) (storage.PluginAgentRuntimeStatusRow, bool, bool) {
@@ -1277,17 +1287,27 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 	if err != nil {
 		return nil, err
 	}
+	implicitRemote, err := s.pluginImplicitRemoteExecution(ctx, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	resolve := func(raw json.RawMessage) ([]string, error) {
+		if implicitRemote {
+			return pluginExplicitTargetIDs(raw)
+		}
+		return pluginTargetIDs(raw, defaultTargetID)
+	}
 	if configure != nil && configure.PublishDesiredEnabled {
 		payload, err := json.Marshal(configure.Targets)
 		if err != nil {
 			return nil, err
 		}
-		requested, err := pluginTargetIDs(payload, defaultTargetID)
+		requested, err := resolve(payload)
 		if err != nil {
 			return nil, err
 		}
 		ids := uniqueAgentIDs(requested)
-		if len(ids) == 0 {
+		if len(ids) == 0 && !implicitRemote {
 			ids = []string{defaultTargetID}
 		}
 		return ids, nil
@@ -1298,13 +1318,13 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 	}
 	ids := make([]string, 0)
 	for _, instance := range instances {
-		active, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON), defaultTargetID)
+		active, err := resolve(json.RawMessage(instance.TargetJSON))
 		if err != nil {
 			return nil, err
 		}
 		ids = append(ids, active...)
 		if strings.TrimSpace(instance.PendingTargetJSON) != "" {
-			pending, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), defaultTargetID)
+			pending, err := resolve(json.RawMessage(instance.PendingTargetJSON))
 			if err != nil {
 				return nil, err
 			}
@@ -1316,17 +1336,33 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 		if err != nil {
 			return nil, err
 		}
-		requested, err := pluginTargetIDs(payload, defaultTargetID)
+		requested, err := resolve(payload)
 		if err != nil {
 			return nil, err
 		}
 		ids = append(ids, requested...)
 	}
 	ids = uniqueAgentIDs(ids)
-	if len(ids) == 0 {
+	if len(ids) == 0 && !implicitRemote {
 		ids = []string{defaultTargetID}
 	}
 	return ids, nil
+}
+
+func (s *PluginService) pluginImplicitRemoteExecution(ctx context.Context, pluginID string) (bool, error) {
+	installed, ok, err := s.store.GetInstalledPlugin(ctx, pluginID)
+	if err != nil || !ok {
+		return false, err
+	}
+	packageRow, exists, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+	if err != nil || !exists {
+		return false, err
+	}
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return false, err
+	}
+	return pluginsdk.RuntimeImplicitRemoteAgentExecution(manifest.Runtime), nil
 }
 
 func pluginLifecycleTargetRevision(revisions map[string]int64, fallback int64) int64 {

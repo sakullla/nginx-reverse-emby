@@ -218,6 +218,38 @@ func TestPluginConfigureAllowsDualFaceEmptyTargetsToFormRemoteAgentGeneration(t 
 	}
 }
 
+func TestPluginEnableCompletesDualFaceEmptyTargetsWithoutAgentRuntime(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.dual-enable-empty", true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+	request := fixture.configureRequest("edge-a", "dual-enable-instance")
+	request.Targets = []string{}
+	if _, err := fixture.service.ConfigureMutation(ctx, request); err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile configure error = %v", err)
+	}
+	if _, err := fixture.service.DisableMutation(ctx, fixture.pluginID, "admin"); err != nil {
+		t.Fatalf("DisableMutation() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile disable error = %v", err)
+	}
+	if _, err := fixture.service.EnableMutation(ctx, fixture.pluginID, "admin"); err != nil {
+		t.Fatalf("EnableMutation() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile enable error = %v", err)
+	}
+	installed, ok, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !ok {
+		t.Fatalf("GetInstalledPlugin() ok=%v err=%v", ok, err)
+	}
+	if installed.CurrentLifecycle != "active" || installed.PendingOperationID != "" || installed.PendingKind != "" {
+		t.Fatalf("enabled plugin still pending: %+v", installed)
+	}
+}
+
 func TestPluginConfigureRejectsSecondGlobalControlPlaneInstance(t *testing.T) {
 	fixture := newPluginTargetAuthorityFixture(t, "official.singleton-app", true, true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
