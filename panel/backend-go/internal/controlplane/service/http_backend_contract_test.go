@@ -382,6 +382,16 @@ func TestHeartbeatRevisionRebasesPendingPluginGeneration(t *testing.T) {
 	if _, err := api.ReportRemoteRevision(ctx, "local", report); err != nil {
 		t.Fatalf("ReportRemoteRevision() replay error = %v", err)
 	}
+	inherited := status
+	inherited.InstanceID = "webdav-default"
+	inherited.PluginID = "webdav"
+	inherited.OperationID = "pluginop-webdav-older"
+	inherited.Revision = heartbeatRevision - 6
+	replayWithInherited := report
+	replayWithInherited.PluginStatuses = []storage.PluginRuntimeStatus{status, inherited}
+	if _, err := api.ReportRemoteRevision(ctx, "local", replayWithInherited); err != nil {
+		t.Fatalf("ReportRemoteRevision() inherited plugin replay error = %v", err)
+	}
 
 	installed, found, err = fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
 	if err != nil || !found || installed.PendingOperationID != "" {

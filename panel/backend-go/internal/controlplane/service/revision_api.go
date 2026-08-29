@@ -829,7 +829,7 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 	}); ok {
 		for _, report := range input.PluginLogs {
 			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, agentID, report); err != nil {
-				if errors.Is(err, storage.ErrPluginGenerationStale) {
+				if pluginGenerationReportIgnorable(err) {
 					continue
 				}
 				return err
@@ -837,6 +837,10 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 		}
 	} else if len(input.PluginLogs) > 0 {
 		return errors.New("plugin runtime log ingestion is unavailable")
+	}
+	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, input.Revision)
+	if err != nil || !found {
+		return err
 	}
 	for _, status := range input.PluginStatuses {
 		report := storage.PluginGenerationReport{
@@ -846,13 +850,9 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 			ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail,
 			Details: append(json.RawMessage(nil), status.Details...), Budget: append(json.RawMessage(nil), status.Budget...),
 		}
-		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !errors.Is(err, storage.ErrPluginGenerationStale) {
+		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !pluginGenerationReportIgnorable(err) {
 			return err
 		}
-	}
-	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, input.Revision)
-	if err != nil || !found {
-		return err
 	}
 	rows, err := s.pluginLifecycle.store.ListPluginAgentRuntimeStatuses(ctx, revisionRow.OperationID)
 	if err != nil {
@@ -882,7 +882,7 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 				ArtifactDigest: row.ArtifactDigest, State: row.State, Sequence: row.ReportSequence,
 				ErrorCode: row.ErrorCode, Details: json.RawMessage(row.DetailsJSON), Budget: json.RawMessage(row.BudgetJSON),
 			}
-			if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !errors.Is(err, storage.ErrPluginGenerationStale) {
+			if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !pluginGenerationReportIgnorable(err) {
 				return err
 			}
 			continue
@@ -918,11 +918,15 @@ func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID
 		default:
 			return storage.ErrPluginGenerationConflict
 		}
-		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil {
+		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !pluginGenerationReportIgnorable(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+func pluginGenerationReportIgnorable(err error) bool {
+	return errors.Is(err, storage.ErrPluginGenerationStale) || errors.Is(err, storage.ErrPluginGenerationConflict)
 }
 
 func (s *RevisionAPI) reconcilePluginRevisionWithoutRuntimeStatuses(ctx context.Context, operationID string) error {

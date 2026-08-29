@@ -152,6 +152,19 @@ func (r *PluginLifecycleReconciler) Reconcile(ctx context.Context, report storag
 	}
 	_, replayed, err := r.store.RecordPluginAgentRuntimeReport(ctx, report)
 	if err != nil {
+		if !errors.Is(err, storage.ErrPluginGenerationStale) && !errors.Is(err, storage.ErrPluginGenerationConflict) {
+			return PluginLifecycleReconcileResult{}, err
+		}
+		operation, found, opErr := r.store.GetPluginOperation(ctx, report.OperationID)
+		if opErr != nil {
+			return PluginLifecycleReconcileResult{}, opErr
+		}
+		if found && (operation.Status == "succeeded" || operation.Status == "failed") {
+			return PluginLifecycleReconcileResult{
+				OperationID: report.OperationID, Replayed: true,
+				Completed: true, Applied: operation.Status == "succeeded",
+			}, nil
+		}
 		return PluginLifecycleReconcileResult{}, err
 	}
 	operation, found, err := r.store.GetPluginOperation(ctx, report.OperationID)
