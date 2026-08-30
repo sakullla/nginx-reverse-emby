@@ -1062,7 +1062,7 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 
 func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.Context, installed storage.InstalledPluginRow, operation storage.PluginOperationRow) error {
 	switch operation.Kind {
-	case "configure", "enable", "disable":
+	case "configure", "enable", "disable", "upgrade", "rollback":
 	default:
 		return nil
 	}
@@ -1090,7 +1090,7 @@ func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.
 			foundPendingConfigure = true
 		}
 	}
-	if operation.Kind == "configure" && !foundPendingConfigure {
+	if (operation.Kind == "configure" || operation.Kind == "upgrade" || operation.Kind == "rollback") && !foundPendingConfigure {
 		return nil
 	}
 	if err := s.CompleteTrustedRevisionOperation(ctx, operation, true, map[string]any{}); err != nil {
@@ -1179,7 +1179,7 @@ func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request Plug
 func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgradeRequest) (PluginSummary, error) {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Upgrade(ctx, request)
-		return pluginSummary(row), err
+		return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
 	}
 	var row storage.InstalledPluginRow
 	err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.upgrade", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
@@ -1187,13 +1187,13 @@ func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgra
 		row, err = txService.Upgrade(mutationCtx, request)
 		return err
 	})
-	return pluginSummary(row), err
+	return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
 }
 
 func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRollbackRequest) (PluginSummary, error) {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Rollback(ctx, request)
-		return pluginSummary(row), err
+		return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
 	}
 	var row storage.InstalledPluginRow
 	err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.rollback", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
@@ -1201,7 +1201,24 @@ func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRoll
 		row, err = txService.Rollback(mutationCtx, request)
 		return err
 	})
-	return pluginSummary(row), err
+	return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
+}
+
+func (s *PluginService) pluginSummaryAfterPendingReconcile(ctx context.Context, pluginID string, row storage.InstalledPluginRow, err error) (PluginSummary, error) {
+	if err != nil {
+		return pluginSummary(row), err
+	}
+	if recErr := s.reconcilePendingPluginOperation(ctx, pluginID); recErr != nil {
+		return pluginSummary(row), recErr
+	}
+	updated, found, lookupErr := s.store.GetInstalledPlugin(ctx, pluginID)
+	if lookupErr != nil {
+		return pluginSummary(row), lookupErr
+	}
+	if found {
+		row = updated
+	}
+	return pluginSummary(row), nil
 }
 
 type pluginLifecycleOperationContextKey struct{}
@@ -1886,12 +1903,15 @@ func (s *PluginService) RecoverControlPlaneRuntimes(ctx context.Context, runtime
 	if !ok {
 		return errors.New("plugin lifecycle store does not support runtime recovery")
 	}
+	var recoveryErrors []error
+	if err := s.RecoverPendingPluginOperations(WithSystemMutationPrincipal(ctx, "system:plugin-runtime-recovery")); err != nil {
+		recoveryErrors = append(recoveryErrors, fmt.Errorf("recover pending plugin operations before runtime recovery: %w", err))
+	}
 	installed, err := s.store.ListInstalledPlugins(ctx)
 	if err != nil {
 		return fmt.Errorf("list installed plugins for runtime recovery: %w", err)
 	}
 	candidates := make([]pluginhost.Candidate, 0)
-	var recoveryErrors []error
 	for _, plugin := range installed {
 		if plugin.DesiredLifecycle != "enabled" || plugin.HostScope != "control-plane" || plugin.RuntimeKind != "rpc-service" {
 			continue

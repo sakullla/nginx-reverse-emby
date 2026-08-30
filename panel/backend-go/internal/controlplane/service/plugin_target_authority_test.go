@@ -241,6 +241,48 @@ func TestPluginEnableCompletesDualFaceEmptyTargetsWithoutAgentRuntime(t *testing
 	}
 }
 
+func TestPluginUpgradeCompletesDualFaceEmptyTargetsWithoutAgentRuntime(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.dual-upgrade-empty", true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+	request := fixture.configureRequest("edge-a", "dual-upgrade-instance")
+	request.Targets = []string{}
+	if _, err := fixture.service.ConfigureMutation(ctx, request); err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile configure error = %v", err)
+	}
+
+	key := publishFixtureSigningKey()
+	publicKey := base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{SourceID: "target-authority-fixture", SourceKind: marketplace.SourceKindCustom, KeyID: "test-fixture", PublicKey: publicKey, Fingerprint: fingerprint}
+	candidate := importPackageCandidate(t, fixture.cacheRoot, writePluginTargetAuthorityPackageVersion(t, fixture.pluginID, "1.0.1", true, key, false), fixture.service.validator, trust)
+	if _, err := fixture.service.Upgrade(ctx, PluginUpgradeRequest{PluginID: fixture.pluginID, Package: candidate, ActorID: "admin", RiskAccepted: true}); err != nil {
+		t.Fatalf("Upgrade() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile upgrade error = %v", err)
+	}
+	installed, ok, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !ok {
+		t.Fatalf("GetInstalledPlugin() ok=%v err=%v", ok, err)
+	}
+	if installed.CurrentLifecycle != "active" || installed.PendingOperationID != "" || installed.PendingKind != "" || installed.StagedPackageDigest != "" {
+		t.Fatalf("upgraded plugin still pending: %+v", installed)
+	}
+	if installed.ActivePackageDigest != candidate.Package.Digest {
+		t.Fatalf("active digest = %q, want %q", installed.ActivePackageDigest, candidate.Package.Digest)
+	}
+	instance := mustPluginInstanceByID(t, fixture.store, "dual-upgrade-instance")
+	if instance.CurrentState != "active" || instance.PendingOperationID != "" {
+		t.Fatalf("upgraded instance still applying: %+v", instance)
+	}
+}
+
 func TestPluginConfigureRejectsSecondGlobalControlPlaneInstance(t *testing.T) {
 	fixture := newPluginTargetAuthorityFixture(t, "official.singleton-app", true, true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
@@ -333,9 +375,10 @@ func TestPluginAgentStatusUsesPerAgentRuntimeRevision(t *testing.T) {
 }
 
 type pluginTargetAuthorityFixture struct {
-	pluginID string
-	store    *storage.GormStore
-	service  *PluginService
+	pluginID  string
+	store     *storage.GormStore
+	service   *PluginService
+	cacheRoot string
 }
 
 func pluginRuntimeStatusCount(t *testing.T, store *storage.GormStore, operations []storage.PluginOperationRow) int {
@@ -392,7 +435,7 @@ func newPluginTargetAuthorityFixture(t *testing.T, pluginID string, dualFace boo
 	}
 	service.SetSecretVault(vault)
 	service.ConfigureRevisionMutations(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
-	return pluginTargetAuthorityFixture{pluginID: pluginID, store: store, service: service}
+	return pluginTargetAuthorityFixture{pluginID: pluginID, store: store, service: service, cacheRoot: cacheRoot}
 }
 
 func completePluginTargetConfigure(t *testing.T, fixture pluginTargetAuthorityFixture, instanceID string) {
@@ -417,6 +460,10 @@ func (f pluginTargetAuthorityFixture) configureRequest(target, instanceID string
 }
 
 func writePluginTargetAuthorityPackage(t *testing.T, pluginID string, dualFace bool, key ed25519.PrivateKey, singletonSurface bool) string {
+	return writePluginTargetAuthorityPackageVersion(t, pluginID, "1.0.0", dualFace, key, singletonSurface)
+}
+
+func writePluginTargetAuthorityPackageVersion(t *testing.T, pluginID, version string, dualFace bool, key ed25519.PrivateKey, singletonSurface bool) string {
 	t.Helper()
 	root := t.TempDir()
 	writePublishFile(t, root, plugins.ConfigSchemaFile, targetAuthorityConfigSchema)
@@ -432,7 +479,7 @@ func writePluginTargetAuthorityPackage(t *testing.T, pluginID string, dualFace b
 	}
 	manifest := fmt.Sprintf(`schema_version: 1
 id: %s
-version: 1.0.0
+version: %s
 name: Target Authority
 compatibility:
   host: "*"
@@ -475,7 +522,7 @@ cleanup:
   grants: delete
   shared_refs: retain
   audit_events: retain
-`, pluginID, hostScopes, artifactPath, hex.EncodeToString(digest[:]), len(artifact), runtime.GOOS, runtime.GOARCH, extensions)
+`, pluginID, version, hostScopes, artifactPath, hex.EncodeToString(digest[:]), len(artifact), runtime.GOOS, runtime.GOARCH, extensions)
 	writePublishFile(t, root, plugins.PackageManifestFile, manifest)
 	packageDigest, err := plugins.ComputePackageDigest(root)
 	if err != nil {
