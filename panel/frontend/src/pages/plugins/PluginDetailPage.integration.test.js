@@ -707,13 +707,14 @@ describe('PluginDetailPage task-center production API projection', () => {
     }))
     const extraLabel = buttonByText(wrapper, '发布另一域名') ? '发布另一域名' : '再发布一条域名'
     const guide = await openTaskGuide(wrapper, extraLabel)
-    await chooseTarget(guide, 'edge-b')
+    expect(guide.findAll('[data-test="deployment-agent"]').map((input) => input.element.value)).toEqual(['edge-a'])
+    await chooseTarget(guide, 'edge-a')
     await fillPublishedEntry(guide, 'alt.example.com', true)
     await guideSubmitButton(guide).trigger('click')
     await flushPromises()
     expect(writePaths()).toEqual(['/plugins/rpc.plugin/publish'])
     expect(mocks.post.mock.calls[0][1]).toEqual(expect.objectContaining({
-      targets: ['edge-b'],
+      targets: ['edge-a'],
       frontend_url: 'https://alt.example.com'
     }))
     expect(mocks.post.mock.calls[0][1]).not.toHaveProperty('rule_id')
@@ -850,7 +851,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(groupSelect.element.value).toBe('group-a')
   })
 
-  it('keeps a control-plane-only plugin on the local management face without a remote target selector', async () => {
+  it('keeps a control-plane-only plugin on the local management face without a deployment action', async () => {
     const wrapper = await mountDetail(productionDetail({
       package: {
         ...productionDetail().package,
@@ -865,13 +866,8 @@ describe('PluginDetailPage task-center production API projection', () => {
     const localFace = wrapper.get('[data-test="plugin-face-local-management"]')
     expect(localFace.text()).toMatch(/本地管理面|管理面.*local/i)
     expect(wrapper.find('[data-test="plugin-face-agent-execution"]').exists()).toBe(false)
-
-    const guide = await openTaskGuide(wrapper, '开始部署')
-    const remoteTargets = guide.findAll('input, select, option').filter((node) => ['edge-a', 'edge-b'].includes(String(node.element.value || '')))
-    expect(remoteTargets).toHaveLength(0)
-    expect(guide.text()).not.toContain('Edge A')
-    expect(guide.text()).not.toContain('Edge B')
-    expect(guide.text()).toMatch(/本地|local-control/i)
+    expect(buttonByText(wrapper, '开始部署')).toBeFalsy()
+    expect(buttonByText(wrapper, '部署')).toBeFalsy()
   })
 
   it('separates local management from Agent execution generation and failures for a dual-face plugin', async () => {

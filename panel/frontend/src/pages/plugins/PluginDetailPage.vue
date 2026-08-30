@@ -208,6 +208,7 @@ const taskHint = computed(() => {
 const primaryTaskLabel = computed(() => (taskState.value === 'unpublished' ? '发布到域名' : '开始部署'))
 const showPrimaryTask = computed(() => {
   if (ownsSingletonControlPlaneSurface.value && taskState.value !== 'unpublished') return false
+  if (!canCreateInstance.value && taskState.value !== 'unpublished') return false
   return taskState.value === 'undeployed' || taskState.value === 'unpublished'
 })
 const deployModalInstance = computed(() => (deployIntent.value === 'deploy' ? null : selectedInstance.value))
@@ -218,7 +219,21 @@ const ownsSingletonControlPlaneSurface = computed(() => {
   const points = detail.value?.package?.manifest?.extension_points
   return Array.isArray(points) && (points.includes('ui.route') || points.includes('resource.group'))
 })
-const canCreateInstance = computed(() => !ownsSingletonControlPlaneSurface.value && !hasInstances.value)
+const runtimeHostScope = computed(() => String(
+  detail.value?.package?.manifest?.runtime?.host_scope || detail.value?.package?.runtime?.host_scope || ''
+).trim().toLowerCase())
+// Deployment is an Agent execution-face operation.  Keep the action
+// available after the first instance so an installed plugin can be deployed
+// to another eligible node; local-management-only plugins remain read-only
+// here because their target is owned by the control plane.
+const canCreateInstance = computed(() => {
+  const executionFace = hasAgentExecutionFace.value || (
+    !hasDeclaredFaceProjection.value &&
+    !ownsSingletonControlPlaneSurface.value &&
+    runtimeHostScope.value !== 'control-plane'
+  )
+  return executionFace
+})
 const showUninstallOnTask = computed(() => admin.value && !hasInstances.value)
 const uninstallNeedsDisable = computed(() => hasInstances.value && detail.value?.plugin?.current_lifecycle !== 'disabled' && detail.value?.plugin?.desired_lifecycle !== 'disabled')
 
