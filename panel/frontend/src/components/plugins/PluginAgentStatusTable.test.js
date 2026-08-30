@@ -116,4 +116,14 @@ describe('PluginAgentStatusTable', () => {
     expect(wrapper.text()).toContain('同步或启动失败')
     expect(wrapper.get('button').text()).toContain('重试此 Agent revision')
   })
+
+  it('emits uninstall for an actionable agent execution target', async () => {
+    const status = {
+      face_id: 'agent-execution', instance_id: 'rpc', agent_id: 'edge', runtime_state: 'active',
+      current_revision: 4, desired_revision: 4
+    }
+    const wrapper = mount(PluginAgentStatusTable, { props: { actionable: true, statuses: [status] } })
+    await wrapper.get('[data-test="plugin-agent-uninstall"]').trigger('click')
+    expect(wrapper.emitted('uninstall')[0][0]).toMatchObject({ agent_id: 'edge', instance_id: 'rpc' })
+  })
 })

@@ -696,31 +696,6 @@ type pluginCallTarget struct {
 	PluginID   string
 }
 
-func pluginCallSavesAgentConfig(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "listen.apply", "compose", "files":
-		return true
-	default:
-		return false
-	}
-}
-
-func (manager *PluginCapabilityManager) kickEnsureSelectedAgentExecutionFace(pluginID, agentID string) {
-	if manager == nil || manager.plugins == nil {
-		return
-	}
-	pluginID = strings.TrimSpace(pluginID)
-	agentID = strings.TrimSpace(agentID)
-	if pluginID == "" || agentID == "" {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-		defer cancel()
-		_ = manager.plugins.EnsureSelectedAgentExecutionFace(WithSystemMutationPrincipal(ctx, "system:plugin-call"), pluginID, agentID)
-	}()
-}
-
 func (manager *PluginCapabilityManager) pluginHostPluginCall(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (json.RawMessage, error) {
 	var input pluginsdk.PluginCallRequest
 	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
@@ -728,9 +703,6 @@ func (manager *PluginCapabilityManager) pluginHostPluginCall(ctx context.Context
 	}
 	if err := manager.authorizePluginCallCaller(ctx, candidate); err != nil {
 		return nil, err
-	}
-	if pluginCallSavesAgentConfig(input.Name) {
-		manager.kickEnsureSelectedAgentExecutionFace(candidate.Identity.PluginID, input.AgentID)
 	}
 	target, err := manager.resolvePluginCallTarget(ctx, candidate.Identity.PluginID, input.AgentID)
 	if err != nil {

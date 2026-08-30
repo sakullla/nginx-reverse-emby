@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -363,18 +362,17 @@ type pluginDependencyConsumerStore interface {
 }
 
 type PluginService struct {
-	store                pluginLifecycleStore
-	validator            *plugins.Validator
-	cacheRoot            string
-	now                  func() time.Time
-	cfg                  config.Config
-	mutationExecutor     *revision.Executor
-	revisionMutation     bool
-	revisionNumbers      map[string]int64
-	secretVault          *secrets.Vault
-	postCommitActions    *[]func()
-	controlPlaneRuntime  PluginControlPlaneRuntime
-	ensureExecutionFaces sync.Map
+	store               pluginLifecycleStore
+	validator           *plugins.Validator
+	cacheRoot           string
+	now                 func() time.Time
+	cfg                 config.Config
+	mutationExecutor    *revision.Executor
+	revisionMutation    bool
+	revisionNumbers     map[string]int64
+	secretVault         *secrets.Vault
+	postCommitActions   *[]func()
+	controlPlaneRuntime PluginControlPlaneRuntime
 }
 
 func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
@@ -1370,86 +1368,6 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 		ids = []string{defaultTargetID}
 	}
 	return ids, nil
-}
-
-func (s *PluginService) EnsureSelectedAgentExecutionFace(ctx context.Context, pluginID, agentID string) error {
-	if s == nil {
-		return errors.New("plugin service is unavailable")
-	}
-	pluginID = strings.TrimSpace(pluginID)
-	agentID = strings.TrimSpace(agentID)
-	if pluginID == "" || agentID == "" {
-		return fmt.Errorf("%w: plugin and agent identities are required", ErrInvalidArgument)
-	}
-	implicit, err := s.pluginImplicitRemoteExecution(ctx, pluginID)
-	if err != nil || !implicit {
-		return err
-	}
-	if pluginsdk.ImplicitRemoteAgentExecutionSkipsAgent(s.cfg.LocalAgentID, agentID) {
-		return nil
-	}
-	instances, err := s.store.ListPluginInstances(ctx, pluginID)
-	if err != nil {
-		return err
-	}
-	var instance storage.PluginInstanceRow
-	for _, candidate := range instances {
-		if !candidate.DesiredEnabled {
-			continue
-		}
-		instance = candidate
-		break
-	}
-	if instance.ID == "" {
-		return ErrPluginInstanceNotFound
-	}
-	targets, err := pluginExplicitTargetIDs(json.RawMessage(instance.TargetJSON))
-	if err != nil {
-		return err
-	}
-	if pluginGenerationContainsString(targets, agentID) {
-		return nil
-	}
-	if strings.TrimSpace(instance.PendingTargetJSON) != "" {
-		pending, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
-		if err != nil {
-			return err
-		}
-		if pluginGenerationContainsString(pending, agentID) {
-			return nil
-		}
-	}
-	key := pluginID + "\x00" + agentID
-	if _, loaded := s.ensureExecutionFaces.LoadOrStore(key, struct{}{}); loaded {
-		return nil
-	}
-	defer s.ensureExecutionFaces.Delete(key)
-	_, err = s.ConfigureMutation(ctx, PluginConfigureRequest{
-		PluginID:        pluginID,
-		InstanceID:      instance.ID,
-		ResourceGroupID: instance.ResourceGroupID,
-		Targets:         append(append([]string{}, targets...), agentID),
-		Config:          json.RawMessage(`{}`),
-		ActorID:         "system:plugin-call",
-		Actor:           authz.Actor{ID: "system:plugin-call", Bootstrap: true, Permissions: []string{"*"}},
-	})
-	if err != nil {
-		return err
-	}
-	return s.reconcilePendingPluginOperation(ctx, pluginID)
-}
-
-func pluginGenerationContainsString(values []string, want string) bool {
-	want = strings.TrimSpace(want)
-	if want == "" {
-		return false
-	}
-	for _, value := range values {
-		if strings.TrimSpace(value) == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *PluginService) activateControlPlaneRuntime(ctx context.Context, operation storage.PluginOperationRow) error {

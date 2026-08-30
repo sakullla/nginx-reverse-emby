@@ -156,4 +156,40 @@ describe('PluginDeployModal target authority', () => {
     await flushPromises()
     expect(mocks.enablePlugin).toHaveBeenCalledWith('official.plugin')
   })
+
+  it('prefills and submits existing instance targets when an instance is passed', async () => {
+    const wrapper = mountModal({
+      targetEligibility: { canonical_local_target_id: 'local', agent_targets_allowed: true },
+      faces: [{ face_id: 'local-management' }, { face_id: 'agent-execution' }],
+      initialFace: 'agent-execution',
+      instance: {
+        id: 'official.plugin-default',
+        resource_group_id: 'default',
+        targets: ['edge-a', 'local'],
+        policy_chains: [{ id: 'chain-a' }],
+        bindings: [{ consumer: { kind: 'http_rule', id: '1' }, target_agent_id: 'edge-a' }],
+        config: { mode: 'observe' }
+      },
+      instances: [{ id: 'official.plugin-default' }]
+    })
+    await openModal(wrapper)
+
+    const choices = wrapper.findAll('[data-test="deployment-agent"]')
+    expect(choices).toHaveLength(2)
+    expect(choices[0].element.checked).toBe(true)
+    expect(choices[1].element.checked).toBe(false)
+    await choices[1].setValue(true)
+    await submitButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.plugin', expect.objectContaining({
+      instance_id: 'official.plugin-default',
+      resource_group_id: 'default',
+      targets: ['edge-a', 'edge-b'],
+      policy_chains: [{ id: 'chain-a' }],
+      bindings: [{ consumer: { kind: 'http_rule', id: '1' }, target_agent_id: 'edge-a' }],
+      config: { mode: 'observe' }
+    }))
+    expect(mocks.configurePlugin.mock.calls[0][1].targets).not.toContain('local')
+  })
 })

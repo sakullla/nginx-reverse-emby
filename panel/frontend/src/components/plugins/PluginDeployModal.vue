@@ -314,6 +314,11 @@ function resetForm() {
     deployment.targets = canonicalLocalTargetID.value ? [canonicalLocalTargetID.value] : []
   } else if (mode.value === 'update' && sortedAgents.value.some((agent) => agent.id === pinned)) {
     deployment.targets = [pinned]
+  } else if (instance) {
+    const localID = canonicalLocalTargetID.value
+    deployment.targets = [...new Set((instance.targets || [])
+      .map((id) => String(id || '').trim())
+      .filter((id) => id && id !== localID))]
   } else if (sortedAgents.value.length === 1) {
     deployment.targets = [sortedAgents.value[0].id]
   } else {
@@ -414,7 +419,10 @@ async function deploy(payload) {
       emit('update:modelValue', false)
       return
     }
-    const created = await configurePlugin(props.pluginId, { ...request, bindings: [] })
+    const created = await configurePlugin(props.pluginId, {
+      ...request,
+      bindings: Array.isArray(props.instance?.bindings) ? props.instance.bindings : []
+    })
     if (props.desiredLifecycle !== 'enabled' && props.currentLifecycle !== 'active') {
       const operationID = String(created?.pending_operation_id || '').trim()
       if (operationID) await waitForPluginOperation(props.pluginId, operationID)
@@ -623,7 +631,7 @@ async function deploy(payload) {
       <p v-else-if="persistentBlocker" class="plugin-deployment__empty">{{ persistentBlocker }}</p>
       <div v-if="formEmpty && mode === 'deploy'" class="plugin-deployment__empty-config">
         <p class="plugin-config-empty">此插件没有需要先填写的配置，可直接{{ hasHTTPBackend ? '发布到域名' : '部署' }}。</p>
-        <button class="btn btn-primary" type="button" :disabled="submitDisabled" @click="deploy({ config: {}, secret_replacements: {} })">
+        <button class="btn btn-primary" type="button" :disabled="submitDisabled" @click="deploy({ config: instance?.config || {}, secret_replacements: {} })">
           {{ submitLabel }}
         </button>
       </div>
@@ -635,7 +643,7 @@ async function deploy(payload) {
       <PluginDeclarativeUI
         v-else
         :document="submitDocument"
-        :config="{}"
+        :config="instance?.config || {}"
         :secret-fields="[]"
         :saving="submitDisabled"
         :can-configure="true"

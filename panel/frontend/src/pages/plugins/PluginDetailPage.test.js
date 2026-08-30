@@ -1264,10 +1264,58 @@ describe('PluginDetailPage', () => {
       package: {
         ...base.package,
         manifest: { ...base.package.manifest, extension_points: ['ui.route', 'resource.group'] }
-      }
+      },
+      faces: [
+        { face_id: 'local-management', host_scope: 'control-plane' },
+        { face_id: 'agent-execution', host_scope: 'agent' }
+      ],
+      target_eligibility: { canonical_local_target_id: 'local', agent_targets_allowed: true }
     })
     expect(buttonByText(wrapper, '部署')).toBeFalsy()
+    expect(buttonByText(wrapper, '部署到节点')).toBeTruthy()
     expect(buttonByText(wrapper, '编辑配置')).toBeTruthy()
+
+    await buttonByText(wrapper, '部署到节点').trigger('click')
+    await flushPromises()
+    const modal = wrapper.get('[data-test="plugin-deploy-modal"]')
+    expect(modal.get('[data-test="plugin-deployment-face-agent"]').attributes('aria-selected')).toBe('true')
+    expect(modal.findAll('[data-test="deployment-agent"]').find((input) => input.element.value === 'edge-a').element.checked).toBe(true)
+    await modalButton(modal, '部署 Agent 执行面').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      instance_id: 'waf-a',
+      targets: ['edge-a']
+    }))
+    expect(mocks.deletePluginInstance).not.toHaveBeenCalled()
+  })
+
+  it('uninstalls one Agent execution face without deleting the instance', async () => {
+    const wrapper = await mountPage(makeDetail({
+      package: {
+        ...makeDetail().package,
+        manifest: { ...makeDetail().package.manifest, extension_points: ['ui.route', 'resource.group'] }
+      },
+      faces: [
+        { face_id: 'local-management', host_scope: 'control-plane' },
+        { face_id: 'agent-execution', host_scope: 'agent' }
+      ],
+      instances: [makeInstance({ targets: ['edge-a', 'edge-b'], bindings: [] })],
+      agent_statuses: [{
+        instance_id: 'waf-a', agent_id: 'edge-a', target_scope: 'active', runtime_state: 'active',
+        desired_revision: 1, current_revision: 1
+      }]
+    }))
+    const more = await openMore(wrapper)
+    await more.get('[data-test="plugin-agent-uninstall"]').trigger('click')
+    expect(wrapper.find('.delete-dialog-title').text()).toBe('确认卸载节点执行面')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
+      instance_id: 'waf-a',
+      targets: ['edge-b']
+    }))
+    expect(mocks.deletePluginInstance).not.toHaveBeenCalled()
+    expect(mocks.uninstallPlugin).not.toHaveBeenCalled()
   })
 
   it('does not offer a deploy action for an undeployed control-plane managed plugin', async () => {
@@ -1279,6 +1327,7 @@ describe('PluginDetailPage', () => {
     }))
     expect(buttonByText(wrapper, '开始部署')).toBeFalsy()
     expect(buttonByText(wrapper, '部署')).toBeFalsy()
+    expect(buttonByText(wrapper, '部署到节点')).toBeFalsy()
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
   })
 
