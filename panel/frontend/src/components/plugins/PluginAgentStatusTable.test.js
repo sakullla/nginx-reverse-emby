@@ -102,6 +102,31 @@ describe('PluginAgentStatusTable', () => {
     expect(wrapper.text()).not.toContain('本地管理面失败')
   })
 
+  it('shows one card per Agent and prefers the pending projection while targets are applying', () => {
+    const wrapper = mount(PluginAgentStatusTable, {
+      props: {
+        agents: [{ id: 'edge-a', name: 'Edge A', status: 'online' }],
+        statuses: [
+          {
+            face_id: 'agent-execution', instance_id: 'rpc', agent_id: 'edge-a', target_scope: 'active',
+            current_state: 'applying', current_revision: 7, desired_revision: 2
+          },
+          {
+            face_id: 'agent-execution', instance_id: 'rpc', agent_id: 'edge-a', target_scope: 'pending',
+            current_state: 'applying', runtime_state: 'active', generation_id: 'generation-8',
+            current_revision: 8, target_revision: 8, operation_kind: 'configure', operation_status: 'applying'
+          }
+        ]
+      }
+    })
+
+    const cards = wrapper.findAll('[data-test="plugin-agent-execution-status"]')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].text()).toContain('generation-8')
+    expect(cards[0].text()).toContain('执行面就绪')
+    expect(cards[0].text()).toContain('pending')
+  })
+
   it('treats prepare and activation error states as execution failures', () => {
     const wrapper = mount(PluginAgentStatusTable, {
       props: {

@@ -323,8 +323,9 @@ function resetForm() {
     ? (hasHTTPBackend.value || props.initialFace === 'agent-execution' ? 'agent-execution' : 'local-management')
     : (hasAgentExecutionFace.value ? 'agent-execution' : 'local-management')
   const instance = props.instance
+  const pending = Boolean(String(instance?.pending_operation_id || '').trim())
   const published = mode.value === 'update' ? parseFrontendURL(props.publishedEntry?.frontend_url) : { href: '', host: '', https: true }
-  const preferredGroup = String(instance?.resource_group_id || '').trim()
+  const preferredGroup = String((pending ? instance?.pending_resource_group_id : '') || instance?.resource_group_id || '').trim()
   deployment.resourceGroupID = props.resourceGroups.some((group) => group.id === preferredGroup)
     ? preferredGroup
     : pickDefaultResourceGroupID(props.resourceGroups)
@@ -335,7 +336,8 @@ function resetForm() {
     deployment.targets = [pinned]
   } else if (instance) {
     const localID = canonicalLocalTargetID.value
-    deployment.targets = [...new Set((instance.targets || [])
+    const targets = pending && Array.isArray(instance.pending_targets) ? instance.pending_targets : instance.targets
+    deployment.targets = [...new Set((targets || [])
       .map((id) => String(id || '').trim())
       .filter((id) => id && id !== localID))]
   } else if (sortedAgents.value.length === 1) {

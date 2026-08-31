@@ -422,9 +422,15 @@ function agentLabel(agentID) {
 
 function instanceTargetLabels(instance) {
   if (usesCanonicalLocalTarget.value) return canonicalLocalTargetID.value ? `本地（${canonicalLocalTargetID.value}）` : '本地'
-  const ids = Array.isArray(instance?.targets) ? instance.targets : []
+  const ids = instanceTargetIDs(instance)
   if (!ids.length) return '—'
   return ids.map((id) => agentLabel(id)).join('、')
+}
+
+function instanceTargetIDs(instance) {
+  const pending = Boolean(String(instance?.pending_operation_id || '').trim())
+  const targets = pending && Array.isArray(instance?.pending_targets) ? instance.pending_targets : instance?.targets
+  return Array.isArray(targets) ? targets : []
 }
 
 function faceHostScope(faceID) {
@@ -789,10 +795,11 @@ async function retryAgent(status) {
             class="btn btn-secondary"
             type="button"
             data-test="plugin-deploy-execution-face"
-            :disabled="!!busy"
+            :disabled="!!busy || !!selectedInstance?.pending_operation_id"
+            :title="selectedInstance?.pending_operation_id ? '当前节点变更仍在应用，请等待完成后再修改目标。' : ''"
             @click="openDeployModal('deploy')"
           >
-            部署到节点
+            {{ selectedInstance?.pending_operation_id ? '节点变更应用中…' : '部署到节点' }}
           </button>
         </div>
 
@@ -836,7 +843,7 @@ async function retryAgent(status) {
                 <strong>Agent 执行面</strong>
                 <small v-if="faceHostScope('agent-execution')">{{ faceHostScope('agent-execution') }}</small>
               </div>
-              <BaseBadge tone="neutral" size="sm">{{ (selectedInstance?.targets || []).length }} 个目标</BaseBadge>
+              <BaseBadge tone="neutral" size="sm">{{ instanceTargetIDs(selectedInstance).length }} 个目标</BaseBadge>
             </div>
             <p>Agent：{{ agentExecutionTargetLabels(selectedInstance) }}。同步、离线与执行错误在此运行面单独展示。</p>
           </section>

@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from 'vue'
 import { safePluginJSON, sanitizePluginText } from '../../api/pluginSecurity'
 import { formatPanelDateTime, panelTimeZone } from '../../utils/panelDateTime.js'
 import BaseBadge from '../base/BaseBadge.vue'
@@ -11,6 +12,22 @@ const props = defineProps({
   busyAgent: { type: String, default: '' }
 })
 defineEmits(['retry', 'uninstall'])
+
+const visibleStatuses = computed(() => {
+  const keys = []
+  const byTarget = new Map()
+  for (const status of props.statuses || []) {
+    const key = `${String(status?.instance_id || '').trim()}\u0000${String(status?.agent_id || '').trim()}`
+    const current = byTarget.get(key)
+    if (!current) keys.push(key)
+    if (!current || targetScopePriority(status) >= targetScopePriority(current)) byTarget.set(key, status)
+  }
+  return keys.map((key) => byTarget.get(key))
+})
+
+function targetScopePriority(status) {
+  return String(status?.target_scope || '').trim().toLowerCase() === 'pending' ? 1 : 0
+}
 
 function agentLabel(agentID) {
   const id = String(agentID || '').trim()
@@ -83,9 +100,9 @@ function syncLabel(status) {
 
 <template>
   <div class="agent-status-table">
-    <p v-if="!statuses.length" class="agent-status-table__empty">尚无 Agent 执行面运行状态。</p>
+    <p v-if="!visibleStatuses.length" class="agent-status-table__empty">尚无 Agent 执行面运行状态。</p>
     <BaseListCard
-      v-for="status in statuses"
+      v-for="status in visibleStatuses"
       v-else
       :key="`${status.instance_id}:${status.agent_id}:${status.target_scope}`"
       class="agent-status-card"

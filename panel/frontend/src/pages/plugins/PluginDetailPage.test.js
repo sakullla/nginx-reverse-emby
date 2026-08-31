@@ -1315,6 +1315,36 @@ describe('PluginDetailPage', () => {
     expect(mocks.deletePluginInstance).not.toHaveBeenCalled()
   })
 
+  it('projects pending Agent targets and blocks another deployment while they are applying', async () => {
+    const base = makeDetail()
+    const wrapper = await mountPage({
+      ...base,
+      package: {
+        ...base.package,
+        manifest: { ...base.package.manifest, extension_points: ['ui.route', 'resource.group'] }
+      },
+      faces: [
+        { face_id: 'local-management', host_scope: 'control-plane' },
+        { face_id: 'agent-execution', host_scope: 'agent' }
+      ],
+      target_eligibility: { canonical_local_target_id: 'local', agent_targets_allowed: true },
+      instances: [makeInstance({
+        targets: ['edge-a'],
+        pending_operation_id: 'op-configure',
+        pending_targets: ['edge-a', 'edge-b'],
+        current_state: 'applying'
+      })]
+    })
+
+    await wrapper.get('[data-test="plugin-face-switch"] button:last-child').trigger('click')
+    const face = wrapper.get('[data-test="plugin-face-agent-execution"]')
+    expect(face.text()).toContain('2 个目标')
+    expect(face.text()).toContain('Edge A、Edge B')
+    const deploy = wrapper.get('[data-test="plugin-deploy-execution-face"]')
+    expect(deploy.text()).toBe('节点变更应用中…')
+    expect(deploy.attributes('disabled')).toBeDefined()
+  })
+
   it('uninstalls one Agent execution face without deleting the instance', async () => {
     const wrapper = await mountPage(makeDetail({
       package: {

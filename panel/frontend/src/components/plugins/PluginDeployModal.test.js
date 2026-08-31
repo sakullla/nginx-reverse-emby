@@ -192,4 +192,30 @@ describe('PluginDeployModal target authority', () => {
     }))
     expect(mocks.configurePlugin.mock.calls[0][1].targets).not.toContain('local')
   })
+
+  it('prefills the pending desired targets while an instance change is applying', async () => {
+    const wrapper = mountModal({
+      targetEligibility: { canonical_local_target_id: 'local', agent_targets_allowed: true },
+      faces: [{ face_id: 'local-management' }, { face_id: 'agent-execution' }],
+      initialFace: 'agent-execution',
+      instance: {
+        id: 'official.plugin-default',
+        resource_group_id: 'default',
+        targets: ['edge-a'],
+        pending_operation_id: 'op-configure',
+        pending_resource_group_id: 'default',
+        pending_targets: ['edge-a', 'edge-b'],
+        policy_chains: [],
+        bindings: [],
+        config: {}
+      },
+      instances: [{ id: 'official.plugin-default' }]
+    })
+    await openModal(wrapper)
+
+    const choices = wrapper.findAll('[data-test="deployment-agent"]')
+    expect(choices).toHaveLength(2)
+    expect(choices[0].element.checked).toBe(true)
+    expect(choices[1].element.checked).toBe(true)
+  })
 })
