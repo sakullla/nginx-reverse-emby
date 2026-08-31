@@ -3462,6 +3462,7 @@ type PluginMutation struct {
 	DeleteInstances            bool
 	DeleteGrants               bool
 	Operation                  PluginOperationRow
+	SupersededOperationID      string
 	CompleteOperation          bool
 	Audit                      AuditEventRow
 	RequireAcquisition         bool
@@ -3625,6 +3626,14 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 	if mutation.ExpectedPendingOperationID != "" && current.PendingOperationID != mutation.ExpectedPendingOperationID {
 		return fmt.Errorf("%w: plugin operation is stale or out of order", ErrPluginConflict)
 	}
+	if mutation.SupersededOperationID != "" {
+		if current.PendingOperationID != mutation.SupersededOperationID {
+			return fmt.Errorf("%w: superseded plugin operation is stale or out of order", ErrPluginConflict)
+		}
+		if err := supersedePluginOperationTx(tx, mutation.PluginID, mutation.SupersededOperationID, mutation.Operation.ID, mutation.Operation.CreatedAt); err != nil {
+			return err
+		}
+	}
 	if mutation.Package != nil {
 		if err := ensurePluginPackageTx(tx, *mutation.Package, mutation.Artifacts); err != nil {
 			return err
@@ -3777,6 +3786,44 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 		return err
 	}
 	return persistPluginOperationScopesTx(tx, mutation.Operation, operationScopes)
+}
+
+func (s *GormStore) SupersedePluginOperation(ctx context.Context, pluginID, operationID, replacementOperationID string, now time.Time) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		return supersedePluginOperationTx(tx, pluginID, operationID, replacementOperationID, now)
+	})
+}
+
+func supersedePluginOperationTx(tx *gorm.DB, pluginID, operationID, replacementOperationID string, now time.Time) error {
+	pluginID = strings.TrimSpace(pluginID)
+	operationID = strings.TrimSpace(operationID)
+	replacementOperationID = strings.TrimSpace(replacementOperationID)
+	if pluginID == "" || operationID == "" || replacementOperationID == "" || operationID == replacementOperationID {
+		return errors.New("superseded plugin operation identity is invalid")
+	}
+	var operation PluginOperationRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND plugin_id = ?", operationID, pluginID).First(&operation).Error; err != nil {
+		return err
+	}
+	if pluginOperationCompleted(operation) {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result := tx.Model(&PluginOperationRow{}).Where("id = ? AND plugin_id = ? AND completed_at IS NULL", operationID, pluginID).Updates(map[string]any{
+		"status": "failed", "error_class": "superseded",
+		"error": "superseded by plugin operation " + replacementOperationID, "completed_at": now,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("%w: superseded plugin operation changed concurrently", ErrPluginConflict)
+	}
+	return tx.Model(&PluginAgentRuntimeStatusRow{}).
+		Where("operation_id = ? AND authority_slot = ?", operationID, "pending").
+		Update("authority_slot", "retired").Error
 }
 
 func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation) error {

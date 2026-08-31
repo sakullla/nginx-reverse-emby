@@ -3,8 +3,10 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -58,13 +60,52 @@ func TestSupersedePendingPlugin(t *testing.T) {
 		StagedPackageDigest: "abc",
 	}
 	instances := []storage.PluginInstanceRow{{PendingOperationID: "op-1", PendingVersion: 2}}
-	supersedePendingPlugin(&installed, instances)
+	operationID := supersedePendingPlugin(&installed, instances)
+	if operationID != "op-1" {
+		t.Fatalf("superseded operation = %q, want op-1", operationID)
+	}
 	if installed.PendingOperationID != "" || installed.StagedPackageDigest != "" {
 		t.Fatalf("plugin pending was not cleared: %+v", installed)
 	}
 	if instances[0].PendingOperationID != "" || instances[0].PendingVersion != 0 {
 		t.Fatalf("instance pending was not cleared: %+v", instances[0])
 	}
+}
+
+func TestCompleteTrustedRevisionOperationClosesOrphanedSupersededOperation(t *testing.T) {
+	now := time.Date(2026, 8, 31, 13, 30, 0, 0, time.UTC)
+	store := &orphanedPluginOperationStore{installed: storage.InstalledPluginRow{
+		PluginID: "official.example", PendingOperationID: "", LastOperationID: "operation-new",
+	}}
+	service := &PluginService{store: store, now: func() time.Time { return now }}
+	operation := storage.PluginOperationRow{
+		ID: "operation-old", PluginID: "official.example", Kind: "disable", Status: "applying", TargetRevision: 7,
+	}
+	if err := service.CompleteTrustedRevisionOperation(t.Context(), operation, true, map[string]any{}); err != nil {
+		t.Fatalf("CompleteTrustedRevisionOperation() error = %v", err)
+	}
+	if store.supersededOperationID != operation.ID || store.replacementOperationID != "operation-new" || !store.supersededAt.Equal(now) {
+		t.Fatalf("superseded operation = %q by %q at %v", store.supersededOperationID, store.replacementOperationID, store.supersededAt)
+	}
+}
+
+type orphanedPluginOperationStore struct {
+	pluginLifecycleStore
+	installed              storage.InstalledPluginRow
+	supersededOperationID  string
+	replacementOperationID string
+	supersededAt           time.Time
+}
+
+func (s *orphanedPluginOperationStore) GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error) {
+	return s.installed, true, nil
+}
+
+func (s *orphanedPluginOperationStore) SupersedePluginOperation(_ context.Context, _ string, operationID, replacementOperationID string, now time.Time) error {
+	s.supersededOperationID = operationID
+	s.replacementOperationID = replacementOperationID
+	s.supersededAt = now
+	return nil
 }
 
 func TestTerminalPluginRuntimeStatusUsesCoordinatorTerminalState(t *testing.T) {

@@ -1518,24 +1518,25 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 	}
 	if len(instances) == 0 {
 		now := s.now()
-		supersedePendingPlugin(&installed, instances)
+		supersededOperationID := supersedePendingPlugin(&installed, instances)
 		installed.DesiredLifecycle, installed.CurrentLifecycle, installed.UpdatedAt = desired, current, now
 		installed.LastOperationID = operation.ID
 		operation.Status, operation.CompletedAt = "succeeded", &now
 		err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
 			PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
-			Installed: &installed, Operation: operation, Audit: pluginLifecycleAudit(operation, actorID, "success", "", now),
+			Installed: &installed, Operation: operation, SupersededOperationID: supersededOperationID, Audit: pluginLifecycleAudit(operation, actorID, "success", "", now),
 		})
 		return installed, err
 	}
 	if installed.DesiredLifecycle == desired && installed.CurrentLifecycle == "applying" {
 		return installed, nil
 	}
+	supersededOperationID := ""
 	if err := ensureNoPendingOperation(installed); err != nil {
 		if kind != "disable" {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
-		supersedePendingPlugin(&installed, instances)
+		supersededOperationID = supersedePendingPlugin(&installed, instances)
 	}
 	now := s.now()
 	for index := range instances {
@@ -1548,7 +1549,7 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	setPendingOperation(&installed, operation)
 	operation.Status = "applying"
-	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstances: instances, Operation: operation, Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now)})
+	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: pluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstances: instances, Operation: operation, SupersededOperationID: supersededOperationID, Audit: pluginLifecycleAudit(operation, actorID, "accepted", "", now)})
 	return installed, err
 }
 
@@ -1618,7 +1619,18 @@ func (s *PluginService) CompleteTrustedRevisionOperation(ctx context.Context, op
 	if !ok {
 		return ErrPluginNotInstalled
 	}
-	if operation.ID == "" || installed.PendingOperationID != operation.ID || operation.TargetRevision <= 0 {
+	if operation.ID == "" || operation.TargetRevision <= 0 {
+		return fmt.Errorf("%w: trusted plugin revision operation is stale", ErrPluginConflict)
+	}
+	if installed.PendingOperationID != operation.ID {
+		replacementID := strings.TrimSpace(installed.LastOperationID)
+		if replacementID != "" && replacementID != operation.ID {
+			if superseder, ok := s.store.(interface {
+				SupersedePluginOperation(context.Context, string, string, string, time.Time) error
+			}); ok {
+				return superseder.SupersedePluginOperation(ctx, operation.PluginID, operation.ID, replacementID, s.now())
+			}
+		}
 		return fmt.Errorf("%w: trusted plugin revision operation is stale", ErrPluginConflict)
 	}
 	result := PluginApplyResult{
@@ -3445,8 +3457,9 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	if pendingUpgradeMatches(installed, request.Package.Package.Digest) {
 		return installed, nil
 	}
+	supersededOperationID := ""
 	if err := ensureNoPendingOperation(installed); err != nil {
-		supersedePendingPlugin(&installed, instances)
+		supersededOperationID = supersedePendingPlugin(&installed, instances)
 	}
 	activePackage, exists, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
 	if err != nil {
@@ -3526,7 +3539,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 		return storage.InstalledPluginRow{}, err
 	}
 	if len(instances) == 0 {
-		return s.finishUndeployedUpgrade(ctx, request, installed, packageRow, artifacts, candidateIdentity, oldDigest, operation, now)
+		return s.finishUndeployedUpgrade(ctx, request, installed, packageRow, artifacts, candidateIdentity, oldDigest, supersededOperationID, operation, now)
 	}
 	installed.StagedPackageDigest = strings.ToLower(request.Package.Package.Digest)
 	installed.StagedPackageIdentity = candidateIdentity
@@ -3539,7 +3552,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
 	setPendingOperation(&installed, operation)
 	operation.Status = "staged"
-	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: oldDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, Package: &packageRow, Artifacts: artifacts, ReplaceInstances: instances, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest})
+	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: oldDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, Package: &packageRow, Artifacts: artifacts, ReplaceInstances: instances, Operation: operation, SupersededOperationID: supersededOperationID, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest})
 	if err != nil {
 		return installed, err
 	}
@@ -3923,15 +3936,17 @@ func pendingUpgradeMatches(installed storage.InstalledPluginRow, digest string) 
 		strings.TrimSpace(installed.PendingOperationID) != ""
 }
 
-func supersedePendingPlugin(installed *storage.InstalledPluginRow, instances []storage.PluginInstanceRow) {
+func supersedePendingPlugin(installed *storage.InstalledPluginRow, instances []storage.PluginInstanceRow) string {
 	if installed == nil {
-		return
+		return ""
 	}
+	operationID := strings.TrimSpace(installed.PendingOperationID)
 	clearPendingOperation(installed)
 	clearStagedSource(installed)
 	for index := range instances {
 		clearPendingInstance(&instances[index])
 	}
+	return operationID
 }
 
 func (s *PluginService) finishUndeployedUpgrade(
@@ -3940,7 +3955,7 @@ func (s *PluginService) finishUndeployedUpgrade(
 	installed storage.InstalledPluginRow,
 	packageRow storage.PluginPackageRow,
 	artifacts []storage.PluginArtifactRow,
-	candidateIdentity, oldDigest string,
+	candidateIdentity, oldDigest, supersededOperationID string,
 	operation storage.PluginOperationRow,
 	now time.Time,
 ) (storage.InstalledPluginRow, error) {
@@ -3966,7 +3981,7 @@ func (s *PluginService) finishUndeployedUpgrade(
 	err := s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
 		PluginID: request.PluginID, ExpectedActive: oldDigest, ExpectedStateVersion: installed.StateVersion,
 		Installed: &installed, Package: &packageRow, Artifacts: artifacts, ReplaceGrants: grants,
-		Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now),
+		Operation: operation, SupersededOperationID: supersededOperationID, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now),
 		RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest,
 	})
 	if err != nil {

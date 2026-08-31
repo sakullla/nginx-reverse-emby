@@ -283,6 +283,59 @@ func TestPluginUpgradeCompletesDualFaceEmptyTargetsWithoutAgentRuntime(t *testin
 	}
 }
 
+func TestPluginUpgradeTerminatesSupersededPendingDisable(t *testing.T) {
+	fixture := newPluginTargetAuthorityFixture(t, "official.upgrade-supersedes-disable", true)
+	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
+	request := fixture.configureRequest("edge-a", "upgrade-supersedes-disable-instance")
+	request.Targets = []string{}
+	if _, err := fixture.service.ConfigureMutation(ctx, request); err != nil {
+		t.Fatalf("ConfigureMutation() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile configure error = %v", err)
+	}
+	if _, err := fixture.service.EnableMutation(ctx, fixture.pluginID, "admin"); err != nil {
+		t.Fatalf("EnableMutation() error = %v", err)
+	}
+	if err := fixture.service.reconcilePendingPluginOperation(ctx, fixture.pluginID); err != nil {
+		t.Fatalf("reconcile enable error = %v", err)
+	}
+	if _, err := fixture.service.DisableMutation(ctx, fixture.pluginID, "admin"); err != nil {
+		t.Fatalf("DisableMutation() error = %v", err)
+	}
+	installed, found, err := fixture.store.GetInstalledPlugin(ctx, fixture.pluginID)
+	if err != nil || !found || installed.PendingKind != "disable" || installed.PendingOperationID == "" {
+		t.Fatalf("pending disable = %+v, found=%t err=%v", installed, found, err)
+	}
+	disableOperationID := installed.PendingOperationID
+
+	key := publishFixtureSigningKey()
+	publicKey := base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{SourceID: "target-authority-fixture", SourceKind: marketplace.SourceKindCustom, KeyID: "test-fixture", PublicKey: publicKey, Fingerprint: fingerprint}
+	candidate := importPackageCandidate(t, fixture.cacheRoot, writePluginTargetAuthorityPackageVersion(t, fixture.pluginID, "1.0.1", true, key, false), fixture.service.validator, trust)
+	if _, err := fixture.service.Upgrade(ctx, PluginUpgradeRequest{PluginID: fixture.pluginID, Package: candidate, ActorID: "admin", RiskAccepted: true}); err != nil {
+		t.Fatalf("Upgrade() error = %v", err)
+	}
+	operations, err := fixture.store.ListPluginOperations(ctx, fixture.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range operations {
+		if operation.ID != disableOperationID {
+			continue
+		}
+		if operation.Status != "failed" || operation.ErrorClass != "superseded" || operation.CompletedAt == nil {
+			t.Fatalf("superseded disable operation = %+v", operation)
+		}
+		return
+	}
+	t.Fatalf("superseded disable operation %q was not retained", disableOperationID)
+}
+
 func TestPluginConfigureRejectsSecondGlobalControlPlaneInstance(t *testing.T) {
 	fixture := newPluginTargetAuthorityFixture(t, "official.singleton-app", true, true)
 	ctx := WithSystemMutationPrincipal(t.Context(), "system:test")
