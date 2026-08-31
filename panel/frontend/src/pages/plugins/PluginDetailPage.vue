@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { fetchAgents, fetchHttpRulesPage, fetchPluginUIRoutes } from '../../api'
 import { fetchResourceGroups } from '../../api/access'
 import {
+  configurePlugin,
   deletePluginInstance,
   disablePlugin,
   enablePlugin,
@@ -69,6 +70,7 @@ const hasDeclaredFaceProjection = computed(() => declaredFaces.value.length > 0)
 const hasLocalManagementFace = computed(() => declaredFaces.value.some((face) => face?.face_id === 'local-management'))
 const hasAgentExecutionFace = computed(() => declaredFaces.value.some((face) => face?.face_id === 'agent-execution'))
 const showAgentExecutionStatus = computed(() => hasAgentExecutionFace.value || !hasDeclaredFaceProjection.value)
+const dualFaceRuntime = computed(() => hasLocalManagementFace.value && hasAgentExecutionFace.value)
 const targetEligibility = computed(() => detail.value?.target_eligibility || null)
 const usesCanonicalLocalTarget = computed(() => targetEligibility.value?.agent_targets_allowed === false)
 const canonicalLocalTargetID = computed(() => String(targetEligibility.value?.canonical_local_target_id || '').trim())
@@ -128,6 +130,7 @@ const pluginName = computed(() => detail.value?.package?.manifest?.name || detai
 const confirmName = computed(() => {
   if (confirmDialog.value.action === 'delete-instance') return selectedInstance.value?.id || ''
   if (confirmDialog.value.action === 'delete-entry') return sanitizePluginText(confirmDialog.value.entry?.frontend_url || '')
+  if (confirmDialog.value.action === 'uninstall-agent') return agentLabel(confirmDialog.value.entry?.agent_id)
   return pluginName.value
 })
 const hasHTTPBackend = computed(() => {
@@ -211,7 +214,13 @@ const showPrimaryTask = computed(() => {
   if (!canCreateInstance.value && taskState.value !== 'unpublished') return false
   return taskState.value === 'undeployed' || taskState.value === 'unpublished'
 })
-const deployModalInstance = computed(() => (deployIntent.value === 'deploy' ? null : selectedInstance.value))
+const deployModalInstance = computed(() => (
+  deployIntent.value === 'deploy' && !canDeployExecutionFace.value ? null : selectedInstance.value
+))
+const deployModalInitialFace = computed(() => {
+  if (deployIntent.value === 'deploy' && selectedInstance.value) return 'agent-execution'
+  return selectedFaceID.value
+})
 
 const hasPendingOperation = computed(() => Boolean(String(detail.value?.plugin?.pending_operation_id || '').trim()))
 const hasInstances = computed(() => (detail.value?.instances || []).length > 0)
@@ -222,17 +231,16 @@ const ownsSingletonControlPlaneSurface = computed(() => {
 const runtimeHostScope = computed(() => String(
   detail.value?.package?.manifest?.runtime?.host_scope || detail.value?.package?.runtime?.host_scope || ''
 ).trim().toLowerCase())
-// Deployment is an Agent execution-face operation.  Keep the action
-// available after the first instance so an installed plugin can be deployed
-// to another eligible node; local-management-only plugins remain read-only
-// here because their target is owned by the control plane.
+const canDeployExecutionFace = computed(() => ownsSingletonControlPlaneSurface.value && dualFaceRuntime.value && hasInstances.value)
+// Keep a deploy action after the first instance for ordinary execution-face
+// plugins. Dual-face plugins that own a control-plane management surface keep
+// one default instance and add Agent targets from that instance instead.
 const canCreateInstance = computed(() => {
-  const executionFace = hasAgentExecutionFace.value || (
+  if (ownsSingletonControlPlaneSurface.value) return false
+  return hasAgentExecutionFace.value || (
     !hasDeclaredFaceProjection.value &&
-    !ownsSingletonControlPlaneSurface.value &&
     runtimeHostScope.value !== 'control-plane'
   )
-  return executionFace
 })
 const showUninstallOnTask = computed(() => admin.value && !hasInstances.value)
 const uninstallNeedsDisable = computed(() => hasInstances.value && detail.value?.plugin?.current_lifecycle !== 'disabled' && detail.value?.plugin?.desired_lifecycle !== 'disabled')
@@ -247,6 +255,8 @@ const confirmCopy = computed(() => {
       return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置、插件密钥及其发布的入口规则将一并清理。', confirmText: '确认删除实例' }
     case 'delete-entry':
       return { title: '确认删除入口', message: '删除后该域名将不再指向此插件，已发布的访问会立即失效。插件实例仍保留，需要时可以再发布。', confirmText: '确认删除入口' }
+    case 'uninstall-agent':
+      return { title: '确认卸载节点执行面', message: '将从此节点移除该插件的 Agent 执行面。插件实例和本地管理面会保留，不会卸载整个插件。', confirmText: '确认卸载执行面' }
     case 'uninstall':
       return {
         title: '确认卸载插件',
@@ -526,6 +536,11 @@ async function confirmAction() {
       configModalOpen.value = false
       await load()
       messageStore.success('入口已删除')
+    } else if (action === 'uninstall-agent') {
+      await uninstallAgentExecutionFace(confirmDialog.value.entry)
+      confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
+      await load()
+      messageStore.success('已从此节点卸载执行面')
     } else {
       await lifecycle(action)
       confirmDialog.value = { visible: false, loading: false, action: '', entry: null }
@@ -535,7 +550,9 @@ async function confirmAction() {
       ? '删除插件实例失败'
       : action === 'delete-entry'
         ? '删除入口失败'
-        : action === 'uninstall' ? '卸载插件失败' : `插件 ${action} 失败`
+        : action === 'uninstall-agent'
+          ? '卸载节点执行面失败'
+          : action === 'uninstall' ? '卸载插件失败' : `插件 ${action} 失败`
     messageStore.error(humanPluginError(cause, fallback))
     confirmDialog.value = { ...confirmDialog.value, loading: false }
   }
@@ -567,6 +584,29 @@ function humanLoadError(cause, fallback) {
     return '暂时连不上服务，请稍后重试。'
   }
   return raw || fallback || '读取失败'
+}
+
+function startUninstallAgentExecution(status) {
+  if (!admin.value || busy.value || !status) return
+  confirmDialog.value = { visible: true, loading: false, action: 'uninstall-agent', entry: status }
+}
+
+async function uninstallAgentExecutionFace(status) {
+  const agentID = String(status?.agent_id || '').trim()
+  const instanceID = String(status?.instance_id || '').trim()
+  const instance = (detail.value?.instances || []).find((item) => item.id === instanceID) || selectedInstance.value
+  if (!instance?.id || !agentID) throw new Error('Agent 执行面目标无效')
+  const remaining = [...new Set((instance.targets || [])
+    .map((id) => String(id || '').trim())
+    .filter((id) => id && id !== agentID))]
+  await configurePlugin(detail.value.plugin.plugin_id, {
+    instance_id: instance.id,
+    resource_group_id: instance.resource_group_id,
+    targets: remaining,
+    policy_chains: instance.policy_chains || [],
+    bindings: instance.bindings || [],
+    config: instance.config || {}
+  })
 }
 
 async function retryAgent(status) {
@@ -744,6 +784,16 @@ async function retryAgent(status) {
           <button v-if="admin && canCreateInstance" class="btn btn-secondary" type="button" :disabled="!!busy" @click="openDeployModal('deploy')">
             部署
           </button>
+          <button
+            v-if="admin && canDeployExecutionFace"
+            class="btn btn-secondary"
+            type="button"
+            data-test="plugin-deploy-execution-face"
+            :disabled="!!busy"
+            @click="openDeployModal('deploy')"
+          >
+            部署到节点
+          </button>
         </div>
 
         <BaseTabs
@@ -855,7 +905,7 @@ async function retryAgent(status) {
                 <p>generation、同步、离线与执行故障只归属 Agent 执行面；失败时可重试。</p>
               </div>
             </header>
-            <PluginAgentStatusTable :statuses="detail.agent_statuses" :agents="agents" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" />
+            <PluginAgentStatusTable :statuses="detail.agent_statuses" :agents="agents" :actionable="admin" :busy-agent="retryingAgent" @retry="retryAgent" @uninstall="startUninstallAgentExecution" />
           </section>
 
           <section v-if="selectedInstance" class="plugin-ops-panel">
@@ -898,7 +948,7 @@ async function retryAgent(status) {
         :package-detail="detail.package"
         :declaresHTTPBackend="hasHTTPBackend"
         :faces="declaredFaces"
-        :initial-face="selectedFaceID"
+        :initial-face="deployModalInitialFace"
         :target-eligibility="targetEligibility"
         @deployed="handleDeployed"
       />

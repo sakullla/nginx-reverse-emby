@@ -10,7 +10,7 @@ const props = defineProps({
   actionable: { type: Boolean, default: false },
   busyAgent: { type: String, default: '' }
 })
-defineEmits(['retry'])
+defineEmits(['retry', 'uninstall'])
 
 function agentLabel(agentID) {
   const id = String(agentID || '').trim()
@@ -146,6 +146,16 @@ function syncLabel(status) {
           @click="$emit('retry', status)"
         >
           {{ busyAgent === status.agent_id ? '重试中…' : '重试此 Agent revision' }}
+        </button>
+        <button
+          v-if="actionable"
+          class="btn btn-danger btn-sm"
+          type="button"
+          data-test="plugin-agent-uninstall"
+          :disabled="busyAgent === status.agent_id"
+          @click="$emit('uninstall', status)"
+        >
+          卸载执行面
         </button>
         <details v-if="status.runtime_budget || status.runtime_details" class="agent-status-card__details">
           <summary>预算、崩溃与重试详情</summary>

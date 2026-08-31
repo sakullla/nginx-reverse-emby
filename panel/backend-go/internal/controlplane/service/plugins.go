@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -363,18 +362,17 @@ type pluginDependencyConsumerStore interface {
 }
 
 type PluginService struct {
-	store                pluginLifecycleStore
-	validator            *plugins.Validator
-	cacheRoot            string
-	now                  func() time.Time
-	cfg                  config.Config
-	mutationExecutor     *revision.Executor
-	revisionMutation     bool
-	revisionNumbers      map[string]int64
-	secretVault          *secrets.Vault
-	postCommitActions    *[]func()
-	controlPlaneRuntime  PluginControlPlaneRuntime
-	ensureExecutionFaces sync.Map
+	store               pluginLifecycleStore
+	validator           *plugins.Validator
+	cacheRoot           string
+	now                 func() time.Time
+	cfg                 config.Config
+	mutationExecutor    *revision.Executor
+	revisionMutation    bool
+	revisionNumbers     map[string]int64
+	secretVault         *secrets.Vault
+	postCommitActions   *[]func()
+	controlPlaneRuntime PluginControlPlaneRuntime
 }
 
 func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
@@ -1062,7 +1060,7 @@ func (s *PluginService) reconcilePendingPluginOperation(ctx context.Context, plu
 
 func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.Context, installed storage.InstalledPluginRow, operation storage.PluginOperationRow) error {
 	switch operation.Kind {
-	case "configure", "enable", "disable":
+	case "configure", "enable", "disable", "upgrade", "rollback":
 	default:
 		return nil
 	}
@@ -1090,7 +1088,7 @@ func (s *PluginService) completePendingOperationWithoutAgentRuntime(ctx context.
 			foundPendingConfigure = true
 		}
 	}
-	if operation.Kind == "configure" && !foundPendingConfigure {
+	if (operation.Kind == "configure" || operation.Kind == "upgrade" || operation.Kind == "rollback") && !foundPendingConfigure {
 		return nil
 	}
 	if err := s.CompleteTrustedRevisionOperation(ctx, operation, true, map[string]any{}); err != nil {
@@ -1179,7 +1177,7 @@ func (s *PluginService) DeleteInstanceMutation(ctx context.Context, request Plug
 func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgradeRequest) (PluginSummary, error) {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Upgrade(ctx, request)
-		return pluginSummary(row), err
+		return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
 	}
 	var row storage.InstalledPluginRow
 	err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.upgrade", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
@@ -1187,13 +1185,13 @@ func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgra
 		row, err = txService.Upgrade(mutationCtx, request)
 		return err
 	})
-	return pluginSummary(row), err
+	return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
 }
 
 func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRollbackRequest) (PluginSummary, error) {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		row, err := s.Rollback(ctx, request)
-		return pluginSummary(row), err
+		return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
 	}
 	var row storage.InstalledPluginRow
 	err := s.executeRevisionLifecycleMutation(ctx, request.PluginID, "plugin.rollback", request, nil, func(txService *PluginService, mutationCtx context.Context) error {
@@ -1201,7 +1199,24 @@ func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRoll
 		row, err = txService.Rollback(mutationCtx, request)
 		return err
 	})
-	return pluginSummary(row), err
+	return s.pluginSummaryAfterPendingReconcile(ctx, request.PluginID, row, err)
+}
+
+func (s *PluginService) pluginSummaryAfterPendingReconcile(ctx context.Context, pluginID string, row storage.InstalledPluginRow, err error) (PluginSummary, error) {
+	if err != nil {
+		return pluginSummary(row), err
+	}
+	if recErr := s.reconcilePendingPluginOperation(ctx, pluginID); recErr != nil {
+		return pluginSummary(row), recErr
+	}
+	updated, found, lookupErr := s.store.GetInstalledPlugin(ctx, pluginID)
+	if lookupErr != nil {
+		return pluginSummary(row), lookupErr
+	}
+	if found {
+		row = updated
+	}
+	return pluginSummary(row), nil
 }
 
 type pluginLifecycleOperationContextKey struct{}
@@ -1353,86 +1368,6 @@ func (s *PluginService) pluginLifecycleTargetIDs(ctx context.Context, pluginID s
 		ids = []string{defaultTargetID}
 	}
 	return ids, nil
-}
-
-func (s *PluginService) EnsureSelectedAgentExecutionFace(ctx context.Context, pluginID, agentID string) error {
-	if s == nil {
-		return errors.New("plugin service is unavailable")
-	}
-	pluginID = strings.TrimSpace(pluginID)
-	agentID = strings.TrimSpace(agentID)
-	if pluginID == "" || agentID == "" {
-		return fmt.Errorf("%w: plugin and agent identities are required", ErrInvalidArgument)
-	}
-	implicit, err := s.pluginImplicitRemoteExecution(ctx, pluginID)
-	if err != nil || !implicit {
-		return err
-	}
-	if pluginsdk.ImplicitRemoteAgentExecutionSkipsAgent(s.cfg.LocalAgentID, agentID) {
-		return nil
-	}
-	instances, err := s.store.ListPluginInstances(ctx, pluginID)
-	if err != nil {
-		return err
-	}
-	var instance storage.PluginInstanceRow
-	for _, candidate := range instances {
-		if !candidate.DesiredEnabled {
-			continue
-		}
-		instance = candidate
-		break
-	}
-	if instance.ID == "" {
-		return ErrPluginInstanceNotFound
-	}
-	targets, err := pluginExplicitTargetIDs(json.RawMessage(instance.TargetJSON))
-	if err != nil {
-		return err
-	}
-	if pluginGenerationContainsString(targets, agentID) {
-		return nil
-	}
-	if strings.TrimSpace(instance.PendingTargetJSON) != "" {
-		pending, err := pluginExplicitTargetIDs(json.RawMessage(instance.PendingTargetJSON))
-		if err != nil {
-			return err
-		}
-		if pluginGenerationContainsString(pending, agentID) {
-			return nil
-		}
-	}
-	key := pluginID + "\x00" + agentID
-	if _, loaded := s.ensureExecutionFaces.LoadOrStore(key, struct{}{}); loaded {
-		return nil
-	}
-	defer s.ensureExecutionFaces.Delete(key)
-	_, err = s.ConfigureMutation(ctx, PluginConfigureRequest{
-		PluginID:        pluginID,
-		InstanceID:      instance.ID,
-		ResourceGroupID: instance.ResourceGroupID,
-		Targets:         append(append([]string{}, targets...), agentID),
-		Config:          json.RawMessage(`{}`),
-		ActorID:         "system:plugin-call",
-		Actor:           authz.Actor{ID: "system:plugin-call", Bootstrap: true, Permissions: []string{"*"}},
-	})
-	if err != nil {
-		return err
-	}
-	return s.reconcilePendingPluginOperation(ctx, pluginID)
-}
-
-func pluginGenerationContainsString(values []string, want string) bool {
-	want = strings.TrimSpace(want)
-	if want == "" {
-		return false
-	}
-	for _, value := range values {
-		if strings.TrimSpace(value) == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *PluginService) activateControlPlaneRuntime(ctx context.Context, operation storage.PluginOperationRow) error {
@@ -1886,12 +1821,15 @@ func (s *PluginService) RecoverControlPlaneRuntimes(ctx context.Context, runtime
 	if !ok {
 		return errors.New("plugin lifecycle store does not support runtime recovery")
 	}
+	var recoveryErrors []error
+	if err := s.RecoverPendingPluginOperations(WithSystemMutationPrincipal(ctx, "system:plugin-runtime-recovery")); err != nil {
+		recoveryErrors = append(recoveryErrors, fmt.Errorf("recover pending plugin operations before runtime recovery: %w", err))
+	}
 	installed, err := s.store.ListInstalledPlugins(ctx)
 	if err != nil {
 		return fmt.Errorf("list installed plugins for runtime recovery: %w", err)
 	}
 	candidates := make([]pluginhost.Candidate, 0)
-	var recoveryErrors []error
 	for _, plugin := range installed {
 		if plugin.DesiredLifecycle != "enabled" || plugin.HostScope != "control-plane" || plugin.RuntimeKind != "rpc-service" {
 			continue

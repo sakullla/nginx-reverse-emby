@@ -34,8 +34,11 @@ func TestInstanceTargetsRemoteAgent(t *testing.T) {
 	}
 	controlOnly := Runtime{Kind: RuntimeRPCService, HostScope: HostScopeControlPlane}
 
-	if InstanceTargetsRemoteAgent(dual, nil, "edge-a", "local") != true {
-		t.Fatal("empty dual-face targets must include remote Agents")
+	if InstanceTargetsRemoteAgent(dual, nil, "edge-a", "local") {
+		t.Fatal("empty dual-face targets must not allow arbitrary remotes")
+	}
+	if InstanceTargetsRemoteAgent(dual, []string{}, "edge-a", "local") {
+		t.Fatal("empty explicit target list must not allow plugin.call")
 	}
 	if InstanceTargetsRemoteAgent(dual, nil, "local", "local") {
 		t.Fatal("empty dual-face targets must skip the embedded local Agent")
