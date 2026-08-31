@@ -77,9 +77,28 @@ const mode = computed(() => {
   if (props.instance?.id && hasHTTPBackend.value) return 'publish'
   return 'deploy'
 })
-const sortedAgents = computed(() => props.agents
-  .filter((agent) => !dualFaceRuntime.value || String(agent?.id || '') !== canonicalLocalTargetID.value)
-  .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id))))
+const sortedAgents = computed(() => {
+  const installedTargets = new Set()
+  // Publishing an additional domain must stay within the nodes that already
+  // host this instance.  The publish API can create another entry for those
+  // nodes, but it must not make an uninstalled node look eligible.
+  if (mode.value === 'publish') {
+    for (const target of props.instance?.targets || []) {
+      const id = String(target || '').trim()
+      if (id) installedTargets.add(id)
+    }
+    for (const binding of props.instance?.bindings || []) {
+      const id = String(binding?.target_agent_id || '').trim()
+      if (id) installedTargets.add(id)
+    }
+    const publishedAgentID = String(props.publishedEntry?.agent_id || '').trim()
+    if (publishedAgentID) installedTargets.add(publishedAgentID)
+  }
+  return props.agents
+    .filter((agent) => !dualFaceRuntime.value || String(agent?.id || '') !== canonicalLocalTargetID.value)
+    .filter((agent) => mode.value !== 'publish' || installedTargets.has(String(agent?.id || '').trim()))
+    .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id)))
+})
 const visibleAgents = computed(() => {
   const query = agentQuery.value.trim().toLowerCase()
   return sortedAgents.value.filter((agent) => {

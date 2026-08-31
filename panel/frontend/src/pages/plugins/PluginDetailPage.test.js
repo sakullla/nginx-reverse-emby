@@ -635,12 +635,13 @@ describe('PluginDetailPage', () => {
     await buttonByText(wrapper, '再发布一条域名').trigger('click')
     await flushPromises()
     const guide = taskGuide(wrapper)
-    await selectTarget(guide, 'edge-b')
+    expect(guide.findAll('[data-test="deployment-agent"]').map((input) => input.element.value)).toEqual(['edge-a'])
+    await selectTarget(guide, 'edge-a')
     await fillDomain(guide, { host: 'alt.example.com', https: true })
     await guideSubmit(guide).trigger('click')
     await flushPromises()
     expect(mocks.publishPlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
-      targets: ['edge-b'],
+      targets: ['edge-a'],
       frontend_url: 'https://alt.example.com'
     }))
     expect(mocks.publishPlugin.mock.calls[0][1]).not.toHaveProperty('rule_id')
@@ -1255,6 +1256,31 @@ describe('PluginDetailPage', () => {
     expect(more.text()).toMatch(/运行日志/)
     expect(more.text()).toMatch(/生命周期操作与审计/)
     expect(buttonByText(more, '导出脱敏诊断')).toBeTruthy()
+  })
+
+  it('keeps an execution-face deploy action available after the first instance', async () => {
+    const base = makeDetail()
+    const wrapper = await mountPage({
+      ...base,
+      faces: [{ face_id: 'agent-execution', host_scope: 'agent' }]
+    })
+
+    expect(buttonByText(wrapper, '部署')).toBeTruthy()
+    await buttonByText(wrapper, '部署').trigger('click')
+    await flushPromises()
+    expect(deployModal(wrapper).exists()).toBe(true)
+  })
+
+  it('does not expose deployment for a local-management-only plugin', async () => {
+    const base = makeDetail()
+    const wrapper = await mountPage({
+      ...base,
+      instances: [],
+      faces: [{ face_id: 'local-management', host_scope: 'control-plane' }]
+    })
+
+    expect(buttonByText(wrapper, '开始部署')).toBeFalsy()
+    expect(buttonByText(wrapper, '部署')).toBeFalsy()
   })
 
   it('does not offer a second instance for a plugin that owns a global control-plane surface', async () => {

@@ -211,9 +211,12 @@ const taskHint = computed(() => {
 const primaryTaskLabel = computed(() => (taskState.value === 'unpublished' ? '发布到域名' : '开始部署'))
 const showPrimaryTask = computed(() => {
   if (ownsSingletonControlPlaneSurface.value && taskState.value !== 'unpublished') return false
+  if (!canCreateInstance.value && taskState.value !== 'unpublished') return false
   return taskState.value === 'undeployed' || taskState.value === 'unpublished'
 })
-const deployModalInstance = computed(() => selectedInstance.value)
+const deployModalInstance = computed(() => (
+  deployIntent.value === 'deploy' && !canDeployExecutionFace.value ? null : selectedInstance.value
+))
 const deployModalInitialFace = computed(() => {
   if (deployIntent.value === 'deploy' && selectedInstance.value) return 'agent-execution'
   return selectedFaceID.value
@@ -225,8 +228,20 @@ const ownsSingletonControlPlaneSurface = computed(() => {
   const points = detail.value?.package?.manifest?.extension_points
   return Array.isArray(points) && (points.includes('ui.route') || points.includes('resource.group'))
 })
-const canCreateInstance = computed(() => !ownsSingletonControlPlaneSurface.value && !hasInstances.value)
+const runtimeHostScope = computed(() => String(
+  detail.value?.package?.manifest?.runtime?.host_scope || detail.value?.package?.runtime?.host_scope || ''
+).trim().toLowerCase())
 const canDeployExecutionFace = computed(() => ownsSingletonControlPlaneSurface.value && dualFaceRuntime.value && hasInstances.value)
+// Keep a deploy action after the first instance for ordinary execution-face
+// plugins. Dual-face plugins that own a control-plane management surface keep
+// one default instance and add Agent targets from that instance instead.
+const canCreateInstance = computed(() => {
+  if (ownsSingletonControlPlaneSurface.value) return false
+  return hasAgentExecutionFace.value || (
+    !hasDeclaredFaceProjection.value &&
+    runtimeHostScope.value !== 'control-plane'
+  )
+})
 const showUninstallOnTask = computed(() => admin.value && !hasInstances.value)
 const uninstallNeedsDisable = computed(() => hasInstances.value && detail.value?.plugin?.current_lifecycle !== 'disabled' && detail.value?.plugin?.desired_lifecycle !== 'disabled')
 
