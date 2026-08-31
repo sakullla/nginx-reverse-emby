@@ -107,6 +107,14 @@ func (c *TaskClient) Run(ctx context.Context) error {
 			return nil
 		}
 		err := c.runStreamSession(ctx)
+		if ctx.Err() == nil {
+			// A completed stream is no proof that its underlying HTTP/2
+			// connection is reusable. In particular, a half-open connection can
+			// keep accepting new stream headers while every server push fails.
+			// Rotate the transport before opening the next task session; merely
+			// closing idle connections is racy while HTTP/2 retires the stream.
+			c.rotateTransport()
+		}
 		if err != nil && ctx.Err() == nil && isStreamUnavailable(err) {
 			err = c.runSSESession(ctx)
 		}
@@ -625,7 +633,37 @@ func (c *TaskClient) postUpdate(ctx context.Context, taskID string, payload map[
 func (c *TaskClient) discardConnections() {
 	if c.transport != nil {
 		c.transport.CloseIdleConnections()
+		return
 	}
+	if c.cfg.HTTPClient != nil {
+		if transport, ok := c.cfg.HTTPClient.Transport.(interface{ CloseIdleConnections() }); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+}
+
+func (c *TaskClient) rotateTransport() {
+	if c == nil || c.cfg.HTTPClient == nil {
+		return
+	}
+	currentClient := c.cfg.HTTPClient
+	currentTransport, ok := currentClient.Transport.(*http.Transport)
+	if !ok || currentTransport == nil {
+		c.discardConnections()
+		return
+	}
+
+	var nextTransport *http.Transport
+	if c.transport != nil {
+		nextTransport = newHTTPTransport(c.cfg.HTTPTransport)
+		c.transport = nextTransport
+	} else {
+		nextTransport = currentTransport.Clone()
+	}
+	nextClient := *currentClient
+	nextClient.Transport = nextTransport
+	c.cfg.HTTPClient = &nextClient
+	currentTransport.CloseIdleConnections()
 }
 
 func (c *TaskClient) updateURL(taskID string) string {

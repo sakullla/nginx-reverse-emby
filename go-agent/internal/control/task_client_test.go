@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 
 	"testing"
 	"time"
@@ -360,6 +361,77 @@ func TestTaskClientReconnectsWhenTaskStreamStopsAcknowledgingPings(t *testing.T)
 		case <-time.After(time.Second):
 			t.Fatalf("task stream opened %d times, want reconnect", opened)
 		}
+	}
+}
+
+func TestTaskClientRestoresServerPushAfterHTTP2StreamEnds(t *testing.T) {
+	var streamMu sync.Mutex
+	streamCount := 0
+	firstConnection := ""
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodHead && request.URL.Path == "/api/agents/task-stream":
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodPost && request.URL.Path == "/api/agents/task-stream":
+			if _, err := bufio.NewReader(request.Body).ReadString('\n'); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+			writer.(http.Flusher).Flush()
+			streamMu.Lock()
+			streamCount++
+			current := streamCount
+			if current == 1 {
+				firstConnection = request.RemoteAddr
+			}
+			poisoned := current > 1 && request.RemoteAddr == firstConnection
+			streamMu.Unlock()
+			if current == 1 || poisoned {
+				return
+			}
+			_, _ = io.WriteString(writer, `{"type":"task","task":{"task_id":"task-recovered","task_type":"diagnose_http_rule","deadline":"2099-01-01T00:00:00Z","payload":{"rule_id":7}}}`+"\n")
+			writer.(http.Flusher).Flush()
+			_, _ = io.Copy(io.Discard, request.Body)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	received := make(chan struct{}, 1)
+	client := NewTaskClient(TaskClientConfig{
+		MasterURL: server.URL, AgentToken: "token", AgentID: "edge-a", ReconnectWait: 5 * time.Millisecond,
+		HTTPClient: server.Client(), Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
+			if task.TaskID != "task-recovered" {
+				t.Fatalf("task id = %q", task.TaskID)
+			}
+			received <- struct{}{}
+			return map[string]any{"ok": true}, nil
+		}),
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("task client did not restore server push after the first HTTP/2 stream ended")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("TaskClient.Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("task client did not stop")
 	}
 }
 
