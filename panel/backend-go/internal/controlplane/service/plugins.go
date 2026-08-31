@@ -1236,9 +1236,7 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 	if err != nil {
 		return err
 	}
-	dependencyAction := revision.DependencyActionApply
 	if strings.HasSuffix(kind, ".disable") || strings.HasSuffix(kind, ".delete-instance") || strings.HasSuffix(kind, ".unpublish") {
-		dependencyAction = revision.DependencyActionDelete
 		targetIDs, err = s.existingPluginLifecycleTargetIDs(ctx, targetIDs)
 		if err != nil {
 			return err
@@ -1251,7 +1249,7 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 	_, err = s.mutationExecutor.Execute(mutationCtx, revision.MutationRequest{
 		OperationID:      operationID,
 		Kind:             kind,
-		DependencyAction: dependencyAction,
+		DependencyAction: pluginLifecycleDependencyAction(kind),
 		Request:          request,
 		Targets:          configMutationTargets(s.cfg, targetIDs, nil),
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
@@ -1279,6 +1277,15 @@ func (s *PluginService) executeRevisionLifecycleMutation(
 		},
 	})
 	return err
+}
+
+func pluginLifecycleDependencyAction(string) revision.DependencyAction {
+	// The dependency graph orders HTTP/L4 rule changes against Relay and
+	// Egress resources. Plugin lifecycle mutations do not change those graph
+	// resources, so revalidating every unchanged rule in each target snapshot
+	// would incorrectly require unrelated stable dependency Agents to join the
+	// plugin rollout.
+	return ""
 }
 
 func (s *PluginService) existingPluginLifecycleTargetIDs(ctx context.Context, targetIDs []string) ([]string, error) {

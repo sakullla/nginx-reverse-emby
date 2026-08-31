@@ -52,6 +52,14 @@ func TestPendingUpgradeMatches(t *testing.T) {
 	}
 }
 
+func TestPluginLifecycleMutationsDoNotRevalidateUnchangedRuleDependencies(t *testing.T) {
+	for _, kind := range []string{"plugin.configure", "plugin.enable", "plugin.disable", "plugin.upgrade", "plugin.delete-instance"} {
+		if action := pluginLifecycleDependencyAction(kind); action != "" {
+			t.Fatalf("pluginLifecycleDependencyAction(%q) = %q, want empty", kind, action)
+		}
+	}
+}
+
 func TestSupersedePendingPlugin(t *testing.T) {
 	t.Parallel()
 
