@@ -345,6 +345,8 @@ var managedCertificateAutoRenewInitialDelay = 10 * time.Second
 var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
 var revisionRetentionInterval = 24 * time.Hour
+var revisionRetentionStartupRetryInterval = 5 * time.Second
+var revisionRetentionStartupMaxAttempts = 6
 var pluginRuntimeRetentionAge = 24 * time.Hour
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger, resolver *service.PluginDNSTokenResolver) {
@@ -471,6 +473,10 @@ type revisionRetentionStore interface {
 	Close() error
 }
 
+type orphanedPluginOperationRetentionStore interface {
+	FailOrphanedPluginOperations(context.Context, time.Time, time.Time) (int64, error)
+}
+
 var openRevisionRetentionStore = func(cfg config.Config) (revisionRetentionStore, error) {
 	return openConfiguredStore(cfg)
 }
@@ -482,6 +488,13 @@ var runRevisionRetentionPass = func(ctx context.Context, cfg config.Config) erro
 	}
 	now := time.Now().UTC()
 	_, pruneErr := store.PruneRevisionHistory(ctx, storage.RevisionRetentionPolicy{Now: now})
+	var orphanedOperationErr error
+	if orphanedStore, ok := store.(orphanedPluginOperationRetentionStore); ok {
+		_, orphanedOperationErr = orphanedStore.FailOrphanedPluginOperations(ctx, now.Add(-storage.DefaultOrphanedPluginOperationGrace), now)
+		if orphanedOperationErr != nil {
+			orphanedOperationErr = fmt.Errorf("fail orphaned plugin operations: %w", orphanedOperationErr)
+		}
+	}
 	references, referenceErr := store.ListPluginRuntimeDirectoryReferences(ctx)
 	closeErr := store.Close()
 	if pruneErr != nil {
@@ -508,7 +521,7 @@ var runRevisionRetentionPass = func(ctx context.Context, cfg config.Config) erro
 			runtimePruneErr = fmt.Errorf("prune plugin runtime directories: %w", runtimePruneErr)
 		}
 	}
-	return errors.Join(pruneErr, referenceErr, runtimePruneErr, closeErr)
+	return errors.Join(pruneErr, orphanedOperationErr, referenceErr, runtimePruneErr, closeErr)
 }
 
 func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *log.Logger) <-chan struct{} {
@@ -528,7 +541,7 @@ func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *
 			return
 		default:
 		}
-		if err := runRevisionRetentionPass(ctx, cfg); err != nil && ctx.Err() == nil {
+		if err := runRevisionRetentionStartupPass(ctx, cfg); err != nil && ctx.Err() == nil {
 			logger.Printf("[revision-retention] startup pass failed: %v", err)
 		}
 
@@ -546,6 +559,36 @@ func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *
 		}
 	}()
 	return done
+}
+
+func runRevisionRetentionStartupPass(ctx context.Context, cfg config.Config) error {
+	attempts := revisionRetentionStartupMaxAttempts
+	if attempts <= 0 {
+		attempts = 6
+	}
+	retryInterval := revisionRetentionStartupRetryInterval
+	if retryInterval <= 0 {
+		retryInterval = 5 * time.Second
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := runRevisionRetentionPass(ctx, cfg); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == attempts-1 {
+			break
+		}
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
 
 func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResolver func(*service.PluginDNSTokenResolver)) (*app.App, error) {

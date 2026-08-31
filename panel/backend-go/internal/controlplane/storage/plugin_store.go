@@ -2331,7 +2331,11 @@ func (s *GormStore) WithPackageGCMutation(ctx context.Context, claim marketplace
 
 func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.PackageGCIntent, error) {
 	var rows []PluginCacheGCIntentRow
-	if err := s.db.WithContext(ctx).Order("source_id, digest, signer_fingerprint").Find(&rows).Error; err != nil {
+	deferredCutoff := time.Now().UTC().Add(-packageGCDeferredRetryInterval)
+	if err := s.db.WithContext(ctx).
+		Where("deferred = ? OR updated_at <= ? OR last_error <> ?", false, deferredCutoff, "").
+		Order("source_id, digest, signer_fingerprint").
+		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	result := make([]marketplace.PackageGCIntent, 0, len(rows))
@@ -2340,6 +2344,10 @@ func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.Pac
 	}
 	return result, nil
 }
+
+const packageGCDeferredRetryInterval = 10 * time.Minute
+
+const DefaultOrphanedPluginOperationGrace = 24 * time.Hour
 
 func (s *GormStore) RecordPackageGCFailure(ctx context.Context, sourceID, digest, signerFingerprint, failure string) error {
 	return s.db.WithContext(ctx).Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).Updates(map[string]any{"status": "pending", "last_error": failure, "updated_at": time.Now().UTC()}).Error
@@ -3792,6 +3800,56 @@ func (s *GormStore) SupersedePluginOperation(ctx context.Context, pluginID, oper
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		return supersedePluginOperationTx(tx, pluginID, operationID, replacementOperationID, now)
 	})
+}
+
+func (s *GormStore) FailOrphanedPluginOperations(ctx context.Context, cutoff, now time.Time) (int64, error) {
+	if cutoff.IsZero() {
+		return 0, errors.New("orphaned plugin operation cutoff is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var failed int64
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		orphaned := tx.Model(&PluginOperationRow{}).
+			Where("completed_at IS NULL AND status IN ?", []string{"applying", "staged"}).
+			Where("created_at <= ?", cutoff).
+			Where("NOT EXISTS (SELECT 1 FROM installed_plugins WHERE installed_plugins.pending_operation_id = plugin_operations.id)").
+			Where("NOT EXISTS (SELECT 1 FROM plugin_instances WHERE plugin_instances.pending_operation_id = plugin_operations.id)")
+		var operationIDs []string
+		if err := orphaned.Clauses(clause.Locking{Strength: "UPDATE"}).Pluck("id", &operationIDs).Error; err != nil {
+			return err
+		}
+		if len(operationIDs) == 0 {
+			return nil
+		}
+		result := tx.Model(&PluginOperationRow{}).
+			Where("id IN ? AND completed_at IS NULL", operationIDs).
+			Where("NOT EXISTS (SELECT 1 FROM installed_plugins WHERE installed_plugins.pending_operation_id = plugin_operations.id)").
+			Where("NOT EXISTS (SELECT 1 FROM plugin_instances WHERE plugin_instances.pending_operation_id = plugin_operations.id)").
+			Updates(map[string]any{
+				"status":       "failed",
+				"error_class":  "orphaned",
+				"error":        "plugin operation has no pending lifecycle owner",
+				"completed_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		failed = result.RowsAffected
+		if failed == 0 {
+			return nil
+		}
+		if err := tx.Model(&PluginAgentRuntimeStatusRow{}).
+			Where("operation_id IN ? AND authority_slot = ?", operationIDs, "pending").
+			Update("authority_slot", "retired").Error; err != nil {
+			return err
+		}
+		return tx.Model(&PluginOperationSecretRow{}).
+			Where("operation_id IN ? AND state = ?", operationIDs, "staged").
+			Updates(map[string]any{"state": "retired", "retired_at": now}).Error
+	})
+	return failed, err
 }
 
 func supersedePluginOperationTx(tx *gorm.DB, pluginID, operationID, replacementOperationID string, now time.Time) error {

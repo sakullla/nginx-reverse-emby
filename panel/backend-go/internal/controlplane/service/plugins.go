@@ -357,6 +357,10 @@ type pluginControlPlaneRuntimeRecoveryStore interface {
 	GetPluginRuntime(context.Context, string) (storage.PluginRuntimeInstanceRow, bool, error)
 }
 
+type pluginOrphanedOperationRecoveryStore interface {
+	FailOrphanedPluginOperations(context.Context, time.Time, time.Time) (int64, error)
+}
+
 type pluginDependencyConsumerStore interface {
 	ResolvePluginInstanceBindingRequests(context.Context, []storage.PluginInstanceBindingRequest, string) ([]storage.PluginInstanceBinding, error)
 }
@@ -957,6 +961,12 @@ func (s *PluginService) RecoverSupersededConfigures(ctx context.Context) error {
 // new user mutation checks the pending-operation fence. Reports and revision
 // states remain generation-fenced; genuinely in-flight work stays exclusive.
 func (s *PluginService) RecoverPendingPluginOperations(ctx context.Context) error {
+	if recovery, ok := s.store.(pluginOrphanedOperationRecoveryStore); ok {
+		now := s.now().UTC()
+		if _, err := recovery.FailOrphanedPluginOperations(ctx, now.Add(-storage.DefaultOrphanedPluginOperationGrace), now); err != nil {
+			return fmt.Errorf("recover orphaned plugin operations: %w", err)
+		}
+	}
 	installed, err := s.store.ListInstalledPlugins(ctx)
 	if err != nil {
 		return err
