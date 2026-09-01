@@ -111,16 +111,18 @@ describe('RuleDetailPage', () => {
       '/relay-listeners',
       '/agents',
       '/plugins/marketplace',
-      '/resource-groups',
       '/settings'
     ])
     expect(hrefs).not.toContain('/access')
     expect(hrefs).not.toContain('/access/users')
     expect(hrefs).not.toContain('/access/resource-groups')
+    expect(hrefs).not.toContain('/resource-groups')
+    expect(hrefs).not.toContain('/plugins/repositories')
     expect(wrapper.text()).not.toContain('用户与资源管理')
     expect(wrapper.text()).not.toContain('用户管理')
     expect(wrapper.text()).not.toContain('资源组管理')
-    expect(wrapper.text()).toContain('插件资源组')
+    expect(wrapper.text()).not.toContain('插件资源组')
+    expect(wrapper.text()).not.toContain('插件仓库')
     expect(wrapper.text()).toContain('设置')
 
     wrapper.unmount()

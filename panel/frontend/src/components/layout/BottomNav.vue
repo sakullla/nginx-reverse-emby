@@ -64,13 +64,6 @@
           </svg>
           插件市场
         </RouterLink>
-        <RouterLink to="/resource-groups" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/resource-groups') }" :aria-current="isMoreItemActive('/resource-groups') ? 'page' : undefined" @click.stop="moreOpen = false">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
-            <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
-          </svg>
-          插件资源组
-        </RouterLink>
         <RouterLink to="/settings" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/settings') }" :aria-current="isMoreItemActive('/settings') ? 'page' : undefined" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
@@ -104,7 +97,6 @@ const isMoreActive = computed(() =>
   route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/agents') ||
   route.path.startsWith('/plugins') ||
-  route.path.startsWith('/resource-groups') ||
   route.path.startsWith('/settings')
 )
 

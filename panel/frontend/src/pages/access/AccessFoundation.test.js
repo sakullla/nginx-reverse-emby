@@ -67,7 +67,7 @@ describe('access security foundation', () => {
     expect(accessNavigation.every((item) => item.permission && !item.path)).toBe(true)
     expect(retiredAccessNames.every((name) => !router.getRoutes().some((route) => route.name === name))).toBe(true)
     expect(blockedAccessPages.every((path) => !isUsableManagementPage(path))).toBe(true)
-    expect(router.resolve('/resource-groups').name).toBe('resource-groups')
+    expect(router.getRoutes().find((route) => route.path === '/resource-groups')?.redirect).toEqual({ name: 'plugins' })
     expect(router.resolve('/settings').name).toBe('settings')
   })
 })

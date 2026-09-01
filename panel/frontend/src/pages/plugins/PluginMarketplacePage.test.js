@@ -97,7 +97,8 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.find('.page-subtitle').text()).toContain('发布')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins')
     expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/repositories')
-    expect(wrapper.find('.page-header__right a').text()).toBe('高级：仓库源')
+    expect(wrapper.find('.page-header__right a').text()).toBe('插件仓库')
+    expect(wrapper.find('.page-header__right a').classes()).toContain('btn-secondary')
   })
 
   it('shows a spinner while loading', () => {
@@ -235,7 +236,9 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('暂无插件')
     expect(wrapper.text()).toContain('下一步')
-    expect(wrapper.find('a[href="/plugins/repositories"]').exists()).toBe(true)
+    const repositoryLinks = wrapper.findAll('a[href="/plugins/repositories"]')
+    expect(repositoryLinks.length).toBeGreaterThanOrEqual(2)
+    expect(repositoryLinks.every((link) => link.text() === '插件仓库')).toBe(true)
   })
 
   it('shows signed package facts and confirms permissions through a modal', async () => {

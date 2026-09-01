@@ -548,7 +548,7 @@ async function applyPackage() {
           </button>
         </div>
         <ViewToggle v-if="packages.length" v-model:view="view" />
-        <RouterLink class="btn btn-ghost btn-sm" to="/plugins/repositories">高级：仓库源</RouterLink>
+        <RouterLink class="btn btn-secondary" to="/plugins/repositories">插件仓库</RouterLink>
       </div>
     </header>
 
@@ -567,7 +567,7 @@ async function applyPackage() {
 
     <EmptyState v-else-if="!packages.length" icon="🧩" title="暂无插件" description="当前市场没有可安装的插件。下一步：到仓库检查来源是否刷新成功。">
       <template #action>
-        <RouterLink class="btn btn-secondary" to="/plugins/repositories">打开插件仓库</RouterLink>
+        <RouterLink class="btn btn-secondary" to="/plugins/repositories">插件仓库</RouterLink>
       </template>
     </EmptyState>
 

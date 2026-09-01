@@ -46,17 +46,19 @@ describe('Sidebar plugin UI routes', () => {
     sidebar.unmount()
   })
 
-  it('keeps marketplace, installed plugins, and plugin resource groups in the plugin menu', () => {
+  it('keeps marketplace and installed plugins in the plugin menu', () => {
     pluginRoutes.value = []
     const sidebar = mount(Sidebar)
     const hrefs = sidebar.findAll('a').map((item) => item.attributes('href'))
     expect(hrefs).toContain('/plugins/marketplace')
     expect(hrefs).toContain('/plugins')
-    expect(hrefs).toContain('/resource-groups')
+    expect(hrefs).not.toContain('/resource-groups')
+    expect(hrefs).not.toContain('/plugins/repositories')
     expect(hrefs).toContain('/settings')
     expect(sidebar.text()).toContain('插件市场')
     expect(sidebar.text()).toContain('已安装插件')
-    expect(sidebar.text()).toContain('插件资源组')
+    expect(sidebar.text()).not.toContain('插件资源组')
+    expect(sidebar.text()).not.toContain('插件仓库')
     expect(sidebar.text()).toContain('设置')
     sidebar.unmount()
   })
@@ -71,7 +73,7 @@ describe('Sidebar plugin UI routes', () => {
     for (const href of retiredAccessHrefs) {
       expect(hrefs).not.toContain(href)
     }
-    expect(hrefs).toContain('/resource-groups')
+    expect(hrefs).not.toContain('/resource-groups')
     expect(hrefs).toContain('/settings')
     sidebar.unmount()
   })
