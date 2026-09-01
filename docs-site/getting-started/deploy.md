@@ -62,7 +62,7 @@ environment:
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `API_TOKEN` | 是 | 登录面板和调用 API 的密码。用 32 位以上随机字符串，包含大小写字母和数字 |
+| `API_TOKEN` | 是 | 登录面板和调用 API 的访问令牌。用 32 位以上随机字符串，包含大小写字母和数字 |
 | `MASTER_REGISTER_TOKEN` | 否 | 远程 Agent 注册时用的令牌。不上多台机器可以不填，会自动回退到 `API_TOKEN` |
 | `NRE_TIMEZONE` | 否 | 面板时区，影响流量统计和计费周期的分界点。默认 UTC |
 | `NRE_PANEL_PUBLIC_PATH` | 否 | 无域名 HTTP 临时部署时的随机面板入口路径，例如 `/panel-a1b2c3d4` |
@@ -96,7 +96,7 @@ docker compose logs -f     # 实时日志（Ctrl+C 退出）
 ssh -L 8080:127.0.0.1:8080 root@<VPS IP>
 ```
 
-然后浏览器访问 `http://127.0.0.1:8080`，输入 `API_TOKEN` 登录。
+然后浏览器访问 `http://127.0.0.1:8080`，输入 `API_TOKEN` 登录后即可使用面板。
 
 健康检查接口：`http://127.0.0.1:8080/panel-api/health`
 
