@@ -777,7 +777,7 @@ describe('PluginDetailPage task-center production API projection', () => {
     }
 
     const more = await openMore(wrapper)
-    expect(more.get('summary').text()).toBe('更多')
+    expect(more.get('summary').text()).toContain('更多')
     for (const label of OPS_ACTION_LABELS) {
       expect(moreButton(wrapper, label)).toBeTruthy()
     }

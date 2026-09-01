@@ -16,7 +16,7 @@ import {
 } from '../../api/plugins'
 import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
-import { filterPluginDetailForActor, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
+import { filterPluginDetailForActor, resourceGroupDisplayName, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
 import { messageStore } from '../../stores/messages'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseTabs from '../../components/base/BaseTabs.vue'
@@ -78,10 +78,25 @@ const refreshIntervalMs = 5000
 let refreshTimer = 0
 let refreshInFlight = false
 
+function instanceGroupLabel(instance) {
+  const groupID = String(instance?.resource_group_id || '').trim()
+  const group = visibleResourceGroups.value.find((item) => item.id === groupID)
+  return resourceGroupDisplayName(group || { id: groupID }) || groupID || instance?.id || ''
+}
+
+function instanceTabLabel(instance) {
+  const groupName = instanceGroupLabel(instance)
+  const instances = detail.value?.instances || []
+  const sameGroup = instances.filter((item) => item.resource_group_id === instance.resource_group_id).length > 1
+  if (sameGroup && instance?.id) return `${groupName} · ${instance.id}`
+  return groupName
+}
+
 const instanceTabs = computed(() => (detail.value?.instances || []).map((instance) => ({
   id: instance.id,
-  label: `${instance.id} · ${instance.resource_group_id}`
+  label: instanceTabLabel(instance)
 })))
+const showInstanceTabs = computed(() => instanceTabs.value.length > 1)
 const faceTabs = computed(() => declaredFaces.value.map((face) => ({
   id: face.face_id,
   label: face.face_id === 'local-management' ? '本地管理面' : face.face_id === 'agent-execution' ? 'Agent 执行面' : face.face_id
@@ -203,7 +218,7 @@ const taskHint = computed(() => {
     case 'published-unavailable':
       return '入口已发布，但现在还不能访问。可在「更多」里查看节点状态并重试。'
     case 'deployed':
-      return '插件已部署到所选节点。'
+      return ''
     default:
       return ''
   }
@@ -449,6 +464,13 @@ function localManagementState(instance) {
   return instance?.current_state || '尚未部署'
 }
 
+function taskStateTone(state) {
+  if (state === 'available' || state === 'deployed') return 'success'
+  if (state === 'upgrading' || state === 'unpublished' || state === 'undeployed') return 'warning'
+  if (state === 'published-unavailable') return 'danger'
+  return 'neutral'
+}
+
 function agentExecutionTargetLabels(instance) {
   if (!instance) return '尚未部署'
   const labels = instanceTargetLabels(instance)
@@ -660,29 +682,20 @@ async function retryAgent(status) {
       </header>
 
       <section class="plugin-task" data-test="plugin-task-center" aria-label="插件任务">
-        <p class="plugin-task__purpose">{{ pluginPurpose }}</p>
-        <p class="plugin-task__status" data-test="plugin-task-status">{{ taskStateLabel }}</p>
+        <div class="plugin-task__head">
+          <p class="plugin-task__purpose">{{ pluginPurpose }}</p>
+          <p class="plugin-task__status" data-test="plugin-task-status">
+            <BaseBadge :tone="taskStateTone(taskState)" dot>{{ taskStateLabel }}</BaseBadge>
+          </p>
+        </div>
         <p v-if="taskHint" class="plugin-task__hint">{{ taskHint }}</p>
         <p v-if="!admin && showPrimaryTask" class="plugin-task__hint">
           当前身份可以看懂下一步，但不能提交部署或发布。
         </p>
 
-        <div v-if="manageHref" class="plugin-http-entries" data-test="plugin-manage-open">
-          <header class="plugin-http-entries__head">
-            <div>
-              <h2>管理页</h2>
-              <p>在当前窗口打开此插件的站内管理页。</p>
-            </div>
-          </header>
-          <div class="plugin-http-entry">
-            <div class="plugin-http-entry__main">
-              <a
-                class="plugin-http-entry__url"
-                data-test="plugin-open-manage"
-                :href="manageHref"
-              >打开管理页</a>
-            </div>
-          </div>
+        <div v-if="manageHref" class="plugin-task__cta" data-test="plugin-manage-open">
+          <a class="btn btn-primary" data-test="plugin-open-manage" :href="manageHref">打开管理页</a>
+          <p>在当前窗口打开此插件的站内管理页。</p>
         </div>
 
         <div v-if="publishedEntries.length" class="plugin-http-entries" data-test="plugin-published-entries">
@@ -781,11 +794,13 @@ async function retryAgent(status) {
         </div>
       </section>
 
-      <section class="plugin-section">
+      <section class="plugin-section plugin-instances" data-test="plugin-instances">
         <div class="plugin-section-heading">
           <div>
             <h2>实例</h2>
-            <p>查看实例状态；部署与配置编辑在弹窗中完成。</p>
+            <p v-if="showInstanceTabs">查看实例状态；部署与配置编辑在弹窗中完成。</p>
+            <p v-else-if="selectedInstance">{{ instanceTabLabel(selectedInstance) }}</p>
+            <p v-else>尚未部署实例。</p>
           </div>
           <button v-if="admin && canCreateInstance" class="btn btn-secondary" type="button" :disabled="!!busy" @click="openDeployModal('deploy')">
             部署
@@ -804,9 +819,10 @@ async function retryAgent(status) {
         </div>
 
         <BaseTabs
-          v-if="instanceTabs.length"
+          v-if="showInstanceTabs"
           :tabs="instanceTabs"
           :model-value="selectedInstanceID"
+          data-test="plugin-instance-tabs"
           @update:model-value="selectedInstanceID = $event"
         />
         <BaseTabs
@@ -849,23 +865,27 @@ async function retryAgent(status) {
           </section>
         </div>
         <div v-if="selectedInstance" class="instance-facts">
-          <span>版本：{{ selectedInstance.config_version }}</span>
+          <span>配置版本 {{ selectedInstance.config_version }}</span>
           <template v-if="!hasDeclaredFaceProjection">
-            <span>目标：{{ instanceTargetLabels(selectedInstance) }}</span>
-            <span>状态：{{ selectedInstance.current_state }}</span>
+            <span>目标 {{ instanceTargetLabels(selectedInstance) }}</span>
+            <span>状态 {{ selectedInstance.current_state }}</span>
           </template>
           <div v-if="canWrite" class="instance-actions">
             <button v-if="!formEmpty" class="btn btn-secondary btn-sm" type="button" @click="openConfigModal">编辑配置</button>
-            <button class="btn btn-danger btn-sm" type="button" :disabled="!!busy" @click="confirmDialog = { visible: true, loading: false, action: 'delete-instance', entry: null }">删除实例</button>
+            <button class="btn btn-ghost btn-sm instance-actions__danger" type="button" :disabled="!!busy" @click="confirmDialog = { visible: true, loading: false, action: 'delete-instance', entry: null }">删除实例</button>
           </div>
         </div>
         <p v-else class="plugin-config-empty">尚未部署。</p>
-        <p v-if="selectedInstance && canWrite && formEmpty" class="plugin-config-empty">此插件没有宿主允许的可配置字段。</p>
         <p v-if="selectedInstance && !canWrite" class="plugin-config-empty">当前身份只有只读权限。</p>
       </section>
 
       <details class="plugin-ops" data-test="plugin-more">
-        <summary>更多</summary>
+        <summary>
+          <span class="plugin-ops__summary-copy">
+            <span>更多</span>
+            <small>诊断、回滚与卸载</small>
+          </span>
+        </summary>
         <div class="plugin-ops__stack">
           <section class="plugin-ops-panel">
             <header class="plugin-ops-panel__head">
@@ -1045,6 +1065,16 @@ async function retryAgent(status) {
   font-size: 0.9375rem;
   font-weight: 700;
 }
+.plugin-ops__summary-copy {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.plugin-ops__summary-copy small {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
 .plugin-ops > summary::-webkit-details-marker { display: none; }
 .plugin-ops > summary::after {
   content: '';
@@ -1100,12 +1130,30 @@ async function retryAgent(status) {
   gap: var(--space-4);
   padding: var(--space-5);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-2xl);
   background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
+}
+.plugin-task__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 .plugin-task__purpose,
-.plugin-task__hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
-.plugin-task__status { margin: 0; font-size: var(--text-lg); font-weight: 600; }
+.plugin-task__hint { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: 1.5; }
+.plugin-task__status { margin: 0; flex-shrink: 0; }
+.plugin-task__cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.plugin-task__cta p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
 .plugin-task__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 .plugin-http-entries {
@@ -1218,11 +1266,19 @@ a.plugin-http-entry__url:hover {
 }
 
 .plugin-section { display: grid; gap: var(--space-4); padding-top: var(--space-5); border-top: 1px solid var(--color-border-subtle); }
+.plugin-instances {
+  padding: var(--space-5);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
+}
 .plugin-section h2 { margin: 0; font-size: var(--text-lg); }
 .plugin-section-heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-4); }
 .plugin-section-heading > div { display: grid; gap: var(--space-1); }
 .plugin-section-heading p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .instance-facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm); }
+.instance-actions__danger { color: var(--color-danger); }
 .plugin-face-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: var(--space-3); width: 100%; }
 .plugin-face {
   display: grid;
@@ -1241,6 +1297,9 @@ a.plugin-http-entry__url:hover {
 .instance-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
 
 @media (max-width: 640px) {
+  .plugin-task__head,
+  .plugin-task__cta { align-items: stretch; flex-direction: column; }
+  .plugin-task__cta .btn { width: 100%; }
   .plugin-section-heading { align-items: stretch; flex-direction: column; }
   .plugin-section-heading .btn { width: 100%; }
   .instance-actions { margin-left: 0; }

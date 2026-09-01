@@ -262,7 +262,7 @@ function expectOpsOnlyInMore(wrapper, { allowUninstall = false } = {}) {
   expect(screen).not.toMatch(/生命周期操作与审计|操作时间线/)
   const more = morePanel(wrapper)
   expect(more.exists()).toBe(true)
-  expect(more.get('summary').text()).toBe('更多')
+  expect(more.get('summary').text()).toContain('更多')
   expect(more.element.open).toBeFalsy()
 }
 
@@ -387,8 +387,8 @@ describe('PluginDetailPage', () => {
     const wrapper = await mountPage(detail)
     const tablist = wrapper.find('[role="tablist"]')
     expect(tablist.exists()).toBe(true)
-    expect(tablist.text()).toContain('waf-a · group-a')
-    expect(tablist.text()).toContain('waf-b · group-b')
+    expect(tablist.text()).toContain('group-a')
+    expect(tablist.text()).toContain('group-b')
     expect(wrapper.find('select option[value="waf-a"]').exists()).toBe(false)
   })
 
@@ -872,8 +872,9 @@ describe('PluginDetailPage', () => {
       makeInstance({ id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], bindings: [], config: { mode: 'block' }, config_version: 2 })
     ]
     const wrapper = await mountPage(detail)
-    expect(wrapper.text()).toContain('waf-a · group-a')
-    expect(wrapper.text()).not.toContain('waf-b · group-b')
+    expect(wrapper.text()).toContain('group-a')
+    expect(wrapper.text()).not.toContain('group-b')
+    expect(wrapper.text()).not.toContain('waf-b')
     expect(wrapper.find('input[data-test="deployment-resource-group"]').exists()).toBe(false)
   })
 
