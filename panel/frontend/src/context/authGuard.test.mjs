@@ -28,10 +28,16 @@ describe('authGuard', () => {
   it('validates a panel token and ignores leftover panel_session', async () => {
     setSessionToken('session-token')
     setAuthToken('panel-token')
-    verifyToken.mockResolvedValue(true)
+    verifyToken.mockImplementation(async () => {
+      expect(localStorage.getItem('panel_session')).toBeNull()
+      expect(localStorage.getItem('panel_token')).toBe('panel-token')
+      return true
+    })
 
     await expect(authGuard({ name: 'dashboard' })).resolves.toBe(true)
     expect(verifyToken).toHaveBeenCalledWith('panel-token')
+    expect(localStorage.getItem('panel_session')).toBeNull()
+    expect(localStorage.getItem('panel_token')).toBe('panel-token')
     expect(fetchCurrentActor).not.toHaveBeenCalled()
   })
 

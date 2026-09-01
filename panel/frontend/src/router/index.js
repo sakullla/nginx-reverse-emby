@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { verifyToken } from '../api'
-import { clearCredentials, getStoredAuthToken } from '../api/authState'
+import { clearCredentials, clearSessionToken, getStoredAuthToken } from '../api/authState'
 
 const AppShell = () => import('../components/layout/AppShell.vue')
 const AccessOverview = () => import('../pages/access/AccessOverview.vue')
@@ -143,6 +143,9 @@ export async function authGuard(to) {
   }
 
   try {
+    // Drop leftover panel_session so the API client cannot attach Authorization
+    // Bearer and let the backend authenticate the session before X-Panel-Token.
+    clearSessionToken()
     const valid = await verifyToken(token)
     if (!valid) {
       clearCredentials()
