@@ -425,7 +425,12 @@ describe('PluginMarketplacePage', () => {
   })
 
   it('retries upgrade after a pending-operation conflict instead of ignoring the confirm click', async () => {
-    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+    mocks.fetchPlugins.mockResolvedValue([{
+      plugin_id: entry.id,
+      active_package_digest: 'c'.repeat(64),
+      pending_operation_id: 'op-configure',
+      pending_kind: 'configure'
+    }])
     mocks.upgradePlugin
       .mockRejectedValueOnce(new Error('plugin state conflict: another plugin operation is already pending'))
       .mockResolvedValueOnce({})
@@ -445,6 +450,58 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     expect(mocks.upgradePlugin).toHaveBeenCalledTimes(2)
     expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+  })
+
+  it('does not tell the user to open the second plugin when another upgrade is still applying', async () => {
+    const helper = {
+      ...entry,
+      id: 'official.emby-helper',
+      name: 'Emby 助手',
+      version: '1.4.2',
+      sha256: 'd'.repeat(64)
+    }
+    mocks.fetchRepositoryContents.mockResolvedValue({ entries: [entry, helper], directPlugin: null })
+    mocks.fetchPlugins.mockResolvedValue([
+      { plugin_id: entry.id, active_package_digest: 'c'.repeat(64), pending_operation_id: 'op-upgrade', pending_kind: 'upgrade', pending_target_digest: entry.sha256 },
+      { plugin_id: helper.id, active_package_digest: 'e'.repeat(64) }
+    ])
+    mocks.fetchPluginPackageDetail.mockImplementation(async (selection) => ({
+      ...packageDetail,
+      digest: selection.digest,
+      version: selection.version,
+      manifest: { ...packageDetail.manifest, id: selection.plugin_id, name: selection.plugin_id === helper.id ? helper.name : entry.name }
+    }))
+    mocks.upgradePlugin.mockRejectedValue(new Error('plugin state conflict: another plugin operation is already pending'))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${helper.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认升级').trigger('click')
+    await flushPromises()
+    const text = messageStore.state.messages.map((item) => item.text).join('\n')
+    expect(text).toContain('另一个插件的升级还在节点上应用')
+    expect(text).toContain('这个插件本身正常')
+    expect(text).not.toContain('打开详情查看进度')
+    expect(wrapper.find('[data-test="marketplace-pending-detail"]').exists()).toBe(false)
+    expect(mocks.upgradePlugin).toHaveBeenCalledWith(helper.id, expect.objectContaining({
+      plugin_id: helper.id, digest: helper.sha256
+    }))
+    expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a marketplace refresh conflict as this plugin being broken', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+    mocks.upgradePlugin.mockRejectedValue(new Error('plugin state conflict: official marketplace branch changed concurrently'))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认升级').trigger('click')
+    await flushPromises()
+    const text = messageStore.state.messages.map((item) => item.text).join('\n')
+    expect(text).toContain('市场目录刚刷新或正在刷新')
+    expect(text).toContain('这个插件本身正常')
+    expect(wrapper.find('[data-test="marketplace-pending-detail"]').exists()).toBe(false)
   })
 
   it('still submits upgrade when the same catalog digest is already pending', async () => {

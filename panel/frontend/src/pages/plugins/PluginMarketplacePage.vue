@@ -216,6 +216,7 @@ async function cachedPackageDetail(item) {
 }
 
 function selectPackage(item) {
+  if (actionBusy.value || detailLoading.value) return
   selected.value = item
   detail.value = previewPackageDetail(item)
   detailPrepared.value = false
@@ -356,6 +357,10 @@ function isPendingConflictMessage(message) {
   return /already pending|plugin state conflict/i.test(String(message || ''))
 }
 
+function isMarketplaceBusyMessage(message) {
+  return /refresh lease|source generation changed|marketplace source config revision|official marketplace branch changed/i.test(String(message || ''))
+}
+
 function pendingPlugin() {
   return installedPlugin.value
 }
@@ -378,10 +383,17 @@ function isPendingSameUpgrade() {
 
 function humanLoadError(cause, fallback) {
   const raw = sanitizePluginText(cause?.message || fallback)
+  if (isMarketplaceBusyMessage(raw)) {
+    return '市场目录刚刷新或正在刷新。这个插件本身正常，请稍后重新点升级。'
+  }
   if (isPendingConflictMessage(raw)) {
-    return isPendingSameUpgrade()
-      ? '这个插件已有升级在进行。打开详情查看进度，不用重复提交。'
-      : '这个插件还有未完成的操作，所以这次没有提交。打开详情查看进度，结束后再点重试。'
+    if (isPendingSameUpgrade()) {
+      return '这个插件已有升级在进行。打开详情查看进度，不用重复提交。'
+    }
+    if (hasPendingOperation()) {
+      return '这个插件还有未完成的操作，所以这次没有提交。打开详情查看进度，结束后再点重试。'
+    }
+    return '另一个插件的升级还在节点上应用。这个插件本身正常，等当前升级完成后再试。'
   }
   if (/timeout|timed out|exceeded|econnaborted/i.test(raw)) {
     return '读取插件包超时。安装前需要下载并校验签名包，请检查出站网络或 HTTP 代理后重试。'
@@ -459,19 +471,29 @@ async function refreshInstalled() {
 
 async function applyPackage() {
   if (!selected.value || actionBusy.value || detailLoading.value) return
-  const pluginID = selected.value.plugin.id
-  const shouldUpgrade = isUpgrade.value
+  const item = selected.value
+  const pluginID = String(item?.plugin?.id || '').trim()
+  if (!pluginID) return
+  const shouldUpgrade = pluginHasUpgrade(installed.value.find((plugin) => plugin.plugin_id === pluginID), item)
+  const selection = {
+    source_id: item.source?.id,
+    plugin_id: pluginID,
+    version: item.plugin?.version,
+    digest: item.plugin?.sha256,
+    confirmed_permissions: [...requiredPermissions.value].sort(),
+    risk_accepted: item.source?.kind !== 'official'
+  }
   actionBusy.value = true
   actionError.value = ''
   pendingConflict.value = false
   try {
     if (!detailPrepared.value) {
-      const prepared = await preparePackageDetail(selected.value)
+      const prepared = await preparePackageDetail(item)
       if (!prepared) return
     }
     await refreshInstalled()
-    if (shouldUpgrade) await upgradePlugin(pluginID, installSelection())
-    else await installPlugin(installSelection())
+    if (shouldUpgrade) await upgradePlugin(pluginID, selection)
+    else await installPlugin(selection)
     confirmVisible.value = false
     actionError.value = ''
     messageStore.success(shouldUpgrade ? '插件已升级' : '插件已安装')
@@ -480,7 +502,7 @@ async function applyPackage() {
     confirmVisible.value = true
     inspectVisible.value = false
     await refreshInstalled()
-    pendingConflict.value = isPendingConflictMessage(cause?.message)
+    pendingConflict.value = isPendingConflictMessage(cause?.message) && hasPendingOperation()
     actionError.value = humanLoadError(cause, '提交插件包失败')
     messageStore.error(actionError.value)
   } finally {
@@ -577,7 +599,7 @@ async function applyPackage() {
               :tone="installedStatus(item) === '已安装' ? 'default' : 'primary'"
               :title="detailLoading && isSelected(item) ? '正在下载签名包…' : cardActionLabel(item)"
               :data-test="`marketplace-card-action-${item.plugin.id}`"
-              :disabled="(actionBusy || detailLoading) && isSelected(item)"
+              :disabled="actionBusy || detailLoading"
               @click="startCardAction(item)"
             >
               <svg v-if="detailLoading && isSelected(item)" class="marketplace-card__spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -641,7 +663,7 @@ async function applyPackage() {
                     type="button"
                     :class="tableActionClass(item)"
                     :data-test="`marketplace-card-action-${item.plugin.id}`"
-                    :disabled="(actionBusy || detailLoading) && isSelected(item)"
+                    :disabled="actionBusy || detailLoading"
                     @click="startCardAction(item)"
                   >
                     {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
@@ -710,7 +732,7 @@ async function applyPackage() {
         @update:model-value="onConfirmVisible"
       >
         <div class="confirm-permissions">
-          <p v-if="actionError && (hasPendingOperation() || pendingConflict)" class="confirm-pending-next">
+          <p v-if="actionError && hasPendingOperation()" class="confirm-pending-next">
             <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
           </p>
           <div v-if="detailLoading" class="package-download-progress" data-test="marketplace-detail-loading">
