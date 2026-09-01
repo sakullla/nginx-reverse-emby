@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from './AgentContext.js'
-import { clearCredentials, setSessionToken } from '../api/authState'
+import { clearCredentials, setAuthToken } from '../api/authState'
 
 const { fetchSystemInfo } = vi.hoisted(() => ({ fetchSystemInfo: vi.fn() }))
 
@@ -24,16 +24,16 @@ describe('AgentProvider session boundary', () => {
     fetchSystemInfo.mockResolvedValue({ default_agent_id: 'edge-a' })
   })
 
-  it('loads system info for a fresh account session and clears selection on identity replacement', async () => {
+  it('loads system info for a fresh panel token and clears selection on identity replacement', async () => {
     localStorage.setItem('selected_agent_id', 'hidden-agent')
-    setSessionToken('administrator-session')
+    setAuthToken('panel-token')
     mount(AgentProvider, { slots: { default: defineComponent({ template: '<div />' }) } })
     await nextTick()
     await Promise.resolve()
 
     expect(fetchSystemInfo).toHaveBeenCalledOnce()
 
-    setSessionToken('restricted-session')
+    setAuthToken('replacement-token')
     await nextTick()
     expect(localStorage.getItem('selected_agent_id')).toBeNull()
   })

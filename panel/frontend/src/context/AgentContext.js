@@ -49,7 +49,7 @@ export const AgentProvider = defineComponent({
       localStorage.removeItem('nre_recent_agent_ids')
     })
 
-    // Re-read system info for either an account session or the legacy token.
+    // Re-read system info when a panel token is present.
     watch([hasToken, credentialVersion], async ([authenticated, generation]) => {
 	  systemInfo.value = null
 	  systemInfoAttempted.value = false
