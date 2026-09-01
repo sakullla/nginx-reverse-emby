@@ -1,9 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { verifyToken } from '../api'
-import { fetchCurrentActor } from '../api/access'
-import { useAuthState } from '../context/useAuthState'
-
-const { clearCredentials } = useAuthState()
+import { clearCredentials, getStoredAuthToken } from '../api/authState'
 
 const AppShell = () => import('../components/layout/AppShell.vue')
 const AccessOverview = () => import('../pages/access/AccessOverview.vue')
@@ -140,15 +137,13 @@ export async function authGuard(to) {
   // Allow login route through
   if (to.name === 'login') return true
 
-  const sessionToken = localStorage.getItem('panel_session')
-  const token = localStorage.getItem('panel_token')
-  if (!sessionToken && !token) {
+  const token = getStoredAuthToken()
+  if (!token) {
     return { name: 'login' }
   }
 
-  // Token exists — verify it; on failure clear token and redirect to login
   try {
-    const valid = sessionToken ? !!(await fetchCurrentActor()) : await verifyToken(token)
+    const valid = await verifyToken(token)
     if (!valid) {
       clearCredentials()
       return { name: 'login' }
@@ -156,7 +151,7 @@ export async function authGuard(to) {
     return true
   } catch (err) {
     // Only 401 from /auth/verify means the token is invalid/expired — clear it.
-    // Transport errors (network) and 5xx should not destroy a valid session.
+    // Transport errors (network) and 5xx should not destroy a valid panel token.
     if (err?.response?.status === 401) {
       clearCredentials()
       return { name: 'login' }

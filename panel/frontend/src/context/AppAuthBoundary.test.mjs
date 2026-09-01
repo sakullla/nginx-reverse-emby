@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App.vue'
-import { clearCredentials, setSessionToken } from '../api/authState'
+import { clearCredentials, setAuthToken, setSessionToken } from '../api/authState'
 
 const { replace, route } = vi.hoisted(() => ({
   replace: vi.fn(),
@@ -29,13 +29,23 @@ describe('App authentication boundary', () => {
     route.name = 'dashboard'
   })
 
-  it('unmounts the protected route when an account session expires', async () => {
-    setSessionToken('account-session')
+  it('unmounts the protected route when a panel token is cleared', async () => {
+    setAuthToken('panel-token')
     mount(App, { global: { stubs: { RouterView: true, StatusMessage: true } } })
 
     clearCredentials()
     await nextTick()
 
     expect(replace).toHaveBeenCalledWith({ name: 'login' })
+  })
+
+  it('does not treat leftover panel_session as authenticated', async () => {
+    setSessionToken('account-session')
+    mount(App, { global: { stubs: { RouterView: true, StatusMessage: true } } })
+
+    clearCredentials()
+    await nextTick()
+
+    expect(replace).not.toHaveBeenCalled()
   })
 })

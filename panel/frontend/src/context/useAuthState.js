@@ -13,7 +13,7 @@ export function useAuthState() {
   return {
     token: authToken,
     sessionToken,
-    hasToken: computed(() => !!authToken.value || !!sessionToken.value),
+    hasToken: computed(() => !!authToken.value),
     credentialVersion,
     setToken: setAuthToken,
     setSessionToken,

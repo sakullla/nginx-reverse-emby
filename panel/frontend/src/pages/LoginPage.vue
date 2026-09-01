@@ -7,37 +7,10 @@
           <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
         </svg>
         <h1 class="login-card__title">nginx-reverse-emby</h1>
-        <div class="login-mode" role="group" aria-label="登录方式">
-          <button type="button" :class="['login-mode__option', { 'is-active': mode === 'account' }]" @click="mode = 'account'">账号密码</button>
-          <button type="button" :class="['login-mode__option', { 'is-active': mode === 'token' }]" @click="mode = 'token'">访问令牌</button>
-        </div>
+        <p class="login-card__subtitle">访问令牌</p>
       </div>
       <form class="login-form" @submit.prevent="handleLogin">
-        <div v-if="mode === 'account'" class="form-group">
-          <label for="username-input" class="sr-only">用户名</label>
-          <input
-            id="username-input"
-            v-model="username"
-            type="text"
-            class="input"
-            placeholder="用户名"
-            :disabled="loading"
-            autocomplete="username"
-          >
-        </div>
-        <div v-if="mode === 'account'" class="form-group">
-          <label for="password-input" class="sr-only">密码</label>
-          <input
-            id="password-input"
-            v-model="password"
-            type="password"
-            class="input"
-            placeholder="密码"
-            :disabled="loading"
-            autocomplete="current-password"
-          >
-        </div>
-        <div v-else class="form-group">
+        <div class="form-group">
           <label for="token-input" class="sr-only">访问令牌</label>
           <input
             id="token-input"
@@ -50,7 +23,7 @@
           >
         </div>
         <p v-if="error" class="login-error">{{ error }}</p>
-        <button type="submit" class="btn btn--primary btn--full" :disabled="submitDisabled">
+        <button type="submit" class="btn btn--primary btn--full" :disabled="loading">
           <span v-if="loading" class="spinner spinner--sm"></span>
           <span v-else>连接</span>
         </button>
@@ -60,26 +33,17 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { verifyToken } from '../api'
-import { login } from '../api/access'
 import { useAuthState } from '../context/useAuthState'
 
 const router = useRouter()
 const route = useRoute()
 const { clearCredentials, setToken } = useAuthState()
-const mode = ref('account')
-const username = ref('')
-const password = ref('')
 const tokenInput = ref('')
 const loading = ref(false)
 const error = ref('')
-const submitDisabled = computed(() => loading.value || (
-  mode.value === 'account'
-    ? !username.value.trim() || !password.value
-    : !tokenInput.value.trim()
-))
 
 function safeReturnPath(value) {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
@@ -89,24 +53,25 @@ function safeReturnPath(value) {
 }
 
 async function handleLogin() {
-  if (submitDisabled.value) return
+  if (loading.value) return
+
+  const token = tokenInput.value.trim()
+  error.value = ''
+  if (!token) {
+    error.value = '令牌无效'
+    return
+  }
 
   loading.value = true
-  error.value = ''
 
   try {
-    if (mode.value === 'account') {
-      await login(username.value.trim(), password.value)
-    } else {
-      const token = tokenInput.value.trim()
-      clearCredentials()
-      const valid = await verifyToken(token)
-      if (!valid) {
-        error.value = '令牌无效'
-        return
-      }
-      setToken(token)
+    clearCredentials()
+    const valid = await verifyToken(token)
+    if (!valid) {
+      error.value = '令牌无效'
+      return
     }
+    setToken(token)
     const next = safeReturnPath(typeof route.query.return === 'string' ? route.query.return : '')
     if (next && next.startsWith('/panel-api/')) {
       window.location.assign(next)
@@ -161,33 +126,6 @@ async function handleLogin() {
   font-size: var(--text-sm);
   color: var(--color-text-muted);
   margin: 0;
-}
-
-.login-mode {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  width: 100%;
-  padding: 3px;
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-}
-
-.login-mode__option {
-  min-height: 34px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--text-sm);
-}
-
-.login-mode__option.is-active {
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  box-shadow: var(--shadow-xs);
 }
 
 .login-form {
