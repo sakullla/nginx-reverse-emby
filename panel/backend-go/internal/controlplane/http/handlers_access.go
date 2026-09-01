@@ -20,24 +20,7 @@ func (d Dependencies) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
 		return
 	}
-	if d.AccessManager == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorPayloadCode("access_control_unavailable", "multi-user authentication is unavailable"))
-		return
-	}
-	var input struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := decodeAccessJSON(r, &input); err != nil {
-		writeAccessError(w, err)
-		return
-	}
-	result, err := d.AccessManager.Login(r.Context(), input.Username, input.Password)
-	if err != nil {
-		writeAccessError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": result})
+	writeJSON(w, http.StatusUnauthorized, errorPayloadCode("authentication_required", "password login is disabled"))
 }
 
 func (d Dependencies) handleMe(w http.ResponseWriter, r *http.Request) {

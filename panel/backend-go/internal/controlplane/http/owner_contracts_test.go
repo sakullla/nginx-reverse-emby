@@ -482,71 +482,53 @@ func TestAccessUserAccountOwnerContract(t *testing.T) {
 		t.Fatalf("list q=ali users=%v", usernames(filtered))
 	}
 
-	first := env.login(t, "alice", password)
-	second := env.login(t, "alice", password)
+	env.login(t, "alice", password)
 	if err := env.Manager.ChangePassword(t.Context(), alice.ID, password, "new-correct-horse"); err != nil {
 		t.Fatalf("ChangePassword() error = %v", err)
 	}
-	assertHTTPSessionRejected(t, env, first)
-	assertHTTPSessionRejected(t, env, second)
 	if rec := env.do(t, http.MethodPost, "/api/auth/login", nil, `{"username":"alice","password":"`+password+`"}`); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("login old password status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	changed := env.login(t, "alice", "new-correct-horse")
+	env.login(t, "alice", "new-correct-horse")
 	if err := env.Manager.ResetPassword(t.Context(), alice.ID, "reset-correct-horse"); err != nil {
 		t.Fatalf("ResetPassword() error = %v", err)
 	}
-	assertHTTPSessionRejected(t, env, changed)
 	env.login(t, "alice", "reset-correct-horse")
 
-	selfLogin := env.login(t, "alice", "reset-correct-horse")
 	if err := env.Manager.ChangePassword(t.Context(), alice.ID, "wrong-horse-battery", "fresh-correct"); !errors.Is(err, authz.ErrInvalidCredentials) {
 		t.Fatalf("ChangePassword(wrong current) error = %v", err)
 	}
 	if err := env.Manager.ChangePassword(t.Context(), alice.ID, "reset-correct-horse", "short"); !errors.Is(err, authz.ErrInvalidInput) {
 		t.Fatalf("ChangePassword(short next) error = %v", err)
 	}
-	me := env.do(t, http.MethodGet, "/api/auth/me", sessionToken(selfLogin), "")
+
+	verify := env.do(t, http.MethodGet, "/api/auth/verify", bootstrapToken(bootstrap), "")
+	if verify.Code != http.StatusOK {
+		t.Fatalf("verify status=%d body=%s", verify.Code, verify.Body.String())
+	}
+	if verifyBody := decodeMap(t, verify); verifyBody["ok"] != true {
+		t.Fatalf("verify payload=%v", verifyBody)
+	}
+
+	me := env.do(t, http.MethodGet, "/api/auth/me", bootstrapToken(bootstrap), "")
 	if me.Code != http.StatusOK {
-		t.Fatalf("session after failed password writes status=%d body=%s", me.Code, me.Body.String())
+		t.Fatalf("bootstrap me status=%d body=%s", me.Code, me.Body.String())
 	}
 
-	wrongCurrent := env.do(t, http.MethodPost, "/api/access/me/password", sessionToken(selfLogin), `{
-		"current_password":"wrong-horse-battery",
-		"new_password":"fresh-correct-horse"
-	}`)
-	if wrongCurrent.Code == http.StatusUnauthorized || wrongCurrent.Code < 400 {
-		t.Fatalf("POST /access/me/password wrong current status=%d body=%s", wrongCurrent.Code, wrongCurrent.Body.String())
-	}
-	wrongBody := decodeMap(t, wrongCurrent)
-	if wrongBody["code"] != "invalid_credentials" {
-		t.Fatalf("wrong current code=%v body=%s", wrongBody["code"], wrongCurrent.Body.String())
-	}
-	if fields := fieldMap(wrongBody["fields"]); strings.TrimSpace(fields["current_password"]) == "" {
-		t.Fatalf("wrong current fields=%v body=%s", wrongBody["fields"], wrongCurrent.Body.String())
-	}
-	assertJSONHasNoSecretMaterial(t, wrongCurrent.Body.Bytes())
-	meAfterWrong := env.do(t, http.MethodGet, "/api/auth/me", sessionToken(selfLogin), "")
-	if meAfterWrong.Code != http.StatusOK {
-		t.Fatalf("session after wrong current password status=%d body=%s", meAfterWrong.Code, meAfterWrong.Body.String())
-	}
-
-	changeRoute := env.do(t, http.MethodPost, "/api/access/me/password", sessionToken(selfLogin), `{
+	selfPassword := env.do(t, http.MethodPost, "/api/access/me/password", bootstrapToken(bootstrap), `{
 		"current_password":"reset-correct-horse",
 		"new_password":"route-correct-horse"
 	}`)
-	if changeRoute.Code != http.StatusOK {
-		t.Fatalf("POST /access/me/password status=%d body=%s", changeRoute.Code, changeRoute.Body.String())
+	if selfPassword.Code != http.StatusForbidden {
+		t.Fatalf("POST /access/me/password bootstrap status=%d body=%s", selfPassword.Code, selfPassword.Body.String())
 	}
-	assertJSONHasNoSecretMaterial(t, changeRoute.Body.Bytes())
-	assertHTTPSessionRejected(t, env, selfLogin)
-	resetActor := env.login(t, "alice", "route-correct-horse")
+	assertJSONHasNoSecretMaterial(t, selfPassword.Body.Bytes())
+
 	resetRoute := env.do(t, http.MethodPost, "/api/access/users/"+ops.ID+"/password", bootstrapToken(bootstrap), `{"new_password":"ops-reset-horse"}`)
 	if resetRoute.Code != http.StatusOK {
 		t.Fatalf("POST /access/users/{id}/password status=%d body=%s", resetRoute.Code, resetRoute.Body.String())
 	}
 	assertJSONHasNoSecretMaterial(t, resetRoute.Body.Bytes())
-	_ = resetActor
 
 	events := env.do(t, http.MethodGet, "/api/access/audit-events?limit=100", bootstrapToken(bootstrap), "")
 	if events.Code != http.StatusOK {
@@ -680,6 +662,7 @@ func newUserAccountHTTP(t *testing.T) userAccountHTTP {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/auth/login", http.HandlerFunc(deps.handleLogin))
+	mux.Handle("/api/auth/verify", http.HandlerFunc(deps.handleVerify))
 	mux.Handle("/api/auth/me", deps.requirePanelToken(http.HandlerFunc(deps.handleMe)))
 	mux.Handle("/api/access/users", deps.requirePanelToken(http.HandlerFunc(deps.handleAccessUsers)))
 	mux.Handle("/api/access/users/{id}", deps.requirePanelToken(http.HandlerFunc(deps.handleAccessUser)))
@@ -744,25 +727,20 @@ func (env userAccountHTTP) getUser(t *testing.T, token, id string) userAccountUs
 	return decodeUser(t, rec)
 }
 
-func (env userAccountHTTP) login(t *testing.T, username, password string) string {
+func (env userAccountHTTP) login(t *testing.T, username, password string) {
 	t.Helper()
 	rec := env.do(t, http.MethodPost, "/api/auth/login", nil, `{"username":"`+username+`","password":"`+password+`"}`)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("login %s status=%d body=%s", username, rec.Code, rec.Body.String())
 	}
 	assertJSONHasNoSecretMaterial(t, rec.Body.Bytes())
-	var payload struct {
-		Session struct {
-			Token string `json:"token"`
-		} `json:"session"`
+	payload := decodeMap(t, rec)
+	if payload["ok"] != false {
+		t.Fatalf("login %s ok=%v body=%s", username, payload["ok"], rec.Body.String())
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
+	if _, hasSession := payload["session"]; hasSession {
+		t.Fatalf("login %s returned session payload: %s", username, rec.Body.String())
 	}
-	if payload.Session.Token == "" {
-		t.Fatal("login returned empty session token")
-	}
-	return payload.Session.Token
 }
 
 func bootstrapToken(token string) func(*http.Request) {
@@ -818,14 +796,6 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func assertHTTPSessionRejected(t *testing.T, env userAccountHTTP, token string) {
-	t.Helper()
-	rec := env.do(t, http.MethodGet, "/api/auth/me", sessionToken(token), "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("session still authorized status=%d body=%s", rec.Code, rec.Body.String())
-	}
 }
 
 func assertJSONHasNoSecretMaterial(t *testing.T, raw []byte) {
@@ -1140,7 +1110,12 @@ func TestAccessResourceGroupOwnerContract(t *testing.T) {
 		t.Fatalf("q=west missed updated group: %+v", filtered)
 	}
 
-	readerToken := env.login(t, "reader", password)
+	env.login(t, "reader", password)
+	readerSession, err := env.Manager.Login(t.Context(), "reader", password)
+	if err != nil {
+		t.Fatalf("Manager.Login(reader) error = %v", err)
+	}
+	readerToken := readerSession.Token
 	visible := env.do(t, http.MethodGet, "/api/access/resource-groups", sessionToken(readerToken), "")
 	if visible.Code != http.StatusOK {
 		t.Fatalf("reader list groups status=%d body=%s", visible.Code, visible.Body.String())
@@ -1351,24 +1326,19 @@ func (env resourceGroupHTTP) do(t *testing.T, method, path string, auth func(*ht
 	return rec
 }
 
-func (env resourceGroupHTTP) login(t *testing.T, username, password string) string {
+func (env resourceGroupHTTP) login(t *testing.T, username, password string) {
 	t.Helper()
 	rec := env.do(t, http.MethodPost, "/api/auth/login", nil, `{"username":"`+username+`","password":"`+password+`"}`)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("login %s status=%d body=%s", username, rec.Code, rec.Body.String())
 	}
-	var payload struct {
-		Session struct {
-			Token string `json:"token"`
-		} `json:"session"`
+	payload := decodeMap(t, rec)
+	if payload["ok"] != false {
+		t.Fatalf("login %s ok=%v body=%s", username, payload["ok"], rec.Body.String())
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
+	if _, hasSession := payload["session"]; hasSession {
+		t.Fatalf("login %s returned session payload: %s", username, rec.Body.String())
 	}
-	if payload.Session.Token == "" {
-		t.Fatal("login returned empty session token")
-	}
-	return payload.Session.Token
 }
 
 func (env resourceGroupHTTP) groupPath(id string) string {
