@@ -82,6 +82,12 @@ const routes = [
         meta: { title: '插件市场' }
       },
       {
+        path: 'plugins/marketplace/:pluginId',
+        name: 'plugin-marketplace-detail',
+        component: () => import('../pages/plugins/PluginMarketplaceDetailPage.vue'),
+        meta: { title: '插件市场详情' }
+      },
+      {
         path: 'plugins/repositories',
         name: 'plugin-repositories',
         component: () => import('../pages/plugins/PluginRepositoriesPage.vue'),

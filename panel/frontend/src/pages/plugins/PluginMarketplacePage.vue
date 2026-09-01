@@ -1,82 +1,55 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchRepositoryContents, fetchRepositorySources } from '../../api/pluginRepositories'
-import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../../api/plugins'
-import { sanitizePluginText } from '../../api/pluginSecurity'
 import BaseBadge from '../../components/base/BaseBadge.vue'
-import BaseIconButton from '../../components/base/BaseIconButton.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
 import ViewToggle from '../../components/common/ViewToggle.vue'
-import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
-import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
-import { messageStore } from '../../stores/messages'
+import { useMarketplaceCatalog } from '../../composables/useMarketplaceCatalog'
 
 const router = useRouter()
 const { view } = useViewToggle('plugin-marketplace')
-
-const loading = ref(true)
-const actionBusy = ref(false)
-const detailLoading = ref(false)
-const error = ref('')
-const actionError = ref('')
-const packages = ref([])
-const installed = ref([])
-const selected = ref(null)
-const detail = ref(null)
-const detailPrepared = ref(false)
-const confirmVisible = ref(false)
-const inspectVisible = ref(false)
-const confirmFromInspect = ref(false)
-const pendingConflict = ref(false)
 const query = ref('')
 const searchInputRef = ref(null)
-const packageDetailCache = new Map()
-const downloadElapsedSec = ref(0)
-let downloadTimer = 0
 
-const downloadSteps = [
-  { id: 'download', label: '下载签名包' },
-  { id: 'verify', label: '校验完整性' },
-  { id: 'permissions', label: '读取权限' }
-]
+const {
+  loading,
+  actionBusy,
+  detailLoading,
+  error,
+  actionError,
+  packages,
+  selected,
+  confirmVisible,
+  downloadElapsedSec,
+  downloadSteps,
+  downloadPhaseLabel,
+  downloadHint,
+  source,
+  isUpgrade,
+  requiredPermissions,
+  selectedDetailPath,
+  hasPendingDetailLink,
+  nextStepHint,
+  load,
+  startCardAction,
+  cancelConfirm,
+  onConfirmVisible,
+  applyPackage,
+  isSelected,
+  installedStatus,
+  statusTone,
+  cardActionLabel,
+  tableActionClass,
+  pluginTitle,
+  pluginBlurb,
+  sourceKindLabel,
+  packageKey,
+  marketplaceDetailHref,
+} = useMarketplaceCatalog()
 
-const downloadPhase = computed(() => (downloadElapsedSec.value < 2 ? 'connect' : 'download'))
-const downloadPhaseLabel = computed(() => {
-  if (downloadPhase.value === 'connect') return '正在连接市场源'
-  const size = packageSizeLabel(selected.value)
-  return size ? `正在下载签名包（约 ${size}）` : '正在下载签名包'
-})
-const downloadHint = computed(() => (
-  source.value.kind === 'official'
-    ? '官方包首次安装会先下载并校验，可能需要一两分钟。进度按真实阶段显示，不会假装已经快完成。'
-    : '安装前会读取并校验签名包。进度按真实阶段显示，不会假装已经快完成。'
-))
-
-const source = computed(() => selected.value?.source || {})
-const installedPlugin = computed(() => installed.value.find((item) => item.plugin_id === selected.value?.plugin.id))
-const isUpgrade = computed(() => pluginHasUpgrade(installedPlugin.value, selected.value))
-const requiredPermissions = computed(() => detail.value?.permissions || [])
-const alreadyInstalled = computed(() => !!installedPlugin.value && !isUpgrade.value)
-const selectedPluginID = computed(() => String(selected.value?.plugin.id || '').trim())
-const selectedDetailPath = computed(() => selectedPluginID.value ? `/plugins/${encodeURIComponent(selectedPluginID.value)}` : '')
-const hasHTTPBackend = computed(() => {
-  const pkg = detail.value
-  const providers = pkg?.manifest?.http_backend_providers || pkg?.http_backend_providers
-  const extensions = pkg?.manifest?.extension_points || []
-  return (Array.isArray(providers) && providers.some((provider) => String(provider?.id || '').trim()))
-    || (Array.isArray(extensions) && extensions.includes('http.backend-provider'))
-})
-const pluginPurpose = computed(() => {
-  const description = sanitizePluginText(detail.value?.manifest?.description || '').trim()
-  if (description) return description
-  return hasHTTPBackend.value
-    ? '安装后把插件部署到一个节点，再填写一条入口域名即可发布。'
-    : '安装后把插件部署到一个节点即可在该节点上使用。'
-})
 const filteredPackages = computed(() => {
   const needle = query.value.trim().toLowerCase()
   if (!needle) return packages.value
@@ -94,420 +67,13 @@ const filteredPackages = computed(() => {
   })
 })
 
-const nextStepHint = computed(() => {
-  if (alreadyInstalled.value) {
-    return hasHTTPBackend.value
-      ? '当前版本已安装。下一步：打开详情继续部署，或在已部署后发布域名。'
-      : '当前版本已安装。下一步：打开详情继续部署。'
-  }
-  if (isUpgrade.value) {
-    return hasHTTPBackend.value
-      ? '升级后会进入详情。下一步：部署到一个节点并发布域名。'
-      : '升级后会进入详情。下一步：部署到一个节点。'
-  }
-  return hasHTTPBackend.value
-    ? '安装后会进入详情。下一步：部署到一个节点并填写入口域名发布。'
-    : '安装后会进入详情。下一步：部署到一个节点。'
-})
-
-onMounted(load)
-onBeforeUnmount(stopDownloadProgress)
-
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    const [sources, current] = await Promise.all([fetchRepositorySources(), fetchPlugins()])
-    installed.value = current
-    const contents = await Promise.all(sources.map(async (sourceItem) => ({ source: sourceItem, contents: await fetchRepositoryContents(sourceItem.id) })))
-    packages.value = contents.flatMap(({ source: sourceItem, contents: value }) => {
-      const entries = [...(value.entries || [])]
-      if (value.directPlugin) entries.push(value.directPlugin)
-      return entries.map((plugin) => ({ source: sourceItem, plugin }))
-    })
-  } catch (cause) {
-    applyPreviewPackages()
-    error.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-function applyPreviewPackages() {
-  const official = { id: 'official', kind: 'official', risk_label: 'official' }
-  const community = { id: 'community', kind: 'custom', risk_label: 'community' }
-  packages.value = [
-    {
-      source: official,
-      plugin: {
-        id: 'official.emby-helper',
-        name: 'Emby 助手',
-        version: '1.4.2',
-        sha256: 'preview-emby-helper',
-        description: '媒体访问入口',
-        http_backend_providers: [{ id: 'default' }],
-      },
-    },
-    {
-      source: official,
-      plugin: {
-        id: 'official.waf',
-        name: '网站防火墙',
-        version: '2.1.0',
-        sha256: 'preview-waf',
-        description: '入口请求检查',
-      },
-    },
-    {
-      source: community,
-      plugin: {
-        id: 'community.ddns',
-        name: '动态域名',
-        version: '0.9.1',
-        sha256: 'preview-ddns',
-        description: '公网地址自动更新',
-      },
-    },
-  ]
-  installed.value = []
-}
-
-function previewPackageDetail(item) {
-  const plugin = item?.plugin || {}
-  return {
-    catalog_only: true,
-    digest: plugin.sha256,
-    version: plugin.version,
-    runtime: plugin.runtime || {},
-    artifacts: plugin.artifacts || [],
-    signature: { key_id: plugin.signature_key_id || '' },
-    manifest: {
-      id: plugin.id,
-      name: plugin.name,
-      description: plugin.description || '',
-      compatibility: plugin.compatibility || {},
-      extension_points: plugin.capabilities || [],
-    },
-  }
-}
-
-function packageDetailKey(item) {
-  return `${item?.source?.id || ''}:${item?.plugin?.sha256 || ''}:${item?.plugin?.version || ''}`
-}
-
-async function cachedPackageDetail(item) {
-  const key = packageDetailKey(item)
-  if (packageDetailCache.has(key)) return await packageDetailCache.get(key)
-  const pending = fetchPluginPackageDetail({
-    source_id: item?.source?.id,
-    plugin_id: item?.plugin?.id,
-    version: item?.plugin?.version,
-    digest: item?.plugin?.sha256
-  })
-  packageDetailCache.set(key, pending)
-  try {
-    const resolved = await pending
-    packageDetailCache.set(key, resolved)
-    return resolved
-  } catch (error) {
-    packageDetailCache.delete(key)
-    throw error
-  }
-}
-
-function selectPackage(item) {
-  if (actionBusy.value || detailLoading.value) return
-  selected.value = item
-  detail.value = previewPackageDetail(item)
-  detailPrepared.value = false
-  confirmVisible.value = false
-  inspectVisible.value = true
-  error.value = ''
-  actionError.value = ''
-}
-
-function startDownloadProgress() {
-  downloadElapsedSec.value = 0
-  if (downloadTimer) window.clearInterval(downloadTimer)
-  downloadTimer = window.setInterval(() => {
-    downloadElapsedSec.value += 1
-  }, 1000)
-}
-
-function stopDownloadProgress() {
-  if (!downloadTimer) return
-  window.clearInterval(downloadTimer)
-  downloadTimer = 0
-}
-
-function packageSizeLabel(item) {
-  const blob = Number(item?.plugin?.blob_size)
-  if (Number.isFinite(blob) && blob > 0) return formatPackageSize(blob)
-  const artifacts = Array.isArray(item?.plugin?.artifacts) ? item.plugin.artifacts : []
-  const total = artifacts.reduce((sum, artifact) => sum + (Number(artifact?.size) || 0), 0)
-  return total > 0 ? formatPackageSize(total) : ''
-}
-
-function formatPackageSize(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return ''
-  if (bytes < 1024) return `${Math.round(bytes)} B`
-  if (bytes < 1024 * 1024) {
-    const kb = bytes / 1024
-    return `${kb >= 10 ? kb.toFixed(0) : kb.toFixed(1)} KB`
-  }
-  const mb = bytes / (1024 * 1024)
-  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
-}
-
-async function preparePackageDetail(item) {
-  detailLoading.value = true
-  actionError.value = ''
-  startDownloadProgress()
-  try {
-    detail.value = await cachedPackageDetail(item)
-    detailPrepared.value = true
-    return true
-  } catch (cause) {
-    detail.value = previewPackageDetail(item)
-    detailPrepared.value = false
-    if (!String(item?.plugin?.sha256 || '').startsWith('preview-')) {
-      actionError.value = humanLoadError(cause, '读取签名包详情失败')
-      messageStore.error(actionError.value)
-    }
-    return false
-  } finally {
-    stopDownloadProgress()
-    detailLoading.value = false
-  }
-}
-
-function closeInspect() {
-  if (actionBusy.value) return
-  inspectVisible.value = false
-  actionError.value = ''
-}
-
-function packageSelection() {
-  return {
-    source_id: source.value.id,
-    plugin_id: selected.value?.plugin.id,
-    version: selected.value?.plugin.version,
-    digest: selected.value?.plugin.sha256
-  }
-}
-
-function installSelection() {
-  return {
-    ...packageSelection(),
-    confirmed_permissions: [...requiredPermissions.value].sort(),
-    risk_accepted: source.value.kind !== 'official'
-  }
-}
-
-function packageKey(item) {
-  return `${item?.source?.id || ''}:${item?.plugin?.id || ''}:${item?.plugin?.version || ''}`
-}
-
-function isSelected(item) {
-  return packageKey(item) === packageKey(selected.value)
-}
-
-function pluginTitle(item) {
-  const plugin = item?.plugin || {}
-  const name = String(plugin.name || plugin.manifest?.name || '').trim()
-  if (name) return name
-  const id = String(plugin.id || '').trim()
-  if (id) return id
-  return '未命名插件'
-}
-
-function pluginBlurb(item) {
-  return sanitizePluginText(item?.plugin?.description || item?.plugin?.manifest?.description || '').trim()
-}
-
-function sourceKindLabel(kind) {
-  return kind === 'official' ? '官方来源' : '非官方来源'
-}
-
-function installedStatus(item) {
-  const current = installed.value.find((plugin) => plugin.plugin_id === item?.plugin.id)
-  if (!current) return '未安装'
-  if (pluginHasUpgrade(current, item)) return '可升级'
-  return '已安装'
-}
-
-function pluginHasUpgrade(current, item) {
-  if (!current) return false
-  const installedVersion = String(current.active_version || '').trim()
-  const marketVersion = String(item?.plugin?.version || '').trim()
-  if (installedVersion && marketVersion) return installedVersion !== marketVersion
-  const installedDigest = String(current.active_package_digest || '').trim().toLowerCase()
-  const marketDigest = String(item?.plugin?.sha256 || '').trim().toLowerCase()
-  return Boolean(installedDigest && marketDigest && installedDigest !== marketDigest)
-}
-
-function statusTone(item) {
-  const status = installedStatus(item)
-  if (status === '已安装') return 'success'
-  if (status === '可升级') return 'warning'
-  return 'neutral'
-}
-
-function isPendingConflictMessage(message) {
-  return /already pending|plugin state conflict/i.test(String(message || ''))
-}
-
-function isMarketplaceBusyMessage(message) {
-  return /refresh lease|source generation changed|marketplace source config revision|official marketplace branch changed/i.test(String(message || ''))
-}
-
-function pendingPlugin() {
-  return installedPlugin.value
-}
-
-function hasPendingOperation() {
-  return Boolean(String(pendingPlugin()?.pending_operation_id || '').trim())
-}
-
-function isPendingSameUpgrade() {
-  const pending = pendingPlugin()
-  const pendingKind = String(pending?.pending_kind || '').trim().toLowerCase()
-  const pendingDigest = String(pending?.pending_target_digest || '').trim()
-  const selectedDigest = String(selected.value?.plugin?.sha256 || '').trim()
-  return hasPendingOperation()
-    && pendingKind === 'upgrade'
-    && pendingDigest
-    && selectedDigest
-    && pendingDigest.toLowerCase() === selectedDigest.toLowerCase()
-}
-
-function humanLoadError(cause, fallback) {
-  const raw = sanitizePluginText(cause?.message || fallback)
-  if (isMarketplaceBusyMessage(raw)) {
-    return '市场目录刚刷新或正在刷新。这个插件本身正常，请稍后重新点升级。'
-  }
-  if (isPendingConflictMessage(raw)) {
-    if (isPendingSameUpgrade()) {
-      return '这个插件已有升级在进行。打开详情查看进度，不用重复提交。'
-    }
-    if (hasPendingOperation()) {
-      return '这个插件还有未完成的操作，所以这次没有提交。打开详情查看进度，结束后再点重试。'
-    }
-    return '另一个插件的升级还在节点上应用。这个插件本身正常，等当前升级完成后再试。'
-  }
-  if (/timeout|timed out|exceeded|econnaborted/i.test(raw)) {
-    return '读取插件包超时。安装前需要下载并校验签名包，请检查出站网络或 HTTP 代理后重试。'
-  }
-  if (/status code 5\d\d|network error|failed to fetch/i.test(raw)) {
-    return '暂时连不上服务，请稍后重试。'
-  }
-  return raw
-}
-
 function focusSearch() {
   searchInputRef.value?.focus?.()
 }
 
-function cardActionLabel(item) {
-  const status = installedStatus(item)
-  if (status === '可升级') return '升级'
-  if (status === '已安装') return '打开详情'
-  return '安装'
-}
-
-function tableActionClass(item) {
-  return cardActionLabel(item) === '打开详情' ? 'btn btn-ghost btn-sm' : 'btn btn-primary btn-sm'
-}
-
-async function startCardAction(item) {
-  if (!item?.plugin?.id || actionBusy.value || detailLoading.value) return
-  selected.value = item
-  inspectVisible.value = false
-  confirmFromInspect.value = false
-  error.value = ''
-  actionError.value = ''
-  pendingConflict.value = false
-  const status = installedStatus(item)
-  if (status === '已安装') {
-    await router.push(`/plugins/${encodeURIComponent(item.plugin.id)}`)
-    return
-  }
-  detail.value = previewPackageDetail(item)
-  detailPrepared.value = false
-  confirmVisible.value = true
-  await preparePackageDetail(item)
-}
-
-async function openConfirm() {
-  if (alreadyInstalled.value || detailLoading.value) return
-  confirmFromInspect.value = true
-  inspectVisible.value = false
-  confirmVisible.value = true
-  if (!detailPrepared.value) await preparePackageDetail(selected.value)
-}
-
-function cancelConfirm() {
-  if (actionBusy.value) return
-  confirmVisible.value = false
-  actionError.value = ''
-  inspectVisible.value = confirmFromInspect.value
-}
-
-function onConfirmVisible(open) {
-  if (open) {
-    confirmVisible.value = true
-    return
-  }
-  cancelConfirm()
-}
-
-async function refreshInstalled() {
-  try {
-    installed.value = await fetchPlugins()
-  } catch {
-    // Keep the last known installed list so retry and pending checks still work.
-  }
-}
-
-async function applyPackage() {
-  if (!selected.value || actionBusy.value || detailLoading.value) return
-  const item = selected.value
-  const pluginID = String(item?.plugin?.id || '').trim()
-  if (!pluginID) return
-  const shouldUpgrade = pluginHasUpgrade(installed.value.find((plugin) => plugin.plugin_id === pluginID), item)
-  const selection = {
-    source_id: item.source?.id,
-    plugin_id: pluginID,
-    version: item.plugin?.version,
-    digest: item.plugin?.sha256,
-    confirmed_permissions: [...requiredPermissions.value].sort(),
-    risk_accepted: item.source?.kind !== 'official'
-  }
-  actionBusy.value = true
-  actionError.value = ''
-  pendingConflict.value = false
-  try {
-    if (!detailPrepared.value) {
-      const prepared = await preparePackageDetail(item)
-      if (!prepared) return
-    }
-    await refreshInstalled()
-    if (shouldUpgrade) await upgradePlugin(pluginID, selection)
-    else await installPlugin(selection)
-    confirmVisible.value = false
-    actionError.value = ''
-    messageStore.success(shouldUpgrade ? '插件已升级' : '插件已安装')
-    await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
-  } catch (cause) {
-    confirmVisible.value = true
-    inspectVisible.value = false
-    await refreshInstalled()
-    pendingConflict.value = isPendingConflictMessage(cause?.message) && hasPendingOperation()
-    actionError.value = humanLoadError(cause, '提交插件包失败')
-    messageStore.error(actionError.value)
-  } finally {
-    actionBusy.value = false
-  }
+function openMarketplaceDetail(item) {
+  const href = marketplaceDetailHref(item)
+  if (href) router.push(href)
 }
 </script>
 
@@ -575,51 +141,42 @@ async function applyPackage() {
       <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
 
       <section v-else-if="view === 'card'" class="plugin-marketplace-catalog" aria-label="可安装插件">
-        <BaseListCard
+        <RouterLink
           v-for="item in filteredPackages"
           :key="packageKey(item)"
-          class="marketplace-card"
-          :class="{ 'marketplace-card--active': isSelected(item) }"
-          clickable
-          @click="selectPackage(item)"
+          class="marketplace-card-link"
+          :to="marketplaceDetailHref(item)"
+          :data-test="`marketplace-detail-link-${item.plugin.id}`"
         >
-          <template #header-left>
-            <span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span>
-            <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
-          </template>
-          <template #header-right>
-            <span class="marketplace-card__version">{{ item.plugin.version }}</span>
-          </template>
-          <p v-if="pluginBlurb(item)" class="marketplace-card__blurb">{{ pluginBlurb(item) }}</p>
-          <template #footer>
-            <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
-              {{ sourceKindLabel(item.source.kind) }}
-            </BaseBadge>
-            <BaseIconButton
-              :tone="installedStatus(item) === '已安装' ? 'default' : 'primary'"
-              :title="detailLoading && isSelected(item) ? '正在下载签名包…' : cardActionLabel(item)"
-              :data-test="`marketplace-card-action-${item.plugin.id}`"
-              :disabled="actionBusy || detailLoading"
-              @click="startCardAction(item)"
-            >
-              <svg v-if="detailLoading && isSelected(item)" class="marketplace-card__spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M12 3a9 9 0 1 1-9 9" />
-              </svg>
-              <svg v-else-if="installedStatus(item) === '已安装'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M9 18l6-6-6-6" />
-              </svg>
-              <svg v-else-if="installedStatus(item) === '可升级'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <polyline points="23 4 23 10 17 10" />
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-              </svg>
-              <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-            </BaseIconButton>
-          </template>
-        </BaseListCard>
+          <BaseListCard
+            class="marketplace-card"
+            :class="{ 'marketplace-card--active': isSelected(item) }"
+            :clickable="false"
+          >
+            <template #header-left>
+              <span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span>
+              <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
+            </template>
+            <template #header-right>
+              <span class="marketplace-card__version">{{ item.plugin.version }}</span>
+            </template>
+            <p v-if="pluginBlurb(item)" class="marketplace-card__blurb">{{ pluginBlurb(item) }}</p>
+            <template #footer>
+              <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
+                {{ sourceKindLabel(item.source.kind) }}
+              </BaseBadge>
+              <button
+                type="button"
+                :class="tableActionClass(item)"
+                :data-test="`marketplace-card-action-${item.plugin.id}`"
+                :disabled="actionBusy || detailLoading"
+                @click.stop.prevent="startCardAction(item)"
+              >
+                {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
+              </button>
+            </template>
+          </BaseListCard>
+        </RouterLink>
       </section>
 
       <div v-else class="plugin-catalog-table-wrap" data-test="marketplace-table">
@@ -638,11 +195,18 @@ async function applyPackage() {
               v-for="item in filteredPackages"
               :key="packageKey(item)"
               :class="{ 'plugin-catalog-table__row--active': isSelected(item) }"
-              @click="selectPackage(item)"
+              @click="openMarketplaceDetail(item)"
             >
               <td>
                 <div class="plugin-catalog-table__name">
-                  <strong :title="pluginTitle(item)">{{ pluginTitle(item) }}</strong>
+                  <RouterLink
+                    class="plugin-catalog-table__name-link"
+                    :to="marketplaceDetailHref(item)"
+                    :data-test="`marketplace-detail-link-${item.plugin.id}`"
+                    @click.stop
+                  >
+                    <strong :title="pluginTitle(item)">{{ pluginTitle(item) }}</strong>
+                  </RouterLink>
                   <small v-if="pluginBlurb(item)">{{ pluginBlurb(item) }}</small>
                 </div>
               </td>
@@ -676,53 +240,6 @@ async function applyPackage() {
       </div>
 
       <BaseModal
-        :model-value="inspectVisible"
-        :title="pluginTitle({ plugin: { id: selected?.plugin?.id, name: detail?.manifest?.name || selected?.plugin?.name } })"
-        :subtitle="selected ? `${selected.plugin.version} · ${installedStatus(selected)}` : ''"
-        size="lg"
-        :close-on-click-modal="!actionBusy"
-        show-footer
-        @update:model-value="inspectVisible = $event"
-      >
-        <div v-if="detail" class="plugin-marketplace-detail">
-          <section class="marketplace-primary">
-            <p class="marketplace-primary__source">{{ sourceKindLabel(source.kind) }}</p>
-            <p class="marketplace-primary__purpose">{{ pluginPurpose }}</p>
-            <p class="marketplace-primary__next" data-test="marketplace-next-step">{{ nextStepHint }}</p>
-            <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
-            <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
-          </section>
-          <PluginRiskNotices :package-detail="detail" :source="source" />
-          <section class="permission-review">
-            <h3>精确权限确认</h3>
-            <p v-if="!detailPrepared">市场快照只展示已签名的索引信息；点击安装或升级后，会校验完整包并显示精确权限。</p>
-            <p v-else-if="!requiredPermissions.length">此包未请求宿主能力。</p>
-            <ul v-else class="permission-list">
-              <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
-            </ul>
-          </section>
-          <details class="marketplace-technical">
-            <summary>技术详情</summary>
-            <PluginPackageSummary :detail="detail" :source="source" :show-identity="false" :collapsible="false" />
-          </details>
-        </div>
-        <p v-else class="plugin-marketplace-empty">正在读取市场元数据…</p>
-        <template #footer>
-          <button class="btn btn-secondary" type="button" @click="closeInspect">关闭</button>
-          <RouterLink
-            v-if="alreadyInstalled && selectedDetailPath"
-            class="btn btn-primary"
-            :to="selectedDetailPath"
-          >
-            打开详情
-          </RouterLink>
-          <button class="btn" :class="alreadyInstalled ? 'btn-secondary' : 'btn-primary'" type="button" :disabled="alreadyInstalled || detailLoading" @click="openConfirm">
-            {{ detailLoading ? '下载中…' : isUpgrade ? '升级插件' : '安装插件' }}
-          </button>
-        </template>
-      </BaseModal>
-
-      <BaseModal
         :model-value="confirmVisible"
         :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
         :subtitle="pluginTitle(selected)"
@@ -732,7 +249,7 @@ async function applyPackage() {
         @update:model-value="onConfirmVisible"
       >
         <div class="confirm-permissions">
-          <p v-if="actionError && hasPendingOperation()" class="confirm-pending-next">
+          <p v-if="hasPendingDetailLink" class="confirm-pending-next">
             <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
           </p>
           <div v-if="detailLoading" class="package-download-progress" data-test="marketplace-detail-loading">
@@ -837,6 +354,31 @@ async function applyPackage() {
   text-align: center;
 }
 
+.marketplace-card-link {
+  display: flex;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-2xl);
+}
+
+.marketplace-card-link :deep(.base-list-card) {
+  flex: 1;
+  min-width: 0;
+}
+
+.marketplace-card-link:hover :deep(.base-list-card) {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+}
+
+.marketplace-card-link:focus-visible :deep(.base-list-card) {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
+}
+
 .marketplace-card :deep(.base-list-card__header-left) {
   flex-wrap: nowrap;
   min-width: 0;
@@ -885,77 +427,13 @@ async function applyPackage() {
   border-top: 1px solid var(--color-border-subtle);
 }
 
-.marketplace-card__spinner {
-  animation: marketplace-spin 0.8s linear infinite;
+.plugin-catalog-table__name-link {
+  color: inherit;
+  text-decoration: none;
 }
 
-@keyframes marketplace-spin {
-  to { transform: rotate(360deg); }
-}
-
-.plugin-marketplace-detail {
-  min-width: 0;
-  display: grid;
-  align-content: start;
-  gap: 1rem;
-}
-
-.marketplace-primary {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.marketplace-primary h2 {
-  margin: var(--space-1) 0 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.marketplace-primary p {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-}
-
-.marketplace-primary__source {
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-}
-
-.marketplace-primary__purpose {
-  color: var(--color-text-secondary);
-}
-
-.marketplace-primary__next {
-  color: var(--color-text-primary);
-}
-
-.marketplace-technical {
-  display: grid;
-  gap: var(--space-4);
-}
-
-.marketplace-technical summary {
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.permission-review {
-  display: grid;
-  gap: 0.4rem;
-}
-
-.permission-review h3,
-.permission-review p {
-  margin: 0;
-}
-
-.permission-review__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
+.plugin-catalog-table__name-link:hover {
+  color: var(--color-primary);
 }
 
 .permission-list {
@@ -968,10 +446,6 @@ async function applyPackage() {
 .permission-list code {
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
-}
-
-.upgrade-notice {
-  color: var(--color-warning);
 }
 
 .confirm-permissions {
