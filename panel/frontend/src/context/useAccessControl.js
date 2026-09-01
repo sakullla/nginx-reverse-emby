@@ -14,36 +14,21 @@ onCredentialIdentityChange(() => {
   loadError.value = null
 })
 
-// Overview cards only. Sidebar and mobile consume accessManagementNavigation.
+// Retired overview cards. None of these keep a product-surface path.
 export const accessNavigation = Object.freeze([
   { id: 'users', label: '用户', permission: 'access.manage' },
   { id: 'roles', label: '角色', permission: 'access.manage' },
-  { id: 'resource-groups', label: '资源组', permission: 'resource.read', path: '/access/resource-groups' },
+  { id: 'resource-groups', label: '资源组', permission: 'resource.read' },
   { id: 'quotas', label: '配额', permission: 'resource.read' },
   { id: 'secrets', label: '凭据', permission: 'secret.metadata.read' },
   { id: 'audit', label: '审计', permission: 'audit.read' }
 ])
 
-// Sidebar/mobile group. Omit the group when no child is visible. No roles/quotas/secrets/audit.
+// Retired sidebar/mobile group. Children stay empty so leftover consumers insert nothing.
 export const accessManagementNavigation = Object.freeze({
   id: 'users-and-resources',
   label: '用户与资源管理',
-  children: Object.freeze([
-    {
-      id: 'users',
-      label: '用户管理',
-      permission: 'access.manage',
-      path: '/access/users',
-      routeName: 'access-users'
-    },
-    {
-      id: 'resource-groups',
-      label: '资源组管理',
-      permission: 'resource.read',
-      path: '/access/resource-groups',
-      routeName: 'access-resource-groups'
-    }
-  ])
+  children: Object.freeze([])
 })
 
 export const MIN_PASSWORD_LENGTH = 10
@@ -53,19 +38,12 @@ export function actorHasPermission(actor, permission) {
   return permissions.has('*') || permissions.has(permission)
 }
 
-export function visibleAccessManagementNavForActor(actor) {
-  const children = accessManagementNavigation.children.filter((item) => actorHasPermission(actor, item.permission))
-  if (!children.length) return null
-  return { ...accessManagementNavigation, children }
+export function visibleAccessManagementNavForActor() {
+  return null
 }
 
-export function accessNavForSession(actor) {
-  const visible = visibleAccessManagementNavForActor(actor)
-  if (visible?.children?.length) return visible
-  if (actor) return visible
-  if (typeof localStorage === 'undefined') return null
-  const hasSession = Boolean(localStorage.getItem('panel_session') || localStorage.getItem('panel_token'))
-  return hasSession ? accessManagementNavigation : null
+export function accessNavForSession() {
+  return null
 }
 
 export function isAccessManagementChildActive(item, route) {

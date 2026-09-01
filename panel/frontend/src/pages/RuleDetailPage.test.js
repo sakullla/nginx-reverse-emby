@@ -42,6 +42,23 @@ vi.mock('../hooks/usePluginUIRoutes', () => ({
   usePluginUIRoutes: () => ({ routes: ref([]) })
 }))
 
+vi.mock('../context/useAccessControl', () => ({
+  useAccessControl: () => ({
+    refreshActor: async () => undefined,
+    visibleAccessManagement: {
+      value: {
+        id: 'users-and-resources',
+        label: '用户与资源管理',
+        children: [
+          { id: 'users', label: '用户管理', path: '/access/users' },
+          { id: 'resource-groups', label: '资源组管理', path: '/access/resource-groups' }
+        ]
+      }
+    }
+  }),
+  isAccessManagementChildActive: () => false
+}))
+
 vi.mock('../components/QuickAgentSelect.vue', () => ({
   default: {
     name: 'QuickAgentSelect',
@@ -88,7 +105,8 @@ describe('RuleDetailPage', () => {
     const wrapper = mount(BottomNav)
     await wrapper.get('.nav-item--dropdown').trigger('click')
 
-    expect(wrapper.findAll('.more-dropdown__item').map((link) => link.attributes('data-to'))).toEqual([
+    const hrefs = wrapper.findAll('.more-dropdown__item').map((link) => link.attributes('data-to'))
+    expect(hrefs).toEqual([
       '/l4',
       '/relay-listeners',
       '/agents',
@@ -96,6 +114,14 @@ describe('RuleDetailPage', () => {
       '/resource-groups',
       '/settings'
     ])
+    expect(hrefs).not.toContain('/access')
+    expect(hrefs).not.toContain('/access/users')
+    expect(hrefs).not.toContain('/access/resource-groups')
+    expect(wrapper.text()).not.toContain('用户与资源管理')
+    expect(wrapper.text()).not.toContain('用户管理')
+    expect(wrapper.text()).not.toContain('资源组管理')
+    expect(wrapper.text()).toContain('插件资源组')
+    expect(wrapper.text()).toContain('设置')
 
     wrapper.unmount()
   })

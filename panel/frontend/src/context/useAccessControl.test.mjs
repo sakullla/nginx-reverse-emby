@@ -3,6 +3,7 @@ import { fetchCurrentActor } from '../api/access'
 import { clearCredentials, setSessionToken } from '../api/authState'
 import {
   accessManagementNavigation,
+  accessNavForSession,
   accessNavigation,
   canChangeOwnPassword,
   filterPluginDetailForActor,
@@ -101,33 +102,21 @@ describe('visible resource group selection', () => {
 })
 
 describe('access management navigation', () => {
-  it('keeps overview cards off the sidebar group and hides the group without visible children', () => {
-    expect(accessManagementNavigation).toMatchObject({
-      id: 'users-and-resources',
-      label: '用户与资源管理'
-    })
-    expect(accessManagementNavigation.children.map((item) => item.id)).toEqual(['users', 'resource-groups'])
-    expect(accessManagementNavigation.children.map((item) => item.path)).toEqual([
-      '/access/users',
-      '/access/resource-groups'
-    ])
-    expect(accessManagementNavigation.children.some((item) => ['roles', 'quotas', 'secrets', 'audit'].includes(item.id))).toBe(false)
-    expect(accessNavigation.find((item) => item.id === 'users')).toMatchObject({ permission: 'access.manage' })
-    expect(accessNavigation.find((item) => item.id === 'users').path).toBeUndefined()
-    expect(visibleAccessManagementNavForActor({ permissions: ['*'] }).children.map((item) => item.id)).toEqual(['users', 'resource-groups'])
-    expect(visibleAccessManagementNavForActor({ permissions: ['access.manage'] }).children.map((item) => item.id)).toEqual(['users'])
-    expect(visibleAccessManagementNavForActor({ permissions: ['resource.read'] }).children.map((item) => item.id)).toEqual(['resource-groups'])
-    expect(visibleAccessManagementNavForActor({ permissions: ['audit.read'] })).toBeNull()
-    expect(visibleAccessManagementNavForActor(null)).toBeNull()
-  })
-
-  it('marks authorized child pages as active for expanded and collapsed nav', () => {
-    const users = accessManagementNavigation.children[0]
-    const groups = accessManagementNavigation.children[1]
-    expect(isAccessManagementChildActive(users, { name: 'access-users', path: '/access/users' })).toBe(true)
-    expect(isAccessManagementChildActive(users, { name: 'access', path: '/access' })).toBe(false)
-    expect(isAccessManagementChildActive(groups, { name: 'access-resource-groups', path: '/access/resource-groups' })).toBe(true)
-    expect(isAccessManagementChildActive(groups, { path: '/access/resource-groups' })).toBe(true)
+  it('does not offer the retired users-and-resources product group', () => {
+    expect(accessManagementNavigation.children).toEqual([])
+    expect(accessNavigation.every((item) => !item.path)).toBe(true)
+    expect(visibleAccessManagementNavForActor({ permissions: ['*'] })).toBeNull()
+    expect(visibleAccessManagementNavForActor({ permissions: ['access.manage'] })).toBeNull()
+    expect(visibleAccessManagementNavForActor({ permissions: ['resource.read'] })).toBeNull()
+    expect(accessNavForSession({ permissions: ['*'] })).toBeNull()
+    expect(accessNavForSession(null)).toBeNull()
+    localStorage.setItem('panel_token', 'panel-token')
+    expect(accessNavForSession(null)).toBeNull()
+    localStorage.removeItem('panel_token')
+    expect(isAccessManagementChildActive(
+      { routeName: 'access-users', path: '/access/users' },
+      { name: 'access-users', path: '/access/users' }
+    )).toBe(true)
   })
 })
 
@@ -182,23 +171,23 @@ describe('first-admin setup and account security', () => {
     })
   })
 
-  it('projects sidebar group and account-security flags from the current actor', async () => {
+  it('does not project sidebar access management for any current actor', async () => {
     fetchCurrentActor.mockResolvedValue(admin)
     const access = useAccessControl()
     await access.refreshActor()
-    expect(access.visibleAccessManagement.value.children.map((item) => item.label)).toEqual(['用户管理'])
+    expect(access.visibleAccessManagement.value).toBeNull()
     expect(access.isBootstrap.value).toBe(false)
     expect(access.canChangePassword.value).toBe(true)
 
     fetchCurrentActor.mockResolvedValue(bootstrap)
     await access.refreshActor()
-    expect(access.visibleAccessManagement.value.children.map((item) => item.id)).toEqual(['users', 'resource-groups'])
+    expect(access.visibleAccessManagement.value).toBeNull()
     expect(access.isBootstrap.value).toBe(true)
     expect(access.canChangePassword.value).toBe(false)
 
     fetchCurrentActor.mockResolvedValue(reader)
     await access.refreshActor()
-    expect(access.visibleAccessManagement.value.children.map((item) => item.id)).toEqual(['resource-groups'])
+    expect(access.visibleAccessManagement.value).toBeNull()
     expect(access.canChangePassword.value).toBe(true)
     expect(access.can('access.manage')).toBe(false)
   })

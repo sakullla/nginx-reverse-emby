@@ -1,64 +1,42 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import router from '../../router'
 import AccessOverview from './AccessOverview.vue'
 
 const mocks = vi.hoisted(() => ({
-  fetchResourceGroups: vi.fn(),
-  fetchUsers: vi.fn(),
-  fetchRoles: vi.fn(),
-  fetchQuotaOverview: vi.fn(),
-  fetchSecrets: vi.fn(),
-  fetchAuditEvents: vi.fn(),
-  refreshActor: vi.fn()
+  replace: vi.fn()
 }))
 
-vi.mock('vue-router', () => ({
-  useRouter: () => ({ replace: vi.fn() })
-}))
-
-vi.mock('../../api/access', () => ({
-  fetchResourceGroups: mocks.fetchResourceGroups,
-  fetchUsers: mocks.fetchUsers,
-  fetchRoles: mocks.fetchRoles,
-  fetchQuotaOverview: mocks.fetchQuotaOverview,
-  fetchSecrets: mocks.fetchSecrets,
-  fetchAuditEvents: mocks.fetchAuditEvents
-}))
-
-vi.mock('../../context/useAccessControl', async (original) => {
+vi.mock('vue-router', async (original) => {
   const actual = await original()
   return {
     ...actual,
-    useAccessControl: () => ({
-      can: (permission) => permission === 'resource.read',
-      refreshActor: mocks.refreshActor,
-      visibleNavigation: {
-        value: [
-          { id: 'resource-groups', label: '资源组', permission: 'resource.read', path: '/access/resource-groups' }
-        ]
-      }
-    })
+    useRouter: () => ({ replace: mocks.replace })
   }
 })
 
+function isUsableManagementPage(path) {
+  const record = router.getRoutes().find((route) => route.path === path)
+  if (!record) return false
+  if (record.redirect) return false
+  return Boolean(record.components?.default)
+}
+
 describe('AccessOverview resource group entry', () => {
   beforeEach(() => {
-    mocks.fetchResourceGroups.mockReset().mockResolvedValue([{ id: 'default', name: 'default' }])
-    mocks.fetchUsers.mockReset().mockResolvedValue([])
-    mocks.fetchRoles.mockReset().mockResolvedValue([])
-    mocks.fetchQuotaOverview.mockReset().mockResolvedValue({ quota_usage: [] })
-    mocks.fetchSecrets.mockReset().mockResolvedValue([])
-    mocks.fetchAuditEvents.mockReset().mockResolvedValue([])
-    mocks.refreshActor.mockReset().mockResolvedValue({})
+    mocks.replace.mockReset()
   })
 
-  it('links the resource group card to the dedicated route', async () => {
+  it('does not keep a resource-group management entry', async () => {
     const wrapper = mount(AccessOverview, {
       global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } }
     })
     await flushPromises()
-    const link = wrapper.get('a.access-card-link')
-    expect(link.text()).toContain('资源组')
-    expect(link.attributes('href')).toBe('/access/resource-groups')
+    const hrefs = wrapper.findAll('a').map((link) => link.attributes('href'))
+    expect(hrefs).not.toContain('/access/resource-groups')
+    expect(wrapper.text()).not.toContain('资源组管理')
+    expect(mocks.replace).toHaveBeenCalledWith({ name: 'dashboard' })
+    expect(isUsableManagementPage('/access')).toBe(false)
+    expect(isUsableManagementPage('/access/resource-groups')).toBe(false)
   })
 })

@@ -4,7 +4,7 @@
       <div class="plugin-groups-page__header-left">
         <h1 class="plugin-groups-page__title">插件资源组</h1>
         <p class="plugin-groups-page__desc">
-          插件声明的分组，用来打开插件自己的管理页。谁能看到这些组，在「资源组管理」里授权。
+          插件声明的分组，用来打开插件自己的管理页。
           <template v-if="groups.length">共 {{ groups.length }} 个</template>
           <template v-if="query.trim()"> · 匹配 {{ filtered.length }} 个</template>
         </p>
@@ -163,8 +163,7 @@
         </div>
         <section class="resource-group-detail__auth">
           <h3>授权</h3>
-          <p>这里是插件声明的分组。要给用户看这些插件，请到资源组管理里授权。</p>
-          <a class="resource-group-detail__link" href="/access/resource-groups">打开资源组管理</a>
+          <p>这里是插件声明的分组，用于打开插件自己的管理页。</p>
         </section>
       </dl>
       <template #footer>
@@ -443,12 +442,6 @@ async function copyRef(group) {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
-}
-
-.resource-group-detail__link {
-  color: var(--color-primary);
-  font-size: var(--text-sm);
-  text-decoration: none;
 }
 
 @media (max-width: 800px) {

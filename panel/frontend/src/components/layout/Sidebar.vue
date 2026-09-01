@@ -119,7 +119,7 @@
 <script setup>
 import { ref, computed, h, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { isAccessManagementChildActive, useAccessControl } from '../../context/useAccessControl'
+import { useAccessControl } from '../../context/useAccessControl'
 import { pluginChildrenForGroup, usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 
 // --- Icon components ---
@@ -145,16 +145,9 @@ const icons = {
   settings: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
   infra: makeIconMixed([{ tag: 'rect', attrs: { x: '2', y: '2', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'rect', attrs: { x: '2', y: '14', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'line', attrs: { x1: '6', y1: '6', x2: '6.01', y2: '6' } }, { tag: 'line', attrs: { x1: '6', y1: '18', x2: '6.01', y2: '18' } }]),
   plugin: makeIcon(['M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z']),
-  users: makeIconMixed([
-    { tag: 'path', attrs: { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' } },
-    { tag: 'circle', attrs: { cx: '9', cy: '7', r: '4' } },
-    { tag: 'path', attrs: { d: 'M22 21v-2a4 4 0 0 0-3-3.87' } },
-    { tag: 'path', attrs: { d: 'M16 3.13a4 4 0 0 1 0 7.75' } },
-  ]),
-  folder: makeIcon(['M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z']),
 }
 
-const { refreshActor, visibleAccessManagement } = useAccessControl()
+const { refreshActor } = useAccessControl()
 const route = useRoute()
 
 function isPathActive(to) {
@@ -212,21 +205,6 @@ const navItems = computed(() => {
       ],
     },
   ]
-  const accessGroup = visibleAccessManagement.value
-  if (accessGroup?.children?.length) {
-    items.push({
-      type: 'group',
-      label: accessGroup.label,
-      icon: icons.users,
-      activePathPrefix: '/access',
-      children: accessGroup.children.map((child) => ({
-        label: child.label,
-        to: child.path,
-        icon: child.id === 'users' ? icons.users : icons.folder,
-        activeMatch: () => isAccessManagementChildActive(child, route)
-      }))
-    })
-  }
   items.push({ type: 'item', label: '设置', to: '/settings', icon: icons.settings })
   return items
 })

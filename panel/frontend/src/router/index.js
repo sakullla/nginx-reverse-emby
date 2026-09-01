@@ -3,7 +3,6 @@ import { verifyToken } from '../api'
 import { clearCredentials, clearSessionToken, getStoredAuthToken } from '../api/authState'
 
 const AppShell = () => import('../components/layout/AppShell.vue')
-const AccessOverview = () => import('../pages/access/AccessOverview.vue')
 
 const routes = [
   {
@@ -108,21 +107,15 @@ const routes = [
       },
       {
         path: 'access',
-        name: 'access',
-        component: AccessOverview,
-        meta: { title: '访问与安全' }
+        redirect: { name: 'dashboard' }
       },
       {
         path: 'access/users',
-        name: 'access-users',
-        component: () => import('../pages/access/UsersPage.vue'),
-        meta: { title: '用户管理' }
+        redirect: { name: 'dashboard' }
       },
       {
         path: 'access/resource-groups',
-        name: 'access-resource-groups',
-        component: () => import('../pages/access/ResourceGroupsPage.vue'),
-        meta: { title: '资源组' }
+        redirect: { name: 'dashboard' }
       }
     ]
   }

@@ -20,10 +20,22 @@ vi.mock('../../hooks/usePluginUIRoutes', () => ({
 vi.mock('../../context/useAccessControl', () => ({
   useAccessControl: () => ({
     refreshActor: async () => undefined,
-    visibleAccessManagement: { value: null },
+    visibleAccessManagement: {
+      value: {
+        id: 'users-and-resources',
+        label: '用户与资源管理',
+        children: [
+          { id: 'users', label: '用户管理', path: '/access/users', routeName: 'access-users' },
+          { id: 'resource-groups', label: '资源组管理', path: '/access/resource-groups', routeName: 'access-resource-groups' }
+        ]
+      }
+    }
   }),
-  isAccessManagementChildActive: () => false,
+  isAccessManagementChildActive: () => false
 }))
+
+const retiredAccessLabels = ['用户与资源管理', '用户管理', '资源组管理']
+const retiredAccessHrefs = ['/access', '/access/users', '/access/resource-groups']
 
 describe('Sidebar plugin UI routes', () => {
   it('does not hardcode a Cloudflare mapping page', () => {
@@ -41,9 +53,26 @@ describe('Sidebar plugin UI routes', () => {
     expect(hrefs).toContain('/plugins/marketplace')
     expect(hrefs).toContain('/plugins')
     expect(hrefs).toContain('/resource-groups')
+    expect(hrefs).toContain('/settings')
     expect(sidebar.text()).toContain('插件市场')
     expect(sidebar.text()).toContain('已安装插件')
     expect(sidebar.text()).toContain('插件资源组')
+    expect(sidebar.text()).toContain('设置')
+    sidebar.unmount()
+  })
+
+  it('does not show retired access management even when an actor would have been authorized', () => {
+    pluginRoutes.value = []
+    const sidebar = mount(Sidebar)
+    const hrefs = sidebar.findAll('a').map((item) => item.attributes('href'))
+    for (const label of retiredAccessLabels) {
+      expect(sidebar.text()).not.toContain(label)
+    }
+    for (const href of retiredAccessHrefs) {
+      expect(hrefs).not.toContain(href)
+    }
+    expect(hrefs).toContain('/resource-groups')
+    expect(hrefs).toContain('/settings')
     sidebar.unmount()
   })
 

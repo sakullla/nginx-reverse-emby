@@ -46,26 +46,6 @@
           </svg>
           节点管理
         </RouterLink>
-        <RouterLink
-          v-for="item in accessNavItems"
-          :key="item.path"
-          :to="item.path"
-          class="more-dropdown__item"
-          :class="{ 'more-dropdown__item--active': isAccessItemActive(item) }"
-          :aria-current="isAccessItemActive(item) ? 'page' : undefined"
-          @click.stop="moreOpen = false"
-        >
-          <svg v-if="item.id === 'users'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-          </svg>
-          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          </svg>
-          {{ item.label }}
-        </RouterLink>
         <a
           v-for="pluginRoute in pluginUIRoutes"
           :key="pluginRoute.id"
@@ -106,24 +86,18 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { isAccessManagementChildActive, useAccessControl } from '../../context/useAccessControl'
+import { useAccessControl } from '../../context/useAccessControl'
 import { usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 
 const route = useRoute()
 const moreOpen = ref(false)
 const moreRef = ref(null)
-const { refreshActor, visibleAccessManagement } = useAccessControl()
+const { refreshActor } = useAccessControl()
 const { routes: pluginUIRoutes } = usePluginUIRoutes()
 
 function isMoreItemActive(to) {
   return Boolean(to) && (route.path === to || route.path.startsWith(`${to}/`))
 }
-
-function isAccessItemActive(item) {
-  return isAccessManagementChildActive(item, route)
-}
-
-const accessNavItems = computed(() => visibleAccessManagement.value?.children || [])
 
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
@@ -131,8 +105,7 @@ const isMoreActive = computed(() =>
   route.path.startsWith('/agents') ||
   route.path.startsWith('/plugins') ||
   route.path.startsWith('/resource-groups') ||
-  route.path.startsWith('/settings') ||
-  accessNavItems.value.some((item) => isAccessItemActive(item))
+  route.path.startsWith('/settings')
 )
 
 function handleClickOutside(e) {
