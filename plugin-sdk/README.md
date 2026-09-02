@@ -67,6 +67,12 @@ older action guests before cutover. Under that feature, `PlanAction` requests
 bounded typed operations against opaque handles, and `InvokeAction` receives
 only bounded results—never raw resource identity, sockets, or credentials.
 
+RPC plugins are network-isolated by default. A package that explicitly declares
+the unscoped `network.full` permission receives the Host network namespace and
+may create unrestricted INET listen and outbound sockets. Hosts treat this as a
+high-risk ambient permission; omitting it preserves the isolated network
+namespace and non-UNIX socket syscall denial.
+
 ## Go rpc-service quick start
 
 The SDK owns entrypoint probing, private Unix listeners, cookie authentication,

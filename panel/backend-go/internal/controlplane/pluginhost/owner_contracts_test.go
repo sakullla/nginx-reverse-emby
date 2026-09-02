@@ -98,6 +98,19 @@ func TestPluginHostSandboxRequirementAllowsResourceGroupExtension(t *testing.T) 
 	}
 }
 
+func TestPluginHostSandboxRequirementAllowsDeclaredFullNetwork(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("c", 64)
+	pkg := validatedSandboxPackage(digest, []string{pluginsdk.PermissionNetworkFull}, []string{pluginsdk.ExtensionResourceGroup})
+	requirement, err := SandboxRequirementFromValidatedPackage(pkg)
+	if err != nil {
+		t.Fatalf("network.full sandbox requirement = %v", err)
+	}
+	if !requirement.RequiresPrivilegeBoundary() || !requirement.Budget().Network || requirement.RequiresNetworkIsolation() {
+		t.Fatalf("network.full requirement = %+v", requirement)
+	}
+}
+
 func TestPluginCapabilityAuthorizationMatrix(t *testing.T) {
 	t.Parallel()
 	quota := &capabilityQuotaStub{}

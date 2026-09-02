@@ -167,7 +167,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 	if len(options.AllowedPermissions) == 0 {
 		options.AllowedPermissions = []string{
 			"agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond",
-			pluginsdk.PermissionHTTPOutbound,
+			pluginsdk.PermissionHTTPOutbound, pluginsdk.PermissionNetworkFull,
 			"l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use",
 			"storage.read", "storage.write", "dns.manage",
 			string(pluginsdk.CapabilityHTTPRule),

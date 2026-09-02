@@ -19,6 +19,7 @@ const (
 	PermissionHTTPInspect                    SandboxPermission = "http.inspect"
 	PermissionHTTPRespond                    SandboxPermission = "http.respond"
 	PermissionHTTPOutbound                   SandboxPermission = SandboxPermission(pluginsdk.PermissionHTTPOutbound)
+	PermissionNetworkFull                    SandboxPermission = SandboxPermission(pluginsdk.PermissionNetworkFull)
 	PermissionL4Inspect                      SandboxPermission = "l4.inspect"
 	PermissionL4Respond                      SandboxPermission = "l4.respond"
 	PermissionPolicyRead                     SandboxPermission = "policy.read"
@@ -93,7 +94,7 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		}
 		seenPermissions[permission] = struct{}{}
 		switch permission {
-		case PermissionDNSManage, PermissionSecretUse, PermissionStorageWrite:
+		case PermissionDNSManage, PermissionSecretUse, PermissionStorageWrite, PermissionNetworkFull:
 			requirement.privileged = true
 		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions,
@@ -125,6 +126,9 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		network = true
 	}
 	if _, ok := seenPermissions[PermissionHTTPOutbound]; ok {
+		network = true
+	}
+	if _, ok := seenPermissions[PermissionNetworkFull]; ok {
 		network = true
 	}
 	requirement.networkBound = network
@@ -168,7 +172,7 @@ func validSandboxPackageDigest(value string) bool {
 
 func knownSandboxPermission(value SandboxPermission) bool {
 	switch value {
-	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound,
+	case PermissionAgentRead, PermissionAgentConfigure, PermissionEventEmit, PermissionHTTPInspect, PermissionHTTPRespond, PermissionHTTPOutbound, PermissionNetworkFull,
 		PermissionL4Inspect, PermissionL4Respond, PermissionPolicyRead, PermissionPolicyWrite, PermissionSecretUse,
 		PermissionStorageRead, PermissionStorageWrite, PermissionDNSManage,
 		PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic,
