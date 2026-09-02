@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -199,6 +200,104 @@ func TestRewriteOfficialWAFHTTPPolicyRefsAttachesAndDetaches(t *testing.T) {
 	if httpWAFRuleByID(t, local, 2).PolicyRefJSON != `{"id":"custom-chain"}` {
 		t.Fatalf("foreign ref detached: %+v", local)
 	}
+}
+
+func TestRewriteOfficialWAFHTTPPolicyRefsPublishesCoordinatorSnapshots(t *testing.T) {
+	store := newHTTPWAFAttachStore(t)
+	ctx := t.Context()
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Name: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	localEmpty := testHTTPWAFRuleRow(1, "local", "")
+	localEmpty.FrontendURL = "http://app-a.example"
+	localKept := testHTTPWAFRuleRow(2, "local", `{"id":"custom-chain"}`)
+	localKept.FrontendURL = "http://app-b.example"
+	remoteEmpty := testHTTPWAFRuleRow(3, "edge-a", "")
+	remoteEmpty.FrontendURL = "http://app-c.example"
+	if err := store.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{localEmpty, localKept}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{remoteEmpty}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewPluginService(store, t.TempDir())
+	service.ConfigureRevisionMutations(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	if err := service.rewriteOfficialWAFHTTPPolicyRefs(ctx, "official.waf-default", []string{"official.waf-default"}, true); err != nil {
+		t.Fatalf("attach error = %v", err)
+	}
+
+	localSnapshot := latestWAFCoordinatorSnapshot(t, store, "local")
+	if localSnapshot.Revision <= 1 {
+		t.Fatalf("local attach snapshot revision = %d, want above pre-mutation HTTP revision", localSnapshot.Revision)
+	}
+	localRule := snapshotHTTPRuleByID(t, localSnapshot, 1)
+	if localRule.PolicyRef == nil || localRule.PolicyRef.ID != "official.waf-default" || string(localRule.PolicyRef.Overlay) != `{"mode":"observe"}` {
+		t.Fatalf("local snapshot missing observe policy_ref: %+v", localRule.PolicyRef)
+	}
+	if localRule.Revision != localSnapshot.Revision {
+		t.Fatalf("local HTTP revision = %d snapshot = %d", localRule.Revision, localSnapshot.Revision)
+	}
+	kept := snapshotHTTPRuleByID(t, localSnapshot, 2)
+	if kept.PolicyRef == nil || kept.PolicyRef.ID != "custom-chain" {
+		t.Fatalf("existing ref overwritten in snapshot: %+v", kept.PolicyRef)
+	}
+
+	remoteSnapshot := latestWAFCoordinatorSnapshot(t, store, "edge-a")
+	if remoteSnapshot.Revision <= 1 {
+		t.Fatalf("remote attach snapshot revision = %d, want above pre-mutation HTTP revision", remoteSnapshot.Revision)
+	}
+	remoteRule := snapshotHTTPRuleByID(t, remoteSnapshot, 3)
+	if remoteRule.PolicyRef == nil || remoteRule.PolicyRef.ID != "official.waf-default" {
+		t.Fatalf("remote snapshot missing policy_ref: %+v", remoteRule.PolicyRef)
+	}
+
+	attachRevision := localSnapshot.Revision
+	if err := service.rewriteOfficialWAFHTTPPolicyRefs(ctx, "", []string{"official.waf-default"}, false); err != nil {
+		t.Fatalf("detach error = %v", err)
+	}
+	detached := latestWAFCoordinatorSnapshot(t, store, "local")
+	if detached.Revision <= attachRevision {
+		t.Fatalf("detach snapshot revision = %d, want above attach %d", detached.Revision, attachRevision)
+	}
+	if snapshotHTTPRuleByID(t, detached, 1).PolicyRef != nil {
+		t.Fatalf("dangling ref after detach snapshot: %+v", detached.Rules)
+	}
+	kept = snapshotHTTPRuleByID(t, detached, 2)
+	if kept.PolicyRef == nil || kept.PolicyRef.ID != "custom-chain" {
+		t.Fatalf("foreign ref detached from snapshot: %+v", kept.PolicyRef)
+	}
+	remoteDetached := latestWAFCoordinatorSnapshot(t, store, "edge-a")
+	if snapshotHTTPRuleByID(t, remoteDetached, 3).PolicyRef != nil {
+		t.Fatalf("remote dangling ref after detach snapshot: %+v", remoteDetached.Rules)
+	}
+}
+
+func latestWAFCoordinatorSnapshot(t *testing.T, store *storage.GormStore, agentID string) storage.Snapshot {
+	t.Helper()
+	pointer, found, err := store.GetAgentRevisionPointer(t.Context(), agentID)
+	if err != nil || !found || pointer.DesiredRevision <= 0 {
+		t.Fatalf("GetAgentRevisionPointer(%s) = %+v found=%v err=%v", agentID, pointer, found, err)
+	}
+	runtime, found, err := store.LoadCoordinatorRuntimeSnapshot(t.Context(), agentID, pointer.DesiredRevision)
+	if err != nil || !found {
+		t.Fatalf("LoadCoordinatorRuntimeSnapshot(%s/%d) found=%v err=%v", agentID, pointer.DesiredRevision, found, err)
+	}
+	return runtime.Snapshot
+}
+
+func snapshotHTTPRuleByID(t *testing.T, snapshot storage.Snapshot, id int) storage.HTTPRule {
+	t.Helper()
+	for _, rule := range snapshot.Rules {
+		if rule.ID == id {
+			return rule
+		}
+	}
+	t.Fatalf("snapshot rule %d not found in %+v", id, snapshot.Rules)
+	return storage.HTTPRule{}
 }
 
 type staticWAFPolicyCatalogStore struct {

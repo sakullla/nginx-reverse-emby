@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -156,6 +157,20 @@ func (s *PluginService) detachOfficialWAFHTTPPolicyRefs(ctx context.Context, ins
 	return s.rewriteOfficialWAFHTTPPolicyRefs(ctx, "", instanceIDs, false)
 }
 
+func (s *PluginService) syncOfficialWAFHTTPPolicyRefsAfterLifecycle(ctx context.Context, pluginID string, attach bool) error {
+	if s == nil {
+		return nil
+	}
+	instances, err := s.store.ListPluginInstances(ctx, pluginID)
+	if err != nil {
+		return err
+	}
+	if attach {
+		return s.attachOfficialWAFHTTPPolicyRefs(ctx, pluginID, instances)
+	}
+	return s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances))
+}
+
 func (s *PluginService) pluginIsOfficialDualFaceWAF(ctx context.Context, pluginID string) (bool, error) {
 	installed, ok, err := s.store.GetInstalledPlugin(ctx, pluginID)
 	if err != nil || !ok {
@@ -172,7 +187,70 @@ func (s *PluginService) pluginIsOfficialDualFaceWAF(ctx context.Context, pluginI
 	return officialDualFaceWAF(manifest), nil
 }
 
+type officialWAFHTTPPolicyRefMutationRequest struct {
+	AttachID    string   `json:"attach_id,omitempty"`
+	InstanceIDs []string `json:"instance_ids,omitempty"`
+	Attach      bool     `json:"attach"`
+}
+
 func (s *PluginService) rewriteOfficialWAFHTTPPolicyRefs(ctx context.Context, attachID string, instanceIDs []string, attach bool) error {
+	store, ok := s.store.(httpPolicyAttachStore)
+	if !ok {
+		return nil
+	}
+	changedAgents, err := s.officialWAFHTTPPolicyRefChangedAgents(ctx, store, attachID, instanceIDs, attach)
+	if err != nil || len(changedAgents) == 0 {
+		return err
+	}
+	if s.mutationExecutor != nil && !s.revisionMutation {
+		kind := "http_rule.waf_detach"
+		if attach {
+			kind = "http_rule.waf_attach"
+		}
+		_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+			Kind:             kind,
+			DependencyAction: revision.DependencyActionApply,
+			Request: officialWAFHTTPPolicyRefMutationRequest{
+				AttachID: attachID, InstanceIDs: append([]string(nil), instanceIDs...), Attach: attach,
+			},
+			Targets: configMutationTargets(s.cfg, changedAgents, nil),
+			ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+				return httpRuleMutationResourceState(ctx, tx, s.cfg)
+			},
+			Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+				txService := &PluginService{
+					store: tx, validator: s.validator, cacheRoot: s.cacheRoot, now: s.now, cfg: s.cfg,
+					revisionMutation: true, revisionNumbers: revisions, secretVault: s.secretVault,
+					postCommitActions: s.postCommitActions,
+				}
+				return txService.persistOfficialWAFHTTPPolicyRefs(ctx, attachID, instanceIDs, attach)
+			},
+		})
+		return err
+	}
+	return s.persistOfficialWAFHTTPPolicyRefs(ctx, attachID, instanceIDs, attach)
+}
+
+func (s *PluginService) officialWAFHTTPPolicyRefChangedAgents(ctx context.Context, store httpPolicyAttachStore, attachID string, instanceIDs []string, attach bool) ([]string, error) {
+	agentIDs, err := s.httpPolicyAttachAgentIDs(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	detach := officialWAFDetachIDs(instanceIDs)
+	changed := make([]string, 0, len(agentIDs))
+	for _, agentID := range agentIDs {
+		rows, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		if officialWAFHTTPPolicyRefsMutate(rows, attachID, detach, attach) {
+			changed = append(changed, agentID)
+		}
+	}
+	return uniqueAgentIDs(changed), nil
+}
+
+func (s *PluginService) persistOfficialWAFHTTPPolicyRefs(ctx context.Context, attachID string, instanceIDs []string, attach bool) error {
 	store, ok := s.store.(httpPolicyAttachStore)
 	if !ok {
 		return nil
@@ -181,20 +259,12 @@ func (s *PluginService) rewriteOfficialWAFHTTPPolicyRefs(ctx context.Context, at
 	if err != nil {
 		return err
 	}
-	detach := make(map[string]struct{}, len(instanceIDs))
-	for _, id := range instanceIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		detach[id] = struct{}{}
-	}
+	detach := officialWAFDetachIDs(instanceIDs)
 	for _, agentID := range agentIDs {
 		rows, err := store.ListHTTPRules(ctx, agentID)
 		if err != nil {
 			return err
 		}
-		changed := false
 		nextRevision := 0
 		for _, row := range rows {
 			if row.Revision > nextRevision {
@@ -202,6 +272,7 @@ func (s *PluginService) rewriteOfficialWAFHTTPPolicyRefs(ctx context.Context, at
 			}
 		}
 		nextRevision = configMutationRevision(s.revisionNumbers, agentID, nextRevision+1)
+		changed := false
 		for index, row := range rows {
 			var nextJSON string
 			var mutated bool
@@ -225,6 +296,33 @@ func (s *PluginService) rewriteOfficialWAFHTTPPolicyRefs(ctx context.Context, at
 		}
 	}
 	return nil
+}
+
+func officialWAFDetachIDs(instanceIDs []string) map[string]struct{} {
+	detach := make(map[string]struct{}, len(instanceIDs))
+	for _, id := range instanceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		detach[id] = struct{}{}
+	}
+	return detach
+}
+
+func officialWAFHTTPPolicyRefsMutate(rows []storage.HTTPRuleRow, attachID string, detach map[string]struct{}, attach bool) bool {
+	for _, row := range rows {
+		if attach {
+			if _, mutated := attachOfficialWAFPolicyRefJSON(row.PolicyRefJSON, attachID); mutated {
+				return true
+			}
+			continue
+		}
+		if _, mutated := detachOfficialWAFPolicyRefJSON(row.PolicyRefJSON, detach); mutated {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *PluginService) httpPolicyAttachAgentIDs(ctx context.Context, store httpPolicyAttachStore) ([]string, error) {
