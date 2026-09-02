@@ -60,9 +60,10 @@ func RuntimeAgentPolicyFace(runtime Runtime) (RuntimePolicy, bool) {
 }
 
 // ProjectAgentPolicy is the host PluginPolicies projection: identity plus the
-// budget and failure policy that Agent evaluation must enforce. Dual-face
-// packages use the nested policy budgets; wasm-policy-only packages use the
-// primary manifest budgets.
+// budget, failure policy, and policy-face extensions that Agent evaluation
+// must enforce. Dual-face packages use the nested policy budgets and omit
+// control-plane management-face extensions such as ui.route; wasm-policy-only
+// packages use the primary manifest budgets.
 func ProjectAgentPolicy(manifest Manifest) (AgentPolicyProjection, bool) {
 	face, ok := RuntimeAgentPolicyFace(manifest.Runtime)
 	if !ok {
@@ -74,27 +75,57 @@ func ProjectAgentPolicy(manifest Manifest) (AgentPolicyProjection, bool) {
 		budget = face.ResourceBudget
 		failure = face.FailurePolicy
 	}
+	policyKind := strings.TrimSpace(manifest.Runtime.PolicyKind)
 	return AgentPolicyProjection{
-		Kind:           face.Kind,
-		ABI:            face.ABI,
-		HostScope:      face.HostScope,
-		Entry:          face.Entry,
-		PolicyKind:     strings.TrimSpace(manifest.Runtime.PolicyKind),
-		ResourceBudget: budget,
-		FailurePolicy:  failure,
+		Kind:            face.Kind,
+		ABI:             face.ABI,
+		HostScope:       face.HostScope,
+		Entry:           face.Entry,
+		PolicyKind:      policyKind,
+		ExtensionPoints: projectAgentPolicyExtensionPoints(manifest.ExtensionPoints, policyKind),
+		ResourceBudget:  budget,
+		FailurePolicy:   failure,
 	}, true
 }
 
 // AgentPolicyProjection is the wasm-policy face consumed by Agent
 // PluginPolicies. It is not a second durable plugin_id.
 type AgentPolicyProjection struct {
-	Kind           string
-	ABI            string
-	HostScope      string
-	Entry          string
-	PolicyKind     string
-	ResourceBudget ResourceBudget
-	FailurePolicy  FailurePolicy
+	Kind            string
+	ABI             string
+	HostScope       string
+	Entry           string
+	PolicyKind      string
+	ExtensionPoints []string
+	ResourceBudget  ResourceBudget
+	FailurePolicy   FailurePolicy
+}
+
+// projectAgentPolicyExtensionPoints keeps only Agent wasm-policy face
+// extensions. Dual-face packages list ui.route for the control-plane
+// management face; Agent PolicyStage must not publish it. WAF stages admit
+// http.request only.
+func projectAgentPolicyExtensionPoints(extensionPoints []string, policyKind string) []string {
+	projected := make([]string, 0, len(extensionPoints))
+	seen := make(map[string]struct{}, len(extensionPoints))
+	for _, point := range extensionPoints {
+		point = strings.TrimSpace(point)
+		switch point {
+		case ExtensionHTTPRequest:
+		case ExtensionL4Accept:
+			if policyKind == "waf" {
+				continue
+			}
+		default:
+			continue
+		}
+		if _, exists := seen[point]; exists {
+			continue
+		}
+		seen[point] = struct{}{}
+		projected = append(projected, point)
+	}
+	return projected
 }
 
 // RuntimeImplicitRemoteAgentExecution is the dual-face control-plane contract.

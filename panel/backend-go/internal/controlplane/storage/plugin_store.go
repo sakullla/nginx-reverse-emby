@@ -1248,7 +1248,7 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 			},
 			SignatureVerified: true,
 			SignerKeyID:       installed.ActiveSignatureKeyID, SignerFingerprint: installed.ActiveSignatureFingerprint,
-			ABI: policyProjection.ABI, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...),
+			ABI: policyProjection.ABI, ExtensionPoints: append([]string(nil), policyProjection.ExtensionPoints...),
 			DeclaredScopes: declaredScopes, GrantedScopes: grantedScopes, ResourceGroupID: instance.ResourceGroupID,
 			Config: append(json.RawMessage(nil), config...),
 			ResourceBudget: PolicyResourceBudget{

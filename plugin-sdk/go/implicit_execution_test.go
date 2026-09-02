@@ -63,6 +63,36 @@ func TestRuntimeProjectsControlPlaneUIAndAgentPolicy(t *testing.T) {
 	}
 }
 
+func TestProjectAgentPolicyOmitsManagementFaceExtensions(t *testing.T) {
+	t.Parallel()
+	dual := Manifest{
+		Runtime: Runtime{
+			Kind: RuntimeRPCService, ABI: RPCABIV1,
+			HostScope: HostScopeControlPlane, Entry: "plugin", PolicyKind: "waf",
+			Policy: &RuntimePolicy{
+				Kind: RuntimeWASMPolicy, ABI: PolicyABIV1, HostScope: HostScopeAgent,
+				Entry: "artifacts/waf.wasm",
+			},
+		},
+		ExtensionPoints: []string{ExtensionUIRoute, ExtensionHTTPRequest, ExtensionL4Accept},
+	}
+	projection, ok := ProjectAgentPolicy(dual)
+	if !ok || len(projection.ExtensionPoints) != 1 || projection.ExtensionPoints[0] != ExtensionHTTPRequest {
+		t.Fatalf("dual-face policy-face extensions = %+v ok=%v", projection, ok)
+	}
+	wasm := Manifest{
+		Runtime: Runtime{
+			Kind: RuntimeWASMPolicy, ABI: PolicyABIV1,
+			HostScope: HostScopeAgent, Entry: "artifacts/policy.wasm", PolicyKind: "ip",
+		},
+		ExtensionPoints: []string{ExtensionHTTPRequest, ExtensionL4Accept, ExtensionUIRoute},
+	}
+	projection, ok = ProjectAgentPolicy(wasm)
+	if !ok || len(projection.ExtensionPoints) != 2 || projection.ExtensionPoints[0] != ExtensionHTTPRequest || projection.ExtensionPoints[1] != ExtensionL4Accept {
+		t.Fatalf("wasm-policy-only policy-face extensions = %+v ok=%v", projection, ok)
+	}
+}
+
 func TestInstanceTargetsRemoteAgent(t *testing.T) {
 	t.Parallel()
 	dual := Runtime{

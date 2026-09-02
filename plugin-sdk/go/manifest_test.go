@@ -133,6 +133,7 @@ runtime:
       on_budget: fail-closed
       restart: never
       core_fallback: preserve
+extension_points: [ui.route, http.request]
 `)
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	decoder.KnownFields(true)
@@ -149,6 +150,9 @@ runtime:
 	projection, ok := ProjectAgentPolicy(manifest)
 	if !ok || projection.Entry != "artifacts/waf.wasm" || projection.PolicyKind != "waf" || projection.ResourceBudget.TimeoutMS != 2 || projection.FailurePolicy.Restart != "never" {
 		t.Fatalf("dual-face policy projection = %+v ok=%v", projection, ok)
+	}
+	if len(projection.ExtensionPoints) != 1 || projection.ExtensionPoints[0] != ExtensionHTTPRequest {
+		t.Fatalf("dual-face policy-face extensions = %v", projection.ExtensionPoints)
 	}
 }
 

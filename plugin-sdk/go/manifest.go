@@ -14,6 +14,8 @@ const (
 	PluginManifestSchemaVersion = 1
 	ExtensionUIRoute            = "ui.route"
 	ExtensionResourceGroup      = "resource.group"
+	ExtensionHTTPRequest        = "http.request"
+	ExtensionL4Accept           = "l4.accept"
 )
 
 //go:embed schema/plugin-manifest-v1.schema.json

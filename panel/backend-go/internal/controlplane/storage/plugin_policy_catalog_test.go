@@ -38,7 +38,7 @@ func TestLoadAgentPluginPoliciesProjectsDualFaceWAFWithoutSelectingNodes(t *test
 				FailurePolicy:  plugins.FailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
 			},
 		},
-		extensions:   []string{pluginsdk.ExtensionUIRoute, "http.request"},
+		extensions:   []string{pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionHTTPRequest},
 		targets:      `[]`,
 		policyChains: `[]`,
 		desired:      "enabled",
@@ -83,6 +83,9 @@ func TestLoadAgentPluginPoliciesProjectsDualFaceWAFWithoutSelectingNodes(t *test
 	stage := policies[0].Stages[0]
 	if stage.Kind != "waf" || stage.PluginID != "official.waf" || stage.InstanceID != "official.waf-default" || stage.ABI != pluginsdk.PolicyABIV1 || stage.ResourceBudget.TimeoutMS != 2 {
 		t.Fatalf("dual-face stage = %+v", stage)
+	}
+	if len(stage.ExtensionPoints) != 1 || stage.ExtensionPoints[0] != pluginsdk.ExtensionHTTPRequest {
+		t.Fatalf("dual-face policy-face extensions = %v", stage.ExtensionPoints)
 	}
 	if stage.ArtifactSource.RelativePath != "artifacts/policy.wasm" {
 		t.Fatalf("dual-face wasm entry = %+v", stage.ArtifactSource)

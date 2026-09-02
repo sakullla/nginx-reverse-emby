@@ -291,6 +291,9 @@ func TestValidatePackageAcceptsControlPlaneUIAndAgentWAFPolicyFace(t *testing.T)
 	if !ok || projection.PolicyKind != "waf" || projection.Entry != "artifacts/policy.wasm" || projection.ResourceBudget.TimeoutMS != 2 {
 		t.Fatalf("dual-face policy projection = %+v ok=%v", projection, ok)
 	}
+	if len(projection.ExtensionPoints) != 1 || projection.ExtensionPoints[0] != pluginsdk.ExtensionHTTPRequest {
+		t.Fatalf("dual-face policy-face extensions = %v", projection.ExtensionPoints)
+	}
 }
 
 func TestValidatePackageKeepsWASMPolicyOnAgentHost(t *testing.T) {
