@@ -570,7 +570,7 @@ func knownPluginRequiredFeature(value string) bool {
 
 func knownPluginGrant(value string) bool {
 	switch value {
-	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
+	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", pluginsdk.PermissionNetworkFull, "l4.inspect", "l4.respond",
 		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write",
 		"dns.manage", string(pluginsdk.CapabilityHTTPRule),
 		string(pluginsdk.CapabilityUIDynamic):
