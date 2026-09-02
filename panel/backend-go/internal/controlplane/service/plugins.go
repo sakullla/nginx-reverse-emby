@@ -1531,6 +1531,16 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 		}
 	}
 	if installed.DesiredLifecycle == desired && installed.CurrentLifecycle == current {
+		if kind == "enable" {
+			if err := s.attachOfficialWAFHTTPPolicyRefs(ctx, pluginID, instances); err != nil {
+				return storage.InstalledPluginRow{}, err
+			}
+		}
+		if kind == "disable" {
+			if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances)); err != nil {
+				return storage.InstalledPluginRow{}, err
+			}
+		}
 		return installed, nil
 	}
 	if len(instances) == 0 {
@@ -1600,6 +1610,9 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 			installed.CurrentLifecycle = "active"
 		} else {
 			installed.CurrentLifecycle = "disabled"
+			if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances)); err != nil {
+				return storage.InstalledPluginRow{}, err
+			}
 		}
 		for index := range instances {
 			instances[index].DesiredEnabled = installed.DesiredLifecycle == "enabled"
@@ -1621,7 +1634,15 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 		auditResult = "failure"
 	}
 	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, ExpectedPendingOperationID: operation.ID, Installed: &installed, ReplaceInstances: instances, Operation: operation, CompleteOperation: true, Audit: pluginLifecycleAudit(operation, applyResult.ActorID, auditResult, operation.ErrorClass, now)})
-	return installed, err
+	if err != nil {
+		return installed, err
+	}
+	if applyResult.Applied && installed.DesiredLifecycle == "enabled" {
+		if err := s.attachOfficialWAFHTTPPolicyRefs(ctx, installed.PluginID, instances); err != nil {
+			return installed, err
+		}
+	}
+	return installed, nil
 }
 
 // CompleteTrustedRevisionOperation closes a plugin operation that has no
@@ -2248,6 +2269,9 @@ func (s *PluginService) DeleteInstance(ctx context.Context, request PluginDelete
 	operation.TargetRevision = pluginLifecycleTargetRevision(s.revisionNumbers, int64(installed.StateVersion+1))
 	operation.Status, operation.CompletedAt = "succeeded", &now
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
+	if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, []string{instance.ID}); err != nil {
+		return s.recordFailure(ctx, operation, request.ActorID, err)
+	}
 	return s.store.ApplyPluginMutation(ctx, storage.PluginMutation{
 		PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion,
 		Installed: &installed, DeleteInstanceID: instance.ID, DeleteInstanceHTTPRules: true, ExpectedInstanceVersion: instance.StateVersion,
@@ -3922,6 +3946,9 @@ func (s *PluginService) Uninstall(ctx context.Context, request PluginUninstallRe
 	cleanup := manifest.Cleanup
 	now := s.now()
 	operation.Status, operation.CompletedAt = "succeeded", &now
+	if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances)); err != nil {
+		return s.recordFailure(ctx, operation, request.ActorID, err)
+	}
 	return s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, DeletePlugin: true, DeleteInstances: cleanup.Instances == "delete", DeleteGrants: cleanup.Grants == "delete", Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now)})
 }
 

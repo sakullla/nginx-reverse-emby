@@ -85,6 +85,12 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 		e.observe(ctx, observability.PolicyRejection, "denied", model.PolicyStage{}, policyID, "waf-not-supported-on-l4", 0)
 		return unavailableDecision(policyID, "waf-not-supported-on-l4")
 	}
+	if containsStage(definition.Stages, model.PolicyKindWAF) {
+		if err := ValidateWAFPolicyOverlay(ref.Overlay); err != nil {
+			e.observe(ctx, observability.PolicyRejection, "denied", model.PolicyStage{}, policyID, "invalid-overlay", 0)
+			return unavailableDecision(policyID, "invalid-overlay")
+		}
+	}
 
 	decision := Decision{Action: ActionAllow, PolicyID: policyID}
 	for _, stage := range definition.Stages {

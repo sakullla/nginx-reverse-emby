@@ -12,6 +12,11 @@ const (
 	PolicyKindWAF  PolicyKind = "waf"
 )
 
+const (
+	PolicyOverlayModeObserve = "observe"
+	PolicyOverlayModeDeny    = "deny"
+)
+
 func (kind PolicyKind) Valid() bool {
 	switch kind {
 	case PolicyKindIP, PolicyKindRate, PolicyKindWAF:
