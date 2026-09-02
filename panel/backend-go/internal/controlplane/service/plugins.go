@@ -691,6 +691,9 @@ func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID s
 		row, err := s.Disable(ctx, pluginID, actorID)
 		return pluginSummary(row), err
 	}
+	if err := s.syncOfficialWAFHTTPPolicyRefsAfterLifecycle(ctx, pluginID, false); err != nil {
+		return PluginSummary{}, err
+	}
 	var row storage.InstalledPluginRow
 	err := s.executeRevisionLifecycleMutation(ctx, pluginID, "plugin.disable", struct {
 		PluginID string `json:"plugin_id"`
@@ -699,15 +702,7 @@ func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID s
 		row, err = txService.Disable(mutationCtx, pluginID, actorID)
 		return err
 	})
-	if err != nil {
-		return pluginSummary(row), err
-	}
-	if row.CurrentLifecycle == "disabled" {
-		if err := s.syncOfficialWAFHTTPPolicyRefsAfterLifecycle(ctx, pluginID, false); err != nil {
-			return pluginSummary(row), err
-		}
-	}
-	return pluginSummary(row), nil
+	return pluginSummary(row), err
 }
 
 func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
@@ -1579,6 +1574,11 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 	if installed.DesiredLifecycle == desired && installed.CurrentLifecycle == "applying" {
 		return installed, nil
 	}
+	if kind == "disable" && !s.revisionMutation {
+		if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances)); err != nil {
+			return storage.InstalledPluginRow{}, err
+		}
+	}
 	supersededOperationID := ""
 	if err := ensureNoPendingOperation(installed); err != nil {
 		if kind != "disable" {
@@ -1651,17 +1651,18 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 	if !applyResult.Applied {
 		auditResult = "failure"
 	}
+	if applyResult.Applied && installed.DesiredLifecycle != "enabled" {
+		// Matching HTTP policy_ref must leave the catalog before the instance does.
+		if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances)); err != nil {
+			return installed, err
+		}
+	}
 	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, ExpectedPendingOperationID: operation.ID, Installed: &installed, ReplaceInstances: instances, Operation: operation, CompleteOperation: true, Audit: pluginLifecycleAudit(operation, applyResult.ActorID, auditResult, operation.ErrorClass, now)})
 	if err != nil {
 		return installed, err
 	}
 	if applyResult.Applied && installed.DesiredLifecycle == "enabled" {
 		if err := s.attachOfficialWAFHTTPPolicyRefs(ctx, installed.PluginID, instances); err != nil {
-			return installed, err
-		}
-	}
-	if applyResult.Applied && installed.DesiredLifecycle != "enabled" {
-		if err := s.detachOfficialWAFHTTPPolicyRefs(ctx, pluginInstanceIDs(instances)); err != nil {
 			return installed, err
 		}
 	}
