@@ -68,6 +68,11 @@ type SandboxRequirement struct {
 	filesystem    bool
 }
 
+// minimumPluginProcessLimit leaves enough task headroom for Go RPC guests and
+// their host-authorized helpers. Linux accounts threads against RLIMIT_NPROC,
+// so a small process-only floor can terminate an otherwise healthy guest.
+const minimumPluginProcessLimit = 50
+
 func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequirement, error) {
 	digest := strings.TrimSpace(projection.PackageDigest)
 	if !validSandboxPackageDigest(digest) {
@@ -124,8 +129,8 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 	}
 	requirement.networkBound = network
 	processes := budget.Concurrency + 4
-	if processes < 8 {
-		processes = 8
+	if processes < minimumPluginProcessLimit {
+		processes = minimumPluginProcessLimit
 	}
 	files := processes*4 + 16
 	if files < 64 {

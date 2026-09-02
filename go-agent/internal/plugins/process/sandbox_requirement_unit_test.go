@@ -1,9 +1,34 @@
 package process
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestNewSandboxRequirementUsesProcessFloor(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		concurrency int
+		want        int
+	}{{1, 50}, {8, 50}, {46, 50}, {47, 51}} {
+		t.Run(fmt.Sprintf("concurrency_%d", test.concurrency), func(t *testing.T) {
+			requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+				PackageDigest: strings.Repeat("a", 64),
+				ResourceBudget: ManifestResourceBudget{
+					TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: test.concurrency,
+					InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := requirement.Budget().Processes; got != test.want {
+				t.Fatalf("process budget = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
 
 func TestNewSandboxRequirementRejectsRemovedDockerComposeIdentifiers(t *testing.T) {
 	t.Parallel()

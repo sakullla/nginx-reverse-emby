@@ -28,12 +28,32 @@ func TestPluginHostSandboxRequirement(t *testing.T) {
 	}
 }
 
+func TestPluginHostSandboxProcessBudgetUsesSafeFloor(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		concurrency int
+		want        int
+	}{{1, 50}, {8, 50}, {46, 50}, {47, 51}} {
+		t.Run(fmt.Sprintf("concurrency_%d", test.concurrency), func(t *testing.T) {
+			pkg := validatedSandboxPackage(strings.Repeat("e", 64), nil, []string{pluginsdk.ExtensionUIRoute})
+			pkg.Manifest.ResourceBudget.Concurrency = test.concurrency
+			requirement, err := SandboxRequirementFromValidatedPackage(pkg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := requirement.Budget().Processes; got != test.want {
+				t.Fatalf("process budget = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPluginHostSandboxFileBudgetScalesFromSafeFloor(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		concurrency int
 		wantFiles   int
-	}{{2, 256}, {8, 256}, {16, 256}, {32, 512}, {64, 1024}} {
+	}{{2, 512}, {8, 512}, {16, 512}, {32, 512}, {64, 1024}} {
 		t.Run(fmt.Sprintf("concurrency_%d", test.concurrency), func(t *testing.T) {
 			pkg := validatedSandboxPackage(strings.Repeat("f", 64), nil, []string{pluginsdk.ExtensionUIRoute})
 			pkg.Manifest.ResourceBudget.Concurrency = test.concurrency
