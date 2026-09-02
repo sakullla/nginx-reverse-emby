@@ -18,10 +18,13 @@ import (
 )
 
 const (
-	maxTaskMessageLineBytes         = 4 * 1024 * 1024
-	maxConcurrentTaskExecutions     = 4
-	taskStreamMessageWriteTimeout   = 5 * time.Second
-	defaultTaskStreamPingInterval   = time.Minute
+	maxTaskMessageLineBytes       = 4 * 1024 * 1024
+	maxConcurrentTaskExecutions   = 4
+	taskStreamMessageWriteTimeout = 5 * time.Second
+	// Keep the application-level stream active before common 60-second proxy
+	// and NAT idle cutoffs. Sending the first ping at the cutoff races teardown
+	// and creates a recurring window where plugin.call has no Agent session.
+	defaultTaskStreamPingInterval   = 30 * time.Second
 	defaultTaskStreamPingAckTimeout = 20 * time.Second
 )
 

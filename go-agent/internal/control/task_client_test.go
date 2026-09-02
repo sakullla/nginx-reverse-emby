@@ -447,6 +447,19 @@ func TestHTTPTransportConfiguresHTTP2LivenessChecks(t *testing.T) {
 	}
 }
 
+func TestTaskClientDefaultPingPrecedesMinuteIdleCutoff(t *testing.T) {
+	client := NewTaskClient(TaskClientConfig{})
+	if client.transport != nil {
+		defer client.transport.CloseIdleConnections()
+	}
+	if client.cfg.TaskStreamPingInterval != 30*time.Second {
+		t.Fatalf("task stream ping interval = %s, want 30s", client.cfg.TaskStreamPingInterval)
+	}
+	if client.cfg.TaskStreamLivenessTimeout <= client.cfg.TaskStreamPingInterval || client.cfg.TaskStreamLivenessTimeout >= time.Minute {
+		t.Fatalf("task stream liveness timeout = %s, want between ping interval and one minute", client.cfg.TaskStreamLivenessTimeout)
+	}
+}
+
 func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	updates := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
