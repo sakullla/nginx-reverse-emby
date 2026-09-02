@@ -110,3 +110,21 @@ func TestNewSandboxRequirementKeepsChannelReversePermissionHostMediated(t *testi
 		t.Fatal("channel.reverse permission gained ambient privilege, filesystem, or network authority")
 	}
 }
+
+func TestNewSandboxRequirementAllowsDeclaredFullNetwork(t *testing.T) {
+	t.Parallel()
+	requirement, err := NewSandboxRequirement(SandboxRequirementProjection{
+		PackageDigest: strings.Repeat("b", 64),
+		Permissions:   []SandboxPermission{PermissionNetworkFull},
+		ResourceBudget: ManifestResourceBudget{
+			TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 1,
+			InputBytes: 4096, OutputBytes: 4096, CPUMillis: 1000, Restarts: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("network.full sandbox requirement = %v", err)
+	}
+	if !requirement.RequiresPrivilegeBoundary() || !requirement.Budget().Network || requirement.RequiresNetworkIsolation() {
+		t.Fatalf("network.full requirement = %+v", requirement)
+	}
+}

@@ -44,7 +44,7 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		}
 		seenPermissions[permission.Name] = struct{}{}
 		switch permission.Name {
-		case "dns.manage", "secret.use", "storage.write":
+		case "dns.manage", "secret.use", "storage.write", pluginsdk.PermissionNetworkFull:
 			requirement.privileged = true
 		case string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
@@ -75,6 +75,9 @@ func SandboxRequirementFromValidatedPackage(pkg plugins.ValidatedPackage) (Sandb
 		}
 	}
 	if _, ok := seenPermissions["dns.manage"]; ok {
+		network = true
+	}
+	if _, ok := seenPermissions[pluginsdk.PermissionNetworkFull]; ok {
 		network = true
 	}
 	requirement.networkBound = network
@@ -125,7 +128,7 @@ func validControlSandboxDigest(value string) bool {
 
 func knownControlSandboxPermission(value string) bool {
 	switch value {
-	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "l4.inspect", "l4.respond",
+	case "agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", pluginsdk.PermissionNetworkFull, "l4.inspect", "l4.respond",
 		"policy.read", "policy.write", "secret.use", "storage.read", "storage.write",
 		string(pluginsdk.CapabilityHTTPRule), string(pluginsdk.CapabilityUIDynamic),
 		"dns.manage":

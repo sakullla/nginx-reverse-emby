@@ -286,7 +286,7 @@ func TestValidatePackageAllowsHostRuleCapabilitiesByDefault(t *testing.T) {
 	// permission "..." is not allowed before any grant can be issued.
 	root := newSignedWASMPackage(t, "")
 	manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]",
-		fmt.Sprintf("permissions: [http.inspect, %s, %s, %s]", pluginsdk.CapabilityHTTPRule, pluginsdk.CapabilityL4Rule, pluginsdk.CapabilityChannelReverse), 1)
+		fmt.Sprintf("permissions: [http.inspect, %s, %s, %s, %s]", pluginsdk.CapabilityHTTPRule, pluginsdk.CapabilityL4Rule, pluginsdk.CapabilityChannelReverse, pluginsdk.PermissionNetworkFull), 1)
 	writeOwnerFile(t, root, PackageManifestFile, manifest)
 	refreshOwnerPackage(t, root)
 	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
@@ -301,6 +301,9 @@ func TestValidatePackageAllowsHostRuleCapabilitiesByDefault(t *testing.T) {
 		if _, ok := declared[string(capability)]; !ok {
 			t.Fatalf("validated manifest lost %q: %+v", string(capability), got.Manifest.Permissions)
 		}
+	}
+	if _, ok := declared[pluginsdk.PermissionNetworkFull]; !ok {
+		t.Fatalf("validated manifest lost %q: %+v", pluginsdk.PermissionNetworkFull, got.Manifest.Permissions)
 	}
 }
 
