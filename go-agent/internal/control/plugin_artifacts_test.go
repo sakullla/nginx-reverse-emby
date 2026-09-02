@@ -3,8 +3,8 @@
 package control
 
 import (
+	"bytes"
 	"crypto/sha256"
-
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,11 +14,57 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 const testPluginSnapshotDigest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+func TestPluginArtifactDownloadDoesNotUseHeartbeatTotalTimeout(t *testing.T) {
+	payload := []byte("verified artifact payload")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload[:1])
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write(payload[1:])
+	}))
+	t.Cleanup(server.Close)
+
+	heartbeatClient := server.Client()
+	heartbeatClient.Timeout = 10 * time.Millisecond
+	client := NewSyncClient(SyncClientConfig{AgentToken: "agent-secret"}, heartbeatClient)
+	var target bytes.Buffer
+	if err := client.downloadPluginArtifact(t.Context(), server.URL, &target, digest, int64(len(payload)), "application/octet-stream"); err != nil {
+		t.Fatalf("downloadPluginArtifact() error = %v", err)
+	}
+	if !bytes.Equal(target.Bytes(), payload) {
+		t.Fatalf("downloaded payload = %q, want %q", target.Bytes(), payload)
+	}
+}
+
+func TestPluginArtifactDownloadTimeoutIsSizeBounded(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		size int64
+		want time.Duration
+	}{
+		{name: "small", size: 1, want: 2 * time.Minute},
+		{name: "slow 21 MiB", size: 21_499_619, want: 22*time.Minute + 23*time.Second},
+		{name: "bounded", size: 1 << 40, want: 30 * time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pluginArtifactDownloadTimeout(test.size); got != test.want {
+				t.Fatalf("pluginArtifactDownloadTimeout(%d) = %s, want %s", test.size, got, test.want)
+			}
+		})
+	}
+}
 
 func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerifiedCache(t *testing.T) {
 	payload := []byte("verified wasm payload")

@@ -14,12 +14,20 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 )
 
 const maxPluginArtifactIdentityBytes = 256
+
+const (
+	minimumPluginArtifactDownloadTimeout = 2 * time.Minute
+	maximumPluginArtifactDownloadTimeout = 30 * time.Minute
+	minimumPluginArtifactBytesPerSecond  = 16 << 10
+	pluginArtifactResponseAllowance      = 30 * time.Second
+)
 
 var pluginArtifactMaterializeLocks [64]sync.Mutex
 
@@ -214,6 +222,11 @@ func (c *SyncClient) downloadPluginArtifact(ctx context.Context, endpoint string
 	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
 	req.Header.Set("Accept", accept)
 	client := *c.client
+	// Heartbeats are small and retain the shared client's short total timeout.
+	// Plugin artifacts can be tens of MiB and cross slow Agent links, so bound
+	// this transfer independently while the transport still enforces its
+	// response-header timeout.
+	client.Timeout = pluginArtifactDownloadTimeout(size)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
@@ -238,6 +251,22 @@ func (c *SyncClient) downloadPluginArtifact(ctx context.Context, endpoint string
 		return errors.New("downloaded artifact digest differs from snapshot identity")
 	}
 	return nil
+}
+
+func pluginArtifactDownloadTimeout(size int64) time.Duration {
+	seconds := size / minimumPluginArtifactBytesPerSecond
+	if size%minimumPluginArtifactBytesPerSecond != 0 {
+		seconds++
+	}
+	maximumSeconds := int64((maximumPluginArtifactDownloadTimeout - pluginArtifactResponseAllowance) / time.Second)
+	if seconds > maximumSeconds {
+		return maximumPluginArtifactDownloadTimeout
+	}
+	timeout := pluginArtifactResponseAllowance + time.Duration(seconds)*time.Second
+	if timeout < minimumPluginArtifactDownloadTimeout {
+		return minimumPluginArtifactDownloadTimeout
+	}
+	return timeout
 }
 
 func pluginArtifactFileMatches(path, digest string, size int64) (bool, error) {
