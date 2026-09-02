@@ -102,6 +102,56 @@ runtime:
 	}
 }
 
+func TestPluginManifestRuntimeDeclaresNestedAgentPolicyFace(t *testing.T) {
+	schema := string(PluginManifestSchemaV1())
+	if !strings.Contains(schema, `"runtime_policy"`) {
+		t.Fatal("manifest schema omits nested runtime.policy")
+	}
+	data := []byte(`schema_version: 1
+id: waf
+version: 1.0.0
+name: WAF
+runtime:
+  kind: rpc-service
+  abi: nre:rpc/v1
+  host_scope: control-plane
+  entry: plugin
+  policy_kind: waf
+  policy:
+    kind: wasm-policy
+    abi: nre:policy/v1
+    host_scope: agent
+    entry: artifacts/waf.wasm
+    resource_budget:
+      timeout_ms: 2
+      memory_bytes: 1048576
+      concurrency: 8
+      input_bytes: 65536
+      output_bytes: 4096
+    failure_policy:
+      on_error: fail-closed
+      on_budget: fail-closed
+      restart: never
+      core_fallback: preserve
+`)
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder.KnownFields(true)
+	var manifest Manifest
+	if err := decoder.Decode(&manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Runtime.Kind != RuntimeRPCService || manifest.Runtime.HostScope != HostScopeControlPlane || manifest.Runtime.PolicyKind != "waf" {
+		t.Fatalf("dual-face primary runtime = %+v", manifest.Runtime)
+	}
+	if !RuntimeProjectsControlPlaneUIAndAgentPolicy(manifest.Runtime) || RuntimeProjectsAgentRPC(manifest.Runtime) {
+		t.Fatalf("dual-face projection = rpc:%v policy:%v ui+policy:%v", RuntimeProjectsAgentRPC(manifest.Runtime), RuntimeProjectsAgentPolicy(manifest.Runtime), RuntimeProjectsControlPlaneUIAndAgentPolicy(manifest.Runtime))
+	}
+	projection, ok := ProjectAgentPolicy(manifest)
+	if !ok || projection.Entry != "artifacts/waf.wasm" || projection.PolicyKind != "waf" || projection.ResourceBudget.TimeoutMS != 2 || projection.FailurePolicy.Restart != "never" {
+		t.Fatalf("dual-face policy projection = %+v ok=%v", projection, ok)
+	}
+}
+
 func TestPluginManifestV1PermissionYAMLUsesOneTypedProjection(t *testing.T) {
 	data := []byte(`schema_version: 1
 id: example

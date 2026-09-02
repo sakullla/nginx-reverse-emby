@@ -78,6 +78,31 @@ func TestPluginHostSandboxRequirementAllowsResourceGroupExtension(t *testing.T) 
 	}
 }
 
+func TestPluginHostSandboxRequirementAllowsUIAndHTTPRequestDualFace(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("c", 64)
+	pkg := validatedSandboxPackage(digest, []string{"http.inspect", "event.emit"}, []string{pluginsdk.ExtensionUIRoute, "http.request"})
+	requirement, err := SandboxRequirementFromValidatedPackage(pkg)
+	if err != nil {
+		t.Fatalf("ui.route+http.request dual-face sandbox = %v", err)
+	}
+	if err := requirement.validatePackageDigest(digest); err != nil {
+		t.Fatalf("dual-face package digest binding = %v", err)
+	}
+}
+
+func TestPluginHostSandboxRequirementRejectsWASMPolicyOnly(t *testing.T) {
+	t.Parallel()
+	digest := strings.Repeat("d", 64)
+	pkg := validatedSandboxPackage(digest, []string{"http.inspect"}, []string{"http.request"})
+	pkg.Manifest.Runtime.Kind = pluginsdk.RuntimeWASMPolicy
+	pkg.Manifest.Runtime.ABI = pluginsdk.PolicyABIV1
+	pkg.Manifest.Runtime.HostScope = pluginsdk.HostScopeAgent
+	if _, err := SandboxRequirementFromValidatedPackage(pkg); err == nil {
+		t.Fatal("wasm-policy-only received a control-plane sandbox")
+	}
+}
+
 func TestPluginCapabilityAuthorizationMatrix(t *testing.T) {
 	t.Parallel()
 	quota := &capabilityQuotaStub{}

@@ -25,6 +25,42 @@ func TestRuntimeImplicitRemoteAgentExecution(t *testing.T) {
 	if RuntimeProjectsAgentRPC(wasm) || RuntimeImplicitRemoteAgentExecution(wasm) {
 		t.Fatalf("wasm runtime = %+v", wasm)
 	}
+	if RuntimeProjectsControlPlaneRPC(wasm) || RuntimeProjectsControlPlaneUIAndAgentPolicy(wasm) {
+		t.Fatalf("wasm-policy-only became a control-plane process: %+v", wasm)
+	}
+	if !RuntimeProjectsAgentPolicy(wasm) {
+		t.Fatalf("wasm-policy-only lost the agent policy face: %+v", wasm)
+	}
+}
+
+func TestRuntimeProjectsControlPlaneUIAndAgentPolicy(t *testing.T) {
+	t.Parallel()
+	dual := Runtime{
+		Kind: RuntimeRPCService, ABI: RPCABIV1,
+		HostScope: HostScopeControlPlane, Entry: "plugin", PolicyKind: "waf",
+		Policy: &RuntimePolicy{
+			Kind: RuntimeWASMPolicy, ABI: PolicyABIV1, HostScope: HostScopeAgent,
+			Entry: "artifacts/waf.wasm",
+		},
+	}
+	if RuntimeProjectsAgentRPC(dual) || RuntimeImplicitRemoteAgentExecution(dual) {
+		t.Fatalf("waf dual-face must not project Agent RPC: %+v", dual)
+	}
+	if !RuntimeProjectsControlPlaneRPC(dual) || !RuntimeProjectsAgentPolicy(dual) || !RuntimeProjectsControlPlaneUIAndAgentPolicy(dual) {
+		t.Fatalf("waf dual-face runtime = %+v", dual)
+	}
+	face, ok := RuntimeAgentPolicyFace(dual)
+	if !ok || face.Entry != "artifacts/waf.wasm" || face.ABI != PolicyABIV1 || face.HostScope != HostScopeAgent {
+		t.Fatalf("waf dual-face policy face = %+v ok=%v", face, ok)
+	}
+	rpcOnly := Runtime{Kind: RuntimeRPCService, ABI: RPCABIV1, HostScope: HostScopeControlPlane, Entry: "plugin"}
+	if RuntimeProjectsAgentPolicy(rpcOnly) || RuntimeProjectsControlPlaneUIAndAgentPolicy(rpcOnly) {
+		t.Fatalf("rpc-only runtime projected a policy face: %+v", rpcOnly)
+	}
+	agentRPC := Runtime{Kind: RuntimeRPCService, HostScope: HostScopeAgent, PolicyKind: "waf"}
+	if RuntimeProjectsControlPlaneUIAndAgentPolicy(agentRPC) {
+		t.Fatalf("agent rpc-service became a control-plane UI+policy package: %+v", agentRPC)
+	}
 }
 
 func TestInstanceTargetsRemoteAgent(t *testing.T) {
