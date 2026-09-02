@@ -35,6 +35,15 @@ func TestPluginManifestSchemaV1DeclaresResourceGroup(t *testing.T) {
 	}
 }
 
+func TestPluginManifestSchemaV1DeclaresNetworkFullPermission(t *testing.T) {
+	if PermissionNetworkFull != "network.full" {
+		t.Fatalf("full network permission = %q", PermissionNetworkFull)
+	}
+	if !strings.Contains(string(PluginManifestSchemaV1()), `"network.full"`) {
+		t.Fatal("manifest schema omits network.full permission")
+	}
+}
+
 func TestPluginManifestSchemaV1IsEmbeddedAndImmutable(t *testing.T) {
 	first := PluginManifestSchemaV1()
 	var schema map[string]any
