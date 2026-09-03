@@ -2,12 +2,14 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { api } from './client'
+import { clearCredentials, getStoredAuthToken, setAuthToken } from './authState'
 
 describe('api client', () => {
   const originalAdapter = api.defaults.adapter
 
   afterEach(() => {
     api.defaults.adapter = originalAdapter
+    clearCredentials()
   })
 
   it('does not send application/json for FormData uploads', async () => {
@@ -57,5 +59,42 @@ describe('api client', () => {
       code: 'quota_exceeded',
       context: quota
     })
+  })
+
+  it('clears the current credentials after a 401 response', async () => {
+    setAuthToken('expired-panel-token')
+    api.defaults.adapter = async (config) => {
+      const error = new Error('Request failed with status code 401')
+      error.config = config
+      error.response = { data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config }
+      throw error
+    }
+
+    await expect(api.get('/agents')).rejects.toMatchObject({ status: 401 })
+    expect(getStoredAuthToken()).toBeNull()
+  })
+
+  it('discards an old identity response without clearing replacement credentials', async () => {
+    setAuthToken('administrator-token')
+    let rejectRequest
+    let markAdapterStarted
+    const adapterStarted = new Promise(resolve => { markAdapterStarted = resolve })
+    api.defaults.adapter = config => new Promise((resolve, reject) => {
+      rejectRequest = () => {
+        const error = new Error('Request failed with status code 401')
+        error.config = config
+        error.response = { data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config }
+        reject(error)
+      }
+      markAdapterStarted()
+    })
+
+    const request = api.get('/agents')
+    await adapterStarted
+    setAuthToken('restricted-token')
+    rejectRequest()
+
+    await expect(request).rejects.toMatchObject({ code: 'credential_identity_changed' })
+    expect(getStoredAuthToken()).toBe('restricted-token')
   })
 })

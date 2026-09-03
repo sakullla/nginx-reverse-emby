@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -76,7 +77,7 @@ func (d Dependencies) writeMutationResource(
 		cached := cachedMutationPayload(payload, result)
 		if encoded, err := json.Marshal(cached); err == nil {
 			_ = d.RevisionService.SaveMutationResponse(
-				r.Context(), service.PanelIdempotencyScope, idempotencyKey, result.Operation.ID, encoded,
+				r.Context(), panelMutationIdempotencyScope(r.Context()), idempotencyKey, result.Operation.ID, encoded,
 			)
 		}
 	}
@@ -196,7 +197,7 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 		return false
 	}
 	payload, found, err := d.RevisionService.LoadMutationResponseByKey(
-		r.Context(), service.PanelIdempotencyScope, key,
+		r.Context(), panelMutationIdempotencyScope(r.Context()), key,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to load idempotency response"))
@@ -242,7 +243,7 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 		response, statusURL := buildAcceptedMutationPayload(r, result, field, resource, extra)
 		if cached, err := json.Marshal(cachedMutationPayload(response, result)); err == nil {
 			_ = d.RevisionService.SaveMutationResponse(
-				r.Context(), service.PanelIdempotencyScope, key, result.Operation.ID, cached,
+				r.Context(), panelMutationIdempotencyScope(r.Context()), key, result.Operation.ID, cached,
 			)
 		}
 		w.Header().Set("Idempotency-Replayed", "true")
@@ -382,8 +383,16 @@ func (d Dependencies) persistActionResponse(r *http.Request, operationID, finger
 		return
 	}
 	_ = d.RevisionService.SaveMutationResponse(
-		r.Context(), service.PanelIdempotencyScope, key, operationID, encoded,
+		r.Context(), panelMutationIdempotencyScope(r.Context()), key, operationID, encoded,
 	)
+}
+
+func panelMutationIdempotencyScope(ctx context.Context) string {
+	scope, _, _ := revision.MutationIdempotencyFromContext(ctx)
+	if scope == "" {
+		return service.PanelIdempotencyScope
+	}
+	return scope
 }
 
 func clonePayload(input map[string]any) map[string]any {

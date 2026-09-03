@@ -6,6 +6,7 @@ export const PKI_OPERATION_STORAGE_KEY = 'nre.pki.operations.v1'
 const trackedOperations = ref([])
 const operationErrors = ref({})
 let restored = false
+let operationGeneration = 0
 
 function browserStorage() {
   try {
@@ -95,6 +96,7 @@ export function forgetPkiOperation(operationID, storage = browserStorage()) {
 }
 
 export function resetPkiOperationMemory(storage = browserStorage()) {
+  operationGeneration += 1
   trackedOperations.value = []
   operationErrors.value = {}
   restored = false
@@ -143,10 +145,13 @@ export function usePkiOperations(options = {}) {
     const id = String(operationID || '').trim()
     const current = trackedOperations.value.find(operation => operation.id === id)
     if (!current) return null
+    const generation = operationGeneration
     try {
       const next = await fetchPkiOperationStatus(current.status_url || current.id)
+      if (generation !== operationGeneration) return null
       return recordPkiOperation(next, options.storage || browserStorage())
     } catch (error) {
+      if (generation !== operationGeneration) return null
       operationErrors.value = { ...operationErrors.value, [id]: operationError(error) }
       return current
     }

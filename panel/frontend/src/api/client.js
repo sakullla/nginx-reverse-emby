@@ -1,9 +1,24 @@
 import axios from 'axios'
 import {
   clearCredentials,
+  credentialVersion,
   getStoredAuthToken,
   getStoredSessionToken
 } from './authState'
+
+const credentialVersionField = 'nreCredentialVersion'
+
+function credentialIdentityChanged(config) {
+  const requestVersion = config?.[credentialVersionField]
+  return Number.isInteger(requestVersion) && requestVersion !== credentialVersion.value
+}
+
+function credentialIdentityChangedError() {
+  const error = new Error('credential identity changed while the request was in flight')
+  error.code = 'credential_identity_changed'
+  error.status = 0
+  return error
+}
 
 export const api = axios.create({
   baseURL: '/panel-api',
@@ -18,6 +33,7 @@ export const longRunningRequest = {
 }
 
 api.interceptors.request.use((config) => {
+  config[credentialVersionField] = credentialVersion.value
   const headers = config.headers || {}
   if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
     if (typeof headers.delete === 'function') {
@@ -44,8 +60,16 @@ api.interceptors.request.use((config) => {
 })
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (credentialIdentityChanged(response.config)) {
+      return Promise.reject(credentialIdentityChangedError())
+    }
+    return response
+  },
   (error) => {
+    if (credentialIdentityChanged(error.config || error.response?.config)) {
+      return Promise.reject(credentialIdentityChangedError())
+    }
     const status = error.response?.status
     if (status === 401) {
       clearCredentials()

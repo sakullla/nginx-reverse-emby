@@ -2,7 +2,9 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -41,6 +44,10 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 		correlationID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 		ctx = authz.WithCorrelationID(ctx, correlationID)
 		ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID, Bootstrap: actor.Bootstrap})
+		ctx, _ = revision.WithMutationContext(ctx, revision.MutationContextOptions{
+			IdempotencyScope: panelIdentityIdempotencyScope(r, actor),
+			IdempotencyKey:   r.Header.Get("Idempotency-Key"),
+		})
 		if d.AccessManager != nil {
 			ctx = service.WithResourceAuthorizer(ctx, func(checkCtx context.Context, kind, id string) error {
 				if actor.Bootstrap {
@@ -70,6 +77,16 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func panelIdentityIdempotencyScope(r *http.Request, actor authz.Actor) string {
+	credentialIdentity := actor.SessionID
+	if actor.Bootstrap {
+		credentialIdentity = presentedPanelToken(r)
+	}
+	identity := actor.ID + "\x00" + credentialIdentity
+	digest := sha256.Sum256([]byte(identity))
+	return service.PanelIdempotencyScope + ".identity." + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 type actorContextKey struct{}

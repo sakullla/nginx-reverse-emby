@@ -67,4 +67,25 @@ describe('internal PKI operation recovery', () => {
     expect(hook.errors.value[`op-${status}`]).toMatchObject({ status, recoverable: true })
     scope.stop()
   })
+
+  it('does not restore PKI details from an in-flight poll after identity reset', async () => {
+    tracker.recordPkiOperation({ id: 'op-old-identity', state: 'running' }, localStorage)
+    let resolveStatus
+    api.fetch.mockImplementationOnce(() => new Promise(resolve => { resolveStatus = resolve }))
+    const scope = effectScope(true)
+    let hook
+    scope.run(() => { hook = tracker.usePkiOperations({ pollInterval: -1, refreshOnRestore: false, storage: localStorage }) })
+
+    const refresh = hook.refresh('op-old-identity')
+    tracker.resetPkiOperationMemory(localStorage)
+    resolveStatus({
+      id: 'op-old-identity', state: 'failed', target_id: 'hidden-identity', last_error: 'private failure'
+    })
+
+    await expect(refresh).resolves.toBeNull()
+    expect(hook.operations.value).toEqual([])
+    expect(hook.errors.value).toEqual({})
+    expect(localStorage.getItem(tracker.PKI_OPERATION_STORAGE_KEY)).toBeNull()
+    scope.stop()
+  })
 })
