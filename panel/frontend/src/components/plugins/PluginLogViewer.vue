@@ -27,7 +27,6 @@ const agentOptions = computed(() => {
     const record = agentRecord(item)
     push(record.id, record.name)
   }
-  push(CONTROL_PLANE_AGENT_ID, CONTROL_PLANE_LABEL)
   for (const entry of entries.value) {
     push(entry?.agent_id, '')
   }
@@ -105,7 +104,8 @@ function formatStamp(value) {
 }
 
 function displayMessage(value) {
-  return String(value || '').replace(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+/, '')
+  const text = String(value || '').replace(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+/, '').trim()
+  return text || '无日志正文'
 }
 </script>
 

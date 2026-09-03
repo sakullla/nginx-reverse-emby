@@ -446,6 +446,15 @@ function instanceTargetIDs(instance) {
   return Array.isArray(targets) ? targets : []
 }
 
+const logViewerAgents = computed(() => instanceTargetIDs(selectedInstance.value)
+  .map((id) => {
+    const key = String(id || '').trim()
+    if (!key) return null
+    const match = agents.value.find((item) => String(item?.id || '').trim() === key)
+    return { id: key, name: String(match?.name || '').trim() }
+  })
+  .filter(Boolean))
+
 function faceHostScope(faceID) {
   const face = declaredFaces.value.find((item) => item?.face_id === faceID)
   return sanitizePluginText(face?.host_scope || '')
@@ -927,7 +936,7 @@ async function retryAgent(status) {
                 <p>最近 5 条宿主持久化日志，按时间从新到旧。</p>
               </div>
             </header>
-            <PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="agents" />
+            <PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="logViewerAgents" />
           </section>
 
           <section class="plugin-ops-panel">

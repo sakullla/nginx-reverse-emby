@@ -25,10 +25,11 @@ describe('PluginLogViewer', () => {
     expect(wrapper.text()).not.toContain('token=[REDACTED]')
     expect(wrapper.text()).not.toContain('plaintext-credential')
     expect(wrapper.find('button').exists()).toBe(false)
+    expect(wrapper.find('select option[value="control-plane"]').exists()).toBe(false)
     await wrapper.get('select').setValue('edge-a')
     await flushPromises()
-		expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 5 }))
-	})
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 5 }))
+  })
 
 	it('discards a deferred stale response after the selected instance changes', async () => {
 		let resolveFirst
@@ -44,7 +45,7 @@ describe('PluginLogViewer', () => {
 		expect(wrapper.find('button').exists()).toBe(false)
 	})
 
-  it('shows agent names in the body and filter and still filters by agent id', async () => {
+  it('shows instance-related agent names plus this-batch ids without a default control-plane option', async () => {
     mocks.fetchPluginLogs.mockResolvedValue({
       entries: [{ agent_id: 'edge-a', level: 'info', message: 'hello', created_at: '2026-08-01T00:00:00Z' }],
       next_cursor: ''
@@ -62,8 +63,9 @@ describe('PluginLogViewer', () => {
     })
     await flushPromises()
     const options = wrapper.findAll('select option')
-    expect(options.map((option) => option.text())).toEqual(['全部可见 Agent', 'Edge A', 'edge-b', 'edge-c', '控制面'])
-    expect(options.map((option) => option.element.value)).toEqual(['', 'edge-a', 'edge-b', 'edge-c', 'control-plane'])
+    expect(options.map((option) => option.text())).toEqual(['全部可见 Agent', 'Edge A', 'edge-b', 'edge-c'])
+    expect(options.map((option) => option.element.value)).toEqual(['', 'edge-a', 'edge-b', 'edge-c'])
+    expect(wrapper.find('select option[value="control-plane"]').exists()).toBe(false)
     expect(wrapper.get('li strong').text()).toBe('Edge A')
     await wrapper.get('select').setValue('edge-a')
     await flushPromises()
@@ -85,6 +87,22 @@ describe('PluginLogViewer', () => {
     await flushPromises()
     expect(wrapper.get('li strong').text()).toBe('edge-z')
     expect(wrapper.get('select option[value="edge-z"]').text()).toBe('edge-z')
+    expect(wrapper.find('select option[value="control-plane"]').exists()).toBe(false)
+  })
+
+  it('adds control-plane only when it is a target or appears in this batch', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({ entries: [], next_cursor: '' })
+    const unrelated = mount(PluginLogViewer, {
+      props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [{ id: 'edge-a', name: 'Edge A' }] }
+    })
+    await flushPromises()
+    expect(unrelated.find('select option[value="control-plane"]').exists()).toBe(false)
+
+    const asTarget = mount(PluginLogViewer, {
+      props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [{ id: 'control-plane' }] }
+    })
+    await flushPromises()
+    expect(asTarget.get('select option[value="control-plane"]').text()).toBe('控制面')
   })
 
   it('lets the filter select control-plane logs by name and agent id', async () => {
@@ -125,5 +143,37 @@ describe('PluginLogViewer', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.get('time').text()).toBe('2026/08/24 14:55:53')
     expect(wrapper.get('time').attributes('data-timezone')).toBe('Asia/Shanghai')
+  })
+
+  it('shows an explicit empty-body label when a log has no display message', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [
+        { agent_id: 'edge-a', level: 'info', message: '', created_at: '2026-08-03T00:00:00Z' },
+        { agent_id: 'edge-a', level: 'warning', message: '   ', created_at: '2026-08-02T00:00:00Z' },
+        { agent_id: 'edge-a', level: 'error', message: '2026/08/24 06:55:53 ', created_at: '2026-08-01T00:00:00Z' }
+      ],
+      next_cursor: ''
+    })
+    const wrapper = mount(PluginLogViewer, {
+      props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [{ id: 'edge-a', name: 'Edge A' }] }
+    })
+    await flushPromises()
+    const rows = wrapper.findAll('li')
+    expect(rows).toHaveLength(3)
+    expect(rows.map((row) => row.get('header + span').text())).toEqual(['无日志正文', '无日志正文', '无日志正文'])
+    expect(rows[0].text()).toContain('info')
+    expect(rows[0].get('strong').text()).toBe('Edge A')
+    expect(wrapper.text()).not.toContain('暂无宿主持久化运行日志。')
+  })
+
+  it('keeps the empty-state copy when there are no host logs', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({ entries: [], next_cursor: '' })
+    const wrapper = mount(PluginLogViewer, {
+      props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [{ id: 'edge-a' }] }
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('暂无宿主持久化运行日志。')
+    expect(wrapper.find('li').exists()).toBe(false)
+    expect(wrapper.find('select option[value="control-plane"]').exists()).toBe(false)
   })
 })

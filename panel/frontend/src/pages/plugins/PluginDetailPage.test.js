@@ -1433,7 +1433,7 @@ describe('PluginDetailPage', () => {
     expect(wrapper.find('[data-test="plugin-task-center"]').exists()).toBe(true)
   })
 
-  it('shows named agents in logs and still filters by agent id', async () => {
+  it('passes selected instance targets into logs and omits unrelated fleet agents', async () => {
     mocks.fetchPluginLogs.mockResolvedValue({
       entries: [{ agent_id: 'edge-a', level: 'info', message: 'hello', created_at: '2026-08-01T00:00:00Z' }],
       next_cursor: ''
@@ -1442,11 +1442,31 @@ describe('PluginDetailPage', () => {
     const more = await openMore(wrapper)
     const logs = more.get('.plugin-log-viewer')
     expect(logs.get('select option[value="edge-a"]').text()).toBe('Edge A')
-    expect(logs.get('select option[value="control-plane"]').text()).toBe('控制面')
+    expect(logs.find('select option[value="edge-b"]').exists()).toBe(false)
+    expect(logs.find('select option[value="control-plane"]').exists()).toBe(false)
     expect(logs.get('li strong').text()).toBe('Edge A')
+    expect(logs.get('li > span').text()).toBe('hello')
     await logs.get('select').setValue('edge-a')
     await flushPromises()
-    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'edge-a' }))
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'edge-a', limit: 5 }))
+  })
+
+  it('limits log agent filters to the selected instance targets', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({ entries: [], next_cursor: '' })
+    const wrapper = await mountPage(makeDetail({
+      instances: [
+        makeInstance({ id: 'waf-a', resource_group_id: 'group-a', bindings: [], config: { mode: 'observe' } }),
+        makeInstance({ id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], bindings: [], config: { mode: 'block' }, config_version: 2 })
+      ]
+    }))
+    const more = await openMore(wrapper)
+    expect(more.findAll('.plugin-log-viewer select option').map((option) => option.element.value)).toEqual(['', 'edge-a'])
+    expect(more.get('.plugin-log-viewer').text()).toContain('暂无宿主持久化运行日志。')
+
+    await wrapper.get('[data-test="plugin-instance-tabs"] button:last-child').trigger('click')
+    await flushPromises()
+    expect(more.findAll('.plugin-log-viewer select option').map((option) => option.element.value)).toEqual(['', 'edge-b'])
+    expect(more.find('.plugin-log-viewer select option[value="control-plane"]').exists()).toBe(false)
   })
 
   it('falls back to agent id in logs when the agent has no name', async () => {
@@ -1462,6 +1482,8 @@ describe('PluginDetailPage', () => {
     const more = await openMore(wrapper)
     const logs = more.get('.plugin-log-viewer')
     expect(logs.get('select option[value="edge-a"]').text()).toBe('edge-a')
+    expect(logs.get('select option[value="ghost"]').text()).toBe('ghost')
+    expect(logs.find('select option[value="control-plane"]').exists()).toBe(false)
     expect(logs.findAll('li strong').map((node) => node.text())).toEqual(['edge-a', 'ghost'])
   })
 
@@ -1474,9 +1496,23 @@ describe('PluginDetailPage', () => {
     const more = await openMore(wrapper)
     const logs = more.get('.plugin-log-viewer')
     expect(logs.get('select option[value="control-plane"]').text()).toBe('控制面')
+    expect(logs.find('select option[value="edge-b"]').exists()).toBe(false)
     expect(logs.get('li strong').text()).toBe('控制面')
     await logs.get('select').setValue('control-plane')
     await flushPromises()
-    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'control-plane' }))
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'control-plane', limit: 5 }))
+  })
+
+  it('shows an explicit empty log body instead of a blank row', async () => {
+    mocks.fetchPluginLogs.mockResolvedValue({
+      entries: [{ agent_id: 'edge-a', level: 'info', message: '', created_at: '2026-08-01T00:00:00Z' }],
+      next_cursor: ''
+    })
+    const wrapper = await mountPage()
+    const more = await openMore(wrapper)
+    const row = more.get('.plugin-log-viewer li')
+    expect(row.get('.base-badge').text()).toBe('info')
+    expect(row.get('strong').text()).toBe('Edge A')
+    expect(row.get('header + span').text()).toBe('无日志正文')
   })
 })
