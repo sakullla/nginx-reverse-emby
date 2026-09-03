@@ -14,7 +14,6 @@ export default defineConfig({
     exclude: [
       'src/components/l4/proxyEntryAuth.test.js',
       'src/components/traffic/trafficTrendHelpers.test.js',
-      'src/context/agentHelpers.test.mjs',
       'src/context/agentSelection.test.mjs',
       'src/hooks/__tests__/useIdSearch.test.js',
       'src/pages/outboundProxyURL.test.js',
@@ -22,7 +21,6 @@ export default defineConfig({
       'src/utils/agentMetrics.test.js',
       'src/utils/resolveResourceAgent.test.js',
       'src/utils/resourceCardStatus.test.js',
-      'src/utils/trafficStats.test.mjs',
       'src/components/egress/EgressProfileForm.test.js',
       'src/components/traffic/TrafficHistoryManager.test.js',
       'src/components/traffic/TrafficPolicyForm.test.js',

@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/acme"
 )
 
-func TestSafeErrorClassifiesBadNonceWithoutLeakingDetail(t *testing.T) {
+func TestIntegrationSafeErrorClassifiesBadNonceWithoutLeakingDetail(t *testing.T) {
 	const canary = "super-secret-token-canary"
 	err := normalizeError("new_order", &acme.Error{
 		StatusCode:  http.StatusBadRequest,
@@ -33,7 +33,7 @@ func TestSafeErrorClassifiesBadNonceWithoutLeakingDetail(t *testing.T) {
 	}
 }
 
-func TestSafeErrorPreservesRetryAfter(t *testing.T) {
+func TestIntegrationSafeErrorPreservesRetryAfter(t *testing.T) {
 	err := normalizeError("new_order", &acme.Error{
 		StatusCode:  http.StatusTooManyRequests,
 		ProblemType: "urn:ietf:params:acme:error:rateLimited",
@@ -52,7 +52,7 @@ func TestSafeErrorPreservesRetryAfter(t *testing.T) {
 	}
 }
 
-func TestSafeErrorClassifiesAuthorizationAndCancellation(t *testing.T) {
+func TestIntegrationSafeErrorClassifiesAuthorizationAndCancellation(t *testing.T) {
 	authzErr := normalizeError("wait_authorization", &acme.AuthorizationError{
 		Identifier: "example.com",
 		Errors: []error{&acme.Error{

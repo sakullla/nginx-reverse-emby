@@ -100,7 +100,7 @@ func TestIntegrationServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	}
 }
 
-func TestStreamingResponseEOFDoesNotPoisonSharedBackendHealth(t *testing.T) {
+func TestIntegrationStreamingResponseEOFDoesNotPoisonSharedBackendHealth(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/stream" {
 			_, _ = io.WriteString(writer, "healthy")
@@ -151,7 +151,7 @@ func TestStreamingResponseEOFDoesNotPoisonSharedBackendHealth(t *testing.T) {
 	}
 }
 
-func TestSoleBackendBackoffAllowsRecoveryProbe(t *testing.T) {
+func TestIntegrationSoleBackendBackoffAllowsRecoveryProbe(t *testing.T) {
 	var attempts atomic.Int32
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		if attempts.Add(1) == 1 {

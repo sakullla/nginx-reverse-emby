@@ -33,12 +33,15 @@ jobs:
             fast_packages: ./...
           - module: go-agent
             fast_packages: >-
-              ./internal/app ./internal/control ./internal/core ./internal/model
-              ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay
-              ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+              ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
+              ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
+              ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
+              ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi
+              ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm
+              ./pkg/acmeflow ./pkg/acmeflow/cloudflare
           - module: panel/backend-go
             fast_packages: >-
-              ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
+              ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
               ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace
               ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins
               ./internal/controlplane/service ./internal/controlplane/storage
@@ -88,23 +91,33 @@ jobs:
         include:
           - module: go-agent
             full_packages: >-
-              ./internal/app ./internal/control ./internal/core ./internal/model
-              ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay
-              ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+              ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
+              ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
+              ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
+              ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy
+              ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc
+              ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
             integration_packages: >-
+              ./embedded
+              ./internal/app
               ./internal/core
               ./internal/hotrestart
               ./internal/modules/certs
+              ./internal/modules/diagnostics
               ./internal/modules/http
               ./internal/modules/l4
+              ./internal/plugins/process
               ./pkg/acmeflow
           - module: panel/backend-go
             full_packages: >-
-              ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
+              ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/authz
+              ./internal/controlplane/config ./internal/controlplane/coordinator ./internal/controlplane/dependency
               ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace
               ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins
-              ./internal/controlplane/service ./internal/controlplane/storage
+              ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
             integration_packages: >-
+              ./internal/controlplane/coordinator
+              ./internal/controlplane/revision
               ./internal/controlplane/storage
     steps:
       - name: Checkout repository

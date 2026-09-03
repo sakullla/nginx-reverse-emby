@@ -3,23 +3,23 @@
 Run tests by module. The fast commands are:
 
 ```sh
-cd go-agent && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/model ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
-cd panel/backend-go && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/service ./internal/controlplane/storage
+cd go-agent && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/service ./internal/controlplane/storage
 cd panel/frontend && npm test
 ```
 
 Run the affected Go module's complete untagged tier before release:
 
 ```sh
-cd go-agent && go test -p=16 -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/model ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
-cd panel/backend-go && go test -p=16 -count=1 -timeout=30s ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/service ./internal/controlplane/storage
+cd go-agent && go test -p=16 -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4 ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -count=1 -timeout=30s ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/authz ./internal/controlplane/config ./internal/controlplane/coordinator ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
 ```
 
 Run the integration packages when changing persistence, certificate lifecycle, or process handoff:
 
 ```sh
-cd go-agent && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/http ./internal/modules/l4 ./pkg/acmeflow
-cd panel/backend-go && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./internal/controlplane/storage
+cd go-agent && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/plugins/process ./pkg/acmeflow
+cd panel/backend-go && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./internal/controlplane/coordinator ./internal/controlplane/revision ./internal/controlplane/storage
 ```
 
 The frontend has one behavior suite rather than separate fast and full commands. The Go fast and full tiers use an explicit package manifest so packages with no canonical tests do not pay a test-binary link and startup cost. The `fast` tag also prevents full-tier SQLite and filesystem fixtures from being compiled into the fast binaries. The integration tier selects only packages that own canonical `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages.

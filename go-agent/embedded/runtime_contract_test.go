@@ -1,4 +1,4 @@
-//go:build exhaustive && !integration
+//go:build integration
 
 package embedded
 
@@ -55,7 +55,7 @@ func TestIntegrationRuntimeRevisionPersistenceLifecycle(t *testing.T) {
 	}
 }
 
-func TestSanitizeSnapshotContract(t *testing.T) {
+func TestIntegrationSanitizeSnapshotContract(t *testing.T) {
 	edge := PluginDependencyEdge{
 		Consumer:           PluginDependencyConsumer{Kind: "http_rule", ID: "1", ResourceGroupID: "default"},
 		ProviderInstanceID: "rpc-1",
@@ -89,7 +89,7 @@ func TestSanitizeSnapshotContract(t *testing.T) {
 	}
 }
 
-func TestRuntimeConcurrentCloseMemoizesFailure(t *testing.T) {
+func TestIntegrationRuntimeConcurrentCloseMemoizesFailure(t *testing.T) {
 	wantErr := errors.New("embedded app close failed")
 	started := make(chan struct{})
 	release := make(chan struct{})

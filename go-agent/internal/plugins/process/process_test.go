@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-func TestProcessArtifactInstallerRequiresDigestAndNonExecutableCache(t *testing.T) {
+func TestIntegrationProcessArtifactInstallerRequiresDigestAndNonExecutableCache(t *testing.T) {
 	root := t.TempDir()
 	cache := filepath.Join(root, "cache.bin")
 	payload := []byte("verified plugin process")
@@ -57,7 +57,7 @@ func (fakeSandbox) Configure(*exec.Cmd, Security) (func() error, func() error, f
 	return func() error { return nil }, func() error { return nil }, func(int) error { return nil }, nil
 }
 
-func TestSandboxUnsupportedBudgetFailsClosed(t *testing.T) {
+func TestIntegrationSandboxUnsupportedBudgetFailsClosed(t *testing.T) {
 	sandbox := fakeSandbox{available: true, validateErr: errors.New("files unsupported")}
 	security := Security{Requirement: testSandboxRequirement(Budget{Files: 10}, false, true)}
 	if _, err := DecideSandbox(sandbox, security); err == nil {
@@ -72,7 +72,7 @@ func (fakeSandbox) Attach(int, Security) (func() error, error) {
 	return func() error { return nil }, nil
 }
 
-func TestProcessLogsRedactAcrossWriteBoundariesAndDropOversizedLines(t *testing.T) {
+func TestIntegrationProcessLogsRedactAcrossWriteBoundariesAndDropOversizedLines(t *testing.T) {
 	var output bytes.Buffer
 	w := newRedactingWriter(&output, []string{"split-secret"})
 	for _, chunk := range []string{"value=split-", "secret\nauthor", "ization: bearer nope\n", strings.Repeat("x", maxPluginLogLine+1), "\npartial token=bad"} {
@@ -110,7 +110,7 @@ func (r splitRuntimeLogRunner) StartWithStreams(_ context.Context, _ InstanceSpe
 	return r.process, func() error { return nil }, nil
 }
 
-func TestProcessEnvironmentDoesNotInheritHostSecrets(t *testing.T) {
+func TestIntegrationProcessEnvironmentDoesNotInheritHostSecrets(t *testing.T) {
 	t.Setenv("NRE_PARENT_SECRET", "must-not-leak")
 	environment, err := buildProcessEnvironment([]string{"PLUGIN_MODE=test"}, nil)
 	if err != nil {
@@ -192,7 +192,7 @@ func (r *cleanupRetryRunner) Start(context.Context, InstanceSpec, Sandbox, io.Wr
 	}, nil
 }
 
-func TestSupervisorIntentionalStopRetainsCleanupUntilCloseRetry(t *testing.T) {
+func TestIntegrationSupervisorIntentionalStopRetainsCleanupUntilCloseRetry(t *testing.T) {
 	runner := &cleanupRetryRunner{process: &hostStoppingProcess{done: make(chan error, 1)}}
 	supervisor := NewSupervisor(runner, fakeSandbox{available: true}, io.Discard)
 	handle, err := supervisor.StartOnce(t.Context(), InstanceSpec{ID: "cleanup-retry", Executable: "unused", GracePeriod: time.Millisecond})
@@ -241,7 +241,7 @@ func (s *startFailureCleanupSandbox) Configure(*exec.Cmd, Security) (func() erro
 	}, func() error { s.processCalls++; return nil }, func(int) error { return nil }, nil
 }
 
-func TestExecRunnerStartFailureExecutesSandboxCleanup(t *testing.T) {
+func TestIntegrationExecRunnerStartFailureExecutesSandboxCleanup(t *testing.T) {
 	sandbox := &startFailureCleanupSandbox{}
 	_, _, err := (ExecRunner{}).Start(t.Context(), InstanceSpec{ID: "start-failure", Executable: filepath.Join(t.TempDir(), "missing")}, sandbox, io.Discard)
 	if err == nil {
@@ -273,7 +273,7 @@ func (r *closeBlockingRunner) Start(ctx context.Context, _ InstanceSpec, _ Sandb
 	return nil, nil, ctx.Err()
 }
 
-func TestSupervisorCloseCancelsAndJoinsBlockedStart(t *testing.T) {
+func TestIntegrationSupervisorCloseCancelsAndJoinsBlockedStart(t *testing.T) {
 	runner := &closeBlockingRunner{started: make(chan struct{}), returned: make(chan struct{})}
 	supervisor := NewSupervisor(runner, fakeSandbox{available: true}, io.Discard)
 	startDone := make(chan error, 1)
@@ -328,7 +328,7 @@ func (r retainedSecretRestartRunner) StartWithStreams(_ context.Context, _ Insta
 	return attempt.process, func() error { return nil }, nil
 }
 
-func TestProcessCrashLoopOpensCircuit(t *testing.T) {
+func TestIntegrationProcessCrashLoopOpensCircuit(t *testing.T) {
 	s := NewSupervisor(crashRunner{}, fakeSandbox{available: true}, io.Discard)
 	h, err := s.Start(t.Context(), InstanceSpec{ID: "crash", Executable: "unused", RestartLimit: 1, RestartWindow: time.Second, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond})
 	if err != nil {

@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestPostgresPackagePublicationFencesSourceDeletion(t *testing.T) {
+func TestIntegrationPostgresPackagePublicationFencesSourceDeletion(t *testing.T) {
 	dsn := postgresIntegrationSchemaDSN(t)
 	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
 	if err != nil {

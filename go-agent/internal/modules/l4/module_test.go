@@ -21,7 +21,7 @@ import (
 	l4module "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 )
 
-func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
+func TestIntegrationModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("via-final-hop"))
@@ -76,7 +76,7 @@ func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
 	}
 }
 
-func TestModuleRollbackAfterLaterCommitFailurePreservesCustomFinalHopProvider(t *testing.T) {
+func TestIntegrationModuleRollbackAfterLaterCommitFailurePreservesCustomFinalHopProvider(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("previous-final-hop"))
