@@ -26,8 +26,6 @@ import PluginAgentStatusTable from '../../components/plugins/PluginAgentStatusTa
 import PluginDeployModal from '../../components/plugins/PluginDeployModal.vue'
 import PluginInstanceConfigModal from '../../components/plugins/PluginInstanceConfigModal.vue'
 import PluginLogViewer from '../../components/plugins/PluginLogViewer.vue'
-import PluginPackageSummary from '../../components/plugins/PluginPackageSummary.vue'
-import PluginRiskNotices from '../../components/plugins/PluginRiskNotices.vue'
 import PluginOperationTimeline from '../../components/operations/PluginOperationTimeline.vue'
 
 const route = useRoute()
@@ -912,19 +910,6 @@ async function retryAgent(status) {
             </div>
           </section>
 
-          <div class="plugin-technical">
-            <section class="plugin-ops-panel">
-              <header class="plugin-ops-panel__head">
-                <div>
-                  <h2>插件包与风险</h2>
-                  <p>签名、预算、权限差异，以及安装与运行边界。</p>
-                </div>
-              </header>
-              <PluginPackageSummary :detail="detail.package" :source="source" :show-identity="false" :collapsible="false" />
-              <PluginRiskNotices :package-detail="detail.package" :source="source" />
-            </section>
-          </div>
-
           <section v-if="showAgentExecutionStatus" class="plugin-ops-panel">
             <header class="plugin-ops-panel__head">
               <div>
@@ -1045,7 +1030,6 @@ async function retryAgent(status) {
 
 .plugin-detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.plugin-technical { display: grid; gap: var(--space-4); min-width: 0; }
 .plugin-ops {
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);

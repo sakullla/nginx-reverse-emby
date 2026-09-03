@@ -787,7 +787,8 @@ describe('PluginDetailPage task-center production API projection', () => {
     expect(more.text()).toContain('Edge A')
     expect(more.text()).toContain('ready')
     expect(more.text()).toContain('configure')
-    expect(more.find('.plugin-technical').exists()).toBe(true)
+    expect(more.find('.plugin-technical').exists()).toBe(false)
+    expect(more.text()).not.toContain('插件包与风险')
 
     await moreButton(wrapper, '停用').trigger('click')
     expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)

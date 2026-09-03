@@ -822,7 +822,7 @@ describe('PluginDetailPage', () => {
     expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', [])
   })
 
-  it('keeps enable, diagnostics, logs, timeline, and technical details only in 更多', async () => {
+  it('keeps enable, diagnostics, logs, and timeline only in 更多', async () => {
     const wrapper = await mountPage(undeployedDetail())
     expect(pagePrimaryButtons(wrapper).map((button) => button.text())).toEqual(['开始部署'])
     expectOpsOnlyInMore(wrapper, { allowUninstall: true })
@@ -830,7 +830,8 @@ describe('PluginDetailPage', () => {
     for (const label of opsLabels) {
       expect(buttonByText(more, label)).toBeTruthy()
     }
-    expect(more.find('.plugin-technical').exists()).toBe(true)
+    expect(more.find('.plugin-technical').exists()).toBe(false)
+    expect(more.text()).not.toContain('插件包与风险')
     expect(more.text()).toMatch(/Agent 执行面状态/)
     expect(more.text()).toMatch(/运行日志|操作时间线|生命周期/)
   })
@@ -858,7 +859,8 @@ describe('PluginDetailPage', () => {
     expect(wrapper.get('[data-test="plugin-task-status"]').text()).toBe('还没部署')
     expect(deployModal(wrapper).exists()).toBe(false)
     expectOpsOnlyInMore(wrapper, { allowUninstall: true })
-    expect(morePanel(wrapper).find('.plugin-technical').exists()).toBe(true)
+    expect(morePanel(wrapper).find('.plugin-technical').exists()).toBe(false)
+    expect(morePanel(wrapper).text()).not.toContain('插件包与风险')
     const modal = await openGuide(wrapper)
     expect(modal.exists()).toBe(true)
     expect(modal.attributes('data-test')).toBe('plugin-deploy-modal')
