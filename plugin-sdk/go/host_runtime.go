@@ -26,6 +26,8 @@ const (
 	HostRuntimeL4Rule           = "l4.rule"
 	HostRuntimeChannelReverse   = "channel.reverse"
 	HostRuntimeEventEmit        = "event.emit"
+	HostRuntimeInstanceConfig   = "instance.config"
+	HostRuntimeEventList        = "event.list"
 	HTTPBackendOfferCatalogKey  = "http.backend-offers"
 )
 
@@ -210,12 +212,14 @@ const (
 // other rules. Delete requires a legal RuleRef and does not accept domain or
 // port. Create Domain accepts a hostname or an http(s) URL; the host
 // normalizes by stripping a path and preserving the frontend scheme.
+// Overlay is cutover-only: create, list, and delete must not carry it.
 type HTTPRuleRequest struct {
-	Action  string `json:"action"`
-	AgentID string `json:"agent_id,omitempty"`
-	Domain  string `json:"domain,omitempty"`
-	Port    int    `json:"port,omitempty"`
-	RuleRef string `json:"rule_ref,omitempty"`
+	Action  string          `json:"action"`
+	AgentID string          `json:"agent_id,omitempty"`
+	Domain  string          `json:"domain,omitempty"`
+	Port    int             `json:"port,omitempty"`
+	RuleRef string          `json:"rule_ref,omitempty"`
+	Overlay json.RawMessage `json:"overlay,omitempty"`
 }
 
 func (request HTTPRuleRequest) Validate() error {
@@ -232,6 +236,9 @@ func (request HTTPRuleRequest) Validate() error {
 		}
 		if strings.TrimSpace(request.RuleRef) != "" {
 			return errors.New("http.rule create does not accept rule_ref")
+		}
+		if len(request.Overlay) > 0 {
+			return errors.New("http.rule create does not accept overlay")
 		}
 		return nil
 	case HTTPRuleActionCutover:
@@ -254,7 +261,7 @@ func (request HTTPRuleRequest) Validate() error {
 		if request.Port < 0 || request.Port > 65535 {
 			return errors.New("http.rule port is invalid")
 		}
-		return nil
+		return validateHostRuntimeRawJSON("http.rule overlay", request.Overlay, false)
 	case HTTPRuleActionDelete:
 		if strings.TrimSpace(request.RuleRef) == "" {
 			return errors.New("http.rule delete rule_ref is required")
@@ -270,6 +277,9 @@ func (request HTTPRuleRequest) Validate() error {
 		if request.Domain != "" || request.Port != 0 {
 			return errors.New("http.rule delete does not accept domain or port")
 		}
+		if len(request.Overlay) > 0 {
+			return errors.New("http.rule delete does not accept overlay")
+		}
 		return nil
 	case HTTPRuleActionList:
 		if err := ValidatePolicyIdentity(request.AgentID); err != nil {
@@ -278,23 +288,95 @@ func (request HTTPRuleRequest) Validate() error {
 		if request.Domain != "" || request.Port != 0 || strings.TrimSpace(request.RuleRef) != "" {
 			return errors.New("http.rule list does not accept domain, port, or rule_ref")
 		}
+		if len(request.Overlay) > 0 {
+			return errors.New("http.rule list does not accept overlay")
+		}
 		return nil
 	default:
 		return fmt.Errorf("http.rule action %q is unsupported", request.Action)
 	}
 }
 
+// PolicyRef is the host-published HTTP rule policy attachment, including an
+// optional overlay such as WAF observe/deny mode.
+type PolicyRef struct {
+	ID      string          `json:"id"`
+	Overlay json.RawMessage `json:"overlay,omitempty"`
+}
+
 // HTTPRuleListItem is one host-owned HTTP rule as returned by http.rule list.
 type HTTPRuleListItem struct {
-	RuleRef     string `json:"rule_ref"`
-	FrontendURL string `json:"frontend_url"`
-	Backend     string `json:"backend"`
-	Enabled     bool   `json:"enabled"`
+	RuleRef     string     `json:"rule_ref"`
+	FrontendURL string     `json:"frontend_url"`
+	Backend     string     `json:"backend"`
+	Enabled     bool       `json:"enabled"`
+	PolicyRef   *PolicyRef `json:"policy_ref,omitempty"`
 }
 
 // HTTPRuleListResponse is the http.rule list payload.
 type HTTPRuleListResponse struct {
 	Rules []HTTPRuleListItem `json:"rules"`
+}
+
+// InstanceConfigRequest writes committed plugin instance configuration.
+type InstanceConfigRequest struct {
+	Config json.RawMessage `json:"config"`
+}
+
+func (request InstanceConfigRequest) Validate() error {
+	return validateHostRuntimeRawJSON("instance.config", request.Config, true)
+}
+
+// InstanceConfigResponse reports whether instance configuration was stored.
+type InstanceConfigResponse struct {
+	Stored bool `json:"stored"`
+}
+
+// EventListRequest lists recent host audit events for the calling plugin.
+type EventListRequest struct {
+	AgentID string `json:"agent_id"`
+	Code    string `json:"code,omitempty"`
+}
+
+func (request EventListRequest) Validate() error {
+	if err := ValidatePolicyIdentity(request.AgentID); err != nil {
+		return fmt.Errorf("event.list agent id: %w", err)
+	}
+	if request.Code != "" {
+		if err := ValidatePolicyIdentity(request.Code); err != nil {
+			return fmt.Errorf("event.list code: %w", err)
+		}
+	}
+	return nil
+}
+
+// PolicyEvent is one projected waf.rule_match (or similar) host audit event.
+type PolicyEvent struct {
+	Site        string `json:"site,omitempty"`
+	RuleID      string `json:"rule_id,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	Disposition string `json:"disposition,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	Code        string `json:"code,omitempty"`
+	Action      string `json:"action,omitempty"`
+}
+
+// EventListResponse is the event.list payload.
+type EventListResponse struct {
+	Events []PolicyEvent `json:"events"`
+}
+
+func validateHostRuntimeRawJSON(field string, raw json.RawMessage, required bool) error {
+	if len(raw) == 0 {
+		if required {
+			return fmt.Errorf("%s is required", field)
+		}
+		return nil
+	}
+	if len(raw) > PluginHostPayloadMaxBytes || !json.Valid(raw) {
+		return fmt.Errorf("%s is invalid or exceeds the canonical bound", field)
+	}
+	return nil
 }
 
 // NormalizeHTTPRuleFrontend accepts a hostname or an http(s) URL, strips any

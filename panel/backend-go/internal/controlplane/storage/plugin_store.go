@@ -4715,6 +4715,50 @@ func (s *GormStore) GetPluginInstance(ctx context.Context, id string) (PluginIns
 	return row, err == nil, err
 }
 
+// PutPluginInstanceConfigJSON writes committed instance ConfigJSON, bumps
+// ConfigVersion, and reconciles Agent policy-catalog revisions so snapshots
+// pick up the new Config.
+func (s *GormStore) PutPluginInstanceConfigJSON(ctx context.Context, instanceID string, config json.RawMessage) error {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" || len(config) == 0 || !json.Valid(config) {
+		return fmt.Errorf("%w: plugin instance config is invalid", ErrPluginConflict)
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		scoped := s.transactionView(tx)
+		var instance PluginInstanceRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", instanceID).First(&instance).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPluginNotInstalled
+			}
+			return err
+		}
+		now := time.Now().UTC()
+		agents, err := scoped.pluginMutationPolicyAgents(ctx, PluginMutation{PluginID: instance.PluginID, ReplaceInstance: &instance})
+		if err != nil {
+			return err
+		}
+		if err := scoped.lockPluginPolicyAgentCatalogs(ctx, agents, now); err != nil {
+			return err
+		}
+		before, err := scoped.capturePluginPolicyCatalogs(ctx, agents)
+		if err != nil {
+			return err
+		}
+		result := tx.Model(&PluginInstanceRow{}).Where("id = ?", instance.ID).Updates(map[string]any{
+			"config_json":    string(config),
+			"config_version": instance.ConfigVersion + 1,
+			"updated_at":     now,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
+		}
+		return scoped.reconcilePluginPolicyCatalogRevisions(ctx, agents, before, now)
+	})
+}
+
 func (s *GormStore) ListPluginOperations(ctx context.Context, pluginID string) ([]PluginOperationRow, error) {
 	var rows []PluginOperationRow
 	err := s.db.WithContext(ctx).Where("plugin_id = ?", pluginID).Order("created_at, id").Find(&rows).Error
