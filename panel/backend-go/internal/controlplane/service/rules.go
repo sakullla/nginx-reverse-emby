@@ -510,6 +510,10 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 	if err := s.validateHTTPBackendProviders(ctx, resolvedID, rule.Backends); err != nil {
 		return HTTPRule{}, err
 	}
+	rule.PolicyRef, err = applyDefaultOfficialWAFPolicyRef(ctx, s.store, resolvedID, rule.PolicyRef)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
 		return HTTPRule{}, err
 	}
@@ -709,6 +713,10 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 	}
 	rule.AgentID = resolvedID
 	if err := s.validateHTTPBackendProviders(ctx, resolvedID, rule.Backends); err != nil {
+		return HTTPRule{}, err
+	}
+	rule.PolicyRef, err = applyDefaultOfficialWAFPolicyRef(ctx, s.store, resolvedID, rule.PolicyRef)
+	if err != nil {
 		return HTTPRule{}, err
 	}
 	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
@@ -2510,6 +2518,11 @@ func validateRulePolicyReference(ctx context.Context, store any, agentID string,
 	}
 	for _, policy := range policies {
 		if policy.ID == ref.ID {
+			if pluginPolicyIsOfficialWAF(policy) {
+				if err := validateWAFPolicyOverlay(ref.Overlay); err != nil {
+					return err
+				}
+			}
 			frameBytes, frameErr := pluginsdk.PolicyV1EvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", pluginsdk.PolicyRequestIDMaxBytes), ref.Overlay)
 			if frameErr != nil {
 				return fmt.Errorf("%w: policy_ref %q frame is invalid: %v", ErrInvalidArgument, ref.ID, frameErr)

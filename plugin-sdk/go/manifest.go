@@ -14,6 +14,8 @@ const (
 	PluginManifestSchemaVersion = 1
 	ExtensionUIRoute            = "ui.route"
 	ExtensionResourceGroup      = "resource.group"
+	ExtensionHTTPRequest        = "http.request"
+	ExtensionL4Accept           = "l4.accept"
 )
 
 //go:embed schema/plugin-manifest-v1.schema.json
@@ -59,12 +61,25 @@ type Manifest struct {
 }
 
 type Runtime struct {
-	Kind       string   `yaml:"kind" json:"kind"`
-	ABI        string   `yaml:"abi" json:"abi"`
-	HostScope  string   `yaml:"host_scope" json:"host_scope"`
-	HostScopes []string `yaml:"host_scopes,omitempty" json:"host_scopes,omitempty"`
-	Entry      string   `yaml:"entry" json:"entry"`
-	PolicyKind string   `yaml:"policy_kind,omitempty" json:"policy_kind,omitempty"`
+	Kind       string         `yaml:"kind" json:"kind"`
+	ABI        string         `yaml:"abi" json:"abi"`
+	HostScope  string         `yaml:"host_scope" json:"host_scope"`
+	HostScopes []string       `yaml:"host_scopes,omitempty" json:"host_scopes,omitempty"`
+	Entry      string         `yaml:"entry" json:"entry"`
+	PolicyKind string         `yaml:"policy_kind,omitempty" json:"policy_kind,omitempty"`
+	Policy     *RuntimePolicy `yaml:"policy,omitempty" json:"policy,omitempty"`
+}
+
+// RuntimePolicy is the Agent wasm-policy face nested under a control-plane
+// rpc-service. wasm-policy-only packages keep kind=wasm-policy and omit this
+// object; they cannot become a control-plane process.
+type RuntimePolicy struct {
+	Kind           string         `yaml:"kind" json:"kind"`
+	ABI            string         `yaml:"abi" json:"abi"`
+	HostScope      string         `yaml:"host_scope" json:"host_scope"`
+	Entry          string         `yaml:"entry" json:"entry"`
+	ResourceBudget ResourceBudget `yaml:"resource_budget" json:"resource_budget"`
+	FailurePolicy  FailurePolicy  `yaml:"failure_policy" json:"failure_policy"`
 }
 
 // RuntimeDeclaredHostScopes returns the unique host faces this runtime

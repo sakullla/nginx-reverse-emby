@@ -48,7 +48,21 @@
         "host_scope": {"enum": ["agent", "control-plane"]},
         "host_scopes": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["agent", "control-plane"]}},
         "entry": {"type": "string", "minLength": 1, "maxLength": 2048},
-        "policy_kind": {"enum": ["ip", "rate", "waf"]}
+        "policy_kind": {"enum": ["ip", "rate", "waf"]},
+        "policy": {"$ref": "#/$defs/runtime_policy"}
+      }
+    },
+    "runtime_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "abi", "host_scope", "entry", "resource_budget", "failure_policy"],
+      "properties": {
+        "kind": {"const": "wasm-policy"},
+        "abi": {"const": "nre:policy/v1"},
+        "host_scope": {"const": "agent"},
+        "entry": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "resource_budget": {"$ref": "#/$defs/resource_budget"},
+        "failure_policy": {"$ref": "#/$defs/failure_policy"}
       }
     },
     "artifact": {

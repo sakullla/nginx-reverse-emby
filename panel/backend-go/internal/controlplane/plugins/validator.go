@@ -643,16 +643,21 @@ func (v *Validator) validateRuntimeIndex(runtime RuntimeIndex, artifacts []Artif
 		return errors.New("artifact platform matrix is required")
 	}
 	seen := map[string]struct{}{}
+	wasmCount := 0
 	for _, artifact := range artifacts {
 		if !hexDigestPattern.MatchString(strings.ToLower(artifact.SHA256)) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
 			return errors.New("artifact digest and bounded size are required")
 		}
 		platform := artifact.GOOS + "/" + artifact.GOARCH
-		if runtime.Kind == pluginsdk.RuntimeWASMPolicy {
-			if artifact.GOOS != "" || artifact.GOARCH != "" || len(artifacts) != 1 {
+		if runtime.Kind == pluginsdk.RuntimeWASMPolicy || (runtime.Kind == pluginsdk.RuntimeRPCService && runtime.PolicyKind != "" && artifact.GOOS == "" && artifact.GOARCH == "") {
+			if artifact.GOOS != "" || artifact.GOARCH != "" {
+				return errors.New("wasm-policy requires one platform-neutral artifact")
+			}
+			if runtime.Kind == pluginsdk.RuntimeWASMPolicy && len(artifacts) != 1 {
 				return errors.New("wasm-policy requires one platform-neutral artifact")
 			}
 			platform = "wasm"
+			wasmCount++
 		} else if !validPlatform(artifact.GOOS, artifact.GOARCH) {
 			return errors.New("rpc-service artifact requires an allowed GOOS/GOARCH")
 		}
@@ -660,6 +665,9 @@ func (v *Validator) validateRuntimeIndex(runtime RuntimeIndex, artifacts []Artif
 			return fmt.Errorf("duplicate artifact platform %s", platform)
 		}
 		seen[platform] = struct{}{}
+	}
+	if runtime.Kind == pluginsdk.RuntimeRPCService && runtime.PolicyKind != "" && wasmCount != 1 {
+		return errors.New("dual-face rpc-service requires one platform-neutral wasm policy artifact")
 	}
 	if runtime.Kind == pluginsdk.RuntimeRPCService && v.options.TargetGOOS != "" && v.options.TargetGOARCH != "" {
 		if _, ok := seen[v.options.TargetGOOS+"/"+v.options.TargetGOARCH]; !ok {
@@ -942,6 +950,9 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 	if err := validateRuntimePolicyKind(manifest.Runtime.Kind, manifest.Runtime.PolicyKind); err != nil {
 		return validationError("runtime", PackageManifestFile, err)
 	}
+	if err := validateRuntimePolicyFace(manifest); err != nil {
+		return validationError("runtime", PackageManifestFile, err)
+	}
 	if expected.Runtime.Kind != "" && (manifest.Runtime.Kind != expected.Runtime.Kind || manifest.Runtime.ABI != expected.Runtime.ABI || manifest.Runtime.HostScope != expected.Runtime.HostScope || manifest.Runtime.PolicyKind != expected.Runtime.PolicyKind) {
 		return validationError("runtime_mismatch", PackageManifestFile, errors.New("manifest runtime differs from market index"))
 	}
@@ -956,7 +967,12 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 	}
 	seenPaths := map[string]struct{}{}
 	index := make([]ArtifactIndex, 0, len(manifest.Artifacts))
-	entryFound := false
+	rpcEntryFound := false
+	wasmEntryFound := false
+	policyEntry := ""
+	if manifest.Runtime.Policy != nil {
+		policyEntry = filepath.ToSlash(manifest.Runtime.Policy.Entry)
+	}
 	for _, artifact := range manifest.Artifacts {
 		canonical := filepath.ToSlash(artifact.Path)
 		if len(canonical) > MaxPackagePathBytes || !strings.HasPrefix(canonical, "artifacts/") {
@@ -968,24 +984,6 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 		seenPaths[canonical] = struct{}{}
 		if !hexDigestPattern.MatchString(strings.ToLower(artifact.SHA256)) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
 			return validationError("artifact", artifact.Path, errors.New("artifact digest and bounded size are required"))
-		}
-		if manifest.Runtime.Kind == pluginsdk.RuntimeWASMPolicy {
-			if len(manifest.Artifacts) != 1 || artifact.Mode != "wasm" || artifact.GOOS != "" || artifact.GOARCH != "" || path.Ext(canonical) != ".wasm" || manifest.Runtime.Entry != canonical {
-				return validationError("artifact", artifact.Path, errors.New("wasm-policy requires one platform-neutral wasm entry artifact"))
-			}
-			entryFound = true
-		} else {
-			extension := path.Ext(canonical)
-			validName := (artifact.GOOS == "windows" && extension == ".exe") || (artifact.GOOS != "windows" && extension == "")
-			platformPrefix := "artifacts/" + artifact.GOOS + "-" + artifact.GOARCH + "/"
-			if artifact.Mode != "executable" || !validPlatform(artifact.GOOS, artifact.GOARCH) || !validName || !strings.HasPrefix(canonical, platformPrefix) {
-				return validationError("artifact", artifact.Path, errors.New("rpc-service requires a native executable artifact for an allowed platform"))
-			}
-			base := strings.TrimSuffix(path.Base(canonical), ".exe")
-			if base != manifest.Runtime.Entry {
-				return validationError("runtime_entry", artifact.Path, errors.New("every RPC platform artifact must provide the declared logical entry"))
-			}
-			entryFound = true
 		}
 		resolved, err := securePackagePath(root, canonical)
 		if err != nil {
@@ -1002,13 +1000,63 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 		if err != nil || !strings.EqualFold(actual, artifact.SHA256) {
 			return validationError("artifact_digest", artifact.Path, errors.New("declared artifact digest does not match content"))
 		}
-		if err := validateArtifactMagic(resolved, manifest.Runtime.Kind, artifact, manifest.ResourceBudget); err != nil {
-			return validationError("artifact_format", artifact.Path, err)
+		isPolicyWASM := artifact.Mode == "wasm" || (policyEntry != "" && canonical == policyEntry)
+		if isPolicyWASM {
+			wantEntry := strings.TrimSpace(manifest.Runtime.Entry)
+			memoryBudget := manifest.ResourceBudget.MemoryBytes
+			if manifest.Runtime.Policy != nil {
+				wantEntry = policyEntry
+				memoryBudget = manifest.Runtime.Policy.ResourceBudget.MemoryBytes
+			} else if manifest.Runtime.Kind != pluginsdk.RuntimeWASMPolicy {
+				return validationError("artifact", artifact.Path, errors.New("wasm artifacts require a wasm-policy runtime or nested policy face"))
+			}
+			if artifact.Mode != "wasm" || artifact.GOOS != "" || artifact.GOARCH != "" || path.Ext(canonical) != ".wasm" || canonical != wantEntry {
+				return validationError("artifact", artifact.Path, errors.New("wasm-policy requires one platform-neutral wasm entry artifact"))
+			}
+			if wasmEntryFound {
+				return validationError("artifact", artifact.Path, errors.New("dual-face packages require exactly one wasm policy artifact"))
+			}
+			if err := validatePolicyWASMArtifact(resolved, memoryBudget); err != nil {
+				return validationError("artifact_format", artifact.Path, err)
+			}
+			wasmEntryFound = true
+		} else {
+			if manifest.Runtime.Kind != pluginsdk.RuntimeRPCService {
+				return validationError("artifact", artifact.Path, errors.New("wasm-policy requires one platform-neutral wasm entry artifact"))
+			}
+			extension := path.Ext(canonical)
+			validName := (artifact.GOOS == "windows" && extension == ".exe") || (artifact.GOOS != "windows" && extension == "")
+			platformPrefix := "artifacts/" + artifact.GOOS + "-" + artifact.GOARCH + "/"
+			if artifact.Mode != "executable" || !validPlatform(artifact.GOOS, artifact.GOARCH) || !validName || !strings.HasPrefix(canonical, platformPrefix) {
+				return validationError("artifact", artifact.Path, errors.New("rpc-service requires a native executable artifact for an allowed platform"))
+			}
+			base := strings.TrimSuffix(path.Base(canonical), ".exe")
+			if base != manifest.Runtime.Entry {
+				return validationError("runtime_entry", artifact.Path, errors.New("every RPC platform artifact must provide the declared logical entry"))
+			}
+			if err := validateRPCExecutable(resolved, artifact); err != nil {
+				return validationError("artifact_format", artifact.Path, err)
+			}
+			rpcEntryFound = true
 		}
 		index = append(index, ArtifactIndex{SHA256: strings.ToLower(artifact.SHA256), Size: artifact.Size, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH})
 	}
-	if !entryFound || strings.TrimSpace(manifest.Runtime.Entry) == "" {
+	if strings.TrimSpace(manifest.Runtime.Entry) == "" {
 		return validationError("runtime_entry", PackageManifestFile, errors.New("runtime entry does not resolve to every runtime kind's artifact contract"))
+	}
+	switch {
+	case manifest.Runtime.Policy != nil:
+		if !wasmEntryFound || !rpcEntryFound {
+			return validationError("runtime_entry", PackageManifestFile, errors.New("dual-face rpc-service requires native executable artifacts and one wasm policy entry"))
+		}
+	case manifest.Runtime.Kind == pluginsdk.RuntimeWASMPolicy:
+		if !wasmEntryFound || rpcEntryFound || len(manifest.Artifacts) != 1 {
+			return validationError("runtime_entry", PackageManifestFile, errors.New("runtime entry does not resolve to every runtime kind's artifact contract"))
+		}
+	default:
+		if !rpcEntryFound || wasmEntryFound {
+			return validationError("runtime_entry", PackageManifestFile, errors.New("runtime entry does not resolve to every runtime kind's artifact contract"))
+		}
 	}
 	if err := v.validateRuntimeIndex(RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, index); err != nil {
 		return validationError("artifact", PackageManifestFile, err)
@@ -1040,18 +1088,78 @@ func (v *Validator) validateRuntimeIdentity(kind, abi, hostScope string) error {
 
 func validateRuntimePolicyKind(runtimeKind, policyKind string) error {
 	policyKind = strings.TrimSpace(policyKind)
-	if runtimeKind != pluginsdk.RuntimeWASMPolicy {
-		if policyKind != "" {
-			return errors.New("policy_kind is only valid for wasm-policy")
+	if runtimeKind == pluginsdk.RuntimeWASMPolicy {
+		switch policyKind {
+		case "ip", "rate", "waf":
+			return nil
+		default:
+			return errors.New("wasm-policy requires policy_kind ip, rate, or waf")
 		}
+	}
+	if policyKind == "" {
 		return nil
+	}
+	if runtimeKind != pluginsdk.RuntimeRPCService {
+		return errors.New("policy_kind is only valid for wasm-policy or a dual-face rpc-service")
 	}
 	switch policyKind {
 	case "ip", "rate", "waf":
 		return nil
 	default:
-		return errors.New("wasm-policy requires policy_kind ip, rate, or waf")
+		return errors.New("rpc-service policy_kind must be ip, rate, or waf")
 	}
+}
+
+func validateRuntimePolicyFace(manifest Manifest) error {
+	policy := manifest.Runtime.Policy
+	kind := strings.TrimSpace(manifest.Runtime.Kind)
+	policyKind := strings.TrimSpace(manifest.Runtime.PolicyKind)
+	if kind == pluginsdk.RuntimeWASMPolicy {
+		if policy != nil {
+			return errors.New("wasm-policy cannot declare a nested policy face")
+		}
+		return nil
+	}
+	if policy == nil {
+		if policyKind != "" {
+			return errors.New("rpc-service policy_kind requires a nested agent policy face")
+		}
+		return nil
+	}
+	if kind != pluginsdk.RuntimeRPCService {
+		return errors.New("nested policy face is only valid on rpc-service")
+	}
+	if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
+		return errors.New("UI and agent policy dual-face requires a control-plane rpc-service host")
+	}
+	if policyKind == "" {
+		return errors.New("dual-face rpc-service requires policy_kind ip, rate, or waf")
+	}
+	if strings.TrimSpace(policy.Kind) != pluginsdk.RuntimeWASMPolicy || strings.TrimSpace(policy.ABI) != pluginsdk.PolicyABIV1 || strings.TrimSpace(policy.HostScope) != pluginsdk.HostScopeAgent || strings.TrimSpace(policy.Entry) == "" {
+		return errors.New("nested policy face requires wasm-policy nre:policy/v1 on the agent host")
+	}
+	if err := validateResourceBudget(pluginsdk.RuntimeWASMPolicy, policy.ResourceBudget); err != nil {
+		return err
+	}
+	if err := validateFailurePolicy(pluginsdk.RuntimeWASMPolicy, policy.FailurePolicy); err != nil {
+		return err
+	}
+	if !hasManifestExtension(manifest.ExtensionPoints, "http.request") {
+		return errors.New("agent policy face requires the http.request extension point")
+	}
+	if !hasManifestExtension(manifest.ExtensionPoints, pluginsdk.ExtensionUIRoute) {
+		return errors.New("control-plane UI and agent policy dual-face requires ui.route")
+	}
+	return nil
+}
+
+func hasManifestExtension(points []string, want string) bool {
+	for _, point := range points {
+		if point == want {
+			return true
+		}
+	}
+	return false
 }
 
 func validateResourceBudget(kind string, budget ResourceBudget) error {

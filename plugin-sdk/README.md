@@ -119,9 +119,15 @@ structural `plugin.yaml v1` contract for publishers and hosts. Each package
 still owns the `config.schema.json` referenced by its manifest and may provide
 the host-rendered `ui.schema.json`; plugins do not define alternate manifest
 schemas. WASM policy packages declare `runtime.policy_kind` as exactly `ip`,
-`rate`, or `waf`; RPC packages omit it. Host validation adds runtime artifact,
-budget, permission, cleanup, and official signing-profile semantics to the
-shared structural schema.
+`rate`, or `waf` and keep `host_scope: agent`. RPC packages omit
+`policy_kind` unless they also project an Agent wasm-policy face: then
+`runtime.policy` carries the `nre:policy/v1` entry, budget, and failure
+policy, while the primary runtime remains control-plane `rpc-service`.
+That one plugin_id is the control-plane `ui.route` process and the Agent
+`PluginPolicies` wasm face; wasm-policy-only packages still cannot become
+a control-plane process. Host validation adds runtime artifact, budget,
+permission, cleanup, and official signing-profile semantics to the shared
+structural schema.
 
 Official packages use `package.files.json` plus `signature.json`. The Ed25519
 signature covers the raw 32-byte value decoded from `payload_sha256`, never its

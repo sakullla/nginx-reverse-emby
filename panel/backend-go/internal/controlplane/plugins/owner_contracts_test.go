@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -276,6 +277,49 @@ func TestValidatePackageAllowsResourceGroupExtension(t *testing.T) {
 	}
 }
 
+func TestValidatePackageAcceptsControlPlaneUIAndAgentWAFPolicyFace(t *testing.T) {
+	t.Parallel()
+	root := newSignedDualFaceWAFPackage(t)
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("dual-face waf package = %v", err)
+	}
+	if got.Manifest.ID != "official.waf" || !pluginsdk.RuntimeProjectsControlPlaneUIAndAgentPolicy(got.Manifest.Runtime) || pluginsdk.RuntimeProjectsAgentRPC(got.Manifest.Runtime) {
+		t.Fatalf("dual-face projection = %+v", got.Manifest.Runtime)
+	}
+	projection, ok := pluginsdk.ProjectAgentPolicy(got.Manifest)
+	if !ok || projection.PolicyKind != "waf" || projection.Entry != "artifacts/policy.wasm" || projection.ResourceBudget.TimeoutMS != 2 {
+		t.Fatalf("dual-face policy projection = %+v ok=%v", projection, ok)
+	}
+	if len(projection.ExtensionPoints) != 1 || projection.ExtensionPoints[0] != pluginsdk.ExtensionHTTPRequest {
+		t.Fatalf("dual-face policy-face extensions = %v", projection.ExtensionPoints)
+	}
+}
+
+func TestValidatePackageKeepsWASMPolicyOnAgentHost(t *testing.T) {
+	t.Parallel()
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "host_scope: agent", "host_scope: control-plane", 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	_, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err == nil || !strings.Contains(err.Error(), "wasm-policy requires nre:policy/v1 on the agent host") {
+		t.Fatalf("wasm-policy control-plane error = %v", err)
+	}
+}
+
+func TestValidatePackageRejectsRPCPolicyKindWithoutNestedFace(t *testing.T) {
+	t.Parallel()
+	root := newSignedDualFaceWAFPackage(t)
+	stripped := strings.Replace(validDualFaceManifestYAML(t, ownerRPCArtifact(t), ownerWASMArtifact()), dualFacePolicyYAML(), "", 1)
+	writeOwnerFile(t, root, PackageManifestFile, stripped)
+	refreshOwnerPackage(t, root)
+	_, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err == nil || !strings.Contains(err.Error(), "nested agent policy face") {
+		t.Fatalf("rpc policy_kind without nested face error = %v", err)
+	}
+}
+
 func TestValidatePackageAllowsHostRuleCapabilitiesByDefault(t *testing.T) {
 	t.Parallel()
 
@@ -473,4 +517,129 @@ func writeOwnerBytes(t *testing.T, root, name string, value []byte) {
 	if err := os.WriteFile(full, value, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func newSignedDualFaceWAFPackage(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	rpcArtifact := ownerRPCArtifact(t)
+	wasmArtifact := ownerWASMArtifact()
+	writeOwnerFile(t, root, PackageManifestFile, validDualFaceManifestYAML(t, rpcArtifact, wasmArtifact))
+	writeOwnerFile(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"additionalProperties":false}`)
+	writeOwnerBytes(t, root, ownerRPCArtifactPath(), rpcArtifact)
+	writeOwnerBytes(t, root, "artifacts/policy.wasm", wasmArtifact)
+	refreshOwnerPackage(t, root)
+	return root
+}
+
+func validDualFaceManifestYAML(t *testing.T, rpcArtifact, wasmArtifact []byte) string {
+	t.Helper()
+	rpcDigest := sha256.Sum256(rpcArtifact)
+	wasmDigest := sha256.Sum256(wasmArtifact)
+	rpcPath := ownerRPCArtifactPath()
+	return fmt.Sprintf(`schema_version: 1
+id: official.waf
+version: 1.0.0
+name: WAF
+compatibility:
+  host: ">=1.0.0 <2.0.0"
+  agent: ">=1.0.0 <2.0.0"
+runtime:
+  kind: rpc-service
+  abi: nre:rpc/v1
+  host_scope: control-plane
+  entry: plugin
+  policy_kind: waf
+%s
+artifacts:
+  - path: %s
+    sha256: %x
+    size: %d
+    mode: executable
+    goos: %s
+    goarch: %s
+  - path: artifacts/policy.wasm
+    sha256: %x
+    size: %d
+    mode: wasm
+extension_points: [ui.route, http.request]
+ui_route_id: official.waf
+permissions: [http.inspect]
+config_schema: config.schema.json
+resource_budget:
+  timeout_ms: 2000
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 4096
+  cpu_millis: 100
+  restarts: 1
+failure_policy:
+  on_error: fail-closed
+  on_budget: fail-closed
+  restart: on-failure
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
+cleanup:
+  instances: delete
+  config: delete
+  owned_data: delete
+  grants: delete
+  shared_refs: retain
+  audit_events: retain
+`, dualFacePolicyYAML(), rpcPath, rpcDigest, len(rpcArtifact), runtime.GOOS, runtime.GOARCH, wasmDigest, len(wasmArtifact))
+}
+
+func dualFacePolicyYAML() string {
+	return `  policy:
+    kind: wasm-policy
+    abi: nre:policy/v1
+    host_scope: agent
+    entry: artifacts/policy.wasm
+    resource_budget:
+      timeout_ms: 2
+      memory_bytes: 1048576
+      concurrency: 8
+      input_bytes: 65536
+      output_bytes: 4096
+    failure_policy:
+      on_error: fail-closed
+      on_budget: fail-closed
+      restart: never
+      core_fallback: preserve
+`
+}
+
+func ownerRPCArtifactPath() string {
+	name := "plugin"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.ToSlash(filepath.Join("artifacts", runtime.GOOS+"-"+runtime.GOARCH, name))
+}
+
+func ownerRPCArtifact(t *testing.T) []byte {
+	t.Helper()
+	candidates := []string{"true", "sleep"}
+	if runtime.GOOS == "windows" {
+		candidates = []string{filepath.Join(os.Getenv("SystemRoot"), "System32", "where.exe"), filepath.Join(os.Getenv("SystemRoot"), "System32", "hostname.exe")}
+	}
+	for _, candidate := range candidates {
+		data, err := os.ReadFile(candidate)
+		if err == nil && len(data) > 0 {
+			return data
+		}
+	}
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(source)
+	if err != nil || len(data) == 0 {
+		t.Fatalf("rpc fixture executable: %v", err)
+	}
+	return data
 }

@@ -5,6 +5,7 @@ package policy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 
 	"log/slog"
@@ -84,6 +85,71 @@ func TestPolicyChainRunsIPRateWAFInStrictOrderAndStopsOnRateDeny(t *testing.T) {
 	want := []model.PolicyKind{model.PolicyKindIP, model.PolicyKindRate}
 	if !reflect.DeepEqual(module.calls, want) {
 		t.Fatalf("calls = %v, want %v", module.calls, want)
+	}
+}
+
+func TestWAFInvalidOverlayFailClosedWithoutCallingGuest(t *testing.T) {
+	module := &scriptedModule{responses: map[model.PolicyKind]ModuleResponse{model.PolicyKindWAF: {Action: ActionAllow}}}
+	evaluator, err := NewGenerationEvaluator("generation-overlay", []model.PluginPolicy{testPolicy("waf", model.PolicyKindWAF)}, module, nil)
+	if err != nil {
+		t.Fatalf("NewGenerationEvaluator() error = %v", err)
+	}
+	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
+	for _, overlay := range []json.RawMessage{
+		json.RawMessage(`{"mode":"block"}`),
+		json.RawMessage(`{"mode":"deny","extra":true}`),
+		json.RawMessage(`[]`),
+		json.RawMessage(`not-json`),
+	} {
+		decision := evaluator.Evaluate(context.Background(), &model.PolicyRef{ID: "waf", Overlay: overlay}, input)
+		if decision.Action != ActionDeny || decision.StatusCode != 503 || decision.Reason != "invalid-overlay" || !decision.Degraded {
+			t.Fatalf("overlay %s decision = %+v", overlay, decision)
+		}
+	}
+	if len(module.calls) != 0 {
+		t.Fatalf("guest calls = %v, want none for invalid overlay", module.calls)
+	}
+}
+
+func TestWAFEmptyOrObserveOverlayReachesGuest(t *testing.T) {
+	module := &scriptedModule{responses: map[model.PolicyKind]ModuleResponse{model.PolicyKindWAF: {Action: ActionObserve}}}
+	evaluator, err := NewGenerationEvaluator("generation-overlay", []model.PluginPolicy{testPolicy("waf", model.PolicyKindWAF)}, module, nil)
+	if err != nil {
+		t.Fatalf("NewGenerationEvaluator() error = %v", err)
+	}
+	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
+	empty := evaluator.Evaluate(context.Background(), &model.PolicyRef{ID: "waf"}, input)
+	if empty.Action != ActionAllow || !empty.Observed {
+		t.Fatalf("empty overlay decision = %+v", empty)
+	}
+	observe := evaluator.Evaluate(context.Background(), &model.PolicyRef{ID: "waf", Overlay: json.RawMessage(`{"mode":"observe"}`)}, input)
+	if observe.Action != ActionAllow || !observe.Observed {
+		t.Fatalf("observe overlay decision = %+v", observe)
+	}
+	if len(module.calls) != 2 {
+		t.Fatalf("guest calls = %d, want 2", len(module.calls))
+	}
+}
+
+func TestWAFDenyOverlayIsPassedToGuest(t *testing.T) {
+	var payload []byte
+	module := &scriptedModule{
+		responses: map[model.PolicyKind]ModuleResponse{model.PolicyKindWAF: {Action: ActionDeny}},
+		inspect: func(request ModuleRequest) {
+			payload = append([]byte(nil), request.Payload...)
+		},
+	}
+	evaluator, err := NewGenerationEvaluator("generation-overlay", []model.PluginPolicy{testPolicy("waf", model.PolicyKindWAF)}, module, nil)
+	if err != nil {
+		t.Fatalf("NewGenerationEvaluator() error = %v", err)
+	}
+	overlay := json.RawMessage(`{"mode":"deny"}`)
+	decision := evaluator.Evaluate(context.Background(), &model.PolicyRef{ID: "waf", Overlay: overlay}, testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil)))
+	if decision.Action != ActionDeny || decision.StatusCode != 403 {
+		t.Fatalf("deny overlay decision = %+v", decision)
+	}
+	if !bytes.Equal(payload, overlay) {
+		t.Fatalf("guest payload = %s, want %s", payload, overlay)
 	}
 }
 

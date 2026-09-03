@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 
 	"io"
 	stdhttp "net/http"
@@ -150,6 +151,34 @@ func TestIPPolicyUntrustedOrMalformedXFFCannotForgeSource(t *testing.T) {
 	decision, allowed := server.allowPolicyRequest(malformed, rule)
 	if allowed || decision.Reason != "invalid-source" || calls != 1 {
 		t.Fatalf("malformed trusted XFF decision/calls = %+v/%d", decision, calls)
+	}
+}
+
+func TestHTTPPolicyObserveActionIsAllowed(t *testing.T) {
+	evaluator := httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, _ policy.Input) policy.Decision {
+		return policy.Decision{Action: policy.ActionObserve, Observed: true}
+	})
+	server := &Server{policyEvaluator: evaluator}
+	req := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
+	decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{
+		ID: "waf-policy", Overlay: json.RawMessage(`{"mode":"observe"}`),
+	}})
+	if !allowed || decision.Action != policy.ActionObserve {
+		t.Fatalf("observe decision = %+v, allowed=%v", decision, allowed)
+	}
+}
+
+func TestHTTPPolicyInvalidOverlayDenyIsFailClosed(t *testing.T) {
+	evaluator := httpPolicyEvaluatorFunc(func(_ context.Context, _ *model.PolicyRef, _ policy.Input) policy.Decision {
+		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "invalid-overlay", Degraded: true}
+	})
+	server := &Server{policyEvaluator: evaluator}
+	req := httptest.NewRequest(stdhttp.MethodGet, "http://media.example.test/", nil)
+	decision, allowed := server.allowPolicyRequest(req, model.HTTPRule{PolicyRef: &model.PolicyRef{
+		ID: "waf-policy", Overlay: json.RawMessage(`{"mode":"block"}`),
+	}})
+	if allowed || decision.Action != policy.ActionDeny || decision.Reason != "invalid-overlay" {
+		t.Fatalf("invalid overlay decision = %+v, allowed=%v", decision, allowed)
 	}
 }
 
