@@ -126,7 +126,7 @@ func postgresIntegrationSchemaDSN(t *testing.T) string {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("NRE_TEST_POSTGRES_DSN"))
 	if dsn == "" {
-		t.Skip("NRE_TEST_POSTGRES_DSN is not configured")
+		t.Fatal("NRE_TEST_POSTGRES_DSN is required for the canonical integration gate")
 	}
 	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {

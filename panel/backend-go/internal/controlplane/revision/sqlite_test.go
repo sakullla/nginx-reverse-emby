@@ -1,4 +1,4 @@
-//go:build !fast && !integration
+//go:build !fast
 
 package revision
 
