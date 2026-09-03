@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -129,8 +130,57 @@ func TestPluginCallAndHTTPRuleRequestsValidateWithoutInterpretingActionNames(t *
 	if err := (HTTPRuleRequest{Action: HTTPRuleActionList, AgentID: "edge-a", Domain: "app.example.com"}).Validate(); err == nil {
 		t.Fatal("http.rule list accepted a domain")
 	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCreate, AgentID: "edge-a", Domain: "app.example.com", Port: 8096, Overlay: json.RawMessage(`{"mode":"deny"}`)}).Validate(); err == nil {
+		t.Fatal("http.rule create accepted overlay")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionList, AgentID: "edge-a", Overlay: json.RawMessage(`{"mode":"observe"}`)}).Validate(); err == nil {
+		t.Fatal("http.rule list accepted overlay")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionDelete, RuleRef: "12", Overlay: json.RawMessage(`{"mode":"deny"}`)}).Validate(); err == nil {
+		t.Fatal("http.rule delete accepted overlay")
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: "12", Overlay: json.RawMessage(`{"mode":"deny"}`)}).Validate(); err != nil {
+		t.Fatalf("http.rule cutover overlay: %v", err)
+	}
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: "12", Overlay: json.RawMessage(`{`)}).Validate(); err == nil {
+		t.Fatal("http.rule cutover accepted invalid overlay JSON")
+	}
+	oversizedOverlay := json.RawMessage(`"` + strings.Repeat("a", PluginHostPayloadMaxBytes) + `"`)
+	if err := (HTTPRuleRequest{Action: HTTPRuleActionCutover, RuleRef: "12", Overlay: oversizedOverlay}).Validate(); err == nil {
+		t.Fatal("http.rule cutover accepted an oversized overlay")
+	}
+	if err := (InstanceConfigRequest{}).Validate(); err == nil {
+		t.Fatal("empty instance.config was accepted")
+	}
+	if err := (InstanceConfigRequest{Config: json.RawMessage(`{"mode":"deny"}`)}).Validate(); err != nil {
+		t.Fatalf("instance.config: %v", err)
+	}
+	if err := (InstanceConfigRequest{Config: json.RawMessage(`{`)}).Validate(); err == nil {
+		t.Fatal("instance.config accepted invalid JSON")
+	}
+	if err := (InstanceConfigRequest{Config: oversizedOverlay}).Validate(); err == nil {
+		t.Fatal("instance.config accepted an oversized payload")
+	}
+	if err := (EventListRequest{}).Validate(); err == nil {
+		t.Fatal("event.list without agent_id was accepted")
+	}
+	if err := (EventListRequest{AgentID: "edge-a"}).Validate(); err != nil {
+		t.Fatalf("event.list: %v", err)
+	}
+	if err := (EventListRequest{AgentID: "edge-a", Code: "waf.rule_match"}).Validate(); err != nil {
+		t.Fatalf("event.list code: %v", err)
+	}
+	if err := (EventListRequest{AgentID: "edge-a", Code: "contains\nnewline"}).Validate(); err == nil {
+		t.Fatal("event.list accepted an invalid code")
+	}
 	if err := (HostRuntimeCall{Operation: HostRuntimeHTTPRule}).Validate(); err != nil {
 		t.Fatalf("http.rule host operation: %v", err)
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeInstanceConfig}).Validate(); err != nil {
+		t.Fatalf("instance.config host operation: %v", err)
+	}
+	if err := (HostRuntimeCall{Operation: HostRuntimeEventList}).Validate(); err != nil {
+		t.Fatalf("event.list host operation: %v", err)
 	}
 	if err := (HostRuntimeCall{Operation: HostRuntimeHTTPBackendOffer}).Validate(); err != nil {
 		t.Fatalf("http.backend-offer host operation: %v", err)

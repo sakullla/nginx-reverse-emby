@@ -89,6 +89,16 @@ func TestPluginHostMutationsRequireDurableOperationID(t *testing.T) {
 	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeChannelReverse, Payload: teardownPayload}) {
 		t.Fatal("channel.reverse teardown did not require a durable operation id")
 	}
+	if !pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeInstanceConfig}) {
+		t.Fatal("instance.config did not require a durable operation id")
+	}
+	eventListPayload, err := json.Marshal(pluginsdk.EventListRequest{AgentID: "edge-a", Code: "waf.rule_match"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pluginHostCallRequiresOperation(pluginsdk.HostRuntimeCall{Operation: pluginsdk.HostRuntimeEventList, Payload: eventListPayload}) {
+		t.Fatal("event.list unexpectedly required a mutation operation id")
+	}
 }
 
 func TestPluginHostSecretRevealPreservesMaterialUntilResponseEncoding(t *testing.T) {
@@ -538,6 +548,244 @@ func TestPluginHostHTTPRuleCreatePreservesHTTPSFrontendAndRejectsInvalid(t *test
 	remaining, err := rules.List(t.Context(), "edge-a")
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("https delete left rules = %+v err=%v", remaining, err)
+	}
+}
+
+func TestPluginHostHTTPRuleListReturnsPolicyRef(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager := &PluginCapabilityManager{store: store}
+	manager.SetRuleService(rules)
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionHTTPRule}
+
+	createPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionCreate, AgentID: "edge-a", Domain: "app.example.com", Port: 8096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-policyref-create",
+		Payload:     createPayload,
+	})
+	if created.Error != nil {
+		t.Fatalf("http.rule create error = %v", created.Error)
+	}
+	rows, err := store.ListHTTPRules(t.Context(), "edge-a")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("created rows = %+v err=%v", rows, err)
+	}
+	rows[0].PolicyRefJSON = marshalJSON(&storage.PolicyRef{ID: "official.waf-default", Overlay: json.RawMessage(`{"mode":"observe"}`)}, "")
+	if err := store.SaveHTTPRules(t.Context(), "edge-a", rows); err != nil {
+		t.Fatal(err)
+	}
+
+	listPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionList, AgentID: "edge-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeHTTPRule,
+		Payload:   listPayload,
+	})
+	if listed.Error != nil {
+		t.Fatalf("http.rule list error = %v", listed.Error)
+	}
+	var listedRules pluginsdk.HTTPRuleListResponse
+	if err := json.Unmarshal(listed.Payload, &listedRules); err != nil {
+		t.Fatal(err)
+	}
+	if len(listedRules.Rules) != 1 || listedRules.Rules[0].PolicyRef == nil || listedRules.Rules[0].PolicyRef.ID != "official.waf-default" || string(listedRules.Rules[0].PolicyRef.Overlay) != `{"mode":"observe"}` {
+		t.Fatalf("http.rule list policy_ref = %+v", listedRules)
+	}
+}
+
+func TestPluginHostHTTPRuleCutoverOverlayUpdatesDeny(t *testing.T) {
+	t.Parallel()
+	fixture := newOfficialWAFDisableLifecycleFixture(t)
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, fixture.store)
+	manager := &PluginCapabilityManager{store: fixture.store}
+	manager.SetRuleService(rules)
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionHTTPRule}
+
+	createPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionCreate, AgentID: "local", Domain: "app.example.com", Port: 8096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-overlay-create",
+		Payload:     createPayload,
+	})
+	if created.Error != nil {
+		t.Fatalf("http.rule create error = %v", created.Error)
+	}
+	var createdResult struct {
+		RuleRef string `json:"rule_ref"`
+	}
+	if err := json.Unmarshal(created.Payload, &createdResult); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := rules.List(t.Context(), "local")
+	if err != nil || len(listed) != 1 || listed[0].PolicyRef == nil || listed[0].PolicyRef.ID == "" {
+		t.Fatalf("created rule missing policy_ref = %+v err=%v", listed, err)
+	}
+	policyID := listed[0].PolicyRef.ID
+
+	cutoverPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{
+		Action:  pluginsdk.HTTPRuleActionCutover,
+		AgentID: "local",
+		RuleRef: createdResult.RuleRef,
+		Overlay: json.RawMessage(`{"mode":"deny"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutover := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-overlay-deny",
+		Payload:     cutoverPayload,
+	})
+	if cutover.Error != nil {
+		t.Fatalf("http.rule overlay cutover error = %v", cutover.Error)
+	}
+	updated, err := rules.Get(t.Context(), "local", listed[0].ID)
+	if err != nil || updated.PolicyRef == nil || updated.PolicyRef.ID != policyID || string(updated.PolicyRef.Overlay) != `{"mode":"deny"}` {
+		t.Fatalf("overlay cutover lost policy_ref = %+v err=%v", updated.PolicyRef, err)
+	}
+}
+
+func TestPluginHostHTTPRuleCutoverOverlayRejectsUnmounted(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := NewRuleService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	manager := &PluginCapabilityManager{store: store}
+	manager.SetRuleService(rules)
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionHTTPRule}
+
+	createPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{Action: pluginsdk.HTTPRuleActionCreate, AgentID: "edge-a", Domain: "app.example.com", Port: 8096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-unmounted-create",
+		Payload:     createPayload,
+	})
+	if created.Error != nil {
+		t.Fatalf("http.rule create error = %v", created.Error)
+	}
+	var createdResult struct {
+		RuleRef string `json:"rule_ref"`
+	}
+	if err := json.Unmarshal(created.Payload, &createdResult); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := rules.List(t.Context(), "edge-a")
+	if err != nil || len(listed) != 1 || listed[0].PolicyRef != nil {
+		t.Fatalf("unmounted fixture = %+v err=%v", listed, err)
+	}
+
+	cutoverPayload, err := json.Marshal(pluginsdk.HTTPRuleRequest{
+		Action:  pluginsdk.HTTPRuleActionCutover,
+		AgentID: "edge-a",
+		RuleRef: createdResult.RuleRef,
+		Overlay: json.RawMessage(`{"mode":"deny"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeHTTPRule,
+		OperationID: "http-rule-unmounted-overlay",
+		Payload:     cutoverPayload,
+	})
+	if denied.Error == nil || denied.Error.Code != pluginsdk.ErrorInvalidArgument {
+		t.Fatalf("unmounted overlay error = %v", denied.Error)
+	}
+	unchanged, err := rules.Get(t.Context(), "edge-a", listed[0].ID)
+	if err != nil || unchanged.PolicyRef != nil {
+		t.Fatalf("unmounted overlay mutated rule = %+v err=%v", unchanged, err)
+	}
+}
+
+func TestPluginHostInstanceConfigStoresJSON(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	manager := &PluginCapabilityManager{store: store}
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{pluginsdk.PermissionStorageWrite}
+	seedHTTPBackendOfferInstance(t, store, candidate)
+
+	payload, err := json.Marshal(pluginsdk.InstanceConfigRequest{Config: json.RawMessage(`{"mode":"deny","threshold":2}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation:   pluginsdk.HostRuntimeInstanceConfig,
+		OperationID: "instance-config-1",
+		Payload:     payload,
+	})
+	if stored.Error != nil {
+		t.Fatalf("instance.config error = %v", stored.Error)
+	}
+	var result pluginsdk.InstanceConfigResponse
+	if err := json.Unmarshal(stored.Payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Stored {
+		t.Fatal("instance.config stored=false")
+	}
+	instance, found, err := store.GetPluginInstance(t.Context(), candidate.InstanceID)
+	if err != nil || !found {
+		t.Fatalf("GetPluginInstance found=%v err=%v", found, err)
+	}
+	if instance.ConfigJSON != `{"mode":"deny","threshold":2}` || instance.ConfigVersion != 2 {
+		t.Fatalf("instance config = %+v", instance)
+	}
+}
+
+func TestPluginHostEventListReturnsWAFRuleMatch(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	manager := &PluginCapabilityManager{store: store}
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{"event.emit"}
+	if err := store.AppendAuditEvent(t.Context(), storage.AuditEventRow{
+		ID: "audit-waf-rule-match", ActorID: "plugin/" + candidate.Identity.PluginID, Action: "waf.rule_match",
+		TargetKind: "agent", TargetID: "edge-a", ResourceGroupID: candidate.ResourceGroupID,
+		Result: "success", MetadataJSON: `{"site":"app.example.com","rule_id":"r1","digest":"abc","disposition":"deny","reason":"xss","action":"deny","code":"waf.rule_match"}`,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := json.Marshal(pluginsdk.EventListRequest{AgentID: "edge-a", Code: "waf.rule_match"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginsdk.HostRuntimeEventList,
+		Payload:   payload,
+	})
+	if listed.Error != nil {
+		t.Fatalf("event.list error = %v", listed.Error)
+	}
+	var result pluginsdk.EventListResponse
+	if err := json.Unmarshal(listed.Payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 || result.Events[0].Code != "waf.rule_match" || result.Events[0].Action != "deny" || result.Events[0].Disposition != "deny" || result.Events[0].Site != "app.example.com" || result.Events[0].RuleID != "r1" || result.Events[0].Digest != "abc" || result.Events[0].Reason != "xss" {
+		t.Fatalf("event.list = %+v", result)
 	}
 }
 

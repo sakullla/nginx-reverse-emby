@@ -34,6 +34,12 @@ type pluginHostResourceStore interface {
 	GetPluginRuntimeState(context.Context, string, string) ([]byte, bool, error)
 	PutPluginRuntimeState(context.Context, storage.PluginRuntimeStateRow) error
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
+	ListAuditEvents(context.Context, int) ([]storage.AuditEventRow, error)
+}
+
+type pluginHostInstanceConfigStore interface {
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	PutPluginInstanceConfigJSON(context.Context, string, json.RawMessage) error
 }
 
 func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.Context, candidate pluginhost.Candidate, call pluginsdk.HostRuntimeCall) pluginsdk.HostRuntimeResponse {
@@ -96,6 +102,10 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostL4Rule(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeChannelReverse:
 		payload, err = manager.pluginHostChannelReverse(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeInstanceConfig:
+		payload, err = manager.pluginHostInstanceConfig(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeEventList:
+		payload, err = manager.pluginHostEventList(ctx, candidate, call.Payload)
 	default:
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	}
@@ -141,6 +151,10 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionL4Rule
 	case pluginsdk.HostRuntimeChannelReverse:
 		return pluginsdk.PermissionChannelReverse
+	case pluginsdk.HostRuntimeInstanceConfig:
+		return pluginsdk.PermissionStorageWrite
+	case pluginsdk.HostRuntimeEventList:
+		return "event.emit"
 	default:
 		return ""
 	}
@@ -156,8 +170,11 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
-	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule {
+	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule || call.Operation == pluginsdk.HostRuntimeInstanceConfig {
 		return true
+	}
+	if call.Operation == pluginsdk.HostRuntimeEventList {
+		return false
 	}
 	if call.Operation == pluginsdk.HostRuntimeHTTPRule {
 		var input pluginsdk.HTTPRuleRequest
@@ -532,6 +549,128 @@ func (manager *PluginCapabilityManager) pluginHostEvent(ctx context.Context, can
 	return map[string]any{"emitted": err == nil}, err
 }
 
+func (manager *PluginCapabilityManager) pluginHostInstanceConfig(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (pluginsdk.InstanceConfigResponse, error) {
+	var input pluginsdk.InstanceConfigRequest
+	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return pluginsdk.InstanceConfigResponse{}, errPluginHostInvalid
+	}
+	store, ok := manager.store.(pluginHostInstanceConfigStore)
+	if !ok {
+		return pluginsdk.InstanceConfigResponse{}, errPluginHostUnavailable
+	}
+	instance, found, err := store.GetPluginInstance(ctx, candidate.InstanceID)
+	if err != nil {
+		return pluginsdk.InstanceConfigResponse{}, err
+	}
+	if !found || strings.TrimSpace(instance.ID) == "" {
+		return pluginsdk.InstanceConfigResponse{}, errPluginHostUnavailable
+	}
+	if instance.PluginID != candidate.Identity.PluginID {
+		return pluginsdk.InstanceConfigResponse{}, errPluginHostDenied
+	}
+	if err := store.PutPluginInstanceConfigJSON(ctx, instance.ID, input.Config); err != nil {
+		if errors.Is(err, storage.ErrPluginNotInstalled) {
+			return pluginsdk.InstanceConfigResponse{}, errPluginHostUnavailable
+		}
+		if errors.Is(err, storage.ErrPluginConflict) {
+			return pluginsdk.InstanceConfigResponse{}, errPluginHostInvalid
+		}
+		return pluginsdk.InstanceConfigResponse{}, err
+	}
+	return pluginsdk.InstanceConfigResponse{Stored: true}, nil
+}
+
+func (manager *PluginCapabilityManager) pluginHostEventList(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (pluginsdk.EventListResponse, error) {
+	var input pluginsdk.EventListRequest
+	if decodePluginHostPayload(raw, &input) != nil || input.Validate() != nil {
+		return pluginsdk.EventListResponse{}, errPluginHostInvalid
+	}
+	store, ok := manager.store.(pluginHostResourceStore)
+	if !ok {
+		return pluginsdk.EventListResponse{}, errPluginHostUnavailable
+	}
+	rows, err := store.ListAuditEvents(ctx, 100)
+	if err != nil {
+		return pluginsdk.EventListResponse{}, err
+	}
+	actor := "plugin/" + candidate.Identity.PluginID
+	events := make([]pluginsdk.PolicyEvent, 0)
+	for _, row := range rows {
+		if row.ActorID != actor {
+			continue
+		}
+		event, ok := projectPluginHostPolicyEvent(row, input)
+		if !ok {
+			continue
+		}
+		events = append(events, event)
+	}
+	return pluginsdk.EventListResponse{Events: events}, nil
+}
+
+func projectPluginHostPolicyEvent(row storage.AuditEventRow, request pluginsdk.EventListRequest) (pluginsdk.PolicyEvent, bool) {
+	metadata := map[string]any{}
+	if strings.TrimSpace(row.MetadataJSON) != "" {
+		_ = json.Unmarshal([]byte(row.MetadataJSON), &metadata)
+	}
+	metaString := func(keys ...string) string {
+		for _, key := range keys {
+			value, ok := metadata[key]
+			if !ok {
+				continue
+			}
+			text, ok := value.(string)
+			if !ok {
+				continue
+			}
+			text = strings.TrimSpace(text)
+			if text != "" {
+				return text
+			}
+		}
+		return ""
+	}
+	code := firstNonEmpty(row.Action, metaString("code"))
+	if request.Code != "" && row.Action != request.Code && metaString("code") != request.Code {
+		return pluginsdk.PolicyEvent{}, false
+	}
+	if request.AgentID != "" {
+		agentID := firstNonEmpty(row.TargetID, metaString("agent_id"))
+		if agentID != "" && agentID != request.AgentID {
+			return pluginsdk.PolicyEvent{}, false
+		}
+	}
+	action := pluginHostPolicyEventAction(firstNonEmpty(metaString("action"), metaString("disposition"), row.Result))
+	disposition := pluginHostPolicyEventAction(firstNonEmpty(metaString("disposition"), action))
+	return pluginsdk.PolicyEvent{
+		Site:        metaString("site"),
+		RuleID:      metaString("rule_id", "ruleId"),
+		Digest:      metaString("digest"),
+		Disposition: disposition,
+		Reason:      metaString("reason"),
+		Code:        code,
+		Action:      firstNonEmpty(action, disposition),
+	}, true
+}
+
+func pluginHostPolicyEventAction(value string) string {
+	switch strings.TrimSpace(value) {
+	case "observe", "deny":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 type pluginHostTaskDispatcher interface {
 	HasSession(string) bool
 	CreateAndDispatchContext(context.Context, TaskCreateRequest) (TaskRecord, error)
@@ -879,6 +1018,7 @@ func (manager *PluginCapabilityManager) pluginHostHTTPRuleList(ctx context.Conte
 			FrontendURL: rule.FrontendURL,
 			Backend:     pluginHostHTTPRuleBackend(rule),
 			Enabled:     rule.Enabled,
+			PolicyRef:   pluginHostPolicyRef(rule.PolicyRef),
 		})
 	}
 	return map[string]any{"rules": items}, nil
@@ -954,7 +1094,19 @@ func (manager *PluginCapabilityManager) pluginHostHTTPRuleCutover(ctx context.Co
 		}
 		update.FrontendURL = &frontend
 	}
-	if update.Backends == nil && update.FrontendURL == nil {
+	if pluginHostOverlayPresent(input.Overlay) {
+		if rule.PolicyRef == nil || strings.TrimSpace(rule.PolicyRef.ID) == "" {
+			return nil, errPluginHostInvalid
+		}
+		if err := validateWAFPolicyOverlay(input.Overlay); err != nil {
+			return nil, errPluginHostInvalid
+		}
+		update.PolicyRef = &storage.PolicyRef{
+			ID:      rule.PolicyRef.ID,
+			Overlay: append(json.RawMessage(nil), input.Overlay...),
+		}
+	}
+	if update.Backends == nil && update.FrontendURL == nil && update.PolicyRef == nil {
 		return pluginHostHTTPRuleResult(rule), nil
 	}
 	updated, err := rules.Update(ctx, rule.AgentID, rule.ID, update)
@@ -1060,12 +1212,32 @@ func pluginHostInstanceTargetsAgent(runtime pluginsdk.Runtime, raw, agentID, loc
 }
 
 func pluginHostHTTPRuleResult(rule HTTPRule) map[string]any {
-	return map[string]any{
+	result := map[string]any{
 		"rule_ref":     strconv.Itoa(rule.ID),
 		"agent_id":     rule.AgentID,
 		"frontend_url": rule.FrontendURL,
 		"backend_url":  pluginHostHTTPRuleBackend(rule),
 	}
+	if ref := pluginHostPolicyRef(rule.PolicyRef); ref != nil {
+		result["policy_ref"] = ref
+	}
+	return result
+}
+
+func pluginHostPolicyRef(ref *storage.PolicyRef) *pluginsdk.PolicyRef {
+	if ref == nil || strings.TrimSpace(ref.ID) == "" {
+		return nil
+	}
+	projected := &pluginsdk.PolicyRef{ID: ref.ID}
+	if len(ref.Overlay) > 0 {
+		projected.Overlay = append(json.RawMessage(nil), ref.Overlay...)
+	}
+	return projected
+}
+
+func pluginHostOverlayPresent(overlay json.RawMessage) bool {
+	overlay = bytes.TrimSpace(overlay)
+	return len(overlay) > 0 && string(overlay) != "null"
 }
 
 func pluginHostHTTPRuleBackend(rule HTTPRule) string {
