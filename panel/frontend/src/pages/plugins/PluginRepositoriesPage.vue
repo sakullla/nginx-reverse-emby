@@ -71,7 +71,7 @@
         show-footer
         @update:model-value="inspectVisible = $event"
       >
-        <div v-if="selectedSource" class="repository-detail">
+        <div v-if="selectedSource" class="repository-detail" data-test="repository-source-inspect">
           <div class="repository-detail__header">
             <div class="repository-detail__eyebrow">
               <span>{{ purposeLabel(selectedSource.purpose) }}</span>
@@ -138,32 +138,6 @@
             </dl>
           </details>
 
-          <section class="repository-packages" aria-labelledby="repository-packages-title">
-            <div class="repository-packages__heading">
-              <h3 id="repository-packages-title">{{ selectedSource.purpose === 'plugin' ? '插件包' : '市场条目' }}</h3>
-              <span v-if="selectedSource.purpose === 'market'">{{ repositoryContents.entries.length }}</span>
-            </div>
-            <p v-if="contentsLoading" class="repository-packages__empty">正在读取包投影…</p>
-            <p v-else-if="contentsFailed" class="repository-packages__empty">读取包投影失败</p>
-            <div v-else-if="repositoryContents.directPlugin" class="repository-package-row">
-              <div>
-                <strong>{{ repositoryContents.directPlugin.name || repositoryContents.directPlugin.id }}</strong>
-                <small>{{ repositoryContents.directPlugin.version }} · {{ repositoryContents.directPlugin.runtime?.kind || 'runtime 未声明' }}</small>
-              </div>
-              <code :title="repositoryContents.directPlugin.sha256">{{ repositoryContents.directPlugin.sha256 }}</code>
-            </div>
-            <div v-else-if="repositoryContents.entries.length" class="repository-package-list">
-              <div v-for="entry in repositoryContents.entries" :key="`${entry.id}@${entry.version}`" class="repository-package-row">
-                <div>
-                  <strong>{{ entry.name || entry.id }}</strong>
-                  <small>{{ entry.version }} · {{ entry.runtime?.kind || 'runtime 未声明' }}</small>
-                </div>
-                <code :title="entry.sha256">{{ entry.sha256 }}</code>
-              </div>
-            </div>
-            <p v-else class="repository-packages__empty">当前快照没有可用包。下一步：立即刷新该来源，成功后再去市场安装。</p>
-          </section>
-
           <p class="repository-detail__notice">
             删除仓库源只会停止从该 Git 来源继续发现或刷新内容，不会卸载已经安装的插件。
             <RouterLink to="/plugins">到已安装列表继续部署或发布</RouterLink>
@@ -202,12 +176,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 import {
   createRepositorySource,
   deleteRepositorySource,
-  fetchRepositoryContents,
   fetchRepositorySources,
   refreshRepositorySource,
   updateRepositorySource
@@ -221,7 +194,6 @@ import BaseModal from '../../components/base/BaseModal.vue'
 import { messageStore } from '../../stores/messages'
 
 const sources = ref([])
-const previewMode = ref(false)
 const selectedId = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -231,22 +203,17 @@ const showForm = ref(false)
 const editingSource = ref(null)
 const confirmingDelete = ref(false)
 const inspectVisible = ref(false)
-const contentsLoading = ref(false)
-const contentsFailed = ref(false)
-const repositoryContents = ref({ entries: [], directPlugin: null })
 
 const selectedSource = computed(() => sources.value.find((source) => source.id === selectedId.value) || null)
 const refreshing = computed(() => refreshingId.value === selectedId.value)
 
 onMounted(loadSources)
-watch(selectedId, (id) => loadContents(id))
 
 async function loadSources(preferredId = selectedId.value) {
   loading.value = true
   loadError.value = ''
   try {
     sources.value = await fetchRepositorySources()
-    previewMode.value = false
     const keep = sources.value.some((source) => source.id === preferredId) ? preferredId : ''
     selectedId.value = keep
     if (keep && inspectVisible.value) inspectVisible.value = true
@@ -259,7 +226,6 @@ async function loadSources(preferredId = selectedId.value) {
 }
 
 function applyPreviewSources() {
-  previewMode.value = true
   sources.value = [
     {
       id: 'official-market',
@@ -292,33 +258,6 @@ function applyPreviewSources() {
       last_completed_at: new Date().toISOString(),
     },
   ]
-}
-
-async function loadContents(id) {
-  repositoryContents.value = { entries: [], directPlugin: null }
-  contentsFailed.value = false
-  if (!id) return
-  contentsLoading.value = true
-  try {
-    const contents = await fetchRepositoryContents(id)
-    if (selectedId.value === id) repositoryContents.value = contents
-  } catch (cause) {
-    if (selectedId.value === id) {
-      if (previewMode.value) {
-        repositoryContents.value = {
-          entries: [
-            { id: 'official.waf', name: '网站防火墙', version: '2.1.0', runtime: { kind: 'wasm-policy' }, sha256: 'preview-waf' }
-          ],
-          directPlugin: null
-        }
-      } else {
-        contentsFailed.value = true
-        messageStore.error(sanitizePluginText(cause?.message || '读取仓库包投影失败'))
-      }
-    }
-  } finally {
-    if (selectedId.value === id) contentsLoading.value = false
-  }
 }
 
 function openSource(source) {
@@ -371,7 +310,6 @@ async function refreshSelected() {
   try {
     await refreshRepositorySource(id)
     await loadSources(id)
-    await loadContents(id)
     messageStore.success('仓库源已刷新')
   } catch (cause) {
     messageStore.error(sanitizePluginText(cause?.message || '刷新仓库源失败'))
@@ -540,39 +478,6 @@ function formatDate(value) {
 .repository-state--pending { color: var(--color-warning); }
 .repository-technical { margin-top: var(--space-3); }
 .repository-technical summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--text-sm); }
-.repository-packages { margin-top: var(--space-3); border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-3); }
-.repository-packages__heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.repository-packages__heading h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; }
-.repository-packages__heading span { color: var(--color-text-muted); font-size: var(--text-xs); }
-.repository-package-list {
-  display: grid;
-  margin-top: var(--space-2);
-  max-height: 13.5rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.repository-package-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, 0.5fr);
-  align-items: center;
-  gap: 0.75rem;
-  margin: 0;
-  padding: 0.42rem 0;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-.repository-package-row:last-child { border-bottom: 0; }
-.repository-package-row div { display: grid; gap: 1px; min-width: 0; }
-.repository-package-row strong { font-size: 0.8125rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.repository-package-row small { color: var(--color-text-muted); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.repository-package-row code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-}
-.repository-packages__empty { margin: var(--space-2) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .repository-detail__notice { margin: var(--space-3) 0 0; color: var(--color-text-muted); font-size: var(--text-xs); }
 .repository-detail__notice a { color: var(--color-primary); text-decoration: none; }
 .repository-detail__notice a:hover { text-decoration: underline; }
@@ -584,7 +489,6 @@ function formatDate(value) {
   .repository-detail__facts { grid-template-columns: 1fr; }
   .repository-detail__fact-wide { grid-column: auto; }
   .repository-detail__facts > div:nth-child(odd):not(.repository-detail__fact-wide) { padding-right: 0; }
-  .repository-package-row { grid-template-columns: 1fr; gap: var(--space-2); }
 }
 
 @media (min-width: 1920px) { .plugin-repositories-page { max-width: 1600px; } }

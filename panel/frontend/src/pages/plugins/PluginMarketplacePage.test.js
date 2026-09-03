@@ -5,10 +5,19 @@ import { messageStore } from '../../stores/messages'
 
 const mocks = vi.hoisted(() => ({
   fetchRepositorySources: vi.fn(), fetchRepositoryContents: vi.fn(), fetchPlugins: vi.fn(),
-  fetchPluginPackageDetail: vi.fn(), installPlugin: vi.fn(), upgradePlugin: vi.fn(), push: vi.fn()
+  fetchPluginPackageDetail: vi.fn(), installPlugin: vi.fn(), upgradePlugin: vi.fn(), push: vi.fn(),
+  refreshRepositorySource: vi.fn(), createRepositorySource: vi.fn(), updateRepositorySource: vi.fn(),
+  deleteRepositorySource: vi.fn()
 }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }))
-vi.mock('../../api/pluginRepositories', () => ({ fetchRepositorySources: mocks.fetchRepositorySources, fetchRepositoryContents: mocks.fetchRepositoryContents }))
+vi.mock('../../api/pluginRepositories', () => ({
+  fetchRepositorySources: mocks.fetchRepositorySources,
+  fetchRepositoryContents: mocks.fetchRepositoryContents,
+  refreshRepositorySource: mocks.refreshRepositorySource,
+  createRepositorySource: mocks.createRepositorySource,
+  updateRepositorySource: mocks.updateRepositorySource,
+  deleteRepositorySource: mocks.deleteRepositorySource
+}))
 vi.mock('../../api/plugins', () => ({
   fetchPlugins: mocks.fetchPlugins,
   fetchPluginPackageDetail: mocks.fetchPluginPackageDetail,
@@ -24,14 +33,15 @@ vi.mock('../../components/base/BaseModal.vue', () => ({
       subtitle: { type: String, default: '' },
       size: { type: String, default: 'md' },
       showFooter: { type: Boolean, default: false },
-      closeOnClickModal: { type: Boolean, default: true }
+      closeOnClickModal: { type: Boolean, default: true },
+      dataTest: { type: String, default: '' }
     },
     emits: ['update:modelValue', 'confirm'],
-    template: '<div v-if="modelValue" class="modal-stub"><div class="modal-title">{{ title }}</div><div class="modal-body"><slot /></div><div v-if="showFooter" class="modal-footer"><slot name="footer" /></div></div>'
+    template: '<div v-if="modelValue" class="modal-stub" :data-test="dataTest"><div class="modal-title">{{ title }}</div><div class="modal-body"><slot /></div><div v-if="showFooter" class="modal-footer"><slot name="footer" /></div></div>'
   }
 }))
 
-const source = { id: 'community', kind: 'custom', risk_label: 'untrusted', purpose: 'market' }
+const source = { id: 'community', name: 'Community', kind: 'custom', risk_label: 'untrusted', purpose: 'market' }
 const entry = {
   id: 'official.waf', name: 'WAF', version: '1.2.0', sha256: 'a'.repeat(64),
   runtime: { kind: 'wasm-policy', abi: 'nre:policy/v1', host_scope: 'agent' },
@@ -79,6 +89,10 @@ beforeEach(() => {
   mocks.fetchPluginPackageDetail.mockReset().mockResolvedValue(packageDetail)
   mocks.installPlugin.mockReset().mockResolvedValue({ plugin_id: entry.id })
   mocks.upgradePlugin.mockReset().mockResolvedValue({})
+  mocks.refreshRepositorySource.mockReset().mockResolvedValue({ source_id: source.id })
+  mocks.createRepositorySource.mockReset().mockResolvedValue(source)
+  mocks.updateRepositorySource.mockReset().mockResolvedValue(source)
+  mocks.deleteRepositorySource.mockReset().mockResolvedValue({ ok: true })
   mocks.push.mockReset()
 })
 
@@ -91,9 +105,83 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.find('.page-subtitle').text()).toContain('下一步')
     expect(wrapper.find('.page-subtitle').text()).toContain('发布')
     expect(wrapper.find('.back-link').attributes('href')).toBe('/plugins')
-    expect(wrapper.find('.page-header__right a').attributes('href')).toBe('/plugins/repositories')
-    expect(wrapper.find('.page-header__right a').text()).toBe('插件仓库')
-    expect(wrapper.find('.page-header__right a').classes()).toContain('btn-secondary')
+    expect(wrapper.find('a[href="/plugins/repositories"]').exists()).toBe(false)
+    const repoButton = wrapper.get('[data-test="marketplace-repositories"]')
+    expect(repoButton.element.tagName).toBe('BUTTON')
+    expect(repoButton.text()).toBe('插件仓库')
+    expect(repoButton.classes()).toContain('btn-secondary')
+    expect(wrapper.get('[data-test="marketplace-catalog-refresh"]').text()).toBe('更新')
+    expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).toBe('尚未更新')
+  })
+
+  it('opens an in-page repository modal instead of navigating to the repositories page', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    const contentsCalls = mocks.fetchRepositoryContents.mock.calls.length
+    await wrapper.get('[data-test="marketplace-repositories"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.page-title').text()).toBe('插件市场')
+    expect(wrapper.get('[data-test="plugin-repositories-modal"]').exists()).toBe(true)
+    expect(wrapper.find('.modal-title').text()).toBe('插件仓库')
+    expect(wrapper.text()).toContain('Community')
+    expect(mocks.push).not.toHaveBeenCalled()
+    expect(wrapper.find('a[href="/plugins/repositories"]').exists()).toBe(false)
+    await wrapper.find('.repository-card').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="repository-source-inspect"]').exists()).toBe(true)
+    expect(wrapper.find('.repository-packages').exists()).toBe(false)
+    expect(wrapper.find('.repository-package-list').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('市场条目')
+    expect(mocks.fetchRepositoryContents).toHaveBeenCalledTimes(contentsCalls)
+    expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('refreshes each catalog source then reloads the catalog', async () => {
+    mocks.fetchRepositorySources.mockResolvedValue([{ ...source, last_completed_at: '2026-08-10T08:00:00Z' }])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).toBe('2026/08/10 08:00:00')
+    const contentsCalls = mocks.fetchRepositoryContents.mock.calls.length
+    await wrapper.get('[data-test="marketplace-catalog-refresh"]').trigger('click')
+    await flushPromises()
+    expect(mocks.refreshRepositorySource).toHaveBeenCalledWith(source.id)
+    expect(mocks.fetchRepositoryContents.mock.calls.length).toBeGreaterThan(contentsCalls)
+    expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).toBe('2026/08/10 08:00:00')
+    expect(wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).exists()).toBe(true)
+  })
+
+  it('keeps successful catalog sources and the last completed time when one refresh fails', async () => {
+    const official = {
+      id: 'official',
+      name: 'Official',
+      kind: 'official',
+      purpose: 'market',
+      last_completed_at: '2026-08-10T08:00:00Z'
+    }
+    const community = { ...source, last_completed_at: '2026-08-09T08:00:00Z' }
+    mocks.fetchRepositorySources.mockResolvedValue([official, community])
+    mocks.fetchRepositoryContents.mockImplementation(async (id) => (
+      id === official.id
+        ? { entries: [{ ...entry, id: 'official.helper', name: 'Helper' }], directPlugin: null }
+        : { entries: [entry], directPlugin: null }
+    ))
+    mocks.refreshRepositorySource
+      .mockResolvedValueOnce({ source_id: official.id })
+      .mockRejectedValueOnce(new Error('community refresh failed'))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Helper')
+    expect(wrapper.text()).toContain('WAF')
+    expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).toBe('2026/08/10 08:00:00')
+    await wrapper.get('[data-test="marketplace-catalog-refresh"]').trigger('click')
+    await flushPromises()
+    expect(mocks.refreshRepositorySource).toHaveBeenCalledWith(official.id)
+    expect(mocks.refreshRepositorySource).toHaveBeenCalledWith(community.id)
+    expect(wrapper.text()).toContain('Helper')
+    expect(wrapper.text()).toContain('WAF')
+    expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).toBe('2026/08/10 08:00:00')
+    expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).not.toBe('尚未更新')
+    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('community refresh failed')
   })
 
   it('shows a spinner while loading', () => {
@@ -245,9 +333,11 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     const action = wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`)
     expect(action.text()).toBe('更新')
+    expect(wrapper.get('[data-test="marketplace-catalog-refresh"]').text()).toBe('更新')
     await action.trigger('click')
     await flushPromises()
     expect(wrapper.find('.modal-title').text()).toBe('确认升级插件')
+    expect(mocks.refreshRepositorySource).not.toHaveBeenCalled()
     await buttonByText(wrapper, '确认升级').trigger('click')
     await flushPromises()
     expect(mocks.upgradePlugin).toHaveBeenCalledWith(entry.id, expect.objectContaining({
@@ -263,9 +353,13 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('暂无插件')
     expect(wrapper.text()).toContain('下一步')
-    const repositoryLinks = wrapper.findAll('a[href="/plugins/repositories"]')
-    expect(repositoryLinks.length).toBeGreaterThanOrEqual(2)
-    expect(repositoryLinks.every((link) => link.text() === '插件仓库')).toBe(true)
+    expect(wrapper.find('a[href="/plugins/repositories"]').exists()).toBe(false)
+    const repositoryButtons = wrapper.findAll('button').filter((button) => button.text() === '插件仓库')
+    expect(repositoryButtons.length).toBeGreaterThanOrEqual(2)
+    await wrapper.get('[data-test="marketplace-repositories-empty"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="plugin-repositories-modal"]').exists()).toBe(true)
+    expect(mocks.push).not.toHaveBeenCalled()
   })
 
   it('does not advertise an upgrade when the version is unchanged but the catalog digest was rebuilt', async () => {

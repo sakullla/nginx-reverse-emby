@@ -8,15 +8,13 @@ const {
   createRepositorySource,
   updateRepositorySource,
   deleteRepositorySource,
-  refreshRepositorySource,
-  fetchRepositoryContents
+  refreshRepositorySource
 } = vi.hoisted(() => ({
   fetchRepositorySources: vi.fn(),
   createRepositorySource: vi.fn(),
   updateRepositorySource: vi.fn(),
   deleteRepositorySource: vi.fn(),
-  refreshRepositorySource: vi.fn(),
-  fetchRepositoryContents: vi.fn()
+  refreshRepositorySource: vi.fn()
 }))
 
 vi.mock('../../api/pluginRepositories', () => ({
@@ -24,8 +22,7 @@ vi.mock('../../api/pluginRepositories', () => ({
   createRepositorySource,
   updateRepositorySource,
   deleteRepositorySource,
-  refreshRepositorySource,
-  fetchRepositoryContents
+  refreshRepositorySource
 }))
 
 vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
@@ -103,9 +100,6 @@ beforeEach(() => {
   updateRepositorySource.mockReset().mockResolvedValue(customSource)
   deleteRepositorySource.mockReset().mockResolvedValue({ ok: true })
   refreshRepositorySource.mockReset().mockResolvedValue({ source_id: customSource.id, commit: customSource.current_resolved_oid })
-  fetchRepositoryContents.mockReset().mockImplementation(async (id) => id === customSource.id
-    ? { entries: [], directPlugin: { id: 'team.waf', version: '1.2.3', runtime: { kind: 'wasm-policy' }, sha256: 'a'.repeat(64) } }
-    : { entries: [{ id: 'official.waf', version: '1.0.0', runtime: { kind: 'wasm-policy' }, sha256: 'b'.repeat(64) }], directPlugin: null })
 })
 
 afterEach(() => {
@@ -159,8 +153,10 @@ describe('PluginRepositoriesPage', () => {
     expect(wrapper.text()).toContain('自定义来源 · custom-review-required')
     expect(wrapper.text()).toContain('Git 凭据')
     expect(wrapper.text()).toContain('已配置')
-    expect(wrapper.text()).toContain('team.waf')
-    expect(wrapper.text()).toContain('wasm-policy')
+    expect(wrapper.text()).not.toContain('team.waf')
+    expect(wrapper.text()).not.toContain('wasm-policy')
+    expect(wrapper.find('.repository-packages').exists()).toBe(false)
+    expect(wrapper.find('.repository-package-list').exists()).toBe(false)
   })
 
   it('surfaces the durable refresh error in both status and detail', async () => {
@@ -224,15 +220,19 @@ describe('PluginRepositoriesPage', () => {
     expect(createRepositorySource).toHaveBeenCalled()
   })
 
-  it('shows a distinct placeholder when package contents fail to load', async () => {
-    fetchRepositoryContents.mockRejectedValue(new Error('snapshot unavailable'))
+  it('does not list plugin packages or market entries when inspecting a source', async () => {
     await mountPage()
     await openSource('Team Plugins')
 
-    expect(wrapper.text()).not.toContain('snapshot unavailable')
-    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('snapshot unavailable')
-    expect(wrapper.text()).toContain('读取包投影失败')
+    expect(wrapper.find('.repository-packages').exists()).toBe(false)
+    expect(wrapper.find('.repository-package-list').exists()).toBe(false)
+    expect(wrapper.find('.repository-package-row').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('team.waf')
+    expect(wrapper.text()).not.toContain('市场条目')
+    expect(wrapper.text()).not.toContain('读取包投影失败')
     expect(wrapper.text()).not.toContain('当前快照没有可用包')
+    expect(wrapper.text()).toContain('当前可用')
+    expect(wrapper.text()).toContain('立即刷新')
   })
 
   it('keeps official sources immutable in the UI while allowing refresh', async () => {
@@ -242,10 +242,11 @@ describe('PluginRepositoriesPage', () => {
     expect(wrapper.text()).toContain('官方来源 · official')
     expect(buttonByText('编辑')).toBeUndefined()
     expect(buttonByText('删除源')).toBeUndefined()
-    expect(wrapper.text()).toContain('official.waf')
+    expect(wrapper.text()).not.toContain('official.waf')
+    expect(wrapper.text()).not.toContain('市场条目')
+    expect(wrapper.find('.repository-package-list').exists()).toBe(false)
     expect(buttonByText('关闭').classes()).toEqual(expect.arrayContaining(['btn-ghost', 'btn-sm']))
     expect(buttonByText('立即刷新').classes()).toEqual(expect.arrayContaining(['btn-primary', 'btn-sm']))
-    expect(wrapper.find('.repository-package-list').exists()).toBe(true)
 
     await buttonByText('立即刷新').trigger('click')
     await flushPromises()

@@ -1,9 +1,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchRepositoryContents, fetchRepositorySources } from '../api/pluginRepositories'
+import { fetchRepositoryContents, fetchRepositorySources, refreshRepositorySource } from '../api/pluginRepositories'
 import { fetchPluginPackageDetail, fetchPlugins, installPlugin, upgradePlugin } from '../api/plugins'
 import { sanitizePluginText } from '../api/pluginSecurity'
 import { messageStore } from '../stores/messages'
+import { formatPanelDateTime } from '../utils/panelDateTime.js'
 
 const downloadSteps = [
   { id: 'download', label: '下载签名包' },
@@ -92,10 +93,13 @@ export function useMarketplaceCatalog() {
   const loading = ref(true)
   const actionBusy = ref(false)
   const detailLoading = ref(false)
+  const catalogRefreshing = ref(false)
   const error = ref('')
   const actionError = ref('')
   const packages = ref([])
   const installed = ref([])
+  const catalogSources = ref([])
+  const lastCatalogCompletedAt = ref('')
   const selected = ref(null)
   const detail = ref(null)
   const detailPrepared = ref(false)
@@ -155,26 +159,118 @@ export function useMarketplaceCatalog() {
       : '安装后会进入详情。下一步：部署到一个节点。'
   })
 
+  const catalogUpdatedLabel = computed(() => {
+    if (!lastCatalogCompletedAt.value) return '尚未更新'
+    const formatted = formatPanelDateTime(lastCatalogCompletedAt.value, '')
+    return formatted || '尚未更新'
+  })
+
   onMounted(load)
   onBeforeUnmount(stopDownloadProgress)
 
-  async function load() {
-    loading.value = true
+  function catalogSourceList(sourceList) {
+    return (sourceList || []).filter((sourceItem) => String(sourceItem?.id || '').trim())
+  }
+
+  function latestCompletedAt(sourceList) {
+    let latestMs = Number.NaN
+    let latestValue = ''
+    for (const sourceItem of catalogSourceList(sourceList)) {
+      const raw = sourceItem?.last_completed_at
+      if (raw == null || raw === '') continue
+      const ms = new Date(raw).getTime()
+      if (!Number.isFinite(ms)) continue
+      if (!Number.isFinite(latestMs) || ms > latestMs) {
+        latestMs = ms
+        latestValue = raw
+      }
+    }
+    return latestValue
+  }
+
+  function rememberCatalogCompletedAt(sourceList) {
+    const next = latestCompletedAt(sourceList)
+    if (next) lastCatalogCompletedAt.value = next
+  }
+
+  function packagesFromContents(sourceList, contentResults, previousPackages) {
+    const previousBySource = new Map()
+    for (const item of previousPackages || []) {
+      const id = String(item?.source?.id || '').trim()
+      if (!id) continue
+      const list = previousBySource.get(id) || []
+      list.push(item)
+      previousBySource.set(id, list)
+    }
+    return sourceList.flatMap((sourceItem, index) => {
+      const result = contentResults[index]
+      if (!result || result.status === 'rejected') {
+        return previousBySource.get(sourceItem.id) || []
+      }
+      const value = result.value || { entries: [], directPlugin: null }
+      const entries = [...(value.entries || [])]
+      if (value.directPlugin) entries.push(value.directPlugin)
+      return entries.map((plugin) => ({ source: sourceItem, plugin }))
+    })
+  }
+
+  async function load(options = {}) {
+    const silent = options.silent === true
+    if (!silent) loading.value = true
     error.value = ''
     try {
-      const [sources, current] = await Promise.all([fetchRepositorySources(), fetchPlugins()])
+      const [sourceList, current] = await Promise.all([fetchRepositorySources(), fetchPlugins()])
+      catalogSources.value = catalogSourceList(sourceList)
       installed.value = current
-      const contents = await Promise.all(sources.map(async (sourceItem) => ({ source: sourceItem, contents: await fetchRepositoryContents(sourceItem.id) })))
-      packages.value = contents.flatMap(({ source: sourceItem, contents: value }) => {
-        const entries = [...(value.entries || [])]
-        if (value.directPlugin) entries.push(value.directPlugin)
-        return entries.map((plugin) => ({ source: sourceItem, plugin }))
-      })
+      rememberCatalogCompletedAt(catalogSources.value)
+      const contentResults = await Promise.allSettled(
+        catalogSources.value.map((sourceItem) => fetchRepositoryContents(sourceItem.id))
+      )
+      packages.value = packagesFromContents(catalogSources.value, contentResults, packages.value)
     } catch (cause) {
-      applyPreviewPackages()
+      if (!packages.value.length) applyPreviewPackages()
       error.value = ''
     } finally {
       loading.value = false
+    }
+  }
+
+  async function refreshCatalog() {
+    if (catalogRefreshing.value || actionBusy.value || detailLoading.value) return
+    catalogRefreshing.value = true
+    try {
+      let sourceList = catalogSources.value
+      if (!sourceList.length) {
+        try {
+          sourceList = catalogSourceList(await fetchRepositorySources())
+          catalogSources.value = sourceList
+          rememberCatalogCompletedAt(sourceList)
+        } catch (cause) {
+          messageStore.error(sanitizePluginText(cause?.message || '读取仓库源失败'))
+          return
+        }
+      }
+      const failures = []
+      const results = await Promise.allSettled(
+        sourceList.map((sourceItem) => refreshRepositorySource(sourceItem.id))
+      )
+      results.forEach((result, index) => {
+        if (result.status !== 'rejected') return
+        const sourceItem = sourceList[index]
+        failures.push({
+          id: sourceItem?.id,
+          name: sourceItem?.name || sourceItem?.id || '仓库源',
+          message: sanitizePluginText(result.reason?.message || '刷新仓库源失败')
+        })
+      })
+      await load({ silent: true })
+      if (failures.length) {
+        messageStore.error(failures.map((item) => `${item.name}：${item.message}`).join('；'))
+        return
+      }
+      if (sourceList.length) messageStore.success('市场目录已更新')
+    } finally {
+      catalogRefreshing.value = false
     }
   }
 
@@ -469,10 +565,13 @@ export function useMarketplaceCatalog() {
     loading,
     actionBusy,
     detailLoading,
+    catalogRefreshing,
     error,
     actionError,
     packages,
     installed,
+    catalogSources,
+    catalogUpdatedLabel,
     selected,
     detail,
     detailPrepared,
@@ -492,6 +591,7 @@ export function useMarketplaceCatalog() {
     pluginPurpose,
     nextStepHint,
     load,
+    refreshCatalog,
     showCatalogItem,
     startCardAction,
     cancelConfirm,

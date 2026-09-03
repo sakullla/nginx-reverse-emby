@@ -5,6 +5,7 @@ import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
+import PluginRepositoriesModal from '../../components/plugins/PluginRepositoriesModal.vue'
 import ViewToggle from '../../components/common/ViewToggle.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
 import { useMarketplaceCatalog } from '../../composables/useMarketplaceCatalog'
@@ -13,11 +14,13 @@ const router = useRouter()
 const { view } = useViewToggle('plugin-marketplace')
 const query = ref('')
 const searchInputRef = ref(null)
+const repoModalOpen = ref(false)
 
 const {
   loading,
   actionBusy,
   detailLoading,
+  catalogRefreshing,
   error,
   actionError,
   packages,
@@ -33,7 +36,9 @@ const {
   selectedDetailPath,
   hasPendingDetailLink,
   nextStepHint,
+  catalogUpdatedLabel,
   load,
+  refreshCatalog,
   startCardAction,
   cancelConfirm,
   onConfirmVisible,
@@ -75,6 +80,14 @@ function openMarketplaceDetail(item) {
   const href = marketplaceDetailHref(item)
   if (href) router.push(href)
 }
+
+function openRepositories() {
+  repoModalOpen.value = true
+}
+
+function onRepositoriesUpdated() {
+  load({ silent: true })
+}
 </script>
 
 <template>
@@ -114,7 +127,26 @@ function openMarketplaceDetail(item) {
           </button>
         </div>
         <ViewToggle v-if="packages.length" v-model:view="view" />
-        <RouterLink class="btn btn-secondary" to="/plugins/repositories">插件仓库</RouterLink>
+        <div class="catalog-sync">
+          <button
+            class="btn btn-secondary"
+            type="button"
+            data-test="marketplace-catalog-refresh"
+            :disabled="catalogRefreshing || loading"
+            @click="refreshCatalog"
+          >
+            {{ catalogRefreshing ? '更新中…' : '更新' }}
+          </button>
+          <span class="catalog-sync__time" data-test="marketplace-catalog-updated-at">{{ catalogUpdatedLabel }}</span>
+        </div>
+        <button
+          class="btn btn-secondary"
+          type="button"
+          data-test="marketplace-repositories"
+          @click="openRepositories"
+        >
+          插件仓库
+        </button>
       </div>
     </header>
 
@@ -133,7 +165,7 @@ function openMarketplaceDetail(item) {
 
     <EmptyState v-else-if="!packages.length" icon="🧩" title="暂无插件" description="当前市场没有可安装的插件。下一步：到仓库检查来源是否刷新成功。">
       <template #action>
-        <RouterLink class="btn btn-secondary" to="/plugins/repositories">插件仓库</RouterLink>
+        <button class="btn btn-secondary" type="button" data-test="marketplace-repositories-empty" @click="openRepositories">插件仓库</button>
       </template>
     </EmptyState>
 
@@ -293,6 +325,11 @@ function openMarketplaceDetail(item) {
         </template>
       </BaseModal>
     </template>
+
+    <PluginRepositoriesModal
+      v-model="repoModalOpen"
+      @updated="onRepositoriesUpdated"
+    />
   </main>
 </template>
 
@@ -325,6 +362,19 @@ function openMarketplaceDetail(item) {
   flex: 1 1 12rem;
   min-width: 0;
   max-width: 22rem;
+}
+
+.catalog-sync {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.catalog-sync__time {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
 
 .back-link {
