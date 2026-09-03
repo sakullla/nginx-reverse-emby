@@ -1469,6 +1469,46 @@ describe('PluginDetailPage', () => {
     expect(more.find('.plugin-log-viewer select option[value="control-plane"]').exists()).toBe(false)
   })
 
+  it('does not keep the previous instance log filter after switching tabs', async () => {
+    mocks.fetchPluginLogs.mockImplementation(async (_pluginId, instanceId, options = {}) => {
+      if (instanceId === 'waf-a') {
+        return {
+          entries: [{
+            agent_id: options.agentID || 'edge-a',
+            level: 'info',
+            message: options.agentID ? 'filtered-a' : 'from-a',
+            created_at: '2026-08-01T00:00:00Z'
+          }],
+          next_cursor: ''
+        }
+      }
+      return {
+        entries: [{ agent_id: 'edge-b', level: 'info', message: 'from-b', created_at: '2026-08-03T00:00:00Z' }],
+        next_cursor: ''
+      }
+    })
+    const wrapper = await mountPage(makeDetail({
+      instances: [
+        makeInstance({ id: 'waf-a', resource_group_id: 'group-a', bindings: [], config: { mode: 'observe' } }),
+        makeInstance({ id: 'waf-b', resource_group_id: 'group-b', targets: ['edge-b'], bindings: [], config: { mode: 'block' }, config_version: 2 })
+      ]
+    }))
+    const more = await openMore(wrapper)
+    await more.get('.plugin-log-viewer select').setValue('edge-a')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-a', expect.objectContaining({ agentID: 'edge-a' }))
+
+    await wrapper.get('[data-test="plugin-instance-tabs"] button:last-child').trigger('click')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.waf', 'waf-b', expect.objectContaining({ agentID: '' }))
+    expect(more.get('.plugin-log-viewer select').element.value).toBe('')
+    expect(more.findAll('.plugin-log-viewer select option').map((option) => option.element.value)).toEqual(['', 'edge-b'])
+    expect(more.find('.plugin-log-viewer select option[value="edge-a"]').exists()).toBe(false)
+    expect(more.get('.plugin-log-viewer').text()).toContain('from-b')
+    expect(more.get('.plugin-log-viewer').text()).not.toContain('from-a')
+    expect(more.get('.plugin-log-viewer').text()).not.toContain('filtered-a')
+  })
+
   it('falls back to agent id in logs when the agent has no name', async () => {
     mocks.fetchAgents.mockResolvedValue([{ id: 'edge-a', status: 'online' }])
     mocks.fetchPluginLogs.mockResolvedValue({

@@ -31,6 +31,60 @@ describe('PluginLogViewer', () => {
     expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 5 }))
   })
 
+  it('resets the agent filter and batch ids when the instance changes', async () => {
+    mocks.fetchPluginLogs
+      .mockResolvedValueOnce({
+        entries: [
+          { agent_id: 'edge-a', level: 'info', message: 'from-a', created_at: '2026-08-02T00:00:00Z' },
+          { agent_id: 'batch-old', level: 'info', message: 'old-batch', created_at: '2026-08-01T00:00:00Z' }
+        ],
+        next_cursor: ''
+      })
+      .mockResolvedValueOnce({
+        entries: [{ agent_id: 'edge-a', level: 'info', message: 'filtered-a', created_at: '2026-08-02T00:00:00Z' }],
+        next_cursor: ''
+      })
+    let resolveNext
+    const next = new Promise((resolve) => { resolveNext = resolve })
+    mocks.fetchPluginLogs.mockReturnValueOnce(next)
+
+    const wrapper = mount(PluginLogViewer, {
+      props: {
+        pluginId: 'official.rpc',
+        instanceId: 'rpc-a',
+        agents: [{ id: 'edge-a', name: 'Edge A' }]
+      }
+    })
+    await flushPromises()
+    expect(wrapper.find('select option[value="batch-old"]').exists()).toBe(true)
+    await wrapper.get('select').setValue('edge-a')
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-a', expect.objectContaining({ agentID: 'edge-a', cursor: '', limit: 5 }))
+
+    await wrapper.setProps({
+      instanceId: 'rpc-b',
+      agents: [{ id: 'edge-b', name: 'Edge B' }]
+    })
+    expect(mocks.fetchPluginLogs).toHaveBeenLastCalledWith('official.rpc', 'rpc-b', expect.objectContaining({ agentID: '', cursor: '', limit: 5 }))
+    expect(wrapper.get('select').element.value).toBe('')
+    expect(wrapper.findAll('select option').map((option) => option.element.value)).toEqual(['', 'edge-b'])
+    expect(wrapper.find('select option[value="edge-a"]').exists()).toBe(false)
+    expect(wrapper.find('select option[value="batch-old"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('from-a')
+    expect(wrapper.text()).not.toContain('old-batch')
+    expect(wrapper.text()).not.toContain('filtered-a')
+
+    resolveNext({
+      entries: [{ agent_id: 'edge-b', level: 'info', message: 'from-b', created_at: '2026-08-03T00:00:00Z' }],
+      next_cursor: ''
+    })
+    await flushPromises()
+    expect(wrapper.get('select').element.value).toBe('')
+    expect(wrapper.findAll('select option').map((option) => option.element.value)).toEqual(['', 'edge-b'])
+    expect(wrapper.text()).toContain('from-b')
+    expect(wrapper.get('li strong').text()).toBe('Edge B')
+  })
+
 	it('discards a deferred stale response after the selected instance changes', async () => {
 		let resolveFirst
 		const first = new Promise((resolve) => { resolveFirst = resolve })

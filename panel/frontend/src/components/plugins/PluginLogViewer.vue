@@ -41,7 +41,14 @@ let generation = 0
 let controller = null
 
 onMounted(() => load(true))
-watch(() => [props.pluginId, props.instanceId, agentID.value], () => load(true))
+watch(() => [props.pluginId, props.instanceId], () => {
+  const hadFilter = agentID.value !== ''
+  agentID.value = ''
+  entries.value = []
+  error.value = ''
+  if (!hadFilter) load(true)
+})
+watch(agentID, () => load(true))
 onBeforeUnmount(() => controller?.abort())
 
 async function load(selectionChanged = false) {

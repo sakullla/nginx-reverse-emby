@@ -936,7 +936,7 @@ async function retryAgent(status) {
                 <p>最近 5 条宿主持久化日志，按时间从新到旧。</p>
               </div>
             </header>
-            <PluginLogViewer :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="logViewerAgents" />
+            <PluginLogViewer :key="selectedInstance.id" :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="logViewerAgents" />
           </section>
 
           <section class="plugin-ops-panel">
