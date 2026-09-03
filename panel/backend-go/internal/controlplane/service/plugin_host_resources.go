@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +25,8 @@ import (
 )
 
 const pluginHostSecretPurpose = "plugin.host.runtime"
+
+const pluginHostNodeAddressesOperation = "node.addresses"
 
 const (
 	pluginHostOperationScope = "plugin.host.runtime"
@@ -86,6 +89,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostSecretRequest(ctx, candidate, call.Payload)
 	case "event.emit":
 		payload, err = manager.pluginHostEvent(ctx, candidate, call.Payload)
+	case pluginHostNodeAddressesOperation:
+		payload, err = manager.pluginHostNodeAddresses(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimePluginCall:
 		payload, err = manager.pluginHostPluginCall(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeHTTPRule:
@@ -133,6 +138,8 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionHTTPOutbound
 	case "event.emit":
 		return "event.emit"
+	case pluginHostNodeAddressesOperation:
+		return "agent.read"
 	case "operation.inspect":
 		return "storage.read"
 	case pluginsdk.HostRuntimeHTTPRule, pluginsdk.HostRuntimeHTTPBackendOffer:
@@ -144,6 +151,63 @@ func pluginHostOperationPermission(operation string) string {
 	default:
 		return ""
 	}
+}
+
+type pluginHostNodeAddressesRequest struct {
+	AgentID string `json:"agent_id"`
+}
+
+type pluginHostNodeAddressStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+}
+
+func (manager *PluginCapabilityManager) pluginHostNodeAddresses(ctx context.Context, candidate pluginhost.Candidate, raw json.RawMessage) (map[string]any, error) {
+	var input pluginHostNodeAddressesRequest
+	if decodePluginHostPayload(raw, &input) != nil || pluginsdk.ValidatePolicyIdentity(input.AgentID) != nil {
+		return nil, errPluginHostInvalid
+	}
+	binding, found, err := manager.store.PluginCapabilityTargetBinding(ctx, "agent", input.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errPluginHostInvalid
+	}
+	if binding.ResourceGroupID != candidate.ResourceGroupID {
+		return nil, errPluginHostDenied
+	}
+	store, ok := manager.store.(pluginHostNodeAddressStore)
+	if !ok {
+		return nil, errPluginHostUnavailable
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, agent := range agents {
+		if agent.ID != input.AgentID {
+			continue
+		}
+		ipv4, ipv6 := strings.TrimSpace(agent.LastSeenIPv4), strings.TrimSpace(agent.LastSeenIPv6)
+		observed := strings.Trim(strings.TrimSpace(agent.LastSeenIP), "[]")
+		if ip := net.ParseIP(observed); ip != nil {
+			if ip.To4() != nil && ipv4 == "" {
+				ipv4 = ip.String()
+			} else if ip.To4() == nil && ipv6 == "" {
+				ipv6 = ip.String()
+			}
+		}
+		var ddns struct {
+			Domain string `json:"domain"`
+		}
+		_ = json.Unmarshal([]byte(agent.DdnsConfigJSON), &ddns)
+		return map[string]any{
+			"ddns_domain":    strings.TrimSpace(ddns.Domain),
+			"last_seen_ipv4": ipv4,
+			"last_seen_ipv6": ipv6,
+		}, nil
+	}
+	return nil, errPluginHostInvalid
 }
 
 func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) bool {

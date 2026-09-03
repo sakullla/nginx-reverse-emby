@@ -139,6 +139,56 @@ func TestPluginHostSecretRevealPreservesMaterialUntilResponseEncoding(t *testing
 	}
 }
 
+func TestPluginHostNodeAddressesUsesObservedRemoteIPFallback(t *testing.T) {
+	t.Parallel()
+	store := newServiceOwnerStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-a", Name: "edge-a", LastSeenIP: "203.0.113.17",
+		DdnsConfigJSON: `{"domain":"ss.example.com"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{
+		ID: "binding-edge-a", ResourceKind: "agent", ResourceID: "edge-a",
+		ResourceGroupID: "default", UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := &PluginCapabilityManager{store: store}
+	candidate := pluginCallCandidate()
+	candidate.Grants = []string{"agent.read"}
+	payload, err := json.Marshal(pluginHostNodeAddressesRequest{AgentID: "edge-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginHostNodeAddressesOperation,
+		Payload:   payload,
+	})
+	if response.Error != nil {
+		t.Fatalf("node.addresses error = %v", response.Error)
+	}
+	var addresses struct {
+		DDNS         string `json:"ddns_domain"`
+		LastSeenIPv4 string `json:"last_seen_ipv4"`
+	}
+	if err := json.Unmarshal(response.Payload, &addresses); err != nil {
+		t.Fatal(err)
+	}
+	if addresses.DDNS != "ss.example.com" || addresses.LastSeenIPv4 != "203.0.113.17" {
+		t.Fatalf("node.addresses = %+v", addresses)
+	}
+
+	candidate.Grants = nil
+	denied := manager.DispatchPluginHostResource(t.Context(), candidate, pluginsdk.HostRuntimeCall{
+		Operation: pluginHostNodeAddressesOperation,
+		Payload:   payload,
+	})
+	if denied.Error == nil || denied.Error.Code != pluginsdk.ErrorPermissionDenied {
+		t.Fatalf("ungranted node.addresses error = %v", denied.Error)
+	}
+}
+
 func TestPluginHostRuntimeServicesUnboundUntilSetters(t *testing.T) {
 	t.Parallel()
 	store := newServiceOwnerStore(t)
