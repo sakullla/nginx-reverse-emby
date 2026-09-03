@@ -1,20 +1,20 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
+import PluginMarketplaceInspectModal from '../../components/plugins/PluginMarketplaceInspectModal.vue'
 import PluginRepositoriesModal from '../../components/plugins/PluginRepositoriesModal.vue'
 import ViewToggle from '../../components/common/ViewToggle.vue'
 import { useViewToggle } from '../../composables/useViewToggle'
 import { useMarketplaceCatalog } from '../../composables/useMarketplaceCatalog'
 
-const router = useRouter()
 const { view } = useViewToggle('plugin-marketplace')
 const query = ref('')
 const searchInputRef = ref(null)
 const repoModalOpen = ref(false)
+const inspectVisible = ref(false)
 
 const {
   loading,
@@ -25,6 +25,8 @@ const {
   actionError,
   packages,
   selected,
+  detail,
+  detailPrepared,
   confirmVisible,
   downloadElapsedSec,
   downloadSteps,
@@ -33,12 +35,15 @@ const {
   source,
   isUpgrade,
   requiredPermissions,
+  alreadyInstalled,
   selectedDetailPath,
   hasPendingDetailLink,
+  pluginPurpose,
   nextStepHint,
   catalogUpdatedLabel,
   load,
   refreshCatalog,
+  showCatalogItem,
   startCardAction,
   cancelConfirm,
   onConfirmVisible,
@@ -52,7 +57,6 @@ const {
   pluginBlurb,
   sourceKindLabel,
   packageKey,
-  marketplaceDetailHref,
 } = useMarketplaceCatalog()
 
 const filteredPackages = computed(() => {
@@ -76,9 +80,18 @@ function focusSearch() {
   searchInputRef.value?.focus?.()
 }
 
-function openMarketplaceDetail(item) {
-  const href = marketplaceDetailHref(item)
-  if (href) router.push(href)
+function openMarketplaceInspect(item) {
+  if (!item?.plugin?.id) return
+  showCatalogItem(item)
+  inspectVisible.value = true
+}
+
+function onInspectVisible(open) {
+  inspectVisible.value = open
+}
+
+function onInspectAction() {
+  if (selected.value) startCardAction(selected.value)
 }
 
 function openRepositories() {
@@ -173,42 +186,38 @@ function onRepositoriesUpdated() {
       <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
 
       <section v-else-if="view === 'card'" class="plugin-marketplace-catalog" aria-label="可安装插件">
-        <RouterLink
+        <BaseListCard
           v-for="item in filteredPackages"
           :key="packageKey(item)"
-          class="marketplace-card-link"
-          :to="marketplaceDetailHref(item)"
-          :data-test="`marketplace-detail-link-${item.plugin.id}`"
+          class="marketplace-card"
+          :class="{ 'marketplace-card--active': isSelected(item) }"
+          clickable
+          :data-test="`marketplace-package-${item.plugin.id}`"
+          @click="openMarketplaceInspect(item)"
         >
-          <BaseListCard
-            class="marketplace-card"
-            :class="{ 'marketplace-card--active': isSelected(item) }"
-            :clickable="false"
-          >
-            <template #header-left>
-              <span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span>
-              <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
-            </template>
-            <template #header-right>
-              <span class="marketplace-card__version">{{ item.plugin.version }}</span>
-            </template>
-            <p v-if="pluginBlurb(item)" class="marketplace-card__blurb">{{ pluginBlurb(item) }}</p>
-            <template #footer>
-              <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
-                {{ sourceKindLabel(item.source.kind) }}
-              </BaseBadge>
-              <button
-                type="button"
-                :class="tableActionClass(item)"
-                :data-test="`marketplace-card-action-${item.plugin.id}`"
-                :disabled="actionBusy || detailLoading"
-                @click.stop.prevent="startCardAction(item)"
-              >
-                {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
-              </button>
-            </template>
-          </BaseListCard>
-        </RouterLink>
+          <template #header-left>
+            <span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span>
+            <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
+          </template>
+          <template #header-right>
+            <span class="marketplace-card__version">{{ item.plugin.version }}</span>
+          </template>
+          <p v-if="pluginBlurb(item)" class="marketplace-card__blurb">{{ pluginBlurb(item) }}</p>
+          <template #footer>
+            <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
+              {{ sourceKindLabel(item.source.kind) }}
+            </BaseBadge>
+            <button
+              type="button"
+              :class="tableActionClass(item)"
+              :data-test="`marketplace-card-action-${item.plugin.id}`"
+              :disabled="actionBusy || detailLoading"
+              @click.stop.prevent="startCardAction(item)"
+            >
+              {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
+            </button>
+          </template>
+        </BaseListCard>
       </section>
 
       <div v-else class="plugin-catalog-table-wrap" data-test="marketplace-table">
@@ -227,18 +236,12 @@ function onRepositoriesUpdated() {
               v-for="item in filteredPackages"
               :key="packageKey(item)"
               :class="{ 'plugin-catalog-table__row--active': isSelected(item) }"
-              @click="openMarketplaceDetail(item)"
+              :data-test="`marketplace-package-${item.plugin.id}`"
+              @click="openMarketplaceInspect(item)"
             >
               <td>
                 <div class="plugin-catalog-table__name">
-                  <RouterLink
-                    class="plugin-catalog-table__name-link"
-                    :to="marketplaceDetailHref(item)"
-                    :data-test="`marketplace-detail-link-${item.plugin.id}`"
-                    @click.stop
-                  >
-                    <strong :title="pluginTitle(item)">{{ pluginTitle(item) }}</strong>
-                  </RouterLink>
+                  <strong :title="pluginTitle(item)">{{ pluginTitle(item) }}</strong>
                   <small v-if="pluginBlurb(item)">{{ pluginBlurb(item) }}</small>
                 </div>
               </td>
@@ -260,7 +263,7 @@ function onRepositoriesUpdated() {
                     :class="tableActionClass(item)"
                     :data-test="`marketplace-card-action-${item.plugin.id}`"
                     :disabled="actionBusy || detailLoading"
-                    @click="startCardAction(item)"
+                    @click.stop="startCardAction(item)"
                   >
                     {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
                   </button>
@@ -270,66 +273,90 @@ function onRepositoriesUpdated() {
           </tbody>
         </table>
       </div>
-
-      <BaseModal
-        :model-value="confirmVisible"
-        :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
-        :subtitle="pluginTitle(selected)"
-        size="sm"
-        :close-on-click-modal="!actionBusy"
-        show-footer
-        @update:model-value="onConfirmVisible"
-      >
-        <div class="confirm-permissions">
-          <p v-if="hasPendingDetailLink" class="confirm-pending-next">
-            <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
-          </p>
-          <div v-if="detailLoading" class="package-download-progress" data-test="marketplace-detail-loading">
-            <p class="package-download-progress__title">{{ downloadPhaseLabel }}</p>
-            <p class="package-download-progress__hint">{{ downloadHint }}</p>
-            <div
-              class="package-download-progress__track"
-              role="progressbar"
-              aria-valuemin="0"
-              aria-valuemax="100"
-              :aria-valuetext="downloadPhaseLabel"
-            >
-              <div class="package-download-progress__fill"></div>
-            </div>
-            <ol class="package-download-progress__steps">
-              <li
-                v-for="step in downloadSteps"
-                :key="step.id"
-                :class="{ 'is-current': step.id === 'download' }"
-              >
-                {{ step.label }}
-              </li>
-            </ol>
-            <p class="package-download-progress__elapsed">已等待 {{ downloadElapsedSec }} 秒</p>
-          </div>
-          <template v-else>
-            <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
-            <p v-else>此包未请求宿主能力。</p>
-            <ul v-if="requiredPermissions.length" class="permission-list">
-              <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
-            </ul>
-            <p v-if="!actionError" class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
-            <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
-          </template>
-        </div>
-        <template #footer>
-          <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="cancelConfirm">取消</button>
-          <button class="btn btn-primary" type="button" data-test="marketplace-confirm-submit" :disabled="actionBusy || detailLoading" @click="applyPackage">
-            {{ actionBusy ? '提交中…' : detailLoading ? '下载中…' : actionError ? (isUpgrade ? '重试升级' : '重试安装') : isUpgrade ? '确认升级' : '确认安装' }}
-          </button>
-        </template>
-      </BaseModal>
     </template>
+
+    <PluginMarketplaceInspectModal
+      :model-value="inspectVisible"
+      :item="selected"
+      :detail="detail"
+      :detail-prepared="detailPrepared"
+      :source="source"
+      :title="pluginTitle(selected)"
+      :version="selected?.plugin?.version || ''"
+      :status="selected ? installedStatus(selected) : ''"
+      :status-tone="selected ? statusTone(selected) : 'neutral'"
+      :source-label="sourceKindLabel(source.kind)"
+      :purpose="pluginPurpose"
+      :next-step="nextStepHint"
+      :already-installed="alreadyInstalled"
+      :is-upgrade="isUpgrade"
+      :required-permissions="requiredPermissions"
+      :action-busy="actionBusy"
+      :detail-loading="detailLoading"
+      :action-label="selected ? cardActionLabel(selected) : '安装'"
+      @update:model-value="onInspectVisible"
+      @action="onInspectAction"
+    />
 
     <PluginRepositoriesModal
       v-model="repoModalOpen"
       @updated="onRepositoriesUpdated"
     />
+
+    <BaseModal
+      :model-value="confirmVisible"
+      :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
+      :subtitle="pluginTitle(selected)"
+      size="sm"
+      :close-on-click-modal="!actionBusy"
+      show-footer
+      data-test="marketplace-confirm-modal"
+      @update:model-value="onConfirmVisible"
+    >
+      <div class="confirm-permissions">
+        <p v-if="hasPendingDetailLink" class="confirm-pending-next">
+          <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
+        </p>
+        <div v-if="detailLoading" class="package-download-progress" data-test="marketplace-detail-loading">
+          <p class="package-download-progress__title">{{ downloadPhaseLabel }}</p>
+          <p class="package-download-progress__hint">{{ downloadHint }}</p>
+          <div
+            class="package-download-progress__track"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuetext="downloadPhaseLabel"
+          >
+            <div class="package-download-progress__fill"></div>
+          </div>
+          <ol class="package-download-progress__steps">
+            <li
+              v-for="step in downloadSteps"
+              :key="step.id"
+              :class="{ 'is-current': step.id === 'download' }"
+            >
+              {{ step.label }}
+            </li>
+          </ol>
+          <p class="package-download-progress__elapsed">已等待 {{ downloadElapsedSec }} 秒</p>
+        </div>
+        <template v-else>
+          <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
+          <p v-else>此包未请求宿主能力。</p>
+          <ul v-if="requiredPermissions.length" class="permission-list">
+            <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
+          </ul>
+          <p v-if="!actionError" class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
+          <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
+        </template>
+      </div>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="cancelConfirm">取消</button>
+        <button class="btn btn-primary" type="button" data-test="marketplace-confirm-submit" :disabled="actionBusy || detailLoading" @click="applyPackage">
+          {{ actionBusy ? '提交中…' : detailLoading ? '下载中…' : actionError ? (isUpgrade ? '重试升级' : '重试安装') : isUpgrade ? '确认升级' : '确认安装' }}
+        </button>
+      </template>
+    </BaseModal>
   </main>
 </template>
 
@@ -404,31 +431,6 @@ function onRepositoriesUpdated() {
   text-align: center;
 }
 
-.marketplace-card-link {
-  display: flex;
-  min-width: 0;
-  color: inherit;
-  text-decoration: none;
-  border-radius: var(--radius-2xl);
-}
-
-.marketplace-card-link :deep(.base-list-card) {
-  flex: 1;
-  min-width: 0;
-}
-
-.marketplace-card-link:hover :deep(.base-list-card) {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
-}
-
-.marketplace-card-link:focus-visible :deep(.base-list-card) {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
-}
-
 .marketplace-card :deep(.base-list-card__header-left) {
   flex-wrap: nowrap;
   min-width: 0;
@@ -475,15 +477,6 @@ function onRepositoriesUpdated() {
   gap: 0.5rem;
   padding-top: 0.45rem;
   border-top: 1px solid var(--color-border-subtle);
-}
-
-.plugin-catalog-table__name-link {
-  color: inherit;
-  text-decoration: none;
-}
-
-.plugin-catalog-table__name-link:hover {
-  color: var(--color-primary);
 }
 
 .permission-list {
