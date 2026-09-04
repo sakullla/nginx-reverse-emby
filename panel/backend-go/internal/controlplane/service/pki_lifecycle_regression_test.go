@@ -133,6 +133,43 @@ func TestPKIEndpointRotationLeaseRecheckResamplesCandidateAndActiveExpiry(t *tes
 	}
 }
 
+func TestPKIEndpointRotationCommitValidatorRejectsCandidateExpiredDuringActivation(t *testing.T) {
+	startedAt := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
+	committedAt := startedAt.Add(2 * time.Hour)
+	currentTime := startedAt
+	active := PKIEndpointCertificateState{
+		IdentityID: "identity-commit-delay", CertificateID: "cert-active", Generation: 1,
+		CertificateFingerprintSHA256: testPKISHA256("a"), PublicKeyFingerprintSHA256: testPKISHA256("d"),
+		NotBefore: startedAt.Add(-89 * 24 * time.Hour), NotAfter: startedAt.Add(3 * time.Hour),
+	}
+	repository := newRegressionPKIEndpointRepository(active)
+	repository.commitClock = func() time.Time { return currentTime }
+	repository.afterActivation = func() { currentTime = committedAt }
+	rotator := &advancingPKIRotator{candidate: PKIEndpointRotationCandidate{
+		CertificateID: "cert-expires-during-activation", Generation: 2,
+		CertificateFingerprintSHA256: testPKISHA256("b"), PublicKeyFingerprintSHA256: testPKISHA256("c"),
+		NotBefore: startedAt.Add(-time.Minute), NotAfter: startedAt.Add(time.Hour), Verified: true,
+	}}
+	service, err := NewPKILifecycleService(PKILifecycleServiceOptions{
+		Policy: DefaultInternalPKIPolicy(), Repository: repository, Rotator: rotator,
+		Lease: regressionPKILeaseGate{}, Clock: func() time.Time { return currentTime },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.RunEndpointRotation(t.Context(), active.IdentityID, true)
+	if !errors.Is(err, ErrPKILifecycleInvalid) || !strings.Contains(err.Error(), "expired before activation commit") {
+		t.Fatalf("RunEndpointRotation() error = %v, want commit-time candidate expiry", err)
+	}
+	if result.Activated || result.FailedClosed || repository.activations != 0 || len(repository.failures) != 1 {
+		t.Fatalf("commit-delay result = %+v, activations = %d, failures = %+v", result, repository.activations, repository.failures)
+	}
+	if repository.failures[0].Event.OccurredAt != committedAt || !repository.failures[0].NextAttemptAt.After(committedAt) {
+		t.Fatalf("commit-delay failure = %+v", repository.failures[0])
+	}
+}
+
 func TestProtectedRestoreEmbedsConfiguredMasterKeyInsidePKIRoot(t *testing.T) {
 	dataRoot := t.TempDir()
 	masterKey := filepath.Join(dataRoot, "pki", "keys", "master.key")
@@ -204,6 +241,7 @@ type regressionPKIEndpointRepository struct {
 	activations     int
 	activationErr   error
 	afterActivation func()
+	commitClock     func() time.Time
 }
 
 func newRegressionPKIEndpointRepository(states ...PKIEndpointCertificateState) *regressionPKIEndpointRepository {
@@ -227,10 +265,26 @@ func (r *regressionPKIEndpointRepository) RecordPKIEndpointRotationFailure(_ con
 	return nil
 }
 
-func (r *regressionPKIEndpointRepository) ActivatePKIEndpointCandidate(_ context.Context, activation PKIEndpointActivation) error {
-	r.activations++
+func (r *regressionPKIEndpointRepository) ActivatePKIEndpointCandidate(
+	_ context.Context,
+	activation PKIEndpointActivation,
+	validateCommit PKIEndpointActivationCommitValidator,
+) error {
 	if r.afterActivation != nil {
 		r.afterActivation()
+	}
+	committedAt := activation.Event.OccurredAt
+	if r.commitClock != nil {
+		committedAt = r.commitClock()
+	}
+	if validateCommit == nil {
+		return errors.New("activation commit validator is required")
+	}
+	if err := validateCommit(committedAt); err != nil {
+		return err
+	}
+	if r.activationErr == nil {
+		r.activations++
 	}
 	return r.activationErr
 }

@@ -47,6 +47,11 @@ type PKIEndpointActivation struct {
 	Event                       PKIAuditEvent
 }
 
+// PKIEndpointActivationCommitValidator is invoked by the repository with its
+// authoritative transaction commit time while the activation CAS and lease
+// fence are still held. Returning an error must abort the transaction.
+type PKIEndpointActivationCommitValidator func(time.Time) error
+
 // PKIEndpointRotationRepository must persist a failure without changing the
 // active generation, and must activate a verified candidate with a CAS on
 // ExpectedActiveCertificateID. In the same transaction it must compare Lease
@@ -55,7 +60,7 @@ type PKIEndpointActivation struct {
 type PKIEndpointRotationRepository interface {
 	LoadPKIEndpointCertificate(context.Context, string) (PKIEndpointCertificateState, error)
 	RecordPKIEndpointRotationFailure(context.Context, PKIEndpointRotationFailure) error
-	ActivatePKIEndpointCandidate(context.Context, PKIEndpointActivation) error
+	ActivatePKIEndpointCandidate(context.Context, PKIEndpointActivation, PKIEndpointActivationCommitValidator) error
 }
 
 // PKIEndpointRotator stages the new private key at the owning endpoint and
@@ -168,7 +173,9 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 		Candidate: candidate, Forced: forced, Lease: after,
 		Event: NewPKIAuditEvent("endpoint_rotated", "scheduler", identityID, "succeeded", "", completedAt),
 	}
-	if err := s.repository.ActivatePKIEndpointCandidate(ctx, activation); err != nil {
+	if err := s.repository.ActivatePKIEndpointCandidate(ctx, activation, func(committedAt time.Time) error {
+		return validatePKIEndpointActivationCommit(candidate, committedAt)
+	}); err != nil {
 		failedAt := s.clock().UTC()
 		if failedAt.IsZero() {
 			return result, errors.Join(err, fmt.Errorf("%w: clock returned zero", ErrPKILifecycleInvalid))
@@ -182,6 +189,17 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 	result.AlertLevel = PKIAlertNone
 	result.FailedClosed = false
 	return result, nil
+}
+
+func validatePKIEndpointActivationCommit(candidate PKIEndpointRotationCandidate, committedAt time.Time) error {
+	committedAt = committedAt.UTC()
+	if committedAt.IsZero() {
+		return fmt.Errorf("%w: endpoint activation commit time is zero", ErrPKILifecycleInvalid)
+	}
+	if !committedAt.Before(candidate.NotAfter) {
+		return fmt.Errorf("%w: endpoint candidate expired before activation commit", ErrPKILifecycleInvalid)
+	}
+	return nil
 }
 
 func (s *PKILifecycleService) ForceRotateEndpoint(ctx context.Context, identityID string) (PKIEndpointRotationResult, error) {
