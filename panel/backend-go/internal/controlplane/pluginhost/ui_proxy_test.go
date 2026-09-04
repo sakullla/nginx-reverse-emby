@@ -159,7 +159,7 @@ func TestPluginHostStopUnregistersDefaultUIRoute(t *testing.T) {
 
 func TestPluginHostStopNonUIPluginKeepsAnotherExplicitRoute(t *testing.T) {
 	const routeID = "shared-route"
-	t.Cleanup(func() { Unregister(routeID) })
+	t.Cleanup(func() { Unregister("ui-owner", routeID) })
 	Register(Declaration{
 		PluginID: "ui-owner", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute},
 	}, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -185,6 +185,34 @@ func TestPluginHostStopNonUIPluginKeepsAnotherExplicitRoute(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://panel/", nil))
 	if response.Body.String() != "owner" {
 		t.Fatalf("explicit route owner response = %q", response.Body.String())
+	}
+}
+
+func TestPluginHostStopCannotRemoveAnotherOwnersExplicitRoute(t *testing.T) {
+	const routeID = "owned-shared-route"
+	t.Cleanup(func() { Unregister("route-owner", routeID) })
+	if err := Register(Declaration{PluginID: "route-owner", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "owner")
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	colliding := &Instance{
+		ID: "other-plugin", Generation: "generation-1", State: "active",
+		candidate: Candidate{Identity: Identity{Generation: "generation-1"}, Declaration: Declaration{PluginID: "other-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}},
+	}
+	host := &Host{active: map[string]*Instance{colliding.ID: colliding}}
+	if err := host.Stop(t.Context(), colliding.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler, _, ok := Lookup(routeID)
+	if !ok {
+		t.Fatal("one plugin removed another owner's route during stop")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://panel/", nil))
+	if response.Body.String() != "owner" {
+		t.Fatalf("route owner response = %q", response.Body.String())
 	}
 }
 

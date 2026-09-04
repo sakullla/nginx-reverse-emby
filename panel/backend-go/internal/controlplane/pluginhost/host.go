@@ -496,7 +496,7 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 		return nil, errors.New("prepared control-plane plugin instances are required")
 	}
 	seen := make(map[string]struct{}, len(instances))
-	entries := make([]preparedPublicationEntry, 0, len(instances))
+	routeOwners := currentUIRouteOwners()
 	for _, instance := range instances {
 		if instance == nil || instance.ID == "" || instance.Generation == "" {
 			return nil, errors.New("prepared control-plane plugin instance is required")
@@ -505,6 +505,16 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 			return nil, errors.New("control-plane plugin publication duplicates an instance")
 		}
 		seen[instance.ID] = struct{}{}
+		if hasExtension(instance.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
+			owner := strings.TrimSpace(instance.candidate.Declaration.PluginID)
+			routeID := declarationUIRouteID(instance.candidate.Declaration)
+			if err := ClaimUIRouteOwnership(routeOwners, owner, routeID); err != nil {
+				return nil, fmt.Errorf("prepare control-plane plugin UI route: %w", err)
+			}
+		}
+	}
+	entries := make([]preparedPublicationEntry, 0, len(instances))
+	for _, instance := range instances {
 		normalized := normalizeRestartCandidate(instance.candidate)
 		runCtx, cancel := context.WithCancel(context.Background())
 		entries = append(entries, preparedPublicationEntry{instance: instance, control: &runtimeControl{candidate: normalized, backoff: normalized.InitialBackoff, ctx: runCtx, cancel: cancel}})
@@ -545,6 +555,13 @@ func (p *PreparedPublication) Publish() {
 	h := p.host
 	for index := range p.entries {
 		entry := &p.entries[index]
+		if entry.previous != nil && hasExtension(entry.previous.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
+			previousOwner := strings.TrimSpace(entry.previous.candidate.Declaration.PluginID)
+			nextOwner := strings.TrimSpace(entry.instance.candidate.Declaration.PluginID)
+			if !hasExtension(entry.instance.candidate.Declaration.ExtensionPoints, extensionUIRoute) || previousOwner != nextOwner {
+				h.unpublishPluginUI(entry.previous)
+			}
+		}
 		if entry.previous != nil && entry.previous.control != nil {
 			entry.previous.control.cancel()
 		}

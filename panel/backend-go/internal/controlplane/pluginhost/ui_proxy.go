@@ -144,7 +144,7 @@ func (h *Host) unpublishPluginUI(instance *Instance) {
 	if routeID == "" {
 		return
 	}
-	Unregister(routeID)
+	Unregister(instance.candidate.Declaration.PluginID, routeID)
 	instance.closePluginUIIdleConnections()
 }
 

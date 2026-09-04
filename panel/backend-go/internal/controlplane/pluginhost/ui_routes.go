@@ -1,6 +1,8 @@
 package pluginhost
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -27,13 +29,15 @@ type Declaration struct {
 
 // UIRoute is a plugin-declared panel entry.
 type UIRoute struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Group string `json:"group"`
-	Href  string `json:"href"`
+	ID       string `json:"id"`
+	PluginID string `json:"plugin_id"`
+	Label    string `json:"label"`
+	Group    string `json:"group"`
+	Href     string `json:"href"`
 }
 
 type uiMount struct {
+	owner   string
 	route   UIRoute
 	group   ResourceGroup
 	handler http.Handler
@@ -44,6 +48,8 @@ var uiMounts = struct {
 	byID map[string]uiMount
 }{byID: map[string]uiMount{}}
 
+var ErrUIRouteConflict = errors.New("plugin UI route is owned by another plugin")
+
 func UIHref(routeID string) string {
 	routeID = strings.TrimSpace(routeID)
 	if routeID == "" {
@@ -52,34 +58,64 @@ func UIHref(routeID string) string {
 	return panelAPIPrefix + pluginUIPrefix + routeID + "/"
 }
 
-func declarationUIRouteID(decl Declaration) string {
-	id := strings.TrimSpace(decl.UIRouteID)
+func ResolveUIRouteID(pluginID, declaredRouteID string) string {
+	id := strings.TrimSpace(declaredRouteID)
 	if id == "" {
-		id = strings.TrimSpace(decl.PluginID)
+		id = strings.TrimSpace(pluginID)
 	}
 	return id
 }
 
-func Register(decl Declaration, handler http.Handler) {
+func declarationUIRouteID(decl Declaration) string {
+	return ResolveUIRouteID(decl.PluginID, decl.UIRouteID)
+}
+
+func ClaimUIRouteOwnership(owners map[string]string, ownerPluginID, routeID string) error {
+	ownerPluginID = strings.TrimSpace(ownerPluginID)
+	routeID = strings.TrimSpace(routeID)
+	if owners == nil || ownerPluginID == "" || routeID == "" {
+		return errors.New("plugin UI route owner and identity are required")
+	}
+	if owner, exists := owners[routeID]; exists && owner != ownerPluginID {
+		return fmt.Errorf("%w: route %q belongs to plugin %q, not %q", ErrUIRouteConflict, routeID, owner, ownerPluginID)
+	}
+	owners[routeID] = ownerPluginID
+	return nil
+}
+
+func currentUIRouteOwners() map[string]string {
+	uiMounts.mu.RLock()
+	defer uiMounts.mu.RUnlock()
+	owners := make(map[string]string, len(uiMounts.byID))
+	for routeID, mount := range uiMounts.byID {
+		owners[routeID] = mount.owner
+	}
+	return owners
+}
+
+func Register(decl Declaration, handler http.Handler) error {
+	owner := strings.TrimSpace(decl.PluginID)
 	id := declarationUIRouteID(decl)
-	if handler == nil || id == "" {
-		if id != "" {
-			unregisterMount(id)
-		}
-		return
+	if handler == nil {
+		Unregister(owner, id)
+		return nil
+	}
+	if owner == "" || id == "" {
+		return errors.New("plugin UI route owner and identity are required")
 	}
 
-	mount := uiMount{}
+	mount := uiMount{owner: owner}
 	if hasExtension(decl.ExtensionPoints, extensionUIRoute) {
 		label := metadataValue(decl.Metadata, "ui.nav.label")
 		if label == "" {
 			label = id
 		}
 		mount.route = UIRoute{
-			ID:    id,
-			Label: label,
-			Group: metadataValue(decl.Metadata, "ui.nav.group"),
-			Href:  UIHref(id),
+			ID:       id,
+			PluginID: owner,
+			Label:    label,
+			Group:    metadataValue(decl.Metadata, "ui.nav.group"),
+			Href:     UIHref(id),
 		}
 		mount.handler = handler
 	}
@@ -104,22 +140,47 @@ func Register(decl Declaration, handler http.Handler) {
 		}
 	}
 	if mount.handler == nil && mount.group.ID == "" {
-		return
+		return nil
 	}
 
 	uiMounts.mu.Lock()
 	defer uiMounts.mu.Unlock()
+	owners := make(map[string]string, 1)
+	if existing, found := uiMounts.byID[id]; found {
+		owners[id] = existing.owner
+	}
+	if err := ClaimUIRouteOwnership(owners, owner, id); err != nil {
+		return err
+	}
+	for routeID, existing := range uiMounts.byID {
+		if existing.owner == owner && routeID != id {
+			delete(uiMounts.byID, routeID)
+		}
+	}
 	uiMounts.byID[id] = mount
+	return nil
 }
 
-func Unregister(id string) {
-	unregisterMount(strings.TrimSpace(id))
+// Unregister removes only the named owner's route. Omitting routeID retains
+// compatibility for plugin-id routes while remaining owner checked.
+func Unregister(ownerPluginID string, routeID ...string) bool {
+	ownerPluginID = strings.TrimSpace(ownerPluginID)
+	id := ResolveUIRouteID(ownerPluginID, "")
+	if len(routeID) > 0 {
+		id = strings.TrimSpace(routeID[0])
+	}
+	return unregisterMount(ownerPluginID, id)
 }
 
-func unregisterMount(id string) {
+func unregisterMount(ownerPluginID, id string) bool {
 	uiMounts.mu.Lock()
 	defer uiMounts.mu.Unlock()
+	mount, found := uiMounts.byID[id]
+	if !found || mount.owner != ownerPluginID {
+		return false
+	}
 	delete(uiMounts.byID, id)
+	return true
 }
 
 func Lookup(routeID string) (handler http.Handler, group ResourceGroup, ok bool) {

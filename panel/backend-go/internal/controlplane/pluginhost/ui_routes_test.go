@@ -1,6 +1,7 @@
 package pluginhost
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 )
@@ -100,6 +101,67 @@ func TestRegisterDefaultsOptionalUIRouteIDToPluginID(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("default route is missing from catalog: %#v", routes)
+	}
+}
+
+func TestRegisterRejectsRouteOwnedByAnotherPlugin(t *testing.T) {
+	const routeID = "shared-owner-route"
+	t.Cleanup(func() {
+		Unregister("owner-a", routeID)
+		Unregister("owner-b", routeID)
+	})
+	ownerA := Declaration{PluginID: "owner-a", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}, Metadata: map[string]string{"ui.nav.label": "Owner A"}}
+	ownerB := Declaration{PluginID: "owner-b", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}, Metadata: map[string]string{"ui.nav.label": "Owner B"}}
+	if err := Register(ownerA, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register(ownerB, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); !errors.Is(err, ErrUIRouteConflict) {
+		t.Fatalf("cross-plugin route registration error = %v", err)
+	}
+	routes := ListUIRoutes()
+	for _, route := range routes {
+		if route.ID == routeID {
+			if route.PluginID != ownerA.PluginID || route.Label != "Owner A" {
+				t.Fatalf("route owner changed after rejected registration: %+v", route)
+			}
+			return
+		}
+	}
+	t.Fatal("original owner route disappeared after rejected registration")
+}
+
+func TestRegisterSameOwnerRouteCutoverRemovesPreviousRoute(t *testing.T) {
+	const oldRoute, newRoute = "owner-cutover-old", "owner-cutover-new"
+	t.Cleanup(func() {
+		Unregister("cutover-owner", oldRoute)
+		Unregister("cutover-owner", newRoute)
+	})
+	if err := Register(Declaration{PluginID: "cutover-owner", UIRouteID: oldRoute, ExtensionPoints: []string{extensionUIRoute}}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register(Declaration{PluginID: "cutover-owner", UIRouteID: newRoute, ExtensionPoints: []string{extensionUIRoute}}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := Lookup(oldRoute); ok {
+		t.Fatal("same-owner route cutover retained the previous route")
+	}
+	if _, _, ok := Lookup(newRoute); !ok {
+		t.Fatal("same-owner route cutover did not publish the replacement route")
+	}
+}
+
+func TestPreparePublicationRejectsAnotherUIRouteOwner(t *testing.T) {
+	const routeID = "prepared-shared-route"
+	t.Cleanup(func() { Unregister("prepared-owner", routeID) })
+	if err := Register(Declaration{PluginID: "prepared-owner", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); err != nil {
+		t.Fatal(err)
+	}
+	candidate := &Instance{
+		ID: "prepared-collider", Generation: "generation-1",
+		candidate: Candidate{Declaration: Declaration{PluginID: "prepared-collider", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}},
+	}
+	if _, err := (&Host{}).PreparePublication([]*Instance{candidate}); !errors.Is(err, ErrUIRouteConflict) {
+		t.Fatalf("prepared publication route collision error = %v", err)
 	}
 }
 
