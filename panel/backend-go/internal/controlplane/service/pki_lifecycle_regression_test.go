@@ -93,6 +93,46 @@ func TestPKIEndpointRotationActivationFailureResamplesExpiryTime(t *testing.T) {
 	}
 }
 
+func TestPKIEndpointRotationLeaseRecheckResamplesCandidateAndActiveExpiry(t *testing.T) {
+	startedAt := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(2 * time.Hour)
+	currentTime := startedAt
+	active := PKIEndpointCertificateState{
+		IdentityID: "identity-lease-delay", CertificateID: "cert-active", Generation: 1,
+		CertificateFingerprintSHA256: testPKISHA256("a"), PublicKeyFingerprintSHA256: testPKISHA256("d"),
+		NotBefore: startedAt.Add(-89 * 24 * time.Hour), NotAfter: startedAt.Add(time.Hour),
+	}
+	repository := newRegressionPKIEndpointRepository(active)
+	rotator := &advancingPKIRotator{candidate: PKIEndpointRotationCandidate{
+		CertificateID: "cert-expires-during-lease-check", Generation: 2,
+		CertificateFingerprintSHA256: testPKISHA256("b"), PublicKeyFingerprintSHA256: testPKISHA256("c"),
+		NotBefore: startedAt.Add(-time.Minute), NotAfter: startedAt.Add(time.Hour), Verified: true,
+	}}
+	lease := &delayedRegressionPKILeaseGate{afterSecondCheck: func() { currentTime = completedAt }}
+	service, err := NewPKILifecycleService(PKILifecycleServiceOptions{
+		Policy: DefaultInternalPKIPolicy(), Repository: repository, Rotator: rotator,
+		Lease: lease, Clock: func() time.Time { return currentTime },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.RunEndpointRotation(t.Context(), active.IdentityID, true)
+	if !errors.Is(err, ErrPKILifecycleInvalid) || !errors.Is(err, ErrPKIEndpointFailedClosed) {
+		t.Fatalf("RunEndpointRotation() error = %v, want invalid candidate and failed-closed errors", err)
+	}
+	if lease.calls != 2 || result.Activated || !result.FailedClosed || result.AlertLevel != PKIAlertFailedClosed {
+		t.Fatalf("lease-delay result = %+v, lease calls = %d", result, lease.calls)
+	}
+	if repository.activations != 0 || len(repository.failures) != 1 {
+		t.Fatalf("lease-delay repository = activations %d, failures %+v", repository.activations, repository.failures)
+	}
+	failure := repository.failures[0]
+	if !failure.FailedClosed || failure.Event.OccurredAt != completedAt || !failure.NextAttemptAt.After(completedAt) {
+		t.Fatalf("lease-delay failure = %+v", failure)
+	}
+}
+
 func TestProtectedRestoreEmbedsConfiguredMasterKeyInsidePKIRoot(t *testing.T) {
 	dataRoot := t.TempDir()
 	masterKey := filepath.Join(dataRoot, "pki", "keys", "master.key")
@@ -143,6 +183,19 @@ func (regressionPKILeaseGate) RequirePKILease(context.Context) (PKILeaseGrant, e
 		PKIDomainID: "domain-1", PKIEpoch: 1, InstanceID: "instance-1",
 		LeaseTerm: strings.Repeat("e", 64), LeaseDeadline: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
 	}, nil
+}
+
+type delayedRegressionPKILeaseGate struct {
+	calls            int
+	afterSecondCheck func()
+}
+
+func (g *delayedRegressionPKILeaseGate) RequirePKILease(ctx context.Context) (PKILeaseGrant, error) {
+	g.calls++
+	if g.calls == 2 && g.afterSecondCheck != nil {
+		g.afterSecondCheck()
+	}
+	return regressionPKILeaseGate{}.RequirePKILease(ctx)
 }
 
 type regressionPKIEndpointRepository struct {

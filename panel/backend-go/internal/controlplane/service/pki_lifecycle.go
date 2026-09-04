@@ -143,19 +143,19 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 		return result, err
 	}
 	candidate, stageErr := s.rotator.StageAndVerifyPKIEndpoint(ctx, active, forced)
-	completedAt := s.clock().UTC()
-	if completedAt.IsZero() {
-		return result, fmt.Errorf("%w: clock returned zero", ErrPKILifecycleInvalid)
-	}
-	if stageErr == nil {
-		stageErr = validatePKIEndpointCandidate(active, candidate, completedAt)
-	}
 	after, err := s.lease.RequirePKILease(ctx)
 	if err != nil || !samePKILeaseAuthority(before, after) {
 		if err == nil {
 			err = ErrPKILeaseNotHeld
 		}
 		return result, err
+	}
+	completedAt := s.clock().UTC()
+	if completedAt.IsZero() {
+		return result, fmt.Errorf("%w: clock returned zero", ErrPKILifecycleInvalid)
+	}
+	if stageErr == nil {
+		stageErr = validatePKIEndpointCandidate(active, candidate, completedAt)
 	}
 	if err := validatePKIMutationLeaseFence(after); err != nil {
 		return result, err
