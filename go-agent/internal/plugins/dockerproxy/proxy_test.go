@@ -66,7 +66,12 @@ func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 		{"compose", "up", "-d"},
 		{"compose", "logs", "--no-color", "web"},
 		{"workspace", "remove"},
+		{"system", "df"},
 		{"image", "inspect", "--format", "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}", "nginx:latest"},
+		{"image", "prune", "-f"},
+		{"builder", "prune", "-f", "--keep-storage", "2GB"},
+		{"builder", "prune", "-f", "--keep-storage", "2G"},
+		{"builder", "prune", "-f", "--keep-storage", "512MB"},
 		{"buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", "nginx:latest"},
 		{"manifest", "inspect", "--verbose", "nginx:latest"},
 	}
@@ -79,6 +84,17 @@ func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 		{"run", "--privileged", "alpine"},
 		{"compose", "-f", "/etc/passwd", "up"},
 		{"image", "rm", "nginx"},
+		{"image", "prune", "-a"},
+		{"image", "prune", "-af"},
+		{"image", "prune", "-f", "--all"},
+		{"system", "df", "-v"},
+		{"system", "prune", "-f"},
+		{"builder", "prune", "-f"},
+		{"builder", "prune", "-f", "--keep-storage", "0"},
+		{"builder", "prune", "-f", "--keep-storage", "0GB"},
+		{"builder", "prune", "-f", "--keep-storage", "2"},
+		{"builder", "prune", "-f", "--keep-storage", "2B"},
+		{"volume", "prune", "-f"},
 		{"version", "--format", "{{json .}}"},
 		{"manifest", "inspect", "--verbose", "-bad"},
 	}
@@ -252,5 +268,66 @@ func TestHandlerRunsValidatedCommandAndBoundsErrors(t *testing.T) {
 	long := errors.New(strings.Repeat("x", 1024))
 	if len(boundedError(long)) != 512 {
 		t.Fatal("boundedError did not cap host error text")
+	}
+}
+
+func TestHandlerAllowsDiskCleanupCommands(t *testing.T) {
+	allowed := [][]string{
+		{"system", "df"},
+		{"image", "prune", "-f"},
+		{"builder", "prune", "-f", "--keep-storage", "2GB"},
+	}
+	for _, args := range allowed {
+		runner := &recordingRunner{output: []byte("ok")}
+		handler := &handler{cookie: "secret", workspaceRoot: t.TempDir(), runner: runner}
+		payload, err := json.Marshal(Request{Args: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, proxyPath, bytes.NewReader(payload))
+		request.Header.Set(credentialHeader, "secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("disk-cleanup %q status=%d body=%s", args, response.Code, response.Body.String())
+		}
+		if !reflect.DeepEqual(runner.args, args) {
+			t.Fatalf("disk-cleanup runner args=%q want %q", runner.args, args)
+		}
+	}
+	denied := [][]string{
+		{"system", "df", "-v"},
+		{"image", "prune", "-a"},
+		{"builder", "prune", "-f"},
+		{"builder", "prune", "-f", "--keep-storage", "0GB"},
+		{"builder", "prune", "-f", "--keep-storage", "2B"},
+		{"volume", "prune", "-f"},
+	}
+	for _, args := range denied {
+		handler := &handler{cookie: "secret", workspaceRoot: t.TempDir(), runner: &recordingRunner{}}
+		payload, err := json.Marshal(Request{Args: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, proxyPath, bytes.NewReader(payload))
+		request.Header.Set(credentialHeader, "secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Docker command is not allowed") {
+			t.Fatalf("denied %q status=%d body=%s", args, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestValidKeepStorageAcceptsPositiveSizedUnits(t *testing.T) {
+	for _, value := range []string{"2GB", "2G", "2GiB", "512MB", "1GB"} {
+		if !validKeepStorage(value) {
+			t.Fatalf("validKeepStorage(%q) = false", value)
+		}
+	}
+	for _, value := range []string{"", "0", "0GB", "2", "2B", "1B", "-2GB", "2.5GB", "2 GB"} {
+		if validKeepStorage(value) {
+			t.Fatalf("validKeepStorage(%q) = true", value)
+		}
 	}
 }

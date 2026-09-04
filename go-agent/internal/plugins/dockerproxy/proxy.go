@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -390,8 +391,21 @@ func validateArgs(args []string) error {
 		if workspaceRemoveRequest(args) {
 			return nil
 		}
+	case "system":
+		// Read-only disk usage preview used by docker-app cleanup.
+		if len(args) == 2 && args[1] == "df" {
+			return nil
+		}
 	case "image":
 		if len(args) == 5 && args[1] == "inspect" && args[2] == "--format" && args[3] == "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}" && validImage(args[4]) {
+			return nil
+		}
+		// Dangling images only; -a/--all and filters stay denied.
+		if len(args) == 3 && args[1] == "prune" && args[2] == "-f" {
+			return nil
+		}
+	case "builder":
+		if len(args) == 5 && args[1] == "prune" && args[2] == "-f" && args[3] == "--keep-storage" && validKeepStorage(args[4]) {
 			return nil
 		}
 	case "buildx":
@@ -424,6 +438,33 @@ func validImage(value string) bool {
 		return false
 	}
 	return true
+}
+
+// validKeepStorage accepts a positive Docker size with a k/m/g/t unit.
+// The keep amount is a plugin policy (currently 2GB); the proxy only
+// requires a bounded size so builder prune cannot omit keep-storage or
+// pass 0/bytes-only values that wipe the cache.
+func validKeepStorage(value string) bool {
+	if value == "" || len(value) > 16 || value != strings.TrimSpace(value) {
+		return false
+	}
+	split := 0
+	for split < len(value) && value[split] >= '0' && value[split] <= '9' {
+		split++
+	}
+	if split == 0 || split == len(value) {
+		return false
+	}
+	amount, err := strconv.ParseUint(value[:split], 10, 64)
+	if err != nil || amount == 0 {
+		return false
+	}
+	switch strings.ToLower(value[split:]) {
+	case "k", "kb", "ki", "kib", "m", "mb", "mi", "mib", "g", "gb", "gi", "gib", "t", "tb", "ti", "tib":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeComposeFile(dir, compose string, uid int) error {
