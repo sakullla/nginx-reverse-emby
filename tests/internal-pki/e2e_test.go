@@ -270,6 +270,9 @@ func newTestHarness(t *testing.T, ctx context.Context) *testHarness {
 		for index := len(children) - 1; index >= 0; index-- {
 			children[index].stop()
 		}
+		if err := cleanupProcessTreeFiles(tempRoot); err != nil {
+			h.t.Errorf("clean integration process files: %v", err)
+		}
 	})
 	return h
 }
@@ -806,9 +809,10 @@ func (h *testHarness) waitForRemoteHeartbeat(control controlInstance, agentID st
 
 func (h *testHarness) assertTokenControlBoundary(control controlInstance, agentID, agentToken string) {
 	h.t.Helper()
+	currentRevision := h.currentAgentRevision(control, agentID)
 	payload := map[string]any{
 		"agent_id": agentID, "name": "remote-e2e", "version": "e2e", "platform": runtime.GOOS,
-		"current_revision": 0, "last_apply_revision": 0, "last_apply_status": "success",
+		"current_revision": currentRevision, "last_apply_revision": currentRevision, "last_apply_status": "success",
 	}
 	unauthorized := h.mustJSON(http.MethodPost, control.baseURL+"/panel-api/agents/heartbeat", payload, nil)
 	if unauthorized.Status != http.StatusUnauthorized {
@@ -818,8 +822,27 @@ func (h *testHarness) assertTokenControlBoundary(control controlInstance, agentI
 		"X-Agent-Token": agentToken,
 	})
 	if authorized.Status != http.StatusOK {
-		h.t.Fatalf("token-authenticated HTTP heartbeat status = %d: %s", authorized.Status, authorized.Body)
+		h.t.Fatalf("token-authenticated HTTP heartbeat status = %d: %s\n%s", authorized.Status, authorized.Body, control.process.failureLog())
 	}
+}
+
+func (h *testHarness) currentAgentRevision(control controlInstance, agentID string) int64 {
+	h.t.Helper()
+	response := h.mustJSON(http.MethodGet, control.baseURL+"/panel-api/agents/"+url.PathEscape(agentID), nil, map[string]string{
+		"X-Panel-Token": h.panelToken,
+	})
+	if response.Status != http.StatusOK {
+		h.t.Fatalf("read agent revision status = %d: %s", response.Status, response.Body)
+	}
+	var envelope struct {
+		Agent struct {
+			CurrentRevision int64 `json:"current_revision"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal(response.Body, &envelope); err != nil {
+		h.t.Fatalf("decode agent revision status: %v: %s", err, response.Body)
+	}
+	return envelope.Agent.CurrentRevision
 }
 
 func (h *testHarness) assertIndependentTunnelIdentities(control controlInstance, controlData, remoteData string, remote *childProcess) {
@@ -957,6 +980,7 @@ func (h *testHarness) waitForMutation(control controlInstance, accepted apiRespo
 					ApplyStatus  string `json:"apply_status"`
 					ErrorCode    string `json:"error_code"`
 					ErrorMessage string `json:"error_message"`
+					PrimaryAgent string `json:"primary_agent_id"`
 				} `json:"operation"`
 			}
 			if decodeErr := json.Unmarshal(response.Body, &status); decodeErr == nil {
@@ -964,10 +988,13 @@ func (h *testHarness) waitForMutation(control controlInstance, accepted apiRespo
 				case "applied":
 					return
 				case "failed", "superseded":
-					h.t.Fatalf("%s mutation %s ended as %s (%s: %s): %s\nlisteners=%s\nidentities=%s", label, envelope.OperationID,
+					h.t.Fatalf("%s mutation %s ended as %s (%s: %s): %s\nlisteners=%s\nagents=%s\nidentities=%s\nevents=%s\ncontrol=%s", label, envelope.OperationID,
 						status.Operation.ApplyStatus, status.Operation.ErrorCode, status.Operation.ErrorMessage, response.Body,
-						h.diagnosticGET(control, "/panel-api/agents/"+localAgentID+"/relay-listeners"),
-						h.diagnosticGET(control, "/panel-api/pki/identities"))
+						h.diagnosticGET(control, "/panel-api/agents/"+url.PathEscape(status.Operation.PrimaryAgent)+"/relay-listeners"),
+						h.diagnosticGET(control, "/panel-api/agents"),
+						h.diagnosticGET(control, "/panel-api/pki/identities"),
+						h.diagnosticGET(control, "/panel-api/revision-events?operation_id="+url.QueryEscape(envelope.OperationID)),
+						control.process.failureLog())
 				}
 			}
 		}
@@ -1218,7 +1245,7 @@ func (h *testHarness) revokeListenerAndWaitForFence(control controlInstance, lis
 		"reason": "integration compromise simulation", "confirmation_nonce": confirmationEnvelope.Confirmation.Nonce,
 	}, map[string]string{"X-Panel-Token": h.panelToken})
 	if revoke.Status != http.StatusAccepted {
-		h.t.Fatalf("revoke listener identity status = %d: %s", revoke.Status, revoke.Body)
+		h.t.Fatalf("revoke listener identity status = %d: %s\n%s", revoke.Status, revoke.Body, control.process.failureLog())
 	}
 
 	fenceCtx, cancel := context.WithTimeout(h.ctx, 5*time.Second)

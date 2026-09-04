@@ -130,6 +130,59 @@ func TestRetiredActiveGenerationIsForcedAfterDrainTimeout(t *testing.T) {
 	}
 }
 
+func TestConcurrentGenerationForceHonorsCallerDeadline(t *testing.T) {
+	for name, force := range map[string]func(context.Context, *SessionRegistry) error{
+		"terminal": func(ctx context.Context, registry *SessionRegistry) error {
+			_, err := registry.ForceGeneration(ctx, "generation-1", model.GenerationForceReasonShutdown)
+			return err
+		},
+		"progressive timeout": func(ctx context.Context, registry *SessionRegistry) error {
+			_, err := registry.ForceGenerationExceptProgressive(ctx, "generation-1", model.GenerationForceReasonTimeout)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := NewSessionRegistry(nil)
+			session := &blockingRetentionSession{started: make(chan struct{}), release: make(chan struct{})}
+			entity := EntityKey{Module: "http", ID: "1"}
+			if _, err := registry.Register("generation-1", entity, "session-1", session); err != nil {
+				t.Fatal(err)
+			}
+
+			firstDone := make(chan error, 1)
+			go func() {
+				_, err := registry.ForceEntities(context.Background(), "generation-1", map[EntityKey]string{entity: "retired"})
+				firstDone <- err
+			}()
+			select {
+			case <-session.started:
+			case <-time.After(time.Second):
+				t.Fatal("first force did not start")
+			}
+
+			forceCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			secondDone := make(chan error, 1)
+			go func() { secondDone <- force(forceCtx, registry) }()
+
+			select {
+			case err := <-secondDone:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("concurrent force error = %v, want deadline exceeded", err)
+				}
+			case <-time.After(time.Second):
+				close(session.release)
+				<-firstDone
+				t.Fatal("concurrent force ignored its caller deadline")
+			}
+			close(session.release)
+			if err := <-firstDone; err != nil {
+				t.Fatalf("first force error = %v", err)
+			}
+		})
+	}
+}
+
 type retentionResource struct {
 	destroyed int
 }
@@ -138,6 +191,17 @@ type retentionSession struct {
 	forceCalls int
 	reason     string
 	contextErr error
+}
+
+type blockingRetentionSession struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingRetentionSession) ForceClose(context.Context, string) error {
+	close(s.started)
+	<-s.release
+	return nil
 }
 
 func (s *retentionSession) ForceClose(ctx context.Context, reason string) error {

@@ -143,8 +143,12 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 		return result, err
 	}
 	candidate, stageErr := s.rotator.StageAndVerifyPKIEndpoint(ctx, active, forced)
+	completedAt := s.clock().UTC()
+	if completedAt.IsZero() {
+		return result, fmt.Errorf("%w: clock returned zero", ErrPKILifecycleInvalid)
+	}
 	if stageErr == nil {
-		stageErr = validatePKIEndpointCandidate(active, candidate, now)
+		stageErr = validatePKIEndpointCandidate(active, candidate, completedAt)
 	}
 	after, err := s.lease.RequirePKILease(ctx)
 	if err != nil || !samePKILeaseAuthority(before, after) {
@@ -157,15 +161,15 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 		return result, err
 	}
 	if stageErr != nil {
-		return s.recordEndpointFailure(ctx, active, result, now, after, stageErr)
+		return s.recordEndpointFailure(ctx, active, result, completedAt, after, stageErr)
 	}
 	activation := PKIEndpointActivation{
 		IdentityID: identityID, ExpectedActiveCertificateID: active.CertificateID,
 		Candidate: candidate, Forced: forced, Lease: after,
-		Event: NewPKIAuditEvent("endpoint_rotated", "scheduler", identityID, "succeeded", "", now),
+		Event: NewPKIAuditEvent("endpoint_rotated", "scheduler", identityID, "succeeded", "", completedAt),
 	}
 	if err := s.repository.ActivatePKIEndpointCandidate(ctx, activation); err != nil {
-		return s.recordEndpointFailure(ctx, active, result, now, after, err)
+		return s.recordEndpointFailure(ctx, active, result, completedAt, after, err)
 	}
 	result.Activated = true
 	result.ActiveCertificate = candidate.CertificateID

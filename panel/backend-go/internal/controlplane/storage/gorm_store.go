@@ -150,6 +150,7 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 	}
 	var lifecycleGroup *databaseLifecycleGroup
 	var lifecycleGroupLocked bool
+	var lifecycleGroupWriteLocked bool
 	var storeRegistered bool
 	if driver == "sqlite" {
 		sqliteDSN, err := resolveSQLiteDSN(cfg)
@@ -166,18 +167,22 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 			lifecycleGroup = newDatabaseLifecycleGroup("")
 		}
 		lifecycleGroup.write.Lock()
+		lifecycleGroupWriteLocked = true
 		lifecycleGroup.mu.Lock()
 		lifecycleGroupLocked = true
 		defer func() {
-			if !lifecycleGroupLocked {
-				return
+			if lifecycleGroupLocked {
+				if !storeRegistered && len(lifecycleGroup.members) == 0 && lifecycleGroup.processLock != nil {
+					_ = lifecycleGroup.processLock.Close()
+					lifecycleGroup.processLock = nil
+				}
+				lifecycleGroup.mu.Unlock()
+				lifecycleGroupLocked = false
 			}
-			if !storeRegistered && len(lifecycleGroup.members) == 0 && lifecycleGroup.processLock != nil {
-				_ = lifecycleGroup.processLock.Close()
-				lifecycleGroup.processLock = nil
+			if lifecycleGroupWriteLocked {
+				lifecycleGroup.write.Unlock()
+				lifecycleGroupWriteLocked = false
 			}
-			lifecycleGroup.mu.Unlock()
-			lifecycleGroup.write.Unlock()
 		}()
 		if lifecycleGroup.databasePath != "" && len(lifecycleGroup.members) == 0 {
 			if err := preparePKIRestoreLifecycleGroup(context.Background(), lifecycleGroup); err != nil {
@@ -235,7 +240,6 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		lifecycleGroup.members[store] = struct{}{}
 		storeRegistered = true
 		lifecycleGroup.mu.Unlock()
-		lifecycleGroup.write.Unlock()
 		lifecycleGroupLocked = false
 	} else {
 		lifecycleGroup.mu.Lock()
@@ -246,9 +250,14 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 	if !cfg.SkipBootstrapSchema {
 		schemaOptions := SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)
 		schemaOptions.LocalAgentID = store.LocalAgentID()
-		if err := BootstrapSchema(context.Background(), db, schemaOptions); err != nil {
+		bootstrapErr := BootstrapSchema(context.Background(), db, schemaOptions)
+		if lifecycleGroupWriteLocked {
+			lifecycleGroup.write.Unlock()
+			lifecycleGroupWriteLocked = false
+		}
+		if bootstrapErr != nil {
 			_ = store.Close()
-			return nil, err
+			return nil, bootstrapErr
 		}
 		if err := store.BootstrapRevisionLedger(context.Background()); err != nil {
 			_ = store.Close()
@@ -273,6 +282,10 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 				return nil, err
 			}
 		}
+	}
+	if lifecycleGroupWriteLocked {
+		lifecycleGroup.write.Unlock()
+		lifecycleGroupWriteLocked = false
 	}
 	return store, nil
 }
