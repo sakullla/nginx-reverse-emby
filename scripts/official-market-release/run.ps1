@@ -189,10 +189,12 @@ try {
                 $env:NRE_OFFICIAL_WAF_SHA256 = $artifactPaths['waf'].sha256
                 $testOutput = Invoke-NativeText -WorkingDirectory $agentRoot -FilePath 'go' -Arguments @(
                     'test', '-overlay', $overlayPath, './internal/plugins/wasm',
-                    '-run', '^TestOfficialWAFPerformanceGate$', '-count=1', '-v'
+                    '-run', '^TestOfficialWAFPerformance(Gate|Policy)$', '-count=1', '-v'
                 )
                 if ($testOutput -notmatch '(?m)^=== RUN\s+TestOfficialWAFPerformanceGate$' -or
                     $testOutput -notmatch '(?m)^--- PASS: TestOfficialWAFPerformanceGate\b' -or
+                    $testOutput -notmatch '(?m)^=== RUN\s+TestOfficialWAFPerformancePolicy$' -or
+                    $testOutput -notmatch '(?m)^--- PASS: TestOfficialWAFPerformancePolicy\b' -or
                     $testOutput -match '(?m)^--- SKIP: TestOfficialWAFPerformanceGate\b|\[no tests to run\]|no tests to run') {
                     throw 'official WAF performance gate was skipped or not selected'
                 }

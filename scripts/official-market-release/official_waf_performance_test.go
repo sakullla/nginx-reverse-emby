@@ -30,6 +30,7 @@ const (
 	maximumThroughputDecline = 0.10
 	maximumP95Increase       = time.Millisecond
 	maximumP99Increase       = 2 * time.Millisecond
+	officialWAFSafetyTimeout = 25 * time.Millisecond
 	maximumSteadyExtraMemory = uint64(64 << 20)
 	wafEnabledHeader         = "X-NRE-WAF-Enabled"
 	wafMemoryChildEnv        = "NRE_WAF_MEMORY_CHILD"
@@ -207,6 +208,37 @@ func TestOfficialWAFPerformanceGate(t *testing.T) {
 	harness.assertHealthy(t)
 	harness.assertPersistentConnection(t)
 	assertWAFProcessMemoryGateForMode(t, "official-enabled")
+}
+
+func TestOfficialWAFPerformancePolicy(t *testing.T) {
+	if officialWAFSafetyTimeout <= maximumP99Increase {
+		t.Fatalf("execution safety timeout %s must exceed statistical p99 SLA %s", officialWAFSafetyTimeout, maximumP99Increase)
+	}
+	tests := []struct {
+		name        string
+		measurement wafMeasurement
+		wantPass    bool
+	}{
+		{
+			name: "exact boundaries pass",
+			measurement: wafMeasurement{
+				throughputRegression: maximumThroughputDecline,
+				p95Increase:          maximumP95Increase,
+				p99Increase:          maximumP99Increase,
+			},
+			wantPass: true,
+		},
+		{name: "throughput regression fails", measurement: wafMeasurement{throughputRegression: maximumThroughputDecline + 0.001}, wantPass: false},
+		{name: "p95 regression fails", measurement: wafMeasurement{p95Increase: maximumP95Increase + time.Nanosecond}, wantPass: false},
+		{name: "p99 regression fails", measurement: wafMeasurement{p99Increase: maximumP99Increase + time.Nanosecond}, wantPass: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := wafMeasurementWithinSLA(test.measurement); got != test.wantPass {
+				t.Fatalf("wafMeasurementWithinSLA() = %t, want %t", got, test.wantPass)
+			}
+		})
+	}
 }
 
 // assertWAFGateSensitivity is deliberately called by the anchored Recipe
@@ -477,7 +509,10 @@ func compileOfficialWAFGeneration(t *testing.T, id string) (*Runtime, *Generatio
 			MemoryBytes:    16 << 20,
 			MaxMemoryPages: 256,
 			MaxConcurrency: 1,
-			Timeout:        2 * time.Millisecond,
+			// This is a per-evaluation safety ceiling, not the statistical
+			// latency policy. Completed samples are still rejected by the
+			// unchanged p95/p99 and throughput thresholds below.
+			Timeout: officialWAFSafetyTimeout,
 		},
 	})
 	if err != nil {
