@@ -136,6 +136,27 @@ func TestPluginUIRouteCutoverKeepsOldInflightRequest(t *testing.T) {
 	}
 }
 
+func TestPluginHostStopUnregistersDefaultUIRoute(t *testing.T) {
+	declaration := Declaration{PluginID: "default-route-plugin", ExtensionPoints: []string{extensionUIRoute}}
+	t.Cleanup(func() { Unregister("default-route-plugin") })
+	instance := &Instance{
+		ID: "default-route-plugin", Generation: "generation-1", State: "active",
+		candidate: Candidate{Identity: Identity{Generation: "generation-1"}, Declaration: declaration},
+	}
+	host := &Host{active: map[string]*Instance{instance.ID: instance}}
+	host.publishPluginUI(instance)
+	if _, _, ok := Lookup("default-route-plugin"); !ok {
+		t.Fatal("default plugin-id UI route was not published")
+	}
+
+	if err := host.Stop(t.Context(), instance.ID); err != nil {
+		t.Fatalf("stop plugin host: %v", err)
+	}
+	if _, _, ok := Lookup("default-route-plugin"); ok {
+		t.Fatal("stopped plugin retained its default plugin-id UI route")
+	}
+}
+
 func TestPluginUIProxyDoesNotCrossPanelSessionBoundary(t *testing.T) {
 	t.Parallel()
 	received := make(chan http.Header, 1)

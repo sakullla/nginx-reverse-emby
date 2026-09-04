@@ -137,10 +137,14 @@ func (h *Host) publishPluginUI(instance *Instance) {
 }
 
 func (h *Host) unpublishPluginUI(instance *Instance) {
-	if instance == nil || strings.TrimSpace(instance.candidate.Declaration.UIRouteID) == "" {
+	if instance == nil {
 		return
 	}
-	Unregister(instance.candidate.Declaration.UIRouteID)
+	routeID := declarationUIRouteID(instance.candidate.Declaration)
+	if routeID == "" {
+		return
+	}
+	Unregister(routeID)
 	instance.closePluginUIIdleConnections()
 }
 

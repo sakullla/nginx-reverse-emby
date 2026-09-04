@@ -52,11 +52,16 @@ func UIHref(routeID string) string {
 	return panelAPIPrefix + pluginUIPrefix + routeID + "/"
 }
 
-func Register(decl Declaration, handler http.Handler) {
+func declarationUIRouteID(decl Declaration) string {
 	id := strings.TrimSpace(decl.UIRouteID)
 	if id == "" {
 		id = strings.TrimSpace(decl.PluginID)
 	}
+	return id
+}
+
+func Register(decl Declaration, handler http.Handler) {
+	id := declarationUIRouteID(decl)
 	if handler == nil || id == "" {
 		if id != "" {
 			unregisterMount(id)
@@ -66,19 +71,15 @@ func Register(decl Declaration, handler http.Handler) {
 
 	mount := uiMount{}
 	if hasExtension(decl.ExtensionPoints, extensionUIRoute) {
-		routeID := strings.TrimSpace(decl.UIRouteID)
-		if routeID == "" {
-			routeID = strings.TrimSpace(decl.PluginID)
-		}
 		label := metadataValue(decl.Metadata, "ui.nav.label")
 		if label == "" {
-			label = routeID
+			label = id
 		}
 		mount.route = UIRoute{
-			ID:    routeID,
+			ID:    id,
 			Label: label,
 			Group: metadataValue(decl.Metadata, "ui.nav.group"),
-			Href:  UIHref(routeID),
+			Href:  UIHref(id),
 		}
 		mount.handler = handler
 	}
