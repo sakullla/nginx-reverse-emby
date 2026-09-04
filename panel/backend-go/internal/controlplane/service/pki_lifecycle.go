@@ -169,7 +169,11 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 		Event: NewPKIAuditEvent("endpoint_rotated", "scheduler", identityID, "succeeded", "", completedAt),
 	}
 	if err := s.repository.ActivatePKIEndpointCandidate(ctx, activation); err != nil {
-		return s.recordEndpointFailure(ctx, active, result, completedAt, after, err)
+		failedAt := s.clock().UTC()
+		if failedAt.IsZero() {
+			return result, errors.Join(err, fmt.Errorf("%w: clock returned zero", ErrPKILifecycleInvalid))
+		}
+		return s.recordEndpointFailure(ctx, active, result, failedAt, after, err)
 	}
 	result.Activated = true
 	result.ActiveCertificate = candidate.CertificateID

@@ -183,6 +183,69 @@ func TestConcurrentGenerationForceHonorsCallerDeadline(t *testing.T) {
 	}
 }
 
+func TestTerminalForceDeadlineAutomaticallyCleansUpAfterOwnerFinishes(t *testing.T) {
+	controller := NewDrainController(nil)
+	resource := &retentionResource{}
+	if err := controller.Activate(t.Context(), Generation{
+		ID: "generation-1", Revision: 1, Resource: resource,
+	}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	entity := EntityKey{Module: "http", ID: "1"}
+	session := &blockingRetentionSession{started: make(chan struct{}), release: make(chan struct{})}
+	if _, err := controller.RegisterSession("generation-1", entity, "session-1", session); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(t.Context(), Generation{
+		ID: "generation-2", Revision: 2, Resource: &retentionResource{},
+	}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Registry().ForceEntities(
+			context.Background(),
+			"generation-1",
+			map[EntityKey]string{entity: model.GenerationForceReasonEntityDeleted},
+		)
+		ownerDone <- err
+	}()
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("existing force owner did not start")
+	}
+
+	forceCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	err := controller.force(forceCtx, "generation-1", model.GenerationForceReasonGenerationLimit)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("terminal force error = %v, want deadline exceeded", err)
+	}
+	if state := cleanupState(t, controller, "generation-1"); state != model.GenerationDrainStateCleanupFailed {
+		t.Fatalf("state after terminal force deadline = %q, want cleanup_failed", state)
+	}
+
+	close(session.release)
+	if err := <-ownerDone; err != nil {
+		t.Fatalf("existing force owner error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, status := range controller.Snapshot().Generations {
+			if status.GenerationID == "generation-1" && status.State == model.GenerationDrainStateForced && !status.CompletedAt.IsZero() {
+				if resource.destroyed != 1 {
+					t.Fatalf("resource destroy count = %d, want 1", resource.destroyed)
+				}
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("generation did not automatically retire after owner completion: %+v", controller.Snapshot())
+}
+
 type retentionResource struct {
 	destroyed int
 }
