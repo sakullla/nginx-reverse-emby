@@ -22,6 +22,10 @@ func TestValidateWAFPolicyOverlayRejectsUnknownModeAndExtraFields(t *testing.T) 
 		json.RawMessage(`{}`),
 		json.RawMessage(`{"mode":"block"}`),
 		json.RawMessage(`{"mode":"deny","extra":true}`),
+		json.RawMessage(`{"mode":"observe","mode":"deny"}`),
+		json.RawMessage(`{"mode":"","mode":"deny"}`),
+		json.RawMessage(`{"mode":" observe "}`),
+		json.RawMessage(`{"mode":"deny"} {"mode":"observe"}`),
 		json.RawMessage(`[]`),
 		json.RawMessage(`not-json`),
 	} {

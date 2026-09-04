@@ -76,6 +76,7 @@ describe('plugin administration API', () => {
 
 const publishedEntry = {
   rule_id: 7,
+  instance_id: 'official.waf-default',
   agent_id: 'edge-a',
   frontend_url: 'https://media.example.com',
   enabled: true,

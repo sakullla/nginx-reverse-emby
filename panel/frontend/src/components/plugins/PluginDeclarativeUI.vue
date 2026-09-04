@@ -1,7 +1,7 @@
 <script setup>
 import { reactive, ref, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
-import { collectHiddenPointers, prunePointer, resolvePointer } from '../../api/pluginCondition.js'
+import { assignOwnJSON, collectHiddenPointers, prunePointer, resolvePointer, setPointer } from '../../api/pluginCondition.js'
 import { collectDeclarativeConstraintErrors } from '../../api/pluginSecurity.js'
 
 const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, secretFields: { type: Array, default: () => [] }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
@@ -16,7 +16,7 @@ function reset() {
   forceValidate.value = false
   for (const key of Object.keys(model)) delete model[key]
   for (const key of Object.keys(secretReplacements)) delete secretReplacements[key]
-  Object.assign(model, clone(props.config))
+  assignOwnJSON(model, clone(props.config))
   seedDefaults()
 }
 
@@ -56,10 +56,7 @@ function setSecret(pointer, value) {
   else secretReplacements[pointer] = value
 }
 function setValue(pointer, value) {
-  const parts = String(pointer).split('/').slice(1).map((part) => part.replaceAll('~1', '/').replaceAll('~0', '~'))
-  let current = model
-  for (const part of parts.slice(0, -1)) current = current[part] ||= {}
-  current[parts.at(-1)] = value
+  setPointer(model, pointer, value)
 }
 function action(action) {
 	if (action.type === 'dynamic' ? !props.canAct : !props.canConfigure) return

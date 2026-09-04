@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestPluginUIClientReusesAndClosesIdleConnection(t *testing.T) {
@@ -131,6 +133,58 @@ func TestPluginUIRouteCutoverKeepsOldInflightRequest(t *testing.T) {
 	}
 	if oldResponse.Code != http.StatusOK || oldResponse.Body.String() != "old" {
 		t.Fatalf("old generation response = status %d body %q", oldResponse.Code, oldResponse.Body.String())
+	}
+}
+
+func TestPluginUIProxyDoesNotCrossPanelSessionBoundary(t *testing.T) {
+	t.Parallel()
+	received := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		received <- request.Header.Clone()
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Set-Cookie", "nre_panel_token=stolen; Path=/")
+		writer.Header().Set("Clear-Site-Data", `"cookies"`)
+		writer.Header().Set("X-Plugin-Response", "kept")
+		_, _ = io.WriteString(writer, `{}`)
+	}))
+	defer server.Close()
+
+	instance := testPluginUIInstance("generation-1", testDeclaration(), server.Listener.Addr().String())
+	instance.candidate.uiEndpoint.Cookie = "private-cookie"
+	host := &Host{active: map[string]*Instance{instance.ID: instance}}
+	request := httptest.NewRequest(http.MethodGet, "http://panel/api/items", nil)
+	request.Header.Set("Authorization", "Bearer panel-session")
+	request.Header.Set("Cookie", "nre_panel_token=panel-secret")
+	request.Header.Set("X-Panel-Session", "panel-session")
+	request.Header.Set("X-Panel-Token", "panel-secret")
+	request.Header.Set("X-Register-Token", "register-secret")
+	request.Header.Set("X-Client-Actor", "kept")
+	response := httptest.NewRecorder()
+	host.proxyPluginUI(instance, response, request)
+
+	proxied := <-received
+	for _, name := range pluginUISessionRequestHeaders {
+		if value := proxied.Get(name); value != "" {
+			t.Fatalf("plugin received panel credential header %s=%q", name, value)
+		}
+	}
+	if got := proxied.Get(pluginsdk.HeaderPluginUICredential); got != "private-cookie" {
+		t.Fatalf("private plugin credential = %q", got)
+	}
+	if got := proxied.Get("X-Client-Actor"); got != "kept" {
+		t.Fatalf("unrelated request header = %q", got)
+	}
+	if cookies := response.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("plugin response set panel-origin cookies: %+v", cookies)
+	}
+	if got := response.Header().Get("Clear-Site-Data"); got != "" {
+		t.Fatalf("plugin response retained Clear-Site-Data %q", got)
+	}
+	if got := response.Header().Get("X-Plugin-Response"); got != "kept" {
+		t.Fatalf("ordinary response header = %q", got)
+	}
+	if got := response.Header().Get("Content-Security-Policy"); got == "" {
+		t.Fatal("plugin response omitted host isolation policy")
 	}
 }
 

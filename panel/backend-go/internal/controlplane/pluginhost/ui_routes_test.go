@@ -79,6 +79,30 @@ func TestRegisterSecondPluginDoesNotNeedHostCode(t *testing.T) {
 	}
 }
 
+func TestRegisterDefaultsOptionalUIRouteIDToPluginID(t *testing.T) {
+	t.Cleanup(func() { Unregister("default-route-plugin") })
+	Register(Declaration{
+		PluginID:        "default-route-plugin",
+		ExtensionPoints: []string{extensionUIRoute},
+		Metadata:        map[string]string{"ui.nav.label": "Default route"},
+	}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	handler, _, ok := Lookup("default-route-plugin")
+	if !ok || handler == nil {
+		t.Fatal("ui.route without ui_route_id did not use the manifest plugin id")
+	}
+	routes := ListUIRoutes()
+	found := false
+	for _, route := range routes {
+		if route.ID == "default-route-plugin" && route.Href == "/panel-api/plugins/default-route-plugin/" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("default route is missing from catalog: %#v", routes)
+	}
+}
+
 func TestSplitPluginUIPath(t *testing.T) {
 	t.Parallel()
 	cases := map[string][2]string{

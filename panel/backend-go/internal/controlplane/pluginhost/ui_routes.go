@@ -65,16 +65,20 @@ func Register(decl Declaration, handler http.Handler) {
 	}
 
 	mount := uiMount{}
-	if hasExtension(decl.ExtensionPoints, extensionUIRoute) && strings.TrimSpace(decl.UIRouteID) != "" {
+	if hasExtension(decl.ExtensionPoints, extensionUIRoute) {
+		routeID := strings.TrimSpace(decl.UIRouteID)
+		if routeID == "" {
+			routeID = strings.TrimSpace(decl.PluginID)
+		}
 		label := metadataValue(decl.Metadata, "ui.nav.label")
 		if label == "" {
-			label = decl.UIRouteID
+			label = routeID
 		}
 		mount.route = UIRoute{
-			ID:    decl.UIRouteID,
+			ID:    routeID,
 			Label: label,
 			Group: metadataValue(decl.Metadata, "ui.nav.group"),
-			Href:  UIHref(decl.UIRouteID),
+			Href:  UIHref(routeID),
 		}
 		mount.handler = handler
 	}
@@ -93,8 +97,8 @@ func Register(decl Declaration, handler http.Handler) {
 				Label:       label,
 				Description: metadataValue(decl.Metadata, "resource.group.description"),
 				Status:      resourceGroupRegistered,
-				UIRouteID:   strings.TrimSpace(decl.UIRouteID),
-				UIHref:      UIHref(decl.UIRouteID),
+				UIRouteID:   mount.route.ID,
+				UIHref:      mount.route.Href,
 			}
 		}
 	}

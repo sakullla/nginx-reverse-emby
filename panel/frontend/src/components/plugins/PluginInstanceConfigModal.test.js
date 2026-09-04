@@ -143,6 +143,22 @@ describe('PluginInstanceConfigModal target authority', () => {
     }))
   })
 
+  it('isolates published entries for two instances on the same Agent', () => {
+    const wrapper = mountModal(
+      { canonical_local_target_id: 'local-control', agent_targets_allowed: true },
+      {
+        hasHTTPBackend: true,
+        publishedEntries: [
+          { rule_id: 1, instance_id: 'official.plugin-default', agent_id: 'edge-a', frontend_url: 'https://owned.test', enabled: true },
+          { rule_id: 2, instance_id: 'official.plugin-other', agent_id: 'edge-a', frontend_url: 'https://other.test', enabled: true }
+        ]
+      }
+    )
+    expect(wrapper.findAll('[data-test="plugin-published-entry"]')).toHaveLength(1)
+    expect(wrapper.text()).toContain('https://owned.test')
+    expect(wrapper.text()).not.toContain('https://other.test')
+  })
+
   it('blocks a local save when the canonical target is missing', async () => {
     const wrapper = mountModal({ canonical_local_target_id: '', agent_targets_allowed: false })
     await wrapper.get('[data-test="save-config"]').trigger('click')

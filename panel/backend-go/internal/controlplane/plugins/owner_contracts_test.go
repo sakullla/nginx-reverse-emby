@@ -401,6 +401,21 @@ func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	_, err = newOwnerValidator().ValidatePackage(modeRoot, PackageExpectation{})
 	assertCode(t, err, "artifact_mode")
 
+	uppercaseDigest := newSignedWASMPackage(t, "")
+	artifactDigest := sha256.Sum256(ownerWASMArtifact())
+	manifest = strings.Replace(validOwnerManifestYAML(), fmt.Sprintf("sha256: %x", artifactDigest), fmt.Sprintf("sha256: %X", artifactDigest), 1)
+	writeOwnerFile(t, uppercaseDigest, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, uppercaseDigest)
+	_, err = newOwnerValidator().ValidatePackage(uppercaseDigest, PackageExpectation{})
+	assertCode(t, err, "artifact")
+
+	unknownHostScope := newSignedWASMPackage(t, "")
+	manifest = strings.Replace(validOwnerManifestYAML(), "  host_scope: agent\n", "  host_scope: agent\n  host_scopes: [sidecar]\n", 1)
+	writeOwnerFile(t, unknownHostScope, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, unknownHostScope)
+	_, err = newOwnerValidator().ValidatePackage(unknownHostScope, PackageExpectation{})
+	assertCode(t, err, "runtime")
+
 	cycle := newSignedWASMPackage(t, "migrations:\n  - {from: 0.8.0, to: 0.9.0, file: migrations/a.json}\n  - {from: 0.9.0, to: 0.8.0, file: migrations/b.json}\n")
 	writeOwnerFile(t, cycle, "migrations/a.json", `{"operations":[{"op":"set","path":"/a","value":true}]}`)
 	writeOwnerFile(t, cycle, "migrations/b.json", `{"operations":[{"op":"set","path":"/b","value":true}]}`)

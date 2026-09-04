@@ -13,10 +13,41 @@ export function resolvePointer(model, pointer) {
   if (typeof pointer !== 'string' || !pointer.startsWith('/')) return undefined
   let current = model
   for (const token of tokens(pointer)) {
-    if (current == null || typeof current !== 'object') return undefined
+    if (current == null || typeof current !== 'object' || !Object.hasOwn(current, token)) return undefined
     current = current[token]
   }
   return current
+}
+
+function setOwnValue(target, key, value) {
+  // Define the legacy accessor names as ordinary own data properties before
+  // assigning through Vue's reactive proxy. This preserves JSON semantics
+  // without invoking Object.prototype.__proto__ or inherited constructors.
+  if (!Object.hasOwn(target, key) && ['__proto__', 'prototype', 'constructor'].includes(key)) {
+    Object.defineProperty(target, key, { value: undefined, writable: true, enumerable: true, configurable: true })
+  }
+  target[key] = value
+}
+
+export function setPointer(model, pointer, value) {
+  if (!model || typeof model !== 'object' || typeof pointer !== 'string' || !pointer.startsWith('/')) return false
+  const parts = tokens(pointer)
+  if (!parts.length) return false
+  let current = model
+  for (const part of parts.slice(0, -1)) {
+    if (!Object.hasOwn(current, part) || !current[part] || typeof current[part] !== 'object') {
+      setOwnValue(current, part, {})
+    }
+    current = current[part]
+  }
+  setOwnValue(current, parts.at(-1), value)
+  return true
+}
+
+export function assignOwnJSON(target, source) {
+  if (!target || typeof target !== 'object' || !source || typeof source !== 'object') return target
+  for (const [key, value] of Object.entries(source)) setOwnValue(target, key, value)
+  return target
 }
 
 export function isEmptyValue(value) {

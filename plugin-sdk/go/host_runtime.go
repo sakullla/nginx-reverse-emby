@@ -59,6 +59,9 @@ func (response HostRuntimeResponse) Validate() error {
 	if len(response.Payload) > PluginHostPayloadMaxBytes || (len(response.Payload) > 0 && !json.Valid(response.Payload)) {
 		return errors.New("host runtime response payload is invalid or exceeds the canonical bound")
 	}
+	if (len(response.Payload) == 0) == (response.Error == nil) {
+		return errors.New("host runtime response must contain exactly one payload or error result")
+	}
 	if response.Error != nil {
 		if err := response.Error.Validate(); err != nil {
 			return err
@@ -130,6 +133,9 @@ func (client *HostRuntimeClient) Call(ctx context.Context, call HostRuntimeCall,
 	if err := decoder.Decode(&wire); err != nil {
 		return fmt.Errorf("decode plugin host runtime response: %w", err)
 	}
+	if err := ensureJSONDecoderEOF(decoder); err != nil {
+		return fmt.Errorf("decode plugin host runtime response: %w", err)
+	}
 	if err := wire.Validate(); err != nil {
 		return err
 	}
@@ -146,6 +152,17 @@ func (client *HostRuntimeClient) Call(ctx context.Context, call HostRuntimeCall,
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(result); err != nil {
 		return fmt.Errorf("decode plugin host runtime payload: %w", err)
+	}
+	return nil
+}
+
+func ensureJSONDecoderEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values are not allowed")
+		}
+		return err
 	}
 	return nil
 }

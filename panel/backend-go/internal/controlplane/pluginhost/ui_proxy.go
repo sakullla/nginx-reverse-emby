@@ -21,6 +21,25 @@ import (
 const pluginUIBodyLimit = 1 << 20
 const pluginUITransportIdleTimeout = 60 * time.Second
 
+var pluginUIHopByHopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+var pluginUISessionRequestHeaders = []string{
+	"Authorization",
+	"Cookie",
+	"X-Panel-Session",
+	"X-Panel-Token",
+	"X-Register-Token",
+}
+
 const internalDNSResolvePath = "/.nre/providers/dns/token"
 const internalDNSProviderVersionHeader = "X-NRE-DNS-Provider-Version"
 
@@ -143,6 +162,10 @@ func (h *Host) proxyPluginUI(instance *Instance, writer http.ResponseWriter, req
 	forward.URL.Host = "plugin-ui"
 	forward.Host = "plugin-ui"
 	forward.Header = request.Header.Clone()
+	removePluginUIHopByHopHeaders(forward.Header)
+	for _, name := range pluginUISessionRequestHeaders {
+		forward.Header.Del(name)
+	}
 	forward.Header.Set(pluginsdk.HeaderPluginUICredential, instance.candidate.uiEndpoint.Cookie)
 	forward.Body = http.MaxBytesReader(writer, request.Body, pluginUIBodyLimit)
 	response, err := instance.pluginUIClient().Do(forward)
@@ -151,16 +174,35 @@ func (h *Host) proxyPluginUI(instance *Instance, writer http.ResponseWriter, req
 		return
 	}
 	defer response.Body.Close()
-	for name, values := range response.Header {
-		if strings.EqualFold(name, "Connection") || strings.EqualFold(name, "Transfer-Encoding") {
-			continue
-		}
+	responseHeader := response.Header.Clone()
+	removePluginUIHopByHopHeaders(responseHeader)
+	// A plugin UI shares the panel origin, so it must not create or overwrite
+	// panel session cookies through its private runtime response.
+	responseHeader.Del("Set-Cookie")
+	responseHeader.Del("Clear-Site-Data")
+	for name, values := range responseHeader {
 		for _, value := range values {
 			writer.Header().Add(name, value)
 		}
 	}
+	if writer.Header().Get("Content-Security-Policy") == "" {
+		pluginsdk.SetPluginUIResponseHeaders(writer.Header())
+	}
 	writer.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(writer, io.LimitReader(response.Body, pluginUIBodyLimit))
+}
+
+func removePluginUIHopByHopHeaders(header http.Header) {
+	for _, value := range header.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				header.Del(name)
+			}
+		}
+	}
+	for _, name := range pluginUIHopByHopHeaders {
+		header.Del(name)
+	}
 }
 
 // HasActiveDNSProvider reports whether at least one published control-plane

@@ -3,13 +3,21 @@ package pluginsdk
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+type hostRuntimeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (call hostRuntimeRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return call(request)
+}
 
 func TestHostRuntimeClientUsesPrivateEndpointAndCredential(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -60,6 +68,31 @@ func TestHostRuntimeCallRejectsUnboundedOrInvalidPayload(t *testing.T) {
 	}
 	if err := (&HostRuntimeClient{}).Call(context.Background(), HostRuntimeCall{Operation: "state.get"}, nil); err == nil {
 		t.Fatal("unconfigured host runtime client was accepted")
+	}
+}
+
+func TestHostRuntimeResponseRequiresOneResultAndRejectsTrailingJSON(t *testing.T) {
+	for _, response := range []HostRuntimeResponse{
+		{},
+		{Payload: json.RawMessage(`{}`), Error: &RuntimeError{Code: ErrorInternal, Message: "failed"}},
+	} {
+		if err := response.Validate(); err == nil {
+			t.Fatalf("HostRuntimeResponse.Validate(%+v) accepted an ambiguous result", response)
+		}
+	}
+
+	client := &HostRuntimeClient{
+		client: &http.Client{Transport: hostRuntimeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"payload":{"ready":true}} {"error":{"Code":7}}`)),
+			}, nil
+		})},
+		credential: "attempt-cookie",
+	}
+	if err := client.Call(t.Context(), HostRuntimeCall{Operation: "state.get"}, nil); err == nil {
+		t.Fatal("HostRuntimeClient accepted trailing JSON response data")
 	}
 }
 

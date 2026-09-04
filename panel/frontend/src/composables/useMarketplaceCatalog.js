@@ -371,14 +371,21 @@ export function useMarketplaceCatalog() {
   }
 
   async function preparePackageDetail(item) {
+    const requestedKey = packageKey(item)
     detailLoading.value = true
     actionError.value = ''
     startDownloadProgress()
     try {
-      detail.value = await cachedPackageDetail(item)
+      const prepared = await cachedPackageDetail(item)
+      // A catalog card can be inspected while a different package is still
+      // downloading. Never attach the earlier package's permissions or
+      // identity to the newly selected card.
+      if (packageKey(selected.value) !== requestedKey) return false
+      detail.value = prepared
       detailPrepared.value = true
       return true
     } catch (cause) {
+      if (packageKey(selected.value) !== requestedKey) return false
       detail.value = previewPackageDetail(item)
       detailPrepared.value = false
       if (!String(item?.plugin?.sha256 || '').startsWith('preview-')) {
@@ -526,15 +533,6 @@ export function useMarketplaceCatalog() {
     const item = selected.value
     const pluginID = String(item?.plugin?.id || '').trim()
     if (!pluginID) return
-    const shouldUpgrade = pluginHasUpgrade(installed.value.find((plugin) => plugin.plugin_id === pluginID), item)
-    const selection = {
-      source_id: item.source?.id,
-      plugin_id: pluginID,
-      version: item.plugin?.version,
-      digest: item.plugin?.sha256,
-      confirmed_permissions: [...requiredPermissions.value].sort(),
-      risk_accepted: item.source?.kind !== 'official'
-    }
     actionBusy.value = true
     actionError.value = ''
     pendingConflict.value = false
@@ -544,6 +542,24 @@ export function useMarketplaceCatalog() {
         if (!prepared) return
       }
       await refreshInstalled()
+      // Both the verified permission list and current installation state may
+      // have changed while the package was downloading. Snapshot them only
+      // after the final refresh, immediately before choosing the mutation.
+      const current = installed.value.find((plugin) => plugin.plugin_id === pluginID)
+      const shouldUpgrade = pluginHasUpgrade(current, item)
+      if (current && !shouldUpgrade) {
+        confirmVisible.value = false
+        await router.push(`/plugins/${encodeURIComponent(pluginID)}`)
+        return
+      }
+      const selection = {
+        source_id: item.source?.id,
+        plugin_id: pluginID,
+        version: item.plugin?.version,
+        digest: item.plugin?.sha256,
+        confirmed_permissions: [...requiredPermissions.value].sort(),
+        risk_accepted: item.source?.kind !== 'official'
+      }
       if (shouldUpgrade) await upgradePlugin(pluginID, selection)
       else await installPlugin(selection)
       confirmVisible.value = false

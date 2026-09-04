@@ -1562,9 +1562,8 @@ func validateHandshake(request pluginsdk.RPCHandshakeRequest, response pluginsdk
 	}
 	seen := map[string]struct{}{}
 	for _, capability := range response.Capabilities {
-		capability = strings.TrimSpace(capability)
-		if capability == "" {
-			return errors.New("control-plane plugin returned an empty capability")
+		if capability == "" || capability != strings.TrimSpace(capability) {
+			return errors.New("control-plane plugin returned a non-canonical capability")
 		}
 		if _, ok := grants[capability]; !ok {
 			return fmt.Errorf("control-plane plugin returned ungranted capability %q", capability)

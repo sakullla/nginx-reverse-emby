@@ -320,6 +320,71 @@ describe('PluginMarketplacePage', () => {
     expect(buttonByText(wrapper, '重试安装').attributes('disabled')).toBeUndefined()
   })
 
+  it('uses permissions from a successful retry instead of the failed preview', async () => {
+    mocks.fetchPluginPackageDetail
+      .mockRejectedValueOnce(new Error('temporary download failure'))
+      .mockResolvedValueOnce(packageDetail)
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '重试安装').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).toHaveBeenCalledWith(expect.objectContaining({
+      plugin_id: entry.id,
+      confirmed_permissions: ['http.inspect']
+    }))
+  })
+
+  it('does not attach a completed package download to a different selected card', async () => {
+    const helper = { ...entry, id: 'official.helper', name: 'Helper', sha256: 'd'.repeat(64) }
+    mocks.fetchRepositoryContents.mockResolvedValue({ entries: [entry, helper], directPlugin: null })
+    let resolveDetail
+    mocks.fetchPluginPackageDetail.mockReturnValue(new Promise((resolve) => { resolveDetail = resolve }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await wrapper.get(`[data-test="marketplace-package-${helper.id}"]`).trigger('click')
+    resolveDetail(packageDetail)
+    await flushPromises()
+    const inspect = wrapper.get('[data-test="marketplace-inspect-modal"]')
+    expect(inspect.find('.modal-title').text()).toBe('Helper')
+    expect(inspect.text()).not.toContain('http.inspect')
+    expect(inspect.text()).toContain('市场快照只展示已签名的索引信息')
+  })
+
+  it('rechecks installed state immediately before choosing install versus upgrade', async () => {
+    mocks.fetchPlugins
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ plugin_id: entry.id, active_version: '1.1.0', active_package_digest: 'c'.repeat(64) }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认安装').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).toHaveBeenCalledWith(entry.id, expect.objectContaining({
+      plugin_id: entry.id,
+      confirmed_permissions: ['http.inspect']
+    }))
+  })
+
+  it('does not reinstall a package that became current while its detail was downloading', async () => {
+    mocks.fetchPlugins
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ plugin_id: entry.id, active_version: entry.version, active_package_digest: entry.sha256 }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, '确认安装').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+  })
+
   it('installs from the card action after permission confirm and does not submit on cancel', async () => {
     const wrapper = mountPage()
     await flushPromises()

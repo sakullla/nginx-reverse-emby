@@ -90,7 +90,9 @@ function emitKeyValue() {
   for (const row of keyValueRows.value) {
     const key = String(row.key || '').trim()
     if (!key || Object.hasOwn(next, key)) continue
-    next[key] = String(row.value ?? '')
+    const value = String(row.value ?? '')
+    if (key === '__proto__') Object.defineProperty(next, key, { value, writable: true, enumerable: true, configurable: true })
+    else next[key] = value
   }
   keyValueLastEmitted = JSON.stringify(next)
   change(next)
@@ -101,7 +103,15 @@ function addKeyValueRow() { keyValueRows.value.push({ key: '', value: '' }) }
 function removeKeyValueRow(index) { keyValueRows.value.splice(index, 1); emitKeyValue() }
 
 const items = computed(() => Array.isArray(value()) ? value() : [])
-function addItem() { change([...items.value, isObjectItems.value ? {} : '']) }
+function defaultScalarItem() {
+  if (props.component.item_default !== undefined) return props.component.item_default
+  if (props.component.item_options?.length) return props.component.item_options[0].value
+  if (props.component.item_type === 'boolean') return false
+  if (props.component.item_type === 'null') return null
+  if (props.component.item_type === 'number' || props.component.item_type === 'integer') return props.component.item_minimum ?? 0
+  return ''
+}
+function addItem() { change([...items.value, isObjectItems.value ? {} : defaultScalarItem()]) }
 function removeItem(index) { change(items.value.filter((_, i) => i !== index)) }
 function moveItem(index, delta) {
   const next = [...items.value]
@@ -110,7 +120,19 @@ function moveItem(index, delta) {
   ;[next[index], next[target]] = [next[target], next[index]]
   change(next)
 }
-function changeScalar(index, text) { const next = [...items.value]; next[index] = text; change(next) }
+function changeScalar(index, raw) {
+  const next = [...items.value]
+  if (props.component.item_options?.length) next[index] = selectScalarValue(raw)
+  else if (props.component.item_type === 'boolean') next[index] = raw === true
+  else if (props.component.item_type === 'number' || props.component.item_type === 'integer') next[index] = raw === '' ? null : Number(raw)
+  else if (props.component.item_type === 'null') next[index] = null
+  else next[index] = raw
+  change(next)
+}
+function selectScalarValue(raw) {
+  const option = (props.component.item_options || []).find((item) => String(item.value) === raw)
+  return option ? option.value : raw
+}
 
 function constraintHint(component) {
   const parts = []
@@ -244,7 +266,13 @@ const error = computed(() => {
       </template>
       <template v-else>
         <div v-for="(item, index) in items" :key="index" class="declarative-array-item declarative-array-scalar">
-          <input type="text" :value="item" :disabled="component.read_only" @input="changeScalar(index, $event.target.value)">
+          <select v-if="component.item_options?.length" :value="item" :disabled="component.read_only" @change="changeScalar(index, $event.target.value)">
+            <option v-for="option in component.item_options" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <input v-else-if="component.item_type === 'boolean'" type="checkbox" :checked="item === true" :disabled="component.read_only" @change="changeScalar(index, $event.target.checked)">
+          <input v-else-if="component.item_type === 'number' || component.item_type === 'integer'" type="number" :value="item" :min="component.item_minimum" :max="component.item_maximum" :step="component.item_step || (component.item_type === 'integer' ? 1 : 'any')" :disabled="component.read_only" @input="changeScalar(index, $event.target.value)">
+          <input v-else-if="component.item_type !== 'null'" type="text" :value="item" :minlength="component.item_min_length" :maxlength="component.item_max_length" :pattern="component.item_pattern" :disabled="component.read_only" @input="changeScalar(index, $event.target.value)">
+          <code v-else>null</code>
           <button class="btn btn-secondary btn-sm" type="button" :disabled="component.read_only" @click="removeItem(index)">移除</button>
         </div>
       </template>

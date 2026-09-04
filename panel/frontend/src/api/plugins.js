@@ -19,13 +19,16 @@ function projectPublishedEntry(entry) {
   const agentID = String(entry.agent_id || '').trim()
   const frontendURL = String(entry.frontend_url || '').trim()
   if (!Number.isInteger(ruleID) || ruleID <= 0 || !agentID || !frontendURL) return null
-  return {
+  const projected = {
     rule_id: ruleID,
     agent_id: agentID,
     frontend_url: frontendURL,
     enabled: entry.enabled === true,
     accessible: entry.accessible === true
   }
+  const instanceID = String(entry.instance_id || '').trim()
+  if (instanceID) projected.instance_id = instanceID
+  return projected
 }
 
 function projectPluginPublishedEntries(value) {

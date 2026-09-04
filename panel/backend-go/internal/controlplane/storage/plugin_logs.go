@@ -149,9 +149,7 @@ type PluginRuntimeLogReport struct {
 // monotonic per-generation replay fence before persisting sanitized fragments.
 func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authenticatedAgentID string, report PluginRuntimeLogReport) (bool, error) {
 	authenticatedAgentID = strings.TrimSpace(authenticatedAgentID)
-	if authenticatedAgentID == "" || report.AgentID != authenticatedAgentID || report.Revision <= 0 || report.Sequence == 0 ||
-		strings.TrimSpace(report.GenerationID) == "" || strings.TrimSpace(report.InstanceID) == "" || strings.TrimSpace(report.PluginID) == "" ||
-		len(report.PackageDigest) != 64 || len(report.ArtifactDigest) != 64 || len(report.Entries) == 0 || len(report.Entries) > 32 {
+	if authenticatedAgentID == "" || report.AgentID != authenticatedAgentID || validatePluginRuntimeLogReport(report) != nil {
 		return false, errors.New("plugin runtime log report identity is invalid")
 	}
 	encoded, err := json.Marshal(report)
@@ -205,6 +203,47 @@ func (s *GormStore) RecordPluginRuntimeLogReport(ctx context.Context, authentica
 		return nil
 	})
 	return accepted, err
+}
+
+func validatePluginRuntimeLogReport(report PluginRuntimeLogReport) error {
+	if report.Revision <= 0 || report.Sequence == 0 ||
+		!validPluginRuntimeLogIdentity(report.GenerationID) || !validPluginRuntimeLogIdentity(report.InstanceID) ||
+		!validPluginRuntimeLogIdentity(report.PluginID) || !validPluginRuntimeLogIdentity(report.AgentID) ||
+		!validPluginRuntimeLogDigest(report.PackageDigest) || !validPluginRuntimeLogDigest(report.ArtifactDigest) ||
+		len(report.Entries) == 0 || len(report.Entries) > 32 {
+		return errors.New("plugin runtime log report fence is invalid")
+	}
+	for _, entry := range report.Entries {
+		if entry.Level != "debug" && entry.Level != "info" && entry.Level != "warn" && entry.Level != "error" {
+			return errors.New("plugin runtime log entry level is invalid")
+		}
+		if entry.Message == "" || len(entry.Message) > pluginRuntimeLogMessageMax {
+			return errors.New("plugin runtime log entry message is invalid")
+		}
+	}
+	return nil
+}
+
+func validPluginRuntimeLogIdentity(value string) bool {
+	if value == "" || len(value) > 256 || value != strings.TrimSpace(value) {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' || strings.ContainsRune("._:@+-/", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validPluginRuntimeLogDigest(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func pluginRuntimeLogStatusCurrentTx(tx *gorm.DB, status PluginAgentRuntimeStatusRow) error {

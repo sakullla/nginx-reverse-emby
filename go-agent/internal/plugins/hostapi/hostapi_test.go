@@ -176,7 +176,7 @@ func TestHostAPIAuthorizationProjectsChannelReverseCapability(t *testing.T) {
 	}
 }
 
-func TestHostAPIRevocableHandleBindsOwnerAndFencesDrainAndTargetRotation(t *testing.T) {
+func TestHostAPICapabilityRevocableHandleBindsOwnerAndFencesDrainAndTargetRotation(t *testing.T) {
 	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
 	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}
 	call := pluginsdk.HostCapabilityCall{PluginID: "official.reverse", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.reverse", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
@@ -215,9 +215,17 @@ func TestHostAPIRevocableHandleBindsOwnerAndFencesDrainAndTargetRotation(t *test
 	if _, err := handles.Resolve(t.Context(), token, call); !errors.Is(err, ErrDenied) {
 		t.Fatalf("Resolve(after target rotation) error = %v", err)
 	}
+	replacement := &struct{ ID string }{ID: "replacement-relay"}
+	replacementToken, err := handles.Issue(t.Context(), authorizer, call, replacement)
+	if err != nil {
+		t.Fatalf("Issue(after target rotation) error = %v", err)
+	}
+	if resolved, err := handles.Resolve(t.Context(), replacementToken, call); err != nil || resolved != replacement {
+		t.Fatalf("Resolve(replacement target) = (%v, %v)", resolved, err)
+	}
 }
 
-func TestHostAPIRevokeCancelsLeaseWithoutWaitingForQuota(t *testing.T) {
+func TestHostAPICapabilityRevokeCancelsLeaseWithoutWaitingForQuota(t *testing.T) {
 	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
 	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}
 	call := pluginsdk.HostCapabilityCall{PluginID: "official.reverse", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.reverse", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
