@@ -2,7 +2,9 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +12,18 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestPrepareOutputMarshalsEmptyCollectionsAsArrays(t *testing.T) {
+	output := newPrepareOutput(marketOutput{SourceCommit: strings.Repeat("a", 40)})
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"package_results":[]`)) ||
+		!bytes.Contains(encoded, []byte(`"failures":[]`)) {
+		t.Fatalf("empty prepare output = %s", encoded)
+	}
+}
 
 func TestExtractPackageRejectsUnsafeEntries(t *testing.T) {
 	for _, test := range []struct {

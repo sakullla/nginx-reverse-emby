@@ -184,7 +184,7 @@ func preparePackages(root, destination, validator string) (prepareOutput, error)
 	if err := os.Mkdir(destination, 0o755); err != nil {
 		return prepareOutput{}, err
 	}
-	output := prepareOutput{SourceCommit: market.SourceCommit, Packages: len(market.Packages)}
+	output := newPrepareOutput(market)
 	for _, pkg := range market.Packages {
 		result := preparedPackage{ID: pkg.ID, Version: pkg.Version, Runtime: pkg.Runtime}
 		archive := filepath.Join(destination, pkg.ID+".nrepkg")
@@ -199,6 +199,15 @@ func preparePackages(root, destination, validator string) (prepareOutput, error)
 	}
 	output.Valid = len(output.Failures) == 0
 	return output, nil
+}
+
+func newPrepareOutput(market marketOutput) prepareOutput {
+	return prepareOutput{
+		SourceCommit:   market.SourceCommit,
+		Packages:       len(market.Packages),
+		PackageResults: make([]preparedPackage, 0, len(market.Packages)),
+		Failures:       []string{},
+	}
 }
 
 func preparePackage(pkg marketPackage, archive, extracted, validator string, result *preparedPackage) error {

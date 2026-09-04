@@ -124,7 +124,10 @@ try {
         }
     }
     foreach ($failure in @($prepared.failures)) {
-        $failures.Add([string]$failure)
+        $message = [string]$failure
+        if (-not [string]::IsNullOrWhiteSpace($message)) {
+            $failures.Add($message)
+        }
     }
     if ($prepared.packages -le 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$' -or $sourceCommit -eq ('0' * 40)) {
         $failures.Add('signed v2 projection did not contain packages and a non-zero full source OID')
