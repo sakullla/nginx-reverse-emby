@@ -87,7 +87,8 @@ func TestPluginUIRouteCutoverKeepsOldInflightRequest(t *testing.T) {
 	newInstance := testPluginUIInstance("generation-new", declaration, newServer.Listener.Addr().String())
 	host := &Host{active: map[string]*Instance{oldInstance.ID: oldInstance}}
 	t.Cleanup(func() {
-		Unregister(declaration.UIRouteID)
+		host.unpublishPluginUI(oldInstance)
+		host.unpublishPluginUI(newInstance)
 		oldInstance.closePluginUIIdleConnections()
 		newInstance.closePluginUIIdleConnections()
 	})
@@ -113,11 +114,11 @@ func TestPluginUIRouteCutoverKeepsOldInflightRequest(t *testing.T) {
 	host.active[oldInstance.ID] = newInstance
 	host.mu.Unlock()
 	host.publishPluginUI(newInstance)
-	oldInstance.closePluginUIIdleConnections()
+	host.unpublishPluginUI(oldInstance)
 
 	newHandler, _, ok := Lookup(declaration.UIRouteID)
 	if !ok {
-		t.Fatal("new plugin UI route was not published")
+		t.Fatal("old generation unpublish removed the new generation route")
 	}
 	newResponse := httptest.NewRecorder()
 	newHandler.ServeHTTP(newResponse, httptest.NewRequest(http.MethodGet, "http://panel/", nil))
@@ -141,7 +142,7 @@ func TestPluginHostStopUnregistersDefaultUIRoute(t *testing.T) {
 	t.Cleanup(func() { Unregister("default-route-plugin") })
 	instance := &Instance{
 		ID: "default-route-plugin", Generation: "generation-1", State: "active",
-		candidate: Candidate{Identity: Identity{Generation: "generation-1"}, Declaration: declaration},
+		candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-1"}, Declaration: declaration},
 	}
 	host := &Host{active: map[string]*Instance{instance.ID: instance}}
 	host.publishPluginUI(instance)
@@ -199,7 +200,7 @@ func TestPluginHostStopCannotRemoveAnotherOwnersExplicitRoute(t *testing.T) {
 
 	colliding := &Instance{
 		ID: "other-plugin", Generation: "generation-1", State: "active",
-		candidate: Candidate{Identity: Identity{Generation: "generation-1"}, Declaration: Declaration{PluginID: "other-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}},
+		candidate: Candidate{Identity: Identity{PluginID: "other-plugin", Generation: "generation-1"}, Declaration: Declaration{PluginID: "other-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}},
 	}
 	host := &Host{active: map[string]*Instance{colliding.ID: colliding}}
 	if err := host.Stop(t.Context(), colliding.ID); err != nil {
@@ -213,6 +214,33 @@ func TestPluginHostStopCannotRemoveAnotherOwnersExplicitRoute(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://panel/", nil))
 	if response.Body.String() != "owner" {
 		t.Fatalf("route owner response = %q", response.Body.String())
+	}
+}
+
+func TestPluginHostStopCannotRemoveSamePluginOtherInstanceRoute(t *testing.T) {
+	const routeID = "same-plugin-owned-route"
+	declaration := Declaration{PluginID: "shared-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}
+	owner := &Instance{
+		ID: "instance-a", Generation: "generation-a", State: "active",
+		candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-a"}, Declaration: declaration},
+	}
+	ownerHost := &Host{active: map[string]*Instance{owner.ID: owner}}
+	ownerHost.publishPluginUI(owner)
+	t.Cleanup(func() { ownerHost.unpublishPluginUI(owner) })
+	if _, _, ok := Lookup(routeID); !ok {
+		t.Fatal("owning instance route was not published")
+	}
+
+	other := &Instance{
+		ID: "instance-b", Generation: "generation-b", State: "active",
+		candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-b"}, Declaration: declaration},
+	}
+	otherHost := &Host{active: map[string]*Instance{other.ID: other}}
+	if err := otherHost.Stop(t.Context(), other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := Lookup(routeID); !ok {
+		t.Fatal("same-plugin non-owning instance removed the live route")
 	}
 }
 
@@ -271,7 +299,7 @@ func TestPluginUIProxyDoesNotCrossPanelSessionBoundary(t *testing.T) {
 func testPluginUIInstance(generation string, declaration Declaration, address string) *Instance {
 	instance := &Instance{ID: "sample-plugin", Generation: generation}
 	instance.candidate = Candidate{
-		Identity:    Identity{Generation: generation},
+		Identity:    Identity{PluginID: declaration.PluginID, Generation: generation},
 		Declaration: declaration,
 		uiEndpoint:  Endpoint{Network: "tcp", Address: address, Cookie: "cookie"},
 	}

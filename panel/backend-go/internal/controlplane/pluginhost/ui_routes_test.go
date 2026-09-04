@@ -158,10 +158,107 @@ func TestPreparePublicationRejectsAnotherUIRouteOwner(t *testing.T) {
 	}
 	candidate := &Instance{
 		ID: "prepared-collider", Generation: "generation-1",
-		candidate: Candidate{Declaration: Declaration{PluginID: "prepared-collider", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}},
+		candidate: Candidate{Identity: Identity{PluginID: "prepared-collider", Generation: "generation-1"}, Declaration: Declaration{PluginID: "prepared-collider", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}},
 	}
-	if _, err := (&Host{}).PreparePublication([]*Instance{candidate}); !errors.Is(err, ErrUIRouteConflict) {
+	host := &Host{prepared: map[*Instance]struct{}{candidate: {}}}
+	if _, err := host.PreparePublication([]*Instance{candidate}); !errors.Is(err, ErrUIRouteConflict) {
 		t.Fatalf("prepared publication route collision error = %v", err)
+	}
+}
+
+func TestPreparePublicationRejectsSamePluginMultiInstanceRoute(t *testing.T) {
+	const routeID = "same-plugin-route"
+	declaration := Declaration{PluginID: "multi-instance-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}
+	first := &Instance{ID: "instance-a", Generation: "generation-a", candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-a"}, Declaration: declaration}}
+	second := &Instance{ID: "instance-b", Generation: "generation-b", candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-b"}, Declaration: declaration}}
+	host := &Host{prepared: map[*Instance]struct{}{first: {}, second: {}}}
+	if _, err := host.PreparePublication([]*Instance{first, second}); !errors.Is(err, ErrUIRouteConflict) {
+		t.Fatalf("same-plugin multi-instance route error = %v", err)
+	}
+	if len(host.active) != 0 {
+		t.Fatalf("route conflict changed active view: %+v", host.active)
+	}
+}
+
+func TestConcurrentHostsReserveRouteForOnlyOneInstance(t *testing.T) {
+	const routeID = "concurrent-plugin-route"
+	declaration := Declaration{PluginID: "concurrent-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}
+	first := &Instance{ID: "instance-a", Generation: "generation-a", candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-a"}, Declaration: declaration}}
+	second := &Instance{ID: "instance-b", Generation: "generation-b", candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-b"}, Declaration: declaration}}
+	firstHost := &Host{prepared: map[*Instance]struct{}{first: {}}}
+	secondHost := &Host{prepared: map[*Instance]struct{}{second: {}}}
+	type result struct {
+		publication *PreparedPublication
+		err         error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	prepare := func(host *Host, instance *Instance) {
+		<-start
+		publication, err := host.PreparePublication([]*Instance{instance})
+		results <- result{publication: publication, err: err}
+	}
+	go prepare(firstHost, first)
+	go prepare(secondHost, second)
+	close(start)
+
+	firstResult, secondResult := <-results, <-results
+	winners, conflicts := 0, 0
+	for _, candidate := range []result{firstResult, secondResult} {
+		switch {
+		case candidate.err == nil && candidate.publication != nil:
+			winners++
+			candidate.publication.Abort()
+		case errors.Is(candidate.err, ErrUIRouteConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent publication result: publication=%p err=%v", candidate.publication, candidate.err)
+		}
+	}
+	if winners != 1 || conflicts != 1 {
+		t.Fatalf("concurrent route reservations winners=%d conflicts=%d", winners, conflicts)
+	}
+	if len(firstHost.active) != 0 || len(secondHost.active) != 0 {
+		t.Fatal("route reservation changed an active view before publish")
+	}
+	third := &Instance{ID: "instance-c", Generation: "generation-c", candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-c"}, Declaration: declaration}}
+	thirdHost := &Host{prepared: map[*Instance]struct{}{third: {}}}
+	publication, err := thirdHost.PreparePublication([]*Instance{third})
+	if err != nil {
+		t.Fatalf("aborted route reservation was not released: %v", err)
+	}
+	publication.Abort()
+}
+
+func TestReservedRoutePublishesWithActiveView(t *testing.T) {
+	const routeID = "atomic-active-route"
+	declaration := Declaration{PluginID: "atomic-plugin", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute}}
+	instance := &Instance{
+		ID: "atomic-instance", Generation: "generation-a", State: "active",
+		candidate: Candidate{Identity: Identity{PluginID: declaration.PluginID, Generation: "generation-a"}, Declaration: declaration},
+	}
+	host := &Host{active: make(map[string]*Instance), prepared: map[*Instance]struct{}{instance: {}}}
+	publication, err := host.PreparePublication([]*Instance{instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.active[instance.ID] != nil {
+		publication.Abort()
+		t.Fatal("route reservation changed active view before publish")
+	}
+	if _, _, ok := Lookup(routeID); ok {
+		publication.Abort()
+		t.Fatal("reserved route became visible before publish")
+	}
+	publication.Publish()
+	if host.active[instance.ID] != instance {
+		t.Fatal("publish did not advance active view")
+	}
+	if _, _, ok := Lookup(routeID); !ok {
+		t.Fatal("publish did not commit reserved route")
+	}
+	if err := host.Stop(t.Context(), instance.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -174,6 +174,7 @@ type TerminalResult struct {
 type PreparedPublication struct {
 	host    *Host
 	entries []preparedPublicationEntry
+	routes  *uiRouteReservation
 	done    bool
 }
 
@@ -496,7 +497,6 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 		return nil, errors.New("prepared control-plane plugin instances are required")
 	}
 	seen := make(map[string]struct{}, len(instances))
-	routeOwners := currentUIRouteOwners()
 	for _, instance := range instances {
 		if instance == nil || instance.ID == "" || instance.Generation == "" {
 			return nil, errors.New("prepared control-plane plugin instance is required")
@@ -505,13 +505,6 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 			return nil, errors.New("control-plane plugin publication duplicates an instance")
 		}
 		seen[instance.ID] = struct{}{}
-		if hasExtension(instance.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
-			owner := strings.TrimSpace(instance.candidate.Declaration.PluginID)
-			routeID := declarationUIRouteID(instance.candidate.Declaration)
-			if err := ClaimUIRouteOwnership(routeOwners, owner, routeID); err != nil {
-				return nil, fmt.Errorf("prepare control-plane plugin UI route: %w", err)
-			}
-		}
 	}
 	entries := make([]preparedPublicationEntry, 0, len(instances))
 	for _, instance := range instances {
@@ -543,7 +536,27 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 		}
 		entry.control.wg.Add(workers)
 	}
-	return &PreparedPublication{host: h, entries: entries}, nil
+	publications := make([]uiRoutePublication, 0, len(entries))
+	for _, entry := range entries {
+		publication, err := h.uiRoutePublication(entry.previous, entry.instance)
+		if err != nil {
+			h.mu.Unlock()
+			for _, cleanup := range entries {
+				cleanup.control.cancel()
+			}
+			return nil, fmt.Errorf("prepare control-plane plugin UI route: %w", err)
+		}
+		publications = append(publications, publication)
+	}
+	routes, err := reserveUIRoutePublication(publications)
+	if err != nil {
+		h.mu.Unlock()
+		for _, cleanup := range entries {
+			cleanup.control.cancel()
+		}
+		return nil, fmt.Errorf("prepare control-plane plugin UI route: %w", err)
+	}
+	return &PreparedPublication{host: h, entries: entries, routes: routes}, nil
 }
 
 // Publish swaps every reserved instance into the active view before releasing
@@ -555,24 +568,21 @@ func (p *PreparedPublication) Publish() {
 	h := p.host
 	for index := range p.entries {
 		entry := &p.entries[index]
-		if entry.previous != nil && hasExtension(entry.previous.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
-			previousOwner := strings.TrimSpace(entry.previous.candidate.Declaration.PluginID)
-			nextOwner := strings.TrimSpace(entry.instance.candidate.Declaration.PluginID)
-			if !hasExtension(entry.instance.candidate.Declaration.ExtensionPoints, extensionUIRoute) || previousOwner != nextOwner {
-				h.unpublishPluginUI(entry.previous)
-			}
-		}
 		if entry.previous != nil && entry.previous.control != nil {
 			entry.previous.control.cancel()
 		}
 		if entry.previous != nil && entry.previous != entry.instance {
 			h.prepared[entry.previous] = struct{}{}
 		}
-		entry.instance.control = entry.control
-		h.active[entry.instance.ID] = entry.instance
-		delete(h.prepared, entry.instance)
-		h.publishPluginUI(entry.instance)
 	}
+	p.routes.publish(func() {
+		for index := range p.entries {
+			entry := &p.entries[index]
+			entry.instance.control = entry.control
+			h.active[entry.instance.ID] = entry.instance
+			delete(h.prepared, entry.instance)
+		}
+	})
 	p.done = true
 	h.mu.Unlock()
 	for index := range p.entries {
@@ -595,6 +605,7 @@ func (p *PreparedPublication) Abort() {
 	for _, entry := range p.entries {
 		entry.control.cancel()
 	}
+	p.routes.abort()
 	p.done = true
 	p.host.mu.Unlock()
 }
@@ -1241,9 +1252,25 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 			_ = replacement.Stop(context.Background())
 			return
 		}
-		h.active[instance.ID] = replacement
-		delete(h.prepared, replacement)
-		h.publishPluginUI(replacement)
+		publication, routeErr := h.uiRoutePublication(instance, replacement)
+		var routes *uiRouteReservation
+		if routeErr == nil {
+			routes, routeErr = reserveUIRoutePublication([]uiRoutePublication{publication})
+		}
+		if routeErr != nil {
+			h.mu.Unlock()
+			control.launchMu.Unlock()
+			_ = replacement.Stop(context.Background())
+			instance.mu.Lock()
+			instance.LastError = safeError(routeErr)
+			instance.mu.Unlock()
+			failure = routeErr
+			continue
+		}
+		routes.publish(func() {
+			h.active[instance.ID] = replacement
+			delete(h.prepared, replacement)
+		})
 		h.mu.Unlock()
 		control.launchMu.Unlock()
 		instance.closePluginUIIdleConnections()

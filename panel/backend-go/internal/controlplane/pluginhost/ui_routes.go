@@ -37,16 +37,51 @@ type UIRoute struct {
 }
 
 type uiMount struct {
-	owner   string
+	owner   uiRouteOwner
 	route   UIRoute
 	group   ResourceGroup
 	handler http.Handler
 }
 
+type uiRouteOwner struct {
+	PluginID   string
+	InstanceID string
+	Generation string
+}
+
+func (owner uiRouteOwner) valid() bool {
+	return owner.PluginID != "" && owner.PluginID == strings.TrimSpace(owner.PluginID) &&
+		owner.InstanceID == strings.TrimSpace(owner.InstanceID) && owner.Generation == strings.TrimSpace(owner.Generation) &&
+		(owner.InstanceID == "") == (owner.Generation == "")
+}
+
+func sameUIRouteRuntime(left, right uiRouteOwner) bool {
+	if left.InstanceID == "" || right.InstanceID == "" {
+		return left == right
+	}
+	return left.PluginID == right.PluginID && left.InstanceID == right.InstanceID
+}
+
+type uiRoutePublication struct {
+	previousOwner   uiRouteOwner
+	previousRouteID string
+	nextOwner       uiRouteOwner
+	nextRouteID     string
+	nextMount       *uiMount
+}
+
+type uiRouteReservation struct {
+	token        uint64
+	routes       []string
+	publications []uiRoutePublication
+}
+
 var uiMounts = struct {
-	mu   sync.RWMutex
-	byID map[string]uiMount
-}{byID: map[string]uiMount{}}
+	mu              sync.RWMutex
+	byID            map[string]uiMount
+	reserved        map[string]uint64
+	nextReservation uint64
+}{byID: map[string]uiMount{}, reserved: map[string]uint64{}}
 
 var ErrUIRouteConflict = errors.New("plugin UI route is owned by another plugin")
 
@@ -83,40 +118,53 @@ func ClaimUIRouteOwnership(owners map[string]string, ownerPluginID, routeID stri
 	return nil
 }
 
-func currentUIRouteOwners() map[string]string {
-	uiMounts.mu.RLock()
-	defer uiMounts.mu.RUnlock()
-	owners := make(map[string]string, len(uiMounts.byID))
-	for routeID, mount := range uiMounts.byID {
-		owners[routeID] = mount.owner
-	}
-	return owners
-}
-
 func Register(decl Declaration, handler http.Handler) error {
-	owner := strings.TrimSpace(decl.PluginID)
+	owner := uiRouteOwner{PluginID: strings.TrimSpace(decl.PluginID)}
 	id := declarationUIRouteID(decl)
 	if handler == nil {
-		Unregister(owner, id)
+		Unregister(owner.PluginID, id)
 		return nil
 	}
-	if owner == "" || id == "" {
+	if !owner.valid() || id == "" {
 		return errors.New("plugin UI route owner and identity are required")
 	}
+	mount := buildUIMount(owner, decl, handler)
+	if mount == nil {
+		return nil
+	}
+	return registerUIMount(id, *mount)
+}
 
-	mount := uiMount{owner: owner}
-	if hasExtension(decl.ExtensionPoints, extensionUIRoute) {
+func registerUIMount(id string, mount uiMount) error {
+	uiMounts.mu.Lock()
+	defer uiMounts.mu.Unlock()
+	if _, reserved := uiMounts.reserved[id]; reserved {
+		return fmt.Errorf("%w: route %q has a pending publication", ErrUIRouteConflict, id)
+	}
+	if existing, found := uiMounts.byID[id]; found && !sameUIRouteRuntime(existing.owner, mount.owner) {
+		return uiRouteOwnershipConflict(id, existing.owner, mount.owner)
+	}
+	for routeID, existing := range uiMounts.byID {
+		if sameUIRouteRuntime(existing.owner, mount.owner) && routeID != id {
+			if _, reserved := uiMounts.reserved[routeID]; reserved {
+				return fmt.Errorf("%w: previous route %q has a pending publication", ErrUIRouteConflict, routeID)
+			}
+			delete(uiMounts.byID, routeID)
+		}
+	}
+	uiMounts.byID[id] = mount
+	return nil
+}
+
+func buildUIMount(owner uiRouteOwner, decl Declaration, handler http.Handler) *uiMount {
+	id := declarationUIRouteID(decl)
+	mount := &uiMount{owner: owner}
+	if hasExtension(decl.ExtensionPoints, extensionUIRoute) && handler != nil {
 		label := metadataValue(decl.Metadata, "ui.nav.label")
 		if label == "" {
 			label = id
 		}
-		mount.route = UIRoute{
-			ID:       id,
-			PluginID: owner,
-			Label:    label,
-			Group:    metadataValue(decl.Metadata, "ui.nav.group"),
-			Href:     UIHref(id),
-		}
+		mount.route = UIRoute{ID: id, PluginID: owner.PluginID, Label: label, Group: metadataValue(decl.Metadata, "ui.nav.group"), Href: UIHref(id)}
 		mount.handler = handler
 	}
 	if hasExtension(decl.ExtensionPoints, extensionResourceGroup) {
@@ -127,38 +175,137 @@ func Register(decl Declaration, handler http.Handler) error {
 			if label == "" {
 				label = groupID
 			}
-			mount.group = ResourceGroup{
-				ID:          groupID,
-				PluginID:    strings.TrimSpace(decl.PluginID),
-				Ref:         ref,
-				Label:       label,
-				Description: metadataValue(decl.Metadata, "resource.group.description"),
-				Status:      resourceGroupRegistered,
-				UIRouteID:   mount.route.ID,
-				UIHref:      mount.route.Href,
-			}
+			mount.group = ResourceGroup{ID: groupID, PluginID: owner.PluginID, Ref: ref, Label: label, Description: metadataValue(decl.Metadata, "resource.group.description"), Status: resourceGroupRegistered, UIRouteID: mount.route.ID, UIHref: mount.route.Href}
 		}
 	}
 	if mount.handler == nil && mount.group.ID == "" {
 		return nil
 	}
+	return mount
+}
 
+func uiRouteOwnershipConflict(routeID string, current, requested uiRouteOwner) error {
+	return fmt.Errorf("%w: route %q belongs to plugin %q instance %q generation %q, not plugin %q instance %q generation %q", ErrUIRouteConflict, routeID, current.PluginID, current.InstanceID, current.Generation, requested.PluginID, requested.InstanceID, requested.Generation)
+}
+
+func reserveUIRoutePublication(publications []uiRoutePublication) (*uiRouteReservation, error) {
 	uiMounts.mu.Lock()
 	defer uiMounts.mu.Unlock()
-	owners := make(map[string]string, 1)
-	if existing, found := uiMounts.byID[id]; found {
-		owners[id] = existing.owner
+	lockedRoutes := make(map[string]struct{})
+	desired := make(map[string]uiRouteOwner)
+	desiredPublications := make(map[string]uiRoutePublication)
+	for _, publication := range publications {
+		if publication.previousRouteID != "" {
+			lockedRoutes[publication.previousRouteID] = struct{}{}
+		}
+		if publication.nextMount == nil {
+			continue
+		}
+		if !publication.nextOwner.valid() || publication.nextOwner.InstanceID == "" || publication.nextRouteID == "" {
+			return nil, errors.New("plugin UI route runtime owner is invalid")
+		}
+		if current, exists := desired[publication.nextRouteID]; exists && !sameUIRouteRuntime(current, publication.nextOwner) {
+			return nil, uiRouteOwnershipConflict(publication.nextRouteID, current, publication.nextOwner)
+		}
+		desired[publication.nextRouteID] = publication.nextOwner
+		desiredPublications[publication.nextRouteID] = publication
+		lockedRoutes[publication.nextRouteID] = struct{}{}
 	}
-	if err := ClaimUIRouteOwnership(owners, owner, id); err != nil {
-		return err
-	}
-	for routeID, existing := range uiMounts.byID {
-		if existing.owner == owner && routeID != id {
-			delete(uiMounts.byID, routeID)
+	for routeID := range lockedRoutes {
+		if _, reserved := uiMounts.reserved[routeID]; reserved {
+			return nil, fmt.Errorf("%w: route %q has a concurrent publication", ErrUIRouteConflict, routeID)
 		}
 	}
-	uiMounts.byID[id] = mount
-	return nil
+	for _, publication := range publications {
+		if publication.previousRouteID == "" {
+			continue
+		}
+		if current, exists := uiMounts.byID[publication.previousRouteID]; exists && current.owner != publication.previousOwner {
+			return nil, uiRouteOwnershipConflict(publication.previousRouteID, current.owner, publication.previousOwner)
+		}
+	}
+	for routeID, owner := range desired {
+		current, exists := uiMounts.byID[routeID]
+		if !exists {
+			continue
+		}
+		publication := desiredPublications[routeID]
+		replacesPrevious := publication.previousRouteID == routeID && current.owner == publication.previousOwner
+		if current.owner != owner && !replacesPrevious {
+			return nil, uiRouteOwnershipConflict(routeID, current.owner, owner)
+		}
+	}
+	routes := make([]string, 0, len(lockedRoutes))
+	for routeID := range lockedRoutes {
+		routes = append(routes, routeID)
+	}
+	sort.Strings(routes)
+	uiMounts.nextReservation++
+	if uiMounts.nextReservation == 0 {
+		uiMounts.nextReservation++
+	}
+	token := uiMounts.nextReservation
+	for _, routeID := range routes {
+		uiMounts.reserved[routeID] = token
+	}
+	return &uiRouteReservation{token: token, routes: routes, publications: append([]uiRoutePublication(nil), publications...)}, nil
+}
+
+func (reservation *uiRouteReservation) publish(activate func()) bool {
+	if reservation == nil || activate == nil {
+		return false
+	}
+	uiMounts.mu.Lock()
+	defer uiMounts.mu.Unlock()
+	for _, routeID := range reservation.routes {
+		if uiMounts.reserved[routeID] != reservation.token {
+			return false
+		}
+	}
+	activate()
+	for _, publication := range reservation.publications {
+		if publication.previousRouteID != "" {
+			if current, found := uiMounts.byID[publication.previousRouteID]; found && current.owner == publication.previousOwner {
+				delete(uiMounts.byID, publication.previousRouteID)
+			}
+		}
+		if publication.nextMount != nil {
+			uiMounts.byID[publication.nextRouteID] = *publication.nextMount
+		}
+	}
+	reservation.releaseLocked()
+	return true
+}
+
+func (reservation *uiRouteReservation) abort() {
+	if reservation == nil {
+		return
+	}
+	uiMounts.mu.Lock()
+	defer uiMounts.mu.Unlock()
+	reservation.releaseLocked()
+}
+
+func (reservation *uiRouteReservation) releaseLocked() {
+	for _, routeID := range reservation.routes {
+		if uiMounts.reserved[routeID] == reservation.token {
+			delete(uiMounts.reserved, routeID)
+		}
+	}
+}
+
+func unregisterRuntimeMount(owner uiRouteOwner, routeID string) bool {
+	uiMounts.mu.Lock()
+	defer uiMounts.mu.Unlock()
+	if _, reserved := uiMounts.reserved[routeID]; reserved {
+		return false
+	}
+	mount, found := uiMounts.byID[routeID]
+	if !found || mount.owner != owner {
+		return false
+	}
+	delete(uiMounts.byID, routeID)
+	return true
 }
 
 // Unregister removes only the named owner's route. Omitting routeID retains
@@ -173,10 +320,14 @@ func Unregister(ownerPluginID string, routeID ...string) bool {
 }
 
 func unregisterMount(ownerPluginID, id string) bool {
+	owner := uiRouteOwner{PluginID: strings.TrimSpace(ownerPluginID)}
 	uiMounts.mu.Lock()
 	defer uiMounts.mu.Unlock()
+	if _, reserved := uiMounts.reserved[id]; reserved {
+		return false
+	}
 	mount, found := uiMounts.byID[id]
-	if !found || mount.owner != ownerPluginID {
+	if !found || mount.owner != owner {
 		return false
 	}
 	delete(uiMounts.byID, id)

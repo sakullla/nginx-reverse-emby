@@ -131,9 +131,16 @@ func (h *Host) publishPluginUI(instance *Instance) {
 	if h == nil || instance == nil || !hasExtension(instance.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
 		return
 	}
-	Register(instance.candidate.Declaration, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	owner, err := runtimeUIRouteOwner(instance)
+	if err != nil {
+		return
+	}
+	mount := buildUIMount(owner, instance.candidate.Declaration, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		h.proxyPluginUI(instance, writer, request)
 	}))
+	if mount != nil {
+		_ = registerUIMount(declarationUIRouteID(instance.candidate.Declaration), *mount)
+	}
 }
 
 func (h *Host) unpublishPluginUI(instance *Instance) {
@@ -144,8 +151,53 @@ func (h *Host) unpublishPluginUI(instance *Instance) {
 	if routeID == "" {
 		return
 	}
-	Unregister(instance.candidate.Declaration.PluginID, routeID)
+	owner, err := runtimeUIRouteOwner(instance)
+	if err != nil {
+		return
+	}
+	unregisterRuntimeMount(owner, routeID)
 	instance.closePluginUIIdleConnections()
+}
+
+func runtimeUIRouteOwner(instance *Instance) (uiRouteOwner, error) {
+	if instance == nil {
+		return uiRouteOwner{}, errors.New("plugin UI runtime instance is required")
+	}
+	owner := uiRouteOwner{
+		PluginID: strings.TrimSpace(instance.candidate.Identity.PluginID), InstanceID: strings.TrimSpace(instance.ID), Generation: strings.TrimSpace(instance.Generation),
+	}
+	if !owner.valid() || owner.InstanceID == "" || strings.TrimSpace(instance.candidate.Declaration.PluginID) != owner.PluginID || strings.TrimSpace(instance.candidate.Identity.Generation) != owner.Generation {
+		return uiRouteOwner{}, errors.New("plugin UI runtime owner is invalid")
+	}
+	return owner, nil
+}
+
+func (h *Host) uiRoutePublication(previous, next *Instance) (uiRoutePublication, error) {
+	publication := uiRoutePublication{}
+	if previous != nil && hasExtension(previous.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
+		owner, err := runtimeUIRouteOwner(previous)
+		if err != nil {
+			return uiRoutePublication{}, err
+		}
+		publication.previousOwner = owner
+		publication.previousRouteID = declarationUIRouteID(previous.candidate.Declaration)
+	}
+	if next == nil || !hasExtension(next.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
+		return publication, nil
+	}
+	owner, err := runtimeUIRouteOwner(next)
+	if err != nil {
+		return uiRoutePublication{}, err
+	}
+	publication.nextOwner = owner
+	publication.nextRouteID = declarationUIRouteID(next.candidate.Declaration)
+	publication.nextMount = buildUIMount(owner, next.candidate.Declaration, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		h.proxyPluginUI(next, writer, request)
+	}))
+	if publication.nextMount == nil {
+		return uiRoutePublication{}, errors.New("plugin UI runtime mount is unavailable")
+	}
+	return publication, nil
 }
 
 func (h *Host) proxyPluginUI(instance *Instance, writer http.ResponseWriter, request *http.Request) {
