@@ -83,9 +83,9 @@ environment:
   NRE_TIMEZONE: Asia/Shanghai
 ```
 
-`API_TOKEN` 和 `MASTER_REGISTER_TOKEN` 都要用 32 位以上随机字符串，且互不相同。`PANEL_VAULT_MASTER_KEY` 可省略；省略时控制面会从 `API_TOKEN` 确定性派生标准 32-byte Vault key，重启不需要额外迁移。显式配置仍优先，一键部署脚本也会继续生成并持久保留独立 key。已存储 secret 后，如需更换 `API_TOKEN`，应先配置并备份当前部署使用的显式 Vault key；直接更换派生来源会使既有 ciphertext 无法解密。
+`API_TOKEN` 和 `MASTER_REGISTER_TOKEN` 都要用 32 位以上随机字符串，且互不相同；仓库附带的 Compose 会同时要求这两个值。`PANEL_VAULT_MASTER_KEY` 可省略；省略时控制面会从 `API_TOKEN` 确定性派生标准 32-byte Vault key，重启不需要额外迁移。显式配置仍优先，一键部署脚本也会继续生成并持久保留独立 key。请把包含这些值的 `.env` 权限收紧为 `0600` 并纳入受控备份，不要只备份数据库。
 
-允许在线替换 Vault key：设置新的 `PANEL_VAULT_MASTER_KEY` 和不同的 `PANEL_VAULT_KEY_ID`，再临时设置旧的 `PANEL_VAULT_PREVIOUS_MASTER_KEY`；旧部署由 API token 派生时，改用 `PANEL_VAULT_PREVIOUS_API_TOKEN`。同时用 `PANEL_VAULT_PREVIOUS_KEY_ID` 指明旧部署的 key ID（Compose 默认是 `primary`）。控制面启动时会在事务内重加密全部 active secret，版本号和引用不变；启动成功后删除三个 `PANEL_VAULT_PREVIOUS_*` 变量。
+已存储 secret 后不能只更换 `API_TOKEN`，也不能单独填入一个新的 `PANEL_VAULT_MASTER_KEY`，否则既有 ciphertext 将无法解密。允许在线替换 Vault key：设置新的 `PANEL_VAULT_MASTER_KEY` 和不同的 `PANEL_VAULT_KEY_ID`，再临时设置旧的 `PANEL_VAULT_PREVIOUS_MASTER_KEY`；旧部署由 API token 派生时，改用 `PANEL_VAULT_PREVIOUS_API_TOKEN`。同时用 `PANEL_VAULT_PREVIOUS_KEY_ID` 指明旧部署的 key ID（Compose 默认是 `primary`）。控制面启动时会在事务内重加密全部 active secret，版本号和引用不变；确认启动和 secret 读取成功后，再删除三个 `PANEL_VAULT_PREVIOUS_*` 变量并备份新 key。
 
 官方插件市场默认读取镜像内的 `/opt/nginx-reverse-emby/official-market.lock`，并跟踪 `sakullla/sakullla-plugins` 的 `official-market` 分支。需要使用其它策略文件时，可设置 `PANEL_OFFICIAL_MARKET_LOCK_FILE`；该值必须是容器内的绝对路径，并指向普通文件而非符号链接。该文件只固定官方仓库身份、可切换的 `ref_kind: branch`/`ref_name` 更新通道、支持的 SDK ABI 与官方签名根，不固定 commit、tag、版本或 `market.yaml` 摘要。每次刷新都会解析所配置 branch 的当前 full OID，复核刷新期间 ref 未移动，完整验证市场与包签名后才持久化该 OID 和摘要 provenance；切换 branch 会先使旧 catalog 失效并建立新的 source generation。文件缺失、身份或签名验证失败会拒绝刷新并保留当前快照。
 
@@ -121,6 +121,8 @@ ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
 ```yaml
 environment:
   NRE_PUBLIC_URL: https://panel.example.com
+  # bundled local Agent 会清洗并重写 X-Forwarded-*；其它上游代理必须具备同样行为
+  NRE_TRUST_FORWARDED_HEADERS: "true"
 ```
 
 然后 `docker compose up -d`。

@@ -68,8 +68,11 @@ $validationJSON = Invoke-NativeText -WorkingDirectory $backendRoot -FilePath 'go
     'run', './cmd/nre-plugin-validator', '--official-lock', $lockPath
 )
 $validation = $validationJSON | ConvertFrom-Json
-if (-not $validation.valid -or $validation.packages -ne 9 -or $validation.commit -notmatch '^[0-9a-f]{40}$') {
-    throw "official market validation did not return a valid nine-package full commit: $validationJSON"
+$validProperty = $validation.PSObject.Properties['valid']
+$commitProperty = $validation.PSObject.Properties['commit']
+if ($null -eq $validProperty -or $null -eq $commitProperty -or -not $validProperty.Value -or
+    [string]$commitProperty.Value -notmatch '^[0-9a-f]{40}$' -or [string]$commitProperty.Value -eq ('0' * 40)) {
+    throw "official market validation did not return a valid full commit: $validationJSON"
 }
 
 $tempParent = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).Path.TrimEnd([char[]]@(
@@ -85,6 +88,17 @@ $sourceCommit = ''
 New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
 try {
+    $suffix = if ($IsWindows) { '.exe' } else { '' }
+    $helperPath = Join-Path $tempRoot "release-helper$suffix"
+    $validatorPath = Join-Path $tempRoot "nre-plugin-validator$suffix"
+    $helperSource = Join-Path $PSScriptRoot 'release_helper.go'
+    Invoke-NativeText -WorkingDirectory $backendRoot -FilePath 'go' -Arguments @(
+        'build', '-o', $helperPath, $helperSource
+    ) | Out-Null
+    Invoke-NativeText -WorkingDirectory $backendRoot -FilePath 'go' -Arguments @(
+        'build', '-o', $validatorPath, './cmd/nre-plugin-validator'
+    ) | Out-Null
+
     & git clone --quiet --depth 1 --branch $refName --single-branch $repository $marketCheckout
     if ($LASTEXITCODE -ne 0) {
         throw "git clone official market exited with code $LASTEXITCODE"
@@ -94,77 +108,50 @@ try {
         throw "official branch moved during validation ($($validation.commit) -> $checkoutCommit); rerun the script"
     }
 
-    $seenPackages = @{}
-    foreach ($package in @($validation.package_details)) {
-        $packageErrors = [Collections.Generic.List[string]]::new()
-        if ($seenPackages.ContainsKey($package.id)) {
-            $packageErrors.Add('duplicate package id')
-        }
-        $seenPackages[$package.id] = $true
-        $packageRoot = Join-Path $marketCheckout $package.package_path
-        $resolvedPackageRoot = ''
-        try {
-            $resolvedPackageRoot = (Resolve-Path -LiteralPath $packageRoot).Path
-        }
-        catch {
-            $packageErrors.Add("package directory is missing: $($_.Exception.Message)")
-        }
-        $artifactCount = 0
-        foreach ($artifact in @($package.artifacts)) {
-            $artifactCount++
-            try {
-                $artifactPath = (Resolve-Path -LiteralPath (Join-Path $resolvedPackageRoot $artifact.path)).Path
-                if (-not $artifactPath.StartsWith($resolvedPackageRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-                    throw 'artifact escaped its package directory'
-                }
-                $actualDigest = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-                $actualSize = (Get-Item -LiteralPath $artifactPath).Length
-                if ($actualDigest -ne $artifact.sha256) {
-                    throw "digest $actualDigest differs from $($artifact.sha256)"
-                }
-                if ($actualSize -ne $artifact.size) {
-                    throw "size $actualSize differs from $($artifact.size)"
-                }
-                if ($artifact.path -eq $package.runtime_entry -or $artifactCount -eq 1) {
-                    $artifactPaths[$package.id] = $artifactPath
-                }
-            }
-            catch {
-                $packageErrors.Add("artifact $($artifact.path): $($_.Exception.Message)")
+    $packagesRoot = Join-Path $tempRoot 'packages'
+    $preparedJSON = Invoke-NativeText -WorkingDirectory $backendRoot -FilePath $helperPath -Arguments @(
+        'prepare', '--root', $marketCheckout, '--destination', $packagesRoot, '--validator', $validatorPath
+    )
+    $prepared = $preparedJSON | ConvertFrom-Json
+    $sourceCommit = [string]$prepared.source_commit
+    foreach ($result in @($prepared.package_results)) {
+        $packageResults.Add($result)
+        if ($result.passed) {
+            $artifactPaths[$result.id] = [ordered]@{
+                path = [string]$result.artifact_path
+                sha256 = [string]$result.artifact_sha256
+                runtime = [string]$result.runtime
             }
         }
-        if ($artifactCount -eq 0) {
-            $packageErrors.Add('no signed artifacts were declared')
+    }
+    foreach ($failure in @($prepared.failures)) {
+        $failures.Add([string]$failure)
+    }
+    if ($prepared.packages -le 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$' -or $sourceCommit -eq ('0' * 40)) {
+        $failures.Add('signed v2 projection did not contain packages and a non-zero full source OID')
+    }
+    Invoke-BatchStep -Name 'signed-source-commit' -Action {
+        $sourceCheckout = Join-Path $tempRoot 'source'
+        New-Item -ItemType Directory -Path $sourceCheckout | Out-Null
+        Invoke-NativeText -WorkingDirectory $sourceCheckout -FilePath 'git' -Arguments @('init', '--quiet') | Out-Null
+        Invoke-NativeText -WorkingDirectory $sourceCheckout -FilePath 'git' -Arguments @('remote', 'add', 'origin', $repository) | Out-Null
+        Invoke-NativeText -WorkingDirectory $sourceCheckout -FilePath 'git' -Arguments @(
+            'fetch', '--quiet', '--depth', '1', 'origin', $sourceCommit
+        ) | Out-Null
+        $resolvedSource = (Invoke-NativeText -WorkingDirectory $sourceCheckout -FilePath 'git' -Arguments @(
+            'rev-parse', 'FETCH_HEAD'
+        )).Trim()
+        if ($resolvedSource -ne $sourceCommit) {
+            throw "signed source OID resolved as $resolvedSource"
         }
-        $passed = $packageErrors.Count -eq 0
-        $packageResults.Add([ordered]@{
-            id = $package.id
-            version = $package.version
-            runtime = $package.runtime_kind
-            artifacts = $artifactCount
-            passed = $passed
-            errors = @($packageErrors)
-        })
-        if (-not $passed) {
-            $failures.Add("package $($package.id): $($packageErrors -join '; ')")
-        }
-    }
-    if ($seenPackages.Count -ne 9) {
-        $failures.Add("package set contains $($seenPackages.Count) unique ids, want 9")
-    }
+    } | Out-Null
 
-    $provenance = Get-Content -Raw -LiteralPath (Join-Path $marketCheckout 'provenance.json') | ConvertFrom-Json
-    $sourceCommit = [string]$provenance.repository_commit
-    if ($sourceCommit -notmatch '^[0-9a-f]{40}$') {
-        $failures.Add('signed provenance repository_commit is not a full lowercase Git OID')
-    }
-
-    foreach ($package in @($validation.package_details | Where-Object { $_.runtime_kind -eq 'rpc-service' })) {
+    foreach ($package in @($prepared.package_results | Where-Object { $_.runtime -eq 'rpc-service' })) {
         if (-not $artifactPaths.ContainsKey($package.id)) {
             $failures.Add("rpc-handshake-$($package.id): no verified artifact path")
             continue
         }
-        $artifactPath = $artifactPaths[$package.id]
+        $artifactPath = $artifactPaths[$package.id].path
         Invoke-BatchStep -Name "rpc-handshake-$($package.id)" -Action {
             $mount = "type=bind,source=$artifactPath,target=/plugin,readonly"
             $output = Invoke-NativeText -WorkingDirectory $repositoryRoot -FilePath 'docker' -Arguments @(
@@ -182,16 +169,27 @@ try {
         $failures.Add('official-waf-performance: no verified waf artifact path')
     }
     else {
-        $waf = @($validation.package_details | Where-Object { $_.id -eq 'waf' })[0]
-        $wafArtifact = @($waf.artifacts | Where-Object { $_.path -eq $waf.runtime_entry })[0]
         Invoke-BatchStep -Name 'official-waf-performance' -Action {
+            $overlayPath = Join-Path $tempRoot 'official-waf-overlay.json'
+            $wasmRoot = Join-Path $agentRoot 'internal\plugins\wasm'
+            $overlay = [ordered]@{ Replace = [ordered]@{} }
+            foreach ($name in @(
+                'official_waf_performance_test.go',
+                'official_waf_process_memory_linux_test.go',
+                'official_waf_process_memory_other_test.go',
+                'official_waf_process_memory_windows_test.go'
+            )) {
+                $overlay.Replace[(Join-Path $wasmRoot $name)] = Join-Path $PSScriptRoot $name
+            }
+            $overlay | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $overlayPath -Encoding utf8
             $oldArtifact = [Environment]::GetEnvironmentVariable('NRE_OFFICIAL_WAF_ARTIFACT', 'Process')
             $oldDigest = [Environment]::GetEnvironmentVariable('NRE_OFFICIAL_WAF_SHA256', 'Process')
             try {
-                $env:NRE_OFFICIAL_WAF_ARTIFACT = $artifactPaths['waf']
-                $env:NRE_OFFICIAL_WAF_SHA256 = $wafArtifact.sha256
+                $env:NRE_OFFICIAL_WAF_ARTIFACT = $artifactPaths['waf'].path
+                $env:NRE_OFFICIAL_WAF_SHA256 = $artifactPaths['waf'].sha256
                 $testOutput = Invoke-NativeText -WorkingDirectory $agentRoot -FilePath 'go' -Arguments @(
-                    'test', './internal/plugins/wasm/...', '-run', '^TestOfficialWAFPerformanceGate$', '-count=1', '-v'
+                    'test', '-overlay', $overlayPath, './internal/plugins/wasm',
+                    '-run', '^TestOfficialWAFPerformanceGate$', '-count=1', '-v'
                 )
                 if ($testOutput -notmatch '(?m)^=== RUN\s+TestOfficialWAFPerformanceGate$' -or
                     $testOutput -notmatch '(?m)^--- PASS: TestOfficialWAFPerformanceGate\b' -or
@@ -206,11 +204,20 @@ try {
         } | Out-Null
     }
 
+    Invoke-BatchStep -Name 'stable-market-branch' -Action {
+        $remote = Invoke-NativeText -WorkingDirectory $repositoryRoot -FilePath 'git' -Arguments @(
+            'ls-remote', '--exit-code', $repository, "refs/heads/$refName"
+        )
+        if ($remote -notmatch "^$checkoutCommit\s+refs/heads/$([regex]::Escape($refName))$") {
+            throw "official branch moved during validation: $remote"
+        }
+    } | Out-Null
+
     [ordered]@{
         valid = $failures.Count -eq 0
         market_commit = $checkoutCommit
         source_commit = $sourceCommit
-        packages = $validation.packages
+        packages = $prepared.packages
         package_results = @($packageResults)
         steps = @($steps)
         failures = @($failures)

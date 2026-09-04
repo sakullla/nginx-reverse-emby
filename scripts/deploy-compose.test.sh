@@ -6,7 +6,9 @@ script="${script_dir}/deploy-compose.sh"
 compose_file="${script_dir}/../docker-compose.yaml"
 tmp="${TMPDIR:-/tmp}/nre-deploy-compose-test.$$"
 env_test_file="${tmp}.env"
-trap 'rm -f "$tmp" "$env_test_file"' EXIT HUP INT TERM
+secure_env_test_file="${tmp}.secure-env"
+secure_env_test_dir="${tmp}.secure-dir"
+trap 'rm -f "$tmp" "$env_test_file" "$secure_env_test_file"; rmdir "$secure_env_test_dir" 2>/dev/null || true' EXIT HUP INT TERM
 
 awk '
     function update_depth(line) {
@@ -20,6 +22,7 @@ awk '
     /^panel_certificate_objects\(\)/ ||
     /^panel_certificate_object\(\)/ ||
     /^create_panel_self_proxy\(\)/ ||
+    /^secure_env_file\(\)/ ||
     /^write_env_value\(\)/ ||
     /^configure_forwarded_headers_trust\(\)/ ||
     /^wait_public_panel_ready\(\)/ {
@@ -112,6 +115,25 @@ assert_apply_calls() {
         exit 1
     fi
 }
+
+umask 022
+secure_env_file "$secure_env_test_file"
+case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *)
+        secure_env_mode="$(stat -c '%a' "$secure_env_test_file" 2>/dev/null || stat -f '%Lp' "$secure_env_test_file")"
+        assert_eq "new env file mode" "$secure_env_mode" "600"
+        chmod 644 "$secure_env_test_file"
+        secure_env_file "$secure_env_test_file"
+        secure_env_mode="$(stat -c '%a' "$secure_env_test_file" 2>/dev/null || stat -f '%Lp' "$secure_env_test_file")"
+        assert_eq "existing env file mode" "$secure_env_mode" "600"
+        ;;
+esac
+mkdir "$secure_env_test_dir"
+if secure_env_file "$secure_env_test_dir"; then
+    printf 'secure env setup accepted a non-regular path\n' >&2
+    exit 1
+fi
 
 if ! grep -Fq 'NRE_TRUST_FORWARDED_HEADERS: "${NRE_TRUST_FORWARDED_HEADERS:-false}"' "$compose_file"; then
     printf 'compose does not pass NRE_TRUST_FORWARDED_HEADERS with a safe default\n' >&2

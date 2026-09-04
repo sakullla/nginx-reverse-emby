@@ -55,6 +55,8 @@ nginx-reverse-emby/
 environment:
   API_TOKEN: ${API_TOKEN:?set API_TOKEN to a random 32+ character token}
   MASTER_REGISTER_TOKEN: ${MASTER_REGISTER_TOKEN:?set MASTER_REGISTER_TOKEN to a random 32+ character token}
+  PANEL_VAULT_MASTER_KEY: ${PANEL_VAULT_MASTER_KEY:-}
+  PANEL_VAULT_KEY_ID: ${PANEL_VAULT_KEY_ID:-primary}
   NRE_TIMEZONE: Asia/Shanghai            # 时区，国内用户建议填这个
   NRE_PANEL_PUBLIC_PATH: /panel-a1b2c3d4  # 无域名 HTTP 临时部署时可选
   NRE_PKI_MASTER_KEY_FILE: /run/nre-pki/master.key  # 使用独立 PKI key 目录时可选
@@ -63,12 +65,16 @@ environment:
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
 | `API_TOKEN` | 是 | 登录面板和调用 API 的访问令牌。用 32 位以上随机字符串，包含大小写字母和数字 |
-| `MASTER_REGISTER_TOKEN` | 否 | 远程 Agent 注册时用的令牌。不上多台机器可以不填，会自动回退到 `API_TOKEN` |
-| `NRE_TIMEZONE` | 否 | 面板时区，影响流量统计和计费周期的分界点。默认 UTC |
+| `MASTER_REGISTER_TOKEN` | 是 | 远程 Agent 注册时用的独立令牌。仓库附带的 Compose 强制要求设置，且不能与 `API_TOKEN` 相同 |
+| `PANEL_VAULT_MASTER_KEY` | 否 | 通用 secret vault 的 32-byte envelope key；留空时从 `API_TOKEN` 确定性派生。已有 ciphertext 后不能单独更换 key 来源 |
+| `PANEL_VAULT_KEY_ID` | 否 | 当前 vault key 的稳定 ID；Compose 默认 `primary`。轮换 key 时新旧 ID 必须不同 |
+| `NRE_TIMEZONE` | 否 | 面板时区，影响流量统计和计费周期的分界点。Compose 默认 `Asia/Shanghai`；直接运行二进制默认 `UTC` |
 | `NRE_PANEL_PUBLIC_PATH` | 否 | 无域名 HTTP 临时部署时的随机面板入口路径，例如 `/panel-a1b2c3d4` |
 | `NRE_PKI_MASTER_KEY_FILE` | 否 | 内部 tunnel-PKI master key 的**容器内绝对路径**。使用时挂载私有且可写的父目录；受保护恢复需要在其中原子轮换 key。留空则使用 data 目录内的默认 key。 |
 
 更多配置项见 [环境变量速查](../reference/environment-variables.md)。
+
+手动部署建议先用 `openssl rand -hex 32` 生成并持久保存 `PANEL_VAULT_MASTER_KEY`。若使用 `.env` 保存 token 和 key，请执行 `chmod 600 .env`，并把实际 secret 配置纳入受控、加密的恢复材料。若现有部署使用从 `API_TOKEN` 派生的 key，迁移到显式 key 时必须同时设置新的 key/新 ID，以及 `PANEL_VAULT_PREVIOUS_API_TOKEN`/旧 ID；不能只填新 key。控制面成功启动并确认既有 secret 可读取后，才删除 `PANEL_VAULT_PREVIOUS_*`。完整变量见[环境变量速查](../reference/environment-variables.md#通用-secret-vault)。
 
 外部 secret 的 Compose 示例：
 
@@ -118,9 +124,21 @@ ssh -L 8080:127.0.0.1:8080 root@<VPS IP>
 ```yaml
 environment:
   NRE_PUBLIC_URL: https://panel.example.com
+  NRE_TRUST_FORWARDED_HEADERS: "true"
 ```
 
-这样 join script 和 Agent 更新包 URL 会使用 HTTPS 面板地址。只有在你额外使用上游反代，并且上游会清洗并重写 `X-Forwarded-*` 头时，才开启 `NRE_TRUST_FORWARDED_HEADERS: "true"`。
+这样 join script 和 Agent 更新包 URL 会使用 HTTPS 面板地址。bundled local Agent 会清洗并重写 `X-Forwarded-*` 头，因此该自代理可以开启信任；若改用其它上游反代，只有在它会丢弃客户端伪造值并写入自身值时才开启。
+
+## 出站代理（可选）
+
+市场仓库刷新和其它控制面 HTTP 客户端遵循 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY`。host 网络不会让容器里的 `127.0.0.1` 自动指向 Docker Desktop 宿主代理；可按实际环境使用 `http://192.168.65.254:<端口>`，Linux 服务器则填写宿主机可达地址。把控制面、数据库、Agent 和其它内网目标加入 `NO_PROXY`，避免本地控制流量绕到出站代理。
+
+```yaml
+environment:
+  HTTP_PROXY: http://192.168.65.254:7890
+  HTTPS_PROXY: http://192.168.65.254:7890
+  NO_PROXY: localhost,127.0.0.1,::1,10.0.0.0/8
+```
 
 如果你配置了 Cloudflare API Token：
 

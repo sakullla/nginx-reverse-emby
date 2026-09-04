@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 # ---- 可配置默认值（环境变量可覆盖，便于自动化 / 非交互部署） ----
 repo_raw_base="${NRE_REPO_RAW_BASE:-https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main}"
@@ -397,6 +398,17 @@ random_hex() {
     fi
     err "需要 openssl 或 od 生成随机 token。"
     exit 1
+}
+
+secure_env_file() {
+    file="$1"
+    if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+        return 1
+    fi
+    if [ ! -e "$file" ]; then
+        (umask 077; : > "$file") || return 1
+    fi
+    chmod 600 "$file"
 }
 
 write_env_value() {
@@ -921,7 +933,10 @@ else
 fi
 
 env_file=".env"
-touch "$env_file"
+if ! secure_env_file "$env_file"; then
+    err "无法安全创建或收紧 ${env_file}；拒绝写入部署密钥。"
+    exit 1
+fi
 
 api_token="${API_TOKEN:-$(env_value API_TOKEN "$env_file")}"
 register_token="${MASTER_REGISTER_TOKEN:-$(env_value MASTER_REGISTER_TOKEN "$env_file")}"
@@ -1064,9 +1079,6 @@ if [ -z "$public_url" ] && [ -z "$domain" ]; then
 fi
 
 configure_forwarded_headers_trust "$env_file"
-
-# 收紧 .env 权限：内含 token，不应被其他用户读取。
-chmod 600 "$env_file" 2>/dev/null || true
 
 # 部署前预览（默认直接开始；仅临时 HTTP 再确认一次，避免误暴露公网）
 if [ -n "$domain" ]; then
