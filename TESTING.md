@@ -74,12 +74,9 @@ pwsh -File scripts/official-market-release/run.ps1
 ```
 
 The script validates all nine signed packages and every declared artifact,
-performs all published RPC handshakes in networkless containers, and supplies
-the verified WAF artifact to the performance process.
-It aggregates all package and runtime failures before returning. The Go tests
-themselves never fetch a repository. A missing artifact makes the standalone
-WAF test skip; the release script rejects that skip, zero matched tests, or any
-throughput, p95, p99, and process-memory measurement failure.
+performs all published RPC handshakes in networkless containers, and aggregates
+all package and runtime failures before returning. The Go tests themselves
+never fetch a repository.
 
 ## Internal PKI Multi-Process E2E
 

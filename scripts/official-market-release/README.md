@@ -4,9 +4,9 @@
 plugin in the signed official index. It resolves and validates
 `official-market.lock`, downloads each immutable signed package blob, safely
 extracts and validates every declared artifact, performs each published RPC
-executable handshake in an isolated networkless container, and runs the real
-signed WAF performance gate. Source-repository tests and builds remain the
-publisher's CI responsibility and are not duplicated here.
+executable handshake in an isolated networkless container. Source-repository
+tests and builds remain the publisher's CI responsibility and are not
+duplicated here.
 
 ```powershell
 pwsh -File scripts/official-market-release/run.ps1

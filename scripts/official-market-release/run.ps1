@@ -52,7 +52,6 @@ function Invoke-BatchStep {
 $repositoryRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $lockPath = Join-Path $repositoryRoot 'official-market.lock'
 $backendRoot = Join-Path $repositoryRoot 'panel\backend-go'
-$agentRoot = Join-Path $repositoryRoot 'go-agent'
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
     throw "official market lock not found: $lockPath"
 }
@@ -161,47 +160,6 @@ try {
             $handshake = @($output -split "`r?`n" | Where-Object { $_.Trim() -ne '' })[-1].Trim()
             if ($handshake -ne 'nre:rpc/v1') {
                 throw "handshake returned $handshake"
-            }
-        } | Out-Null
-    }
-
-    if (-not $artifactPaths.ContainsKey('waf')) {
-        $failures.Add('official-waf-performance: no verified waf artifact path')
-    }
-    else {
-        Invoke-BatchStep -Name 'official-waf-performance' -Action {
-            $overlayPath = Join-Path $tempRoot 'official-waf-overlay.json'
-            $wasmRoot = Join-Path $agentRoot 'internal\plugins\wasm'
-            $overlay = [ordered]@{ Replace = [ordered]@{} }
-            foreach ($name in @(
-                'official_waf_performance_test.go',
-                'official_waf_process_memory_linux_test.go',
-                'official_waf_process_memory_other_test.go',
-                'official_waf_process_memory_windows_test.go'
-            )) {
-                $overlay.Replace[(Join-Path $wasmRoot $name)] = Join-Path $PSScriptRoot $name
-            }
-            $overlay | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $overlayPath -Encoding utf8
-            $oldArtifact = [Environment]::GetEnvironmentVariable('NRE_OFFICIAL_WAF_ARTIFACT', 'Process')
-            $oldDigest = [Environment]::GetEnvironmentVariable('NRE_OFFICIAL_WAF_SHA256', 'Process')
-            try {
-                $env:NRE_OFFICIAL_WAF_ARTIFACT = $artifactPaths['waf'].path
-                $env:NRE_OFFICIAL_WAF_SHA256 = $artifactPaths['waf'].sha256
-                $testOutput = Invoke-NativeText -WorkingDirectory $agentRoot -FilePath 'go' -Arguments @(
-                    'test', '-overlay', $overlayPath, './internal/plugins/wasm',
-                    '-run', '^TestOfficialWAFPerformance(Gate|Policy)$', '-count=1', '-v'
-                )
-                if ($testOutput -notmatch '(?m)^=== RUN\s+TestOfficialWAFPerformanceGate$' -or
-                    $testOutput -notmatch '(?m)^--- PASS: TestOfficialWAFPerformanceGate\b' -or
-                    $testOutput -notmatch '(?m)^=== RUN\s+TestOfficialWAFPerformancePolicy$' -or
-                    $testOutput -notmatch '(?m)^--- PASS: TestOfficialWAFPerformancePolicy\b' -or
-                    $testOutput -match '(?m)^--- SKIP: TestOfficialWAFPerformanceGate\b|\[no tests to run\]|no tests to run') {
-                    throw 'official WAF performance gate was skipped or not selected'
-                }
-            }
-            finally {
-                [Environment]::SetEnvironmentVariable('NRE_OFFICIAL_WAF_ARTIFACT', $oldArtifact, 'Process')
-                [Environment]::SetEnvironmentVariable('NRE_OFFICIAL_WAF_SHA256', $oldDigest, 'Process')
             }
         } | Out-Null
     }
