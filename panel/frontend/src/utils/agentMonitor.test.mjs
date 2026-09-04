@@ -19,7 +19,7 @@ describe('agent monitor utils', () => {
     ])
   })
 
-  it('keeps the running package when a list refetch copies the target digest', () => {
+  it('accepts the authoritative running package after a durable list refetch', () => {
     const running = 'a'.repeat(64)
     const target = 'b'.repeat(64)
     const previous = [{
@@ -36,9 +36,9 @@ describe('agent monitor utils', () => {
     }]
     expect(mergeFetchedAgents(previous, next)).toEqual([{
       id: 'edge-1',
-      runtime_package_sha256: running,
+      runtime_package_sha256: target,
       desired_package_sha256: target,
-      package_sync_status: 'pending'
+      package_sync_status: 'aligned'
     }])
   })
 

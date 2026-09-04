@@ -18,6 +18,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const maxAgentHeartbeatBodyBytes int64 = 8 << 20
+
 func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)
@@ -102,8 +104,14 @@ func (d Dependencies) handleAgentPluginSecretRedemption(w http.ResponseWriter, r
 }
 
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentHeartbeatBodyBytes)
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("heartbeat request body too large"))
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 		return
 	}

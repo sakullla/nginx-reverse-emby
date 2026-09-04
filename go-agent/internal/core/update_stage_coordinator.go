@@ -31,13 +31,15 @@ type packageStageIdentity struct {
 }
 
 type packageStageAttempt struct {
-	identity   packageStageIdentity
-	cancel     context.CancelFunc
-	done       chan struct{}
-	discarded  bool
-	state      packageStageState
-	stagedPath string
-	err        error
+	identity       packageStageIdentity
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stageDone      chan struct{}
+	activationDone chan struct{}
+	discarded      bool
+	state          packageStageState
+	stagedPath     string
+	err            error
 }
 
 // PackageStageCoordinator owns the one process-local package staging attempt.
@@ -100,7 +102,15 @@ func (c *PackageStageCoordinator) Ensure(
 		attempt.discarded = true
 		attempt.cancel()
 		select {
-		case <-attempt.done:
+		case <-attempt.stageDone:
+			if attempt.activationDone != nil {
+				select {
+				case <-attempt.activationDone:
+				default:
+					c.mu.Unlock()
+					return errPackageStagePending
+				}
+			}
 			c.attempt = nil
 			attempt = nil
 		default:
@@ -109,16 +119,18 @@ func (c *PackageStageCoordinator) Ensure(
 		}
 	}
 	if attempt == nil {
-		stageCtx, cancel := context.WithCancel(ctx)
+		attemptCtx, cancel := context.WithCancel(ctx)
+		stageCtx, cancelStage := context.WithCancel(attemptCtx)
 		attempt = &packageStageAttempt{
-			identity: identity,
-			cancel:   cancel,
-			done:     make(chan struct{}),
-			state:    packageStageRunning,
+			identity:  identity,
+			ctx:       attemptCtx,
+			cancel:    cancel,
+			stageDone: make(chan struct{}),
+			state:     packageStageRunning,
 		}
 		c.attempt = attempt
 		c.mu.Unlock()
-		go c.stage(stageCtx, updater, pkg, attempt)
+		go c.stage(stageCtx, cancelStage, updater, pkg, attempt)
 		return errPackageStagePending
 	}
 
@@ -129,6 +141,7 @@ func (c *PackageStageCoordinator) Ensure(
 	case packageStageFailed:
 		err := attempt.err
 		c.attempt = nil
+		attempt.cancel()
 		c.mu.Unlock()
 		return err
 	case packageStageActivated:
@@ -183,6 +196,7 @@ func (c *PackageStageCoordinator) Activate(
 	case packageStageFailed:
 		err := attempt.err
 		c.attempt = nil
+		attempt.cancel()
 		c.mu.Unlock()
 		return err
 	case packageStageActivated:
@@ -190,13 +204,22 @@ func (c *PackageStageCoordinator) Activate(
 		return ErrRestartRequested
 	case packageStageReady:
 		attempt.state = packageStageActivating
+		attempt.activationDone = make(chan struct{})
 		stagedPath := attempt.stagedPath
+		attemptCtx := attempt.ctx
 		c.mu.Unlock()
 
-		err := updater.Activate(ctx, stagedPath, desiredVersion)
+		activationCtx, cancelActivation := context.WithCancel(ctx)
+		stopAttemptCancellation := context.AfterFunc(attemptCtx, cancelActivation)
+		err := updater.Activate(activationCtx, stagedPath, desiredVersion)
+		stopAttemptCancellation()
+		cancelActivation()
 		c.mu.Lock()
+		discarded := attempt.discarded
 		if c.attempt == attempt {
-			if err == nil || errors.Is(err, ErrRestartRequested) {
+			if discarded {
+				c.attempt = nil
+			} else if err == nil || errors.Is(err, ErrRestartRequested) {
 				attempt.state = packageStageActivated
 				attempt.err = nil
 			} else {
@@ -205,7 +228,12 @@ func (c *PackageStageCoordinator) Activate(
 				c.attempt = nil
 			}
 		}
+		close(attempt.activationDone)
+		attempt.cancel()
 		c.mu.Unlock()
+		if discarded && (err == nil || errors.Is(err, ErrRestartRequested)) {
+			return context.Canceled
+		}
 		if err != nil {
 			return err
 		}
@@ -218,27 +246,31 @@ func (c *PackageStageCoordinator) Activate(
 
 func (c *PackageStageCoordinator) stage(
 	ctx context.Context,
+	cancelStage context.CancelFunc,
 	updater Updater,
 	pkg model.VersionPackage,
 	attempt *packageStageAttempt,
 ) {
-	defer close(attempt.done)
-	defer attempt.cancel()
+	defer close(attempt.stageDone)
+	defer cancelStage()
 	stagedPath, err := updater.Stage(ctx, pkg)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if attempt.state != packageStageRunning || attempt.discarded {
+		attempt.cancel()
 		return
 	}
 	if err != nil {
 		attempt.state = packageStageFailed
 		attempt.err = err
+		attempt.cancel()
 		return
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		attempt.state = packageStageFailed
 		attempt.err = ctxErr
+		attempt.cancel()
 		return
 	}
 	attempt.state = packageStageReady
@@ -259,7 +291,15 @@ func (c *PackageStageCoordinator) Cancel() {
 	c.attempt.discarded = true
 	c.attempt.cancel()
 	select {
-	case <-c.attempt.done:
+	case <-c.attempt.stageDone:
+		if c.attempt.activationDone != nil {
+			select {
+			case <-c.attempt.activationDone:
+				c.attempt = nil
+			default:
+			}
+			return
+		}
 		c.attempt = nil
 	default:
 	}
@@ -301,7 +341,10 @@ func (c *PackageStageCoordinator) Close() {
 	if attempt != nil {
 		// Shutdown is the convergence boundary: temporary package resources may
 		// not outlive the process-local coordinator that owns their worker.
-		<-attempt.done
+		<-attempt.stageDone
+		if attempt.activationDone != nil {
+			<-attempt.activationDone
+		}
 	}
 	c.mu.Lock()
 	if c.attempt == attempt {

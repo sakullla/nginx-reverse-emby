@@ -33,6 +33,12 @@ type coordinatorContextLifecycleUpdater struct {
 	stageContextDone chan (<-chan struct{})
 }
 
+type coordinatorActivationLifecycleUpdater struct {
+	activationStarted  chan struct{}
+	activationCanceled chan struct{}
+	activationRelease  chan struct{}
+}
+
 func (u *coordinatorContextLifecycleUpdater) Stage(ctx context.Context, _ model.VersionPackage) (string, error) {
 	u.stageContextDone <- ctx.Done()
 	return "staged/context-lifecycle", nil
@@ -40,6 +46,18 @@ func (u *coordinatorContextLifecycleUpdater) Stage(ctx context.Context, _ model.
 
 func (u *coordinatorContextLifecycleUpdater) Activate(context.Context, string, string) error {
 	return nil
+}
+
+func (*coordinatorActivationLifecycleUpdater) Stage(context.Context, model.VersionPackage) (string, error) {
+	return "staged/activation-lifecycle", nil
+}
+
+func (u *coordinatorActivationLifecycleUpdater) Activate(ctx context.Context, _, _ string) error {
+	close(u.activationStarted)
+	<-ctx.Done()
+	close(u.activationCanceled)
+	<-u.activationRelease
+	return ctx.Err()
 }
 
 func (u *coordinatorTestUpdater) Preflight(model.VersionPackage) error { return nil }
@@ -283,6 +301,50 @@ func TestPackageStageCoordinatorCloseCancelsStage(t *testing.T) {
 	}
 	if len(updater.activations()) != 0 {
 		t.Fatalf("shutdown target activations = %v, want none", updater.activations())
+	}
+}
+
+func TestPackageStageCoordinatorCloseCancelsAndWaitsForActivation(t *testing.T) {
+	updater := &coordinatorActivationLifecycleUpdater{
+		activationStarted:  make(chan struct{}),
+		activationCanceled: make(chan struct{}),
+		activationRelease:  make(chan struct{}),
+	}
+	coordinator := NewPackageStageCoordinator()
+	pkg := coordinatorTestPackage("https://updates.example.test/activation-shutdown-agent", "f")
+
+	if err := coordinator.Ensure(t.Context(), updater, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
+	}
+	waitForCoordinatorResult(t, func() error {
+		return coordinator.Ensure(t.Context(), updater, pkg)
+	}, nil)
+
+	activateDone := make(chan error, 1)
+	go func() {
+		activateDone <- coordinator.Activate(t.Context(), updater, pkg, "2.0.0")
+	}()
+	waitForCoordinatorSignal(t, updater.activationStarted)
+
+	closeDone := make(chan struct{})
+	go func() {
+		coordinator.Close()
+		close(closeDone)
+	}()
+	waitForCoordinatorSignal(t, updater.activationCanceled)
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before the activation worker converged")
+	default:
+	}
+
+	close(updater.activationRelease)
+	waitForCoordinatorSignal(t, closeDone)
+	if err := <-activateDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Activate() error = %v, want context cancellation", err)
+	}
+	if err := coordinator.Handle(t.Context(), updater, pkg, "2.0.0"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Handle(after Close) error = %v, want context cancellation", err)
 	}
 }
 
