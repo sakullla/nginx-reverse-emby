@@ -1,4 +1,4 @@
-//go:build exhaustive && !integration
+//go:build integration
 
 package embedded
 
@@ -51,7 +51,7 @@ func TestIntegrationRelayCredentialCompositeExposesTunnelSecurity(t *testing.T) 
 	}
 }
 
-func TestRelayCredentialCompositePreservesActiveMetadata(t *testing.T) {
+func TestIntegrationRelayCredentialCompositePreservesActiveMetadata(t *testing.T) {
 	metadata, certificateFingerprint := embeddedRelayCredentialMetadata(t)
 	security := modulepki.SecurityState{
 		Hash: "security-hash",

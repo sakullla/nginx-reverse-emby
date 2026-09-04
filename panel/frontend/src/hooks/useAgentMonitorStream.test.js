@@ -103,26 +103,31 @@ describe('useAgentMonitorStream', () => {
     const enabled = ref(true)
     const queryClient = createQueryClient()
     const signals = []
-    api.consumeAgentMonitorStream.mockImplementation(({ signal }) => {
+    api.consumeAgentMonitorStream.mockImplementation(({ signal, onMessage }) => {
       signals.push(signal)
+      onMessage({ type: 'snapshot', payload: { agents: [{ id: 'edge-1', status: 'online' }] } })
       return new Promise(() => {})
     })
 
-    const { wrapper } = mountHarness(queryClient, { enabled, reconnectDelay: -1 })
+    const { wrapper, exposed } = mountHarness(queryClient, { enabled, reconnectDelay: -1 })
     await nextTick()
     expect(signals).toHaveLength(1)
     expect(signals[0].aborted).toBe(false)
+    expect(exposed.active.value).toBe(true)
 
     enabled.value = false
     await nextTick()
     await Promise.resolve()
     expect(signals[0].aborted).toBe(true)
+    expect(exposed.status.value).toBe('idle')
+    expect(exposed.active.value).toBe(false)
 
     enabled.value = true
     await nextTick()
     await Promise.resolve()
     expect(signals).toHaveLength(2)
     expect(signals[1].aborted).toBe(false)
+    expect(exposed.active.value).toBe(true)
 
     wrapper.unmount()
   })
@@ -165,6 +170,7 @@ describe('useAgentMonitorStream', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(exposed.status.value).toBe('disconnected')
+    expect(exposed.active.value).toBe(false)
     expect(exposed.data.value).toEqual([{ id: 'edge-1', status: 'online' }])
 
     await vi.advanceTimersByTimeAsync(25)

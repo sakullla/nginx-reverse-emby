@@ -246,20 +246,21 @@ type ResourceHandles struct {
 	mu                 sync.RWMutex
 	handles            map[string]*agentResourceHandle
 	revokedGenerations map[string]struct{}
-	revokedTargets     map[pluginsdk.HostTarget]struct{}
+	targetEpochs       map[pluginsdk.HostTarget]uint64
 	nextLease          uint64
 }
 
 type agentResourceHandle struct {
-	call       pluginsdk.HostCapabilityCall
-	authorizer Authorizer
-	resource   any
-	revoked    bool
-	leases     map[uint64]context.CancelFunc
+	call        pluginsdk.HostCapabilityCall
+	authorizer  Authorizer
+	resource    any
+	targetEpoch uint64
+	revoked     bool
+	leases      map[uint64]context.CancelFunc
 }
 
 func NewResourceHandles() *ResourceHandles {
-	return &ResourceHandles{handles: make(map[string]*agentResourceHandle), revokedGenerations: make(map[string]struct{}), revokedTargets: make(map[pluginsdk.HostTarget]struct{})}
+	return &ResourceHandles{handles: make(map[string]*agentResourceHandle), revokedGenerations: make(map[string]struct{}), targetEpochs: make(map[pluginsdk.HostTarget]uint64)}
 }
 
 func (handles *ResourceHandles) Issue(ctx context.Context, authorizer Authorizer, call pluginsdk.HostCapabilityCall, resource any) (string, error) {
@@ -270,6 +271,9 @@ func (handles *ResourceHandles) Issue(ctx context.Context, authorizer Authorizer
 	if err := authorizer.Authorize(ctx, call); err != nil {
 		return "", err
 	}
+	handles.mu.RLock()
+	targetEpoch := handles.targetEpochs[call.Target]
+	handles.mu.RUnlock()
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
 		return "", err
@@ -280,10 +284,10 @@ func (handles *ResourceHandles) Issue(ctx context.Context, authorizer Authorizer
 	if _, revoked := handles.revokedGenerations[call.InstanceID+"\x00"+call.Generation]; revoked {
 		return "", fmt.Errorf("%w: plugin generation is drained", ErrDenied)
 	}
-	if _, revoked := handles.revokedTargets[call.Target]; revoked {
-		return "", fmt.Errorf("%w: resource target is revoked", ErrDenied)
+	if handles.targetEpochs[call.Target] != targetEpoch {
+		return "", fmt.Errorf("%w: resource target changed during handle issue", ErrDenied)
 	}
-	handles.handles[token] = &agentResourceHandle{call: call, authorizer: authorizer, resource: resource, leases: make(map[uint64]context.CancelFunc)}
+	handles.handles[token] = &agentResourceHandle{call: call, authorizer: authorizer, resource: resource, targetEpoch: targetEpoch, leases: make(map[uint64]context.CancelFunc)}
 	return token, nil
 }
 
@@ -304,6 +308,10 @@ func (handles *ResourceHandles) Resolve(ctx context.Context, token string, call 
 	if call.PluginID != handle.call.PluginID || call.InstanceID != handle.call.InstanceID || call.Generation != handle.call.Generation || call.Target != handle.call.Target {
 		handles.mu.Unlock()
 		return nil, fmt.Errorf("%w: resource handle owner mismatch", ErrDenied)
+	}
+	if handle.targetEpoch != handles.targetEpochs[call.Target] {
+		handles.mu.Unlock()
+		return nil, fmt.Errorf("%w: resource target generation changed", ErrDenied)
 	}
 	handles.nextLease++
 	leaseID := handles.nextLease
@@ -353,7 +361,7 @@ func (handles *ResourceHandles) RevokeTarget(target pluginsdk.HostTarget) {
 		return
 	}
 	handles.mu.Lock()
-	handles.revokedTargets[target] = struct{}{}
+	handles.targetEpochs[target]++
 	var cancels []context.CancelFunc
 	for token, handle := range handles.handles {
 		if handle.call.Target == target {

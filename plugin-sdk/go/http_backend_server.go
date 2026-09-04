@@ -86,6 +86,9 @@ func LoadHTTPBackendProviderEndpointConfig() (HTTPBackendProviderEndpointConfig,
 	if err := decoder.Decode(&config); err != nil {
 		return HTTPBackendProviderEndpointConfig{}, fmt.Errorf("decode HTTP backend provider endpoint config: %w", err)
 	}
+	if err := ensureJSONDecoderEOF(decoder); err != nil {
+		return HTTPBackendProviderEndpointConfig{}, fmt.Errorf("decode HTTP backend provider endpoint config: %w", err)
+	}
 	if err := config.Validate(); err != nil {
 		return HTTPBackendProviderEndpointConfig{}, err
 	}

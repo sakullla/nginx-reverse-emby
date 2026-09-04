@@ -6,6 +6,7 @@ const MAX_OPERATIONS = 50
 const RECOVERABLE_TERMINAL_STATUSES = new Set(['failed', 'degraded'])
 const state = reactive({ byId: {}, order: [] })
 const refreshSequence = new Map()
+let operationGeneration = 0
 
 function persist() {
   if (typeof localStorage === 'undefined') return
@@ -94,6 +95,7 @@ export function restoreOperations() {
 }
 
 export function resetOperations() {
+  operationGeneration += 1
   state.byId = {}
   state.order = []
   refreshSequence.clear()
@@ -105,10 +107,13 @@ export function resetOperations() {
 export async function refreshOperation(operationID) {
   const current = state.byId[operationID]
   if (!current?.status_url) return current || null
+  const generation = operationGeneration
   const sequence = (refreshSequence.get(operationID) || 0) + 1
   refreshSequence.set(operationID, sequence)
   const next = await fetchOperationStatus(current.status_url)
-  if (refreshSequence.get(operationID) !== sequence) return state.byId[operationID] || null
+  if (generation !== operationGeneration || refreshSequence.get(operationID) !== sequence) {
+    return state.byId[operationID] || null
+  }
   next.status_url ||= current.status_url
   return recordAcceptedOperation(next)
 }
@@ -120,19 +125,27 @@ function operationAgent(operation, agentID) {
 export async function retryOperation(operationID, agentID = '') {
   const current = state.byId[operationID]
   if (!current) return null
-  return recordAcceptedOperation(await retryRevision(current, operationAgent(current, agentID)))
+  const generation = operationGeneration
+  const next = await retryRevision(current, operationAgent(current, agentID))
+  if (generation !== operationGeneration) return null
+  return recordAcceptedOperation(next)
 }
 
 export async function rollbackOperation(operationID, agentID = '') {
   const current = state.byId[operationID]
   if (!current) return null
-  return recordAcceptedOperation(await rollbackRevision(current, operationAgent(current, agentID)))
+  const generation = operationGeneration
+  const next = await rollbackRevision(current, operationAgent(current, agentID))
+  if (generation !== operationGeneration) return null
+  return recordAcceptedOperation(next)
 }
 
 export async function dismissOperation(operationID) {
   const current = state.byId[operationID]
   if (!current) return null
+  const generation = operationGeneration
   const next = await dismissOperationStatus(operationID)
+  if (generation !== operationGeneration) return null
   next.status_url ||= current.status_url
   delete state.byId[operationID]
   state.order = state.order.filter((item) => item !== operationID)

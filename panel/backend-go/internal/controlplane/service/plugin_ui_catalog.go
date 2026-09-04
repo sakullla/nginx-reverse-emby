@@ -15,6 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -29,47 +30,22 @@ func (s *PluginService) DeclaredUIRoutes(ctx context.Context) ([]pluginhost.UIRo
 	if s == nil {
 		return nil, errors.New("plugin service is required")
 	}
-	installed, err := s.store.ListInstalledPlugins(ctx)
+	declared, err := s.installedPluginUIRoutes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	routes := make([]pluginhost.UIRoute, 0)
-	seen := make(map[string]struct{})
-	for _, row := range installed {
-		packageRow, ok, err := s.storedPackage(ctx, row.ActivePackageIdentity, row.ActivePackageDigest)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		var manifest plugins.Manifest
-		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
-			continue
-		}
-		if !hasPluginExtension(manifest.ExtensionPoints, pluginsdk.ExtensionUIRoute) {
-			continue
-		}
-		routeID := strings.TrimSpace(manifest.UIRouteID)
-		if routeID == "" {
-			routeID = strings.TrimSpace(manifest.ID)
-		}
-		if routeID == "" {
-			continue
-		}
-		if _, exists := seen[routeID]; exists {
-			continue
-		}
-		seen[routeID] = struct{}{}
-		label := strings.TrimSpace(manifest.Metadata["ui.nav.label"])
+	routes := make([]pluginhost.UIRoute, 0, len(declared))
+	for _, entry := range declared {
+		label := strings.TrimSpace(entry.manifest.Metadata["ui.nav.label"])
 		if label == "" {
-			label = routeID
+			label = entry.routeID
 		}
 		routes = append(routes, pluginhost.UIRoute{
-			ID:    routeID,
-			Label: label,
-			Group: strings.TrimSpace(manifest.Metadata["ui.nav.group"]),
-			Href:  pluginhost.UIHref(routeID),
+			ID:       entry.routeID,
+			PluginID: entry.pluginID,
+			Label:    label,
+			Group:    strings.TrimSpace(entry.manifest.Metadata["ui.nav.group"]),
+			Href:     pluginhost.UIHref(entry.routeID),
 		})
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].ID < routes[j].ID })
@@ -85,33 +61,22 @@ func (s *PluginService) OpenUIAsset(ctx context.Context, routeID, suffix string)
 	if err != nil {
 		return "", nil, err
 	}
-	installed, err := s.store.ListInstalledPlugins(ctx)
+	routes, err := s.installedPluginUIRoutes(ctx)
 	if err != nil {
 		return "", nil, err
 	}
-	for _, row := range installed {
-		packageRow, ok, err := s.storedPackage(ctx, row.ActivePackageIdentity, row.ActivePackageDigest)
-		if err != nil {
-			return "", nil, err
-		}
-		if !ok {
+	for _, route := range routes {
+		if route.routeID != strings.TrimSpace(routeID) {
 			continue
 		}
-		var manifest plugins.Manifest
-		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
-			continue
-		}
-		if !pluginManifestOwnsUIRoute(manifest, routeID) {
-			continue
-		}
-		declared := firstDeclaredPluginUIAsset(manifest, logical)
+		declared := firstDeclaredPluginUIAsset(route.manifest, logical)
 		if declared == "" {
 			return "", nil, ErrPluginUIAssetNotFound
 		}
-		if err := marketplace.ValidateCachePath(s.cacheRoot, packageRow.CachePath, packageRow.Digest, packageRow.SignatureFingerprint); err != nil {
+		if err := marketplace.ValidateCachePath(s.cacheRoot, route.packageRow.CachePath, route.packageRow.Digest, route.packageRow.SignatureFingerprint); err != nil {
 			return "", nil, err
 		}
-		full, err := joinPluginPackageFile(packageRow.CachePath, declared)
+		full, err := joinPluginPackageFile(route.packageRow.CachePath, declared)
 		if err != nil {
 			return "", nil, err
 		}
@@ -135,15 +100,56 @@ func (s *PluginService) OpenUIAsset(ctx context.Context, routeID, suffix string)
 	return "", nil, ErrPluginNotInstalled
 }
 
-func pluginManifestOwnsUIRoute(manifest plugins.Manifest, routeID string) bool {
+type installedPluginUIRoute struct {
+	pluginID   string
+	routeID    string
+	manifest   plugins.Manifest
+	packageRow storage.PluginPackageRow
+}
+
+func (s *PluginService) installedPluginUIRoutes(ctx context.Context) ([]installedPluginUIRoute, error) {
+	installed, err := s.store.ListInstalledPlugins(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owners := make(map[string]string)
+	routes := make([]installedPluginUIRoute, 0, len(installed))
+	for _, row := range installed {
+		packageRow, ok, err := s.storedPackage(ctx, row.ActivePackageIdentity, row.ActivePackageDigest)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		var manifest plugins.Manifest
+		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+			continue
+		}
+		routeID, declared, err := claimPluginManifestUIRoute(owners, row.PluginID, manifest)
+		if err != nil {
+			return nil, err
+		}
+		if declared {
+			routes = append(routes, installedPluginUIRoute{pluginID: row.PluginID, routeID: routeID, manifest: manifest, packageRow: packageRow})
+		}
+	}
+	return routes, nil
+}
+
+func claimPluginManifestUIRoute(owners map[string]string, pluginID string, manifest plugins.Manifest) (string, bool, error) {
 	if !hasPluginExtension(manifest.ExtensionPoints, pluginsdk.ExtensionUIRoute) {
-		return false
+		return "", false, nil
 	}
-	id := strings.TrimSpace(manifest.UIRouteID)
-	if id == "" {
-		id = strings.TrimSpace(manifest.ID)
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" || strings.TrimSpace(manifest.ID) != pluginID {
+		return "", false, ErrPluginReadProjection
 	}
-	return id != "" && id == strings.TrimSpace(routeID)
+	routeID := pluginhost.ResolveUIRouteID(pluginID, manifest.UIRouteID)
+	if err := pluginhost.ClaimUIRouteOwnership(owners, pluginID, routeID); err != nil {
+		return "", false, err
+	}
+	return routeID, true, nil
 }
 
 func pluginManifestDeclaresAsset(manifest plugins.Manifest, logical string) bool {

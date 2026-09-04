@@ -41,11 +41,14 @@ mkdir -p data
 environment:
   API_TOKEN: 改成你自己的访问令牌
   MASTER_REGISTER_TOKEN: 改成另一个访问令牌
+  PANEL_VAULT_MASTER_KEY: 改成 openssl rand -hex 32 的输出
+  PANEL_VAULT_KEY_ID: primary
   NRE_TIMEZONE: Asia/Shanghai
 ```
 
-- `API_TOKEN`：登录面板用的访问令牌，越随机越好。
-- `MASTER_REGISTER_TOKEN`：远程 Agent 注册用的令牌。只在一台机器上用的话可以先随便填。
+- `API_TOKEN`：登录面板用的访问令牌，使用 32 位以上随机字符串。
+- `MASTER_REGISTER_TOKEN`：远程 Agent 注册用的独立令牌；仓库附带的 Compose 即使只运行本机节点也要求设置，不能与 `API_TOKEN` 相同。
+- `PANEL_VAULT_MASTER_KEY`：通用 secret vault 的 32-byte envelope key；若把 token/key 放在 `.env`，请将其权限设为 `0600`，并把实际 secret 配置纳入受控备份。
 
 启动：
 
@@ -98,7 +101,10 @@ ssh -L 8080:127.0.0.1:8080 root@<你的 VPS IP>
 ```yaml
 environment:
   NRE_PUBLIC_URL: https://panel.example.com
+  NRE_TRUST_FORWARDED_HEADERS: "true"
 ```
+
+这里的 local Agent 会清洗并重写 `X-Forwarded-*`。如果改用其它上游代理，只能在它也会丢弃客户端伪造值并写入自身值时开启该选项。
 
 ## 第四步：验证业务反代
 

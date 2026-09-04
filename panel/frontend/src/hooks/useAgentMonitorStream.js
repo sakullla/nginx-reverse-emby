@@ -66,6 +66,7 @@ export function useAgentMonitorStream(options = {}) {
   const data = ref(queryClient.getQueryData(AGENT_MONITOR_QUERY_KEY) || [])
   const status = ref('idle')
   const error = ref(null)
+  const active = computed(() => enabled.value && status.value === 'connected')
   const reconnectDelay = options.reconnectDelay ?? AGENT_MONITOR_RECONNECT_DELAY_MS
   let controller = null
   let reconnectTimer = null
@@ -84,6 +85,11 @@ export function useAgentMonitorStream(options = {}) {
       controller.abort()
       controller = null
     }
+  }
+
+  function stop() {
+    stopStream()
+    status.value = 'idle'
   }
 
   function scheduleReconnect() {
@@ -130,8 +136,7 @@ export function useAgentMonitorStream(options = {}) {
       startStream()
       return
     }
-    stopStream()
-    status.value = 'idle'
+    stop()
   }, { immediate: true })
 
   onScopeDispose(() => {
@@ -142,8 +147,9 @@ export function useAgentMonitorStream(options = {}) {
   return {
     data: computed(() => data.value),
     status,
+    active,
     error,
     reconnect: startStream,
-    stop: stopStream
+    stop
   }
 }

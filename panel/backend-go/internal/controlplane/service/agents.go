@@ -1355,7 +1355,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 			row.LastReportedStatsJSON = marshalAgentStats(persistedStats)
 		}
 		if trafficStatsEnabled && s.trafficService != nil {
-			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
+			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil && !errors.Is(err, storage.ErrQuotaExceeded) {
 				return HeartbeatReply{}, err
 			}
 		}

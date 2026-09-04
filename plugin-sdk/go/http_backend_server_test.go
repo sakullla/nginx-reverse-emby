@@ -74,6 +74,24 @@ func TestLoadHTTPBackendProviderEndpointConfigUsesProtectedPathsNotTokenEnvironm
 	}
 }
 
+func TestLoadHTTPBackendProviderEndpointConfigRejectsTrailingJSON(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "providers.json")
+	config := HTTPBackendProviderEndpointConfig{Version: HTTPBackendProviderEndpointConfigVersion, Providers: []HTTPBackendProviderEndpoint{{
+		InstanceID: "instance-1", ProviderID: "default", Generation: "generation-1", Endpoint: "provider.sock", Credential: strings.Repeat("c", 64),
+	}}}
+	payload, _ := json.Marshal(config)
+	payload = append(payload, []byte(` {}`)...)
+	if err := os.WriteFile(configPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvHTTPBackendProviderConfigFile, configPath)
+	t.Setenv(EnvHTTPBackendProviderEndpointDirectory, directory)
+	if _, err := LoadHTTPBackendProviderEndpointConfig(); err == nil {
+		t.Fatal("LoadHTTPBackendProviderEndpointConfig accepted trailing JSON data")
+	}
+}
+
 func TestServeHTTPBackendProviderConfigRejectsStaleNonSocket(t *testing.T) {
 	endpointPath := filepath.Join(t.TempDir(), "provider.sock")
 	if err := os.WriteFile(endpointPath, []byte("not a socket"), 0o600); err != nil {

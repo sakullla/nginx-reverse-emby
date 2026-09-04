@@ -69,15 +69,20 @@ grep -Fq 'TasksMax=infinity' "$script" || {
     exit 1
 }
 
-run_go_shell_pki_contract() {
-    go_data_dir="$DATA_DIR"
-    if command -v cygpath >/dev/null 2>&1; then
-        go_data_dir="$(cygpath -w "$DATA_DIR")"
-    fi
+run_go_pki_store_contract() {
     (
         cd "$script_dir/../go-agent"
-        NRE_TEST_SHELL_PKI_DATA_DIR="$go_data_dir" \
-            go test -count=1 ./internal/modules/pki -run '^TestShellPendingEnrollmentContract$'
+        test_output="$(go test -count=1 -v ./internal/modules/pki \
+            -run '^TestPrepareEnrollmentPersistsReplaySafeKeyAndCSR$')" || {
+            printf '%s\n' "$test_output" >&2
+            exit 1
+        }
+        printf '%s\n' "$test_output"
+        printf '%s\n' "$test_output" | grep -Fq -- \
+            '--- PASS: TestPrepareEnrollmentPersistsReplaySafeKeyAndCSR' || {
+            echo "Go PKI store contract test was not selected" >&2
+            exit 1
+        }
     )
 }
 
@@ -273,7 +278,7 @@ prepare_tunnel_enrollment
 assert_eq "stable enrollment request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
 assert_eq "stable enrollment CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"
 
-run_go_shell_pki_contract
+run_go_pki_store_contract
 
 MASTER_URL="https://panel.example"
 AGENT_NAME="edge"
@@ -335,7 +340,7 @@ if grep -Fq 'control-secret' "$staged_response" || grep -Fq 'register-secret' "$
     printf 'secret leaked into staged PKI response\n' >&2
     exit 1
 fi
-run_go_shell_pki_contract
+run_go_pki_store_contract
 prepare_tunnel_enrollment
 assert_eq "staged-response replay request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
 assert_eq "staged-response replay CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"

@@ -194,6 +194,9 @@ func (r *SessionRegistry) ForceGenerationExceptProgressive(ctx context.Context, 
 	if r == nil {
 		return 0, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var records []*sessionRecord
 	r.mu.Lock()
 	for _, sessions := range r.generations[generation] {
@@ -227,13 +230,20 @@ func (r *SessionRegistry) ForceGenerationExceptProgressive(ctx context.Context, 
 		forced++
 	}
 	for _, wait := range waits {
-		<-wait
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return forced, errors.Join(closeErr, ctx.Err())
+		}
 	}
 	return forced, closeErr
 }
 func (r *SessionRegistry) force(ctx context.Context, generation string, terminal bool, selectReason func(*sessionRecord) (string, bool)) (int, error) {
 	if r == nil {
 		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	var records []*sessionRecord
 	r.mu.Lock()
@@ -273,7 +283,11 @@ func (r *SessionRegistry) force(ctx context.Context, generation string, terminal
 		}
 	}
 	for _, wait := range waits {
-		<-wait
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return forced, errors.Join(closeErr, ctx.Err())
+		}
 	}
 	return forced, closeErr
 }

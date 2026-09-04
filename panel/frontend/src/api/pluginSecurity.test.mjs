@@ -6,6 +6,7 @@ import {
   safePluginExport,
   sanitizePluginText,
   schemaToUIComponents,
+  enrichDeclarativeUIDocument,
   collectDeclarativeConstraintErrors,
   stripHostInjectedConfigValues,
   stripReadOnlyConfigValues,
@@ -24,6 +25,7 @@ describe('plugin UI security boundary', () => {
     expect(JSON.stringify(redacted)).not.toContain('abc123')
     expect(JSON.stringify(redacted)).not.toContain('raw-password')
     expect(sanitizePluginText('cookie=session-secret')).toBe('cookie=[REDACTED]')
+    expect(sanitizePluginText('failure {"password":"two word secret","token":"abc123"}')).not.toMatch(/two word secret|abc123/)
     vi.useFakeTimers().setSystemTime(new Date('2026-08-11T00:00:00Z'))
     expect(JSON.stringify(safePluginExport(payload, []))).not.toContain('raw-token')
     vi.useRealTimers()
@@ -70,8 +72,44 @@ describe('plugin UI security boundary', () => {
           { type: 'number', id: 'port', label: 'port', description: '', binding: '/port', required: false }
         ]
       },
-      { type: 'array', id: 'tags', label: 'tags', description: '', binding: '/tags', required: false, min_items: 0 }
+      { type: 'array', id: 'tags', label: 'tags', description: '', binding: '/tags', required: false, min_items: 0, item_type: 'string' }
     ])
+  })
+
+  it('keeps scalar array item types and constraints from the config schema', () => {
+    const components = schemaToUIComponents({
+      type: 'object',
+      properties: {
+        ports: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'integer', minimum: 1, maximum: 65535, multipleOf: 1 } },
+        flags: { type: 'array', items: { type: 'boolean' } },
+        names: { type: 'array', items: { type: 'string', minLength: 2, maxLength: 8, pattern: '^[a-z]+$' } }
+      }
+    })
+    expect(components[0]).toMatchObject({ type: 'array', item_type: 'integer', item_minimum: 1, item_maximum: 65535, item_step: 1, min_items: 1, unique_items: true })
+    expect(components[1]).toMatchObject({ type: 'array', item_type: 'boolean' })
+    expect(components[2]).toMatchObject({ type: 'array', item_type: 'string', item_min_length: 2, item_max_length: 8, item_pattern: '^[a-z]+$' })
+  })
+
+  it('rejoins declarative array and field projections with config schema constraints', () => {
+    const document = enrichDeclarativeUIDocument({
+      schema_version: 1,
+      components: [
+        { type: 'text', id: 'name', binding: '/name' },
+        { type: 'array', id: 'ports', binding: '/ports' },
+        { type: 'array', id: 'routes', binding: '/routes', children: [{ type: 'number', id: 'weight', binding: '/weight' }] }
+      ]
+    }, {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 2, pattern: '^[a-z]+$' },
+        ports: { type: 'array', uniqueItems: true, items: { type: 'integer', minimum: 1, maximum: 65535 } },
+        routes: { type: 'array', maxItems: 4, items: { type: 'object', properties: { weight: { type: 'integer', multipleOf: 2 } } } }
+      }
+    })
+    expect(document.components[0]).toMatchObject({ min_length: 2, pattern: '^[a-z]+$' })
+    expect(document.components[1]).toMatchObject({ min_items: 0, unique_items: true, item_type: 'integer', item_minimum: 1, item_maximum: 65535 })
+    expect(document.components[2]).toMatchObject({ min_items: 0, max_items: 4 })
+    expect(document.components[2].children[0]).toMatchObject({ integer: true, step: 2 })
   })
 
   it('keeps hostInjected arrays off the fill-in UI even when they have a schema default', () => {

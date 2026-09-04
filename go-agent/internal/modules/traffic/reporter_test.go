@@ -20,7 +20,7 @@ const (
 	testRuntimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
 )
 
-func TestReporterSuppressesStatsBeforeTrafficStatsIntervalElapses(t *testing.T) {
+func TestIntegrationReporterSuppressesStatsBeforeTrafficStatsIntervalElapses(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
 		Enabled: func() bool { return true },
 		SnapshotNonZero: func() map[string]any {
@@ -46,7 +46,7 @@ func TestReporterSuppressesStatsBeforeTrafficStatsIntervalElapses(t *testing.T) 
 	}
 }
 
-func TestReporterReportsInternalTrafficStatsAfterIntervalElapses(t *testing.T) {
+func TestIntegrationReporterReportsInternalTrafficStatsAfterIntervalElapses(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
 		Enabled:         func() bool { return true },
 		SnapshotNonZero: nonzeroTrafficSnapshot,
@@ -74,7 +74,7 @@ func TestReporterReportsInternalTrafficStatsAfterIntervalElapses(t *testing.T) {
 	}
 }
 
-func TestReporterPendingTimestampPersistsOnlyAfterSuccessfulSync(t *testing.T) {
+func TestIntegrationReporterPendingTimestampPersistsOnlyAfterSuccessfulSync(t *testing.T) {
 	lastReportedAt := fixedTrafficReportTime().Add(-time.Hour).Unix()
 	st := core.NewInMemory()
 	if err := st.SaveRuntimeState(core.RuntimeState{Metadata: map[string]string{
@@ -126,7 +126,7 @@ func TestReporterPendingTimestampPersistsOnlyAfterSuccessfulSync(t *testing.T) {
 	}
 }
 
-func TestModuleExposesTrafficStatsCapability(t *testing.T) {
+func TestIntegrationModuleExposesTrafficStatsCapability(t *testing.T) {
 	module := NewModule()
 	capabilities := module.Capabilities(model.Snapshot{})
 	want := []string{"traffic_stats"}

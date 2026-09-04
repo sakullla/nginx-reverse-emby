@@ -7,6 +7,7 @@ export function sanitizePluginText(value) {
   return String(value ?? '')
     .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
     .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, '$1[REDACTED]@')
+    .replace(/((?:["'])(?:authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)(?:["'])\s*:\s*)(["'])(?:\\.|(?!\2)[^\\])*\2/gi, (_, prefix, quote) => `${prefix}${quote}${REDACTED}${quote}`)
     .replace(/((?:authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]')
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, REDACTED)
 }
@@ -121,17 +122,34 @@ function schemaProperties(schema) {
 function schemaEnumOptions(field) {
   if (!Array.isArray(field.enum)) return []
   return field.enum
-    .filter((item) => typeof item === 'string' || typeof item === 'number')
+    .filter((item) => item === null || typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')
     .slice(0, 100)
-    .map((item) => ({ value: item, label: String(item) }))
+    .map((item) => ({ value: item, label: item === null ? 'null' : String(item) }))
 }
 
 function withSchemaArrayConstraints(component, field, required) {
   const minimum = Number.isInteger(field.minItems) && field.minItems >= 0 ? field.minItems : 0
   component.min_items = minimum
   if (Number.isInteger(field.maxItems) && field.maxItems >= 0) component.max_items = field.maxItems
+  if (field.uniqueItems === true) component.unique_items = true
   if (field.default !== undefined) component.default = field.default
   else if (required && minimum === 0) component.default = []
+  return component
+}
+
+function withSchemaArrayItem(component, items) {
+  if (!items || typeof items !== 'object' || Array.isArray(items)) return component
+  const type = String(items.type || '').trim()
+  if (!['string', 'number', 'integer', 'boolean', 'null'].includes(type)) return component
+  component.item_type = type
+  if (items.default !== undefined) component.item_default = items.default
+  if (Number.isFinite(items.minimum)) component.item_minimum = items.minimum
+  if (Number.isFinite(items.maximum)) component.item_maximum = items.maximum
+  if (Number.isFinite(items.multipleOf)) component.item_step = items.multipleOf
+  if (Number.isFinite(items.minLength)) component.item_min_length = items.minLength
+  if (Number.isFinite(items.maxLength)) component.item_max_length = items.maxLength
+  if (typeof items.pattern === 'string') component.item_pattern = items.pattern
+  if (Array.isArray(items.enum)) component.item_options = schemaEnumOptions(items)
   return component
 }
 
@@ -173,9 +191,14 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
         const component = { type: 'multiselect', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(items) }
         return [withSchemaArrayConstraints(component, field, required)]
       }
-      return [withSchemaArrayConstraints({ type: 'array', ...identity, ...annotation, binding: pointer, required }, field, required)]
+      return [withSchemaArrayItem(withSchemaArrayConstraints({ type: 'array', ...identity, ...annotation, binding: pointer, required }, field, required), items)]
     }
     case 'boolean': {
+      if (Array.isArray(field.enum) && field.enum.length) {
+        const component = { type: 'select', ...identity, ...annotation, binding: pointer, required, options: schemaEnumOptions(field) }
+        if (field.default !== undefined) component.default = field.default
+        return [component]
+      }
       const component = { type: 'toggle', ...identity, ...annotation, binding: pointer, required }
       component.default = field.default === undefined ? false : field.default
       return [component]
@@ -188,6 +211,7 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
         return [component]
       }
       const component = { type: 'number', ...identity, ...annotation, binding: pointer, required }
+      if (type === 'integer') component.integer = true
       if (Number.isFinite(field.minimum)) component.minimum = field.minimum
       if (Number.isFinite(field.maximum)) component.maximum = field.maximum
       if (Number.isFinite(field.multipleOf)) component.step = field.multipleOf
@@ -222,7 +246,7 @@ function synthesizeComponent(name, field, pointerPrefix, required) {
       // `null` and absent `type` are both accepted by the backend vocabulary.
       // Render them read-only so the field stays visible and its broker-owned
       // value round-trips without being editable or silently dropped.
-      return [{ type: 'text', ...identity, ...annotation, read_only: true, binding: pointer, required }]
+      return [{ type: 'text', ...identity, ...annotation, read_only: true, binding: pointer, required, ...(type === 'null' ? { default: null } : {}) }]
   }
 }
 
@@ -242,6 +266,60 @@ export function schemaToUIComponents(schema) {
   return synthesizeObjectProperties(schema, '')
 }
 
+function resolveSchemaPointer(schema, pointer) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || typeof pointer !== 'string' || !pointer.startsWith('/')) return null
+  let current = schema
+  const parts = pointer.slice(1).split('/').map((part) => part.replaceAll('~1', '/').replaceAll('~0', '~'))
+  for (const part of parts) {
+    if (!current || typeof current !== 'object' || Array.isArray(current) || current.type !== 'object') return null
+    const properties = schemaProperties(current)
+    if (!Object.hasOwn(properties, part)) return null
+    current = properties[part]
+  }
+  return current && typeof current === 'object' && !Array.isArray(current) ? current : null
+}
+
+function enrichDeclarativeComponents(components, schema) {
+  return (Array.isArray(components) ? components : []).map((source) => {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return source
+    const component = { ...source }
+    if (component.type === 'section' || component.type === 'grid') {
+      component.children = enrichDeclarativeComponents(component.children, schema)
+      return component
+    }
+    const field = component.binding ? resolveSchemaPointer(schema, component.binding) : null
+    if (!field) return component
+    if (field.default !== undefined && component.type !== 'secret') component.default = field.default
+    if (component.type === 'number') {
+      if (field.type === 'integer') component.integer = true
+      if (Number.isFinite(field.minimum)) component.minimum = field.minimum
+      if (Number.isFinite(field.maximum)) component.maximum = field.maximum
+      if (Number.isFinite(field.multipleOf)) component.step = field.multipleOf
+    } else if (component.type === 'text' || component.type === 'textarea') {
+      if (Number.isFinite(field.minLength)) component.min_length = field.minLength
+      if (Number.isFinite(field.maxLength)) component.max_length = field.maxLength
+      if (typeof field.pattern === 'string') component.pattern = field.pattern
+    } else if (component.type === 'array') {
+      withSchemaArrayConstraints(component, field, component.required === true)
+      const items = field.items
+      if (Array.isArray(component.children) && component.children.length && items?.type === 'object') {
+        component.children = enrichDeclarativeComponents(component.children, items)
+      } else {
+        withSchemaArrayItem(component, items)
+      }
+    }
+    return component
+  })
+}
+
+// The backend's declarative projection intentionally contains only the fixed
+// host vocabulary. Rejoin it with the separately projected config schema so
+// scalar array types and JSON Schema constraints are not lost in the browser.
+export function enrichDeclarativeUIDocument(document, schema) {
+  if (!document || typeof document !== 'object' || Array.isArray(document)) return document
+  return { ...document, components: enrichDeclarativeComponents(document.components, schema) }
+}
+
 export function fieldConstraintError(component, current) {
   if (!component || typeof component !== 'object' || component.read_only) return ''
   // Synthesized JSON Schema arrays carry min_items (including zero). For
@@ -253,22 +331,70 @@ export function fieldConstraintError(component, current) {
     if (!Array.isArray(current)) return '格式不匹配'
     if (current.length < component.min_items) return `至少 ${component.min_items} 项`
     if (component.max_items != null && current.length > component.max_items) return `最多 ${component.max_items} 项`
+    if (component.unique_items === true) {
+      const seen = new Set()
+      for (const item of current) {
+        const key = semanticJSONKey(item)
+        if (seen.has(key)) return '数组项不能重复'
+        seen.add(key)
+      }
+    }
+    for (const [index, item] of current.entries()) {
+      const message = scalarConstraintError({
+        type: component.item_type,
+        minimum: component.item_minimum,
+        maximum: component.item_maximum,
+        step: component.item_step,
+        min_length: component.item_min_length,
+        max_length: component.item_max_length,
+        pattern: component.item_pattern,
+        options: component.item_options,
+        enforce_options: Array.isArray(component.item_options),
+        integer: component.item_type === 'integer'
+      }, item)
+      if (message) return `第 ${index + 1} 项：${message}`
+    }
     return ''
   }
   if (isEmptyValue(current)) return component.required ? '此项为必填' : ''
-  if (component.type === 'number') {
+  return scalarConstraintError(component, current)
+}
+
+function semanticJSONKey(value) {
+  if (Array.isArray(value)) return `[${value.map(semanticJSONKey).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${semanticJSONKey(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function exactMultiple(value, step) {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) return false
+  const quotient = value / step
+  return Math.abs(quotient - Math.round(quotient)) <= Number.EPSILON * Math.max(1, Math.abs(quotient)) * 4
+}
+
+function scalarConstraintError(component, current) {
+  const type = component.type
+  if (type === 'number' || type === 'integer') {
+    if (typeof current !== 'number' || !Number.isFinite(current)) return '格式不匹配'
+    if ((component.integer === true || type === 'integer') && !Number.isInteger(current)) return '必须是整数'
     if (component.minimum != null && current < component.minimum) return `不能小于 ${component.minimum}`
     if (component.maximum != null && current > component.maximum) return `不能大于 ${component.maximum}`
+    if (component.step != null && !exactMultiple(current, component.step)) return `必须符合步长 ${component.step}`
   }
-  if ((component.type === 'text' || component.type === 'textarea') && typeof current === 'string') {
+  if ((type === 'text' || type === 'textarea' || type === 'string') && typeof current === 'string') {
     if (component.min_length != null && current.length < component.min_length) return `至少 ${component.min_length} 个字符`
     if (component.max_length != null && current.length > component.max_length) return `最多 ${component.max_length} 个字符`
     if (component.pattern) {
       try {
         if (!new RegExp(component.pattern).test(current)) return '格式不匹配'
-      } catch { /* ignore invalid pattern */ }
+      } catch { /* backend validation rejects invalid patterns */ }
     }
   }
+  if (type === 'boolean' && typeof current !== 'boolean') return '格式不匹配'
+  if (type === 'null' && current !== null) return '格式不匹配'
+  if ((component.enforce_options === true || type === 'select' || type === 'radio') && Array.isArray(component.options) && component.options.length && !component.options.some((option) => Object.is(option.value, current))) return '不在允许选项中'
   return ''
 }
 
@@ -326,6 +452,14 @@ export function collectDeclarativeConstraintErrors(components, model, options = 
 
 const ANNOTATION_STRIPPED = Symbol('annotation-stripped')
 
+function setOwnConfigValue(target, key, value) {
+  if (['__proto__', 'prototype', 'constructor'].includes(key)) {
+    Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
+  } else {
+    target[key] = value
+  }
+}
+
 function stripAnnotationConfigValue(schema, value, annotation) {
   if (schema && typeof schema === 'object' && !Array.isArray(schema) && schema[annotation] === true) return ANNOTATION_STRIPPED
   if (Array.isArray(value)) {
@@ -341,7 +475,7 @@ function stripAnnotationConfigValue(schema, value, annotation) {
     for (const [key, child] of Object.entries(value)) {
       const childSchema = properties && typeof properties === 'object' && !Array.isArray(properties) ? properties[key] : undefined
       const cleaned = stripAnnotationConfigValue(childSchema, child, annotation)
-      if (cleaned !== ANNOTATION_STRIPPED) out[key] = cleaned
+      if (cleaned !== ANNOTATION_STRIPPED) setOwnConfigValue(out, key, cleaned)
     }
     return out
   }

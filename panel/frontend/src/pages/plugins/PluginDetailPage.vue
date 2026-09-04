@@ -12,9 +12,10 @@ import {
   fetchPluginOperations,
   rollbackPlugin,
   uninstallPlugin,
-  unpublishPlugin
+  unpublishPlugin,
+  waitForPluginOperation
 } from '../../api/plugins'
-import { safePluginExport, sanitizePluginText, schemaToUIComponents, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
+import { enrichDeclarativeUIDocument, safePluginExport, sanitizePluginText, schemaToUIComponents, stripReadOnlyConfigValues, stripWriteOnlyConfigValues } from '../../api/pluginSecurity'
 import { retryRevision } from '../../api/operations'
 import { filterPluginDetailForActor, resourceGroupDisplayName, useAccessControl, visibleResourceGroupsForActor } from '../../context/useAccessControl'
 import { messageStore } from '../../stores/messages'
@@ -116,7 +117,7 @@ const isDeclarativeUI = computed(() => !!detail.value?.package?.declarative_ui)
 const uiDocument = computed(() => {
   const pkg = detail.value?.package
   if (!pkg) return null
-  if (pkg.declarative_ui) return bindHttpRuleOptions(pkg.declarative_ui)
+  if (pkg.declarative_ui) return bindHttpRuleOptions(enrichDeclarativeUIDocument(pkg.declarative_ui, pkg.config_schema))
   const components = bindHttpRuleOptions({ components: schemaToUIComponents(pkg.config_schema) }).components
   return {
     schema_version: 1,
@@ -139,6 +140,14 @@ const formConfig = computed(() => {
 const formEmpty = computed(() => !isDeclarativeUI.value && !(uiDocument.value?.components?.length))
 
 const confirmDialog = ref({ visible: false, loading: false, action: '', entry: null })
+const rollbackPermissions = computed(() => {
+  const permissions = detail.value?.plugin?.rollback_permissions
+  if (!Array.isArray(permissions)) return []
+  return [...new Set(permissions.map((permission) => String(permission || '').trim()).filter(Boolean))]
+})
+const rollbackPermissionCopy = computed(() => rollbackPermissions.value.length
+  ? `回滚包将请求这些宿主能力：${rollbackPermissions.value.join('、')}。`
+  : '回滚包不请求宿主能力。')
 const pluginName = computed(() => detail.value?.package?.manifest?.name || detail.value?.plugin?.plugin_id || '')
 const confirmName = computed(() => {
   if (confirmDialog.value.action === 'delete-instance') return selectedInstance.value?.id || ''
@@ -263,7 +272,7 @@ const confirmCopy = computed(() => {
     case 'disable':
       return { title: '确认停用插件', message: '停用后该插件将停止处理流量，依赖其防护的流量可能中断；可随时重新启用。', confirmText: '确认停用' }
     case 'rollback':
-      return { title: '确认回滚插件', message: '回滚将把插件恢复到上一版本，并可能变更其权限。', confirmText: '确认回滚' }
+      return { title: '确认回滚插件', message: `回滚将把插件恢复到上一版本。${rollbackPermissionCopy.value}请确认这是你要恢复的权限边界。`, confirmText: '确认回滚' }
     case 'delete-instance':
       return { title: '确认删除部署实例', message: '该实例会从所有目标 Agent 下线，配置、插件密钥及其发布的入口规则将一并清理。', confirmText: '确认删除实例' }
     case 'delete-entry':
@@ -497,7 +506,7 @@ async function lifecycle(action) {
     const pluginID = detail.value.plugin.plugin_id
     if (action === 'enable') await enablePlugin(pluginID)
     else if (action === 'disable') await disablePlugin(pluginID)
-    else if (action === 'rollback') await rollbackPlugin(pluginID, detail.value.package.permissions || [])
+    else if (action === 'rollback') await rollbackPlugin(pluginID, rollbackPermissions.value)
     await load()
     messageStore.success(lifecycleSuccess[action] || '插件操作已完成')
   } catch (cause) {
@@ -540,7 +549,9 @@ function humanPluginError(cause, fallback) {
 async function uninstallPluginWithPrep() {
   const pluginID = detail.value.plugin.plugin_id
   if (uninstallNeedsDisable.value) {
-    await disablePlugin(pluginID)
+    const disabled = await disablePlugin(pluginID)
+    const operationID = String(disabled?.pending_operation_id || '').trim()
+    if (operationID) await waitForPluginOperation(pluginID, operationID)
     await load()
   }
   await uninstallPlugin(pluginID)
@@ -640,7 +651,7 @@ async function uninstallAgentExecutionFace(status) {
     targets: remaining,
     policy_chains: instance.policy_chains || [],
     bindings: instance.bindings || [],
-    config: instance.config || {}
+    config: stripReadOnlyConfigValues(detail.value?.package?.config_schema, instance.config || {})
   })
 }
 

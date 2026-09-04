@@ -792,9 +792,19 @@ func (r *pkiEndpointRotationTestRepository) RecordPKIEndpointRotationFailure(_ c
 	return nil
 }
 
-func (r *pkiEndpointRotationTestRepository) ActivatePKIEndpointCandidate(_ context.Context, activation PKIEndpointActivation) error {
+func (r *pkiEndpointRotationTestRepository) ActivatePKIEndpointCandidate(
+	_ context.Context,
+	activation PKIEndpointActivation,
+	validateCommit PKIEndpointActivationCommitValidator,
+) error {
 	if validatePKIMutationLeaseFence(activation.Lease) != nil {
 		return ErrPKILeaseNotHeld
+	}
+	if validateCommit == nil {
+		return ErrPKILifecycleInvalid
+	}
+	if err := validateCommit(activation.Event.OccurredAt); err != nil {
+		return err
 	}
 	state := r.states[activation.IdentityID]
 	state.CertificateID = activation.Candidate.CertificateID

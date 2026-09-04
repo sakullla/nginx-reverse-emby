@@ -160,7 +160,12 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		return snapshot, nil
 	}
 	if len(request.Stats) > 0 {
-		_ = s.trafficService.IngestHeartbeat(ctx, s.agentID, service.AgentStats(request.Stats))
+		if err := s.trafficService.IngestHeartbeat(ctx, s.agentID, service.AgentStats(request.Stats)); err != nil && !errors.Is(err, storage.ErrQuotaExceeded) {
+			// Ingestion and quota state are one security decision. If persistence
+			// failed, keep the durable snapshot closed instead of reopening traffic
+			// from a later read that did not observe this sample.
+			return snapshot, nil
+		}
 	}
 	blocked, reason, err := s.trafficService.BlockState(ctx, s.agentID)
 	if err != nil {

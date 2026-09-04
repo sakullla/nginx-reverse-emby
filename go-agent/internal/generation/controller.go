@@ -243,7 +243,24 @@ func (c *DrainController) onSessionEmpty(id string) {
 	}
 	c.mu.Lock()
 	entry := c.entries[id]
-	if entry == nil || entry.status.State != model.GenerationDrainStateDraining || c.registry.GenerationCount(id) != 0 {
+	if entry == nil || c.registry.GenerationCount(id) != 0 {
+		c.mu.Unlock()
+		return
+	}
+	if entry.status.State == model.GenerationDrainStateCleanupFailed {
+		retryCtx := entry.observabilityCtx
+		if retryCtx == nil {
+			retryCtx = context.Background()
+		} else {
+			retryCtx = context.WithoutCancel(retryCtx)
+		}
+		c.mu.Unlock()
+		// The last owner may finish from inside its own ForceClose stack. Retry
+		// asynchronously so resource shutdown cannot wait on that same stack.
+		go func() { _ = c.RetryCleanup(retryCtx, id) }()
+		return
+	}
+	if entry.status.State != model.GenerationDrainStateDraining {
 		c.mu.Unlock()
 		return
 	}
@@ -370,8 +387,11 @@ func (c *DrainController) forceGeneration(ctx context.Context, id, reason string
 	entry.finalState = model.GenerationDrainStateForced
 	c.mu.Unlock()
 	count, closeErr := c.registry.ForceGeneration(ctx, id, reason)
-	remaining := c.registry.GenerationCount(id)
 	c.mu.Lock()
+	// Read the remaining owner count while holding the controller lock. A
+	// concurrent final Finish then observes cleanup_failed in onSessionEmpty,
+	// instead of slipping between this decision and the state transition.
+	remaining := c.registry.GenerationCount(id)
 	entry.status.ForcedSessionCount = count
 	entry.status.SessionCount = remaining
 	if remaining != 0 {

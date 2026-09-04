@@ -90,7 +90,7 @@
       title="加入 Agent 节点"
       subtitle="复制命令到目标主机执行，节点上线后会出现在列表中"
       size="lg"
-      :close-on-click-modal="!joinTokenBusy"
+      :close-on-click-modal="true"
       @update:model-value="onJoinModalChange"
     >
       <div class="join-modal">
@@ -302,9 +302,11 @@ const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 
 const monitorStreamEnabled = ref(false)
-const { data: monitorAgents } = useAgentMonitorStream({ enabled: monitorStreamEnabled })
+const { data: monitorAgents, active: monitorStreamActive } = useAgentMonitorStream({ enabled: monitorStreamEnabled })
 
-const agents = computed(() => mergeAgentsWithMonitor(data.value, monitorAgents.value))
+const agents = computed(() => mergeAgentsWithMonitor(data.value, monitorAgents.value, {
+  active: monitorStreamActive.value
+}))
 
 // Filter/sort state
 const {
@@ -476,10 +478,6 @@ function closeJoinModal() {
 
 function onJoinModalChange(open) {
   if (open) {
-    showJoinModal.value = true
-    return
-  }
-  if (joinTokenBusy.value) {
     showJoinModal.value = true
     return
   }

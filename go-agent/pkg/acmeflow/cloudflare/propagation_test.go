@@ -12,7 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
 
-func TestDNSCNAMEChainLoopAndFiftyHopLimit(t *testing.T) {
+func TestIntegrationDNSCNAMEChainLoopAndFiftyHopLimit(t *testing.T) {
 	chain := make(map[string]string)
 	for index := 0; index < MaxCNAMEHops; index++ {
 		chain[fmt.Sprintf("n%d.example.com", index)] = fmt.Sprintf("n%d.example.com", index+1)
@@ -59,7 +59,7 @@ func TestDNSCNAMEChainLoopAndFiftyHopLimit(t *testing.T) {
 	}
 }
 
-func TestDNSAuthorityDiscoveryAndTXTPropagation(t *testing.T) {
+func TestIntegrationDNSAuthorityDiscoveryAndTXTPropagation(t *testing.T) {
 	clock := newFakePropagationClock()
 	var authoritativePolls int
 	querier := &fakeDNSQuerier{query: func(server, name string, recordType RRType, _ int) (DNSMessage, error) {
@@ -112,7 +112,7 @@ func TestDNSAuthorityDiscoveryAndTXTPropagation(t *testing.T) {
 	}
 }
 
-func TestDNSPropagationRejectsDelegatedChildAuthorityOutsideProviderZone(t *testing.T) {
+func TestIntegrationDNSPropagationRejectsDelegatedChildAuthorityOutsideProviderZone(t *testing.T) {
 	t.Parallel()
 	var txtQueries int
 	querier := &fakeDNSQuerier{query: func(server, name string, recordType RRType, _ int) (DNSMessage, error) {
@@ -155,7 +155,7 @@ func TestDNSPropagationRejectsDelegatedChildAuthorityOutsideProviderZone(t *test
 	}
 }
 
-func TestDNSPropagationTimeoutCancellationAndExactTXT(t *testing.T) {
+func TestIntegrationDNSPropagationTimeoutCancellationAndExactTXT(t *testing.T) {
 	clock := newFakePropagationClock()
 	querier := &fakeDNSQuerier{query: func(server, name string, recordType RRType, _ int) (DNSMessage, error) {
 		switch recordType {
@@ -195,7 +195,7 @@ func TestDNSPropagationTimeoutCancellationAndExactTXT(t *testing.T) {
 	}
 }
 
-func TestDNSPropagationTimeoutBoundsDiscoveryAndAuthoritativeQuery(t *testing.T) {
+func TestIntegrationDNSPropagationTimeoutBoundsDiscoveryAndAuthoritativeQuery(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		mode slowDNSMode

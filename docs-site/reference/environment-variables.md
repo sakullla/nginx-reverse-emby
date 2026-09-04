@@ -35,12 +35,26 @@
 | `NRE_ENABLE_LOCAL_AGENT`（别名 `MASTER_LOCAL_AGENT_ENABLED`） | `true` | 是否在控制面节点上运行内置的 `local` Agent。 |
 | `NRE_LOCAL_AGENT_ID`（别名 `MASTER_LOCAL_AGENT_ID`） | `local` | 内置本地代理的标识符。 |
 | `NRE_LOCAL_AGENT_NAME`（别名 `MASTER_LOCAL_AGENT_NAME`） | `local` | 内置本地代理的显示名称。 |
-| `NRE_TIMEZONE` | `UTC` | 面板使用的时区（IANA 格式），用于每日/每月流量汇总和计费周期边界。 |
+| `NRE_TIMEZONE` | 二进制为 `UTC`；Compose 为 `Asia/Shanghai` | 面板使用的时区（IANA 格式），用于每日/每月流量汇总和计费周期边界。Compose 同时把该值传给容器的 `TZ`。 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 从控制面角度的心跳间隔。（Agent 默认是 `10s`；见下面的 Agent 部分。） |
 | `NRE_DDNS_IP_PROBE_INTERVAL` | `5m` | 内置 `local` Agent 探测 DDNS 公网 IP 的最小间隔；独立于心跳和 Cloudflare DNS 对账间隔。 |
 | `NRE_MARKETPLACE_REFRESH_TIMEOUT` | `30m` | 单次插件市场刷新（含 Git 拉取与验证）的容忍上限；同时约束手动刷新（手动刷新不受客户端断开影响）。 |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 空 | 可选出站代理，供市场刷新拉取 Git 仓库等控制面出站请求使用。host 网络容器内可用 `http://192.168.65.254:<端口>`` 访问宿主机回环代理（Docker Desktop）。 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 代理为空；Compose 的 `NO_PROXY` 为 `localhost,127.0.0.1,::1` | 可选出站代理，供市场刷新拉取 Git 仓库等控制面出站请求使用。Docker Desktop host 网络容器内可用 `http://192.168.65.254:<端口>` 访问宿主机回环代理；Linux 上应使用容器实际可达地址。把控制面、数据库、Agent 和其它内网目标加入 `NO_PROXY`。 |
 | `NRE_PROJECT_URL` | 空 | 项目主页 URL，显示在版本信息中。 |
+
+---
+
+## 通用 secret vault
+
+| 变量 | 默认值 | 作用 |
+|------|--------|------|
+| `PANEL_VAULT_MASTER_KEY` | 空 | 32-byte envelope key，可使用 64 位 hex、base64 或 32-byte literal。空值时从 `API_TOKEN`（或 `NRE_PANEL_TOKEN`）确定性派生。 |
+| `PANEL_VAULT_KEY_ID` | key digest 派生值；Compose 为 `primary` | 当前 key 的稳定 ID。只要仍使用同一个 key 就不要改变；轮换时新旧 ID 必须不同。 |
+| `PANEL_VAULT_PREVIOUS_MASTER_KEY` | 空 | 一次性轮换输入：旧的显式 master key。不能与 `PANEL_VAULT_PREVIOUS_API_TOKEN` 同时设置。 |
+| `PANEL_VAULT_PREVIOUS_API_TOKEN` | 空 | 一次性轮换输入：旧 key 由 panel token 派生时使用的旧 token。 |
+| `PANEL_VAULT_PREVIOUS_KEY_ID` | 旧 key digest 派生值 | 旧部署记录 ciphertext 时使用的 key ID；仓库 Compose 的默认值是 `primary`。 |
+
+已有 ciphertext 后不能只更换 token、key 或 key ID。轮换时同时设置新 `PANEL_VAULT_MASTER_KEY`、不同的新 `PANEL_VAULT_KEY_ID`，以及一种 previous key 来源和原 key ID。启动会事务性重加密 active secret；确认启动及既有 secret 读取成功后，才移除 `PANEL_VAULT_PREVIOUS_*` 并备份新 key。`.env` 应为 `0600`，且 key 必须与数据库作为同一个恢复点保存。
 
 ---
 

@@ -1128,10 +1128,19 @@ func (s *InternalPKIService) Revoke(ctx context.Context, request PKIActionReques
 		ConfirmationDigest: confirmation.digest, ConfirmationAction: confirmation.action,
 		ConfirmationTargetID: confirmation.targetID,
 	})
-	if err != nil {
+	if err != nil && strings.TrimSpace(commit.Facts.IdentityID) == "" {
 		return PKIOperation{}, err
 	}
-	return s.Operation(ctx, fmt.Sprintf("revoke-%s-r%d", commit.Facts.IdentityID, commit.Facts.SecurityRevision))
+	// Revoke persists the identity, certificate set, signed security snapshot,
+	// and retryable convergence job before it contacts live consumers. Once that
+	// commit exists, return its durable operation even when the first publish or
+	// session-close attempt fails; turning an accepted revocation into a generic
+	// 500 hides the committed security state and invites unsafe retries.
+	operation, operationErr := s.Operation(ctx, fmt.Sprintf("revoke-%s-r%d", commit.Facts.IdentityID, commit.Facts.SecurityRevision))
+	if operationErr != nil {
+		return PKIOperation{}, errors.Join(err, operationErr)
+	}
+	return operation, nil
 }
 
 // RevokeListenerForDeletion is the relay configuration deletion safety hook.

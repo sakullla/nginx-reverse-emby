@@ -687,7 +687,7 @@ func (d Dependencies) handlePluginPublish(w http.ResponseWriter, r *http.Request
 	}
 	entries := []pluginPublishedEntry{}
 	if rule.ID > 0 {
-		entries = []pluginPublishedEntry{pluginPublishedEntryFromRule(rule, pluginEntryReachable(instance, nil, rule))}
+		entries = []pluginPublishedEntry{pluginPublishedEntryFromRule(instance.ID, rule, pluginEntryReachable(instance, nil, rule))}
 	}
 	if projected, projectErr := d.publishedPluginEntries(r.Context(), service.PluginDetail{Instances: []service.PluginInstanceDetail{instance}}); projectErr == nil && len(projected) > 0 {
 		entries = projected
@@ -764,6 +764,7 @@ type pluginPublishResult struct {
 }
 
 type pluginPublishedEntry struct {
+	InstanceID  string `json:"instance_id"`
 	RuleID      int    `json:"rule_id"`
 	AgentID     string `json:"agent_id"`
 	FrontendURL string `json:"frontend_url"`
@@ -852,7 +853,7 @@ func (d Dependencies) publishedPluginEntries(ctx context.Context, detail service
 				continue
 			}
 			seen[key] = struct{}{}
-			entries = append(entries, pluginPublishedEntryFromRule(rule, pluginEntryReachable(instance, detail.AgentStatuses, rule)))
+			entries = append(entries, pluginPublishedEntryFromRule(instance.ID, rule, pluginEntryReachable(instance, detail.AgentStatuses, rule)))
 		}
 	}
 	for _, instance := range instanceIDs {
@@ -887,7 +888,7 @@ func (d Dependencies) publishedPluginEntries(ctx context.Context, detail service
 				continue
 			}
 			seen[key] = struct{}{}
-			entries = append(entries, pluginPublishedEntryFromRule(filtered[0], pluginEntryReachable(instance, detail.AgentStatuses, filtered[0])))
+			entries = append(entries, pluginPublishedEntryFromRule(instance.ID, filtered[0], pluginEntryReachable(instance, detail.AgentStatuses, filtered[0])))
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -912,8 +913,9 @@ func pluginRulePublishedInstance(rule service.HTTPRule, instances map[string]ser
 	return service.PluginInstanceDetail{}, false
 }
 
-func pluginPublishedEntryFromRule(rule service.HTTPRule, accessible bool) pluginPublishedEntry {
+func pluginPublishedEntryFromRule(instanceID string, rule service.HTTPRule, accessible bool) pluginPublishedEntry {
 	return pluginPublishedEntry{
+		InstanceID:  strings.TrimSpace(instanceID),
 		RuleID:      rule.ID,
 		AgentID:     rule.AgentID,
 		FrontendURL: rule.FrontendURL,

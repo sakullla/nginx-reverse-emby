@@ -1207,6 +1207,15 @@ func (t *httpSessionTracker) requestDone(session *httpRequestSession) {
 	}
 }
 
+func (s *httpRequestSession) registrationError() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.registrationErr
+}
+
 func (t *httpSessionTracker) finish(session *httpRequestSession) {
 	if t == nil || session == nil {
 		return
@@ -1383,6 +1392,10 @@ func (h *generationHTTPHandler) serveActive(w stdhttp.ResponseWriter, req *stdht
 	session := h.tracker.start(entity, cancel)
 	defer h.tracker.requestDone(session)
 	if session != nil {
+		if err := session.registrationError(); err != nil {
+			stdhttp.Error(w, "HTTP generation no longer accepts requests", stdhttp.StatusServiceUnavailable)
+			return
+		}
 		ctx = withHTTPPolicyRequestID(ctx, session.sessionID)
 		ctx = withHTTPRequestSession(ctx, session)
 	}

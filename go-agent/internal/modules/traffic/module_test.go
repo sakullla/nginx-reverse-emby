@@ -12,7 +12,7 @@ import (
 	trafficmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
-func TestModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
+func TestIntegrationModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {
 		trafficmodule.SetEnabled(true)
@@ -39,7 +39,7 @@ func TestModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
 	}
 }
 
-func TestModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
+func TestIntegrationModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {
 		trafficmodule.SetEnabled(true)
@@ -91,7 +91,7 @@ func TestModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
 	}
 }
 
-func TestGenerationTrafficDisableDropsGlobalAndRecorderWindow(t *testing.T) {
+func TestIntegrationGenerationTrafficDisableDropsGlobalAndRecorderWindow(t *testing.T) {
 	trafficmodule.Reset()
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {
@@ -161,7 +161,7 @@ func assertModuleTrafficCounters(t *testing.T, value any, rx, tx uint64) {
 	}
 }
 
-func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
+func TestIntegrationModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {
 		trafficmodule.SetEnabled(true)
@@ -190,7 +190,7 @@ func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
 	}
 }
 
-func TestModuleRollbackAfterDisablePreservesCommittedCounters(t *testing.T) {
+func TestIntegrationModuleRollbackAfterDisablePreservesCommittedCounters(t *testing.T) {
 	trafficmodule.Reset()
 	trafficmodule.SetEnabled(true)
 	trafficmodule.AddHTTP(11, 22)

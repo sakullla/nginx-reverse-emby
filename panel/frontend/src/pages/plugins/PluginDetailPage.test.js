@@ -43,7 +43,7 @@ vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
     name: 'DeleteConfirmDialog',
     props: ['show', 'title', 'message', 'name', 'confirmText', 'loading'],
     emits: ['confirm', 'cancel'],
-    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><div v-if="name" class="delete-dialog-name">{{ name }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
+    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><div class="delete-dialog-message">{{ message }}</div><div v-if="name" class="delete-dialog-name">{{ name }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
   }
 }))
 vi.mock('../../components/base/BaseModal.vue', () => ({
@@ -725,6 +725,22 @@ describe('PluginDetailPage', () => {
     expect(mocks.push).toHaveBeenCalledWith('/plugins')
   })
 
+  it('waits for the disable operation before submitting uninstall', async () => {
+    let finishDisable
+    mocks.disablePlugin.mockResolvedValue({ pending_operation_id: 'op-disable' })
+    mocks.waitForPluginOperation.mockReturnValue(new Promise((resolve) => { finishDisable = resolve }))
+    const wrapper = await mountPage(makeDetail())
+    const more = await openMore(wrapper)
+    await buttonByText(more, '卸载').trigger('click')
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await flushPromises()
+    expect(mocks.waitForPluginOperation).toHaveBeenCalledWith('official.waf', 'op-disable')
+    expect(mocks.uninstallPlugin).not.toHaveBeenCalled()
+    finishDisable({ status: 'succeeded' })
+    await flushPromises()
+    expect(mocks.uninstallPlugin).toHaveBeenCalledWith('official.waf')
+  })
+
   it('keeps uninstall available after a pending-operation conflict and humanizes the error', async () => {
     mocks.uninstallPlugin.mockRejectedValue(new Error('plugin state conflict: another plugin operation is already pending'))
     const detail = makeDetail()
@@ -811,15 +827,20 @@ describe('PluginDetailPage', () => {
   it('requires confirmation before rolling back', async () => {
     const detail = makeDetail()
     detail.plugin.rollback_package_digest = 'sha256:rollback-digest'
+    detail.plugin.rollback_permissions = ['http.inspect:archive', 'storage.read:archive']
+    detail.package.permissions = ['http.respond:current']
     const wrapper = await mountPage(detail)
 
     const more = await openMore(wrapper)
     await buttonByText(more, '回滚').trigger('click')
     expect(mocks.rollbackPlugin).not.toHaveBeenCalled()
     expect(wrapper.find('.delete-dialog-title').text()).toBe('确认回滚插件')
+    expect(wrapper.find('.delete-dialog-stub').text()).toContain('http.inspect:archive')
+    expect(wrapper.find('.delete-dialog-stub').text()).toContain('storage.read:archive')
+    expect(wrapper.find('.delete-dialog-stub').text()).not.toContain('http.respond:current')
     await wrapper.find('.delete-dialog-confirm').trigger('click')
     await flushPromises()
-    expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', [])
+    expect(mocks.rollbackPlugin).toHaveBeenCalledWith('official.waf', ['http.inspect:archive', 'storage.read:archive'])
   })
 
   it('keeps enable, diagnostics, logs, and timeline only in 更多', async () => {
@@ -1352,13 +1373,21 @@ describe('PluginDetailPage', () => {
     const wrapper = await mountPage(makeDetail({
       package: {
         ...makeDetail().package,
-        manifest: { ...makeDetail().package.manifest, extension_points: ['ui.route', 'resource.group'] }
+        manifest: { ...makeDetail().package.manifest, extension_points: ['ui.route', 'resource.group'] },
+        config_schema: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string' },
+            status: { type: 'string', readOnly: true },
+            generation: { type: 'string', hostInjected: true }
+          }
+        }
       },
       faces: [
         { face_id: 'local-management', host_scope: 'control-plane' },
         { face_id: 'agent-execution', host_scope: 'agent' }
       ],
-      instances: [makeInstance({ targets: ['edge-a', 'edge-b'], bindings: [] })],
+      instances: [makeInstance({ targets: ['edge-a', 'edge-b'], bindings: [], config: { mode: 'block', status: 'ready', generation: 'old-generation' } })],
       agent_statuses: [{
         instance_id: 'waf-a', agent_id: 'edge-a', target_scope: 'active', runtime_state: 'active',
         desired_revision: 1, current_revision: 1
@@ -1371,7 +1400,8 @@ describe('PluginDetailPage', () => {
     await flushPromises()
     expect(mocks.configurePlugin).toHaveBeenCalledWith('official.waf', expect.objectContaining({
       instance_id: 'waf-a',
-      targets: ['edge-b']
+      targets: ['edge-b'],
+      config: { mode: 'block' }
     }))
     expect(mocks.deletePluginInstance).not.toHaveBeenCalled()
     expect(mocks.uninstallPlugin).not.toHaveBeenCalled()

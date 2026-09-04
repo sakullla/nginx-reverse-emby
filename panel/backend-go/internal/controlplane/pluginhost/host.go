@@ -174,6 +174,7 @@ type TerminalResult struct {
 type PreparedPublication struct {
 	host    *Host
 	entries []preparedPublicationEntry
+	routes  *uiRouteReservation
 	done    bool
 }
 
@@ -496,7 +497,6 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 		return nil, errors.New("prepared control-plane plugin instances are required")
 	}
 	seen := make(map[string]struct{}, len(instances))
-	entries := make([]preparedPublicationEntry, 0, len(instances))
 	for _, instance := range instances {
 		if instance == nil || instance.ID == "" || instance.Generation == "" {
 			return nil, errors.New("prepared control-plane plugin instance is required")
@@ -505,6 +505,9 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 			return nil, errors.New("control-plane plugin publication duplicates an instance")
 		}
 		seen[instance.ID] = struct{}{}
+	}
+	entries := make([]preparedPublicationEntry, 0, len(instances))
+	for _, instance := range instances {
 		normalized := normalizeRestartCandidate(instance.candidate)
 		runCtx, cancel := context.WithCancel(context.Background())
 		entries = append(entries, preparedPublicationEntry{instance: instance, control: &runtimeControl{candidate: normalized, backoff: normalized.InitialBackoff, ctx: runCtx, cancel: cancel}})
@@ -533,7 +536,27 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 		}
 		entry.control.wg.Add(workers)
 	}
-	return &PreparedPublication{host: h, entries: entries}, nil
+	publications := make([]uiRoutePublication, 0, len(entries))
+	for _, entry := range entries {
+		publication, err := h.uiRoutePublication(entry.previous, entry.instance)
+		if err != nil {
+			h.mu.Unlock()
+			for _, cleanup := range entries {
+				cleanup.control.cancel()
+			}
+			return nil, fmt.Errorf("prepare control-plane plugin UI route: %w", err)
+		}
+		publications = append(publications, publication)
+	}
+	routes, err := reserveUIRoutePublication(publications)
+	if err != nil {
+		h.mu.Unlock()
+		for _, cleanup := range entries {
+			cleanup.control.cancel()
+		}
+		return nil, fmt.Errorf("prepare control-plane plugin UI route: %w", err)
+	}
+	return &PreparedPublication{host: h, entries: entries, routes: routes}, nil
 }
 
 // Publish swaps every reserved instance into the active view before releasing
@@ -551,11 +574,15 @@ func (p *PreparedPublication) Publish() {
 		if entry.previous != nil && entry.previous != entry.instance {
 			h.prepared[entry.previous] = struct{}{}
 		}
-		entry.instance.control = entry.control
-		h.active[entry.instance.ID] = entry.instance
-		delete(h.prepared, entry.instance)
-		h.publishPluginUI(entry.instance)
 	}
+	p.routes.publish(func() {
+		for index := range p.entries {
+			entry := &p.entries[index]
+			entry.instance.control = entry.control
+			h.active[entry.instance.ID] = entry.instance
+			delete(h.prepared, entry.instance)
+		}
+	})
 	p.done = true
 	h.mu.Unlock()
 	for index := range p.entries {
@@ -578,6 +605,7 @@ func (p *PreparedPublication) Abort() {
 	for _, entry := range p.entries {
 		entry.control.cancel()
 	}
+	p.routes.abort()
 	p.done = true
 	p.host.mu.Unlock()
 }
@@ -1224,9 +1252,25 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 			_ = replacement.Stop(context.Background())
 			return
 		}
-		h.active[instance.ID] = replacement
-		delete(h.prepared, replacement)
-		h.publishPluginUI(replacement)
+		publication, routeErr := h.uiRoutePublication(instance, replacement)
+		var routes *uiRouteReservation
+		if routeErr == nil {
+			routes, routeErr = reserveUIRoutePublication([]uiRoutePublication{publication})
+		}
+		if routeErr != nil {
+			h.mu.Unlock()
+			control.launchMu.Unlock()
+			_ = replacement.Stop(context.Background())
+			instance.mu.Lock()
+			instance.LastError = safeError(routeErr)
+			instance.mu.Unlock()
+			failure = routeErr
+			continue
+		}
+		routes.publish(func() {
+			h.active[instance.ID] = replacement
+			delete(h.prepared, replacement)
+		})
 		h.mu.Unlock()
 		control.launchMu.Unlock()
 		instance.closePluginUIIdleConnections()
@@ -1562,9 +1606,8 @@ func validateHandshake(request pluginsdk.RPCHandshakeRequest, response pluginsdk
 	}
 	seen := map[string]struct{}{}
 	for _, capability := range response.Capabilities {
-		capability = strings.TrimSpace(capability)
-		if capability == "" {
-			return errors.New("control-plane plugin returned an empty capability")
+		if capability == "" || capability != strings.TrimSpace(capability) {
+			return errors.New("control-plane plugin returned a non-canonical capability")
 		}
 		if _, ok := grants[capability]; !ok {
 			return fmt.Errorf("control-plane plugin returned ungranted capability %q", capability)

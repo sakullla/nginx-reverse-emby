@@ -3,9 +3,12 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestPluginUIAssetCandidatesIncludePackagedAssetsPrefix(t *testing.T) {
@@ -44,5 +47,18 @@ func TestMergePluginUIRoutesPrefersLiveMounts(t *testing.T) {
 	got := MergePluginUIRoutes(live, declared)
 	if len(got) != 2 || got[0].ID != "cloudflare-dns" || got[0].Label != "live" || got[1].ID != "docker-app" {
 		t.Fatalf("merged = %+v", got)
+	}
+}
+
+func TestPluginUICatalogRejectsCrossPluginRouteCollision(t *testing.T) {
+	t.Parallel()
+	owners := make(map[string]string)
+	manifestA := plugins.Manifest{ID: "owner-a", UIRouteID: "shared-route", ExtensionPoints: []string{pluginsdk.ExtensionUIRoute}}
+	manifestB := plugins.Manifest{ID: "owner-b", UIRouteID: "shared-route", ExtensionPoints: []string{pluginsdk.ExtensionUIRoute}}
+	if routeID, declared, err := claimPluginManifestUIRoute(owners, manifestA.ID, manifestA); err != nil || !declared || routeID != "shared-route" {
+		t.Fatalf("first declared route = %q declared=%v err=%v", routeID, declared, err)
+	}
+	if _, _, err := claimPluginManifestUIRoute(owners, manifestB.ID, manifestB); !errors.Is(err, pluginhost.ErrUIRouteConflict) {
+		t.Fatalf("declared/static route collision error = %v", err)
 	}
 }

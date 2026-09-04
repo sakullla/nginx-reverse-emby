@@ -80,6 +80,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := prepareMarketplaceRepositorySourceColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := preparePostgresPluginRuntimeStateBinaryColumn(ctx, db, options.Driver); err != nil {
+		return err
+	}
 
 	if err := tx.AutoMigrate(
 		&AgentRow{},
@@ -239,6 +242,35 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func preparePostgresPluginRuntimeStateBinaryColumn(ctx context.Context, db *gorm.DB, driver string) error {
+	if !strings.EqualFold(strings.TrimSpace(driver), "postgres") || !db.Migrator().HasTable(&PluginRuntimeStateRow{}) {
+		return nil
+	}
+	var column struct {
+		DataType string `gorm:"column:data_type"`
+		UDTName  string `gorm:"column:udt_name"`
+	}
+	if err := db.WithContext(ctx).Raw(`
+		SELECT data_type, udt_name
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'plugin_runtime_state'
+		  AND column_name = 'value'
+	`).Scan(&column).Error; err != nil {
+		return err
+	}
+	if strings.EqualFold(column.UDTName, "bytea") {
+		return nil
+	}
+	if !strings.EqualFold(column.UDTName, "blob") {
+		return fmt.Errorf("plugin_runtime_state.value has unsupported PostgreSQL type %q (%q)", column.DataType, column.UDTName)
+	}
+	return db.WithContext(ctx).Exec(`
+		ALTER TABLE plugin_runtime_state
+		ALTER COLUMN value TYPE bytea USING value::bytea
+	`).Error
 }
 
 func prepareLegacyPluginRollbackResourceGroupColumn(db *gorm.DB) error {

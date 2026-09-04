@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestDNSWireCodecCNAMESOANSTXTAndCompressionBounds(t *testing.T) {
+func TestIntegrationDNSWireCodecCNAMESOANSTXTAndCompressionBounds(t *testing.T) {
 	packet := buildDNSFixtureResponse(t, 0x1234, "_acme-challenge.example.com", []wireFixtureRecord{
 		{recordType: TypeCNAME, name: "_acme-challenge.example.com", value: "delegate.example.net"},
 		{recordType: TypeSOA, name: "example.net", value: "ns1.example.net", secondary: "hostmaster.example.net"},
@@ -68,7 +68,7 @@ func TestDNSWireCodecCNAMESOANSTXTAndCompressionBounds(t *testing.T) {
 	}
 }
 
-func TestDNSWireUsesSystemResolversBeforeFallback(t *testing.T) {
+func TestIntegrationDNSWireUsesSystemResolversBeforeFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf")
 	data := []byte("# generated\nnameserver 192.0.2.53\nnameserver 2001:db8::53 # local\nsearch example.test\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -83,7 +83,7 @@ func TestDNSWireUsesSystemResolversBeforeFallback(t *testing.T) {
 	}
 }
 
-func TestDNSWireRejectsMismatchedQuestion(t *testing.T) {
+func TestIntegrationDNSWireRejectsMismatchedQuestion(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen UDP: %v", err)
@@ -117,7 +117,7 @@ func TestDNSWireRejectsMismatchedQuestion(t *testing.T) {
 	}
 }
 
-func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
+func TestIntegrationDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 	var tcpListener net.Listener
 	var udpConn *net.UDPConn
 	var err error
@@ -239,7 +239,7 @@ func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 	}
 }
 
-func TestDNSWireCancellationIsBounded(t *testing.T) {
+func TestIntegrationDNSWireCancellationIsBounded(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen UDP: %v", err)

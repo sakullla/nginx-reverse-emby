@@ -33,12 +33,15 @@ jobs:
             fast_packages: ./...
           - module: go-agent
             fast_packages: >-
-              ./internal/app ./internal/control ./internal/core ./internal/model
-              ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay
-              ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+              ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
+              ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
+              ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
+              ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi
+              ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm
+              ./pkg/acmeflow ./pkg/acmeflow/cloudflare
           - module: panel/backend-go
             fast_packages: >-
-              ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
+              ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
               ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace
               ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins
               ./internal/controlplane/service ./internal/controlplane/storage
@@ -88,23 +91,35 @@ jobs:
         include:
           - module: go-agent
             full_packages: >-
-              ./internal/app ./internal/control ./internal/core ./internal/model
-              ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/relay
-              ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+              ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
+              ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
+              ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
+              ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy
+              ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc
+              ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
             integration_packages: >-
+              ./embedded
+              ./internal/app
               ./internal/core
               ./internal/hotrestart
               ./internal/modules/certs
+              ./internal/modules/diagnostics
               ./internal/modules/http
               ./internal/modules/l4
+              ./internal/modules/traffic
+              ./internal/plugins/process
               ./pkg/acmeflow
+              ./pkg/acmeflow/cloudflare
           - module: panel/backend-go
             full_packages: >-
-              ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
+              ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/authz
+              ./internal/controlplane/config ./internal/controlplane/coordinator ./internal/controlplane/dependency
               ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace
               ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins
-              ./internal/controlplane/service ./internal/controlplane/storage
+              ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
             integration_packages: >-
+              ./internal/controlplane/coordinator
+              ./internal/controlplane/revision
               ./internal/controlplane/storage
     steps:
       - name: Checkout repository
@@ -122,9 +137,51 @@ jobs:
           docker compose -f scripts/acme-integration/docker-compose.yaml up -d --wait --wait-timeout 60
           docker compose -f scripts/acme-integration/docker-compose.yaml cp pebble:/test/certs/pebble.minica.pem "${RUNNER_TEMP}/pebble.minica.pem"
           echo "SSL_CERT_FILE=${RUNNER_TEMP}/pebble.minica.pem" >> "${GITHUB_ENV}"
+      - name: Start PostgreSQL fixture
+        if: matrix.module == 'panel/backend-go'
+        shell: bash
+        run: |
+          docker run --detach --name nre-test-postgres \
+            --env POSTGRES_DB=nre_test \
+            --env POSTGRES_PASSWORD=nre-test-password \
+            --publish 127.0.0.1:5432:5432 \
+            postgres:16-alpine
+          for attempt in $(seq 1 30); do
+            if docker exec nre-test-postgres pg_isready --username postgres --dbname nre_test; then
+              echo 'NRE_TEST_POSTGRES_DSN=postgres://postgres:nre-test-password@127.0.0.1:5432/nre_test?sslmode=disable' >> "${GITHUB_ENV}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs nre-test-postgres
+          exit 1
+      - name: Verify integration tests are discoverable
+        working-directory: ${{ matrix.module }}
+        shell: bash
+        run: |
+          status=0
+          for package in ${{ matrix.integration_packages }}; do
+            if ! discovered="$(go test -tags=integration -list '^TestIntegration' "${package}")"; then
+              printf '%s\n' "${discovered}"
+              status=1
+              continue
+            fi
+            printf '%s\n' "${discovered}"
+            if ! printf '%s\n' "${discovered}" | grep -Eq '^TestIntegration'; then
+              echo "::error::${package} has no TestIntegration tests"
+              status=1
+            fi
+          done
+          exit "${status}"
       - name: Run integration tests
         working-directory: ${{ matrix.module }}
         run: timeout 30s go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ${{ matrix.integration_packages }}
+      - name: Stop PostgreSQL fixture
+        if: always() && matrix.module == 'panel/backend-go'
+        run: |
+          if docker inspect nre-test-postgres >/dev/null 2>&1; then
+            docker rm --force nre-test-postgres
+          fi
       - name: Stop local ACME fixture
         if: always()
         run: docker compose -f scripts/acme-integration/docker-compose.yaml down --volumes --remove-orphans

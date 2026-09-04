@@ -220,6 +220,21 @@ func TestPluginCapabilityAuthorizationMatrix(t *testing.T) {
 	}
 }
 
+func TestPluginHostHandshakeRejectsNonCanonicalCapabilityAcknowledgement(t *testing.T) {
+	t.Parallel()
+	request := pluginsdk.RPCHandshakeRequest{
+		ABI: pluginsdk.RPCABIV1, PluginID: "plugin-1", PluginVersion: "1.0.0",
+		PackageDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64),
+		Generation: strings.Repeat("c", 64), GrantedScopes: []string{string(pluginsdk.CapabilityHTTPRule)},
+	}
+	if err := validateHandshake(request, pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{string(pluginsdk.CapabilityHTTPRule)}}); err != nil {
+		t.Fatalf("canonical handshake = %v", err)
+	}
+	if err := validateHandshake(request, pluginsdk.RPCHandshakeResponse{ABI: pluginsdk.RPCABIV1, Capabilities: []string{" http.rule "}}); err == nil {
+		t.Fatal("non-canonical guest capability acknowledgement was accepted")
+	}
+}
+
 type capabilityQuotaStub struct {
 	calls int
 	err   error

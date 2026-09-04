@@ -457,7 +457,7 @@ type PluginRuntimeStateRow struct {
 	Key             string    `gorm:"primaryKey;size:190"`
 	PluginID        string    `gorm:"index;size:190;not null"`
 	ResourceGroupID string    `gorm:"index;size:64;not null"`
-	Value           []byte    `gorm:"type:blob;not null"`
+	Value           []byte    `gorm:"not null"`
 	UpdatedAt       time.Time `gorm:"not null"`
 }
 

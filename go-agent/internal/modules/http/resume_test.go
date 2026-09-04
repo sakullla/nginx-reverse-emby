@@ -17,7 +17,7 @@ import (
 	"testing"
 )
 
-func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
+func TestIntegrationServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
 	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
@@ -90,7 +90,7 @@ func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
 	}
 }
 
-func TestServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
+func TestIntegrationServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
 	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
@@ -161,7 +161,7 @@ func TestServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
 	}
 }
 
-func TestCopyResumableResponseRetriesTransientResumeRoundTrip(t *testing.T) {
+func TestIntegrationCopyResumableResponseRetriesTransientResumeRoundTrip(t *testing.T) {
 	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
@@ -215,7 +215,7 @@ func TestCopyResumableResponseRetriesTransientResumeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
+func TestIntegrationServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
 	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 

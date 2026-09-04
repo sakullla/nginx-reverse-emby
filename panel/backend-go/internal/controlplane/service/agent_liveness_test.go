@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,66 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+type quotaExceededHeartbeatTrafficService struct{}
+
+func (quotaExceededHeartbeatTrafficService) IngestHeartbeat(context.Context, string, AgentStats) error {
+	return storage.ErrQuotaExceeded
+}
+
+func (quotaExceededHeartbeatTrafficService) Summary(context.Context, string) (TrafficSummary, error) {
+	return TrafficSummary{}, nil
+}
+
+func (quotaExceededHeartbeatTrafficService) BlockState(context.Context, string) (bool, string, error) {
+	return true, "resource group default quota exceeded: traffic_bytes current=2 limit=1", nil
+}
+
+func TestAgentHeartbeatReturnsCommittedQuotaBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite-backed heartbeat lifecycle runs in the full test tier")
+	}
+	store, err := storage.NewStore(storage.StoreConfig{
+		Driver: "sqlite", DataRoot: t.TempDir(), LocalAgentID: "local", TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const agentID = "edge-quota"
+	const agentToken = "edge-quota-token"
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: agentID, Name: agentID, AgentToken: agentToken, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	service := NewAgentService(config.Config{
+		LocalAgentID: "local", HeartbeatInterval: 30 * time.Second, TrafficStatsEnabled: true,
+	}, store)
+	service.now = func() time.Time { return now }
+	service.SetTrafficService(quotaExceededHeartbeatTrafficService{})
+
+	reply, err := service.Heartbeat(t.Context(), HeartbeatRequest{
+		AgentID: agentID,
+		Stats:   AgentStats{"host_total": map[string]any{"rx_bytes": 2}},
+	}, agentToken)
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v, want committed quota decision returned in reply", err)
+	}
+	if !reply.TrafficBlocked || !strings.Contains(reply.TrafficBlockReason, "traffic_bytes") {
+		t.Fatalf("heartbeat traffic block = %v %q, want committed quota block", reply.TrafficBlocked, reply.TrafficBlockReason)
+	}
+	detail, err := service.Get(t.Context(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.LastSeenAt != now.Format(time.RFC3339) {
+		t.Fatalf("last_seen_at = %q, want %q", detail.LastSeenAt, now.Format(time.RFC3339))
+	}
+}
 
 func TestAgentHeartbeatLivenessAndPackageStateRemainIndependent(t *testing.T) {
 	if testing.Short() {

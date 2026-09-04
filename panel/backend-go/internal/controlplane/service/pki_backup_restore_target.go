@@ -23,13 +23,15 @@ type PKIBackupRestoreTargetOptions struct {
 }
 
 type ProductionPKIBackupRestoreTarget struct {
-	store           *storage.GormStore
-	vault           *PKIVault
-	dataRoot        string
-	masterKeyFile   string
-	clock           func() time.Time
-	activationHooks storage.PKISQLiteRestoreHooks
-	mutex           sync.Mutex
+	store              *storage.GormStore
+	vault              *PKIVault
+	dataRoot           string
+	masterKeyFile      string
+	masterKeyInPKIRoot bool
+	masterKeyRelative  string
+	clock              func() time.Time
+	activationHooks    storage.PKISQLiteRestoreHooks
+	mutex              sync.Mutex
 }
 
 func NewProductionPKIBackupRestoreTarget(options PKIBackupRestoreTargetOptions) (*ProductionPKIBackupRestoreTarget, error) {
@@ -45,12 +47,24 @@ func NewProductionPKIBackupRestoreTarget(options PKIBackupRestoreTargetOptions) 
 	if options.MasterKeyFile != "" && !filepath.IsAbs(options.MasterKeyFile) {
 		return nil, fmt.Errorf("%w: configured restore master key path must be absolute", ErrPKIBackupActivation)
 	}
+	absoluteRoot = filepath.Clean(absoluteRoot)
+	masterKeyInPKIRoot := false
+	masterKeyRelative := ""
+	if options.MasterKeyFile != "" {
+		options.MasterKeyFile = filepath.Clean(options.MasterKeyFile)
+		if relative, relativeErr := filepath.Rel(filepath.Join(absoluteRoot, "pki"), options.MasterKeyFile); relativeErr == nil &&
+			!filepath.IsAbs(relative) && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			masterKeyInPKIRoot = true
+			masterKeyRelative = relative
+		}
+	}
 	if options.Clock == nil {
 		options.Clock = time.Now
 	}
 	return &ProductionPKIBackupRestoreTarget{
-		store: options.Store, vault: options.Vault, dataRoot: filepath.Clean(absoluteRoot),
-		masterKeyFile: options.MasterKeyFile, clock: options.Clock, activationHooks: options.ActivationHooks,
+		store: options.Store, vault: options.Vault, dataRoot: absoluteRoot,
+		masterKeyFile: options.MasterKeyFile, masterKeyInPKIRoot: masterKeyInPKIRoot,
+		masterKeyRelative: masterKeyRelative, clock: options.Clock, activationHooks: options.ActivationHooks,
 	}, nil
 }
 
@@ -159,18 +173,15 @@ func (t *ProductionPKIBackupRestoreTarget) ActivateProtectedPKIBackup(
 	}
 
 	stagedMasterKey := ""
-	masterStageRoot := ""
 	stagingVaultConfig := PKIVaultConfig{DataRoot: vaultStageRoot}
-	if t.masterKeyFile != "" {
-		masterStageRoot, err = os.MkdirTemp(filepath.Dir(t.masterKeyFile), ".pki-restore-master-stage-")
-		if err != nil {
-			return fmt.Errorf("create protected restore master-key stage: %w", err)
-		}
+	stagedMasterKey, masterStageRoot, err := t.preparePKIRestoreMasterKeyStage(vaultStageRoot)
+	if masterStageRoot != "" {
 		cleanupPaths = append(cleanupPaths, masterStageRoot)
-		if err := os.Chmod(masterStageRoot, 0o700); err != nil {
-			return err
-		}
-		stagedMasterKey = filepath.Join(masterStageRoot, "master.key")
+	}
+	if err != nil {
+		return err
+	}
+	if stagedMasterKey != "" {
 		stagingVaultConfig.MasterKeyFile = stagedMasterKey
 	}
 	stagingRegistration, err = t.store.RegisterPKIRestoreStagingCleanup(ctx, cleanupPaths)
@@ -251,15 +262,7 @@ func (t *ProductionPKIBackupRestoreTarget) ActivateProtectedPKIBackup(
 	clear(validated.Snapshot)
 	stagedDatabase = finalStagedDatabase
 
-	additional := []storage.PKIRestorePathSwap{{
-		ActivePath: filepath.Join(t.dataRoot, "pki"),
-		StagedPath: filepath.Join(vaultStageRoot, "pki"),
-	}}
-	if t.masterKeyFile != "" {
-		additional = append(additional, storage.PKIRestorePathSwap{
-			ActivePath: t.masterKeyFile, StagedPath: stagedMasterKey,
-		})
-	}
+	additional := t.pkiRestorePathSwaps(vaultStageRoot, stagedMasterKey)
 	hooks := t.activationHooks
 	afterSwap := hooks.AfterSwap
 	afterRollback := hooks.AfterRollback
@@ -294,6 +297,40 @@ func (t *ProductionPKIBackupRestoreTarget) ActivateProtectedPKIBackup(
 		cleanupOwnedByJournal = true
 	}
 	return activationErr
+}
+
+func (t *ProductionPKIBackupRestoreTarget) preparePKIRestoreMasterKeyStage(vaultStageRoot string) (string, string, error) {
+	if t.masterKeyFile == "" {
+		return "", "", nil
+	}
+	if t.masterKeyInPKIRoot {
+		stagedMasterKey := filepath.Join(vaultStageRoot, "pki", t.masterKeyRelative)
+		if err := ensurePKIRestrictedDirectory(filepath.Dir(stagedMasterKey)); err != nil {
+			return "", "", fmt.Errorf("create embedded protected restore master-key stage: %w", err)
+		}
+		return stagedMasterKey, "", nil
+	}
+	masterStageRoot, err := os.MkdirTemp(filepath.Dir(t.masterKeyFile), ".pki-restore-master-stage-")
+	if err != nil {
+		return "", "", fmt.Errorf("create protected restore master-key stage: %w", err)
+	}
+	if err := os.Chmod(masterStageRoot, 0o700); err != nil {
+		return "", masterStageRoot, err
+	}
+	return filepath.Join(masterStageRoot, "master.key"), masterStageRoot, nil
+}
+
+func (t *ProductionPKIBackupRestoreTarget) pkiRestorePathSwaps(vaultStageRoot, stagedMasterKey string) []storage.PKIRestorePathSwap {
+	swaps := []storage.PKIRestorePathSwap{{
+		ActivePath: filepath.Join(t.dataRoot, "pki"),
+		StagedPath: filepath.Join(vaultStageRoot, "pki"),
+	}}
+	if t.masterKeyFile != "" && !t.masterKeyInPKIRoot {
+		swaps = append(swaps, storage.PKIRestorePathSwap{
+			ActivePath: t.masterKeyFile, StagedPath: stagedMasterKey,
+		})
+	}
+	return swaps
 }
 
 func slicesEqualBytes(left, right []byte) bool {

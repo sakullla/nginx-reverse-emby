@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
+import { schemaToUIComponents } from '../../api/pluginSecurity.js'
 
 const document = {
   schema_version: 1,
@@ -88,6 +89,43 @@ describe('PluginDeclarativeUI', () => {
     await itemWrappers[2].findAll('button').find((button) => button.text() === '上移').trigger('click')
     await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
     expect(wrapper.emitted('submit').at(-1)[0].config.upstreams.map((item) => item.host)).toEqual(['a', 'c', 'b'])
+  })
+
+  it('preserves synthesized scalar array types and blocks item constraint failures', async () => {
+    const scalarDocument = {
+      schema_version: 1,
+      title: 'Scalar arrays',
+      components: [
+        { type: 'array', id: 'ports', label: 'Ports', binding: '/ports', min_items: 1, unique_items: true, item_type: 'integer', item_minimum: 1, item_maximum: 65535, item_step: 1 },
+        { type: 'array', id: 'flags', label: 'Flags', binding: '/flags', item_type: 'boolean' }
+      ],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: scalarDocument, config: { ports: [80, 80], flags: [false] }, canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.text()).toContain('不能重复')
+    const portInputs = wrapper.findAll('.declarative-array input[type="number"]')
+    await portInputs[1].setValue('443')
+    await wrapper.find('.declarative-array input[type="checkbox"]').setValue(true)
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config).toEqual({ ports: [80, 443], flags: [true] })
+  })
+
+  it('blocks integer and multipleOf violations before submit', async () => {
+    const numericDocument = {
+      schema_version: 1,
+      title: 'Exact number',
+      components: [{ type: 'number', id: 'workers', label: 'Workers', binding: '/workers', integer: true, step: 2 }],
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: numericDocument, config: { workers: 3 }, canConfigure: true } })
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.text()).toContain('步长')
+    await wrapper.get('input[type="number"]').setValue('4')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].config.workers).toBe(4)
   })
 
   it('removes a repeatable array item', async () => {
@@ -196,6 +234,24 @@ describe('PluginDeclarativeUI', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
     expect(wrapper.emitted('submit')[0][0].config).toEqual({ apps: [] })
     expect(wrapper.text()).not.toContain('此项为必填')
+  })
+
+  it('treats synthesized legacy accessor names as JSON data without polluting prototypes', async () => {
+    const schema = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"object","properties":{"polluted":{"type":"string","default":"safe-value"}}}}}')
+    const unsafeDocument = {
+      schema_version: 1,
+      title: 'Unsafe names',
+      components: schemaToUIComponents(schema),
+      actions: [{ type: 'submit', id: 'save', label: 'Save' }]
+    }
+    delete Object.prototype.polluted
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: unsafeDocument, config: {}, canConfigure: true } })
+    expect(Object.prototype.polluted).toBeUndefined()
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    const config = wrapper.emitted('submit')[0][0].config
+    expect(Object.hasOwn(config, '__proto__')).toBe(true)
+    expect(config.__proto__).toEqual({ polluted: 'safe-value' })
+    expect(Object.prototype.polluted).toBeUndefined()
   })
 
   it('round-trips numeric enum values through a select', async () => {
@@ -308,6 +364,19 @@ describe('PluginDeclarativeUI', () => {
     expect(wrapper.text()).toContain('键重复，此行不会保存')
     await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
     expect(wrapper.emitted('submit')[0][0].config.labels).toEqual({ env: 'prod' })
+  })
+
+  it('round-trips a keyvalue __proto__ key as ordinary JSON data', async () => {
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: extendedDocument, config: { labels: {} }, canConfigure: true } })
+    await wrapper.findAll('.declarative-keyvalue .btn').find((button) => button.text() === '+ 添加').trigger('click')
+    const row = wrapper.get('.declarative-keyvalue__row')
+    await row.findAll('input')[0].setValue('__proto__')
+    await row.findAll('input')[1].setValue('literal')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    const labels = wrapper.emitted('submit')[0][0].config.labels
+    expect(Object.hasOwn(labels, '__proto__')).toBe(true)
+    expect(labels.__proto__).toBe('literal')
+    expect(Object.getPrototypeOf({})).toBe(Object.prototype)
   })
 
   it('expands a default-collapsed section when a failed submit forces validation', async () => {

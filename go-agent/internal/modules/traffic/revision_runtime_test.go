@@ -19,7 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t *testing.T) {
+func TestIntegrationRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t *testing.T) {
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
 		SetEnabled(previousEnabled)
@@ -141,7 +141,7 @@ func TestRevisionSyncAppliesHeartbeatTrafficRuntimeWithoutRebuildingGeneration(t
 	}
 }
 
-func TestRevisionSyncCommitsAuthenticatedBlockBeforePlanAndPullFailures(t *testing.T) {
+func TestIntegrationRevisionSyncCommitsAuthenticatedBlockBeforePlanAndPullFailures(t *testing.T) {
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
 		SetEnabled(previousEnabled)
@@ -205,7 +205,7 @@ func TestRevisionSyncCommitsAuthenticatedBlockBeforePlanAndPullFailures(t *testi
 	}
 }
 
-func TestRevisionSyncTrafficPersistenceFailureRollsForwardBlockAndPreservesUnblock(t *testing.T) {
+func TestIntegrationRevisionSyncTrafficPersistenceFailureRollsForwardBlockAndPreservesUnblock(t *testing.T) {
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
 		SetEnabled(previousEnabled)
@@ -306,7 +306,7 @@ func TestRevisionSyncTrafficPersistenceFailureRollsForwardBlockAndPreservesUnblo
 	})
 }
 
-func TestRevisionSyncMigratesLegacyTrafficEnabledFromAppliedArtifact(t *testing.T) {
+func TestIntegrationRevisionSyncMigratesLegacyTrafficEnabledFromAppliedArtifact(t *testing.T) {
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
 		SetEnabled(previousEnabled)

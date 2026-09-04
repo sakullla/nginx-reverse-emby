@@ -71,6 +71,10 @@ const instanceEntries = computed(() => (Array.isArray(props.publishedEntries) ? 
   const agentID = String(entry.agent_id || '').trim()
   const frontendURL = String(entry.frontend_url || '').trim()
   if (!Number.isInteger(ruleID) || ruleID <= 0 || !frontendURL) return false
+  const entryInstanceID = String(entry.instance_id || '').trim()
+  if (entryInstanceID) return entryInstanceID === String(props.instance?.id || '').trim()
+  // Older control planes did not project instance_id. Keep their Agent-based
+  // fallback, while modern responses use the authoritative instance identity.
   if (!instanceTargets.value.length) return true
   return !agentID || instanceTargets.value.includes(agentID)
 }))

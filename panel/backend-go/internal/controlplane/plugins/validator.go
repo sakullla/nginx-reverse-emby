@@ -645,7 +645,7 @@ func (v *Validator) validateRuntimeIndex(runtime RuntimeIndex, artifacts []Artif
 	seen := map[string]struct{}{}
 	wasmCount := 0
 	for _, artifact := range artifacts {
-		if !hexDigestPattern.MatchString(strings.ToLower(artifact.SHA256)) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
+		if !hexDigestPattern.MatchString(artifact.SHA256) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
 			return errors.New("artifact digest and bounded size are required")
 		}
 		platform := artifact.GOOS + "/" + artifact.GOARCH
@@ -947,6 +947,9 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 	if err := v.validateRuntimeIdentity(manifest.Runtime.Kind, manifest.Runtime.ABI, manifest.Runtime.HostScope); err != nil {
 		return validationError("runtime", PackageManifestFile, err)
 	}
+	if err := validateRuntimeHostScopes(manifest.Runtime); err != nil {
+		return validationError("runtime", PackageManifestFile, err)
+	}
 	if err := validateRuntimePolicyKind(manifest.Runtime.Kind, manifest.Runtime.PolicyKind); err != nil {
 		return validationError("runtime", PackageManifestFile, err)
 	}
@@ -982,7 +985,7 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 			return validationError("artifact", artifact.Path, errors.New("duplicate artifact path"))
 		}
 		seenPaths[canonical] = struct{}{}
-		if !hexDigestPattern.MatchString(strings.ToLower(artifact.SHA256)) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
+		if !hexDigestPattern.MatchString(artifact.SHA256) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
 			return validationError("artifact", artifact.Path, errors.New("artifact digest and bounded size are required"))
 		}
 		resolved, err := securePackagePath(root, canonical)
@@ -997,7 +1000,7 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 			return validationError("artifact_size", artifact.Path, errors.New("declared artifact size does not match content"))
 		}
 		actual, err := digestFile(resolved)
-		if err != nil || !strings.EqualFold(actual, artifact.SHA256) {
+		if err != nil || actual != artifact.SHA256 {
 			return validationError("artifact_digest", artifact.Path, errors.New("declared artifact digest does not match content"))
 		}
 		isPolicyWASM := artifact.Mode == "wasm" || (policyEntry != "" && canonical == policyEntry)
@@ -1082,6 +1085,23 @@ func (v *Validator) validateRuntimeIdentity(kind, abi, hostScope string) error {
 		}
 	default:
 		return fmt.Errorf("runtime kind %q is not allowed", kind)
+	}
+	return nil
+}
+
+func validateRuntimeHostScopes(runtime Runtime) error {
+	if len(runtime.HostScopes) > 2 {
+		return errors.New("runtime host_scopes exceeds the manifest bound")
+	}
+	seen := make(map[string]struct{}, len(runtime.HostScopes))
+	for _, scope := range runtime.HostScopes {
+		if scope != strings.TrimSpace(scope) || (scope != pluginsdk.HostScopeAgent && scope != pluginsdk.HostScopeControlPlane) {
+			return errors.New("runtime host_scopes contains an unsupported host")
+		}
+		if _, duplicate := seen[scope]; duplicate {
+			return errors.New("runtime host_scopes contains a duplicate host")
+		}
+		seen[scope] = struct{}{}
 	}
 	return nil
 }

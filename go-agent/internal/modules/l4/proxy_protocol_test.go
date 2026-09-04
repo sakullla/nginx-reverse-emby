@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestParseProxyProtocolV1(t *testing.T) {
+func TestIntegrationParseProxyProtocolV1(t *testing.T) {
 	t.Parallel()
 	header := []byte("PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\npayload")
 	info, payload, err := parseProxyHeader(bytes.NewReader(header))
@@ -26,7 +26,7 @@ func TestParseProxyProtocolV1(t *testing.T) {
 	}
 }
 
-func TestBuildProxyProtocolV2Frame(t *testing.T) {
+func TestIntegrationBuildProxyProtocolV2Frame(t *testing.T) {
 	t.Parallel()
 	frame, err := buildProxyHeader(proxyInfo{
 		Source:      mustTCPAddr(t, "198.51.100.10:12345"),
@@ -41,7 +41,7 @@ func TestBuildProxyProtocolV2Frame(t *testing.T) {
 	}
 }
 
-func TestBuildProxyProtocolRejectsOutOfRangePorts(t *testing.T) {
+func TestIntegrationBuildProxyProtocolRejectsOutOfRangePorts(t *testing.T) {
 	t.Parallel()
 	_, err := buildProxyHeader(proxyInfo{
 		Source:      &net.TCPAddr{IP: net.ParseIP("198.51.100.10"), Port: 70000},
@@ -53,7 +53,7 @@ func TestBuildProxyProtocolRejectsOutOfRangePorts(t *testing.T) {
 	}
 }
 
-func TestParseProxyProtocolV1RejectsOutOfRangePorts(t *testing.T) {
+func TestIntegrationParseProxyProtocolV1RejectsOutOfRangePorts(t *testing.T) {
 	t.Parallel()
 	header := []byte("PROXY TCP4 198.51.100.10 203.0.113.20 70000 443\r\npayload")
 	if _, _, err := parseProxyHeader(bytes.NewReader(header)); err == nil {
@@ -61,7 +61,7 @@ func TestParseProxyProtocolV1RejectsOutOfRangePorts(t *testing.T) {
 	}
 }
 
-func TestParseProxyProtocolV1Unknown(t *testing.T) {
+func TestIntegrationParseProxyProtocolV1Unknown(t *testing.T) {
 	t.Parallel()
 	header := []byte("PROXY UNKNOWN\r\npayload")
 	info, payload, err := parseProxyHeader(bytes.NewReader(header))
@@ -76,7 +76,7 @@ func TestParseProxyProtocolV1Unknown(t *testing.T) {
 	}
 }
 
-func TestParseProxyHeaderDoesNotCopyBufferedPayloadWhenHeaderDecoded(t *testing.T) {
+func TestIntegrationParseProxyHeaderDoesNotCopyBufferedPayloadWhenHeaderDecoded(t *testing.T) {
 	t.Parallel()
 	header := []byte("PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\npayload")
 	info, payload, err := parseProxyHeader(bytes.NewReader(header))

@@ -18,6 +18,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const maxAgentHeartbeatBodyBytes int64 = 8 << 20
+
 func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)
@@ -102,9 +104,16 @@ func (d Dependencies) handleAgentPluginSecretRedemption(w http.ResponseWriter, r
 }
 
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentHeartbeatBodyBytes)
+	decoder := json.NewDecoder(r.Body)
 	var body map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+	if err := decoder.Decode(&body); err != nil {
+		writeHeartbeatDecodeError(w, err)
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeHeartbeatDecodeError(w, err)
 		return
 	}
 	var payload service.HeartbeatRequest
@@ -129,6 +138,15 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		"ok":   true,
 		"sync": heartbeatSyncPayload(reply, d.requestBaseURL(r)),
 	})
+}
+
+func writeHeartbeatDecodeError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("heartbeat request body too large"))
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 }
 
 func remoteIPFromRequest(r *http.Request, trustForwardedHeaders bool) string {

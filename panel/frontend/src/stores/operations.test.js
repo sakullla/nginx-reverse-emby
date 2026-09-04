@@ -193,4 +193,20 @@ describe('operation store', () => {
     expect(completed.ui_status).toBe('drained')
     expect(storeModule.useOperationsStore().get('op-race')).toBeNull()
   })
+
+  it('does not restore an operation from an in-flight response after identity reset', async () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-old-identity', status_url: '/panel-api/operations/op-old-identity', apply_status: 'pending'
+    })
+    let resolveStatus
+    api.fetch.mockImplementationOnce(() => new Promise(resolve => { resolveStatus = resolve }))
+
+    const refresh = storeModule.refreshOperation('op-old-identity')
+    storeModule.resetOperations()
+    resolveStatus({ operation_id: 'op-old-identity', apply_status: 'failed', error_message: 'private failure' })
+
+    await expect(refresh).resolves.toBeNull()
+    expect(storeModule.useOperationsStore().get('op-old-identity')).toBeNull()
+    expect(localStorage.getItem('nre.operations.v1')).toBeNull()
+  })
 })

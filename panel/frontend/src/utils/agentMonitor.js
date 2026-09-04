@@ -77,9 +77,12 @@ export function overlayMonitorOnAgent(agent, monitor) {
 
 export function mergeFetchedAgents(previous, next) {
   if (!Array.isArray(next)) return Array.isArray(previous) ? previous : []
-  if (!Array.isArray(previous) || previous.length === 0) return next
-  const previousById = new Map(previous.map((agent) => [agent?.id, agent]))
-  return next.map((agent) => preserveRunningPackage(previousById.get(agent?.id), agent))
+  // The list endpoint is backed by the durable agent record. The control plane
+  // already rejects staging heartbeat package identities before persisting
+  // them, so a successful refetch must replace the cached running identity.
+  // Reusing the monitor-overlay guard here would keep the old package forever
+  // after the durable record reports a completed switch.
+  return next
 }
 
 export function mergeMonitorAgents(previous = [], update) {
@@ -95,9 +98,13 @@ export function mergeMonitorAgents(previous = [], update) {
   return agents
 }
 
-export function mergeAgentsWithMonitor(agents, monitorAgents) {
-  const monitorById = new Map((monitorAgents || []).map(agent => [agent.id, agent]))
+export function mergeAgentsWithMonitor(agents, monitorAgents, options = {}) {
   const baseAgents = agents || []
+  // Cached monitor snapshots are useful across reconnects, but they are not
+  // authoritative once the stream is inactive. In that state the durable
+  // /agents result must win without an inline or cached monitor overlay.
+  if (options.active === false) return baseAgents
+  const monitorById = new Map((monitorAgents || []).map(agent => [agent.id, agent]))
   let changed = false
   const merged = baseAgents.map((agent) => {
     const monitor = monitorById.get(agent.id) || agent.monitor

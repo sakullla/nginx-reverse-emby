@@ -29,7 +29,7 @@ type testJWSEnvelope struct {
 	Signature string `json:"signature"`
 }
 
-func TestProfileOrderIncludesAdvertisedProfileAndValidJWS(t *testing.T) {
+func TestIntegrationProfileOrderIncludesAdvertisedProfileAndValidJWS(t *testing.T) {
 	accountKey := mustTestRSAKey(t)
 	const accountURI = "https://ca.invalid/acct/42"
 	var orderRequests atomic.Int32
@@ -114,7 +114,7 @@ func TestProfileOrderIncludesAdvertisedProfileAndValidJWS(t *testing.T) {
 	}
 }
 
-func TestProfileOrderRejectsUnadvertisedProfileWithoutFallback(t *testing.T) {
+func TestIntegrationProfileOrderRejectsUnadvertisedProfileWithoutFallback(t *testing.T) {
 	key := mustTestRSAKey(t)
 	var orderRequests atomic.Int32
 	var server *httptest.Server
@@ -148,7 +148,7 @@ func TestProfileOrderRejectsUnadvertisedProfileWithoutFallback(t *testing.T) {
 	}
 }
 
-func TestProfileOrderRetriesBadNonce(t *testing.T) {
+func TestIntegrationProfileOrderRetriesBadNonce(t *testing.T) {
 	key := mustTestRSAKey(t)
 	var orderRequests atomic.Int32
 	var server *httptest.Server
@@ -206,7 +206,7 @@ func TestProfileOrderRetriesBadNonce(t *testing.T) {
 	}
 }
 
-func TestProfileOrderBadNonceExhaustionIsSafe(t *testing.T) {
+func TestIntegrationProfileOrderBadNonceExhaustionIsSafe(t *testing.T) {
 	key := mustTestRSAKey(t)
 	const canary = "authorization-bearer-token-canary"
 	var server *httptest.Server
@@ -246,7 +246,7 @@ func TestProfileOrderBadNonceExhaustionIsSafe(t *testing.T) {
 	}
 }
 
-func TestProfileOrderPreservesRetryAfterFromHTTP429(t *testing.T) {
+func TestIntegrationProfileOrderPreservesRetryAfterFromHTTP429(t *testing.T) {
 	key := mustTestRSAKey(t)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +288,7 @@ func TestProfileOrderPreservesRetryAfterFromHTTP429(t *testing.T) {
 	}
 }
 
-func TestProfileOrderECDSAJWSUsesRawSignature(t *testing.T) {
+func TestIntegrationProfileOrderECDSAJWSUsesRawSignature(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)

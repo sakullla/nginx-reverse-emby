@@ -214,6 +214,7 @@ type PluginSummary struct {
 	RollbackSourceRefKind     string    `json:"rollback_source_ref_kind,omitempty"`
 	RollbackSourceRefName     string    `json:"rollback_source_ref_name,omitempty"`
 	RollbackSourceResolvedOID string    `json:"rollback_source_resolved_oid,omitempty"`
+	RollbackPermissions       []string  `json:"rollback_permissions,omitempty"`
 	DesiredLifecycle          string    `json:"desired_lifecycle"`
 	CurrentLifecycle          string    `json:"current_lifecycle"`
 	LastOperationID           string    `json:"last_operation_id"`
@@ -288,6 +289,7 @@ type PluginOperationScopeDetail struct {
 }
 
 type PluginPublishedEntry struct {
+	InstanceID  string `json:"instance_id"`
 	RuleID      int    `json:"rule_id"`
 	AgentID     string `json:"agent_id"`
 	FrontendURL string `json:"frontend_url"`
@@ -433,7 +435,10 @@ func (s *PluginService) List(ctx context.Context) ([]PluginSummary, error) {
 		if !found {
 			return nil, errors.New("active plugin package is unavailable")
 		}
-		summary := pluginSummary(row)
+		summary, err := s.pluginSummaryProjection(ctx, row)
+		if err != nil {
+			return nil, err
+		}
 		summary.ActiveVersion = packageRow.Version
 		result = append(result, summary)
 	}
@@ -502,7 +507,10 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	summary := pluginSummary(installed)
+	summary, err := s.pluginSummaryProjection(ctx, installed)
+	if err != nil {
+		return PluginDetail{}, err
+	}
 	summary.ActiveVersion = packageRow.Version
 	return PluginDetail{Plugin: summary, Package: packageDetail, Faces: faces, TargetEligibility: targetEligibility, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses, PublishedEntries: publishedEntries}, nil
 }
@@ -649,7 +657,7 @@ func (s *PluginService) InstallMutation(ctx context.Context, request PluginInsta
 	if found {
 		row = updated
 	}
-	return pluginSummary(row), nil
+	return s.pluginSummaryProjection(ctx, row)
 }
 
 func (s *PluginService) EnableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
@@ -1240,7 +1248,7 @@ func (s *PluginService) pluginSummaryAfterPendingReconcile(ctx context.Context, 
 	if found {
 		row = updated
 	}
-	return pluginSummary(row), nil
+	return s.pluginSummaryProjection(ctx, row)
 }
 
 type pluginLifecycleOperationContextKey struct{}
@@ -3366,7 +3374,7 @@ func (s *PluginService) pluginPublishedEntries(ctx context.Context, instances []
 			}
 			seen[key] = struct{}{}
 			entries = append(entries, PluginPublishedEntry{
-				RuleID: rule.ID, AgentID: rule.AgentID, FrontendURL: rule.FrontendURL,
+				InstanceID: instance.ID, RuleID: rule.ID, AgentID: rule.AgentID, FrontendURL: rule.FrontendURL,
 				Enabled: rule.Enabled, Accessible: pluginPublishedEntryAccessible(instance, rule),
 			})
 		}
@@ -4704,6 +4712,37 @@ func pluginSummary(row storage.InstalledPluginRow) PluginSummary {
 		PendingOperationID: row.PendingOperationID, PendingKind: row.PendingKind, PendingTargetDigest: row.PendingTargetDigest, PendingRevision: row.PendingRevision,
 		InstalledAt: row.InstalledAt, UpdatedAt: row.UpdatedAt,
 	}
+}
+
+func (s *PluginService) pluginSummaryProjection(ctx context.Context, row storage.InstalledPluginRow) (PluginSummary, error) {
+	summary := pluginSummary(row)
+	if strings.TrimSpace(row.RollbackPackageDigest) == "" {
+		return summary, nil
+	}
+	packageRow, found, err := s.storedPackage(ctx, row.RollbackPackageIdentity, row.RollbackPackageDigest)
+	if err != nil {
+		return PluginSummary{}, err
+	}
+	if !found {
+		return PluginSummary{}, errors.New("rollback plugin package is unavailable")
+	}
+	if err := s.validateStoredPackageIntegrity(ctx, packageRow); err != nil {
+		return PluginSummary{}, fmt.Errorf("validate rollback plugin package: %w", err)
+	}
+	permissions, err := pluginPackagePermissions(packageRow)
+	if err != nil {
+		return PluginSummary{}, err
+	}
+	summary.RollbackPermissions = permissions
+	return summary, nil
+}
+
+func pluginPackagePermissions(row storage.PluginPackageRow) ([]string, error) {
+	var manifest plugins.Manifest
+	if err := json.Unmarshal([]byte(row.ManifestJSON), &manifest); err != nil {
+		return nil, fmt.Errorf("decode plugin package permissions: %w", err)
+	}
+	return normalizedPermissions(manifest.Permissions), nil
 }
 
 func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storage.PluginInstanceRow) ([]PluginInstanceDetail, error) {
