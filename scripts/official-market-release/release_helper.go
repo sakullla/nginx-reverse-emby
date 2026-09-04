@@ -24,6 +24,12 @@ import (
 
 var oidPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+const (
+	maxPackageEntries       = 4096
+	maxPackageEntryBytes    = int64(128 << 20)
+	maxExpandedPackageBytes = int64(512 << 20)
+)
+
 type marketDocument struct {
 	SchemaVersion int             `yaml:"schema_version"`
 	Commit        string          `yaml:"commit"`
@@ -345,7 +351,7 @@ func validOID(value string) bool {
 	return oidPattern.MatchString(value) && value != strings.Repeat("0", 40)
 }
 
-func extractPackage(archive, destination string) error {
+func extractPackage(archive, destination string) (resultErr error) {
 	if strings.TrimSpace(archive) == "" || strings.TrimSpace(destination) == "" {
 		return errors.New("archive and destination are required")
 	}
@@ -360,6 +366,18 @@ func extractPackage(archive, destination string) error {
 	if len(entries) != 0 {
 		return errors.New("package extraction destination must be empty")
 	}
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		if err := os.RemoveAll(root); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("clean partial extraction: %w", err))
+			return
+		}
+		if err := os.Mkdir(root, 0o755); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore empty extraction root: %w", err))
+		}
+	}()
 	file, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -372,6 +390,8 @@ func extractPackage(archive, destination string) error {
 	defer gzipReader.Close()
 	tarReader := tar.NewReader(gzipReader)
 	seen := map[string]struct{}{}
+	entryCount := 0
+	expandedBytes := int64(0)
 	for {
 		header, err := tarReader.Next()
 		if errors.Is(err, io.EOF) {
@@ -380,6 +400,20 @@ func extractPackage(archive, destination string) error {
 		if err != nil {
 			return err
 		}
+		entryCount++
+		if entryCount > maxPackageEntries {
+			return fmt.Errorf("archive entry count exceeds %d", maxPackageEntries)
+		}
+		if header.Size < 0 {
+			return fmt.Errorf("archive entry %q has negative size", header.Name)
+		}
+		if header.Size > maxPackageEntryBytes {
+			return fmt.Errorf("archive entry %q exceeds %d bytes", header.Name, maxPackageEntryBytes)
+		}
+		if header.Size > maxExpandedPackageBytes-expandedBytes {
+			return fmt.Errorf("archive expanded size exceeds %d bytes", maxExpandedPackageBytes)
+		}
+		expandedBytes += header.Size
 		name := strings.TrimSuffix(header.Name, "/")
 		if name == "" || strings.Contains(name, `\`) || path.IsAbs(name) || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
 			return fmt.Errorf("archive contains unsafe path %q", header.Name)
@@ -410,7 +444,7 @@ func extractPackage(archive, destination string) error {
 			if err != nil {
 				return err
 			}
-			written, copyErr := io.Copy(output, tarReader)
+			written, copyErr := io.CopyN(output, tarReader, header.Size)
 			closeErr := output.Close()
 			if copyErr != nil {
 				return copyErr

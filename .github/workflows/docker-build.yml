@@ -81,6 +81,8 @@ jobs:
         run: |
           sh scripts/join-agent.test.sh
           sh scripts/deploy-compose.test.sh
+          sh scripts/acme-integration.test.sh
+          sh scripts/test-internal-pki-e2e.sh
 
       - name: Run official market release gate
         shell: pwsh
