@@ -169,7 +169,11 @@ func TestInternalPKIEmergencyRotateReenrollsRemoteListenerAndRestoresRelay(t *te
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
 	h := newTestHarness(t, ctx)
-	control := h.startControl(filepath.Join(h.tempRoot, "emergency-control"))
+	control := h.startControlWithOverrides(filepath.Join(h.tempRoot, "emergency-control"), map[string]string{
+		// Keep the multi-stage re-enrollment and relay-enable barrier inside the
+		// per-condition timeout even when the integration package runs in parallel.
+		integrationAuthorityHeartbeatEnv: "250ms",
+	})
 	before := h.waitForPKI(control)
 	disabledPort := reserveLoopbackPort(t)
 	disabledName := "emergency-disabled-local-listener"
