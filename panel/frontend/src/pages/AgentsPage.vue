@@ -302,9 +302,11 @@ const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 
 const monitorStreamEnabled = ref(false)
-const { data: monitorAgents } = useAgentMonitorStream({ enabled: monitorStreamEnabled })
+const { data: monitorAgents, active: monitorStreamActive } = useAgentMonitorStream({ enabled: monitorStreamEnabled })
 
-const agents = computed(() => mergeAgentsWithMonitor(data.value, monitorAgents.value))
+const agents = computed(() => mergeAgentsWithMonitor(data.value, monitorAgents.value, {
+  active: monitorStreamActive.value
+}))
 
 // Filter/sort state
 const {

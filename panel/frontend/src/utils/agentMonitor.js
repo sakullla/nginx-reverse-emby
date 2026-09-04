@@ -98,9 +98,13 @@ export function mergeMonitorAgents(previous = [], update) {
   return agents
 }
 
-export function mergeAgentsWithMonitor(agents, monitorAgents) {
-  const monitorById = new Map((monitorAgents || []).map(agent => [agent.id, agent]))
+export function mergeAgentsWithMonitor(agents, monitorAgents, options = {}) {
   const baseAgents = agents || []
+  // Cached monitor snapshots are useful across reconnects, but they are not
+  // authoritative once the stream is inactive. In that state the durable
+  // /agents result must win without an inline or cached monitor overlay.
+  if (options.active === false) return baseAgents
+  const monitorById = new Map((monitorAgents || []).map(agent => [agent.id, agent]))
   let changed = false
   const merged = baseAgents.map((agent) => {
     const monitor = monitorById.get(agent.id) || agent.monitor

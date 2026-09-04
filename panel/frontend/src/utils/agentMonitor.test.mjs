@@ -88,6 +88,32 @@ describe('agent monitor utils', () => {
   })
 
   describe('mergeAgentsWithMonitor', () => {
+    it('keeps a durable completed package when only an inactive stale monitor snapshot is cached', () => {
+      const running = 'b'.repeat(64)
+      const durableAgents = [{
+        id: 'edge-1',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: running,
+        desired_package_sha256: running,
+        package_sync_status: 'aligned'
+      }]
+      const staleMonitor = [{
+        id: 'edge-1',
+        runtime_package_version: '1.0.0',
+        runtime_package_sha256: 'a'.repeat(64),
+        desired_package_sha256: running,
+        package_sync_status: 'pending'
+      }]
+
+      const merged = mergeAgentsWithMonitor(durableAgents, staleMonitor, { active: false })
+      expect(merged).toBe(durableAgents)
+      expect(merged[0]).toMatchObject({
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: running,
+        package_sync_status: 'aligned'
+      })
+    })
+
     it('returns the same array when no monitor data applies', () => {
       const agents = [{ id: 'a' }, { id: 'b' }]
       expect(mergeAgentsWithMonitor(agents, [])).toBe(agents)
