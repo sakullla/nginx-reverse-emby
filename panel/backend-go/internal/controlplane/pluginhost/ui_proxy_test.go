@@ -157,6 +157,37 @@ func TestPluginHostStopUnregistersDefaultUIRoute(t *testing.T) {
 	}
 }
 
+func TestPluginHostStopNonUIPluginKeepsAnotherExplicitRoute(t *testing.T) {
+	const routeID = "shared-route"
+	t.Cleanup(func() { Unregister(routeID) })
+	Register(Declaration{
+		PluginID: "ui-owner", UIRouteID: routeID, ExtensionPoints: []string{extensionUIRoute},
+	}, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "owner")
+	}))
+	if _, _, ok := Lookup(routeID); !ok {
+		t.Fatal("explicit owner route was not published")
+	}
+
+	nonUI := &Instance{
+		ID: routeID, Generation: "generation-1", State: "active",
+		candidate: Candidate{Identity: Identity{Generation: "generation-1"}, Declaration: Declaration{PluginID: routeID}},
+	}
+	host := &Host{active: map[string]*Instance{nonUI.ID: nonUI}}
+	if err := host.Stop(t.Context(), nonUI.ID); err != nil {
+		t.Fatalf("stop non-UI plugin host: %v", err)
+	}
+	handler, _, ok := Lookup(routeID)
+	if !ok {
+		t.Fatal("stopping non-UI plugin removed another plugin's explicit route")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://panel/", nil))
+	if response.Body.String() != "owner" {
+		t.Fatalf("explicit route owner response = %q", response.Body.String())
+	}
+}
+
 func TestPluginUIProxyDoesNotCrossPanelSessionBoundary(t *testing.T) {
 	t.Parallel()
 	received := make(chan http.Header, 1)

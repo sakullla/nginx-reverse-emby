@@ -137,7 +137,7 @@ func (h *Host) publishPluginUI(instance *Instance) {
 }
 
 func (h *Host) unpublishPluginUI(instance *Instance) {
-	if instance == nil {
+	if h == nil || instance == nil || !hasExtension(instance.candidate.Declaration.ExtensionPoints, extensionUIRoute) {
 		return
 	}
 	routeID := declarationUIRouteID(instance.candidate.Declaration)
