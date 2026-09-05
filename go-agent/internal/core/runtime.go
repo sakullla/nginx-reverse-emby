@@ -306,7 +306,7 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.CertificatePolicies) == 0 &&
 		len(s.PluginGenerations) == 0 &&
 		len(s.PluginDependencies) == 0 &&
-		len(s.PluginPolicies) == 0
+		len(s.PluginPolicies) == 0 && len(s.Datasets) == 0
 }
 
 func snapshotEqual(left, right model.Snapshot) bool {
@@ -314,6 +314,7 @@ func snapshotEqual(left, right model.Snapshot) bool {
 }
 
 func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
+	snapshot.Datasets = model.CloneDatasetSnapshots(snapshot.Datasets)
 	cloned := snapshot
 	cloned.AgentConfig.TrafficStatsEnabled = clonePtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = clonePtr(snapshot.VersionPackage)

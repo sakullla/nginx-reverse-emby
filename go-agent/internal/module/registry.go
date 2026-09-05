@@ -916,6 +916,7 @@ func hashGenerationProviders(generationContext GenerationContext, providers prov
 
 func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
+	cloned.Datasets = model.CloneDatasetSnapshots(snapshot.Datasets)
 	cloned.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = cloneGenerationPtr(snapshot.VersionPackage)
 	cloned.DDNSConfig = cloneGenerationPtr(snapshot.DDNSConfig)

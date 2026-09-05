@@ -84,6 +84,7 @@ type PluginCapabilityManager struct {
 	operationLocks     map[string]*pluginCapabilityOperationLock
 	secretVault        *secrets.Vault
 	trafficSummary     PluginCapabilityTrafficSummaryProvider
+	datasets           *DatasetService
 }
 
 type pluginCapabilityOperationLock struct {

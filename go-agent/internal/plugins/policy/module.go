@@ -39,8 +39,9 @@ type GenerationRuntime interface {
 }
 
 type Module struct {
-	factory  GenerationFactory
-	observer observability.Observer
+	factory     GenerationFactory
+	observer    observability.Observer
+	datasetPool datasetIndexPool
 
 	mu         sync.Mutex
 	standalone *transaction
@@ -63,11 +64,14 @@ func NewValidationModule(observer observability.Observer) *Module {
 func (*Module) Name() string { return "plugin-policy" }
 
 func (m *Module) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{Name: m.Name(), Provides: []module.ProviderRef{ProviderEvaluator}}
+	return module.ModuleDescriptor{Name: m.Name(), Provides: []module.ProviderRef{ProviderEvaluator, ProviderDatasets}}
 }
 
 func (*Module) RegisterProviders(reg module.ProviderRegistry) error {
-	return reg.Provide(ProviderEvaluator, Evaluator(disabledEvaluator{}))
+	if err := reg.Provide(ProviderEvaluator, Evaluator(disabledEvaluator{})); err != nil {
+		return err
+	}
+	return reg.Provide(ProviderDatasets, &DatasetGeneration{closed: true})
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -92,6 +96,16 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	if err != nil {
 		return nil, err
 	}
+	datasetGeneration, err := prepareDatasetGeneration(ctx, generationContext.ID(), request.Next, &m.datasetPool)
+	if err != nil {
+		return nil, fmt.Errorf("prepare dataset generation: %w", err)
+	}
+	datasetOwned := false
+	defer func() {
+		if !datasetOwned {
+			datasetGeneration.Close()
+		}
+	}()
 	if len(required) > 0 && m.factory == nil {
 		return nil, errors.New("policy execution runtime is unavailable")
 	}
@@ -129,7 +143,8 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 		}
 		return nil, err
 	}
-	return &transaction{module: m, runtime: runtime, evaluator: evaluator}, nil
+	datasetOwned = true
+	return &transaction{module: m, runtime: runtime, evaluator: evaluator, datasets: datasetGeneration}, nil
 }
 
 func (m *Module) Apply(ctx context.Context, request module.ApplyRequest) error {
@@ -166,6 +181,7 @@ type transaction struct {
 	module    *Module
 	runtime   GenerationRuntime
 	evaluator *GenerationEvaluator
+	datasets  *DatasetGeneration
 	previous  *transaction
 
 	mu        sync.Mutex
@@ -177,7 +193,10 @@ func (transaction *transaction) RegisterProviders(reg module.ProviderRegistry) e
 	if transaction == nil || transaction.evaluator == nil {
 		return errors.New("policy evaluator is unavailable")
 	}
-	return reg.Provide(ProviderEvaluator, Evaluator(transaction.evaluator))
+	if err := reg.Provide(ProviderEvaluator, Evaluator(transaction.evaluator)); err != nil {
+		return err
+	}
+	return reg.Provide(ProviderDatasets, transaction.datasets)
 }
 
 func (transaction *transaction) Ready(ctx context.Context) error {
@@ -255,7 +274,9 @@ func (transaction *transaction) Destroy(ctx context.Context) error {
 	runtime := transaction.runtime
 	transaction.runtime = nil
 	transaction.evaluator = nil
+	datasets := transaction.datasets
 	transaction.mu.Unlock()
+	datasets.Close()
 	if runtime != nil {
 		return runtime.Close(ctx)
 	}

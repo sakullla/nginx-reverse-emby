@@ -57,6 +57,7 @@ type DDNSFamily struct {
 }
 
 type Snapshot struct {
+	Datasets            []DatasetSnapshot          `json:"datasets"`
 	DesiredVersion      string                     `json:"desired_version"`
 	Revision            int64                      `json:"desired_revision"`
 	VersionPackage      *VersionPackage            `json:"version_package,omitempty"`

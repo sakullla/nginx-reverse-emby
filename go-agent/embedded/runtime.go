@@ -17,6 +17,9 @@ import (
 )
 
 type Snapshot = model.Snapshot
+type DatasetSnapshot = model.DatasetSnapshot
+type DatasetArtifact = model.DatasetArtifact
+type DatasetInstanceBinding = model.DatasetInstanceBinding
 type PolicyRef = model.PolicyRef
 type PluginPolicy = model.PluginPolicy
 type PluginGeneration = model.PluginGeneration

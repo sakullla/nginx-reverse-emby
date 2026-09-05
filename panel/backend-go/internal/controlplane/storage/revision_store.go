@@ -182,6 +182,12 @@ func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, dataRoo
 		refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionRuntimeArtifactRole(artifactID), CreatedAt: now})
 	}
 	artifacts := make([]GenerationArtifactRow, 0, len(blobs))
+	datasetArtifacts, datasetRefs, err := buildAgentRevisionDatasetArtifacts(ctx, db, agentID, revision, snapshot, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	artifacts = append(artifacts, datasetArtifacts...)
+	refs = append(refs, datasetRefs...)
 	for _, blob := range blobs {
 		artifacts = append(artifacts, blob)
 	}
@@ -1435,6 +1441,12 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		} else {
 			artifacts = artifacts.Where("1 = 1")
 		}
+		if tx.Migrator().HasTable(&DatasetVersionRow{}) {
+			artifacts = artifacts.Where("id NOT IN (SELECT artifact_id FROM dataset_versions)")
+		}
+		if tx.Migrator().HasTable(&DatasetUploadRow{}) {
+			artifacts = artifacts.Where("id NOT IN (SELECT artifact_id FROM dataset_uploads)")
+		}
 		deletedArtifacts := artifacts.Delete(&GenerationArtifactRow{})
 		if deletedArtifacts.Error != nil {
 			return deletedArtifacts.Error
@@ -1454,7 +1466,7 @@ func validateGenerationArtifact(row GenerationArtifactRow) error {
 		return fmt.Errorf("generation artifact identity is required")
 	}
 	if strings.TrimSpace(row.ExternalPath) != "" {
-		if row.Kind != revisionRuntimeArtifactKind || len(row.Payload) != 0 || row.SizeBytes <= 0 || !validSHA256(row.SHA256) {
+		if (row.Kind != revisionRuntimeArtifactKind && row.Kind != DatasetArtifactKind && row.Kind != "dataset-source-v1") || len(row.Payload) != 0 || row.SizeBytes <= 0 || !validSHA256(row.SHA256) {
 			return fmt.Errorf("generation artifact %q external identity is invalid", row.ID)
 		}
 		expected, err := generationArtifactRelativePath(row.SHA256)

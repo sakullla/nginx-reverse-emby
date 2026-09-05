@@ -212,6 +212,7 @@ type Dependencies struct {
 	MarketplaceService           MarketplaceAPI
 	PluginService                PluginAPI
 	PluginArtifactService        AgentPluginArtifactService
+	DatasetService               *service.DatasetService
 	PluginSecretService          AgentPluginSecretService
 	PluginCapabilityService      PluginCapabilityAPI
 	PluginRuntimeHost            *service.PluginRuntimeHost
@@ -402,6 +403,14 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agent-revisions/{revision}/start", http.HandlerFunc(resolved.handleRemoteRevisionStart))
 		mux.Handle(prefix+"/agent-revisions/{revision}/report", http.HandlerFunc(resolved.handleRemoteRevisionReport))
 		mux.Handle(prefix+"/agent-plugin-artifacts/{artifactID}", http.HandlerFunc(resolved.handleAgentPluginArtifact))
+		mux.Handle(prefix+"/agent-dataset-artifacts/{artifactID}", http.HandlerFunc(resolved.handleAgentDatasetArtifact))
+		mux.Handle(prefix+"/datasets", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasets)))
+		mux.Handle(prefix+"/datasets/control", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetControl)))
+		mux.Handle(prefix+"/datasets/{sourceID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetSource)))
+		mux.Handle(prefix+"/datasets/{sourceID}/catalog", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetCatalog)))
+		mux.Handle(prefix+"/datasets/{sourceID}/status", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetStatus)))
+		mux.Handle(prefix+"/datasets/{sourceID}/bindings", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetBinding)))
+		mux.Handle(prefix+"/datasets/{sourceID}/uploads", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetUpload)))
 		mux.Handle(prefix+"/agent-plugin-secrets/redeem", http.HandlerFunc(resolved.handleAgentPluginSecretRedemption))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
 		mux.Handle(prefix+"/agents/task-stream", http.HandlerFunc(resolved.handleAgentTaskStream))
@@ -633,6 +642,10 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.SystemService == nil {
 		d.SystemService = service.NewSystemService(d.Config)
 	}
+	if d.DatasetService == nil {
+		d.DatasetService = service.NewDatasetService(d.Config, store)
+		d.cleanup = joinCleanup(d.cleanup, d.DatasetService.Close)
+	}
 	if d.AgentService == nil {
 		d.AgentService = service.NewAgentService(d.Config, store)
 	}
@@ -749,6 +762,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			manager.SetChannelListenerProjector(pki.PrepareRelayListeners)
 		}
 		manager.SetTrafficSummaryProvider(d.TrafficService)
+		manager.SetDatasetService(d.DatasetService)
 		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
 		d.PluginRuntimeHost.SetHostResourceDispatcher(manager)
 		if d.SecretVault != nil {

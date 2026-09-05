@@ -233,6 +233,7 @@ type HeartbeatReply struct {
 	PluginGenerations    []storage.PluginGeneration         `json:"plugin_generations"`
 	PluginDependencies   []storage.PluginDependencyEdge     `json:"plugin_dependencies"`
 	PluginPolicies       []storage.PluginPolicy             `json:"plugin_policies"`
+	Datasets             []storage.DatasetSnapshot          `json:"datasets"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
@@ -1516,6 +1517,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		PluginGenerations:    snapshot.PluginGenerations,
 		PluginDependencies:   snapshot.PluginDependencies,
 		PluginPolicies:       snapshot.PluginPolicies,
+		Datasets:             snapshot.Datasets,
 		RelayListeners:       wireRelayListeners,
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
@@ -1609,7 +1611,7 @@ func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID stri
 	}
 	issuer, ok := s.store.(agentHeartbeatRevisionIssuer)
 	if !ok {
-		if len(snapshot.PluginPolicies) > 0 || len(snapshot.PluginGenerations) > 0 || len(snapshot.PluginDependencies) > 0 || !foundRevision {
+		if len(snapshot.PluginPolicies) > 0 || len(snapshot.PluginGenerations) > 0 || len(snapshot.PluginDependencies) > 0 || len(snapshot.Datasets) > 0 || !foundRevision {
 			return "", storage.Snapshot{}, errors.New("heartbeat snapshot has no durable revision issuer")
 		}
 		return strings.ToLower(digest), revisionSnapshot, nil

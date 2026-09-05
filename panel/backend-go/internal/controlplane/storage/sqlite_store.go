@@ -483,6 +483,10 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	datasetSnapshots, err := s.loadAgentDatasetSnapshots(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	pluginGenerations, err := s.loadAgentPluginGenerations(ctx, resolvedAgentID, input.Platform)
 	if err != nil {
 		return Snapshot{}, err
@@ -498,6 +502,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	for index := range pluginGenerations {
 		pluginGenerations[index].Revision = desiredRevision
 	}
+	datasetSnapshots = activeDatasetSnapshots(datasetSnapshots, pluginPolicies, pluginGenerations)
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
@@ -514,6 +519,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		PluginGenerations:   pluginGenerations,
 		PluginDependencies:  pluginDependencies,
 		PluginPolicies:      pluginPolicies,
+		Datasets:            datasetSnapshots,
 		PKISecurity:         pkiSecurity,
 	}, nil
 }

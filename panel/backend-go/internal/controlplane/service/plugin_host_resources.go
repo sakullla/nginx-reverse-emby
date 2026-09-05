@@ -111,6 +111,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostInstanceConfig(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeEventList:
 		payload, err = manager.pluginHostEventList(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeDatasetControl, pluginsdk.HostRuntimeDatasetCatalog, pluginsdk.HostRuntimeDatasetStatus:
+		payload, err = manager.pluginHostDataset(ctx, candidate, call)
 	default:
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	}
@@ -162,6 +164,8 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionStorageWrite
 	case pluginsdk.HostRuntimeEventList:
 		return "event.emit"
+	case pluginsdk.HostRuntimeDatasetControl, pluginsdk.HostRuntimeDatasetCatalog, pluginsdk.HostRuntimeDatasetStatus:
+		return string(pluginsdk.CapabilityDatasetManage)
 	default:
 		return ""
 	}
@@ -234,6 +238,9 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
+	if call.Operation == pluginsdk.HostRuntimeDatasetControl {
+		return true
+	}
 	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule || call.Operation == pluginsdk.HostRuntimeInstanceConfig {
 		return true
 	}
