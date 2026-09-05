@@ -77,7 +77,7 @@ func (owner *Owner) Binding() sdk.ManagedBinding {
 func (owner *Owner) Context() context.Context { return owner.ctx }
 func (owner *Owner) Activate() {
 	owner.mu.Lock()
-	if owner.closed {
+	if owner.closed || owner.retired {
 		owner.mu.Unlock()
 		return
 	}
@@ -87,7 +87,11 @@ func (owner *Owner) Activate() {
 	for _, handle := range handles {
 		if handle.handle.Kind == "listener" && handle.listener != nil {
 			handle.listener.mu.Lock()
-			handle.listener.active = handle
+			owner.mu.Lock()
+			if owner.active && !owner.retired && !owner.closed && !handle.closed.Load() {
+				handle.listener.active = handle
+			}
+			owner.mu.Unlock()
 			handle.listener.mu.Unlock()
 		}
 	}

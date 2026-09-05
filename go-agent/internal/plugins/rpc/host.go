@@ -139,6 +139,8 @@ type hostAttempt struct {
 }
 
 type HostedInstance struct {
+	retired         bool
+	restartCancel   context.CancelFunc
 	owner           *Host
 	mu              sync.RWMutex
 	candidate       HostCandidate
@@ -167,28 +169,29 @@ type HostedInstance struct {
 }
 
 type Host struct {
-	mu              sync.RWMutex
-	ctx             context.Context
-	cancel          context.CancelFunc
-	closed          bool
-	activationWG    sync.WaitGroup
-	installer       pluginprocess.Installer
-	install         func(context.Context, string, pluginprocess.Artifact) (string, error)
-	supervisor      *pluginprocess.Supervisor
-	dial            DialFunc
-	provision       func(string, DialConfig) (attemptSecurity, error)
-	redeemer        SecretRedeemer
-	active          map[string]*HostedInstance
-	pending         map[*HostedInstance]struct{}
-	locks           sync.Map
-	afterStartOnce  func()
-	dockerProxyRoot string
-	dockerRunner    dockerproxy.Runner
-	managed         *managed.Manager
-	networkSessions NetworkSessionRegistrar
-	instances       map[*HostedInstance]struct{}
-	revoked         map[string]model.PluginGenerationRevokeRequest
-	revocationPath  string
+	beforeRestartActivation func()
+	mu                      sync.RWMutex
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	closed                  bool
+	activationWG            sync.WaitGroup
+	installer               pluginprocess.Installer
+	install                 func(context.Context, string, pluginprocess.Artifact) (string, error)
+	supervisor              *pluginprocess.Supervisor
+	dial                    DialFunc
+	provision               func(string, DialConfig) (attemptSecurity, error)
+	redeemer                SecretRedeemer
+	active                  map[string]*HostedInstance
+	pending                 map[*HostedInstance]struct{}
+	locks                   sync.Map
+	afterStartOnce          func()
+	dockerProxyRoot         string
+	dockerRunner            dockerproxy.Runner
+	managed                 *managed.Manager
+	networkSessions         NetworkSessionRegistrar
+	instances               map[*HostedInstance]struct{}
+	revoked                 map[string]model.PluginGenerationRevokeRequest
+	revocationPath          string
 }
 
 type PreparedHostGeneration struct {
@@ -391,9 +394,16 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	instance.runStarted = true
 	instance.mu.Unlock()
 	go instance.run(runCtx)
-	if attempt.network != nil {
-		attempt.network.Activate()
+	h.mu.Lock()
+	if h.active[candidate.InstanceID] == instance {
+		instance.mu.RLock()
+		retired := instance.retired
+		instance.mu.RUnlock()
+		if !retired && attempt.network != nil {
+			attempt.network.Activate()
+		}
 	}
+	h.mu.Unlock()
 	return instance, nil
 }
 
@@ -612,9 +622,13 @@ func (prepared *PreparedHostGeneration) Publish() {
 		if next[id] == instance {
 			continue
 		}
-		instance.mu.RLock()
+		instance.mu.Lock()
+		instance.retired = true
+		if instance.restartCancel != nil {
+			instance.restartCancel()
+		}
 		attempt := instance.attempt
-		instance.mu.RUnlock()
+		instance.mu.Unlock()
 		if attempt != nil && attempt.network != nil {
 			attempt.network.Retire()
 		}
@@ -1433,24 +1447,21 @@ func (i *HostedInstance) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			i.mu.Lock()
-			if i.status.State == "stopping" || i.status.State == "stopped" {
-				i.mu.Unlock()
+			restartCtx, finishRestart, allowed := i.beginRestart(ctx)
+			if !allowed {
 				return
 			}
-			i.status.State = "starting"
-			i.mu.Unlock()
-
 			restartHost := i.owner
 			if restartHost == nil {
 				restartHost = &Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce, dockerProxyRoot: i.dockerProxyRoot, dockerRunner: i.dockerRunner}
 			}
-			replacement, err := restartHost.startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			replacement, err := restartHost.startAttempt(restartCtx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()
 			})
 			if err != nil {
+				finishRestart()
 				if replacement != nil {
 					err = errors.Join(err, i.stopAttemptWithTimeout(replacement, true))
 					if attemptTerminal(replacement) {
@@ -1473,30 +1484,69 @@ func (i *HostedInstance) run(ctx context.Context) {
 				failure = err
 				continue
 			}
-			status := replacement.handle.Status()
-			i.mu.Lock()
-			if i.status.State == "stopping" || i.status.State == "stopped" {
-				i.mu.Unlock()
+			if restartHost.beforeRestartActivation != nil {
+				restartHost.beforeRestartActivation()
+			}
+			if !i.publishRestart(replacement) {
+				finishRestart()
 				_ = i.stopAttempt(context.Background(), replacement, true)
 				return
 			}
-			i.attempt = replacement
-			i.status.State = "healthy"
-			i.status.LastError = ""
-			i.status.PID = status.PID
-			i.status.SandboxProvider = status.Sandbox.Provider
-			i.mu.Unlock()
-			if replacement.network != nil {
-				replacement.network.Activate()
-			}
+			finishRestart()
 			break
 		}
 	}
 }
 
+// beginRestart serializes restart admission with generation publication. Its
+// cancellation belongs only to the replacement attempt, never to draining flows.
+func (i *HostedInstance) beginRestart(ctx context.Context) (context.Context, func(), bool) {
+	if i.owner != nil {
+		i.owner.mu.RLock()
+		defer i.owner.mu.RUnlock()
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.retired || i.status.State == "stopping" || i.status.State == "stopped" || (i.owner != nil && (i.owner.closed || i.owner.active[i.candidate.InstanceID] != i)) {
+		return nil, nil, false
+	}
+	restartCtx, cancel := context.WithCancel(ctx)
+	i.restartCancel = cancel
+	i.status.State = "starting"
+	return restartCtx, func() { cancel(); i.mu.Lock(); i.restartCancel = nil; i.mu.Unlock() }, true
+}
+
+// publishRestart holds the same Host lock as generation publication until both
+// process status and listener ownership have committed. An already completed
+// restart cannot reclaim an entry after its generation has been replaced.
+func (i *HostedInstance) publishRestart(replacement *hostAttempt) bool {
+	if i.owner != nil {
+		i.owner.mu.Lock()
+		defer i.owner.mu.Unlock()
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.retired || i.status.State == "stopping" || i.status.State == "stopped" || (i.owner != nil && (i.owner.closed || i.owner.active[i.candidate.InstanceID] != i)) {
+		return false
+	}
+	status := replacement.handle.Status()
+	i.attempt = replacement
+	i.status.State = "healthy"
+	i.status.LastError = ""
+	i.status.PID = status.PID
+	i.status.SandboxProvider = status.Sandbox.Provider
+	if replacement.network != nil {
+		replacement.network.Activate()
+	}
+	return true
+}
+
 func (i *HostedInstance) recordFailure(now time.Time, err error) (time.Duration, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.retired {
+		return 0, false
+	}
 	cutoff := now.Add(-i.candidate.Process.RestartWindow)
 	kept := i.exits[:0]
 	for _, exit := range i.exits {

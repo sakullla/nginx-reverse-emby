@@ -78,9 +78,19 @@ func TestManagedTCPAdmissionHalfCloseAndGeneration(t *testing.T) {
 		t.Fatal(data)
 	}
 	next := testOwner(t, m, "instance", "generation-b", false)
-	call(t, next, request)
+	nextListener := call(t, next, request)
 	next.Activate()
 	old.Retire()
+	old.Activate()
+	nextPeer, err := net.Dial("tcp", endpointString(address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nextPeer.Close()
+	acceptedNext := call(t, next, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkAccept, Handle: nextListener.Handle, WaitMS: 1000})
+	if acceptedNext.Handle.Binding.Generation != next.Binding().Generation {
+		t.Fatal("retired owner regained listener")
+	}
 	call(t, old, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkWrite, Handle: flow.Handle, Data: []byte("reply"), WaitMS: 1000})
 	call(t, old, sdk.ManagedNetworkRequest{Action: sdk.ManagedNetworkHalfClose, Handle: flow.Handle, Direction: "write"})
 	reply, err := io.ReadAll(peer)
