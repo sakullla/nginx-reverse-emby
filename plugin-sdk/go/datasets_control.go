@@ -175,6 +175,10 @@ func (request DatasetStatusRequest) Validate() error {
 // failed node can retain its applied/last-good version while desired advances.
 // Generation describes Applied, never a merely desired candidate. There is no
 // synthesized global "all applied" flag or arbitrary failure text.
+// Preparing with an empty Desired means removal is pending: Applied, LastGood
+// and Generation still describe the complete, actually running old snapshot.
+// After removal is acknowledged, unavailable has no Applied or Generation;
+// LastGood may retain the historical successful version.
 type DatasetStatusResponse struct {
 	SourceID   string             `json:"source_id"`
 	NodeID     string             `json:"node_id"`
@@ -221,8 +225,8 @@ func (response DatasetStatusResponse) Validate() error {
 			return errors.New("dataset applied phase requires acknowledgement of desired version")
 		}
 	case DatasetNodePreparing:
-		if response.Desired == "" {
-			return errors.New("dataset preparing phase requires a desired version")
+		if response.Desired == "" && (response.Applied == "" || response.LastGood == "" || response.Generation == "") {
+			return errors.New("dataset preparing phase requires a desired version or a complete applied snapshot pending removal")
 		}
 	case DatasetNodeUnavailable:
 		if response.Applied != "" {

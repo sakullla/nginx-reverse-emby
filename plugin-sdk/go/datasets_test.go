@@ -540,3 +540,77 @@ func TestDatasetManagementClientRoundtrips(t *testing.T) {
 		t.Fatalf("dataset history = %+v, %v", response, err)
 	}
 }
+
+func TestDatasetStatusDeploymentAndRemovalContractRoundtrips(t *testing.T) {
+	current := datasetTestReference().VersionDigest
+	next := "sha256:" + strings.Repeat("2", 64)
+	for name, status := range map[string]DatasetStatusResponse{
+		"initial prepare":      {Desired: next, Phase: DatasetNodePreparing},
+		"prepare update":       {Desired: next, Applied: current, LastGood: current, Generation: "generation-1", Phase: DatasetNodePreparing},
+		"applied":              {Desired: current, Applied: current, LastGood: current, Generation: "generation-1", Phase: DatasetNodeApplied},
+		"pending removal":      {Applied: current, LastGood: current, Generation: "generation-1", Phase: DatasetNodePreparing},
+		"removal acknowledged": {LastGood: current, Phase: DatasetNodeUnavailable},
+		"initial unavailable":  {Phase: DatasetNodeUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status.SourceID, status.NodeID = "source-1", "node-1"
+			if err := status.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded DatasetStatusResponse
+			if err := json.Unmarshal(encoded, &decoded); err != nil || decoded.Validate() != nil || decoded != status {
+				t.Fatalf("dataset status JSON changed actual snapshot: %+v %v", decoded, err)
+			}
+			request := DatasetStatusRequest{SourceID: status.SourceID, NodeID: status.NodeID}
+			client := datasetTestRuntimeClient(t, func(call HostRuntimeCall) HostRuntimeResponse {
+				if call.Operation != HostRuntimeDatasetStatus {
+					t.Errorf("unexpected operation %s", call.Operation)
+				}
+				var received DatasetStatusRequest
+				if err := json.Unmarshal(call.Payload, &received); err != nil || received.Validate() != nil || received != request {
+					t.Error("invalid dataset status request at HostRuntime")
+				}
+				return datasetTestResponse(t, status)
+			})
+			actual, err := client.DatasetStatus(t.Context(), request)
+			if err != nil || actual != status {
+				t.Fatalf("HostRuntime status changed actual snapshot: %+v %v", actual, err)
+			}
+		})
+	}
+}
+
+func TestDatasetPendingRemovalRequiresCompleteConsistentAppliedState(t *testing.T) {
+	current := datasetTestReference().VersionDigest
+	valid := DatasetStatusResponse{SourceID: "source-1", NodeID: "node-1", Applied: current, LastGood: current, Generation: "generation-1", Phase: DatasetNodePreparing}
+	for name, mutate := range map[string]func(*DatasetStatusResponse){
+		"missing applied":                   func(s *DatasetStatusResponse) { s.Applied = "" },
+		"missing last-good":                 func(s *DatasetStatusResponse) { s.LastGood = "" },
+		"missing generation":                func(s *DatasetStatusResponse) { s.Generation = "" },
+		"history without applied snapshot":  func(s *DatasetStatusResponse) { s.Applied, s.Generation = "", "" },
+		"empty preparing state":             func(s *DatasetStatusResponse) { s.Applied, s.LastGood, s.Generation = "", "", "" },
+		"different last-good":               func(s *DatasetStatusResponse) { s.LastGood = "sha256:" + strings.Repeat("2", 64) },
+		"invalid digest":                    func(s *DatasetStatusResponse) { s.Applied = "latest" },
+		"invalid generation":                func(s *DatasetStatusResponse) { s.Generation = " generation-1" },
+		"failure on preparing":              func(s *DatasetStatusResponse) { s.Failure = DatasetFailureDownload },
+		"unavailable with applied snapshot": func(s *DatasetStatusResponse) { s.Phase = DatasetNodeUnavailable },
+		"applied without desired":           func(s *DatasetStatusResponse) { s.Phase = DatasetNodeApplied },
+		"unknown phase":                     func(s *DatasetStatusResponse) { s.Phase = "removed" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			status := valid
+			mutate(&status)
+			if err := status.Validate(); err == nil {
+				t.Fatalf("inconsistent removal status accepted: %+v", status)
+			}
+			client := datasetTestRuntimeClient(t, func(HostRuntimeCall) HostRuntimeResponse { return datasetTestResponse(t, status) })
+			if actual, err := client.DatasetStatus(t.Context(), DatasetStatusRequest{SourceID: valid.SourceID, NodeID: valid.NodeID}); err == nil || actual != (DatasetStatusResponse{}) {
+				t.Fatalf("public client accepted inconsistent removal state: %+v %v", actual, err)
+			}
+		})
+	}
+}
