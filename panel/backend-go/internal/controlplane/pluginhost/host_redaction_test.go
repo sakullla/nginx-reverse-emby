@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -204,5 +205,35 @@ func TestAttemptLogRegistrationConcurrentBoundedAndOwnsStaticCopy(t *testing.T) 
 	_ = writer.Close()
 	if strings.Contains(output.String(), "unknown-post-overflow-material") {
 		t.Fatal("overflow did not seal log output")
+	}
+}
+
+func TestSecretLifecycleErrorsDiscardCausesEvenAfterLogOwnerCloses(t *testing.T) {
+	cause := errors.New("bare-credential-from-guest")
+	plain := Candidate{}
+	if got := controlLifecycleError(plain, "prepare", cause); got != cause {
+		t.Fatal("non-secret useful diagnostic was discarded")
+	}
+	for _, candidate := range []Candidate{{Grants: []string{sdk.PermissionScopedSecretRead}}, {Grants: []string{sdk.PermissionScopedSecretWrite}}, {Grants: []string{"secret.use"}}, {secretBearing: true}} {
+		for _, phase := range []string{"handshake", "prepare", "activate", "stop", "cleanup"} {
+			got := controlLifecycleError(candidate, phase, errors.Join(errors.New("context"), cause))
+			if strings.Contains(got.Error(), cause.Error()) || errors.Is(got, cause) || errors.Unwrap(got) != nil || !strings.Contains(got.Error(), phase) {
+				t.Fatal("lifecycle boundary retained guest cause or lost stage")
+			}
+		}
+		writer := newRedactor(&bytes.Buffer{}, []string{cause.Error()})
+		_ = writer.Close()
+		candidate.logRedactor = writer
+		instance := &Instance{ID: "cleanup-instance", Generation: "cleanup-generation", candidate: candidate, State: "starting", securityCleanup: func() error { return cause }}
+		if err := instance.Stop(t.Context()); err == nil || strings.Contains(err.Error(), cause.Error()) || errors.Is(err, cause) {
+			t.Fatal("cleanup returned raw guest material")
+		}
+		if err := instance.CleanupError(); err == nil || strings.Contains(err.Error(), cause.Error()) {
+			t.Fatal("cleanup snapshot retained raw material")
+		}
+		_, message := instance.Status()
+		if strings.Contains(message, cause.Error()) {
+			t.Fatal("cleanup status persisted raw material")
+		}
 	}
 }
