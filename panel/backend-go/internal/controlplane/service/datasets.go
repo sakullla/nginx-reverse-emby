@@ -207,11 +207,29 @@ func (s *DatasetService) PutSource(ctx context.Context, authorization DatasetAut
 		next := time.Now().UTC()
 		row.NextRefreshAt = &next
 	}
-	return s.store.PutDatasetSource(ctx, row)
+	guard := storage.DatasetSourceWriteGuard{ResourceGroupID: authorization.ResourceGroupID, Administrator: authorization.Administrator, ExpectedAbsent: errors.Is(err, storage.ErrDatasetNotFound), ExpectedOwner: current.ResourceGroupID}
+	err = s.store.PutDatasetSource(ctx, row, guard)
+	if errors.Is(err, storage.ErrDatasetSourceDenied) {
+		return errPluginHostDenied
+	}
+	if errors.Is(err, storage.ErrDatasetSourceConflict) {
+		return fmt.Errorf("%w: dataset source changed concurrently", ErrConflict)
+	}
+	return err
 }
 
-func (s *DatasetService) Control(ctx context.Context, authorization DatasetAuthorization, request pluginsdk.DatasetControlRequest) (pluginsdk.DatasetControlResponse, error) {
-	response := pluginsdk.DatasetControlResponse{OperationID: lifecycleID("dataset"), SourceID: request.SourceID}
+func (s *DatasetService) Control(ctx context.Context, authorization DatasetAuthorization, request pluginsdk.DatasetControlRequest, operationIDs ...string) (pluginsdk.DatasetControlResponse, error) {
+	operationID := lifecycleID("dataset")
+	if len(operationIDs) > 1 {
+		return pluginsdk.DatasetControlResponse{}, ErrInvalidArgument
+	}
+	if len(operationIDs) == 1 {
+		if pluginsdk.ValidatePolicyIdentity(operationIDs[0]) != nil {
+			return pluginsdk.DatasetControlResponse{}, ErrInvalidArgument
+		}
+		operationID = operationIDs[0]
+	}
+	response := pluginsdk.DatasetControlResponse{OperationID: operationID, SourceID: request.SourceID}
 	if err := request.Validate(); err != nil {
 		return response, fmt.Errorf("%w: dataset control request is invalid", ErrInvalidArgument)
 	}

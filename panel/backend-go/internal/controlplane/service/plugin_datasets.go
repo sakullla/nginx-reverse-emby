@@ -57,7 +57,7 @@ func (manager *PluginCapabilityManager) pluginHostDataset(ctx context.Context, c
 		if decodePluginHostPayload(call.Payload, &request) != nil {
 			return nil, errPluginHostInvalid
 		}
-		return manager.datasets.Control(ctx, authority, request)
+		return manager.datasets.Control(ctx, authority, request, call.OperationID)
 	case pluginsdk.HostRuntimeDatasetCatalog:
 		var request pluginsdk.DatasetCatalogRequest
 		if decodePluginHostPayload(call.Payload, &request) != nil {

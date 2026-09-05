@@ -273,11 +273,10 @@ func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.Syn
 	if err != nil {
 		return goagentembedded.Snapshot{}, err
 	}
-	resolver, _ := a.source.store.(localDatasetArtifactResolver)
-	snapshot, err = materializeLocalDatasets(ctx, resolver, snapshot)
-	if err != nil {
-		return goagentembedded.Snapshot{}, err
-	}
+	// This heartbeat snapshot is not an approved candidate. The embedded bridge
+	// selects its explicit approved snapshot after telemetry synchronization.
+	// Materialization belongs to ApplyRevision/DiagnoseSnapshot, so an unrelated
+	// broken desired index cannot prevent applying a retained valid revision.
 	if len(request.PluginLogs) > 0 && request.PluginLogsAcknowledged != nil {
 		if err := request.PluginLogsAcknowledged(); err != nil {
 			return goagentembedded.Snapshot{}, err

@@ -18,6 +18,8 @@
 
 retrieval 默认使用固定 `revision` + `expected_digest`；管理员也可选择 `mode: "rolling-sha256"` 并设置 `checksum_url`，例如指向对应数据文件的 `.sha256sum`。滚动模式每次先读取有界校验文件（最多 4 KiB、15 秒），接受单个 SHA256 或文件名匹配的 sha256sum 行，再按取得的精确摘要下载数据。捕获的摘要形成 `checksum-sha256:…` 不可变修订，同时保存校验文件 URL、摘要和取得时间；它是完整性证据，不是独立发布者签名。私网和重定向授权同样适用于校验文件。
 
+下载在拨号前验证全部 DNS 结果，IPv4-mapped IPv6 先转换为 IPv4。公共源仅接受一般全局单播地址（IPv6 限 `2000::/3`），排除私网、回环、链路本地及特殊用途段。显式 `allow_private` 额外允许 RFC1918、ULA 和回环源，但不开放链路本地、`100.64.0.0/10`（包含 `100.100.100.200`）、文档/基准测试段、协议转换段、保留地址及 `168.63.129.16`、`fd00:ec2::254` 平台端点；具体拒绝前缀见 `service/dataset_fetch.go`。该规则同样约束数据、校验文件和重定向后的拨号。
+
 手动 refresh 和定时刷新均在完整校验后，通过既有 revision 事务激活源及全部消费者绑定；import 仍只准备候选，可另行 activate。`/bindings` 把实例、节点与最多 64 个分类选择器绑定到版本。本机和远端 Agent 都验证独立 `dataset-index-v1` 产物，索引随 generation 准备、切换和释放。`/status?node_id=…` 区分 desired、applied、last-good 和失败/离线；坏摘要、更新中的摘要/数据不一致、缺失分类或准备失败保留旧版本。最近三个成功版本及仍被配置、会话或 revision 引用的版本不能删除。来源、许可、覆盖与容量证据见 [规则数据集说明](docs/reference/rule-datasets.md)。
 
 SDK 的 `dataset.control/catalog/status` 已接入控制面 HostRuntime；Agent 提供绑定实例授权与 generation 的本地查询 provider。WASM 可信来源查询 import 和受管网络调用的具体 adapter 随相应执行入口接入，当前数据集能力不自行读取插件自报来源作为 admission 依据。

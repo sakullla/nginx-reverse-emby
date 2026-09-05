@@ -18,8 +18,29 @@ import (
 
 var ErrDatasetNotFound = errors.New("dataset resource not found")
 var ErrDatasetInUse = errors.New("dataset version is referenced or retained")
+var ErrDatasetSourceDenied = errors.New("dataset source owner is not authorized")
+var ErrDatasetSourceConflict = errors.New("dataset source creation or ownership changed concurrently")
 
-func (s *GormStore) PutDatasetSource(ctx context.Context, row DatasetSourceRow) error {
+// DatasetSourceWriteGuard is authenticated Host state, not source JSON. The
+// expected state is rechecked after locking the current row in the write txn.
+type DatasetSourceWriteGuard struct {
+	ResourceGroupID string
+	Administrator   bool
+	ExpectedAbsent  bool
+	ExpectedOwner   string
+}
+
+func (s *GormStore) PutDatasetSource(ctx context.Context, row DatasetSourceRow, guards ...DatasetSourceWriteGuard) error {
+	guard := DatasetSourceWriteGuard{ResourceGroupID: row.ResourceGroupID}
+	if len(guards) > 1 {
+		return ErrDatasetSourceDenied
+	}
+	if len(guards) == 1 {
+		guard = guards[0]
+	}
+	if guard.ResourceGroupID == "" || row.ResourceGroupID != guard.ResourceGroupID {
+		return ErrDatasetSourceDenied
+	}
 	var source pluginsdk.DatasetSource
 	if json.Unmarshal([]byte(row.SourceJSON), &source) != nil || source.ID != row.ID || source.Validate() != nil || !json.Valid([]byte(row.RetrievalJSON)) {
 		return errors.New("dataset source record is invalid")
@@ -28,6 +49,12 @@ func (s *GormStore) PutDatasetSource(ctx context.Context, row DatasetSourceRow) 
 		var current DatasetSourceRow
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", row.ID).First(&current).Error
 		if err == nil {
+			if !guard.Administrator && current.ResourceGroupID != guard.ResourceGroupID {
+				return ErrDatasetSourceDenied
+			}
+			if guard.ExpectedAbsent || (guard.ExpectedOwner != "" && guard.ExpectedOwner != current.ResourceGroupID) {
+				return ErrDatasetSourceConflict
+			}
 			var old pluginsdk.DatasetSource
 			if json.Unmarshal([]byte(current.SourceJSON), &old) != nil || old.Format != source.Format {
 				return errors.New("dataset source format is immutable")
@@ -36,6 +63,9 @@ func (s *GormStore) PutDatasetSource(ctx context.Context, row DatasetSourceRow) 
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
+		}
+		if guard.ExpectedOwner != "" {
+			return ErrDatasetSourceConflict
 		}
 		return tx.Create(&row).Error
 	})
@@ -503,7 +533,9 @@ func (s *GormStore) DatasetNodeStatus(ctx context.Context, sourceID, agentID str
 			}
 		}
 	}
-	if status.Desired != "" {
+	// An empty desired version with a still-applied index is a pending removal,
+	// not unavailable. Keep the actual applied/last-good identity until ack.
+	if status.Desired != "" || status.Applied != "" {
 		status.Phase = pluginsdk.DatasetNodePreparing
 	}
 	if status.Applied != "" && status.Applied == status.Desired {

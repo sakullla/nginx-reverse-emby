@@ -1150,6 +1150,11 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 		if err := tx.Where("agent_id = ?", agentID).Delete(&RelayListenerRow{}).Error; err != nil {
 			return err
 		}
+		// Desired references belong to the deleted node; historical revision
+		// artifact references retain their existing ledger lifecycle.
+		if err := tx.Where("agent_id = ?", agentID).Delete(&DatasetBindingRow{}).Error; err != nil {
+			return err
+		}
 		if err := retireCoordinatorAgentTx(tx, agentID, now); err != nil {
 			return err
 		}

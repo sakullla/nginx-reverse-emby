@@ -153,6 +153,31 @@ func TestDatasetRollingRefreshActivatesNewBoundVersionWithoutRepinning(t *testin
 	if got := checkMatching(true); got != firstVersion {
 		t.Fatal("initial binding differs")
 	}
+	// A deleted consumer must not remain in the source's future rollout targets.
+	if err := service.store.SaveAgent(t.Context(), storage.AgentRow{ID: "deleted-edge", AgentToken: "retired-token"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.store.PutDatasetBinding(t.Context(), storage.DatasetBindingRow{AgentID: "deleted-edge", InstanceID: "rolling-instance", SourceID: source.ID, VersionDigest: firstVersion, ClassificationsJSON: `[{"name":"cn-44","kind":"region"}]`, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	live, _ := service.store.LoadLocalSnapshot(t.Context(), "local")
+	retained := storage.Snapshot{Revision: 1, Datasets: live.Datasets}
+	retainedJSON, _ := json.Marshal(retained)
+	retainedSum := sha256.Sum256(retainedJSON)
+	retainedDigest := hex.EncodeToString(retainedSum[:])
+	if _, err := service.store.EnsureAgentHeartbeatRevision(t.Context(), "deleted-edge", retained, retainedJSON, retainedDigest, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.store.DeleteAgent(t.Context(), "deleted-edge"); err != nil {
+		t.Fatal(err)
+	}
+	remainingBindings, err := service.store.DatasetBindings(t.Context(), source.ID)
+	if err != nil || len(remainingBindings) != 1 || remainingBindings[0].AgentID != "local" {
+		t.Fatal("deleted Agent retained desired dataset references", err)
+	}
+	if _, err := service.store.ResolveAgentRevisionDatasetArtifact(t.Context(), "deleted-edge", 1, retainedDigest, retained.Datasets[0].Artifact.ID); err != nil {
+		t.Fatal("Agent deletion removed retained historical dataset artifact", err)
+	}
 	mu.Lock()
 	body = second
 	checksum = datasetServiceDigest(second)[7:] + " *regions.json\n"

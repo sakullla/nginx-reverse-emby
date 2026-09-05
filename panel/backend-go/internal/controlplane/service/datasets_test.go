@@ -252,3 +252,40 @@ func TestDatasetFetchRejectsUnapprovedRedirectAndChecksum(t *testing.T) {
 		t.Fatalf("approved bounded redirect failed: %q %v", value, err)
 	}
 }
+
+func TestDatasetSDKControlAcknowledgementAndDurableReplayKeepOperationID(t *testing.T) {
+	service, administrator := datasetServiceFixture(t)
+	manager := &PluginCapabilityManager{store: service.store, datasets: service, operationLocks: make(map[string]*pluginCapabilityOperationLock)}
+	caller := pluginhost.Candidate{InstanceID: "controller", ResourceGroupID: "default", Identity: pluginhost.Identity{PluginID: "dataset-controller", Generation: "generation-1", Scopes: []string{string(sdk.CapabilityDatasetManage)}}, Grants: []string{string(sdk.CapabilityDatasetManage)}}
+	client := datasetHostRuntimeClient(t, manager, &caller)
+	source := sdk.DatasetSource{ID: "sdk-controlled", Name: "Original name", Format: sdk.DatasetFormatCIDR}
+	request := sdk.DatasetControlRequest{Action: sdk.DatasetControlPutSource, SourceID: source.ID, Source: &source}
+	first, err := client.ControlDataset(t.Context(), "operation-1", request)
+	if err != nil || first.OperationID != "operation-1" {
+		t.Fatalf("successful SDK mutation acknowledgement: %+v %v", first, err)
+	}
+	updated := source
+	updated.Name = "Subsequent authorized edit"
+	if err := service.PutSource(t.Context(), administrator, updated, DatasetRetrieval{}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &PluginCapabilityManager{store: service.store, datasets: service, operationLocks: make(map[string]*pluginCapabilityOperationLock)}
+	secondClient := datasetHostRuntimeClient(t, restarted, &caller)
+	replayed, err := secondClient.ControlDataset(t.Context(), "operation-1", request)
+	if err != nil || replayed != first {
+		t.Fatalf("persisted SDK replay acknowledgement: %+v %v", replayed, err)
+	}
+	row, err := service.store.GetDatasetSource(t.Context(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored sdk.DatasetSource
+	_ = json.Unmarshal([]byte(row.SourceJSON), &stored)
+	if stored.Name != updated.Name {
+		t.Fatal("same-ID replay performed mutation again")
+	}
+	request.Source = &updated
+	if _, err := secondClient.ControlDataset(t.Context(), "operation-1", request); err == nil {
+		t.Fatal("operation ID accepted a different mutation payload")
+	}
+}

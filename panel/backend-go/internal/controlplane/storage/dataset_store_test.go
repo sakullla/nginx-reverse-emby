@@ -159,3 +159,97 @@ func TestDatasetVersionHistoryRetentionAndImmutableMetadata(t *testing.T) {
 		t.Fatal("restart lost immutable dataset", err)
 	}
 }
+
+func TestDatasetSourceWriteRechecksOwnerAfterConcurrentAbsenceReads(t *testing.T) {
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	makeRow := func(group, name string) DatasetSourceRow {
+		source, _ := json.Marshal(sdk.DatasetSource{ID: "shared-name", Name: name, Format: sdk.DatasetFormatCIDR})
+		return DatasetSourceRow{ID: "shared-name", ResourceGroupID: group, SourceJSON: string(source), RetrievalJSON: `{}`}
+	}
+	// Both callers observe absence; A commits while B is delayed between its
+	// read and write. The write transaction must re-evaluate B's authority.
+	for range 2 {
+		if _, err := store.GetDatasetSource(t.Context(), "shared-name"); !errors.Is(err, ErrDatasetNotFound) {
+			t.Fatal(err)
+		}
+	}
+	guardA := DatasetSourceWriteGuard{ResourceGroupID: "group-a", ExpectedAbsent: true}
+	guardB := DatasetSourceWriteGuard{ResourceGroupID: "group-b", ExpectedAbsent: true}
+	if err := store.PutDatasetSource(t.Context(), makeRow("group-a", "Owner A"), guardA); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutDatasetSource(t.Context(), makeRow("group-b", "Intruder B"), guardB); !errors.Is(err, ErrDatasetSourceDenied) {
+		t.Fatalf("cross-group race overwrite accepted: %v", err)
+	}
+	if err := store.PutDatasetSource(t.Context(), makeRow("group-a", "Stale creation"), guardA); !errors.Is(err, ErrDatasetSourceConflict) {
+		t.Fatalf("stale create intent accepted: %v", err)
+	}
+	if err := store.PutDatasetSource(t.Context(), makeRow("group-b", "Implicit B")); !errors.Is(err, ErrDatasetSourceDenied) {
+		t.Fatal("unguarded upsert bypassed owner check")
+	}
+	row, _ := store.GetDatasetSource(t.Context(), "shared-name")
+	if row.ResourceGroupID != "group-a" || !strings.Contains(row.SourceJSON, "Owner A") {
+		t.Fatal("failed race changed owner or configuration")
+	}
+	if err := store.PutDatasetSource(t.Context(), makeRow("group-a", "Owner A updated"), DatasetSourceWriteGuard{ResourceGroupID: "group-a", ExpectedOwner: "group-a"}); err != nil {
+		t.Fatal("authorized update failed", err)
+	}
+}
+
+func TestDatasetFinalUnbindReportsPendingRemovalUntilAcknowledged(t *testing.T) {
+	for _, agentID := range []string{"local", "online-edge"} {
+		t.Run(agentID, func(t *testing.T) {
+			store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			version, dataset := storeDatasetFixture(t, store, "v1", "192.0.2.0/24")
+			if agentID != "local" {
+				if err := store.db.Create(&AgentRow{ID: agentID, LastSeenAt: time.Now().UTC().Format(time.RFC3339Nano)}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			issue := func(number int64, values []DatasetSnapshot) {
+				t.Helper()
+				snapshot := Snapshot{Revision: number, Datasets: values}
+				payload, _ := json.Marshal(snapshot)
+				sum := sha256.Sum256(payload)
+				if _, err := store.EnsureAgentHeartbeatRevision(t.Context(), agentID, snapshot, payload, hex.EncodeToString(sum[:]), time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ack := func(number int64, generation string) {
+				t.Helper()
+				if err := store.db.Model(&AgentRevisionRow{}).Where("agent_id = ? AND revision = ?", agentID, number).Updates(map[string]any{"state": AgentRevisionStateApplied, "generation_id": generation}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := store.db.Model(&AgentRevisionPointerRow{}).Where("agent_id = ?", agentID).Updates(map[string]any{"applied_revision": number, "last_known_good_revision": number}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := store.PutDatasetBinding(t.Context(), DatasetBindingRow{AgentID: agentID, InstanceID: "instance", SourceID: "regions", VersionDigest: version.Digest, Revision: 1, ClassificationsJSON: `[{"name":"cn-44","kind":"region"}]`}); err != nil {
+				t.Fatal(err)
+			}
+			issue(1, []DatasetSnapshot{dataset})
+			ack(1, "generation-one")
+			if err := store.RemoveDatasetBinding(t.Context(), "regions", agentID, "instance"); err != nil {
+				t.Fatal(err)
+			}
+			issue(2, []DatasetSnapshot{})
+			status, err := store.DatasetNodeStatus(t.Context(), "regions", agentID, time.Now().UTC())
+			if err != nil || status.Validate() != nil || status.Phase != sdk.DatasetNodePreparing || status.Desired != "" || status.Applied != version.Digest || status.LastGood != version.Digest || status.Generation != "generation-one" {
+				t.Fatalf("pending removal lost real state: %+v %v", status, err)
+			}
+			ack(2, "generation-two")
+			status, err = store.DatasetNodeStatus(t.Context(), "regions", agentID, time.Now().UTC())
+			if err != nil || status.Phase != sdk.DatasetNodeUnavailable || status.Desired != "" || status.Applied != "" || status.Generation != "" {
+				t.Fatalf("removal acknowledgement retained obsolete application: %+v %v", status, err)
+			}
+		})
+	}
+}

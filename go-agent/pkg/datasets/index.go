@@ -94,9 +94,6 @@ func buildIndex(ctx context.Context, wire indexWire, limits Limits) (*Index, err
 		if group.wire.DisplayName == "" {
 			group.wire.DisplayName = group.wire.Name
 		}
-		if len(group.wire.DisplayName) > 128 || strings.ContainsAny(group.wire.DisplayName, "\r\n\x00") {
-			return nil, invalid("classification display name")
-		}
 		count := groupEntryCount(group.wire)
 		if count == 0 {
 			return nil, invalid("empty classification %s", key)
@@ -194,6 +191,11 @@ func buildIndex(ctx context.Context, wire indexWire, limits Limits) (*Index, err
 				index.regions = append(index.regions, group.ranges...)
 			}
 			sort.Strings(group.wire.Prefixes)
+		}
+		// Validate the exact public projection before this candidate can be
+		// returned or persisted. Compile and LoadIndex share this boundary.
+		if err := group.catalogEntry().Validate(); err != nil {
+			return nil, invalid("classification catalog metadata: %v", err)
 		}
 		if index.stats.EstimatedMemoryBytes > limits.MaxMemoryBytes {
 			return nil, exhausted("retained index memory")
@@ -568,12 +570,21 @@ func (index *Index) Catalog(request sdk.DatasetCatalogRequest) (sdk.DatasetCatal
 		end = len(index.groups)
 	}
 	for _, group := range index.groups[start:end] {
-		response.Classifications = append(response.Classifications, sdk.DatasetCatalogEntry{Classification: sdk.DatasetClassification{Name: group.wire.Name, Kind: group.wire.Kind}, DisplayName: group.wire.DisplayName, EntryCount: groupEntryCount(group.wire), Coverage: group.wire.Coverage})
+		response.Classifications = append(response.Classifications, group.catalogEntry())
 	}
 	if end < len(index.groups) {
 		response.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%d", index.version.Digest, end)))
 	}
 	return response, response.ValidateFor(request)
+}
+
+func (group compiledGroup) catalogEntry() sdk.DatasetCatalogEntry {
+	return sdk.DatasetCatalogEntry{
+		Classification: sdk.DatasetClassification{Name: group.wire.Name, Kind: group.wire.Kind},
+		DisplayName:    group.wire.DisplayName,
+		EntryCount:     groupEntryCount(group.wire),
+		Coverage:       group.wire.Coverage,
+	}
 }
 
 func groupEntryCount(group groupWire) int {

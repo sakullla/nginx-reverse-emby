@@ -3,10 +3,12 @@ package datasets
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,7 +25,152 @@ func compileTest(t *testing.T, format sdk.DatasetFormat, data []byte) *Index {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertIndexCatalogRoundtrip(t, index)
 	return index
+}
+
+func assertIndexCatalogRoundtrip(t *testing.T, index *Index) {
+	t.Helper()
+	encoded, err := index.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadIndex(t.Context(), encoded, Limits{})
+	if err != nil {
+		t.Fatalf("reload successful index: %v", err)
+	}
+	if loaded.Version() != index.Version() {
+		t.Fatal("catalog validation changed immutable version")
+	}
+	for _, candidate := range []*Index{index, loaded} {
+		historyRequest := sdk.DatasetCatalogRequest{SourceID: candidate.Version().SourceID, Limit: 1}
+		history, err := candidate.Catalog(historyRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := history.ValidateFor(historyRequest); err != nil {
+			t.Fatalf("successful index has invalid version catalog: %v", err)
+		}
+		request := sdk.DatasetCatalogRequest{SourceID: candidate.Version().SourceID, VersionDigest: candidate.Version().Digest, Limit: 1}
+		count := 0
+		for {
+			page, err := candidate.Catalog(request)
+			if err != nil {
+				t.Fatalf("successful index has unavailable classification catalog: %v", err)
+			}
+			if err := page.ValidateFor(request); err != nil {
+				t.Fatalf("successful index has invalid classification catalog: %v", err)
+			}
+			for _, entry := range page.Classifications {
+				if err := entry.Validate(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			count += len(page.Classifications)
+			if count > candidate.Version().ClassificationCount {
+				t.Fatal("catalog repeated classifications")
+			}
+			if page.NextCursor == "" {
+				break
+			}
+			request.Cursor = page.NextCursor
+		}
+		if count != candidate.Version().ClassificationCount {
+			t.Fatal("catalog omitted classifications")
+		}
+	}
+}
+
+func TestCatalogMetadataRejectedBeforeCompileOrLoadSucceeds(t *testing.T) {
+	document := CIDRDocument{Schema: CIDRSchema, Classifications: []CIDRClassification{{Name: "cn-44", Kind: sdk.DatasetClassificationRegion, DisplayName: "广东省", CIDRs: []string{"192.0.2.0/24"}}}}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := compileTest(t, sdk.DatasetFormatCIDR, data)
+	encoded, err := valid.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := inflate(encoded, DefaultLimits().MaxExpandedBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire indexWire
+	if err := json.Unmarshal(decoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	assertRejected := func(t *testing.T, index *Index, err error) {
+		t.Helper()
+		var failure *Error
+		if index != nil || !errors.As(err, &failure) || failure.Code != sdk.DatasetFailureInvalidData || !strings.Contains(failure.Detail, "catalog metadata") {
+			t.Fatalf("invalid published metadata was not rejected at construction: index=%v err=%v", index, err)
+		}
+	}
+	for name, displayName := range map[string]string{
+		"blank": " ", "leading space": " Province", "trailing space": "Province ",
+		"tab only": "\t", "embedded tab": "Pro\tvince", "line break": "Pro\nvince",
+		"carriage return": "Pro\rvince", "nul": "Pro\x00vince", "other control": "Pro\x1fvince",
+		"unicode control": "Pro\u0085vince", "unicode whitespace": "\u2003", "oversize": strings.Repeat("x", 129),
+	} {
+		t.Run(name, func(t *testing.T) {
+			document.Classifications[0].DisplayName = displayName
+			data, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			index, err := Compile(t.Context(), testInput(sdk.DatasetFormatCIDR, data), Limits{})
+			assertRejected(t, index, err)
+			// Recreate a correctly encoded artifact with invalid metadata. Its
+			// rejection must precede the final canonical-byte comparison.
+			wire.Groups[0].DisplayName = displayName
+			var altered bytes.Buffer
+			writer, err := gzip.NewWriterLevel(&altered, gzip.BestSpeed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.NewEncoder(writer).Encode(wire); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			index, err = LoadIndex(t.Context(), altered.Bytes(), Limits{})
+			assertRejected(t, index, err)
+		})
+	}
+}
+
+func TestCatalogMetadataFallbackAndMutationIsolation(t *testing.T) {
+	document := CIDRDocument{Schema: CIDRSchema}
+	for i, name := range []string{"", "广东省", "Inner Mongolia", strings.Repeat("x", 128)} {
+		document.Classifications = append(document.Classifications, CIDRClassification{Name: "category-" + strconv.Itoa(i), Kind: sdk.DatasetClassificationCIDR, DisplayName: name, CIDRs: []string{"192.0.2.0/24"}})
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := compileTest(t, sdk.DatasetFormatCIDR, data)
+	request := sdk.DatasetCatalogRequest{SourceID: index.Version().SourceID, VersionDigest: index.Version().Digest, Limit: 4}
+	page, err := index.Catalog(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Classifications[0].DisplayName != "category-0" {
+		t.Fatal("empty display name lost category fallback")
+	}
+	want := append([]sdk.DatasetCatalogEntry(nil), page.Classifications...)
+	page.Classifications[0].DisplayName = "\t"
+	page.Classifications[1].Classification.Name = ""
+	page.Classifications[2].EntryCount = 0
+	page.Classifications[3].Coverage.IPv4 = ""
+	again, err := index.Catalog(request)
+	if err != nil || again.ValidateFor(request) != nil || !reflect.DeepEqual(again.Classifications, want) {
+		t.Fatal("catalog metadata mutation leaked into index")
+	}
+	assertIndexCatalogRoundtrip(t, index)
+	// An omitted field has the same supported fallback as an explicit empty one.
+	compileTest(t, sdk.DatasetFormatCIDR, []byte(`{"schema":"nre.cidr-dataset/v1","classifications":[{"name":"omitted","kind":"cidr","cidrs":["192.0.2.0/24"]}]}`))
 }
 func testQuery(index *Index, address, domain string, selectors ...sdk.DatasetClassification) sdk.DatasetQueryRequest {
 	return sdk.DatasetQueryRequest{Reference: sdk.DatasetReference{Handle: strings.Repeat("a", 43), InstanceID: "instance-1", Generation: "generation-1", SourceID: index.Version().SourceID, VersionDigest: index.Version().Digest}, Address: address, Domain: domain, Classifications: selectors, Budget: sdk.DatasetQueryBudget{MaxDurationMicros: 2000, MaxResponseBytes: 32768}}
@@ -176,6 +323,7 @@ func TestCommunityDependencyFiltersAffiliationsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertIndexCatalogRoundtrip(t, index)
 	for domain, want := range map[string]bool{"cloud.example": false, "global.example": true, "global-keyword.example": true} {
 		response, err := index.Query(t.Context(), testQuery(index, "", domain, sdk.DatasetClassification{Name: "category-ai-!cn", Kind: sdk.DatasetClassificationDomain}))
 		if err != nil || response.Matches[0].Matched != want {
@@ -266,6 +414,7 @@ func TestIndexPublicResultsAndCompileInputAreIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertIndexCatalogRoundtrip(t, index)
 	originalVersion := index.Version()
 	version := originalVersion
 	version.AttributionText = "changed"

@@ -17,15 +17,32 @@ import (
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
+// Special-use/platform endpoints are denied even with private-source consent.
+// In particular, the shared-address block includes 100.100.100.200; Unmap makes
+// IPv4-mapped IPv6 subject to the same policy before any socket is dialed.
+var datasetDeniedNetworks = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("168.63.129.16/32"), netip.MustParsePrefix("fd00:ec2::254/128"),
+	netip.MustParsePrefix("2001::/23"), netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"), netip.MustParsePrefix("3fff::/20"),
+}
+var datasetPublicIPv6 = netip.MustParsePrefix("2000::/3")
+
 func datasetFetchAddressAllowed(address netip.Addr, allowPrivate bool) bool {
 	address = address.Unmap()
-	if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
+	if !address.IsValid() || address.Zone() != "" || address.IsUnspecified() || address.IsMulticast() || address.IsLinkLocalUnicast() {
 		return false
 	}
-	if !allowPrivate && (address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast()) {
-		return false
+	for _, blocked := range datasetDeniedNetworks {
+		if blocked.Contains(address) {
+			return false
+		}
 	}
-	return true
+	if address.IsPrivate() || address.IsLoopback() {
+		return allowPrivate
+	}
+	return address.IsGlobalUnicast() && (address.Is4() || datasetPublicIPv6.Contains(address))
 }
 
 // Each dial resolves and authorizes addresses before connecting directly to a
