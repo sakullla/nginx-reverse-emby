@@ -73,7 +73,11 @@ func (s *GormStore) PutDatasetSource(ctx context.Context, row DatasetSourceRow, 
 
 func (s *GormStore) GetDatasetSource(ctx context.Context, id string) (DatasetSourceRow, error) {
 	var row DatasetSourceRow
-	err := s.db.WithContext(ctx).Where("id = ?", id).First(&row).Error
+	query := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.Where("id = ?", id).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return row, ErrDatasetNotFound
 	}
@@ -290,6 +294,9 @@ func (s *GormStore) ActivateDatasetVersion(ctx context.Context, sourceID, digest
 				return err
 			}
 		}
+		if err := advanceLogicalDatasetVersion(tx, sourceID, digest); err != nil {
+			return err
+		}
 		return tx.Model(&DatasetSourceRow{}).Where("id = ?", sourceID).Updates(map[string]any{"current_digest": digest, "last_failure": ""}).Error
 	})
 }
@@ -347,6 +354,19 @@ func (s *GormStore) DeleteDatasetSource(ctx context.Context, sourceID string) er
 	})
 }
 func datasetVersionUnreferenced(tx *gorm.DB, version DatasetVersionRow) error {
+	var logical []PluginDatasetConsumptionRow
+	if err := tx.Where("source_id = ? AND record_json <> ''", version.SourceID).Find(&logical).Error; err != nil {
+		return err
+	}
+	for _, row := range logical {
+		var record pluginsdk.DatasetBindingRecord
+		if json.Unmarshal([]byte(row.RecordJSON), &record) != nil {
+			return errors.New("logical binding is invalid")
+		}
+		if record.Spec.VersionDigest == version.Digest {
+			return ErrDatasetInUse
+		}
+	}
 	var count int64
 	if err := tx.Model(&DatasetBindingRow{}).Where("source_id = ? AND version_digest = ?", version.SourceID, version.Digest).Count(&count).Error; err != nil {
 		return err
@@ -368,8 +388,8 @@ func (s *GormStore) loadAgentDatasetSnapshots(ctx context.Context, agentID strin
 	if !s.db.Migrator().HasTable(&DatasetBindingRow{}) {
 		return result, nil
 	}
-	var rows []DatasetBindingRow
-	if err := s.db.WithContext(ctx).Where("agent_id = ?", agentID).Order("source_id, instance_id").Find(&rows).Error; err != nil {
+	rows, err := s.ResolveDatasetBindings(ctx, agentID)
+	if err != nil {
 		return nil, err
 	}
 	positions := make(map[string]int)

@@ -134,6 +134,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&SecretVersionRow{},
 		&PluginScopedSecretOperationRow{},
 		&PluginScopedSecretDeliveryRow{},
+		&PluginPolicySettingsRow{}, &PluginPolicyEntryModeRow{}, &PluginDatasetConsumptionRow{}, &PluginConsumptionOperationRow{},
 		&MarketplaceSourceRow{},
 		&MarketSnapshotRow{},
 		&MarketEntryRow{},

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"strings"
 	"sync/atomic"
@@ -17,9 +18,111 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const testPluginSnapshotDigest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+func TestPluginArtifactPreparationIsolatesPolicyAndManagedGenerationInputs(t *testing.T) {
+	payload := []byte("verified policy and RPC artifact fixture")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Agent-Token") != "agent-secret" || r.URL.Path != "/api/agent-plugin-artifacts/artifact-1" ||
+			r.URL.Query().Get("revision") != "1" || r.URL.Query().Get("snapshot_digest") != testPluginSnapshotDigest {
+			http.Error(w, "invalid artifact authority", http.StatusUnauthorized)
+			return
+		}
+		requests.Add(1)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(server.Close)
+	fixture := func() model.Snapshot {
+		snapshot := pluginArtifactSnapshot("artifact-1", digest, int64(len(payload)))
+		defaultMode, entryMode := sdk.PolicyModeObserve, sdk.PolicyModeEnforce
+		settings := sdk.PolicySettingsSnapshot{Version: sdk.PolicySettingsVersion{Revision: 4, InstanceVersion: 2},
+			Settings: sdk.PolicyModeSettings{Handling: sdk.PolicyModeHandlingRaw, DefaultMode: &defaultMode, EntryMode: &entryMode}}
+		stage := &snapshot.PluginPolicies[0].Stages[0]
+		stage.PolicySettings = &settings
+		stage.Config = []byte(`{"source":"geo"}`)
+		stage.DeclaredScopes, stage.GrantedScopes, stage.ExtensionPoints = []string{"dataset.query"}, []string{"dataset.query"}, []string{"l4.accept"}
+		ref := &model.PolicyRef{ID: "shared", OverlayFormat: sdk.PolicyOverlayFormatLegacyWAF, LegacyPolicyID: "existing-waf", Overlay: []byte(`{"mode":"deny"}`),
+			StageModes: []model.PolicyModeBinding{{Stage: sdk.PolicyStageIdentity{Kind: "ip", PolicyID: "default-ip"}, Snapshot: settings}}}
+		// The ordinary signed RPC generation projection goes through validation,
+		// authenticated download, verified cache publication and materialized validation.
+		snapshot.PluginGenerations = []model.PluginGeneration{{
+			ID: "provider-generation", InstanceID: "instance-rpc", OperationID: "operation", Revision: 1, PluginID: "plugin", PluginVersion: "1.0.0", PackageDigest: strings.Repeat("a", 64),
+			Runtime:         model.PluginRuntimeDescriptor{Kind: model.PluginRuntimeRPCService, ABI: model.PluginRPCABIV1, HostScope: "agent", Entry: "artifacts/plugin"},
+			Artifact:        model.PluginArtifactDescriptor{ArtifactID: "artifact-1", PackageIdentity: "plugin@1.0.0", RelativePath: "artifacts/plugin", SHA256: digest, SizeBytes: int64(len(payload)), Mode: "executable", GOOS: "linux", GOARCH: "amd64", SignatureVerified: true, SignerKeyID: "key", SignerFingerprint: strings.Repeat("c", 64)},
+			ExtensionPoints: []string{sdk.ExtensionHTTPBackendProvider}, RequiredFeatures: []string{sdk.RPCFeatureExecutionScopeV1, sdk.RPCFeatureHTTPBackendProviderV1},
+			HTTPBackendProviders: []sdk.HTTPBackendProviderDescriptor{{ID: "web", DisplayName: "Web"}},
+			ConfigVersion:        1, Config: []byte(`{"enabled":true}`), ManagedNetworkPolicy: ref,
+			ManagedNetworkPolicies: map[string]*model.PolicyRef{"tcp": ref, "udp": ref},
+			ResourceBudget:         model.PluginResourceBudget{TimeoutMS: 1000, MemoryBytes: 1 << 20, Concurrency: 2, InputBytes: 4096, OutputBytes: 4096, CPUMillis: 100},
+			Target:                 model.PluginTargetBinding{Kind: "agent", ID: "edge", ResourceGroupID: "default", Version: 1},
+			FailurePolicy:          model.PluginFailurePolicy{OnError: "degraded", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
+		}}
+		return snapshot
+	}
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret", PluginCacheDir: t.TempDir()}, server.Client())
+	input, want := fixture(), fixture()
+	prepared := input // preparePluginArtifacts owns replacement of materialized projections.
+	if err := client.preparePluginArtifacts(t.Context(), &prepared, 1, testPluginSnapshotDigest); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("artifact requests = %d, want separate RPC and policy cache artifacts", requests.Load())
+	}
+	for _, path := range []string{prepared.PluginGenerations[0].Artifact.LocalPath, prepared.PluginPolicies[0].Stages[0].ArtifactPath} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, payload) {
+			t.Fatalf("materialized artifact = %q, error = %v", got, err)
+		}
+	}
+	want.PluginGenerations[0].Artifact.LocalPath = prepared.PluginGenerations[0].Artifact.LocalPath
+	want.PluginPolicies[0].Stages[0].ArtifactPath = prepared.PluginPolicies[0].Stages[0].ArtifactPath
+	if !reflect.DeepEqual(prepared, want) {
+		t.Fatal("materialization dropped policy settings, Config, scopes or entry mode metadata")
+	}
+	mutate := func(s model.Snapshot) {
+		stage := &s.PluginPolicies[0].Stages[0]
+		stage.Config[0] = '!'
+		stage.DeclaredScopes[0], stage.GrantedScopes[0], stage.ExtensionPoints[0] = "foreign", "foreign", "foreign"
+		stage.PolicySettings.Version.Revision = 99
+		*stage.PolicySettings.Settings.DefaultMode = sdk.PolicyModeEnforce
+		*stage.PolicySettings.Settings.EntryMode = sdk.PolicyModeObserve
+		generation := &s.PluginGenerations[0]
+		generation.Config[0] = '!'
+		generation.RequiredFeatures[0], generation.ExtensionPoints[0] = "foreign", "foreign"
+		generation.HTTPBackendProviders[0].ID = "foreign"
+		for _, ref := range []*model.PolicyRef{generation.ManagedNetworkPolicy, generation.ManagedNetworkPolicies["tcp"], generation.ManagedNetworkPolicies["udp"]} {
+			ref.Overlay[0] = '!'
+			ref.OverlayFormat, ref.LegacyPolicyID = "foreign", "foreign"
+			ref.StageModes[0].Stage.PolicyID = "foreign"
+			ref.StageModes[0].Snapshot.Version.Revision = 99
+			*ref.StageModes[0].Snapshot.Settings.DefaultMode = sdk.PolicyModeEnforce
+			*ref.StageModes[0].Snapshot.Settings.EntryMode = sdk.PolicyModeObserve
+		}
+		delete(generation.ManagedNetworkPolicies, "udp")
+	}
+	mutate(input)
+	if !reflect.DeepEqual(prepared, want) {
+		t.Fatal("input mutation changed the materialized policy or managed generation")
+	}
+	// Mutating the materialized copy must also leave its source projection intact.
+	source := fixture()
+	second := source
+	if err := client.preparePluginArtifacts(t.Context(), &second, 1, testPluginSnapshotDigest); err != nil {
+		t.Fatal(err)
+	}
+	mutate(second)
+	if !reflect.DeepEqual(source, fixture()) {
+		t.Fatal("materialized copy mutation changed the original policy or managed generation")
+	}
+	if requests.Load() != 2 {
+		t.Fatal("second projection did not reuse verified immutable artifacts")
+	}
+}
 
 func TestPluginArtifactDownloadDoesNotUseHeartbeatTotalTimeout(t *testing.T) {
 	payload := []byte("verified artifact payload")

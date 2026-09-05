@@ -54,6 +54,9 @@ func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.C
 	if call.Operation == pluginsdk.HostRuntimeScopedSecret {
 		return manager.dispatchPluginScopedSecret(ctx, candidate, call)
 	}
+	if call.Operation == pluginsdk.HostRuntimeDatasetBinding || call.Operation == pluginsdk.HostRuntimePolicyControl {
+		return manager.dispatchPolicyConsumption(ctx, candidate, call)
+	}
 	if call.Operation == "operation.inspect" {
 		if !pluginCandidateHasGrant(candidate, "storage.read") {
 			return pluginHostRuntimeFailure(pluginsdk.ErrorPermissionDenied, "host resource permission was not granted", false)

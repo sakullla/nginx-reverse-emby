@@ -390,9 +390,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			cloned.PluginPolicies[i].Stages = slices.Clone(policy.Stages)
 			for stageIndex, stage := range policy.Stages {
 				clonedStage := &cloned.PluginPolicies[i].Stages[stageIndex]
-				clonedStage.ExtensionPoints = slices.Clone(stage.ExtensionPoints)
-				clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
-				clonedStage.Config = slices.Clone(stage.Config)
+				*clonedStage = model.ClonePolicyStage(stage)
 			}
 		}
 	}
@@ -400,6 +398,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.PluginGenerations = slices.Clone(snapshot.PluginGenerations)
 		for i, generation := range snapshot.PluginGenerations {
 			clonedGeneration := &cloned.PluginGenerations[i]
+			clonedGeneration.ManagedNetworkPolicies = model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)
 			clonedGeneration.Config = slices.Clone(generation.Config)
 			clonedGeneration.ManagedNetworkPolicy = clonePolicyRef(generation.ManagedNetworkPolicy)
 			clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
@@ -415,14 +414,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	return cloned
 }
 
-func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef {
-	if ref == nil {
-		return nil
-	}
-	cloned := *ref
-	cloned.Overlay = slices.Clone(ref.Overlay)
-	return &cloned
-}
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef { return model.ClonePolicyRef(ref) }
 
 func clonePtr[T any](value *T) *T {
 	if value == nil {

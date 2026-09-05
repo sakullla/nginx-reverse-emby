@@ -42,13 +42,15 @@ func (s *Server) allowL4Policy(
 		metadata, err = policy.NewAuthenticatedMetadata(sourceKind, physicalPeer, authenticatedSource)
 	}
 	if err != nil {
-		return false
+		decision := policy.AdmissionFailure(ctx, s.policyEvaluator, rule.PolicyRef, policy.ExtensionL4, strconv.Itoa(rule.ID), "source-unavailable")
+		return decision.Action == policy.ActionAllow || decision.Action == policy.ActionObserve
 	}
 	input, err := policy.NewInput(policy.ExtensionL4, requestID, metadata, fields, body)
 	if err != nil {
-		return false
+		decision := policy.AdmissionFailure(ctx, s.policyEvaluator, rule.PolicyRef, policy.ExtensionL4, strconv.Itoa(rule.ID), "source-unavailable")
+		return decision.Action == policy.ActionAllow || decision.Action == policy.ActionObserve
 	}
-	decision := s.policyEvaluator.Evaluate(ctx, rule.PolicyRef, input)
+	decision := s.policyEvaluator.Evaluate(ctx, rule.PolicyRef, input.WithEntryID(strconv.Itoa(rule.ID)))
 	return decision.Action == policy.ActionAllow || decision.Action == policy.ActionObserve
 }
 

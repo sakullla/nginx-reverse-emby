@@ -29,6 +29,7 @@ type NetworkSessionRegistrar interface {
 }
 
 type runtimeServices struct {
+	policies  map[string]*model.PolicyRef
 	datasets  *policy.DatasetGeneration
 	evaluator policy.Evaluator
 	policy    *model.PolicyRef
@@ -59,8 +60,12 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 	if err := h.checkGenerationRevoked(candidate); err != nil {
 		return nil, err
 	}
-	admit := func(ctx context.Context, source sdk.ManagedSourceMetadata) error {
-		if candidate.services.policy == nil {
+	admit := func(ctx context.Context, protocol string, source sdk.ManagedSourceMetadata) error {
+		ref := candidate.services.policy
+		if selected, exists := candidate.services.policies[protocol]; exists {
+			ref = selected
+		}
+		if ref == nil {
 			return nil
 		}
 		if candidate.services.evaluator == nil {
@@ -78,7 +83,7 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 		if err != nil {
 			return err
 		}
-		decision := candidate.services.evaluator.Evaluate(ctx, candidate.services.policy, input)
+		decision := candidate.services.evaluator.Evaluate(ctx, ref, input.WithEntryID(candidate.InstanceID))
 		if decision.Action == policy.ActionDeny || ctx.Err() != nil {
 			return errors.New("managed source admission denied")
 		}
@@ -97,7 +102,7 @@ func (h *Host) startHostRuntime(candidate HostCandidate, security attemptSecurit
 			return handle.Finish, nil
 		}
 	}
-	owner, err := h.managed.Stage(managed.Authority{InstanceID: candidate.InstanceID, Generation: candidate.Generation, Grants: candidate.Grants, Admit: admit, Track: track})
+	owner, err := h.managed.Stage(managed.Authority{InstanceID: candidate.InstanceID, Generation: candidate.Generation, Grants: candidate.Grants, AdmitProtocol: admit, Track: track})
 	if err != nil {
 		return nil, err
 	}

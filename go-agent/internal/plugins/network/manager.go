@@ -24,6 +24,7 @@ const maxPending = 32
 const maxBufferedDatagramBytes = 64 << 20
 
 type Authority struct {
+	AdmitProtocol          func(context.Context, string, sdk.ManagedSourceMetadata) error
 	InstanceID, Generation string
 	Grants                 []model.PluginGrantProjection
 	Admit                  func(context.Context, sdk.ManagedSourceMetadata) error
@@ -56,7 +57,7 @@ type Owner struct {
 }
 
 func (manager *Manager) Stage(authority Authority) (*Owner, error) {
-	if sdk.ValidatePolicyIdentity(authority.InstanceID) != nil || sdk.ValidatePolicyIdentity(authority.Generation) != nil || authority.Admit == nil {
+	if sdk.ValidatePolicyIdentity(authority.InstanceID) != nil || sdk.ValidatePolicyIdentity(authority.Generation) != nil || (authority.Admit == nil && authority.AdmitProtocol == nil) {
 		return nil, fail(sdk.ErrorInvalidArgument, "managed network authority is incomplete")
 	}
 	manager.mu.Lock()
@@ -525,4 +526,11 @@ func (resource *resource) enqueuePacket(value []byte) {
 		resource.packetMu.Unlock()
 		resource.close()
 	}
+}
+
+func (owner *Owner) admit(ctx context.Context, protocol string, source sdk.ManagedSourceMetadata) error {
+	if owner.authority.AdmitProtocol != nil {
+		return owner.authority.AdmitProtocol(ctx, protocol, source)
+	}
+	return owner.authority.Admit(ctx, source)
 }

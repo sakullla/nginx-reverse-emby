@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -370,6 +371,12 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	candidate.endpointDirectory, candidate.credentialDirectory, candidate.guestEndpoint = security.endpointDirectory, security.credentialDirectory, security.guestEndpoint
 	candidate.sandboxUID = security.sandboxUID
 	candidate.attemptEnvironment = security.environment
+	// Old control-plane packages already identify this face from their Host
+	// endpoint. Negotiate explicit scope only with consumption-capable guests.
+	explicitScope := slices.Contains(candidate.Grants, string(pluginsdk.CapabilityDatasetBind)) || slices.Contains(candidate.Grants, string(pluginsdk.CapabilityPolicyControl))
+	if explicitScope {
+		candidate.attemptEnvironment = append(candidate.attemptEnvironment, pluginsdk.EnvPluginExecutionScope+"="+pluginsdk.HostScopeControlPlane)
+	}
 	if security.cleanup != nil {
 		instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "starting", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt, setupDone: make(chan struct{})}
 		h.mu.Lock()
@@ -458,6 +465,12 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	instance.client, instance.closer = client, closer
 	instance.mu.Unlock()
 	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Grants...), Generation: candidate.Identity.Generation, RequiredFeatures: pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Grants, candidate.Declaration.ExtensionPoints)}
+	if explicitScope {
+		handshake.RequiredFeatures, err = pluginsdk.RequiredRPCFeaturesForExecutionScope(candidate.Grants, candidate.Declaration.ExtensionPoints, pluginsdk.HostScopeControlPlane)
+		if err != nil {
+			return nil, err
+		}
+	}
 	response, err := retryControlHandshake(attemptCtx, candidate.Deadline, process, client, handshake)
 	if err != nil {
 		return nil, controlLifecycleError(candidate, "handshake", err)

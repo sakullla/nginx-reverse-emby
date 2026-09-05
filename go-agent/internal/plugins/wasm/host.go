@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
@@ -53,10 +54,12 @@ func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name st
 	requestPointer, requestLength := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])
 	responsePointer, responseCapacity := api.DecodeU32(stack[2]), api.DecodeU32(stack[3])
 	if requestLength > invocation.budget.MaxInputBytes {
+		recordSecurityFailure(invocation.host, name, pluginsdk.PolicyStatusResourceExhausted)
 		runtime.observeHostBudget(invocation.generation, name, ErrorInputBudget, pluginsdk.BudgetDimensionInput)
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 0)
 	}
 	if responseCapacity > invocation.budget.MaxOutputBytes {
+		recordSecurityFailure(invocation.host, name, pluginsdk.PolicyStatusResourceExhausted)
 		runtime.observeHostBudget(invocation.generation, name, ErrorOutputBudget, pluginsdk.BudgetDimensionOutput)
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 0)
 	}
@@ -67,8 +70,16 @@ func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name st
 	if !readable {
 		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
 	}
-	response, status, dimension := dispatchHost(ctx, invocation.host, name, append([]byte(nil), request...))
+	var response []byte
+	var status pluginsdk.PolicyStatus
+	var dimension pluginsdk.BudgetDimension
+	if name == pluginsdk.PolicyHostDatasetResolve || name == pluginsdk.PolicyHostDatasetQuery || name == pluginsdk.PolicyHostReadTrustedSource {
+		response, status = dispatchSecurityHost(ctx, invocation, name, append([]byte(nil), request...))
+	} else {
+		response, status, dimension = dispatchHost(ctx, invocation.host, name, append([]byte(nil), request...))
+	}
 	if status != pluginsdk.PolicyStatusOK {
+		recordSecurityFailure(invocation.host, name, status)
 		runtime.observer.ObserveWASM(Event{
 			Generation: invocation.generation,
 			Operation:  "host." + name,
@@ -101,6 +112,7 @@ func (runtime *Runtime) callNormalizedHTTP(ctx context.Context, module api.Modul
 	value, err := normalizedHost.ReadNormalizedHTTP(ctx)
 	if err != nil {
 		status := statusForHostError(err)
+		recordSecurityFailure(invocation.host, pluginsdk.PolicyHostReadNormalizedHTTP, status)
 		dimension := budgetDimensionForHostError(err)
 		runtime.observer.ObserveWASM(Event{
 			Generation: invocation.generation,
@@ -225,11 +237,7 @@ func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, r
 		}
 		return encodeEmpty(host.StatePut(ctx, messageString(message, "key"), messageBytes(message, "value")))
 	case pluginsdk.PolicyHostEmitEvent:
-		message, err := decodePolicyMessage("EmitEventRequest", request)
-		if err != nil {
-			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
-		}
-		event, err := pluginsdk.PolicySecurityEventFromWire(messageEnum(message, "code"), messageEnum(message, "action"))
+		event, err := pluginsdk.UnmarshalPolicySecurityEvent(request, len(request))
 		if err != nil {
 			return nil, pluginsdk.PolicyStatusInvalidArgument, ""
 		}
@@ -413,4 +421,36 @@ func setMessageBytes(message protoreflect.ProtoMessage, name protoreflect.Name, 
 
 func setMessageBool(message protoreflect.ProtoMessage, name protoreflect.Name, value bool) {
 	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfBool(value))
+}
+
+func recordSecurityFailure(host pluginsdk.PolicyHost, name string, status pluginsdk.PolicyStatus) {
+	if reporter, ok := host.(interface {
+		RecordPolicyHostFailure(string, pluginsdk.PolicyStatus)
+	}); ok {
+		reporter.RecordPolicyHostFailure(name, status)
+	}
+}
+func dispatchSecurityHost(ctx context.Context, invocation hostInvocation, name string, request []byte) ([]byte, pluginsdk.PolicyStatus) {
+	bound, ok := invocation.host.(interface {
+		PolicyAuthorization() pluginsdk.PolicyHostCallAuthorization
+	})
+	if !ok {
+		return nil, pluginsdk.PolicyStatusPermissionDenied
+	}
+	auth := bound.PolicyAuthorization()
+	budget := pluginsdk.PolicyV1ResourceBudget{TimeoutMilliseconds: int64(invocation.budget.Timeout / time.Millisecond), MemoryBytes: invocation.budget.MemoryBytes, Concurrency: invocation.budget.MaxConcurrency, InputFrameBytes: int64(invocation.budget.MaxInputBytes), OutputFrameBytes: int64(invocation.budget.MaxOutputBytes)}
+	var response []byte
+	var err error
+	switch name {
+	case pluginsdk.PolicyHostDatasetResolve:
+		host, _ := invocation.host.(pluginsdk.DatasetResolveHost)
+		response, err = pluginsdk.CallPolicyDatasetResolveHost(ctx, host, auth, request, budget)
+	case pluginsdk.PolicyHostDatasetQuery:
+		host, _ := invocation.host.(pluginsdk.PolicyDatasetHost)
+		response, err = pluginsdk.CallPolicyDatasetHost(ctx, host, auth, request, budget)
+	case pluginsdk.PolicyHostReadTrustedSource:
+		host, _ := invocation.host.(pluginsdk.PolicyTrustedSourceHost)
+		response, err = pluginsdk.CallPolicyTrustedSourceHost(ctx, host, auth, request, budget)
+	}
+	return response, pluginsdk.PolicySecurityCallStatus(err)
 }

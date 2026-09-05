@@ -5,7 +5,9 @@ package policy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 
 	"strings"
 	"testing"
@@ -144,7 +146,7 @@ func TestPolicyModuleRejectsWAFOnL4(t *testing.T) {
 }
 
 func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) {
-	overlay := bytes.Repeat([]byte("x"), 900)
+	overlay, _ := json.Marshal(map[string]string{"probe": string(bytes.Repeat([]byte("x"), 900))})
 	frameBytes, err := PolicyEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
 	if err != nil {
 		t.Fatal(err)
@@ -153,10 +155,15 @@ func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) 
 	for index := range definition.Stages {
 		definition.Stages[index].ResourceBudget.InputBytes = int64(frameBytes)
 	}
+	envelope := sdk.PolicyOverlayEnvelope{Schema: sdk.PolicyOverlaySchemaV1, Stages: []sdk.PolicyStageOverlay{}}
+	for _, stage := range definition.Stages {
+		envelope.Stages = append(envelope.Stages, sdk.PolicyStageOverlay{Kind: string(stage.Kind), PolicyID: stage.PolicyID, Payload: overlay})
+	}
+	encoded, _ := json.Marshal(envelope)
 	snapshot := model.Snapshot{
 		PluginPolicies: []model.PluginPolicy{definition},
 		Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{
-			ID: "shared", Overlay: overlay,
+			ID: "shared", Overlay: encoded, OverlayFormat: sdk.PolicyOverlayFormatEnvelopeV1,
 		}}},
 	}
 	policyModule := NewModule(nil, nil)

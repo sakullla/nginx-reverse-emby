@@ -1,6 +1,10 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	"slices"
+)
 
 const PolicyABIV1 = "nre:policy/v1"
 
@@ -29,9 +33,17 @@ func (kind PolicyKind) Valid() bool {
 // PolicyRef is the only policy attachment carried by an HTTP or L4 rule. The
 // referenced PluginPolicy owns the ordered IP/rate/WAF chain; Overlay is
 // request-rule-local input and never mutates that shared policy.
+type PolicyModeBinding struct {
+	Stage    sdk.PolicyStageIdentity    `json:"stage"`
+	Snapshot sdk.PolicySettingsSnapshot `json:"snapshot"`
+}
+
 type PolicyRef struct {
-	ID      string          `json:"id"`
-	Overlay json.RawMessage `json:"overlay,omitempty"`
+	OverlayFormat  string              `json:"overlay_format,omitempty"`
+	LegacyPolicyID string              `json:"legacy_policy_id,omitempty"`
+	StageModes     []PolicyModeBinding `json:"stage_modes,omitempty"`
+	ID             string              `json:"id"`
+	Overlay        json.RawMessage     `json:"overlay,omitempty"`
 }
 
 type PolicyResourceBudget struct {
@@ -68,26 +80,27 @@ type PolicyArtifactSource struct {
 // a host-verified, generation-scoped reference; policy evaluation never opens
 // or resolves it itself.
 type PolicyStage struct {
-	Kind              PolicyKind           `json:"kind"`
-	PolicyID          string               `json:"policy_id"`
-	PluginID          string               `json:"plugin_id"`
-	PluginVersion     string               `json:"plugin_version"`
-	InstanceID        string               `json:"instance_id"`
-	PackageDigest     string               `json:"package_digest"`
-	ArtifactPath      string               `json:"artifact_path"`
-	ArtifactDigest    string               `json:"artifact_digest"`
-	ArtifactSource    PolicyArtifactSource `json:"artifact_source"`
-	SignatureVerified bool                 `json:"signature_verified"`
-	SignerKeyID       string               `json:"signer_key_id"`
-	SignerFingerprint string               `json:"signer_fingerprint"`
-	ABI               string               `json:"abi"`
-	ExtensionPoints   []string             `json:"extension_points"`
-	DeclaredScopes    []string             `json:"declared_scopes"`
-	GrantedScopes     []string             `json:"granted_scopes"`
-	ResourceGroupID   string               `json:"resource_group_id"`
-	Config            json.RawMessage      `json:"config,omitempty"`
-	ResourceBudget    PolicyResourceBudget `json:"resource_budget"`
-	FailurePolicy     PolicyFailurePolicy  `json:"failure_policy"`
+	PolicySettings    *sdk.PolicySettingsSnapshot `json:"policy_settings,omitempty"`
+	Kind              PolicyKind                  `json:"kind"`
+	PolicyID          string                      `json:"policy_id"`
+	PluginID          string                      `json:"plugin_id"`
+	PluginVersion     string                      `json:"plugin_version"`
+	InstanceID        string                      `json:"instance_id"`
+	PackageDigest     string                      `json:"package_digest"`
+	ArtifactPath      string                      `json:"artifact_path"`
+	ArtifactDigest    string                      `json:"artifact_digest"`
+	ArtifactSource    PolicyArtifactSource        `json:"artifact_source"`
+	SignatureVerified bool                        `json:"signature_verified"`
+	SignerKeyID       string                      `json:"signer_key_id"`
+	SignerFingerprint string                      `json:"signer_fingerprint"`
+	ABI               string                      `json:"abi"`
+	ExtensionPoints   []string                    `json:"extension_points"`
+	DeclaredScopes    []string                    `json:"declared_scopes"`
+	GrantedScopes     []string                    `json:"granted_scopes"`
+	ResourceGroupID   string                      `json:"resource_group_id"`
+	Config            json.RawMessage             `json:"config,omitempty"`
+	ResourceBudget    PolicyResourceBudget        `json:"resource_budget"`
+	FailurePolicy     PolicyFailurePolicy         `json:"failure_policy"`
 }
 
 // PluginPolicy is immutable within one Snapshot generation. Stages are
@@ -96,4 +109,51 @@ type PluginPolicy struct {
 	ID       string        `json:"id"`
 	Revision int64         `json:"revision"`
 	Stages   []PolicyStage `json:"stages"`
+}
+
+func ClonePolicySettings(value *sdk.PolicySettingsSnapshot) *sdk.PolicySettingsSnapshot {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	if value.Settings.DefaultMode != nil {
+		mode := *value.Settings.DefaultMode
+		copy.Settings.DefaultMode = &mode
+	}
+	if value.Settings.EntryMode != nil {
+		mode := *value.Settings.EntryMode
+		copy.Settings.EntryMode = &mode
+	}
+	return &copy
+}
+func ClonePolicyRef(ref *PolicyRef) *PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	copy := *ref
+	copy.Overlay = slices.Clone(ref.Overlay)
+	copy.StageModes = slices.Clone(ref.StageModes)
+	for i := range copy.StageModes {
+		copy.StageModes[i].Snapshot = *ClonePolicySettings(&ref.StageModes[i].Snapshot)
+	}
+	return &copy
+}
+func ClonePolicyStage(stage PolicyStage) PolicyStage {
+	stage.ExtensionPoints = slices.Clone(stage.ExtensionPoints)
+	stage.DeclaredScopes = slices.Clone(stage.DeclaredScopes)
+	stage.GrantedScopes = slices.Clone(stage.GrantedScopes)
+	stage.Config = slices.Clone(stage.Config)
+	stage.PolicySettings = ClonePolicySettings(stage.PolicySettings)
+	return stage
+}
+
+func CloneManagedNetworkPolicies(values map[string]*PolicyRef) map[string]*PolicyRef {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]*PolicyRef, len(values))
+	for key, ref := range values {
+		result[key] = ClonePolicyRef(ref)
+	}
+	return result
 }

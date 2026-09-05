@@ -83,6 +83,7 @@ type closeFunc func() error
 func (fn closeFunc) Close() error { return fn() }
 
 type HostCandidate struct {
+	RequiredFeatures                                                            []string
 	InstanceID, PluginID, PluginVersion, PackageDigest, Generation, OperationID string
 	Revision                                                                    int64
 	ProviderGenerationID, AgentID                                               string
@@ -724,6 +725,9 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		return attempt, hostErr
 	}
 	security.environment = append(security.environment, hostEnvironment...)
+	if candidateUsesExecutionScope(candidate) {
+		security.environment = append(security.environment, pluginsdk.EnvPluginExecutionScope+"="+pluginsdk.HostScopeAgent)
+	}
 	candidate.Dial = security.dial
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
 	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
@@ -775,7 +779,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		ArtifactDigest:   candidate.Artifact.SHA256,
 		GrantedScopes:    append([]string(nil), candidate.Scopes...),
 		Generation:       candidate.Generation,
-		RequiredFeatures: pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Scopes, candidateExtensionPoints(candidate)),
+		RequiredFeatures: candidateRPCFeatures(candidate),
 	}
 	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {
@@ -1705,4 +1709,34 @@ func safeHostError(err error) string {
 		return value[:256]
 	}
 	return value
+}
+
+func candidateUsesExecutionScope(candidate HostCandidate) bool {
+	if managedRuntimeNeeded(candidate) {
+		return true
+	}
+	for _, feature := range candidate.RequiredFeatures {
+		if feature == pluginsdk.RPCFeatureExecutionScopeV1 {
+			return true
+		}
+	}
+	return false
+}
+func candidateRPCFeatures(candidate HostCandidate) []string {
+	features := pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Scopes, candidateExtensionPoints(candidate))
+	if candidateUsesExecutionScope(candidate) {
+		features, _ = pluginsdk.RequiredRPCFeaturesForExecutionScope(candidate.Scopes, candidateExtensionPoints(candidate), pluginsdk.HostScopeAgent)
+	}
+	for _, required := range candidate.RequiredFeatures {
+		found := false
+		for _, feature := range features {
+			if feature == required {
+				found = true
+			}
+		}
+		if !found {
+			features = append(features, required)
+		}
+	}
+	return features
 }

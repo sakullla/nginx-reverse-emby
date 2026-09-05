@@ -15,14 +15,7 @@ func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
 	return cloned
 }
 
-func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef {
-	if ref == nil {
-		return nil
-	}
-	cloned := *ref
-	cloned.Overlay = append([]byte(nil), ref.Overlay...)
-	return &cloned
-}
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef { return model.ClonePolicyRef(ref) }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
 	return moduleutil.CloneRelayListeners(listeners)

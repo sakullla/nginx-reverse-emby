@@ -55,26 +55,27 @@ type PluginDependencyTarget struct {
 // deliberately contains no marketplace source, cache path, manifest, UI
 // metadata, or secret plaintext.
 type PluginGeneration struct {
-	ID                   string                                    `json:"id"`
-	InstanceID           string                                    `json:"instance_id"`
-	OperationID          string                                    `json:"operation_id,omitempty"`
-	Revision             int64                                     `json:"revision"`
-	PluginID             string                                    `json:"plugin_id"`
-	PluginVersion        string                                    `json:"plugin_version"`
-	PackageDigest        string                                    `json:"package_digest"`
-	Runtime              PluginGenerationRuntime                   `json:"runtime"`
-	Artifact             PluginGenerationArtifact                  `json:"artifact"`
-	ExtensionPoints      []string                                  `json:"extension_points"`
-	RequiredFeatures     []string                                  `json:"required_features"`
-	HTTPBackendProviders []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
-	ConfigVersion        uint64                                    `json:"config_version"`
-	Config               json.RawMessage                           `json:"config"`
-	ManagedNetworkPolicy *PolicyRef                                `json:"managed_network_policy,omitempty"`
-	Grants               []PluginGenerationGrant                   `json:"grants"`
-	SecretHandles        []PluginGenerationSecretHandle            `json:"secret_handles"`
-	ResourceBudget       PluginGenerationResourceBudget            `json:"resource_budget"`
-	Target               PluginGenerationTarget                    `json:"target"`
-	FailurePolicy        PluginGenerationFailurePolicy             `json:"failure_policy"`
+	ID                     string                                    `json:"id"`
+	InstanceID             string                                    `json:"instance_id"`
+	OperationID            string                                    `json:"operation_id,omitempty"`
+	Revision               int64                                     `json:"revision"`
+	PluginID               string                                    `json:"plugin_id"`
+	PluginVersion          string                                    `json:"plugin_version"`
+	PackageDigest          string                                    `json:"package_digest"`
+	Runtime                PluginGenerationRuntime                   `json:"runtime"`
+	Artifact               PluginGenerationArtifact                  `json:"artifact"`
+	ExtensionPoints        []string                                  `json:"extension_points"`
+	RequiredFeatures       []string                                  `json:"required_features"`
+	HTTPBackendProviders   []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
+	ConfigVersion          uint64                                    `json:"config_version"`
+	Config                 json.RawMessage                           `json:"config"`
+	ManagedNetworkPolicy   *PolicyRef                                `json:"managed_network_policy,omitempty"`
+	ManagedNetworkPolicies map[string]*PolicyRef                     `json:"managed_network_policies,omitempty"`
+	Grants                 []PluginGenerationGrant                   `json:"grants"`
+	SecretHandles          []PluginGenerationSecretHandle            `json:"secret_handles"`
+	ResourceBudget         PluginGenerationResourceBudget            `json:"resource_budget"`
+	Target                 PluginGenerationTarget                    `json:"target"`
+	FailurePolicy          PluginGenerationFailurePolicy             `json:"failure_policy"`
 }
 
 type PluginGenerationArtifact struct {
@@ -546,8 +547,16 @@ type LoadBalancing struct {
 }
 
 type PolicyRef struct {
-	ID      string          `json:"id"`
-	Overlay json.RawMessage `json:"overlay,omitempty"`
+	ID             string              `json:"id"`
+	Overlay        json.RawMessage     `json:"overlay,omitempty"`
+	OverlayFormat  string              `json:"overlay_format,omitempty"`
+	LegacyPolicyID string              `json:"legacy_policy_id,omitempty"`
+	StageModes     []PolicyModeBinding `json:"stage_modes,omitempty"`
+}
+
+type PolicyModeBinding struct {
+	Stage    pluginsdk.PolicyStageIdentity    `json:"stage"`
+	Snapshot pluginsdk.PolicySettingsSnapshot `json:"snapshot"`
 }
 
 type PolicyResourceBudget struct {
@@ -578,26 +587,28 @@ type PolicyArtifactSource struct {
 }
 
 type PolicyStage struct {
-	Kind              string               `json:"kind"`
-	PolicyID          string               `json:"policy_id"`
-	PluginID          string               `json:"plugin_id"`
-	PluginVersion     string               `json:"plugin_version"`
-	InstanceID        string               `json:"instance_id"`
-	PackageDigest     string               `json:"package_digest"`
-	ArtifactPath      string               `json:"artifact_path"`
-	ArtifactDigest    string               `json:"artifact_digest"`
-	ArtifactSource    PolicyArtifactSource `json:"artifact_source"`
-	SignatureVerified bool                 `json:"signature_verified"`
-	SignerKeyID       string               `json:"signer_key_id"`
-	SignerFingerprint string               `json:"signer_fingerprint"`
-	ABI               string               `json:"abi"`
-	ExtensionPoints   []string             `json:"extension_points"`
-	DeclaredScopes    []string             `json:"declared_scopes"`
-	GrantedScopes     []string             `json:"granted_scopes"`
-	ResourceGroupID   string               `json:"resource_group_id"`
-	Config            json.RawMessage      `json:"config,omitempty"`
-	ResourceBudget    PolicyResourceBudget `json:"resource_budget"`
-	FailurePolicy     PolicyFailurePolicy  `json:"failure_policy"`
+	PolicySettings    *pluginsdk.PolicySettingsSnapshot `json:"policy_settings,omitempty"`
+	Automatic         bool                              `json:"-"`
+	Kind              string                            `json:"kind"`
+	PolicyID          string                            `json:"policy_id"`
+	PluginID          string                            `json:"plugin_id"`
+	PluginVersion     string                            `json:"plugin_version"`
+	InstanceID        string                            `json:"instance_id"`
+	PackageDigest     string                            `json:"package_digest"`
+	ArtifactPath      string                            `json:"artifact_path"`
+	ArtifactDigest    string                            `json:"artifact_digest"`
+	ArtifactSource    PolicyArtifactSource              `json:"artifact_source"`
+	SignatureVerified bool                              `json:"signature_verified"`
+	SignerKeyID       string                            `json:"signer_key_id"`
+	SignerFingerprint string                            `json:"signer_fingerprint"`
+	ABI               string                            `json:"abi"`
+	ExtensionPoints   []string                          `json:"extension_points"`
+	DeclaredScopes    []string                          `json:"declared_scopes"`
+	GrantedScopes     []string                          `json:"granted_scopes"`
+	ResourceGroupID   string                            `json:"resource_group_id"`
+	Config            json.RawMessage                   `json:"config,omitempty"`
+	ResourceBudget    PolicyResourceBudget              `json:"resource_budget"`
+	FailurePolicy     PolicyFailurePolicy               `json:"failure_policy"`
 }
 
 type PluginPolicy struct {

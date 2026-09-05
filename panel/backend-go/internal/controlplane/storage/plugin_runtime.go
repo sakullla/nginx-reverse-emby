@@ -267,7 +267,11 @@ func (s *GormStore) GetPluginRuntime(ctx context.Context, instanceID string) (Pl
 		return PluginRuntimeInstanceRow{}, false, err
 	}
 	var row PluginRuntimeInstanceRow
-	err := s.db.WithContext(ctx).Where("instance_id = ?", instanceID).Take(&row).Error
+	query := s.db.WithContext(ctx)
+	if s.transactionScoped {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.Where("instance_id = ?", instanceID).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return PluginRuntimeInstanceRow{}, false, nil
 	}

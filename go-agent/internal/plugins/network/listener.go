@@ -149,7 +149,7 @@ func (shared *listener) acceptTCP() {
 		source, err := sourceMetadata(connection.RemoteAddr())
 		if err == nil {
 			ctx, cancel := context.WithTimeout(parent.owner.ctx, 10*time.Millisecond)
-			err = parent.owner.authority.Admit(ctx, source)
+			err = parent.owner.admit(ctx, "tcp", source)
 			if err == nil {
 				err = ctx.Err()
 			}
@@ -210,7 +210,7 @@ func (shared *listener) acceptUDP() {
 			source, err := sourceMetadata(peer)
 			if err == nil {
 				ctx, cancel := context.WithTimeout(parent.owner.ctx, 10*time.Millisecond)
-				err = parent.owner.authority.Admit(ctx, source)
+				err = parent.owner.admit(ctx, "udp", source)
 				if err == nil {
 					err = ctx.Err()
 				}

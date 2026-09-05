@@ -2454,6 +2454,9 @@ func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.Policy
 	if input == nil {
 		return cloneRulePolicyRef(fallback), nil
 	}
+	if len(input.StageModes) > 0 {
+		return nil, fmt.Errorf("%w: policy stage modes are Host-owned", ErrInvalidArgument)
+	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
 		if len(input.Overlay) != 0 && string(input.Overlay) != "null" {
@@ -2468,7 +2471,12 @@ func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.Policy
 	if len(overlay) != 0 && (len(overlay) > 128<<10 || !json.Valid(overlay)) {
 		return nil, fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
 	}
-	return &storage.PolicyRef{ID: id, Overlay: overlay}, nil
+	if input.OverlayFormat != "" {
+		if _, err := pluginsdk.DecodePolicyOverlay(overlay, pluginsdk.PolicyOverlayDecodeContext{Format: input.OverlayFormat, LegacyPolicyID: input.LegacyPolicyID}); err != nil {
+			return nil, fmt.Errorf("%w: policy overlay format is invalid", ErrInvalidArgument)
+		}
+	}
+	return &storage.PolicyRef{ID: id, Overlay: overlay, OverlayFormat: input.OverlayFormat, LegacyPolicyID: input.LegacyPolicyID}, nil
 }
 
 type rulePolicyCatalogStore interface {
@@ -2518,7 +2526,7 @@ func validateRulePolicyReference(ctx context.Context, store any, agentID string,
 	}
 	for _, policy := range policies {
 		if policy.ID == ref.ID {
-			if pluginPolicyIsOfficialWAF(policy) {
+			if pluginPolicyIsOfficialWAF(policy) && (ref.OverlayFormat == "" || ref.OverlayFormat == pluginsdk.PolicyOverlayFormatLegacyWAF) {
 				if err := validateWAFPolicyOverlay(ref.Overlay); err != nil {
 					return err
 				}
@@ -2542,10 +2550,7 @@ func validateRulePolicyReference(ctx context.Context, store any, agentID string,
 }
 
 func cloneRulePolicyRef(ref *storage.PolicyRef) *storage.PolicyRef {
-	if ref == nil {
-		return nil
-	}
-	return &storage.PolicyRef{ID: ref.ID, Overlay: append(json.RawMessage(nil), ref.Overlay...)}
+	return storage.ClonePolicyRef(ref)
 }
 
 func parseRulePolicyRef(raw string) *storage.PolicyRef {

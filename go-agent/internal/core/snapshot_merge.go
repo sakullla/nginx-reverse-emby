@@ -4,7 +4,7 @@ import "github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 
 func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if next.Datasets == nil {
-		next.Datasets = model.CloneDatasetSnapshots(previous.Datasets)
+		next.Datasets = previous.Datasets
 	}
 	if next.PluginGenerations == nil {
 		next.PluginGenerations = previous.PluginGenerations
@@ -43,5 +43,5 @@ func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if next.PluginPolicies == nil {
 		merged.PluginPolicies = previous.PluginPolicies
 	}
-	return merged
+	return cloneSnapshot(merged)
 }

@@ -36,7 +36,7 @@ func TestIntegrationRetiredRestartChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	var listener *sdk.ManagedNetworkHandle
-	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "restart.test", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionManagedNetworkListen}, SupportedFeatures: sdk.RequiredRPCFeatures([]string{sdk.PermissionManagedNetworkListen}), Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, rpcplugin.HookFuncs{
+	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "restart.test", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionManagedNetworkListen}, SupportedFeatures: sdk.RPCFeaturesWithExecutionScope(sdk.RequiredRPCFeatures([]string{sdk.PermissionManagedNetworkListen})), Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, rpcplugin.HookFuncs{
 		PrepareFunc: func(ctx context.Context, generation *rpcplugin.Generation, config []byte) error {
 			var endpoint sdk.ManagedNetworkEndpoint
 			if err := json.Unmarshal(config, &endpoint); err != nil {

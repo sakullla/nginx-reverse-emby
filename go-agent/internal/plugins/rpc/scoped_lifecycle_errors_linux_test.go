@@ -41,7 +41,7 @@ func TestIntegrationScopedErrorChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	var phase, retained string
-	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "scoped.errors", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionScopedSecretRead}, SupportedFeatures: sdk.RequiredRPCFeatures([]string{sdk.PermissionScopedSecretRead}), Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, rpcplugin.HookFuncs{
+	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "scoped.errors", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionScopedSecretRead}, SupportedFeatures: sdk.RPCFeaturesWithExecutionScope(sdk.RequiredRPCFeatures([]string{sdk.PermissionScopedSecretRead})), Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, rpcplugin.HookFuncs{
 		PrepareFunc: func(ctx context.Context, generation *rpcplugin.Generation, config []byte) error {
 			var settings struct{ Phase string }
 			if err := json.Unmarshal(config, &settings); err != nil {

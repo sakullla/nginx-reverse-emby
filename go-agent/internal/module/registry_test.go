@@ -13,7 +13,79 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+func TestGenerationContextIsolatesPolicySettingsAcrossInputsAndViews(t *testing.T) {
+	fixture := func(revision int64) model.Snapshot {
+		defaultMode, entryMode := sdk.PolicyModeObserve, sdk.PolicyModeEnforce
+		settings := sdk.PolicySettingsSnapshot{
+			Version:  sdk.PolicySettingsVersion{Revision: uint64(revision), InstanceVersion: 3},
+			Settings: sdk.PolicyModeSettings{Handling: sdk.PolicyModeHandlingRaw, DefaultMode: &defaultMode, EntryMode: &entryMode},
+		}
+		ref := &model.PolicyRef{ID: "chain", OverlayFormat: sdk.PolicyOverlayFormatLegacyWAF, LegacyPolicyID: "waf-existing", Overlay: []byte(`{"mode":"deny"}`),
+			StageModes: []model.PolicyModeBinding{{Stage: sdk.PolicyStageIdentity{Kind: "ip", PolicyID: "ip-default"}, Snapshot: settings}}}
+		return model.Snapshot{Revision: revision,
+			Rules: []model.HTTPRule{{ID: 1, PolicyRef: ref}}, L4Rules: []model.L4Rule{{ID: 2, PolicyRef: ref}},
+			PluginGenerations: []model.PluginGeneration{{Config: []byte(`{"enabled":true}`), ManagedNetworkPolicy: ref,
+				ManagedNetworkPolicies: map[string]*model.PolicyRef{"tcp": ref, "udp": ref},
+				RequiredFeatures:       []string{sdk.RPCFeatureExecutionScopeV1}, HTTPBackendProviders: []sdk.HTTPBackendProviderDescriptor{{ID: "web", DisplayName: "Web"}}}},
+			PluginPolicies: []model.PluginPolicy{{ID: "chain", Stages: []model.PolicyStage{{Kind: model.PolicyKindIP, PolicyID: "ip-default",
+				Config: []byte(`{"source":"geo"}`), DeclaredScopes: []string{"dataset.query"}, GrantedScopes: []string{"dataset.query"},
+				ExtensionPoints: []string{"l4.accept"}, PolicySettings: &settings}}}},
+		}
+	}
+	mutate := func(snapshot model.Snapshot) {
+		stage := &snapshot.PluginPolicies[0].Stages[0]
+		stage.Config[0] = '!'
+		stage.DeclaredScopes[0] = "foreign"
+		stage.GrantedScopes[0] = "foreign"
+		stage.ExtensionPoints[0] = "foreign"
+		stage.PolicySettings.Version.Revision = 99
+		*stage.PolicySettings.Settings.DefaultMode = sdk.PolicyModeEnforce
+		*stage.PolicySettings.Settings.EntryMode = sdk.PolicyModeObserve
+		snapshot.PluginGenerations[0].Config[0] = '!'
+		snapshot.PluginGenerations[0].RequiredFeatures[0] = "foreign"
+		snapshot.PluginGenerations[0].HTTPBackendProviders[0].ID = "foreign"
+		for _, ref := range []*model.PolicyRef{snapshot.Rules[0].PolicyRef, snapshot.L4Rules[0].PolicyRef, snapshot.PluginGenerations[0].ManagedNetworkPolicy,
+			snapshot.PluginGenerations[0].ManagedNetworkPolicies["tcp"], snapshot.PluginGenerations[0].ManagedNetworkPolicies["udp"]} {
+			ref.Overlay[0] = '!'
+			ref.OverlayFormat, ref.LegacyPolicyID = "foreign", "foreign"
+			ref.StageModes[0].Stage.PolicyID = "foreign"
+			ref.StageModes[0].Snapshot.Version.Revision = 99
+			*ref.StageModes[0].Snapshot.Settings.DefaultMode = sdk.PolicyModeEnforce
+			*ref.StageModes[0].Snapshot.Settings.EntryMode = sdk.PolicyModeObserve
+		}
+		delete(snapshot.PluginGenerations[0].ManagedNetworkPolicies, "udp")
+	}
+	previous, next := fixture(1), fixture(2)
+	generation := mustGenerationContext(t, previous, next)
+	wantPrevious, wantNext := fixture(1), fixture(2)
+	assertStable := func(boundary string) {
+		t.Helper()
+		if !reflect.DeepEqual(generation.Previous(), wantPrevious) {
+			t.Errorf("%s changed the previous generation policy snapshot", boundary)
+		}
+		if !reflect.DeepEqual(generation.Snapshot(), wantNext) {
+			t.Errorf("%s changed the next generation policy snapshot", boundary)
+		}
+	}
+	mutate(previous)
+	mutate(next)
+	assertStable("constructor input mutation")
+	mutate(generation.Previous())
+	mutate(generation.Snapshot())
+	assertStable("getter result mutation")
+	// A later candidate consumes the active snapshot; mutating its returned
+	// previous view must leave both candidate contexts immutable.
+	later := mustGenerationContext(t, generation.Snapshot(), fixture(3))
+	mutate(later.Previous())
+	mutate(later.Snapshot())
+	assertStable("later generation view mutation")
+	if !reflect.DeepEqual(later.Previous(), wantNext) || !reflect.DeepEqual(later.Snapshot(), fixture(3)) {
+		t.Error("later generation retained mutable policy settings")
+	}
+}
 
 func TestRegistryOrdersModulesByRequiredProviders(t *testing.T) {
 	registry := module.NewRegistry()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -420,42 +421,68 @@ func (s *DatasetService) activate(ctx context.Context, row storage.DatasetSource
 	if err != nil {
 		return err
 	}
-	bindings, err := s.store.DatasetBindings(ctx, row.ID)
+	validate := func(ctx context.Context, tx *storage.GormStore) ([]string, error) {
+		current, err := tx.GetDatasetSource(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		if current.SourceJSON != row.SourceJSON || current.RetrievalJSON != row.RetrievalJSON {
+			return nil, errors.New("dataset source authority changed during activation")
+		}
+		bindings, err := tx.DatasetConsumerBindings(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		classes := [][]pluginsdk.DatasetClassification{}
+		for _, binding := range bindings {
+			var value []pluginsdk.DatasetClassification
+			if json.Unmarshal([]byte(binding.ClassificationsJSON), &value) != nil {
+				return nil, errors.New("dataset binding is corrupt")
+			}
+			classes = append(classes, value)
+		}
+		logical, err := tx.ListDatasetConsumptions(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, binding := range logical {
+			if binding.RecordJSON == "" {
+				continue
+			}
+			var value pluginsdk.DatasetBindingRecord
+			if json.Unmarshal([]byte(binding.RecordJSON), &value) != nil || value.Validate() != nil {
+				return nil, errors.New("logical dataset binding is corrupt")
+			}
+			classes = append(classes, value.Spec.Classifications)
+		}
+		for _, value := range classes {
+			if err := validateDatasetBoundClasses(ctx, index, value); err != nil {
+				return nil, err
+			}
+		}
+		return storage.DatasetTargetIDs(bindings), nil
+	}
+	ids, err := validate(ctx, s.store)
 	if err != nil {
 		return err
 	}
-	for _, binding := range bindings {
-		var classes []pluginsdk.DatasetClassification
-		if json.Unmarshal([]byte(binding.ClassificationsJSON), &classes) != nil {
-			return errors.New("dataset binding is corrupt")
-		}
-		if err := validateDatasetBoundClasses(ctx, index, classes); err != nil {
-			return err
-		}
-	}
-	ids := storage.DatasetTargetIDs(bindings)
-	if len(ids) == 0 {
-		return s.store.ActivateDatasetVersion(ctx, row.ID, digest, map[string]int64{})
-	}
-	_, err = s.executor.Execute(ctx, revision.MutationRequest{OperationID: operationID, Kind: "dataset.activate", Request: map[string]string{"source_id": row.ID, "version_digest": digest}, Targets: configMutationTargets(s.cfg, ids, nil), ResourceState: datasetBindingResourceState(row.ID), Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+	mutate := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 		if err := tx.LockDatasetSource(ctx, row.ID); err != nil {
 			return err
 		}
-		latest, err := tx.DatasetBindings(ctx, row.ID)
+		latest, err := validate(ctx, tx)
 		if err != nil {
 			return err
 		}
-		for _, binding := range latest {
-			var classes []pluginsdk.DatasetClassification
-			if json.Unmarshal([]byte(binding.ClassificationsJSON), &classes) != nil {
-				return errors.New("dataset binding is corrupt")
-			}
-			if err := validateDatasetBoundClasses(ctx, index, classes); err != nil {
-				return err
-			}
+		if !slices.Equal(latest, ids) {
+			return storage.ErrPluginConflict
 		}
 		return tx.ActivateDatasetVersion(ctx, row.ID, digest, revisions)
-	}})
+	}
+	if len(ids) == 0 {
+		return s.store.SecurityTransaction(ctx, func(tx *storage.GormStore) error { return mutate(ctx, tx, map[string]int64{}) })
+	}
+	_, err = s.executor.Execute(ctx, revision.MutationRequest{OperationID: operationID, Kind: "dataset.activate", Request: map[string]string{"source_id": row.ID, "version_digest": digest}, Targets: configMutationTargets(s.cfg, ids, nil), ResourceState: datasetBindingResourceState(row.ID), Mutate: mutate})
 	return err
 }
 

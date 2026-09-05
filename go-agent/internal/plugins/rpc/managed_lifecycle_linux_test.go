@@ -36,6 +36,9 @@ func TestIntegrationManagedLifecycleChild(t *testing.T) {
 	if os.Getenv(sdk.EnvPluginEndpoint) == "" {
 		return
 	}
+	if scope, err := sdk.ExecutionScopeFromEnvironment(); err != nil || scope != sdk.HostScopeAgent || !sdk.AgentExecutionFace() {
+		t.Fatal("managed Agent with HostRuntime selected management UI face")
+	}
 	var listener *sdk.ManagedNetworkHandle
 	client, err := sdk.NewHostRuntimeClientFromEnvironment()
 	if err != nil {
@@ -109,7 +112,7 @@ func TestIntegrationManagedLifecycleChild(t *testing.T) {
 		}()
 		return nil
 	}}
-	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "managed.test", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionManagedNetworkListen, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionScopedSecretRead}, SupportedFeatures: sdk.RequiredRPCFeatures([]string{sdk.PermissionManagedNetworkListen, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionScopedSecretRead}), Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, hooks)
+	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "managed.test", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionManagedNetworkListen, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionScopedSecretRead}, SupportedFeatures: sdk.RPCFeaturesWithExecutionScope(sdk.RequiredRPCFeatures([]string{sdk.PermissionManagedNetworkListen, string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityDatasetResolve), sdk.PermissionScopedSecretRead})), Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, hooks)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1261,6 +1261,18 @@ func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string)
 				Restart: policyProjection.FailurePolicy.Restart, CoreFallback: policyProjection.FailurePolicy.CoreFallback,
 			},
 		}
+		handling, err := pluginsdk.PolicyModeHandlingForManifest(manifest)
+		if err != nil {
+			return nil, err
+		}
+		settings, err := s.PolicySettingsSnapshot(ctx, instance, handling, nil)
+		if err != nil {
+			return nil, err
+		}
+		if settings.Settings.Handling != pluginsdk.PolicyModeHandlingLegacy {
+			stage.PolicySettings = &settings
+		}
+		stage.Automatic = installed.ActiveSourceKind == "official" && pluginsdk.RuntimeProjectsControlPlaneUIAndAgentPolicy(manifest.Runtime) && (kind == "waf" || (kind == "ip" && manifest.ID == "ip-policy"))
 		for _, chainID := range memberships {
 			chain := chains[chainID]
 			if chain == nil {
@@ -3716,6 +3728,9 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 				return err
 			}
 			if len(instanceIDs) > 0 {
+				if err := deletePluginConsumptionTx(tx, instanceIDs); err != nil {
+					return err
+				}
 				if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&QuotaAllocationRow{}).Error; err != nil {
 					return err
 				}
@@ -3970,6 +3985,9 @@ func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation)
 		return err
 	}
 	if err := tx.Where("resource_kind = ? AND resource_id = ?", "plugin_instance", instanceID).Delete(&ResourceBindingRow{}).Error; err != nil {
+		return err
+	}
+	if err := deletePluginConsumptionTx(tx, []string{instanceID}); err != nil {
 		return err
 	}
 	result := tx.Where("id = ? AND plugin_id = ? AND state_version = ?", instanceID, mutation.PluginID, current.StateVersion).Delete(&PluginInstanceRow{})
@@ -4406,7 +4424,10 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		instance.StateVersion = 1
-		return tx.Create(instance).Error
+		if err := tx.Create(instance).Error; err != nil {
+			return err
+		}
+		return initializeNewIPPolicySettings(tx, *instance)
 	}
 	next := *instance
 	next.StateVersion = current.StateVersion + 1
@@ -4747,6 +4768,7 @@ func (s *GormStore) PutPluginInstanceConfigJSON(ctx context.Context, instanceID 
 		result := tx.Model(&PluginInstanceRow{}).Where("id = ?", instance.ID).Updates(map[string]any{
 			"config_json":    string(config),
 			"config_version": instance.ConfigVersion + 1,
+			"state_version":  instance.StateVersion + 1,
 			"updated_at":     now,
 		})
 		if result.Error != nil {

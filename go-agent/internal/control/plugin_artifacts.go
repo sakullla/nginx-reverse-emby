@@ -18,6 +18,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const maxPluginArtifactIdentityBytes = 256
@@ -82,9 +83,7 @@ func (c *SyncClient) preparePluginArtifacts(ctx context.Context, snapshot *model
 		var policyErr error
 		for stageIndex := range definition.Stages {
 			stage := &definition.Stages[stageIndex]
-			stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
-			stage.DeclaredScopes = append([]string(nil), stage.DeclaredScopes...)
-			stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
+			*stage = model.ClonePolicyStage(*stage)
 			if cacheDir == "" {
 				policyErr = errors.New("plugin policy snapshot requires an Agent artifact cache")
 				break
@@ -207,13 +206,14 @@ func validPluginArtifactPackageIdentity(value string) bool {
 }
 
 func clonePluginGeneration(generation model.PluginGeneration) model.PluginGeneration {
+	generation.ManagedNetworkPolicies = model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)
 	if generation.ManagedNetworkPolicy != nil {
-		ref := *generation.ManagedNetworkPolicy
-		ref.Overlay = append([]byte(nil), ref.Overlay...)
-		generation.ManagedNetworkPolicy = &ref
+		generation.ManagedNetworkPolicy = model.ClonePolicyRef(generation.ManagedNetworkPolicy)
 	}
 	generation.Config = append([]byte(nil), generation.Config...)
 	generation.ExtensionPoints = append([]string(nil), generation.ExtensionPoints...)
+	generation.RequiredFeatures = append([]string(nil), generation.RequiredFeatures...)
+	generation.HTTPBackendProviders = append([]pluginsdk.HTTPBackendProviderDescriptor(nil), generation.HTTPBackendProviders...)
 	generation.Grants = append([]model.PluginGrantProjection(nil), generation.Grants...)
 	generation.SecretHandles = append([]model.PluginSecretHandle(nil), generation.SecretHandles...)
 	return generation

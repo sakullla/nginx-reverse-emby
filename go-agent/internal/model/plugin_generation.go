@@ -27,26 +27,27 @@ const (
 // package-manifest metadata. LocalPath is populated only after the Agent has
 // independently materialized and verified Artifact.
 type PluginGeneration struct {
-	ID                   string                                    `json:"id"`
-	InstanceID           string                                    `json:"instance_id"`
-	OperationID          string                                    `json:"operation_id,omitempty"`
-	Revision             int64                                     `json:"revision"`
-	PluginID             string                                    `json:"plugin_id"`
-	PluginVersion        string                                    `json:"plugin_version"`
-	PackageDigest        string                                    `json:"package_digest"`
-	Runtime              PluginRuntimeDescriptor                   `json:"runtime"`
-	Artifact             PluginArtifactDescriptor                  `json:"artifact"`
-	ExtensionPoints      []string                                  `json:"extension_points"`
-	RequiredFeatures     []string                                  `json:"required_features"`
-	HTTPBackendProviders []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
-	ConfigVersion        uint64                                    `json:"config_version"`
-	Config               json.RawMessage                           `json:"config"`
-	ManagedNetworkPolicy *PolicyRef                                `json:"managed_network_policy,omitempty"`
-	Grants               []PluginGrantProjection                   `json:"grants"`
-	SecretHandles        []PluginSecretHandle                      `json:"secret_handles"`
-	ResourceBudget       PluginResourceBudget                      `json:"resource_budget"`
-	Target               PluginTargetBinding                       `json:"target"`
-	FailurePolicy        PluginFailurePolicy                       `json:"failure_policy"`
+	ID                     string                                    `json:"id"`
+	InstanceID             string                                    `json:"instance_id"`
+	OperationID            string                                    `json:"operation_id,omitempty"`
+	Revision               int64                                     `json:"revision"`
+	PluginID               string                                    `json:"plugin_id"`
+	PluginVersion          string                                    `json:"plugin_version"`
+	PackageDigest          string                                    `json:"package_digest"`
+	Runtime                PluginRuntimeDescriptor                   `json:"runtime"`
+	Artifact               PluginArtifactDescriptor                  `json:"artifact"`
+	ExtensionPoints        []string                                  `json:"extension_points"`
+	RequiredFeatures       []string                                  `json:"required_features"`
+	HTTPBackendProviders   []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
+	ConfigVersion          uint64                                    `json:"config_version"`
+	Config                 json.RawMessage                           `json:"config"`
+	ManagedNetworkPolicies map[string]*PolicyRef                     `json:"managed_network_policies,omitempty"`
+	ManagedNetworkPolicy   *PolicyRef                                `json:"managed_network_policy,omitempty"`
+	Grants                 []PluginGrantProjection                   `json:"grants"`
+	SecretHandles          []PluginSecretHandle                      `json:"secret_handles"`
+	ResourceBudget         PluginResourceBudget                      `json:"resource_budget"`
+	Target                 PluginTargetBinding                       `json:"target"`
+	FailurePolicy          PluginFailurePolicy                       `json:"failure_policy"`
 }
 
 type PluginRuntimeDescriptor struct {

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -67,5 +68,93 @@ func TestManagedEntryPolicySnapshotIsolation(t *testing.T) {
 	cloned.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] = '!'
 	if stable.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] != '{' {
 		t.Fatal("runtime clone leaked overlay")
+	}
+}
+
+func TestRuntimeActivePolicySettingsRemainIsolatedAcrossUpdates(t *testing.T) {
+	fixture := func(revision int64) model.Snapshot {
+		defaultMode, entryMode := sdk.PolicyModeObserve, sdk.PolicyModeEnforce
+		settings := sdk.PolicySettingsSnapshot{Version: sdk.PolicySettingsVersion{Revision: uint64(revision), InstanceVersion: 2},
+			Settings: sdk.PolicyModeSettings{Handling: sdk.PolicyModeHandlingRaw, DefaultMode: &defaultMode, EntryMode: &entryMode}}
+		ref := &model.PolicyRef{ID: "chain", OverlayFormat: sdk.PolicyOverlayFormatLegacyWAF, LegacyPolicyID: "existing-waf", Overlay: []byte(`{"mode":"deny"}`),
+			StageModes: []model.PolicyModeBinding{{Stage: sdk.PolicyStageIdentity{Kind: "ip", PolicyID: "default-ip"}, Snapshot: settings}}}
+		return model.Snapshot{Revision: revision,
+			Rules: []model.HTTPRule{{ID: 1, PolicyRef: ref}}, L4Rules: []model.L4Rule{{ID: 2, PolicyRef: ref}},
+			PluginGenerations: []model.PluginGeneration{{ManagedNetworkPolicy: ref, Config: []byte(`{"enabled":true}`),
+				ManagedNetworkPolicies: map[string]*model.PolicyRef{"tcp": ref, "udp": ref},
+				RequiredFeatures:       []string{sdk.RPCFeatureExecutionScopeV1}, HTTPBackendProviders: []sdk.HTTPBackendProviderDescriptor{{ID: "web", DisplayName: "Web"}}}},
+			PluginPolicies: []model.PluginPolicy{{ID: "chain", Stages: []model.PolicyStage{{PolicySettings: &settings,
+				DeclaredScopes: []string{"dataset.query"}, GrantedScopes: []string{"dataset.query"}, ExtensionPoints: []string{"l4.accept"}, Config: []byte(`{"source":"geo"}`)}}}},
+		}
+	}
+	mutations := map[string]func(model.Snapshot){
+		"stage settings": func(s model.Snapshot) {
+			settings := s.PluginPolicies[0].Stages[0].PolicySettings
+			settings.Version.Revision = 99
+			*settings.Settings.DefaultMode = sdk.PolicyModeEnforce
+			*settings.Settings.EntryMode = sdk.PolicyModeObserve
+		},
+		"stage config and scopes": func(s model.Snapshot) {
+			stage := &s.PluginPolicies[0].Stages[0]
+			stage.Config[0] = '!'
+			stage.DeclaredScopes[0], stage.GrantedScopes[0], stage.ExtensionPoints[0] = "foreign", "foreign", "foreign"
+		},
+		"managed config":       func(s model.Snapshot) { s.PluginGenerations[0].Config[0] = '!' },
+		"managed protocol map": func(s model.Snapshot) { delete(s.PluginGenerations[0].ManagedNetworkPolicies, "udp") },
+		"execution features and providers": func(s model.Snapshot) {
+			s.PluginGenerations[0].RequiredFeatures[0] = "foreign"
+			s.PluginGenerations[0].HTTPBackendProviders[0].ID = "foreign"
+		},
+	}
+	for name, selectRef := range map[string]func(model.Snapshot) *model.PolicyRef{
+		"managed entry":     func(s model.Snapshot) *model.PolicyRef { return s.PluginGenerations[0].ManagedNetworkPolicy },
+		"managed TCP entry": func(s model.Snapshot) *model.PolicyRef { return s.PluginGenerations[0].ManagedNetworkPolicies["tcp"] },
+		"managed UDP entry": func(s model.Snapshot) *model.PolicyRef { return s.PluginGenerations[0].ManagedNetworkPolicies["udp"] },
+		"HTTP entry":        func(s model.Snapshot) *model.PolicyRef { return s.Rules[0].PolicyRef },
+		"L4 entry":          func(s model.Snapshot) *model.PolicyRef { return s.L4Rules[0].PolicyRef },
+	} {
+		mutations[name] = func(s model.Snapshot) {
+			ref := selectRef(s)
+			ref.Overlay[0] = '!'
+			ref.OverlayFormat, ref.LegacyPolicyID = "foreign", "foreign"
+			ref.StageModes[0].Stage.PolicyID = "foreign"
+			ref.StageModes[0].Snapshot.Version.Revision = 99
+			*ref.StageModes[0].Snapshot.Settings.DefaultMode = sdk.PolicyModeEnforce
+			*ref.StageModes[0].Snapshot.Settings.EntryMode = sdk.PolicyModeObserve
+		}
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			runtime := NewRuntime()
+			input, want := fixture(1), fixture(1)
+			if err := runtime.Apply(t.Context(), model.Snapshot{}, input); err != nil {
+				t.Fatal(err)
+			}
+			mutate(input)
+			if !reflect.DeepEqual(runtime.ActiveSnapshot(), want) {
+				t.Fatal("Apply retained mutable caller policy state")
+			}
+			mutate(runtime.ActiveSnapshot())
+			if !reflect.DeepEqual(runtime.ActiveSnapshot(), want) {
+				t.Fatal("ActiveSnapshot exposed mutable policy state")
+			}
+			previous := runtime.ActiveSnapshot()
+			if err := runtime.Apply(t.Context(), previous, fixture(2)); err != nil {
+				t.Fatal(err)
+			}
+			mutate(previous)
+			if !reflect.DeepEqual(runtime.ActiveSnapshot(), fixture(2)) {
+				t.Fatal("old generation mutation corrupted the active update")
+			}
+			stable := runtime.ActiveSnapshot()
+			mutate(cloneSnapshot(stable))
+			if !reflect.DeepEqual(stable, fixture(2)) {
+				t.Fatal("runtime clone retained policy aliases")
+			}
+			mutate(MergeSnapshotPayload(model.Snapshot{}, stable))
+			if !reflect.DeepEqual(stable, fixture(2)) {
+				t.Fatal("partial revision merge retained policy aliases")
+			}
+		})
 	}
 }

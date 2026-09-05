@@ -21,6 +21,7 @@ type GenerationSpec struct {
 	Revision          int64
 	Policies          []model.PluginPolicy
 	RequiredPolicyIDs []string
+	Datasets          *DatasetGeneration
 }
 
 // GenerationFactory is the narrow process-to-generation bridge. A factory may
@@ -115,7 +116,7 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	var runtime GenerationRuntime
 	if len(definitions) > 0 && m.factory != nil {
 		runtime, err = m.factory.PrepareGeneration(ctx, GenerationSpec{
-			ID: generationContext.ID(), Revision: generationContext.Revision(), Policies: definitions,
+			ID: generationContext.ID(), Revision: generationContext.Revision(), Policies: definitions, Datasets: datasetGeneration,
 			RequiredPolicyIDs: append([]string(nil), required...),
 		})
 		if err != nil {
@@ -143,6 +144,7 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 		}
 		return nil, err
 	}
+	evaluator.datasets = datasetGeneration
 	datasetOwned = true
 	return &transaction{module: m, runtime: runtime, evaluator: evaluator, datasets: datasetGeneration}, nil
 }
@@ -336,6 +338,15 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		l4Required[id] = struct{}{}
 	}
 	for _, instance := range snapshot.PluginGenerations {
+		for protocol, ref := range instance.ManagedNetworkPolicies {
+			if protocol != "tcp" && protocol != "udp" {
+				return nil, nil, errors.New("invalid managed entry protocol")
+			}
+			if err := validatePolicyRef(ref, rawDefinitions, ExtensionL4); err != nil {
+				return nil, nil, err
+			}
+			l4Required[ref.ID] = struct{}{}
+		}
 		if instance.ManagedNetworkPolicy == nil {
 			continue
 		}
@@ -387,6 +398,11 @@ func RequiredPolicyIDs(snapshot model.Snapshot) []string {
 		}
 	}
 	for _, instance := range snapshot.PluginGenerations {
+		for _, ref := range instance.ManagedNetworkPolicies {
+			if ref != nil && strings.TrimSpace(ref.ID) != "" {
+				required[ref.ID] = struct{}{}
+			}
+		}
 		if instance.ManagedNetworkPolicy != nil {
 			if id := strings.TrimSpace(instance.ManagedNetworkPolicy.ID); id != "" {
 				required[id] = struct{}{}
@@ -412,23 +428,31 @@ func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.Plugin
 	if !ok {
 		return fmt.Errorf("policy %q is unavailable", ref.ID)
 	}
-	// A request ID may legally reach its canonical bound at runtime. Admission
-	// therefore uses that exact worst-case deterministic wire frame so every
-	// published stage can accept every legal rule overlay.
-	frameBytes, err := PolicyEvaluateRequestFrameBytes(
-		extensionPoint,
-		strings.Repeat("r", MaxPolicyRequestIDBytes),
-		ref.Overlay,
-	)
+	if err := validateEntryModeBindings(ref, definition); err != nil {
+		return err
+	}
+	envelope, err := resolveEntryOverlays(ref, definition)
 	if err != nil {
-		return fmt.Errorf("encode policy evaluate request: %w", err)
+		return err
 	}
 	for index, stage := range definition.Stages {
 		if !slices.Contains(stage.ExtensionPoints, extensionPoint) {
-			return fmt.Errorf("policy %q stage %d (%q) does not support extension %q", ref.ID, index, stage.InstanceID, extensionPoint)
+			return fmt.Errorf("policy stage %d does not support %s", index, extensionPoint)
+		}
+		projection, err := stageModeProjection(stage, ref)
+		if err != nil {
+			return err
+		}
+		payload, err := selectedStageOverlay(envelope, projection)
+		if err != nil {
+			return err
+		}
+		frameBytes, err := PolicyEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		if err != nil {
+			return err
 		}
 		if err := AdmitPolicyInputFrame(stage.ResourceBudget, frameBytes); err != nil {
-			return fmt.Errorf("policy %q stage %d (%q) evaluate request: %w", ref.ID, index, stage.InstanceID, err)
+			return err
 		}
 	}
 	return nil
