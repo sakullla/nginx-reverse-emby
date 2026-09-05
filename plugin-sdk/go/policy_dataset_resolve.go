@@ -124,13 +124,17 @@ func UnmarshalPolicyDatasetResolveResponse(frame []byte, request PolicyDatasetRe
 // enclosing invocation context must be passed through, so nested resolution
 // cannot reset its admission deadline. Returned identity is checked against
 // actual Host authorization before any reference is delivered to the guest.
+// Connectionless initialization has no EntryID: resolve authenticates only the
+// resource's instance/generation and grants. Source read/query retain their
+// separate connection-entry validation.
 func CallPolicyDatasetResolveHost(ctx context.Context, host DatasetResolveHost, authorization PolicyHostCallAuthorization, frame []byte, budget PolicyV1ResourceBudget) ([]byte, error) {
 	if err := budget.Validate(); err != nil {
 		return nil, err
 	}
 	ctx, stop := context.WithTimeout(ctx, time.Duration(budget.TimeoutMilliseconds)*time.Millisecond)
 	defer stop()
-	if err := authorization.Validate(); err != nil {
+	binding := DatasetResolveBinding{InstanceID: authorization.InstanceID, Generation: authorization.Generation}
+	if err := binding.Validate(); err != nil {
 		return nil, err
 	}
 	request, err := UnmarshalPolicyDatasetResolveRequest(frame, int(budget.InputFrameBytes))
@@ -142,7 +146,7 @@ func CallPolicyDatasetResolveHost(ctx context.Context, host DatasetResolveHost, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(request.Budget.MaxDurationMicros)*time.Microsecond)
 	defer cancel()
-	reference, err := resolveDatasetForCaller(ctx, host, DatasetResolveAuthorization{Binding: DatasetResolveBinding{InstanceID: authorization.InstanceID, Generation: authorization.Generation}, DeclaredScopes: authorization.DeclaredScopes, GrantedScopes: authorization.GrantedScopes}, DatasetResolveRequest{SourceID: request.SourceID})
+	reference, err := resolveDatasetForCaller(ctx, host, DatasetResolveAuthorization{Binding: binding, DeclaredScopes: authorization.DeclaredScopes, GrantedScopes: authorization.GrantedScopes}, DatasetResolveRequest{SourceID: request.SourceID})
 	if err != nil {
 		return nil, err
 	}

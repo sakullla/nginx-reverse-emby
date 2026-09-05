@@ -3,6 +3,7 @@ package pluginsdk
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -200,5 +201,89 @@ func TestPolicyDatasetResolveHostBindsCallerAndEnclosingBudget(t *testing.T) {
 	stop()
 	if _, err := CallPolicyDatasetResolveHost(canceled, host, policyAuth(fresh), frame, budget); !errors.Is(err, context.Canceled) {
 		t.Fatal("enclosing cancellation was ignored", err)
+	}
+}
+
+func TestPolicyDatasetResolveInitializationDoesNotRequireConnectionEntry(t *testing.T) {
+	request := policyResolveTestRequest()
+	frame, err := MarshalPolicyDatasetResolveRequest(request, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := PolicyHostCallAuthorization{InstanceID: "instance", Generation: "generation", DeclaredScopes: []string{string(CapabilityDatasetResolve), string(CapabilityDatasetQuery)}, GrantedScopes: []string{string(CapabilityDatasetResolve), string(CapabilityDatasetQuery)}}
+	binding := DatasetResolveBinding{InstanceID: auth.InstanceID, Generation: auth.Generation}
+	reference := datasetResolveTestReference(binding, "a")
+	if _, err := MarshalPolicyDatasetResolveResponse(PolicyDatasetResolveResponse{Reference: &reference}, request); err != nil {
+		t.Fatal(err)
+	}
+	budget := PolicyV1ResourceBudget{TimeoutMilliseconds: 2, MemoryBytes: 1 << 20, Concurrency: 1, InputFrameBytes: 4096, OutputFrameBytes: 4096}
+	calls := 0
+	host := datasetResolveHostFunc(func(_ context.Context, actual DatasetResolveBinding, actualRequest DatasetResolveRequest) (DatasetReference, error) {
+		calls++
+		if actual != binding || actualRequest.SourceID != request.SourceID {
+			t.Error("init resolution lost authenticated binding")
+		}
+		return reference, nil
+	})
+	encoded, err := CallPolicyDatasetResolveHost(t.Context(), host, auth, frame, budget)
+	if err != nil {
+		t.Fatalf("connectionless init could not resolve its dataset: %v", err)
+	}
+	response, err := UnmarshalPolicyDatasetResolveResponse(encoded, request)
+	if err != nil || response.Reference == nil || *response.Reference != reference || calls != 1 {
+		t.Fatalf("init reference did not roundtrip: %+v %v", response, err)
+	}
+	for name, mutate := range map[string]func(*PolicyHostCallAuthorization){
+		"instance":            func(a *PolicyHostCallAuthorization) { a.InstanceID = "" },
+		"generation":          func(a *PolicyHostCallAuthorization) { a.Generation = "" },
+		"declarations":        func(a *PolicyHostCallAuthorization) { a.DeclaredScopes = nil },
+		"grants":              func(a *PolicyHostCallAuthorization) { a.GrantedScopes = nil },
+		"resolve declaration": func(a *PolicyHostCallAuthorization) { a.DeclaredScopes = []string{string(CapabilityDatasetQuery)} },
+		"query grant":         func(a *PolicyHostCallAuthorization) { a.GrantedScopes = []string{string(CapabilityDatasetResolve)} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := auth
+			mutate(&invalid)
+			if _, err := CallPolicyDatasetResolveHost(t.Context(), host, invalid, frame, budget); err == nil {
+				t.Fatal("incomplete init authority accepted")
+			}
+			if calls != 1 {
+				t.Fatal("invalid init authority reached registry")
+			}
+		})
+	}
+	// Resolving resources is connectionless; reading/querying the actual source
+	// still requires an authenticated entry and the trusted-source grant.
+	query := PolicyDatasetQueryRequest{Reference: reference, Classifications: []DatasetClassification{{Name: "cn-44", Kind: DatasetClassificationRegion}}, Budget: request.Budget}
+	queryFrame, err := MarshalPolicyDatasetQueryRequest(query, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryResult := DatasetQueryResponse{Reference: reference, Status: DatasetQueryOK, Matches: []DatasetMatch{{Index: 0, Coverage: DatasetCovered}}}
+	if _, err := MarshalPolicyDatasetQueryResponse(queryResult, query); err != nil {
+		t.Fatal(err)
+	}
+	sourceAuth := auth
+	sourceAuth.DeclaredScopes = []string{string(CapabilityDatasetQuery), string(CapabilityPolicyTrustedSource)}
+	sourceAuth.GrantedScopes = sourceAuth.DeclaredScopes
+	queryCalls, sourceCalls := 0, 0
+	queryHost := policyDatasetHostFunc(func(context.Context, PolicyDatasetQueryRequest) (DatasetQueryResponse, error) {
+		queryCalls++
+		return queryResult, nil
+	})
+	source := PolicyTrustedSource{InstanceID: auth.InstanceID, Generation: auth.Generation, EntryID: "entry", PeerAddress: netip.MustParseAddr("192.0.2.1"), SourceAddress: netip.MustParseAddr("192.0.2.1"), Authority: PolicySourceSocket}
+	sourceHost := policySourceHostFunc(func(context.Context) (PolicyTrustedSource, error) { sourceCalls++; return source, nil })
+	if _, err := CallPolicyDatasetHost(t.Context(), queryHost, sourceAuth, queryFrame, budget); err == nil || queryCalls != 0 {
+		t.Fatal("source query no longer requires an entry")
+	}
+	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, sourceAuth, nil, budget); err == nil || sourceCalls != 0 {
+		t.Fatal("source read no longer requires an entry")
+	}
+	sourceAuth.EntryID = "entry"
+	if _, err := CallPolicyDatasetHost(t.Context(), queryHost, sourceAuth, queryFrame, budget); err != nil {
+		t.Fatal("valid connected source query regressed", err)
+	}
+	if _, err := CallPolicyTrustedSourceHost(t.Context(), sourceHost, sourceAuth, nil, budget); err != nil {
+		t.Fatal("valid connected source read regressed", err)
 	}
 }
