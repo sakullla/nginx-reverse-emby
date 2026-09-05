@@ -38,7 +38,7 @@ func (capability HostCapability) Validate() error {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
 		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic,
-		CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
+		CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
 		CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
 		return nil
 	default:

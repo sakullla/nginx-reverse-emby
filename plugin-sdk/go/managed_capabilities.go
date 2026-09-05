@@ -7,6 +7,9 @@ import "fmt"
 // A hybrid RPC/control-plane + Agent policy package may declare permissions for
 // both faces; the runtime grants only the effects usable on the current face.
 func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapability) error {
+	if _, err := PolicyModeHandlingForManifest(manifest); err != nil {
+		return err
+	}
 	available := make(map[HostCapability]bool, len(supported))
 	for _, capability := range supported {
 		if err := capability.Validate(); err != nil {
@@ -28,7 +31,7 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 			}
 		}
 		switch capability {
-		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
+		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
 			if !available[capability] {
 				return fmt.Errorf("Host does not support required managed capability %q", capability)
 			}
@@ -46,6 +49,8 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 // DatasetRuntimeCapability maps public operations to their explicit grant.
 func DatasetRuntimeCapability(operation string) (HostCapability, error) {
 	switch operation {
+	case HostRuntimeDatasetBinding:
+		return CapabilityDatasetBind, nil
 	case HostRuntimeDatasetResolve:
 		return CapabilityDatasetResolve, nil
 	case HostRuntimeDatasetOpen, HostRuntimeDatasetQuery:

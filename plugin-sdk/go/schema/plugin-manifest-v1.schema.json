@@ -31,7 +31,7 @@
     "cleanup": {"$ref": "#/$defs/cleanup"},
     "ui_route_id": {"type": "string"},
     "resource_group_id": {"type": "string"},
-    "metadata": {"type": "object", "additionalProperties": {"type": "string"}}
+    "metadata": {"type": "object", "properties": {"policy.mode.handling": {"enum": ["legacy", "raw-decision-v1", "legacy-waf-v1"]}}, "additionalProperties": {"type": "string"}}
   },
   "$defs": {
     "compatibility": {
@@ -77,7 +77,7 @@
         "goarch": {"enum": ["amd64", "arm64"]}
       }
     },
-    "permission_name": {"enum": ["agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "http.outbound", "network.full", "l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "http.rule", "l4.rule", "channel.reverse", "ui.dynamic", "dns.manage", "policy.atomic-state", "policy.monotonic-clock", "policy.trusted-source", "service.revocable-resource-handle", "ui.dynamic-actions", "dataset.query", "dataset.resolve", "dataset.manage", "network.managed.listen", "network.managed.dial", "secret.scoped.read", "secret.scoped.write"]},
+    "permission_name": {"enum": ["agent.read", "agent.configure", "event.emit", "http.inspect", "http.respond", "http.outbound", "network.full", "l4.inspect", "l4.respond", "policy.read", "policy.write", "secret.use", "storage.read", "storage.write", "http.rule", "l4.rule", "channel.reverse", "ui.dynamic", "dns.manage", "policy.atomic-state", "policy.monotonic-clock", "policy.trusted-source", "service.revocable-resource-handle", "ui.dynamic-actions", "dataset.query", "dataset.resolve", "dataset.manage", "dataset.bind", "policy.control", "network.managed.listen", "network.managed.dial", "secret.scoped.read", "secret.scoped.write"]},
     "http_backend_provider": {
       "type": "object", "additionalProperties": false, "required": ["id", "display_name"],
       "properties": {

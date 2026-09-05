@@ -257,3 +257,95 @@ claiming a successful non-match; routing failure cannot claim direct fallback.
 `PolicyDiagnosticContext` supplements resolved events with Host-owned entry,
 source, node, generation, region, rule and dataset version facts for authorized
 administrators. No guest free text, request payload or credential is introduced.
+
+## Public policy consumption and execution scope
+
+`dataset.binding` is the RPC-only management operation behind
+`HostRuntimeClient.ManageDatasetBinding`. It requires the signed and granted
+`dataset.bind` capability and additive `rpc.dataset-bindings.v1` feature.
+`policy.control` similarly requires `policy.control` and
+`rpc.policy-controls.v1`. Older Hosts must refuse these declared capabilities;
+existing query/open/resolve and the original six policy imports are unchanged.
+The bounded JSON payload definitions are available through
+`PolicyConsumptionSchemaV1()` and `go/schema/policy-consumption-v1.schema.json`.
+These operations use HostRuntime JSON; they introduce no protobuf imports.
+
+A binding request names the **execution instance** explicitly, together with its
+source, exact immutable version digest and classifications. The management
+caller can own a different execution instance, but the Host must resolve its
+actual plugin ownership, resource group, live grants and execution targets.
+`targets.mode=effective` uses that instance's actual Host projection;
+`targets.mode=subset` contains sorted, unique, explicitly authorized Agent IDs.
+An empty RPC target list stays empty. A policy's all-Agent projection may include
+the embedded local Agent, and an explicit local target is valid. This does not
+make a caller equivalent to every target selected by `plugin.call`.
+
+`bind` creates an absent source-consumption record. `replace` and `unbind`
+compare its persisted revision; `inspect` obtains current status. Mutations carry
+one operation ID in both the HostRuntime envelope and request. The Host helper
+validates both before dispatch. The Host must check all current authorization,
+classification/version availability and revision comparisons **inside the write
+transaction**, reserve output/storage budgets before commit, publish one immutable
+Agent revision, and persist one outcome keyed by caller plugin, caller instance,
+operation ID and complete request digest. Store the original resolved target set
+with that outcome. Repeating the same operation replays its original ACK, including
+pending status; it does not repeat the mutation or silently address new targets.
+An old version/catalog is unnecessary for a historical replay, but current caller,
+instance, capability and source authority are still checked. Use `inspect` for
+fresh applied state. These SDK helpers define the boundary; production storage,
+transactional replay, target projection and Agent wiring are Host responsibilities.
+
+Desired binding records and per-node desired/applied/last-good values are separate.
+An offline or preparing node cannot be reported as applied. Applied data includes
+the actual runtime generation and immutable configuration revision. Unbind may
+remove desired state while old applied data remains until removal acknowledgement.
+Removed targets remain in `BoundAgentIDs` while cleanup is pending. The effective
+selector can legitimately resolve to zero nodes; it still persists desired intent
+and must not fabricate applied nodes. Frames are capped at 64 KiB, each selection
+at 256 Agents, affected status unions at 512, and selectors at the SDK query bound.
+Hosts must honor the enclosing context and a 30-second mutation ceiling.
+
+When rules and binding versions must move together, include `InstanceUpdate` on
+the binding mutation. It carries opaque Config and/or `PolicyDefaultSettingsUpdate`,
+with the shared instance version and separate policy-settings revision. Check
+binding, instance and settings CAS values before **any** write; commit Config,
+binding and defaults together, publish one Agent snapshot, and store one replayable
+outcome. Config requires `storage.write`; typed defaults also require
+`policy.control` and a compatible signed mode-handling declaration. Config-only
+updates do not change the policy-settings clock. Do not parse business rules in
+the Host or work around incompatible versions using separate intermediate commits.
+
+Typed policy settings use `observe` or `enforce`, attached to an owned stage
+(kind plus policy ID), and optionally an exact node/entry-kind/entry-ID. The signed
+manifest metadata key `policy.mode.handling` declares `raw-decision-v1` or the
+explicit `legacy-waf-v1` bridge; absence preserves `legacy`. Empty and unsupported
+values are rejected. `ProjectAgentPolicy` includes this validated declaration.
+The metadata describes guest behavior, not the administrator's chosen mode.
+`policy.control` can commit Config and trusted instance defaults atomically;
+its settings clock and shared instance clock both advance. Ordinary Config updates
+must advance that same shared clock. Entry overrides cannot lower an enforced
+instance default or affect another stage. Public stage selectors may omit policy ID
+only when the Host resolves it from the selected owned instance.
+
+Raw-decision guests always return their actual allow/deny decision. The explicit
+legacy-WAF bridge sends the existing `{"mode":"deny"}` overlay even for typed
+observe settings, then the Host translates a deny into checked `would-deny`.
+Untyped legacy WAF/IP/rate payload handling remains unchanged. The Host must use
+`ApplyPolicyMode` against trusted generation settings, never guess opaque
+`Config.mode` or equate static `fail-open` with observe. Failed observe checks
+remain unchecked and visibly failed, continue subsequent stages, and cannot clear
+an earlier/global denial; enforced failed checks deny. Overlay format and legacy
+owner identity come from persisted Host context, never payload field guessing.
+
+`NRE_PLUGIN_EXECUTION_SCOPE` is authored by the Host launcher and accepts exactly
+`control-plane` or `agent`. Hosts must prevent user environment overrides.
+`ExecutionScopeFromEnvironment` rejects an empty or invalid explicit value;
+`RunRPCEntrypoint` validates it before startup. `AgentExecutionFace` prioritizes it,
+so an Agent with a HostRuntime endpoint remains an Agent; invalid explicit scope
+returns false and must be surfaced by the strict parser/entrypoint. Only an absent
+key uses the legacy endpoint heuristic. This value selects a client face and is
+**not authorization evidence**. Hosts injecting it request
+`RequiredRPCFeaturesForExecutionScope`; updated guests can advertise support using
+`RPCFeaturesWithExecutionScope`. The additive `rpc.execution-scope.v1` feature is
+not automatically required by legacy `RequiredRPCFeatures` calls. Actual Host
+process injection and production policy/data wiring follow in the consumer task.

@@ -12,6 +12,8 @@ const (
 	RPCFeatureDatasetResolveV1 = "rpc.dataset-resolve.v1"
 	RPCFeatureManagedNetworkV1 = "rpc.managed-network.v1"
 	RPCFeatureScopedSecretsV1  = "rpc.scoped-secrets.v1"
+	RPCFeaturePolicyControlsV1 = "rpc.policy-controls.v1"
+	RPCFeatureExecutionScopeV1 = "rpc.execution-scope.v1"
 )
 
 // RequiredRPCFeatures projects protocol extensions from signed/granted
@@ -22,6 +24,10 @@ func RequiredRPCFeatures(scopes []string) []string {
 		switch HostCapability(strings.TrimSpace(scope)) {
 		case CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityUIDynamic:
 			features = appendRPCFeature(features, RPCFeatureDurableActionsV1)
+		case CapabilityDatasetBind:
+			features = appendRPCFeature(features, RPCFeatureDatasetBindingsV1)
+		case CapabilityPolicyControl:
+			features = appendRPCFeature(features, RPCFeaturePolicyControlsV1)
 		case CapabilityDatasetQuery, CapabilityDatasetManage:
 			features = appendRPCFeature(features, RPCFeatureDatasetsV1)
 		case CapabilityDatasetResolve:
@@ -95,9 +101,25 @@ func ValidateRPCFeatures(required, provided []string) error {
 
 func knownRPCFeature(feature string) bool {
 	switch feature {
-	case RPCFeatureDurableActionsV1, RPCFeatureHTTPBackendProviderV1, RPCFeatureDatasetsV1, RPCFeatureDatasetResolveV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1:
+	case RPCFeatureDurableActionsV1, RPCFeatureHTTPBackendProviderV1, RPCFeatureDatasetsV1, RPCFeatureDatasetResolveV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1, RPCFeatureDatasetBindingsV1, RPCFeaturePolicyControlsV1, RPCFeatureExecutionScopeV1:
 		return true
 	default:
 		return false
 	}
+}
+
+// RequiredRPCFeaturesForExecutionScope is used when a Host injects an explicit
+// scope. A guest not supporting the scope protocol must fail admission rather
+// than silently select the wrong execution face. Legacy projection is unchanged.
+func RequiredRPCFeaturesForExecutionScope(scopes, extensions []string, scope string) ([]string, error) {
+	if _, err := ResolveExecutionScope(scope, true, ""); err != nil {
+		return nil, err
+	}
+	return appendRPCFeature(RequiredRPCFeaturesForExtensions(scopes, extensions), RPCFeatureExecutionScopeV1), nil
+}
+
+// RPCFeaturesWithExecutionScope advertises support without demanding it from a
+// legacy Host. The actual handshake still acknowledges only requested features.
+func RPCFeaturesWithExecutionScope(features []string) []string {
+	return appendRPCFeature(append([]string(nil), features...), RPCFeatureExecutionScopeV1)
 }

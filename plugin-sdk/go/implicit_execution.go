@@ -1,7 +1,6 @@
 package pluginsdk
 
 import (
-	"os"
 	"strings"
 )
 
@@ -69,6 +68,10 @@ func ProjectAgentPolicy(manifest Manifest) (AgentPolicyProjection, bool) {
 	if !ok {
 		return AgentPolicyProjection{}, false
 	}
+	handling, err := PolicyModeHandlingForManifest(manifest)
+	if err != nil {
+		return AgentPolicyProjection{}, false
+	}
 	budget := manifest.ResourceBudget
 	failure := manifest.FailurePolicy
 	if manifest.Runtime.Policy != nil {
@@ -77,6 +80,7 @@ func ProjectAgentPolicy(manifest Manifest) (AgentPolicyProjection, bool) {
 	}
 	policyKind := strings.TrimSpace(manifest.Runtime.PolicyKind)
 	return AgentPolicyProjection{
+		ModeHandling:    handling,
 		Kind:            face.Kind,
 		ABI:             face.ABI,
 		HostScope:       face.HostScope,
@@ -91,6 +95,7 @@ func ProjectAgentPolicy(manifest Manifest) (AgentPolicyProjection, bool) {
 // AgentPolicyProjection is the wasm-policy face consumed by Agent
 // PluginPolicies. It is not a second durable plugin_id.
 type AgentPolicyProjection struct {
+	ModeHandling    PolicyModeHandling
 	Kind            string
 	ABI             string
 	HostScope       string
@@ -132,7 +137,7 @@ func projectAgentPolicyExtensionPoints(extensionPoints []string, policyKind stri
 // The host auto-starts the management face. Execution-face Agents are only
 // those listed in explicit instance targets. The plugin UI does not configure
 // the package onto the Agent as an HTTP backend. The embedded local
-// management Agent is never an execution target.
+// management Agent is a valid execution target when explicitly selected.
 func RuntimeImplicitRemoteAgentExecution(runtime Runtime) bool {
 	return RuntimeProjectsAgentRPC(runtime) && RuntimeDeclaresHostScope(runtime, HostScopeControlPlane)
 }
@@ -162,9 +167,10 @@ func InstanceTargetsRemoteAgent(runtime Runtime, explicitTargets []string, agent
 	return false
 }
 
-// AgentExecutionFace is true when this process has no control-plane host
-// runtime endpoint. Dual-face packages skip UI on that face so the Agent
-// listener does not race the management page.
+// AgentExecutionFace selects the explicit Host-authored scope first. An Agent
+// can have a HostRuntime endpoint. Invalid explicit scope fails closed; callers
+// should surface ExecutionScopeFromEnvironment errors during startup.
 func AgentExecutionFace() bool {
-	return strings.TrimSpace(os.Getenv(EnvPluginHostEndpoint)) == ""
+	scope, err := ExecutionScopeFromEnvironment()
+	return err == nil && scope == HostScopeAgent
 }

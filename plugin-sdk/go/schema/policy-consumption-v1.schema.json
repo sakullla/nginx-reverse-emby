@@ -1,0 +1,1043 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sakullla/nginx-reverse-emby/plugin-sdk/schema/policy-consumption-v1.schema.json",
+  "title": "NRE public policy consumption JSON contracts v1",
+  "description": "JSON payloads for dataset.binding and policy.control. Host authority, CAS, selected-target matching, frame byte budgets and declared/granted scopes are additionally enforced by the SDK helpers. These are not new policy/v1 protobuf imports.",
+  "$defs": {
+    "ExecutionTargetSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "effective",
+            "subset"
+          ]
+        },
+        "agent_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "minItems": 0,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "effective"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "agent_ids": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "agent_ids"
+            ],
+            "properties": {
+              "agent_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "DatasetAttribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9!][A-Za-z0-9_.!@+-]{0,127}$"
+        },
+        "boolean": {
+          "type": "boolean"
+        },
+        "integer": {
+          "type": "integer"
+        },
+        "negate": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "boolean"
+          ],
+          "not": {
+            "required": [
+              "integer"
+            ]
+          }
+        },
+        {
+          "required": [
+            "integer"
+          ],
+          "not": {
+            "required": [
+              "boolean"
+            ]
+          }
+        }
+      ]
+    },
+    "DatasetClassification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.!@+-]{0,127}$"
+        },
+        "kind": {
+          "enum": [
+            "country",
+            "region",
+            "cidr",
+            "domain"
+          ]
+        },
+        "attributes": {
+          "type": "array",
+          "maxItems": 32,
+          "minItems": 0,
+          "items": {
+            "$ref": "#/$defs/DatasetAttribute"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "not": {
+                  "const": "domain"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "DatasetBindingSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "classifications": {
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/DatasetClassification"
+          }
+        }
+      },
+      "required": [
+        "version_digest",
+        "classifications"
+      ]
+    },
+    "PolicyStageIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "ip",
+            "rate",
+            "waf"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "PolicyDefaultSettingsUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage": {
+          "$ref": "#/$defs/PolicyStageIdentity"
+        },
+        "mode": {
+          "enum": [
+            "observe",
+            "enforce"
+          ]
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "required": [
+        "stage",
+        "mode",
+        "expected_revision"
+      ]
+    },
+    "DatasetBindingInstanceUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551614
+        },
+        "config": {
+          "type": "object"
+        },
+        "policy_defaults": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyDefaultSettingsUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "config"
+          ]
+        },
+        {
+          "required": [
+            "policy_defaults"
+          ]
+        }
+      ]
+    },
+    "DatasetBindingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "bind",
+            "replace",
+            "unbind",
+            "inspect"
+          ]
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "targets": {
+          "$ref": "#/$defs/ExecutionTargetSelection"
+        },
+        "spec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetBindingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "instance_update": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetBindingInstanceUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "instance_id",
+        "source_id",
+        "targets"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "inspect"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "operation_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "expected_revision"
+                  ]
+                }
+              ]
+            },
+            "properties": {
+              "spec": {
+                "type": "null"
+              },
+              "instance_update": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "operation_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "bind",
+                  "replace"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "spec"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "spec"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "replace",
+                  "unbind"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "expected_revision"
+            ],
+            "properties": {
+              "expected_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 18446744073709551614
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "bind"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "expected_revision": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "DatasetBindingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551614
+        },
+        "targets": {
+          "$ref": "#/$defs/ExecutionTargetSelection"
+        },
+        "spec": {
+          "$ref": "#/$defs/DatasetBindingSpec"
+        }
+      },
+      "required": [
+        "instance_id",
+        "source_id",
+        "revision",
+        "targets",
+        "spec"
+      ]
+    },
+    "RuntimeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Code": {
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "Message": {
+          "type": "string"
+        },
+        "Retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "Code",
+        "Message",
+        "Retryable"
+      ]
+    },
+    "DatasetBindingTargetStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "state": {
+          "enum": [
+            "applied",
+            "unbound",
+            "pending",
+            "failed",
+            "offline"
+          ]
+        },
+        "desired": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetBindingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetBindingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_good": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetBindingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "config_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "agent_id",
+        "state"
+      ]
+    },
+    "DatasetBindingResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "desired": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetBindingRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "maxItems": 512,
+          "minItems": 0,
+          "items": {
+            "$ref": "#/$defs/DatasetBindingTargetStatus"
+          }
+        },
+        "instance_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "policy_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "required": [
+        "instance_id",
+        "source_id",
+        "revision",
+        "targets"
+      ]
+    },
+    "PolicyEntryTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "http-rule",
+            "tcp-rule",
+            "udp-rule",
+            "plugin-tcp",
+            "plugin-udp"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "node_id",
+        "kind",
+        "id"
+      ]
+    },
+    "PolicyModeSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handling": {
+          "enum": [
+            "legacy",
+            "raw-decision-v1",
+            "legacy-waf-v1"
+          ]
+        },
+        "default_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "observe",
+                "enforce"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "observe",
+                "enforce"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "handling"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "handling": {
+                "const": "legacy"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "default_mode"
+                  ]
+                },
+                {
+                  "required": [
+                    "entry_mode"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "default_mode"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "default_mode": {
+                "const": "enforce"
+              }
+            },
+            "required": [
+              "default_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entry_mode": {
+                "const": "enforce"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PolicyControlRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "inspect",
+            "replace-instance",
+            "replace-entry",
+            "reset-entry"
+          ]
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "stage": {
+          "$ref": "#/$defs/PolicyStageIdentity"
+        },
+        "entry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyEntryTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "enum": [
+            "observe",
+            "enforce"
+          ]
+        },
+        "expected_revision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_instance_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551614
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "stage"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "inspect"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "operation_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "mode"
+                  ]
+                },
+                {
+                  "required": [
+                    "config"
+                  ]
+                }
+              ]
+            },
+            "properties": {
+              "expected_revision": {
+                "type": "null"
+              },
+              "expected_instance_version": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "operation_id",
+              "expected_revision",
+              "expected_instance_version"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "replace-entry",
+                  "reset-entry"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "entry"
+            ],
+            "not": {
+              "required": [
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "replace-instance",
+                  "replace-entry"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ]
+          }
+        }
+      ]
+    },
+    "PolicySettingsVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "instance_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551614
+        }
+      },
+      "required": [
+        "revision",
+        "instance_version"
+      ]
+    },
+    "PolicySettingsSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/PolicySettingsVersion"
+        },
+        "settings": {
+          "$ref": "#/$defs/PolicyModeSettings"
+        }
+      },
+      "required": [
+        "version",
+        "settings"
+      ]
+    },
+    "PolicySettingsNodeStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "enum": [
+            "applied",
+            "preparing",
+            "unavailable",
+            "failed"
+          ]
+        },
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicySettingsSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "failure": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase"
+      ]
+    },
+    "PolicyControlResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "stage": {
+          "$ref": "#/$defs/PolicyStageIdentity"
+        },
+        "entry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyEntryTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "desired": {
+          "$ref": "#/$defs/PolicySettingsSnapshot"
+        },
+        "node": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicySettingsNodeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "instance_id",
+        "stage",
+        "desired"
+      ]
+    },
+    "PolicyStageModeProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage": {
+          "$ref": "#/$defs/PolicyStageIdentity"
+        },
+        "settings": {
+          "$ref": "#/$defs/PolicyModeSettings"
+        }
+      },
+      "required": [
+        "stage",
+        "settings"
+      ]
+    }
+  }
+}
