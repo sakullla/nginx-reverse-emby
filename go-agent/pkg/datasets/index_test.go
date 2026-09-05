@@ -19,6 +19,89 @@ import (
 func testInput(format sdk.DatasetFormat, data []byte) Input {
 	return Input{Source: sdk.DatasetSource{ID: "test-source", Name: "Test source", Format: format}, Revision: "fixed-revision", FetchedAt: "2026-09-05T00:00:00Z", ExpectedDigest: digest(data), Data: data}
 }
+
+func TestMixedCaseClassificationsCompileReloadAndKeepStableDigests(t *testing.T) {
+	for _, names := range [][]string{{"US", "cn"}, {"cn", "US"}, {"us", "CN"}, {"CN", "us"}} {
+		t.Run(strings.Join(names, "-"), func(t *testing.T) {
+			groups := make([]CIDRClassification, 0, len(names))
+			for _, name := range names {
+				prefix := "192.0.2.0/24"
+				if strings.EqualFold(name, "us") {
+					prefix = "198.51.100.0/24"
+				}
+				groups = append(groups, CIDRClassification{Name: name, Kind: sdk.DatasetClassificationCountry, CIDRs: []string{prefix}})
+			}
+			data, err := json.Marshal(CIDRDocument{Schema: CIDRSchema, Classifications: groups})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := testInput(sdk.DatasetFormatCIDR, data)
+			index, err := Compile(t.Context(), input, Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertIndexCatalogRoundtrip(t, index)
+			encoded, err := index.MarshalBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadIndex(t.Context(), encoded, Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reencoded, err := loaded.MarshalBinary()
+			if err != nil || !bytes.Equal(encoded, reencoded) || loaded.Version() != index.Version() {
+				t.Fatal("own serialized index changed bytes or immutable digests on reload", err)
+			}
+			again, err := Compile(t.Context(), input, Limits{})
+			if err != nil || again.Version() != index.Version() {
+				t.Fatal("identical input produced unstable immutable digests", err)
+			}
+			page, err := loaded.Catalog(sdk.DatasetCatalogRequest{SourceID: index.Version().SourceID, VersionDigest: index.Version().Digest, Limit: 2})
+			if err != nil || len(page.Classifications) != 2 || page.Classifications[0].Classification.Name != "cn" || page.Classifications[1].Classification.Name != "us" {
+				t.Fatalf("noncanonical normalized ordering: %+v %v", page, err)
+			}
+			if index.Version().RawDigest != digest(data) {
+				t.Fatal("normalization changed original source integrity evidence")
+			}
+		})
+	}
+}
+
+func TestNormalizedClassificationOrderingHasStableIndexIdentity(t *testing.T) {
+	// Hold provenance fixed when comparing equivalent parser output. Different
+	// raw source documents must still retain their own RawDigest in production.
+	metadata := provenance{Source: sdk.DatasetSource{ID: "source", Name: "Source", Format: sdk.DatasetFormatCIDR}, Revision: "fixed", FetchedAt: "2026-09-05T00:00:00Z", RawDigest: "sha256:" + strings.Repeat("a", 64)}
+	var expected sdk.DatasetVersion
+	var expectedBytes []byte
+	for _, names := range [][]string{{"US", "cn"}, {"cn", "US"}, {"us", "CN"}, {"CN", "us"}} {
+		groups := make([]groupWire, 0, 2)
+		for _, name := range names {
+			prefix := "192.0.2.0/24"
+			if strings.EqualFold(name, "us") {
+				prefix = "198.51.100.0/24"
+			}
+			groups = append(groups, groupWire{Name: name, Kind: sdk.DatasetClassificationCountry, Prefixes: []string{prefix}})
+		}
+		index, err := buildIndex(t.Context(), indexWire{Schema: indexSchema, Provenance: metadata, Groups: groups}, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := index.MarshalBinary()
+		if expectedBytes == nil {
+			expectedBytes = encoded
+			expected = index.Version()
+		} else if !bytes.Equal(encoded, expectedBytes) || index.Version() != expected {
+			t.Fatal("equivalent normalized group order changed canonical artifact/version digests")
+		}
+	}
+	for _, names := range [][]string{{"CN", "cn"}, {"cn", "CN"}} {
+		data, _ := json.Marshal(CIDRDocument{Schema: CIDRSchema, Classifications: []CIDRClassification{{Name: names[0], Kind: sdk.DatasetClassificationCountry, CIDRs: []string{"192.0.2.0/24"}}, {Name: names[1], Kind: sdk.DatasetClassificationCountry, CIDRs: []string{"198.51.100.0/24"}}}})
+		if _, err := Compile(t.Context(), testInput(sdk.DatasetFormatCIDR, data), Limits{}); err == nil {
+			t.Fatal("case-normalized duplicate classifications were accepted")
+		}
+	}
+}
 func compileTest(t *testing.T, format sdk.DatasetFormat, data []byte) *Index {
 	t.Helper()
 	index, err := Compile(t.Context(), testInput(format, data), Limits{})

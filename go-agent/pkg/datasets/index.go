@@ -75,6 +75,11 @@ func buildIndex(ctx context.Context, wire indexWire, limits Limits) (*Index, err
 	if !validDigest(wire.Provenance.RawDigest) {
 		return nil, invalid("index raw digest")
 	}
+	// Sort the names that will actually be serialized. Sorting raw mixed-case
+	// names first could make Compile emit an order that LoadIndex cannot retain.
+	for i := range wire.Groups {
+		wire.Groups[i].Name = strings.ToLower(wire.Groups[i].Name)
+	}
 	canonicalGroups(wire.Groups)
 	index := &Index{lookup: make(map[string]int, len(wire.Groups))}
 	regexes := make(map[string]*regexp.Regexp)
@@ -83,7 +88,6 @@ func buildIndex(ctx context.Context, wire indexWire, limits Limits) (*Index, err
 			return nil, err
 		}
 		group := compiledGroup{wire: sourceGroup}
-		group.wire.Name = strings.ToLower(group.wire.Name)
 		if err := (sdk.DatasetClassification{Name: group.wire.Name, Kind: group.wire.Kind}).Validate(); err != nil {
 			return nil, invalid("classification: %v", err)
 		}
