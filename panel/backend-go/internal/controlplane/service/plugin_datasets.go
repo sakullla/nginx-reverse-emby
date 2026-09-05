@@ -57,7 +57,10 @@ func (manager *PluginCapabilityManager) pluginHostDataset(ctx context.Context, c
 		if decodePluginHostPayload(call.Payload, &request) != nil {
 			return nil, errPluginHostInvalid
 		}
-		return manager.datasets.Control(ctx, authority, request, call.OperationID)
+		// Match the durable HostRuntime replay scope without exposing the global
+		// revision identity as the caller's acknowledgement ID.
+		revisionOperationID := "dataset-runtime-" + pluginHostOperationKey(candidate, call.OperationID)
+		return manager.datasets.controlWithOperationIDs(ctx, authority, request, call.OperationID, revisionOperationID)
 	case pluginsdk.HostRuntimeDatasetCatalog:
 		var request pluginsdk.DatasetCatalogRequest
 		if decodePluginHostPayload(call.Payload, &request) != nil {

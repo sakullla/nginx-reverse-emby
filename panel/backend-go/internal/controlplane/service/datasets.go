@@ -229,6 +229,16 @@ func (s *DatasetService) Control(ctx context.Context, authorization DatasetAutho
 		}
 		operationID = operationIDs[0]
 	}
+	return s.controlWithOperationIDs(ctx, authorization, request, operationID, operationID)
+}
+
+// Public SDK call IDs belong to the authenticated plugin/instance scope. The
+// revision ledger has a global primary key, so its identity must be separate.
+// Direct administrator/scheduler calls use their Host-generated ID for both.
+func (s *DatasetService) controlWithOperationIDs(ctx context.Context, authorization DatasetAuthorization, request pluginsdk.DatasetControlRequest, operationID, revisionOperationID string) (pluginsdk.DatasetControlResponse, error) {
+	if pluginsdk.ValidatePolicyIdentity(operationID) != nil || pluginsdk.ValidatePolicyIdentity(revisionOperationID) != nil {
+		return pluginsdk.DatasetControlResponse{}, ErrInvalidArgument
+	}
 	response := pluginsdk.DatasetControlResponse{OperationID: operationID, SourceID: request.SourceID}
 	if err := request.Validate(); err != nil {
 		return response, fmt.Errorf("%w: dataset control request is invalid", ErrInvalidArgument)
@@ -249,9 +259,9 @@ func (s *DatasetService) Control(ctx context.Context, authorization DatasetAutho
 	case pluginsdk.DatasetControlImport:
 		_, err = s.prepare(ctx, row, *request.Candidate)
 	case pluginsdk.DatasetControlRefresh:
-		err = s.refresh(ctx, row, response.OperationID)
+		err = s.refresh(ctx, row, revisionOperationID)
 	case pluginsdk.DatasetControlActivate, pluginsdk.DatasetControlRollback:
-		err = s.activate(ctx, row, request.VersionDigest, response.OperationID)
+		err = s.activate(ctx, row, request.VersionDigest, revisionOperationID)
 	case pluginsdk.DatasetControlDeleteVersion:
 		err = s.store.DeleteDatasetVersion(ctx, request.SourceID, request.VersionDigest)
 	case pluginsdk.DatasetControlDeleteSource:
