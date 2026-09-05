@@ -72,9 +72,10 @@ func (kind DatasetClassificationKind) Validate() error {
 }
 
 var (
-	datasetNamePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.!@+-]{0,127}$`)
-	datasetDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	datasetHandlePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,256}$`)
+	datasetNamePattern          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.!@+-]{0,127}$`)
+	datasetAttributeNamePattern = regexp.MustCompile(`^[A-Za-z0-9!][A-Za-z0-9_.!@+-]{0,127}$`)
+	datasetDigestPattern        = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	datasetHandlePattern        = regexp.MustCompile(`^[A-Za-z0-9_-]{32,256}$`)
 )
 
 // ValidateDatasetClassificationName accepts source classification names, including
@@ -83,6 +84,19 @@ var (
 func ValidateDatasetClassificationName(name string) error {
 	if !datasetNamePattern.MatchString(name) || name == "." || name == ".." {
 		return errors.New("invalid dataset classification name")
+	}
+	return nil
+}
+
+// ValidateDatasetAttributeName accepts bounded literal attribute keys, including
+// the upstream GeoSite/DLC key !cn. Leading '!' is part of the key, not a
+// negation operator: DatasetAttribute.Negate independently negates a predicate.
+// The existing safe attribute characters remain supported; path separators,
+// whitespace and control characters cannot appear. Classification names retain
+// their separate, stricter leading-character boundary.
+func ValidateDatasetAttributeName(name string) error {
+	if !datasetAttributeNamePattern.MatchString(name) {
+		return errors.New("invalid dataset attribute name")
 	}
 	return nil
 }
@@ -310,7 +324,7 @@ type DatasetAttribute struct {
 }
 
 func (attribute DatasetAttribute) Validate() error {
-	if err := ValidateDatasetClassificationName(attribute.Name); err != nil {
+	if err := ValidateDatasetAttributeName(attribute.Name); err != nil {
 		return err
 	}
 	if (attribute.Boolean == nil) == (attribute.Integer == nil) {

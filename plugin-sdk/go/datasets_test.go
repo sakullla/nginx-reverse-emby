@@ -60,6 +60,71 @@ func TestDatasetClassificationNamesAndTypedAttributes(t *testing.T) {
 	}
 }
 
+func TestDatasetAttributeNamesHaveIndependentBoundedGrammar(t *testing.T) {
+	for _, name := range []string{"!cn", "cn", "ads", "rank", "cn!", "a-b", "a_b", "a.b", "a+b", "a@b", "!" + strings.Repeat("a", 127)} {
+		if err := ValidateDatasetAttributeName(name); err != nil {
+			t.Errorf("valid literal attribute %q rejected: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", " ", "!cn ", " !cn", "! cn", "!cn\t", "!cn\n", "!cn\r", "!cn\x00", "!cn\x1f", "../cn", "..", "/cn", "cn/ads", "cn\\ads", "!cn/ads", "!cn:ads", "!" + strings.Repeat("a", 128)} {
+		if err := ValidateDatasetAttributeName(name); err == nil {
+			t.Errorf("invalid literal attribute %q accepted", name)
+		}
+	}
+	if err := ValidateDatasetClassificationName("!cn"); err == nil {
+		t.Fatal("attribute support loosened classification name validation")
+	}
+	if err := ValidateDatasetClassificationName("category-ai-!cn"); err != nil {
+		t.Fatal("existing classification name became invalid")
+	}
+}
+
+func TestDatasetLiteralBangAttributeContractRoundtrips(t *testing.T) {
+	yes, no, number := true, false, int64(-7)
+	for name, attribute := range map[string]DatasetAttribute{
+		"boolean true":              {Name: "!cn", Boolean: &yes},
+		"boolean false":             {Name: "!cn", Boolean: &no},
+		"integer":                   {Name: "!cn", Integer: &number},
+		"negated boolean predicate": {Name: "!cn", Boolean: &yes, Negate: true},
+		"negated integer predicate": {Name: "!cn", Integer: &number, Negate: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := datasetTestQuery()
+			request.Classifications[0].Attributes = []DatasetAttribute{attribute}
+			if err := request.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded DatasetQueryRequest
+			if err := json.Unmarshal(encoded, &decoded); err != nil || decoded.Validate() != nil || !reflect.DeepEqual(decoded, request) {
+				t.Fatalf("literal !cn attribute lost its key, value type or negation: %+v %v", decoded, err)
+			}
+			client := datasetTestRuntimeClient(t, func(call HostRuntimeCall) HostRuntimeResponse {
+				if call.Operation != HostRuntimeDatasetQuery {
+					t.Errorf("unexpected operation %q", call.Operation)
+				}
+				var received DatasetQueryRequest
+				if err := json.Unmarshal(call.Payload, &received); err != nil || received.Validate() != nil || !reflect.DeepEqual(received, request) {
+					t.Error("public HostRuntime contract changed literal attribute semantics")
+				}
+				return datasetTestResponse(t, DatasetQueryResponse{Reference: request.Reference, Status: DatasetQueryOK, Matches: []DatasetMatch{{Index: 0, Coverage: DatasetCovered}}})
+			})
+			if response, err := client.QueryDatasets(t.Context(), request); err != nil || response.Status != DatasetQueryOK {
+				t.Fatalf("query with !cn attribute failed: %+v %v", response, err)
+			}
+		})
+	}
+	if err := (DatasetAttribute{Name: "!cn"}).Validate(); err == nil {
+		t.Fatal("missing typed attribute value accepted")
+	}
+	if err := (DatasetAttribute{Name: "!cn", Boolean: &yes, Integer: &number}).Validate(); err == nil {
+		t.Fatal("conflicting typed attribute values accepted")
+	}
+}
+
 func TestDatasetQueryRejectsInvalidBindingInputAndBudget(t *testing.T) {
 	if err := datasetTestQuery().ValidateFor("instance-a", "generation-1"); err != nil {
 		t.Fatal(err)
