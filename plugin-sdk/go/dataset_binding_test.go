@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -275,5 +276,74 @@ func TestDatasetBindingHistoricalReplayDoesNotRequireDeletedVersion(t *testing.T
 	auth.GrantedScopes = nil
 	if _, err := CallDatasetBindingHost(t.Context(), nil, auth, bindingCall(request)); err == nil {
 		t.Fatal("historical replay bypassed current capability revocation")
+	}
+}
+
+func TestDatasetBindingCatalogIdentityPreservesAttributePredicatesRoundtrip(t *testing.T) {
+	yes, no, rank := true, false, int64(7)
+	const name = "category-ai-!cn"
+	cases := []struct {
+		name            string
+		selector        DatasetClassification
+		wantError       bool
+		invalidSelector bool
+	}{
+		{name: "literal negated key boolean", selector: DatasetClassification{Name: name, Kind: DatasetClassificationDomain, Attributes: []DatasetAttribute{{Name: "!cn", Boolean: &yes}}}},
+		{name: "false boolean", selector: DatasetClassification{Name: name, Kind: DatasetClassificationDomain, Attributes: []DatasetAttribute{{Name: "cn", Boolean: &no}}}},
+		{name: "integer", selector: DatasetClassification{Name: name, Kind: DatasetClassificationDomain, Attributes: []DatasetAttribute{{Name: "rank", Integer: &rank}}}},
+		{name: "negated boolean", selector: DatasetClassification{Name: name, Kind: DatasetClassificationDomain, Attributes: []DatasetAttribute{{Name: "!cn", Boolean: &yes, Negate: true}}}},
+		{name: "negated integer conjunction", selector: DatasetClassification{Name: name, Kind: DatasetClassificationDomain, Attributes: []DatasetAttribute{{Name: "!cn", Boolean: &yes}, {Name: "rank", Integer: &rank, Negate: true}}}},
+		{name: "unknown name", selector: DatasetClassification{Name: "missing", Kind: DatasetClassificationDomain}, wantError: true},
+		{name: "different kind", selector: DatasetClassification{Name: name, Kind: DatasetClassificationCountry}, wantError: true},
+		{name: "invalid typed predicate", selector: DatasetClassification{Name: name, Kind: DatasetClassificationDomain, Attributes: []DatasetAttribute{{Name: "rank", Boolean: &yes, Integer: &rank}}}, wantError: true, invalidSelector: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			request, auth := bindingFixture()
+			request.Spec.Classifications = []DatasetClassification{test.selector}
+			// Index.Catalog enumerates classification identity only. Attributes are
+			// query predicates, not part of this immutable catalog's identity rows.
+			auth.Catalog = []DatasetClassification{{Name: name, Kind: DatasetClassificationDomain}}
+			mutations, transportCalls := 0, 0
+			host := datasetBindingHostFunc(func(ctx context.Context, a DatasetBindingAuthorization, r DatasetBindingRequest) (DatasetBindingResponse, error) {
+				mutations++
+				if !reflect.DeepEqual(r.Spec.Classifications, request.Spec.Classifications) {
+					t.Error("Host received altered typed predicates")
+				}
+				return bindingAck(a, r), nil
+			})
+			client := managedTestClient(t, func(httpRequest *http.Request, call HostRuntimeCall) HostRuntimeResponse {
+				transportCalls++
+				response, err := CallDatasetBindingHost(httpRequest.Context(), host, auth, call)
+				if err != nil {
+					return HostRuntimeResponse{Error: &RuntimeError{Code: ErrorInvalidArgument, Message: "binding rejected"}}
+				}
+				encoded, err := json.Marshal(response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return HostRuntimeResponse{Payload: encoded}
+			})
+			response, err := client.ManageDatasetBinding(t.Context(), request)
+			if test.wantError {
+				if err == nil || mutations != 0 {
+					t.Fatal("invalid selector reached binding mutation")
+				}
+			} else {
+				if err != nil {
+					t.Fatal("catalog identity rejected valid attribute predicates:", err)
+				}
+				if mutations != 1 || response.Desired == nil || !reflect.DeepEqual(response.Desired.Spec.Classifications, request.Spec.Classifications) {
+					t.Fatal("binding acknowledgement lost typed predicates")
+				}
+			}
+			expectedTransport := 1
+			if test.invalidSelector {
+				expectedTransport = 0
+			}
+			if transportCalls != expectedTransport {
+				t.Fatalf("transport calls = %d, want %d", transportCalls, expectedTransport)
+			}
+		})
 	}
 }

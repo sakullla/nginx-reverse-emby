@@ -401,7 +401,9 @@ func ValidateDatasetBindingAuthorization(request DatasetBindingRequest, authoriz
 		for _, selector := range request.Spec.Classifications {
 			found := false
 			for _, known := range authorization.Catalog {
-				if datasetClassificationKey(selector) == datasetClassificationKey(known) {
+				// Catalog entries identify classifications, not their query predicates.
+				// Spec validation and the binding retain the full typed attributes.
+				if selector.Kind == known.Kind && selector.Name == known.Name {
 					found = true
 					break
 				}
