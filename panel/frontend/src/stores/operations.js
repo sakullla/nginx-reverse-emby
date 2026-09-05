@@ -110,7 +110,21 @@ export async function refreshOperation(operationID) {
   const generation = operationGeneration
   const sequence = (refreshSequence.get(operationID) || 0) + 1
   refreshSequence.set(operationID, sequence)
-  const next = await fetchOperationStatus(current.status_url)
+  let next
+  try {
+    next = await fetchOperationStatus(current.status_url)
+  } catch (error) {
+    if (generation !== operationGeneration || refreshSequence.get(operationID) !== sequence) {
+      return state.byId[operationID] || null
+    }
+    // Browser history can outlive the server's operation retention or database.
+    // An authoritative 404 ends tracking; transient failures remain retryable.
+    if (error.status !== 404) throw error
+    delete state.byId[operationID]
+    state.order = state.order.filter((id) => id !== operationID)
+    persist()
+    return null
+  }
   if (generation !== operationGeneration || refreshSequence.get(operationID) !== sequence) {
     return state.byId[operationID] || null
   }

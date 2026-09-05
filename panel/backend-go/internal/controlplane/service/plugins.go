@@ -524,7 +524,7 @@ func (s *PluginService) pluginDeploymentProjection(ctx context.Context, manifest
 	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeControlPlane) {
 		faces = append(faces, PluginDeploymentFace{FaceID: "local-management", HostScope: pluginsdk.HostScopeControlPlane})
 	}
-	agentTargetsAllowed := pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent)
+	agentTargetsAllowed := pluginHasAgentExecutionFace(manifest.Runtime)
 	if agentTargetsAllowed {
 		faces = append(faces, PluginDeploymentFace{FaceID: "agent-execution", HostScope: pluginsdk.HostScopeAgent})
 	}
@@ -532,6 +532,12 @@ func (s *PluginService) pluginDeploymentProjection(ctx context.Context, manifest
 		return nil, PluginTargetEligibility{}, ErrPluginReadProjection
 	}
 	return faces, PluginTargetEligibility{CanonicalLocalTargetID: localTargetID, AgentTargetsAllowed: agentTargetsAllowed}, nil
+}
+
+// Execution targets may receive either RPC generations or a nested WASM policy.
+// Keep this separate from RPC host scopes so policy guests never launch as RPC.
+func pluginHasAgentExecutionFace(runtime pluginsdk.Runtime) bool {
+	return pluginsdk.RuntimeDeclaresHostScope(runtime, pluginsdk.HostScopeAgent) || pluginsdk.RuntimeProjectsAgentPolicy(runtime)
 }
 
 func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPackageCandidate, pluginID string) (PluginPackageDetail, error) {
@@ -2420,7 +2426,7 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 		return storage.PluginInstanceRow{}, err
 	}
 	var targetIDs []string
-	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+	if pluginHasAgentExecutionFace(manifest.Runtime) {
 		targetIDs, err = pluginExplicitTargetIDs(requestedTargetJSON)
 	} else {
 		targetIDs, err = pluginTargetIDs(requestedTargetJSON, defaultTargetID)
@@ -2655,7 +2661,7 @@ func pluginManifestOwnsSingletonControlPlaneSurface(manifest plugins.Manifest) b
 }
 
 func pluginConfiguredTargetIDs(manifest plugins.Manifest, raw json.RawMessage, defaultTargetID string) ([]string, error) {
-	if pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+	if pluginHasAgentExecutionFace(manifest.Runtime) {
 		return pluginExplicitTargetIDs(raw)
 	}
 	return pluginTargetIDs(raw, defaultTargetID)
@@ -4471,7 +4477,7 @@ func (s *PluginService) validatePluginTargets(ctx context.Context, manifest plug
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
-	if !pluginsdk.RuntimeDeclaresHostScope(manifest.Runtime, pluginsdk.HostScopeAgent) {
+	if !pluginHasAgentExecutionFace(manifest.Runtime) {
 		if len(targetIDs) == 0 {
 			targetIDs = []string{defaultTargetID}
 		}

@@ -129,6 +129,44 @@ describe('operation store', () => {
     expect(result.ui_status).toBe('applied')
   })
 
+  it('forgets a restored operation that no longer exists on the server', async () => {
+    localStorage.setItem('nre.operations.v1', JSON.stringify([{
+      operation_id: 'op-expired', status_url: '/panel-api/operations/op-expired', apply_status: 'applying'
+    }]))
+    storeModule.restoreOperations()
+    api.fetch.mockRejectedValueOnce(Object.assign(new Error('revision record not found'), { status: 404 }))
+
+    await expect(storeModule.refreshOperation('op-expired')).resolves.toBeNull()
+    expect(storeModule.useOperationsStore().get('op-expired')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1'))).toEqual([])
+    await storeModule.refreshOperation('op-expired')
+    expect(api.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([403, 500, undefined])('keeps tracking when status lookup fails with %s', async (status) => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-live', status_url: '/panel-api/operations/op-live', apply_status: 'pending'
+    })
+    const failure = Object.assign(new Error('lookup failed'), { status })
+    api.fetch.mockRejectedValueOnce(failure)
+    await expect(storeModule.refreshOperation('op-live')).rejects.toBe(failure)
+    expect(storeModule.useOperationsStore().get('op-live')).not.toBeNull()
+  })
+
+  it('ignores a stale not-found response after a newer status succeeds', async () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-race', status_url: '/panel-api/operations/op-race', apply_status: 'pending'
+    })
+    let rejectFirst
+    api.fetch.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectFirst = reject }))
+    const first = storeModule.refreshOperation('op-race')
+    api.fetch.mockResolvedValueOnce({ operation_id: 'op-race', apply_status: 'applying' })
+    await storeModule.refreshOperation('op-race')
+    rejectFirst(Object.assign(new Error('not found'), { status: 404 }))
+    await first
+    expect(storeModule.useOperationsStore().get('op-race').apply_status).toBe('applying')
+  })
+
   it('removes an operation after the server records dismissal as completed', async () => {
     storeModule.recordAcceptedOperation({
       operation_id: 'op-dismiss', status_url: '/panel-api/operations/op-dismiss', apply_status: 'applying'
