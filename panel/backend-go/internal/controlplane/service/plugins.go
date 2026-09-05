@@ -379,6 +379,7 @@ type PluginService struct {
 	secretVault         *secrets.Vault
 	postCommitActions   *[]func()
 	controlPlaneRuntime PluginControlPlaneRuntime
+	scopedSecretManager *PluginCapabilityManager
 }
 
 func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
@@ -2055,7 +2056,7 @@ func (s *PluginService) controlPlaneGenerationGrants(ctx context.Context, instal
 		if !strings.EqualFold(row.PackageDigest, packageRow.Digest) || (row.PackageIdentity != "" && row.PackageIdentity != packageRow.Identity) {
 			continue
 		}
-		kind, id := splitPluginResourceSelector(row.ResourceSelector)
+		kind, id := storage.SplitPluginGenerationGrantResource(row.Permission, row.ResourceSelector)
 		result = append(result, storage.PluginGenerationGrant{Name: row.Permission, ResourceKind: kind, ResourceID: id})
 	}
 	return result, nil
@@ -4119,7 +4120,7 @@ func clearStagedSource(installed *storage.InstalledPluginRow) {
 func pluginGenerationGrants(permissions []plugins.Permission) []storage.PluginGenerationGrant {
 	result := make([]storage.PluginGenerationGrant, 0, len(permissions))
 	for _, permission := range permissions {
-		kind, id := splitPluginResourceSelector(permission.Resource)
+		kind, id := storage.SplitPluginGenerationGrantResource(permission.Name, permission.Resource)
 		result = append(result, storage.PluginGenerationGrant{Name: strings.TrimSpace(permission.Name), ResourceKind: kind, ResourceID: id})
 	}
 	return result

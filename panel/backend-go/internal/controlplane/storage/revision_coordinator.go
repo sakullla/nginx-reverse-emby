@@ -90,6 +90,8 @@ type CoordinatorClaimResult struct {
 type CoordinatorStartRequest struct {
 	Lease                      CoordinatorLease
 	GenerationID               string
+	RuntimeGenerationID        string
+	RuntimeSnapshotHash        string
 	Now                        time.Time
 	DefaultApplyTimeoutSeconds int
 }
@@ -409,6 +411,9 @@ func (s *GormStore) StartAgentRevisionAttempt(ctx context.Context, request Coord
 	if request.GenerationID == "" {
 		return CoordinatorStartResult{}, fmt.Errorf("generation id is required")
 	}
+	if err := validateCoordinatorRuntimeIdentity(request.Lease.Revision, request.RuntimeGenerationID, request.RuntimeSnapshotHash, true); err != nil {
+		return CoordinatorStartResult{}, err
+	}
 	var result CoordinatorStartResult
 	var postCommitErr error
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
@@ -430,11 +435,19 @@ func (s *GormStore) StartAgentRevisionAttempt(ctx context.Context, request Coord
 			return err
 		}
 		if attempt.State == AgentRevisionAttemptStateStarted {
+			if revision.State != AgentRevisionStateApplying || revision.RetryCycle != request.Lease.RetryCycle || revision.AttemptCount != request.Lease.Attempt || pointer.DesiredRevision > revision.Revision {
+				return coordinatorLeaseConflict("runtime start no longer owns the current revision attempt")
+			}
 			if !request.Now.Before(attempt.DeadlineAt) {
 				return coordinatorLeaseConflict("lease %q expired", request.Lease.LeaseID)
 			}
 			if revision.GenerationID != request.GenerationID {
 				return coordinatorStateConflict("lease %q started generation %q, not %q", request.Lease.LeaseID, revision.GenerationID, request.GenerationID)
+			}
+			if request.RuntimeGenerationID != "" {
+				if err := bindCoordinatorRuntimeIdentityTx(tx, &revision, request.RuntimeGenerationID, request.RuntimeSnapshotHash); err != nil {
+					return err
+				}
 			}
 			result = CoordinatorStartResult{Revision: revision, Attempt: attempt}
 			return nil
@@ -478,6 +491,7 @@ func (s *GormStore) StartAgentRevisionAttempt(ctx context.Context, request Coord
 			Updates(map[string]any{
 				"state": AgentRevisionStateApplying, "attempt_count": request.Lease.Attempt,
 				"next_attempt_at": nil, "generation_id": request.GenerationID,
+				"runtime_generation_id": request.RuntimeGenerationID, "runtime_snapshot_hash": request.RuntimeSnapshotHash,
 				"error_code": "", "error_message": "", "failed_at": nil, "updated_at": request.Now,
 			}).Error; err != nil {
 			return err
@@ -489,6 +503,8 @@ func (s *GormStore) StartAgentRevisionAttempt(ctx context.Context, request Coord
 		revision.AttemptCount = request.Lease.Attempt
 		revision.NextAttemptAt = nil
 		revision.GenerationID = request.GenerationID
+		revision.RuntimeGenerationID = request.RuntimeGenerationID
+		revision.RuntimeSnapshotHash = request.RuntimeSnapshotHash
 		revision.ErrorCode = ""
 		revision.ErrorMessage = ""
 		revision.FailedAt = nil

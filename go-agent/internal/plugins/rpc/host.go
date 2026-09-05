@@ -17,6 +17,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/dockerproxy"
+	managed "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/network"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -95,6 +96,7 @@ type HostCandidate struct {
 	Process                                                                     pluginprocess.InstanceSpec
 	Dial                                                                        DialConfig
 	HTTPBackendProviders                                                        []pluginsdk.HTTPBackendProviderDescriptor
+	services                                                                    *runtimeServices
 }
 
 func candidateExtensionPoints(candidate HostCandidate) []string {
@@ -119,6 +121,7 @@ type RuntimeStatus struct {
 }
 
 type hostAttempt struct {
+	handleReady chan struct{}
 	stopMu      sync.Mutex
 	handle      *pluginprocess.Handle
 	client      LifecycleClient
@@ -132,9 +135,11 @@ type hostAttempt struct {
 	cleanupDone bool
 	cleanupErr  error
 	providers   map[string]*httpBackendProviderAttempt
+	network     *managed.Owner
 }
 
 type HostedInstance struct {
+	owner           *Host
 	mu              sync.RWMutex
 	candidate       HostCandidate
 	supervisor      *pluginprocess.Supervisor
@@ -179,6 +184,11 @@ type Host struct {
 	afterStartOnce  func()
 	dockerProxyRoot string
 	dockerRunner    dockerproxy.Runner
+	managed         *managed.Manager
+	networkSessions NetworkSessionRegistrar
+	instances       map[*HostedInstance]struct{}
+	revoked         map[string]model.PluginGenerationRevokeRequest
+	revocationPath  string
 }
 
 type PreparedHostGeneration struct {
@@ -201,7 +211,7 @@ func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Superv
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
+	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}, managed: managed.NewManager(), instances: map[*HostedInstance]struct{}{}, revoked: map[string]model.PluginGenerationRevokeRequest{}}, nil
 }
 
 func (h *Host) SetSecretRedeemer(redeemer SecretRedeemer) {
@@ -294,6 +304,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 
 	runCtx, cancel := context.WithCancel(hostCtx)
 	instance := &HostedInstance{
+		owner:      h,
 		candidate:  candidate,
 		supervisor: h.supervisor,
 		dial:       h.dial,
@@ -317,6 +328,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		instance.mu.Unlock()
 		h.mu.Lock()
 		h.pending[instance] = struct{}{}
+		h.instances[instance] = struct{}{}
 		h.mu.Unlock()
 	})
 	if err != nil {
@@ -379,6 +391,9 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	instance.runStarted = true
 	instance.mu.Unlock()
 	go instance.run(runCtx)
+	if attempt.network != nil {
+		attempt.network.Activate()
+	}
 	return instance, nil
 }
 
@@ -423,6 +438,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*
 	}
 	runCtx, cancel := context.WithCancel(hostCtx)
 	instance := &HostedInstance{
+		owner:     h,
 		candidate: candidate, supervisor: h.supervisor, dial: h.dial, provision: h.provision, redeemer: h.secretRedeemer(),
 		status: RuntimeStatus{InstanceID: candidate.InstanceID, Generation: candidate.Generation, OperationID: candidate.OperationID,
 			Revision: candidate.Revision, PackageDigest: candidate.PackageDigest, State: "preparing"},
@@ -436,6 +452,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*
 		instance.mu.Unlock()
 		h.mu.Lock()
 		h.pending[instance] = struct{}{}
+		h.instances[instance] = struct{}{}
 		h.mu.Unlock()
 	}, false)
 	if err != nil {
@@ -476,6 +493,15 @@ func (h *Host) ReadyCandidate(instance *HostedInstance) error {
 // ActivatePreparedCandidate performs the rollback-capable lifecycle step. The
 // Host still does not publish the candidate until the generation view swaps.
 func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedInstance) error {
+	if h == nil || instance == nil {
+		return errors.New("RPC plugin candidate is required")
+	}
+	lock := h.instanceLock(instance.candidate.InstanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := h.checkGenerationRevoked(instance.candidate); err != nil {
+		return err
+	}
 	if err := h.ReadyCandidate(instance); err != nil {
 		return err
 	}
@@ -546,6 +572,10 @@ func (h *Host) PrepareGenerationPublication(generation string, instances []*Host
 			h.mu.Unlock()
 			return nil, errors.New("RPC plugin candidate is not activated")
 		}
+		if _, revoked := h.revoked[generationFenceKey(instance.candidate.InstanceID, instance.candidate.Generation)]; revoked {
+			h.mu.Unlock()
+			return nil, errors.New("RPC plugin candidate was revoked")
+		}
 		if _, duplicate := seen[instance.candidate.InstanceID]; duplicate {
 			h.mu.Unlock()
 			return nil, errors.New("RPC plugin generation duplicates an instance")
@@ -564,11 +594,31 @@ func (prepared *PreparedHostGeneration) Publish() {
 		return
 	}
 	h := prepared.host
+	previousInstances := h.active
 	next := make(map[string]*HostedInstance, len(prepared.instances))
 	for _, instance := range prepared.instances {
 		next[instance.candidate.InstanceID] = instance
 	}
 	h.active = next
+	for _, instance := range prepared.instances {
+		instance.mu.RLock()
+		attempt := instance.attempt
+		instance.mu.RUnlock()
+		if attempt != nil && attempt.network != nil {
+			attempt.network.Activate()
+		}
+	}
+	for id, instance := range previousInstances {
+		if next[id] == instance {
+			continue
+		}
+		instance.mu.RLock()
+		attempt := instance.attempt
+		instance.mu.RUnlock()
+		if attempt != nil && attempt.network != nil {
+			attempt.network.Retire()
+		}
+	}
 	for _, instance := range prepared.instances {
 		delete(h.pending, instance)
 		instance.mu.Lock()
@@ -607,6 +657,9 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 }
 
 func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt), activate bool) (*hostAttempt, error) {
+	if err := h.checkGenerationRevoked(candidate); err != nil {
+		return nil, err
+	}
 	redeemer := h.secretRedeemer()
 	var security attemptSecurity
 	var err error
@@ -622,7 +675,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	}
 	var attempt *hostAttempt
 	if security.cleanup != nil {
-		attempt = &hostAttempt{cleanup: security.cleanup}
+		attempt = &hostAttempt{cleanup: security.cleanup, handleReady: make(chan struct{})}
 		if launched != nil {
 			launched(attempt)
 		}
@@ -652,6 +705,11 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		baseCleanup := attempt.cleanup
 		attempt.cleanup = func() error { return errors.Join(closeProxy(), baseCleanup()) }
 	}
+	hostEnvironment, hostErr := h.startHostRuntime(candidate, security, attempt)
+	if hostErr != nil {
+		return attempt, hostErr
+	}
+	security.environment = append(security.environment, hostEnvironment...)
 	candidate.Dial = security.dial
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
 	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
@@ -680,6 +738,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		h.afterStartOnce()
 	}
 	attempt.handle = handle
+	close(attempt.handleReady)
 	processStatus := handle.Status()
 	attempt.providers = make(map[string]*httpBackendProviderAttempt, len(security.providers))
 	for providerID, providerSecurity := range security.providers {
@@ -1162,8 +1221,15 @@ func (h *Host) Close(ctx context.Context) error {
 	h.activationWG.Wait()
 	h.mu.Lock()
 	instances := make([]*HostedInstance, 0, len(h.active))
-	for _, instance := range h.active {
+	seenInstances := map[*HostedInstance]bool{}
+	for instance := range h.instances {
 		instances = append(instances, instance)
+		seenInstances[instance] = true
+	}
+	for _, instance := range h.active {
+		if !seenInstances[instance] {
+			instances = append(instances, instance)
+		}
 	}
 	pending := make([]*HostedInstance, 0, len(h.pending))
 	for instance := range h.pending {
@@ -1258,6 +1324,11 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 		}
 	}
 	i.mu.Unlock()
+	if terminated && i.owner != nil {
+		i.owner.mu.Lock()
+		delete(i.owner.instances, i)
+		i.owner.mu.Unlock()
+	}
 	if !attemptTerminal(attempt) {
 		return errors.Join(stopErr, errors.New("Agent RPC plugin process did not terminate"))
 	}
@@ -1355,7 +1426,11 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.State = "starting"
 			i.mu.Unlock()
 
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce, dockerProxyRoot: i.dockerProxyRoot, dockerRunner: i.dockerRunner}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			restartHost := i.owner
+			if restartHost == nil {
+				restartHost = &Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce, dockerProxyRoot: i.dockerProxyRoot, dockerRunner: i.dockerRunner}
+			}
+			replacement, err := restartHost.startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()
@@ -1396,6 +1471,9 @@ func (i *HostedInstance) run(ctx context.Context) {
 			i.status.PID = status.PID
 			i.status.SandboxProvider = status.Sandbox.Provider
 			i.mu.Unlock()
+			if replacement.network != nil {
+				replacement.network.Activate()
+			}
 			break
 		}
 	}

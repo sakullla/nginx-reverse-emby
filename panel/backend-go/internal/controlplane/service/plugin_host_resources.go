@@ -49,6 +49,11 @@ func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.C
 	if manager == nil || ctx == nil || candidate.InstanceID == "" || candidate.Identity.PluginID == "" || candidate.Identity.Generation == "" {
 		return pluginHostRuntimeFailure(pluginsdk.ErrorUnavailable, "host resource owner is unavailable", true)
 	}
+	// Secret delivery must never enter the durable response cache. Its payload
+	// is encoded exclusively by the SDK's authenticated secret wire codec.
+	if call.Operation == pluginsdk.HostRuntimeScopedSecret {
+		return manager.dispatchPluginScopedSecret(ctx, candidate, call)
+	}
 	if call.Operation == "operation.inspect" {
 		if !pluginCandidateHasGrant(candidate, "storage.read") {
 			return pluginHostRuntimeFailure(pluginsdk.ErrorPermissionDenied, "host resource permission was not granted", false)

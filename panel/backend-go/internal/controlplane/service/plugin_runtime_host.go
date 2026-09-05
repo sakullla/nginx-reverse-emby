@@ -520,6 +520,19 @@ func safeRuntimeError(err error) string {
 }
 
 func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
+	return s.stopGeneration(ctx, instanceID, "")
+}
+
+// StopGeneration shares the lifecycle operation lock with activation. A
+// revoked delivery can never accidentally stop a replacement generation.
+func (s *PluginRuntimeHost) StopGeneration(ctx context.Context, instanceID, generation string) error {
+	if instanceID == "" || generation == "" {
+		return errors.New("exact plugin generation is required")
+	}
+	return s.stopGeneration(ctx, instanceID, generation)
+}
+
+func (s *PluginRuntimeHost) stopGeneration(ctx context.Context, instanceID, expectedGeneration string) error {
 	operationCtx, done, err := s.beginOperation(ctx)
 	if err != nil {
 		return err
@@ -535,6 +548,25 @@ func (s *PluginRuntimeHost) Stop(ctx context.Context, instanceID string) error {
 	row, found, readErr := s.repository.GetPluginRuntime(operationCtx, instanceID)
 	if readErr != nil {
 		return fmt.Errorf("read plugin runtime before stop: %w", readErr)
+	}
+	if expectedGeneration != "" {
+		results, stopErr := s.host.StopGenerationWithResults(operationCtx, instanceID, expectedGeneration)
+		if stopErr != nil {
+			return stopErr
+		}
+		for _, result := range results {
+			if !result.Terminated {
+				return errors.New("plugin generation termination is not confirmed")
+			}
+		}
+		s.revokeGeneration(instanceID, expectedGeneration)
+		if found && row.ActiveGeneration == expectedGeneration {
+			// Owned children die with the Host (Linux PDEATHSIG / Windows
+			// kill-on-close job). On recovery, the durable delivery fence also
+			// prevents this exact generation from being staged again.
+			return retryRuntimeStopPersistence(operationCtx, s.repository, instanceID, expectedGeneration)
+		}
+		return nil // Preserve any later generation's durable runtime row.
 	}
 	if found && row.ActiveGeneration != "" {
 		if result, ok := s.terminalResult(instanceID, row.ActiveGeneration); ok && result.Terminated {

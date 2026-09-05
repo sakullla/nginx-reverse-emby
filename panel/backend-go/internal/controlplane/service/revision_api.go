@@ -200,12 +200,14 @@ type RemoteRevisionPull struct {
 }
 
 type RemoteRevisionStart struct {
-	AgentID      string `json:"agent_id"`
-	Revision     int64  `json:"revision"`
-	RetryCycle   int    `json:"retry_cycle"`
-	Attempt      int    `json:"attempt"`
-	LeaseID      string `json:"lease_id"`
-	GenerationID string `json:"generation_id"`
+	AgentID             string `json:"agent_id"`
+	Revision            int64  `json:"revision"`
+	RetryCycle          int    `json:"retry_cycle"`
+	Attempt             int    `json:"attempt"`
+	LeaseID             string `json:"lease_id"`
+	GenerationID        string `json:"generation_id"`
+	RuntimeGenerationID string `json:"runtime_generation_id,omitempty"`
+	RuntimeSnapshotHash string `json:"runtime_snapshot_hash,omitempty"`
 }
 
 type RemoteRevisionReport struct {
@@ -750,6 +752,9 @@ func (s *RevisionAPI) StartRemoteRevision(ctx context.Context, agentID string, i
 		return AgentRevisionStatus{}, err
 	}
 	lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseLeased)
+	if err != nil && input.RuntimeGenerationID != "" {
+		lease, err = s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseStarted)
+	}
 	if err != nil {
 		return AgentRevisionStatus{}, err
 	}
@@ -757,7 +762,7 @@ func (s *RevisionAPI) StartRemoteRevision(ctx context.Context, agentID string, i
 	if generationID == "" {
 		return AgentRevisionStatus{}, fmt.Errorf("%w: generation id is required", ErrInvalidArgument)
 	}
-	if _, err := s.coordinator.Start(ctx, coordinator.StartRequest{Lease: lease, GenerationID: generationID}); err != nil {
+	if _, err := s.coordinator.Start(ctx, coordinator.StartRequest{Lease: lease, GenerationID: generationID, RuntimeGenerationID: input.RuntimeGenerationID, RuntimeSnapshotHash: input.RuntimeSnapshotHash}); err != nil {
 		return AgentRevisionStatus{}, err
 	}
 	return s.GetAgentRevisionStatus(ctx, agentID, input.Revision)

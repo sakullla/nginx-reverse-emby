@@ -969,6 +969,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	for i, generation := range snapshot.PluginGenerations {
 		clonedGeneration := &cloned.PluginGenerations[i]
 		clonedGeneration.Config = slices.Clone(generation.Config)
+		clonedGeneration.ManagedNetworkPolicy = cloneGenerationPolicyRef(generation.ManagedNetworkPolicy)
 		clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
 		clonedGeneration.Grants = slices.Clone(generation.Grants)
 		clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)

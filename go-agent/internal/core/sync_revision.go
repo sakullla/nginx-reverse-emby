@@ -254,6 +254,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		if err := client.StartRevision(leaseCtx, model.RevisionStart{
 			AgentID: lease.AgentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle,
 			Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: generationID,
+			RuntimeGenerationID: candidate.RuntimeGenerationID, RuntimeSnapshotHash: candidate.RuntimeSnapshotHash,
 		}); err != nil {
 			return c.recordRuntimeError(err)
 		}

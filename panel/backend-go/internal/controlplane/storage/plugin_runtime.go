@@ -61,7 +61,7 @@ func (s *GormStore) ensurePluginRuntimeSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return gorm.ErrInvalidDB
 	}
-	return s.db.WithContext(ctx).AutoMigrate(&PluginRuntimeInstanceRow{}, &PluginControlPlaneLogOutboxRow{}, &PluginRuntimeLogRow{})
+	return s.db.WithContext(ctx).AutoMigrate(&PluginRuntimeInstanceRow{}, &PluginControlPlaneLogOutboxRow{}, &PluginRuntimeLogRow{}, &PluginScopedSecretOperationRow{}, &PluginScopedSecretDeliveryRow{})
 }
 
 func (s *GormStore) StagePluginRuntime(ctx context.Context, row PluginRuntimeInstanceRow) error {
@@ -76,6 +76,9 @@ func (s *GormStore) StagePluginRuntime(ctx context.Context, row PluginRuntimeIns
 	row.CandidateState = "starting"
 	row.CandidateLastError = ""
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := ensureLocalScopedSecretGenerationUnfenced(tx, row.InstanceID, row.CandidateGeneration); err != nil {
+			return err
+		}
 		var current PluginRuntimeInstanceRow
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ?", row.InstanceID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -101,6 +104,9 @@ func (s *GormStore) StagePluginRuntimeBatch(ctx context.Context, rows []PluginRu
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		seen := make(map[string]struct{}, len(rows))
 		for _, row := range rows {
+			if err := ensureLocalScopedSecretGenerationUnfenced(tx, row.InstanceID, row.CandidateGeneration); err != nil {
+				return err
+			}
 			if strings.TrimSpace(row.InstanceID) == "" || strings.TrimSpace(row.CandidateGeneration) == "" {
 				return errors.New("plugin runtime instance and candidate generation are required")
 			}
@@ -135,6 +141,9 @@ func (s *GormStore) PromotePluginRuntime(ctx context.Context, instanceID, genera
 		return err
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := ensureLocalScopedSecretGenerationUnfenced(tx, instanceID, generation); err != nil {
+			return err
+		}
 		var row PluginRuntimeInstanceRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ?", instanceID).Take(&row).Error; err != nil {
 			return err
@@ -157,6 +166,9 @@ func (s *GormStore) PromotePluginRuntimeBatch(ctx context.Context, promotions []
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		seen := make(map[string]struct{}, len(promotions))
 		for _, promotion := range promotions {
+			if err := ensureLocalScopedSecretGenerationUnfenced(tx, promotion.InstanceID, promotion.Generation); err != nil {
+				return err
+			}
 			if _, duplicate := seen[promotion.InstanceID]; duplicate {
 				return errors.New("plugin runtime promotion batch contains a duplicate instance")
 			}

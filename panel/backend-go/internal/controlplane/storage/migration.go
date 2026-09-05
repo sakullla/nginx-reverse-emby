@@ -63,6 +63,8 @@ func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, jo
 		&AuditEventRow{},
 		&SecretRow{},
 		&SecretVersionRow{},
+		&PluginScopedSecretOperationRow{},
+		&PluginScopedSecretDeliveryRow{},
 		&MarketplaceSourceRow{},
 		&MarketSnapshotRow{},
 		&MarketEntryRow{},
@@ -1599,6 +1601,10 @@ func newSliceForModel(model any) any {
 		return &[]SecretRow{}
 	case *SecretVersionRow:
 		return &[]SecretVersionRow{}
+	case *PluginScopedSecretOperationRow:
+		return &[]PluginScopedSecretOperationRow{}
+	case *PluginScopedSecretDeliveryRow:
+		return &[]PluginScopedSecretDeliveryRow{}
 	case *MarketplaceSourceRow:
 		return &[]MarketplaceSourceRow{}
 	case *MarketSnapshotRow:

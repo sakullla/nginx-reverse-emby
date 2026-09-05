@@ -56,7 +56,7 @@ func TestDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing
 	ipAuth := datasetPolicyAuthorization("ip-generation")
 	ssAuth := ipAuth
 	ssAuth.InstanceID = "ss-instance"
-	ssAuth.Generation = "ss-generation"
+	ssAuth.Generation = "ip-generation" // SDK lifecycle identity is the runtime view ID
 	open := sdk.DatasetOpenRequest{SourceID: "regions", VersionDigest: snapshot.Datasets[0].Version.Digest}
 	ip, err := provider.Open(ipAuth, open)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ip.Handle == ss.Handle || ip.Generation == ss.Generation || ip.VersionDigest != ss.VersionDigest {
+	if ip.Handle == ss.Handle || ip.InstanceID == ss.InstanceID || ip.Generation != ss.Generation || ip.VersionDigest != ss.VersionDigest {
 		t.Fatal("shared source handle ownership was not isolated")
 	}
 	for _, item := range []struct {

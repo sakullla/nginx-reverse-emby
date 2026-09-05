@@ -45,3 +45,27 @@ func TestDatasetSnapshotCopiesNestedSelectorPointersAcrossGenerationViews(t *tes
 		t.Fatal("explicit dataset removal restored prior bindings")
 	}
 }
+
+func TestManagedEntryPolicySnapshotIsolation(t *testing.T) {
+	snapshot := model.Snapshot{Revision: 1, PluginGenerations: []model.PluginGeneration{{ManagedNetworkPolicy: &model.PolicyRef{ID: "entry-policy", Overlay: []byte(`{"mode":"deny"}`)}}}}
+	generation, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.PluginGenerations[0].ManagedNetworkPolicy.ID = "foreign"
+	snapshot.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] = '!'
+	first := generation.Snapshot()
+	if first.PluginGenerations[0].ManagedNetworkPolicy.ID != "entry-policy" || first.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] != '{' {
+		t.Fatal("generation retained caller policy alias")
+	}
+	first.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] = '!'
+	stable := generation.Snapshot()
+	if stable.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] != '{' {
+		t.Fatal("generation getter leaked overlay")
+	}
+	cloned := cloneSnapshot(stable)
+	cloned.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] = '!'
+	if stable.PluginGenerations[0].ManagedNetworkPolicy.Overlay[0] != '{' {
+		t.Fatal("runtime clone leaked overlay")
+	}
+}

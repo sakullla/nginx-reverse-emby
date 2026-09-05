@@ -335,6 +335,15 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		id := strings.TrimSpace(rule.PolicyRef.ID)
 		l4Required[id] = struct{}{}
 	}
+	for _, instance := range snapshot.PluginGenerations {
+		if instance.ManagedNetworkPolicy == nil {
+			continue
+		}
+		if err := validatePolicyRef(instance.ManagedNetworkPolicy, rawDefinitions, ExtensionL4); err != nil {
+			return nil, nil, fmt.Errorf("managed entry %s: %w", instance.InstanceID, err)
+		}
+		l4Required[instance.ManagedNetworkPolicy.ID] = struct{}{}
+	}
 	definitions := make([]model.PluginPolicy, 0, len(rawDefinitions))
 	for _, definition := range snapshot.PluginPolicies {
 		cloned, err := validateAndClonePolicy(definition)
@@ -373,6 +382,13 @@ func RequiredPolicyIDs(snapshot model.Snapshot) []string {
 	for _, rule := range snapshot.L4Rules {
 		if rule.Enabled && rule.PolicyRef != nil {
 			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
+	for _, instance := range snapshot.PluginGenerations {
+		if instance.ManagedNetworkPolicy != nil {
+			if id := strings.TrimSpace(instance.ManagedNetworkPolicy.ID); id != "" {
 				required[id] = struct{}{}
 			}
 		}

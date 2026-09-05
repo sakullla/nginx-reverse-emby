@@ -66,7 +66,7 @@ func datasetSelectorKey(value pluginsdk.DatasetClassification) string {
 func prepareDatasetGeneration(ctx context.Context, generation string, snapshot model.Snapshot, pool *datasetIndexPool) (*DatasetGeneration, error) {
 	provider := &DatasetGeneration{generation: generation, indices: map[string]*datasets.Index{}, bindings: map[string]map[string]map[string]bool{}, instanceGenerations: map[string]string{}, handles: map[string]pluginsdk.DatasetReference{}, pool: pool}
 	for _, instance := range snapshot.PluginGenerations {
-		provider.instanceGenerations[instance.InstanceID] = instance.ID
+		provider.instanceGenerations[instance.InstanceID] = generation
 	}
 	for _, policy := range snapshot.PluginPolicies {
 		for _, stage := range policy.Stages {
@@ -215,6 +215,26 @@ func datasetAuthorizationAllowed(authorization pluginsdk.PolicyHostCallAuthoriza
 	return declared && granted
 }
 
+// ResolveDataset implements the public source-only contract using this view's
+// immutable binding, including connectionless initialization. The SDK boundary
+// authenticates/grants the caller before invoking this method.
+func (provider *DatasetGeneration) ResolveDataset(ctx context.Context, binding pluginsdk.DatasetResolveBinding, request pluginsdk.DatasetResolveRequest) (pluginsdk.DatasetReference, error) {
+	if err := ctx.Err(); err != nil {
+		return pluginsdk.DatasetReference{}, err
+	}
+	if provider == nil || binding.Validate() != nil || request.Validate() != nil {
+		return pluginsdk.DatasetReference{}, errors.New("dataset resolve authority unavailable")
+	}
+	provider.mu.RLock()
+	index := provider.indices[request.SourceID]
+	valid := !provider.closed && provider.instanceGenerations[binding.InstanceID] == binding.Generation && len(provider.bindings[binding.InstanceID][request.SourceID]) > 0
+	provider.mu.RUnlock()
+	if !valid || index == nil {
+		return pluginsdk.DatasetReference{}, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "dataset source is not bound to runtime generation"}
+	}
+	return provider.openBound(binding, pluginsdk.DatasetOpenRequest{SourceID: request.SourceID, VersionDigest: index.Version().Digest})
+}
+
 func (provider *DatasetGeneration) Open(authorization pluginsdk.PolicyHostCallAuthorization, request pluginsdk.DatasetOpenRequest) (pluginsdk.DatasetReference, error) {
 	if provider == nil || !datasetAuthorizationAllowed(authorization) {
 		return pluginsdk.DatasetReference{}, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorPermissionDenied, Message: "dataset authorization denied"}
@@ -222,18 +242,22 @@ func (provider *DatasetGeneration) Open(authorization pluginsdk.PolicyHostCallAu
 	if err := request.Validate(); err != nil {
 		return pluginsdk.DatasetReference{}, err
 	}
+	return provider.openBound(pluginsdk.DatasetResolveBinding{InstanceID: authorization.InstanceID, Generation: authorization.Generation}, request)
+}
+
+func (provider *DatasetGeneration) openBound(binding pluginsdk.DatasetResolveBinding, request pluginsdk.DatasetOpenRequest) (pluginsdk.DatasetReference, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if provider.closed || provider.instanceGenerations[authorization.InstanceID] != authorization.Generation {
+	if provider.closed || provider.instanceGenerations[binding.InstanceID] != binding.Generation {
 		return pluginsdk.DatasetReference{}, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "dataset generation is stale"}
 	}
 	index := provider.indices[request.SourceID]
-	if index == nil || index.Version().Digest != request.VersionDigest || len(provider.bindings[authorization.InstanceID][request.SourceID]) == 0 {
+	if index == nil || index.Version().Digest != request.VersionDigest || len(provider.bindings[binding.InstanceID][request.SourceID]) == 0 {
 		return pluginsdk.DatasetReference{}, &pluginsdk.RuntimeError{Code: pluginsdk.ErrorPermissionDenied, Message: "dataset source/version is not bound to instance"}
 	}
 	// Reuse one immutable handle per instance/source to keep the registry bounded.
 	for _, reference := range provider.handles {
-		if reference.InstanceID == authorization.InstanceID && reference.SourceID == request.SourceID {
+		if reference.InstanceID == binding.InstanceID && reference.SourceID == request.SourceID {
 			return reference, nil
 		}
 	}
@@ -244,7 +268,7 @@ func (provider *DatasetGeneration) Open(authorization pluginsdk.PolicyHostCallAu
 	if _, err := rand.Read(random[:]); err != nil {
 		return pluginsdk.DatasetReference{}, err
 	}
-	reference := pluginsdk.DatasetReference{Handle: hex.EncodeToString(random[:]), InstanceID: authorization.InstanceID, Generation: authorization.Generation, SourceID: request.SourceID, VersionDigest: request.VersionDigest}
+	reference := pluginsdk.DatasetReference{Handle: hex.EncodeToString(random[:]), InstanceID: binding.InstanceID, Generation: binding.Generation, SourceID: request.SourceID, VersionDigest: request.VersionDigest}
 	provider.handles[reference.Handle] = reference
 	return reference, nil
 }

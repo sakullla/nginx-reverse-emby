@@ -564,6 +564,9 @@ func newAppWithAllDeps(
 	rpcProcesses := pluginprocess.NewSupervisor(nil, nil, nil)
 	rpcProcesses.SetRuntimeLogSink(core.NewPluginRuntimeLogSink(st))
 	rpcHost, _ := pluginrpc.NewHost(pluginprocess.Installer{RuntimeRoot: rpcProcessRuntimeRoot(cfg.DataDir, os.Getpid())}, rpcProcesses, nil)
+	if err := rpcHost.SetRevocationPath(filepath.Join(cfg.DataDir, "plugin-resources", "revoked-generations.json")); err != nil {
+		_ = rpcHost.Close(context.Background())
+	}
 	rpcHost.SetDockerProxy(filepath.Join(cfg.DataDir, "plugin-resources", "docker-compose"), nil)
 	if redeemer, ok := client.(pluginrpc.SecretRedeemer); ok {
 		rpcHost.SetSecretRedeemer(redeemer)
@@ -607,6 +610,9 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.certReports = modules.certReports
 	a.ddns = modules.ddns
 	a.generations = modules.generations
+	if a.rpcHost != nil {
+		a.rpcHost.SetNetworkSessionRegistrar(modules.generations)
+	}
 	a.policyWASM = modules.policyWASM
 	a.rpcGeneration = modules.rpcGeneration
 	if a.rpcGeneration != nil {

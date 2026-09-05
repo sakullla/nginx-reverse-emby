@@ -132,23 +132,32 @@ type Launcher interface {
 }
 
 type Host struct {
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	closed         bool
-	prepareWG      sync.WaitGroup
-	runtimeRoot    string
-	launcher       Launcher
-	dialer         RPCDialer
-	authorize      func(Candidate) error
-	provision      func(string, Endpoint) (controlAttemptSecurity, error)
-	logs           io.Writer
-	active         map[string]*Instance
-	prepared       map[*Instance]struct{}
-	observer       func(RuntimeStatus) error
-	logObserver    func(Candidate, string)
-	observerErrors map[string]error
-	hostResources  HostResourceDispatcher
+	mu                     sync.RWMutex
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	closed                 bool
+	prepareWG              sync.WaitGroup
+	runtimeRoot            string
+	launcher               Launcher
+	dialer                 RPCDialer
+	authorize              func(Candidate) error
+	provision              func(string, Endpoint) (controlAttemptSecurity, error)
+	logs                   io.Writer
+	active                 map[string]*Instance
+	prepared               map[*Instance]struct{}
+	observer               func(RuntimeStatus) error
+	logObserver            func(Candidate, string)
+	observerErrors         map[string]error
+	hostResources          HostResourceDispatcher
+	revokedGenerations     map[hostGenerationIdentity]bool
+	generationPreparations map[hostGenerationIdentity]*hostGenerationPreparation
+}
+
+type hostGenerationIdentity struct{ instance, generation string }
+
+type hostGenerationPreparation struct {
+	wg    sync.WaitGroup
+	count int // protected by Host.mu
 }
 
 type RuntimeStatus struct {
@@ -290,14 +299,38 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		return nil, errors.New("control-plane plugin instance and generation are required")
 	}
 	h.mu.Lock()
+	identity := hostGenerationIdentity{candidate.InstanceID, candidate.Identity.Generation}
+	if h.revokedGenerations[identity] {
+		h.mu.Unlock()
+		return nil, errors.New("control-plane plugin generation is revoked")
+	}
 	if h.closed {
 		h.mu.Unlock()
 		return nil, errors.New("control-plane plugin host is closed")
 	}
 	h.prepareWG.Add(1)
+	if h.generationPreparations == nil {
+		h.generationPreparations = make(map[hostGenerationIdentity]*hostGenerationPreparation)
+	}
+	preparations := h.generationPreparations[identity]
+	if preparations == nil {
+		preparations = &hostGenerationPreparation{}
+		h.generationPreparations[identity] = preparations
+	}
+	preparations.wg.Add(1)
+	preparations.count++
 	hostCtx := h.ctx
 	h.mu.Unlock()
 	defer h.prepareWG.Done()
+	defer func() {
+		h.mu.Lock()
+		preparations.count--
+		preparations.wg.Done()
+		if preparations.count == 0 {
+			delete(h.generationPreparations, identity)
+		}
+		h.mu.Unlock()
+	}()
 	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
 	stopHostCancellation := context.AfterFunc(hostCtx, cancelAttempt)
 	stopCallerCancellation := context.AfterFunc(ctx, cancelAttempt)
@@ -338,7 +371,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "starting", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt, setupDone: make(chan struct{})}
 		h.mu.Lock()
 		h.prepared[instance] = struct{}{}
-		closed := h.closed
+		closed := h.closed || h.revokedGenerations[identity]
 		h.mu.Unlock()
 		ownedInstance := instance
 		defer func() {
@@ -522,6 +555,13 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 	}
 	for index := range entries {
 		entry := &entries[index]
+		if h.revokedGenerations[hostGenerationIdentity{entry.instance.ID, entry.instance.Generation}] {
+			h.mu.Unlock()
+			for _, cleanup := range entries {
+				cleanup.control.cancel()
+			}
+			return nil, errors.New("control-plane plugin generation is revoked")
+		}
 		if _, prepared := h.prepared[entry.instance]; !prepared {
 			h.mu.Unlock()
 			for _, cleanup := range entries {
@@ -758,6 +798,76 @@ func (h *Host) ActiveGenerations() map[string]string {
 func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	_, err := h.StopWithResults(ctx, instanceID)
 	return err
+}
+
+// StopGenerationWithResults fences one exact generation before waiting for
+// in-flight preparations. It includes active, prepared and draining objects,
+// and suppresses their restart loop without touching a replacement generation.
+// The controller persists its revocation fence before calling this method so
+// the same generation also cannot be restored after a Host restart.
+func (h *Host) StopGenerationWithResults(ctx context.Context, instanceID, generation string) ([]TerminalResult, error) {
+	if h == nil || ctx == nil || instanceID == "" || generation == "" {
+		return nil, errors.New("exact control-plane plugin generation is required")
+	}
+	identity := hostGenerationIdentity{instanceID, generation}
+	h.mu.Lock()
+	if h.revokedGenerations == nil {
+		h.revokedGenerations = make(map[hostGenerationIdentity]bool)
+	}
+	h.revokedGenerations[identity] = true
+	if instance := h.active[instanceID]; instance != nil && instance.Generation == generation && instance.control != nil {
+		instance.control.cancel()
+	}
+	for instance := range h.prepared {
+		if instance.ID == instanceID && instance.Generation == generation && instance.processCancel != nil {
+			instance.processCancel()
+		}
+	}
+	preparations := h.generationPreparations[identity]
+	h.mu.Unlock()
+	if preparations != nil {
+		joined := make(chan struct{})
+		go func() { preparations.wg.Wait(); close(joined) }()
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("plugin generation preparation termination is pending")
+		case <-joined:
+		}
+	}
+	h.mu.Lock()
+	instances := make(map[*Instance]bool)
+	if instance := h.active[instanceID]; instance != nil && instance.Generation == generation {
+		instances[instance] = true
+	}
+	for instance := range h.prepared {
+		if instance.ID == instanceID && instance.Generation == generation {
+			instances[instance] = instances[instance] || instance.control != nil
+		}
+	}
+	h.mu.Unlock()
+	var results []TerminalResult
+	var failures []error
+	for instance, published := range instances {
+		stopErr := h.stopPublished(ctx, instance)
+		result := terminalResult(instance, published)
+		results = append(results, result)
+		failures = append(failures, stopErr)
+		if !result.Terminated {
+			failures = append(failures, errors.New("plugin generation process termination is pending"))
+			continue
+		}
+		h.mu.Lock()
+		delete(h.prepared, instance)
+		removed := h.active[instanceID] == instance
+		if removed {
+			delete(h.active, instanceID)
+		}
+		h.mu.Unlock()
+		if removed {
+			h.unpublishPluginUI(instance)
+		}
+	}
+	return results, errors.Join(failures...)
 }
 
 func (h *Host) StopWithResults(ctx context.Context, instanceID string) ([]TerminalResult, error) {

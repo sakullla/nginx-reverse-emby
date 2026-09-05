@@ -37,12 +37,14 @@ func (s Snapshot) HasFullRevisionPayload() bool {
 }
 
 type RevisionStart struct {
-	AgentID      string `json:"agent_id"`
-	Revision     int64  `json:"revision"`
-	RetryCycle   int    `json:"retry_cycle"`
-	Attempt      int    `json:"attempt"`
-	LeaseID      string `json:"lease_id"`
-	GenerationID string `json:"generation_id"`
+	RuntimeGenerationID string `json:"runtime_generation_id,omitempty"`
+	RuntimeSnapshotHash string `json:"runtime_snapshot_hash,omitempty"`
+	AgentID             string `json:"agent_id"`
+	Revision            int64  `json:"revision"`
+	RetryCycle          int    `json:"retry_cycle"`
+	Attempt             int    `json:"attempt"`
+	LeaseID             string `json:"lease_id"`
+	GenerationID        string `json:"generation_id"`
 }
 
 type RevisionReport struct {

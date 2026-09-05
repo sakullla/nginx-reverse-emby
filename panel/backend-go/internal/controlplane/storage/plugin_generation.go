@@ -241,7 +241,7 @@ func (s *GormStore) loadPluginGenerationGrants(ctx context.Context, plugin Insta
 		if row.PackageIdentity != "" && row.PackageIdentity != packageRow.Identity {
 			continue
 		}
-		resourceKind, resourceID := splitPluginGrantSelector(row.ResourceSelector)
+		resourceKind, resourceID := SplitPluginGenerationGrantResource(row.Permission, row.ResourceSelector)
 		grants = append(grants, PluginGenerationGrant{Name: strings.TrimSpace(row.Permission), ResourceKind: resourceKind, ResourceID: resourceID})
 	}
 	return grants, nil
@@ -309,6 +309,19 @@ func splitPluginGrantSelector(selector string) (string, string) {
 		return "", parts[0]
 	}
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+// SplitPluginGenerationGrantResource preserves protocol/address selectors for
+// managed effects. A URL's scheme is not a generic resource kind; in particular
+// IPv6 brackets and colons belong to the complete endpoint resource ID.
+func SplitPluginGenerationGrantResource(permission, selector string) (string, string) {
+	selector = strings.TrimSpace(selector)
+	if permission == pluginsdk.PermissionManagedNetworkListen || permission == pluginsdk.PermissionManagedNetworkDial {
+		if strings.HasPrefix(selector, "tcp://") || strings.HasPrefix(selector, "udp://") {
+			return "network-endpoint", selector
+		}
+	}
+	return splitPluginGrantSelector(selector)
 }
 
 func splitPluginPlatform(platform string) (string, string) {

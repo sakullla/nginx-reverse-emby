@@ -12,6 +12,15 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
+// RuntimeGenerationBinder is a trusted Host callback at the actual candidate boundary.
+// It is never populated from a plugin request or unmaterialized control-plane snapshot.
+type RuntimeGenerationBinder func(context.Context, GenerationIdentity) error
+type runtimeGenerationBinderKey struct{}
+
+func WithRuntimeGenerationBinder(ctx context.Context, binder RuntimeGenerationBinder) context.Context {
+	return context.WithValue(ctx, runtimeGenerationBinderKey{}, binder)
+}
+
 type Activator func(ctx context.Context, previous, next model.Snapshot) error
 
 type Runtime struct {
@@ -178,6 +187,15 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 	}
 
 	if r.generations != nil {
+		if binder, ok := ctx.Value(runtimeGenerationBinderKey{}).(RuntimeGenerationBinder); ok && binder != nil {
+			identity, _, err := r.candidateGenerationIdentity(previous, next, snapshotHash)
+			if err != nil {
+				return err
+			}
+			if err := binder(ctx, identity); err != nil {
+				return fmt.Errorf("bind runtime generation before prepare: %w", err)
+			}
+		}
 		var cutover GenerationCutover
 		var err error
 		if trafficRuntime != nil {
@@ -383,6 +401,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		for i, generation := range snapshot.PluginGenerations {
 			clonedGeneration := &cloned.PluginGenerations[i]
 			clonedGeneration.Config = slices.Clone(generation.Config)
+			clonedGeneration.ManagedNetworkPolicy = clonePolicyRef(generation.ManagedNetworkPolicy)
 			clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
 			clonedGeneration.RequiredFeatures = slices.Clone(generation.RequiredFeatures)
 			clonedGeneration.HTTPBackendProviders = slices.Clone(generation.HTTPBackendProviders)

@@ -576,7 +576,10 @@ func (c *TaskClient) handleTaskMessage(ctx context.Context, task TaskMessage, up
 		result map[string]any
 		err    error
 	)
-	if strings.TrimSpace(task.TaskType) == TaskTypePluginCall {
+	if strings.TrimSpace(task.TaskType) == TaskTypePluginGenerationRevoke {
+		revoker, _ := c.cfg.PluginCaller.(PluginGenerationRevoker)
+		result, err = HandlePluginGenerationRevokeTask(taskCtx, revoker, task)
+	} else if strings.TrimSpace(task.TaskType) == TaskTypePluginCall {
 		result, err = HandlePluginCallTask(taskCtx, c.cfg.PluginCaller, task)
 	} else if c.cfg.Handler == nil {
 		return update(ctx, task.TaskID, map[string]any{

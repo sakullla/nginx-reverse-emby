@@ -1,6 +1,7 @@
 package localagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -177,6 +178,8 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 		result, taskErr = s.forceRotatePKI(ctx, envelope)
 	case service.TaskTypePluginCall:
 		result, taskErr = s.handlePluginCall(ctx, envelope)
+	case service.TaskTypePluginGenerationRevoke:
+		result, taskErr = s.handlePluginGenerationRevoke(ctx, envelope)
 	case service.TaskTypeChannelEnsure, service.TaskTypeChannelTeardown, service.TaskTypeChannelStatus:
 		result, taskErr = s.handleChannelTask(ctx, envelope)
 	default:
@@ -202,6 +205,29 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 	}); reportErr != nil {
 		log.Printf("[local-agent] failed to report task result: %v", reportErr)
 	}
+}
+
+func (s *LocalTaskSession) handlePluginGenerationRevoke(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	runner, ok := s.diagnostics.(interface {
+		RevokePluginGeneration(context.Context, goagentembedded.PluginGenerationRevokeRequest) error
+	})
+	if !ok {
+		return nil, errors.New("embedded plugin revocation runner is unavailable")
+	}
+	data, err := json.Marshal(envelope.Payload)
+	if err != nil {
+		return nil, errors.New("embedded plugin revocation request is invalid")
+	}
+	var request goagentembedded.PluginGenerationRevokeRequest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || request.Validate() != nil {
+		return nil, errors.New("embedded plugin revocation identity is invalid")
+	}
+	if err := runner.RevokePluginGeneration(ctx, request); err != nil {
+		return nil, errors.New("embedded plugin revocation is pending")
+	}
+	return map[string]any{"generation_id": request.GenerationID, "fence_id": request.FenceID, "revoked": true}, nil
 }
 
 func (s *LocalTaskSession) handlePluginCall(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {

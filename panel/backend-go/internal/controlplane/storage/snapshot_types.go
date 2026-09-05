@@ -69,6 +69,7 @@ type PluginGeneration struct {
 	HTTPBackendProviders []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
 	ConfigVersion        uint64                                    `json:"config_version"`
 	Config               json.RawMessage                           `json:"config"`
+	ManagedNetworkPolicy *PolicyRef                                `json:"managed_network_policy,omitempty"`
 	Grants               []PluginGenerationGrant                   `json:"grants"`
 	SecretHandles        []PluginGenerationSecretHandle            `json:"secret_handles"`
 	ResourceBudget       PluginGenerationResourceBudget            `json:"resource_budget"`

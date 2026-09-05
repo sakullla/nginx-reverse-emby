@@ -207,6 +207,11 @@ func validPluginArtifactPackageIdentity(value string) bool {
 }
 
 func clonePluginGeneration(generation model.PluginGeneration) model.PluginGeneration {
+	if generation.ManagedNetworkPolicy != nil {
+		ref := *generation.ManagedNetworkPolicy
+		ref.Overlay = append([]byte(nil), ref.Overlay...)
+		generation.ManagedNetworkPolicy = &ref
+	}
 	generation.Config = append([]byte(nil), generation.Config...)
 	generation.ExtensionPoints = append([]string(nil), generation.ExtensionPoints...)
 	generation.Grants = append([]model.PluginGrantProjection(nil), generation.Grants...)

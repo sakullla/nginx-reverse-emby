@@ -22,6 +22,27 @@ type DatasetArtifact = model.DatasetArtifact
 type DatasetInstanceBinding = model.DatasetInstanceBinding
 type PolicyRef = model.PolicyRef
 type PluginPolicy = model.PluginPolicy
+type PluginGenerationRevokeRequest = model.PluginGenerationRevokeRequest
+
+// RuntimeGenerationBinding identifies the materialized candidate used for Prepare.
+type RuntimeGenerationBinding struct {
+	GenerationID, SnapshotHash string
+	Revision                   int64
+}
+
+func WithRuntimeGenerationBinder(ctx context.Context, binder func(context.Context, RuntimeGenerationBinding) error) context.Context {
+	if binder == nil {
+		return ctx
+	}
+	return agentcore.WithRuntimeGenerationBinder(ctx, func(ctx context.Context, identity agentcore.GenerationIdentity) error {
+		return binder(ctx, RuntimeGenerationBinding{GenerationID: identity.ID, SnapshotHash: identity.SnapshotHash, Revision: identity.Revision})
+	})
+}
+
+type PluginScopedSecretSource interface {
+	RedeemScopedPluginSecret(context.Context, PluginSecretRedemptionRequest) (json.RawMessage, error)
+}
+
 type PluginGeneration = model.PluginGeneration
 type PluginDependencyEdge = model.PluginDependencyEdge
 type PluginDependencyConsumer = model.PluginDependencyConsumer
@@ -267,6 +288,17 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	return r.app.SyncNow(applyCtx)
 }
 
+func (r *Runtime) RevokePluginGeneration(ctx context.Context, request PluginGenerationRevokeRequest) error {
+	if r == nil || r.app == nil {
+		return errors.New("embedded runtime unavailable")
+	}
+	owner, ok := r.app.(interface{ PluginRPCHost() *pluginrpc.Host })
+	if !ok || owner.PluginRPCHost() == nil {
+		return errors.New("embedded generation revoker unavailable")
+	}
+	return owner.PluginRPCHost().RevokeGeneration(ctx, request)
+}
+
 func (r *Runtime) Call(ctx context.Context, pluginID, name string, payload json.RawMessage) (json.RawMessage, error) {
 	if r == nil || r.app == nil {
 		return nil, errors.New("plugin execution instance is unavailable")
@@ -356,6 +388,17 @@ func (a syncClientAdapter) RedeemPluginSecrets(ctx context.Context, request mode
 		return nil, errors.New("embedded plugin secret redemption is unavailable")
 	}
 	return source.RedeemPluginSecrets(ctx, request)
+}
+
+func (a syncClientAdapter) RedeemScopedPluginSecret(ctx context.Context, request model.PluginSecretRedemptionRequest) (json.RawMessage, error) {
+	source, ok := a.source.(PluginScopedSecretSource)
+	if !ok {
+		return nil, errors.New("embedded scoped secret redemption unavailable")
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	return source.RedeemScopedPluginSecret(ctx, request)
 }
 
 type approvedRevisionContextKey struct{}

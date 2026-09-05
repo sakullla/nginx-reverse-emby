@@ -153,6 +153,73 @@ func TestIntegrationCoordinatorClaimStartApplyAndExpiredLeaseFence(t *testing.T)
 	}
 }
 
+func TestCoordinatorBindsRuntimeIdentityIndependentlyFromAttempt(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		t.Run(fmt.Sprint("remote=", remote), func(t *testing.T) {
+			store := newCoordinatorTestStore(t)
+			now := time.Now().UTC()
+			seedRevisions(t, store, now, "edge-runtime", 1, 0, map[int64]string{1: storage.AgentRevisionStatePending})
+			clock := &fakeClock{now: now}
+			coord := newTestCoordinatorWithClock(t, store, clock)
+			claim, err := coord.Claim(t.Context(), "edge-runtime")
+			if err != nil || claim.Lease == nil {
+				t.Fatal("claim", err)
+			}
+			hash := strings.Repeat("a", 64)
+			runtimeID := "generation-1-" + hash[:16]
+			start := StartRequest{Lease: *claim.Lease, GenerationID: "attempt-a"}
+			if remote {
+				start.RuntimeGenerationID, start.RuntimeSnapshotHash = runtimeID, hash
+			}
+			if _, err := coord.Start(t.Context(), start); err != nil {
+				t.Fatal(err)
+			}
+			binding := storage.CoordinatorRuntimeBindingRequest{Lease: *claim.Lease, GenerationID: start.GenerationID, RuntimeGenerationID: runtimeID, RuntimeSnapshotHash: hash, Now: now}
+			if err := store.BindAgentRevisionRuntime(t.Context(), binding); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.BindAgentRevisionRuntime(t.Context(), binding); err != nil {
+				t.Fatal("same binding retry failed", err)
+			}
+			row := mustRevision(t, store, "edge-runtime", 1)
+			if row.GenerationID != "attempt-a" || row.RuntimeGenerationID != runtimeID || row.RuntimeSnapshotHash != hash {
+				t.Fatal("runtime binding replaced attempt identity")
+			}
+			for _, mutation := range []string{"pair", "lease", "attempt", "cycle", "expired", "generation"} {
+				changed := binding
+				switch mutation {
+				case "pair":
+					changed.RuntimeSnapshotHash = strings.Repeat("b", 64)
+					changed.RuntimeGenerationID = "generation-1-" + changed.RuntimeSnapshotHash[:16]
+				case "lease":
+					changed.Lease.LeaseID = "other-lease"
+				case "attempt":
+					changed.Lease.Attempt++
+				case "cycle":
+					changed.Lease.RetryCycle++
+				case "expired":
+					changed.Now = now.Add(time.Hour)
+				case "generation":
+					changed.GenerationID = "other-attempt"
+				}
+				if err := store.BindAgentRevisionRuntime(t.Context(), changed); err == nil {
+					t.Fatal("invalid binding accepted", mutation)
+				}
+			}
+			if remote {
+				if _, err := coord.Start(t.Context(), start); err != nil {
+					t.Fatal("same remote Start retry failed", err)
+				}
+				start.RuntimeGenerationID = "generation-1-" + strings.Repeat("b", 16)
+				start.RuntimeSnapshotHash = strings.Repeat("b", 64)
+				if _, err := coord.Start(t.Context(), start); err == nil {
+					t.Fatal("conflicting remote Start identity accepted")
+				}
+			}
+		})
+	}
+}
+
 func TestIntegrationCoordinatorRetryAndRollbackRemainIdempotent(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 16, 11, 0, 0, 0, time.UTC)

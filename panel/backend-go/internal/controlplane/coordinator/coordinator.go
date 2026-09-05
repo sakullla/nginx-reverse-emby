@@ -134,8 +134,10 @@ func (c *Coordinator) claim(ctx context.Context, agentID string) (ClaimResult, e
 }
 
 type StartRequest struct {
-	Lease        Lease
-	GenerationID string
+	Lease               Lease
+	GenerationID        string
+	RuntimeGenerationID string
+	RuntimeSnapshotHash string
 }
 
 type StartResult = storage.CoordinatorStartResult
@@ -143,6 +145,7 @@ type StartResult = storage.CoordinatorStartResult
 func (c *Coordinator) start(ctx context.Context, request StartRequest) (StartResult, error) {
 	return c.repository.StartAgentRevisionAttempt(ctx, storage.CoordinatorStartRequest{
 		Lease: request.Lease, GenerationID: request.GenerationID, Now: c.now(),
+		RuntimeGenerationID: request.RuntimeGenerationID, RuntimeSnapshotHash: request.RuntimeSnapshotHash,
 		DefaultApplyTimeoutSeconds: durationSeconds(c.applyTimeout),
 	})
 }

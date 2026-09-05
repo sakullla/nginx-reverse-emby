@@ -189,3 +189,23 @@ func TestPolicyModuleOptionalRuntimeFailureDoesNotBlockCoreGeneration(t *testing
 		t.Fatalf("Destroy() error = %v", err)
 	}
 }
+
+func TestManagedEntryPolicyAdmissionRequiresExistingL4Policy(t *testing.T) {
+	owner := NewModule(nil, nil)
+	snapshot := model.Snapshot{PluginGenerations: []model.PluginGeneration{{InstanceID: "instance", ManagedNetworkPolicy: &model.PolicyRef{ID: "managed"}}}}
+	if _, _, err := owner.prepareSnapshotPolicies(t.Context(), snapshot); err == nil {
+		t.Fatal("missing managed entry policy accepted")
+	}
+	snapshot.PluginPolicies = []model.PluginPolicy{testPolicy("managed", model.PolicyKindWAF)}
+	if _, _, err := owner.prepareSnapshotPolicies(t.Context(), snapshot); err == nil {
+		t.Fatal("WAF attached to managed L4 entry")
+	}
+	snapshot.PluginPolicies = []model.PluginPolicy{testPolicy("managed", model.PolicyKindIP)}
+	_, required, err := owner.prepareSnapshotPolicies(t.Context(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(required) != 1 || required[0] != "managed" {
+		t.Fatal("managed policy did not become required generation dependency")
+	}
+}

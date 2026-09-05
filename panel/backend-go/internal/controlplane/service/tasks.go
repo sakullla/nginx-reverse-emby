@@ -11,14 +11,15 @@ import (
 )
 
 const (
-	TaskTypeDiagnoseHTTPRule  = "diagnose_http_rule"
-	TaskTypeDiagnoseL4TCPRule = "diagnose_l4_tcp_rule"
-	TaskTypePKISecurityUpdate = "pki_security_update"
-	TaskTypePKIForceRotation  = "pki_force_rotation"
-	TaskTypePluginCall        = "plugin.call"
-	TaskTypeChannelEnsure     = "channel.ensure"
-	TaskTypeChannelTeardown   = "channel.teardown"
-	TaskTypeChannelStatus     = "channel.status"
+	TaskTypeDiagnoseHTTPRule       = "diagnose_http_rule"
+	TaskTypeDiagnoseL4TCPRule      = "diagnose_l4_tcp_rule"
+	TaskTypePKISecurityUpdate      = "pki_security_update"
+	TaskTypePKIForceRotation       = "pki_force_rotation"
+	TaskTypePluginCall             = "plugin.call"
+	TaskTypePluginGenerationRevoke = "plugin.generation.revoke"
+	TaskTypeChannelEnsure          = "channel.ensure"
+	TaskTypeChannelTeardown        = "channel.teardown"
+	TaskTypeChannelStatus          = "channel.status"
 )
 
 const taskDeadlineExceededError = "task deadline exceeded"
@@ -715,7 +716,7 @@ func (s *TaskService) DispatchAgentTask(ctx context.Context, agentID, taskType s
 func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
 	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation, TaskTypePluginCall,
-		TaskTypeChannelEnsure, TaskTypeChannelTeardown, TaskTypeChannelStatus:
+		TaskTypeChannelEnsure, TaskTypeChannelTeardown, TaskTypeChannelStatus, TaskTypePluginGenerationRevoke:
 		return true
 	default:
 		return false

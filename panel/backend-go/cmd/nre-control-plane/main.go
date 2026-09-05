@@ -667,6 +667,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 	}
 
 	var runLocalAgent func(context.Context) error
+	var bindLocalPluginSecrets func(httpapi.AgentPluginSecretService) error
 	if cfg.EnableLocalAgent {
 		runtimeStore, err = openConfiguredStore(cfg)
 		if err != nil {
@@ -685,6 +686,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 		if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
 			runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, trafficSvc)
 			runtimeWithSource.SyncSource().SetDDNSReconciler(ddnsSvc.ReconcileAfterHeartbeat)
+			bindLocalPluginSecrets = localPluginSecretServiceBinding(runtimeWithSource.SyncSource())
 		}
 		revisionWorker, workerErr := localagent.NewRevisionWorker(cfg.LocalAgentID, agentSvc.RevisionAPI(), serviceStore, runtime)
 		if workerErr != nil {
@@ -701,19 +703,20 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 	}
 
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
-		SystemService:        systemSvc,
-		AgentService:         agentSvc,
-		RuleService:          ruleSvc,
-		L4RuleService:        l4Svc,
-		VersionPolicyService: versionSvc,
-		EgressProfileService: egressSvc,
-		RelayListenerService: relaySvc,
-		CertificateService:   certSvc,
-		BackupService:        service.NewBackupService(cfg, serviceStore),
-		PKIService:           pkiHTTPService,
-		TaskService:          taskSvc,
-		TrafficService:       trafficSvc,
-		PluginRuntimeHost:    rpcRuntimeHost,
+		SystemService:           systemSvc,
+		AgentService:            agentSvc,
+		RuleService:             ruleSvc,
+		L4RuleService:           l4Svc,
+		VersionPolicyService:    versionSvc,
+		EgressProfileService:    egressSvc,
+		RelayListenerService:    relaySvc,
+		CertificateService:      certSvc,
+		BackupService:           service.NewBackupService(cfg, serviceStore),
+		PKIService:              pkiHTTPService,
+		TaskService:             taskSvc,
+		TrafficService:          trafficSvc,
+		PluginRuntimeHost:       rpcRuntimeHost,
+		BindPluginSecretService: bindLocalPluginSecrets,
 	})
 	if err != nil {
 		_ = closeServices()
@@ -738,6 +741,16 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 	controlPlaneApp.SetPKIMaintainer(pkiSupervisor.Run)
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
+}
+
+func localPluginSecretServiceBinding(source *localagent.SyncSource) func(httpapi.AgentPluginSecretService) error {
+	return func(service httpapi.AgentPluginSecretService) error {
+		if source == nil || service == nil {
+			return errors.New("production plugin secret service is unavailable")
+		}
+		source.SetPluginSecretSource(service)
+		return nil
+	}
 }
 
 type controlPlanePKIRuntime struct {

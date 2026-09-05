@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"path"
 	"slices"
 	"sort"
@@ -40,6 +41,7 @@ type PluginGeneration struct {
 	HTTPBackendProviders []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
 	ConfigVersion        uint64                                    `json:"config_version"`
 	Config               json.RawMessage                           `json:"config"`
+	ManagedNetworkPolicy *PolicyRef                                `json:"managed_network_policy,omitempty"`
 	Grants               []PluginGrantProjection                   `json:"grants"`
 	SecretHandles        []PluginSecretHandle                      `json:"secret_handles"`
 	ResourceBudget       PluginResourceBudget                      `json:"resource_budget"`
@@ -87,14 +89,16 @@ type PluginSecretHandle struct {
 type PluginGenerationSecretHandle = PluginSecretHandle
 
 type PluginSecretRedemptionRequest struct {
-	Revision       uint64                         `json:"revision"`
-	GenerationID   string                         `json:"generation_id"`
-	InstanceID     string                         `json:"instance_id"`
-	PluginID       string                         `json:"plugin_id"`
-	OperationID    string                         `json:"operation_id"`
-	PackageDigest  string                         `json:"package_digest"`
-	ArtifactDigest string                         `json:"artifact_digest"`
-	Handles        []PluginGenerationSecretHandle `json:"handles"`
+	Revision            uint64                         `json:"revision"`
+	GenerationID        string                         `json:"generation_id"`
+	InstanceID          string                         `json:"instance_id"`
+	PluginID            string                         `json:"plugin_id"`
+	OperationID         string                         `json:"operation_id"`
+	PackageDigest       string                         `json:"package_digest"`
+	ArtifactDigest      string                         `json:"artifact_digest"`
+	Handles             []PluginGenerationSecretHandle `json:"handles"`
+	RuntimeGenerationID string                         `json:"runtime_generation_id,omitempty"`
+	Scoped              json.RawMessage                `json:"scoped,omitempty"`
 }
 
 type PluginRedeemedSecret struct {
@@ -107,13 +111,28 @@ type PluginRedeemedSecret struct {
 
 type PluginSecretRedemptionResponse struct {
 	Secrets []PluginRedeemedSecret `json:"secrets"`
+	Scoped  json.RawMessage        `json:"scoped,omitempty"`
 }
 
 func (request PluginSecretRedemptionRequest) Validate() error {
 	if request.Revision == 0 || !validPluginIdentity(request.GenerationID) || !validPluginIdentity(request.InstanceID) ||
 		!validPluginIdentity(request.PluginID) || !validPluginIdentity(request.OperationID) ||
-		!validPluginSHA256(request.PackageDigest) || !validPluginSHA256(request.ArtifactDigest) || len(request.Handles) == 0 {
+		!validPluginSHA256(request.PackageDigest) || !validPluginSHA256(request.ArtifactDigest) || (len(request.Handles) == 0) == (len(request.Scoped) == 0) {
 		return errors.New("plugin secret redemption fence is invalid")
+	}
+	if len(request.Scoped) > 0 {
+		if !validPluginIdentity(request.RuntimeGenerationID) || len(request.Scoped) > pluginsdk.PluginHostPayloadMaxBytes {
+			return errors.New("scoped secret runtime fence is invalid")
+		}
+		scoped, err := pluginsdk.DecodeScopedSecretRequest(request.Scoped)
+		if err != nil {
+			return err
+		}
+		defer scoped.Material.Close()
+		if scoped.Binding != (pluginsdk.ManagedBinding{InstanceID: request.InstanceID, Generation: request.RuntimeGenerationID, EntryID: request.InstanceID}) {
+			return errors.New("scoped secret runtime binding mismatch")
+		}
+		return nil
 	}
 	return validatePluginSecretHandles(request.InstanceID, request.Handles)
 }
@@ -565,7 +584,7 @@ func knownPluginExtensionPoint(value string) bool {
 }
 
 func knownPluginRequiredFeature(value string) bool {
-	return value == pluginsdk.RPCFeatureDurableActionsV1 || value == pluginsdk.RPCFeatureHTTPBackendProviderV1
+	return pluginsdk.ValidateRPCFeatures([]string{value}, []string{value}) == nil
 }
 
 func knownPluginGrant(value string) bool {
@@ -580,12 +599,54 @@ func knownPluginGrant(value string) bool {
 	}
 }
 
+// ValidManagedNetworkEndpointSelector applies the public endpoint contract to an
+// exact effect selector. It deliberately does not relax other resource identities.
+func ValidManagedNetworkEndpointSelector(permission, value string) bool {
+	protocol, address, ok := strings.Cut(value, "://")
+	if !ok || (protocol != "tcp" && protocol != "udp") {
+		return false
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || strconv.Itoa(number) != port || net.JoinHostPort(host, port) != address {
+		return false
+	}
+	request := pluginsdk.ManagedNetworkRequest{Binding: pluginsdk.ManagedBinding{InstanceID: "validation", Generation: "validation", EntryID: "validation"}, RequestID: "validation", Endpoint: &pluginsdk.ManagedNetworkEndpoint{Host: host, Port: number}, Protocol: protocol}
+	switch permission {
+	case pluginsdk.PermissionManagedNetworkListen:
+		request.Action = pluginsdk.ManagedNetworkListen
+		request.MaxFlows = 1
+		request.IdleMS = 1
+	case pluginsdk.PermissionManagedNetworkDial:
+		request.Action = pluginsdk.ManagedNetworkDial
+		request.WaitMS = 1
+		if protocol == "udp" {
+			request.IdleMS = 1
+		}
+	default:
+		return false
+	}
+	return request.Validate() == nil
+}
+func validPluginGrantResource(grant PluginGrantProjection) bool {
+	if grant.Name == pluginsdk.PermissionManagedNetworkListen || grant.Name == pluginsdk.PermissionManagedNetworkDial {
+		if grant.ResourceKind != "" && grant.ResourceKind != "network-endpoint" {
+			return false
+		}
+		return grant.ResourceID == "" || ValidManagedNetworkEndpointSelector(grant.Name, grant.ResourceID)
+	}
+	return grant.ResourceID == "" || validPluginIdentity(grant.ResourceID)
+}
+
 func validatePluginGrants(grants []PluginGrantProjection) error {
 	seen := map[string]struct{}{}
 	for _, grant := range grants {
 		if !knownPluginGrant(grant.Name) ||
 			(grant.ResourceKind != "" && (!validPluginIdentity(grant.ResourceKind) || grant.ResourceID == "")) ||
-			(grant.ResourceID != "" && !validPluginIdentity(grant.ResourceID)) {
+			!validPluginGrantResource(grant) {
 			return fmt.Errorf("grant %q is invalid", grant.Name)
 		}
 		key := grant.Name + "\x00" + grant.ResourceKind + "\x00" + grant.ResourceID

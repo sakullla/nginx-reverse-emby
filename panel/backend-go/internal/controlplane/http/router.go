@@ -214,6 +214,7 @@ type Dependencies struct {
 	PluginArtifactService        AgentPluginArtifactService
 	DatasetService               *service.DatasetService
 	PluginSecretService          AgentPluginSecretService
+	BindPluginSecretService      func(AgentPluginSecretService) error
 	PluginCapabilityService      PluginCapabilityAPI
 	PluginRuntimeHost            *service.PluginRuntimeHost
 	AccessManager                *authz.Manager
@@ -368,6 +369,14 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	resolved, err := deps.withDefaults()
 	if err != nil {
 		return nil, err
+	}
+	if resolved.BindPluginSecretService != nil {
+		if err := resolved.BindPluginSecretService(resolved.PluginSecretService); err != nil {
+			if resolved.cleanup != nil {
+				_ = resolved.cleanup()
+			}
+			return nil, fmt.Errorf("bind embedded plugin secret service: %w", err)
+		}
 	}
 
 	mux := http.NewServeMux()
