@@ -63,6 +63,11 @@ func ValidatePolicyV1WASMForHost(module []byte, memoryBudgetBytes int64, declare
 // authorization may be revoked after package admission.
 func ValidatePolicyV1ImportGrant(name string, declared, granted []string) error {
 	switch name {
+	case PolicyHostDatasetResolve:
+		if err := ValidateHostCapabilityGrant(CapabilityDatasetResolve, declared, granted); err != nil {
+			return err
+		}
+		return ValidateHostCapabilityGrant(CapabilityDatasetQuery, declared, granted)
 	case PolicyHostDatasetQuery:
 		if err := ValidateHostCapabilityGrant(CapabilityDatasetQuery, declared, granted); err != nil {
 			return err

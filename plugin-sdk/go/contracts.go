@@ -102,6 +102,7 @@ const (
 	PolicyHostReadNormalizedHTTP = "nre_host_read_normalized_http"
 	PolicyHostReadTrustedSource  = "nre_host_read_trusted_source"
 	PolicyHostDatasetQuery       = "nre_host_dataset_query"
+	PolicyHostDatasetResolve     = "nre_host_dataset_resolve"
 	PolicyHostReadBodyWindow     = "nre_host_read_body_window"
 	PolicyHostStateGet           = "nre_host_state_get"
 	PolicyHostStatePut           = "nre_host_state_put"
@@ -149,6 +150,7 @@ func PolicyV1HostFunctions() map[string]WASMFunctionSignature {
 		PolicyHostReadNormalizedHTTP,
 		PolicyHostReadTrustedSource,
 		PolicyHostDatasetQuery,
+		PolicyHostDatasetResolve,
 		PolicyHostReadBodyWindow,
 		PolicyHostStateGet,
 		PolicyHostStatePut,
@@ -171,6 +173,7 @@ func PolicyV1RequiredHostFunctions() map[string]WASMFunctionSignature {
 	delete(result, PolicyHostReadNormalizedHTTP)
 	delete(result, PolicyHostReadTrustedSource)
 	delete(result, PolicyHostDatasetQuery)
+	delete(result, PolicyHostDatasetResolve)
 	return result
 }
 

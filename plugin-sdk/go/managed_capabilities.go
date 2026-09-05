@@ -16,12 +16,23 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 	}
 	for _, permission := range manifest.Permissions {
 		capability := HostCapability(permission.Name)
+		if capability == CapabilityDatasetResolve {
+			queryDeclared := false
+			for _, declared := range manifest.Permissions {
+				if declared.Name == string(CapabilityDatasetQuery) {
+					queryDeclared = true
+				}
+			}
+			if !queryDeclared {
+				return fmt.Errorf("dataset.resolve requires a dataset.query declaration")
+			}
+		}
 		switch capability {
-		case CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
+		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
 			if !available[capability] {
 				return fmt.Errorf("Host does not support required managed capability %q", capability)
 			}
-			if manifest.Runtime.Kind == RuntimeWASMPolicy && capability != CapabilityDatasetQuery {
+			if manifest.Runtime.Kind == RuntimeWASMPolicy && capability != CapabilityDatasetQuery && capability != CapabilityDatasetResolve {
 				return fmt.Errorf("managed capability %q is not available to a WASM policy", capability)
 			}
 			if manifest.Runtime.Kind != RuntimeWASMPolicy && manifest.Runtime.Kind != RuntimeRPCService {
@@ -35,6 +46,8 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 // DatasetRuntimeCapability maps public operations to their explicit grant.
 func DatasetRuntimeCapability(operation string) (HostCapability, error) {
 	switch operation {
+	case HostRuntimeDatasetResolve:
+		return CapabilityDatasetResolve, nil
 	case HostRuntimeDatasetOpen, HostRuntimeDatasetQuery:
 		return CapabilityDatasetQuery, nil
 	case HostRuntimeDatasetControl, HostRuntimeDatasetStatus, HostRuntimeDatasetCatalog:

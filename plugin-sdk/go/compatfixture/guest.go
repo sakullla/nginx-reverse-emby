@@ -101,7 +101,7 @@ func PolicyV1GuestWASMWithOptionalImports(names ...string) ([]byte, error) {
 	seen := make(map[string]bool)
 	for _, name := range names {
 		switch name {
-		case "nre_host_read_normalized_http", "nre_host_read_trusted_source", "nre_host_dataset_query":
+		case "nre_host_read_normalized_http", "nre_host_read_trusted_source", "nre_host_dataset_query", "nre_host_dataset_resolve":
 		default:
 			return nil, fmt.Errorf("unsupported optional policy import %q", name)
 		}

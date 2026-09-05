@@ -9,6 +9,7 @@ import (
 const (
 	RPCFeatureDurableActionsV1 = "rpc.durable-actions.v1"
 	RPCFeatureDatasetsV1       = "rpc.datasets.v1"
+	RPCFeatureDatasetResolveV1 = "rpc.dataset-resolve.v1"
 	RPCFeatureManagedNetworkV1 = "rpc.managed-network.v1"
 	RPCFeatureScopedSecretsV1  = "rpc.scoped-secrets.v1"
 )
@@ -23,6 +24,9 @@ func RequiredRPCFeatures(scopes []string) []string {
 			features = appendRPCFeature(features, RPCFeatureDurableActionsV1)
 		case CapabilityDatasetQuery, CapabilityDatasetManage:
 			features = appendRPCFeature(features, RPCFeatureDatasetsV1)
+		case CapabilityDatasetResolve:
+			features = appendRPCFeature(features, RPCFeatureDatasetsV1)
+			features = appendRPCFeature(features, RPCFeatureDatasetResolveV1)
 		case CapabilityManagedNetworkListen, CapabilityManagedNetworkDial:
 			features = appendRPCFeature(features, RPCFeatureManagedNetworkV1)
 		case CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
@@ -91,7 +95,7 @@ func ValidateRPCFeatures(required, provided []string) error {
 
 func knownRPCFeature(feature string) bool {
 	switch feature {
-	case RPCFeatureDurableActionsV1, RPCFeatureHTTPBackendProviderV1, RPCFeatureDatasetsV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1:
+	case RPCFeatureDurableActionsV1, RPCFeatureHTTPBackendProviderV1, RPCFeatureDatasetsV1, RPCFeatureDatasetResolveV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1:
 		return true
 	default:
 		return false

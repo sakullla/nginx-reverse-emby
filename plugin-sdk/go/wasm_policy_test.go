@@ -115,6 +115,36 @@ func TestPolicyV1OptionalImportsRequireActualHostCapabilities(t *testing.T) {
 	}
 }
 
+func TestPolicyDatasetResolveImportIsOptionalAndRequiresActualHostSupport(t *testing.T) {
+	module, err := compatfixture.PolicyV1GuestWASMWithOptionalImports(pluginsdk.PolicyHostDatasetResolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	available := make([]string, 0)
+	for name := range pluginsdk.PolicyV1HostFunctions() {
+		available = append(available, name)
+	}
+	scopes := []string{string(pluginsdk.CapabilityDatasetQuery), string(pluginsdk.CapabilityDatasetResolve)}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes, scopes, available); err != nil {
+		t.Fatal("supported resolver module rejected", err)
+	}
+	legacy := make([]string, 0)
+	for name := range pluginsdk.PolicyV1RequiredHostFunctions() {
+		legacy = append(legacy, name)
+	}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes, scopes, legacy); err == nil {
+		t.Fatal("old Host admitted an unavailable resolver import")
+	}
+	for _, missing := range [][]string{nil, scopes[:1], scopes[1:]} {
+		if pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes, missing, available) == nil || pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, missing, scopes, available) == nil {
+			t.Fatal("resolver import accepted missing grant/declaration")
+		}
+	}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(compatfixture.PolicyV1GuestWASM(), 1<<20, nil, nil, legacy); err != nil {
+		t.Fatal("original six-import guest regressed", err)
+	}
+}
+
 func insertWASMSectionBefore(t *testing.T, module []byte, beforeID, sectionID byte, payload []byte) []byte {
 	t.Helper()
 	for offset := pluginsdk.WASMModuleV1HeaderSize; offset < len(module); {

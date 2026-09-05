@@ -36,7 +36,7 @@ artifacts belong only in `sakullla/sakullla-plugins`.
   from both v1 IDLs. From `plugin-sdk`,
   `go run ./go/protoschema/cmd/generate` reproduces it without a
   platform `protoc` installation. Its SHA-256 is
-  `26f609ae2dbcd5efeff2d272f69fd3fc49972f0b9e88393de6905dad3de97608`.
+  `2abec011209434be336af2a245d10268c891914aa6f12b60c8eea2d71a8d5170`.
   Fast tests recompile both checked-in sources, require byte-for-byte descriptor
   and generator equality, and lock every policy message plus the RPC message,
   service, method, and streaming surface. The golden guest round trip creates
@@ -139,10 +139,41 @@ artifact into an isolated runtime directory.
 
 ## Dataset and managed connection contracts
 
-The manifest permissions `dataset.query`, `dataset.manage`,
+`HostRuntimeClient.ResolveDataset` invokes the source-only `dataset.resolve`
+operation. Declare and grant both `dataset.resolve` and `dataset.query`; the
+new permission requires the additive `rpc.dataset-resolve.v1` handshake feature.
+Older `dataset.query`/`dataset.open` users still require only `rpc.datasets.v1`.
+Host package admission must check actual resolver capability availability.
+
+Resolve selects the authenticated instance/generation's already-prepared source
+binding, with a stable reference for repeated calls in that generation. A new
+generation may resolve the same source to a different immutable version while
+the old generation continues using its own binding. Resolve never reads global
+latest, changes Config, downloads data, or activates a source. The original
+`OpenDataset` still requires and verifies an explicit version digest.
+
+Host RPC adapters use `DecodeDatasetResolveRequest` and `CallDatasetResolveHost`;
+the latter checks both grants, a 2 ms ceiling and the returned source/instance/
+generation against `DatasetResolveAuthorization`. `DatasetResolveHost` owns
+the actual binding registry, source authorization and revocation checks. RPC
+resolve success frames are capped at 4 KiB. The client validates the source and
+reference structure; callers knowing their lifecycle binding can additionally
+call `ValidateDatasetResolvedReference`.
+
+Policy guests may optionally import `nre_host_dataset_resolve`, using the same
+four-i32/i64 calling convention, `DatasetResolveRequest`/`DatasetResolveResponse`
+protobuf messages and `CallPolicyDatasetResolveHost`. Requests contain a source
+ID and explicit time/response budget; the complete response is capped at 4 KiB
+and work consumes the enclosing invocation deadline. Resolution needs both
+dataset grants but no connection source, so it can bootstrap resource references
+without private configuration injection. Admission query still separately needs
+`policy.trusted-source`. The original six required imports remain unchanged;
+hosts lacking the optional resolver reject guests that import it at admission.
+
+The manifest permissions `dataset.query`, `dataset.resolve`, `dataset.manage`,
 `network.managed.listen`, `network.managed.dial`, `secret.scoped.read`, and
 `secret.scoped.write` authorize distinct effects. They project the additive RPC
-features `rpc.datasets.v1`, `rpc.managed-network.v1`, and
+features `rpc.datasets.v1`, `rpc.dataset-resolve.v1`, `rpc.managed-network.v1`, and
 `rpc.scoped-secrets.v1`. `ValidateManifestManagedCapabilities` rejects unavailable
 Host capabilities, and the canonical handshake rejects a missing feature or
 grant before activation. Existing guests without these permissions keep their
@@ -153,7 +184,7 @@ prepared immutable snapshot. `QueryDatasets` performs a bounded local target
 lookup; `ControlDataset`, `DatasetStatus`, and `DatasetCatalog` expose authorized
 source/import/rollback operations, actual per-node desired/applied/last-good
 state, and bounded pages of metadata. `DatasetRuntimeCapability` maps these
-operations to query or management authorization. Imports reference complete
+operations to query, resolve or management authorization. Imports reference complete
 artifacts or pinned remote inputs with expected digests, never inline blobs.
 Formats include GeoIP, GeoSite, complete community input, CIDR, and generic
 `geo-mmdb`; parsing and semantic adaptation remain Host-owned. Per-classification

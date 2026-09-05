@@ -21,7 +21,7 @@ var policyExtensionDescriptors struct {
 
 func newPolicyExtensionMessage(name string) (*dynamicpb.Message, error) {
 	switch name {
-	case "DatasetQueryRequest", "DatasetQueryResponse", "TrustedSourceResponse", "EmitEventRequest":
+	case "DatasetQueryRequest", "DatasetQueryResponse", "DatasetResolveRequest", "DatasetResolveResponse", "TrustedSourceResponse", "EmitEventRequest":
 	default:
 		return nil, errors.New("unknown policy extension message")
 	}
@@ -31,8 +31,8 @@ func newPolicyExtensionMessage(name string) (*dynamicpb.Message, error) {
 			policyExtensionDescriptors.err = err
 			return
 		}
-		policyExtensionDescriptors.messages = make(map[string]protoreflect.MessageDescriptor, 4)
-		for _, name := range []string{"DatasetQueryRequest", "DatasetQueryResponse", "TrustedSourceResponse", "EmitEventRequest"} {
+		policyExtensionDescriptors.messages = make(map[string]protoreflect.MessageDescriptor, 6)
+		for _, name := range []string{"DatasetQueryRequest", "DatasetQueryResponse", "DatasetResolveRequest", "DatasetResolveResponse", "TrustedSourceResponse", "EmitEventRequest"} {
 			descriptor, err := files.FindDescriptorByName(protoreflect.FullName("nre.plugin.policy.v1." + name))
 			if err != nil {
 				policyExtensionDescriptors.err = err

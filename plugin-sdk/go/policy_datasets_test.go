@@ -210,7 +210,7 @@ func TestPolicyExtensionDescriptorsAreFixedAndSharedConcurrently(t *testing.T) {
 	if _, err := newPolicyExtensionMessage("attacker-controlled-name"); err == nil {
 		t.Fatal("unbounded descriptor cache key accepted")
 	}
-	if len(policyExtensionDescriptors.messages) != 4 {
+	if len(policyExtensionDescriptors.messages) != 6 {
 		t.Fatal("descriptor cache grew beyond fixed catalog")
 	}
 }

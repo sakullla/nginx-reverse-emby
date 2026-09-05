@@ -32,7 +32,7 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policy
 //
 // Allowed function imports use module "nre:policy/v1" and names
 // nre_host_read_field, nre_host_read_normalized_http,
-// nre_host_read_trusted_source, nre_host_dataset_query,
+// nre_host_read_trusted_source, nre_host_dataset_query, nre_host_dataset_resolve,
 // nre_host_read_body_window, nre_host_state_get,
 // nre_host_state_put, nre_host_emit_event, and nre_host_add_metric. The
 // normalized HTTP, trusted source and dataset imports are additive and optional; the original six imports
@@ -48,6 +48,14 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policy
 // admission source, and consume the enclosing admission time budget. Hosts must
 // resolve opaque references against their instance/generation grant registry.
 // There is no request address, trusted flag, remote fetch, or raw data output.
+// dataset_resolve uses DatasetResolveRequest/DatasetResolveResponse. This
+// optional import requires dataset.resolve AND dataset.query and selects only
+// the authenticated instance/generation's prepared source binding. It returns
+// the stable opaque reference for that generation, not global latest. It does
+// not require a connection source, download data, activate a version or rewrite
+// config. Its complete response is bounded to 4 KiB and its time budget is
+// included in the enclosing invocation budget; the original six required
+// imports are unchanged.
 // read_body_window uses ReadBodyWindowRequest/BytesResponse, state_get uses
 // StateGetRequest/BytesResponse, and state_put, emit_event, and add_metric use
 // their corresponding request with an empty response. The returned frame is
@@ -255,6 +263,19 @@ message DatasetReference {
   string generation = 3;
   string source_id = 4;
   string version_digest = 5;
+}
+
+message DatasetResolveRequest {
+  string source_id = 1;
+  uint32 max_duration_micros = 2;
+  uint32 max_response_bytes = 3;
+}
+
+message DatasetResolveResponse {
+  oneof result {
+    DatasetReference reference = 1;
+    RuntimeError error = 2;
+  }
 }
 
 message DatasetClassification {

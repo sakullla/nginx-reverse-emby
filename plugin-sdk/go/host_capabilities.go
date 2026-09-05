@@ -23,6 +23,7 @@ const (
 	CapabilityChannelReverse                 HostCapability = "channel.reverse"
 	CapabilityUIDynamic                      HostCapability = "ui.dynamic"
 	CapabilityDatasetQuery                   HostCapability = "dataset.query"
+	CapabilityDatasetResolve                 HostCapability = "dataset.resolve"
 	CapabilityDatasetManage                  HostCapability = "dataset.manage"
 )
 
@@ -37,7 +38,7 @@ func (capability HostCapability) Validate() error {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
 		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic,
-		CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
+		CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
 		CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
 		return nil
 	default:
