@@ -83,6 +83,38 @@ func TestPolicyV1ResourceBudgetBoundaries(t *testing.T) {
 	}
 }
 
+func TestPolicyV1OptionalImportsRequireActualHostCapabilities(t *testing.T) {
+	available := make([]string, 0)
+	for name := range pluginsdk.PolicyV1HostFunctions() {
+		available = append(available, name)
+	}
+	legacy := compatfixture.PolicyV1GuestWASM()
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(legacy, 1<<20, nil, nil, available); err != nil {
+		t.Fatalf("legacy guest rejected: %v", err)
+	}
+	module, err := compatfixture.PolicyV1GuestWASMWithOptionalImports(pluginsdk.PolicyHostReadTrustedSource, pluginsdk.PolicyHostDatasetQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := []string{string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityDatasetQuery)}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes, scopes, available); err != nil {
+		t.Fatalf("extended guest rejected: %v", err)
+	}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes, scopes[:1], available); err == nil {
+		t.Fatal("dataset import without grant accepted")
+	}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes[:1], scopes, available); err == nil {
+		t.Fatal("dataset import without signed declaration accepted")
+	}
+	legacyImports := make([]string, 0)
+	for name := range pluginsdk.PolicyV1RequiredHostFunctions() {
+		legacyImports = append(legacyImports, name)
+	}
+	if err := pluginsdk.ValidatePolicyV1WASMForHost(module, 1<<20, scopes, scopes, legacyImports); err == nil {
+		t.Fatal("Host lacking actual additive imports accepted extended guest")
+	}
+}
+
 func insertWASMSectionBefore(t *testing.T, module []byte, beforeID, sectionID byte, payload []byte) []byte {
 	t.Helper()
 	for offset := pluginsdk.WASMModuleV1HeaderSize; offset < len(module); {

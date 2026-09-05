@@ -22,6 +22,8 @@ const (
 	CapabilityL4Rule                         HostCapability = "l4.rule"
 	CapabilityChannelReverse                 HostCapability = "channel.reverse"
 	CapabilityUIDynamic                      HostCapability = "ui.dynamic"
+	CapabilityDatasetQuery                   HostCapability = "dataset.query"
+	CapabilityDatasetManage                  HostCapability = "dataset.manage"
 )
 
 var hostCapabilityIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`)
@@ -34,11 +36,34 @@ func (capability HostCapability) Validate() error {
 	switch capability {
 	case CapabilityPolicyAtomicState, CapabilityPolicyMonotonicClock, CapabilityPolicyTrustedSource,
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
-		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic:
+		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic,
+		CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
+		CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
 		return nil
 	default:
 		return fmt.Errorf("host capability %q is not in the canonical catalog", value)
 	}
+}
+
+// ValidateHostCapabilityGrant verifies the signed declaration and administrator
+// grant separately. Resource scope, authenticated caller binding, revocation and
+// quota remain Host-owned checks and cannot be inferred from these names.
+func ValidateHostCapabilityGrant(capability HostCapability, declared, granted []string) error {
+	if err := capability.Validate(); err != nil {
+		return err
+	}
+	contains := func(scopes []string) bool {
+		for _, scope := range scopes {
+			if scope == string(capability) {
+				return true
+			}
+		}
+		return false
+	}
+	if !contains(declared) || !contains(granted) {
+		return fmt.Errorf("host capability %q must be both declared and granted", capability)
+	}
+	return nil
 }
 
 type HostActor struct {

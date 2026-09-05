@@ -32,15 +32,22 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policy
 //
 // Allowed function imports use module "nre:policy/v1" and names
 // nre_host_read_field, nre_host_read_normalized_http,
+// nre_host_read_trusted_source, nre_host_dataset_query,
 // nre_host_read_body_window, nre_host_state_get,
 // nre_host_state_put, nre_host_emit_event, and nre_host_add_metric. The
-// normalized HTTP import is additive and optional; the original six imports
+// normalized HTTP, trusted source and dataset imports are additive and optional; the original six imports
 // remain required for every policy/v1 guest. Every
 // signature is (request_ptr: i32, request_len: i32, response_ptr: i32,
 // response_capacity: i32) -> i64. Requests and responses are the protobuf
 // messages below: read_field uses ReadFieldRequest/BytesResponse,
 // read_normalized_http uses an empty ReadNormalizedHTTPRequest and
 // NormalizedHTTPResponse,
+// read_trusted_source uses empty ReadTrustedSourceRequest/TrustedSourceResponse,
+// dataset_query uses DatasetQueryRequest/DatasetQueryResponse. Dataset queries
+// require dataset.query AND policy.trusted-source, use only the authenticated
+// admission source, and consume the enclosing admission time budget. Hosts must
+// resolve opaque references against their instance/generation grant registry.
+// There is no request address, trusted flag, remote fetch, or raw data output.
 // read_body_window uses ReadBodyWindowRequest/BytesResponse, state_get uses
 // StateGetRequest/BytesResponse, and state_put, emit_event, and add_metric use
 // their corresponding request with an empty response. The returned frame is
@@ -159,14 +166,51 @@ message EmitEventRequest {
   enum Code {
     SECURITY_EVENT_CODE_UNSPECIFIED = 0;
     SECURITY_EVENT_CODE_WAF_RULE_MATCH = 1;
+    SECURITY_EVENT_CODE_IP_RULE_MATCH = 2;
+    SECURITY_EVENT_CODE_IP_CHECK_FAILURE = 3;
+    SECURITY_EVENT_CODE_ROUTING_RULE_MATCH = 4;
+    SECURITY_EVENT_CODE_ROUTING_FAILURE = 5;
   }
   enum Action {
     SECURITY_EVENT_ACTION_UNSPECIFIED = 0;
     SECURITY_EVENT_ACTION_OBSERVE = 1;
     SECURITY_EVENT_ACTION_DENY = 2;
+    SECURITY_EVENT_ACTION_ALLOW = 3;
+    SECURITY_EVENT_ACTION_DIRECT = 4;
+    SECURITY_EVENT_ACTION_UPSTREAM = 5;
+  }
+  enum Reason {
+    SECURITY_EVENT_REASON_NONE = 0;
+    SECURITY_EVENT_REASON_SOURCE_UNAUTHENTICATED = 1;
+    SECURITY_EVENT_REASON_DATASET_UNAVAILABLE = 2;
+    SECURITY_EVENT_REASON_CLASSIFICATION_MISSING = 3;
+    SECURITY_EVENT_REASON_BUDGET_EXCEEDED = 4;
+    SECURITY_EVENT_REASON_UPSTREAM_UNAVAILABLE = 5;
+    SECURITY_EVENT_REASON_UPSTREAM_AUTHENTICATION = 6;
+    SECURITY_EVENT_REASON_PROTOCOL_UNSUPPORTED = 7;
+    SECURITY_EVENT_REASON_DATA_INVALID = 8;
+    SECURITY_EVENT_REASON_COVERAGE_UNKNOWN = 9;
+    SECURITY_EVENT_REASON_REVOKED = 10;
+  }
+  enum DomainSource {
+    SECURITY_EVENT_DOMAIN_SOURCE_UNSPECIFIED = 0;
+    SECURITY_EVENT_DOMAIN_SOURCE_ORIGINAL = 1;
+    SECURITY_EVENT_DOMAIN_SOURCE_HTTP_HOST = 2;
+    SECURITY_EVENT_DOMAIN_SOURCE_TLS_SNI = 3;
+    SECURITY_EVENT_DOMAIN_SOURCE_IP_ONLY = 4;
+    SECURITY_EVENT_DOMAIN_SOURCE_UNAVAILABLE = 5;
   }
   Code code = 1;
   Action action = 2;
+  // One-based indices into the Host-pinned policy configuration dictionaries;
+  // zero means absent. Hosts validate dictionary membership before resolving
+  // names. No arbitrary labels or request bytes may be transported by a guest.
+  uint32 rule_index = 3;
+  uint32 dataset_index = 4;
+  uint32 classification_index = 5;
+  uint32 outbound_index = 6;
+  Reason reason = 7;
+  DomainSource domain_source = 8;
 }
 
 message AddMetricRequest {
@@ -177,4 +221,89 @@ message AddMetricRequest {
 message BytesResponse {
   bytes value = 1;
   bool found = 2;
+}
+
+message ReadTrustedSourceRequest {}
+
+message TrustedSource {
+  enum Authority {
+    AUTHORITY_UNSPECIFIED = 0;
+    AUTHORITY_SOCKET = 1;
+    AUTHORITY_XFF = 2;
+    AUTHORITY_PROXY = 3;
+    AUTHORITY_RELAY = 4;
+  }
+  string instance_id = 1;
+  string generation = 2;
+  string entry_id = 3;
+  // Exactly 4 or 16 network-order address bytes; no scope or IPv4-mapped IPv6.
+  bytes peer_address = 4;
+  bytes source_address = 5;
+  Authority authority = 6;
+}
+
+message TrustedSourceResponse {
+  oneof result {
+    TrustedSource source = 1;
+    RuntimeError error = 2;
+  }
+}
+
+message DatasetReference {
+  string handle = 1;
+  string instance_id = 2;
+  string generation = 3;
+  string source_id = 4;
+  string version_digest = 5;
+}
+
+message DatasetClassification {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_COUNTRY = 1;
+    KIND_REGION = 2;
+    KIND_CIDR = 3;
+  }
+  string name = 1;
+  Kind kind = 2;
+}
+
+message DatasetQueryRequest {
+  DatasetReference reference = 1;
+  // 1..64 unique address classifications. Domain queries belong to the RPC
+  // target lookup contract, never to the authenticated source admission import.
+  repeated DatasetClassification classifications = 2;
+  uint32 max_duration_micros = 3; // 1..2000; also bounded by remaining admission.
+  uint32 max_response_bytes = 4; // complete protobuf frame, at most 4096.
+}
+
+message DatasetMatch {
+  enum Coverage {
+    COVERAGE_UNSPECIFIED = 0;
+    COVERAGE_COVERED = 1;
+    COVERAGE_UNKNOWN = 2;
+    COVERAGE_UNSUPPORTED_FAMILY = 3;
+  }
+  uint32 index = 1; // zero-based request index, complete and ordered.
+  bool matched = 2;
+  Coverage coverage = 3;
+}
+
+message DatasetQueryResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_OK = 1;
+    STATUS_UNAVAILABLE = 2;
+    STATUS_MISSING_CLASSIFICATION = 3;
+    STATUS_BUDGET_EXCEEDED = 4;
+    STATUS_UNAUTHORIZED = 5;
+    STATUS_STALE_REFERENCE = 6;
+    STATUS_INVALID_DATA = 7;
+  }
+  DatasetReference reference = 1;
+  Status status = 2;
+  // No partial matches on failure. A non-match is STATUS_OK, covered, false.
+  // The single echoed reference and 64 compact entries fit a 4 KiB frame even
+  // at maximum reference-field lengths. No per-entry provenance is repeated.
+  repeated DatasetMatch matches = 3;
 }

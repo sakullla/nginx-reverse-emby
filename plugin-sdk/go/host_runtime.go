@@ -369,13 +369,14 @@ func (request EventListRequest) Validate() error {
 
 // PolicyEvent is one projected waf.rule_match (or similar) host audit event.
 type PolicyEvent struct {
-	Site        string `json:"site,omitempty"`
-	RuleID      string `json:"rule_id,omitempty"`
-	Digest      string `json:"digest,omitempty"`
-	Disposition string `json:"disposition,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	Code        string `json:"code,omitempty"`
-	Action      string `json:"action,omitempty"`
+	Context     *PolicyDiagnosticContext `json:"context,omitempty"`
+	Site        string                   `json:"site,omitempty"`
+	RuleID      string                   `json:"rule_id,omitempty"`
+	Digest      string                   `json:"digest,omitempty"`
+	Disposition string                   `json:"disposition,omitempty"`
+	Reason      string                   `json:"reason,omitempty"`
+	Code        string                   `json:"code,omitempty"`
+	Action      string                   `json:"action,omitempty"`
 }
 
 // EventListResponse is the event.list payload.

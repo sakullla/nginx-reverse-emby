@@ -32,6 +32,52 @@ func ValidatePolicyV1WASM(module []byte, memoryBudgetBytes int64) error {
 	)
 }
 
+// ValidatePolicyV1WASMForHost adds capability and availability checks to the
+// canonical module validator. Hosts use this gate before activating new guests;
+// the original validator remains usable for legacy package structure checks.
+// Availability is supplied by the actual Host import registry, not the guest.
+func ValidatePolicyV1WASMForHost(module []byte, memoryBudgetBytes int64, declaredScopes, grantedScopes, supportedImports []string) error {
+	if err := ValidatePolicyV1WASM(module, memoryBudgetBytes); err != nil {
+		return err
+	}
+	declaration, err := inspectPolicyV1Declarations(module)
+	if err != nil {
+		return err
+	}
+	available := make(map[string]bool, len(supportedImports))
+	for _, name := range supportedImports {
+		available[name] = true
+	}
+	for _, name := range declaration.importNames {
+		if !available[name] {
+			return fmt.Errorf("Host does not provide required policy import %q", name)
+		}
+		if err := ValidatePolicyV1ImportGrant(name, declaredScopes, grantedScopes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidatePolicyV1ImportGrant must also run at each optional security import;
+// authorization may be revoked after package admission.
+func ValidatePolicyV1ImportGrant(name string, declared, granted []string) error {
+	switch name {
+	case PolicyHostDatasetQuery:
+		if err := ValidateHostCapabilityGrant(CapabilityDatasetQuery, declared, granted); err != nil {
+			return err
+		}
+		fallthrough
+	case PolicyHostReadTrustedSource:
+		return ValidateHostCapabilityGrant(CapabilityPolicyTrustedSource, declared, granted)
+	default:
+		if _, ok := PolicyV1HostFunctions()[name]; !ok {
+			return fmt.Errorf("unsupported policy Host import %q", name)
+		}
+		return nil
+	}
+}
+
 func validatePolicyV1WASMWithCompiler(
 	module []byte,
 	memoryBudgetBytes int64,
@@ -196,6 +242,7 @@ func sameWASMFunctionSignature(got api.FunctionDefinition, want WASMFunctionSign
 }
 
 type policyV1Declaration struct {
+	importNames       []string
 	importedFunctions uint32
 	versionFunction   uint32
 	functionCount     uint32
@@ -248,6 +295,7 @@ func inspectPolicyV1Declarations(module []byte) (policyV1Declaration, error) {
 					return result, err
 				}
 				result.importedFunctions++
+				result.importNames = append(result.importNames, name)
 			}
 		case 3:
 			count, err := section.u32()

@@ -87,7 +87,7 @@ func TestPolicyV1WASMABICallingConventionIsStable(t *testing.T) {
 	guest := PolicyV1GuestFunctions()
 	host := PolicyV1HostFunctions()
 	requiredHost := PolicyV1RequiredHostFunctions()
-	if len(guest) != 6 || len(host) != 7 || len(requiredHost) != 6 || PolicyHostModule != PolicyABIV1 {
+	if len(guest) != 6 || len(host) != 9 || len(requiredHost) != 6 || PolicyHostModule != PolicyABIV1 {
 		t.Fatalf("unexpected policy ABI surface: guest=%d host=%d module=%q", len(guest), len(host), PolicyHostModule)
 	}
 	if _, ok := requiredHost[PolicyHostReadNormalizedHTTP]; ok {

@@ -91,6 +91,30 @@ func requiredField(message protoreflect.Message, name protoreflect.Name) protore
 // guest exercises allocator ownership, protobuf request/response bytes, a
 // Host import RESOURCE_EXHAUSTED retry, and the packed evaluate response.
 func PolicyV1GuestWASM() []byte {
+	return policyV1GuestWASM(hostFunctionNames)
+}
+
+// PolicyV1GuestWASMWithOptionalImports derives a compatibility module with
+// additive imports while keeping the original checked-in guest unchanged.
+func PolicyV1GuestWASMWithOptionalImports(names ...string) ([]byte, error) {
+	imports := append([]string(nil), hostFunctionNames...)
+	seen := make(map[string]bool)
+	for _, name := range names {
+		switch name {
+		case "nre_host_read_normalized_http", "nre_host_read_trusted_source", "nre_host_dataset_query":
+		default:
+			return nil, fmt.Errorf("unsupported optional policy import %q", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate optional policy import %q", name)
+		}
+		seen[name] = true
+		imports = append(imports, name)
+	}
+	return policyV1GuestWASM(imports), nil
+}
+
+func policyV1GuestWASM(hostImports []string) []byte {
 	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
 	types := wasmVector(
@@ -103,8 +127,8 @@ func PolicyV1GuestWASM() []byte {
 	)
 	module = appendSection(module, 1, types)
 
-	imports := make([][]byte, 0, len(hostFunctionNames))
-	for _, name := range hostFunctionNames {
+	imports := make([][]byte, 0, len(hostImports))
+	for _, name := range hostImports {
 		entry := appendName(nil, "nre:policy/v1")
 		entry = appendName(entry, name)
 		entry = append(entry, 0x00)
@@ -130,14 +154,15 @@ func PolicyV1GuestWASM() []byte {
 		mutableI32Global(0),              // response allocation active
 	))
 
+	firstGuestFunction := uint64(len(hostImports))
 	exports := wasmVector(
 		exportEntry("memory", 0x02, 0),
-		exportEntry("nre_policy_version", 0x00, 6),
-		exportEntry("nre_policy_alloc", 0x00, 7),
-		exportEntry("nre_policy_free", 0x00, 8),
-		exportEntry("nre_policy_init", 0x00, 9),
-		exportEntry("nre_policy_evaluate", 0x00, 10),
-		exportEntry("nre_policy_reset", 0x00, 11),
+		exportEntry("nre_policy_version", 0x00, firstGuestFunction),
+		exportEntry("nre_policy_alloc", 0x00, firstGuestFunction+1),
+		exportEntry("nre_policy_free", 0x00, firstGuestFunction+2),
+		exportEntry("nre_policy_init", 0x00, firstGuestFunction+3),
+		exportEntry("nre_policy_evaluate", 0x00, firstGuestFunction+4),
+		exportEntry("nre_policy_reset", 0x00, firstGuestFunction+5),
 	)
 	module = appendSection(module, 7, exports)
 

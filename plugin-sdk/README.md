@@ -36,7 +36,7 @@ artifacts belong only in `sakullla/sakullla-plugins`.
   from both v1 IDLs. From `plugin-sdk`,
   `go run ./go/protoschema/cmd/generate` reproduces it without a
   platform `protoc` installation. Its SHA-256 is
-  `f5a79c6246f603bac7a24cb824337783e14e43d4b6569148370efad9bd454755`.
+  `26f609ae2dbcd5efeff2d272f69fd3fc49972f0b9e88393de6905dad3de97608`.
   Fast tests recompile both checked-in sources, require byte-for-byte descriptor
   and generator equality, and lock every policy message plus the RPC message,
   service, method, and streaming surface. The golden guest round trip creates
@@ -136,3 +136,93 @@ the legacy custom-source package path and are not an alternate official format.
 RPC files remain non-executable in the verified cache and gain execution
 permission only after a target host re-verifies and copies one platform
 artifact into an isolated runtime directory.
+
+## Dataset and managed connection contracts
+
+The manifest permissions `dataset.query`, `dataset.manage`,
+`network.managed.listen`, `network.managed.dial`, `secret.scoped.read`, and
+`secret.scoped.write` authorize distinct effects. They project the additive RPC
+features `rpc.datasets.v1`, `rpc.managed-network.v1`, and
+`rpc.scoped-secrets.v1`. `ValidateManifestManagedCapabilities` rejects unavailable
+Host capabilities, and the canonical handshake rejects a missing feature or
+grant before activation. Existing guests without these permissions keep their
+existing handshake. Managed network permissions do not imply `network.full`.
+
+`HostRuntimeClient.OpenDataset` obtains a Host-issued reference to an already
+prepared immutable snapshot. `QueryDatasets` performs a bounded local target
+lookup; `ControlDataset`, `DatasetStatus`, and `DatasetCatalog` expose authorized
+source/import/rollback operations, actual per-node desired/applied/last-good
+state, and bounded pages of metadata. `DatasetRuntimeCapability` maps these
+operations to query or management authorization. Imports reference complete
+artifacts or pinned remote inputs with expected digests, never inline blobs.
+Formats include GeoIP, GeoSite, complete community input, CIDR, and generic
+`geo-mmdb`; parsing and semantic adaptation remain Host-owned. Per-classification
+address coverage distinguishes complete, partial and absent support. A region
+query reports unknown or unsupported family explicitly; a country match does
+not imply region coverage. Classification keys such as `category-ai-!cn` retain
+their source spelling, with typed conjunctive attribute filters kept separate.
+
+Version manifests pin raw/index digests, revision, format, coverage and source
+license/attribution metadata. Source changes cannot rewrite old-version credit.
+Render attribution as escaped text and a separately validated HTTP(S) link;
+these metadata fields do not themselves prove licensing authority. Fetchers
+must authorize actual destinations, DNS resolution and redirects independently
+of URL syntax validation. Failed candidates retain last-good data, and Host
+must refuse deletion of versions still referenced by rules, flows or nodes.
+
+`ManagedNetworkRequest` and `ScopedSecretRequest` use the existing private
+HostRuntime transport. Host accepts real sockets and authenticates their source
+before returning admitted flows. Handles are bound to instance, generation and
+entry; Host must resolve opaque tokens in its live registry and enforce grants,
+revocation and quotas on every call. TCP supports bounded chunks, backpressure,
+half-close and cancellation; UDP supports complete bounded datagrams over an
+idle-bounded multi-response flow. Secret delivery uses the dedicated encoders;
+ordinary material JSON serialization fails and formatting redacts values.
+Shape/binding validation is never cryptographic proof or a substitute for the
+Host resource registry.
+
+## Additive policy security interfaces
+
+The original six required policy/v1 imports and `PolicyHost` interface remain
+unchanged. The optional `nre_host_read_trusted_source` and
+`nre_host_dataset_query` imports use the existing four-i32/i64 convention.
+`ValidatePolicyV1WASMForHost` checks the actual import registry as well as signed
+and granted capabilities. Source reads require `policy.trusted-source`; dataset
+admission queries require both `dataset.query` and `policy.trusted-source`.
+Recheck live grants at dispatch with `ValidatePolicyV1ImportGrant` or the SDK
+`CallPolicyTrustedSourceHost`/`CallPolicyDatasetHost` boundaries.
+
+The trusted source request is empty. Source address, peer and socket/XFF/PROXY/
+relay authority come only from Host-authenticated call context. Dataset admission
+requests likewise contain no address or trusted flag, only a snapshot reference,
+up to 64 address classifications and explicit time/response budgets. Target
+domain matching remains in the RPC dataset lookup contract. `PolicyDatasetHost`
+and `PolicyTrustedSourceHost` are optional interfaces, so existing implementations
+continue compiling. Host implementations must resolve actual authorization and
+cooperate with cancellation, using the enclosing admission context so query time
+cannot reset the 2 ms deadline. The 16 MiB memory and complete input/output frame
+limits remain unchanged.
+
+The SDK policy codecs validate raw frames before protobuf decoding, rejecting
+duplicate scalars, conflicting results, unknown fields, invalid enums and bounds.
+Responses contain one snapshot reference and compact indexed matches, including
+explicit coverage and failure status; even 64 matches with maximum reference
+lengths fit the 4 KiB ceiling. Smaller manifest/caller limits still apply to the
+complete encoded frame. Prepare should validate/encode configured queries before
+admission, initializing the fixed descriptor cache outside the request deadline.
+
+`PolicyOverlayEnvelope` separates IP, rate and WAF payloads in that order.
+`SelectPolicyStageOverlay` selects by stage and policy identity. Legacy WAF,
+IP and rate payloads are accepted only through explicit trusted decode context;
+an ambiguous legacy payload cannot be applied to multiple stages. Overlay
+payloads remain plugin-owned, and Host preserves global policy constraints,
+existing effective configuration, and WAF's HTTP-only applicability.
+
+`PolicySecurityEvent` adds fixed IP/routing code, action, reason and domain-source
+catalogs plus one-based indices into Host-pinned dictionaries. The raw event
+codec and `ValidateForCatalog` reject nonexistent references and ambiguous
+success/failure actions. Observation failures use an anomaly event rather than
+claiming a successful non-match; routing failure cannot claim direct fallback.
+`PolicyDiagnosticContext` supplements resolved events with Host-owned entry,
+source, node, generation, region, rule and dataset version facts for authorized
+administrators. No guest free text, request payload or credential is introduced.
