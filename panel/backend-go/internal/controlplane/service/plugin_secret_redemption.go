@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
@@ -135,7 +136,7 @@ func (s *PluginService) redeemAgentPluginSecretsCurrent(ctx context.Context, age
 	if err != nil {
 		return PluginSecretRedemptionResponse{}, err
 	}
-	if !found || status.PluginID != request.PluginID || status.Revision <= 0 || uint64(status.Revision) != request.Revision || status.GenerationID != request.GenerationID || status.PackageDigest != request.PackageDigest || status.ArtifactDigest != request.ArtifactDigest || status.ResourceGroupID == "" || status.TargetVersion == 0 || (status.AuthoritySlot != "active" && status.AuthoritySlot != "pending") || status.State == "failed" || status.State == "drained" || status.State == "draining" {
+	if !found || status.PluginID != request.PluginID || status.Revision <= 0 || (len(request.Scoped) == 0 && uint64(status.Revision) != request.Revision) || status.GenerationID != request.GenerationID || status.PackageDigest != request.PackageDigest || status.ArtifactDigest != request.ArtifactDigest || status.ResourceGroupID == "" || status.TargetVersion == 0 || (status.AuthoritySlot != "active" && status.AuthoritySlot != "pending") || status.State == "failed" || status.State == "drained" || status.State == "draining" {
 		return PluginSecretRedemptionResponse{}, storage.ErrPluginGenerationStale
 	}
 	pendingAuthority := status.AuthoritySlot == "pending" && installed.PendingOperationID == request.OperationID && (operation.Status == "applying" || operation.Status == "staged")
@@ -196,6 +197,14 @@ func (s *PluginService) redeemAgentScopedSecret(ctx context.Context, agentID str
 	if err != nil || !found || revision.RuntimeGenerationID == "" || revision.RuntimeGenerationID != request.RuntimeGenerationID || scoped.Binding.Generation != revision.RuntimeGenerationID {
 		return PluginSecretRedemptionResponse{}, errPluginHostDenied
 	}
+	var inherited *storage.PluginGeneration
+	if uint64(status.Revision) != request.Revision {
+		generation, err := inheritedScopedSecretGeneration(ctx, store, revision, status, request)
+		if err != nil {
+			return PluginSecretRedemptionResponse{}, errPluginHostDenied
+		}
+		inherited = &generation
+	}
 	packageIdentity := installed.ActivePackageIdentity
 	if status.AuthoritySlot == "pending" && installed.StagedPackageDigest == request.PackageDigest {
 		packageIdentity = installed.StagedPackageIdentity
@@ -211,6 +220,18 @@ func (s *PluginService) redeemAgentScopedSecret(ctx context.Context, agentID str
 	candidate := pluginhost.Candidate{InstanceID: request.InstanceID, ResourceGroupID: status.ResourceGroupID,
 		Identity: pluginhost.Identity{PluginID: request.PluginID, Generation: request.RuntimeGenerationID}, GrantSelectors: map[string][]string{}}
 	for _, grant := range grants {
+		if inherited != nil {
+			allowed := false
+			for _, bound := range inherited.Grants {
+				if bound == grant {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
 		candidate.Grants = append(candidate.Grants, grant.Name)
 		selector := grant.ResourceID
 		if grant.ResourceKind != "" {
@@ -234,6 +255,65 @@ func (s *PluginService) redeemAgentScopedSecret(ctx context.Context, agentID str
 		return PluginSecretRedemptionResponse{}, errPluginHostUnavailable
 	}
 	return PluginSecretRedemptionResponse{Scoped: wire}, nil
+}
+
+// An independently issued snapshot may carry an already-active deployment.
+// Its runtime revision differs from the deployment-status revision; the
+// immutable snapshot and canonical provider identity prove that inheritance.
+// Never mutate the old status fence: old live generations may coexist.
+func inheritedScopedSecretGeneration(ctx context.Context, store *storage.GormStore, revision storage.AgentRevisionRow, status storage.PluginAgentRuntimeStatusRow, request PluginSecretRedemptionRequest) (storage.PluginGeneration, error) {
+	deny := func() (storage.PluginGeneration, error) { return storage.PluginGeneration{}, errPluginHostDenied }
+	if revision.State != storage.AgentRevisionStateApplying && revision.State != storage.AgentRevisionStateApplied {
+		return deny()
+	}
+	if revision.State == storage.AgentRevisionStateApplying {
+		attempts, err := store.ListCoordinatorAttempts(ctx, revision.AgentID, revision.Revision)
+		if err != nil {
+			return deny()
+		}
+		live := false
+		for _, attempt := range attempts {
+			if attempt.RetryCycle == revision.RetryCycle && attempt.Attempt == revision.AttemptCount && attempt.State == storage.AgentRevisionAttemptStateStarted && time.Now().UTC().Before(attempt.DeadlineAt) {
+				live = true
+				break
+			}
+		}
+		if !live {
+			return deny()
+		}
+	}
+	artifact, found, err := store.GetGenerationArtifact(ctx, revision.SnapshotArtifactID)
+	if err != nil || !found || artifact.Kind != "agent_snapshot" || artifact.SHA256 != revision.SnapshotDigest || artifact.SizeBytes != int64(len(artifact.Payload)) {
+		return deny()
+	}
+	digest := sha256.Sum256(artifact.Payload)
+	if hex.EncodeToString(digest[:]) != revision.SnapshotDigest {
+		return deny()
+	}
+	var snapshot storage.Snapshot
+	if json.Unmarshal(artifact.Payload, &snapshot) != nil || snapshot.Revision != int64(request.Revision) {
+		return deny()
+	}
+	var selected *storage.PluginGeneration
+	for index := range snapshot.PluginGenerations {
+		generation := &snapshot.PluginGenerations[index]
+		if generation.InstanceID == request.InstanceID {
+			if selected != nil {
+				return deny()
+			}
+			selected = generation
+		}
+	}
+	if selected == nil {
+		return deny()
+	}
+	g := *selected
+	identity, err := storage.PluginGenerationIdentity(g)
+	if err != nil || identity != g.ID || g.ID != request.GenerationID || g.PluginID != request.PluginID || g.OperationID != request.OperationID || g.Revision != int64(request.Revision) ||
+		g.PackageDigest != request.PackageDigest || g.Artifact.SHA256 != request.ArtifactDigest || g.ConfigVersion != status.ConfigVersion || g.Target.Kind != "agent" || g.Target.ID != revision.AgentID || g.Target.ResourceGroupID != status.ResourceGroupID || g.Target.Version != status.TargetVersion || g.Runtime.HostScope != "agent" || g.Runtime.Kind != pluginsdk.RuntimeRPCService || g.Runtime.ABI != pluginsdk.RPCABIV1 {
+		return deny()
+	}
+	return g, nil
 }
 
 func pluginRedemptionDigest(value string) bool {

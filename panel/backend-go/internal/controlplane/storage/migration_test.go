@@ -3,8 +3,46 @@
 package storage
 
 import (
+	"reflect"
 	"testing"
+	"time"
 )
+
+func TestIntegrationCopyDefaultMigrationRowsPreservesScopedSecretRecovery(t *testing.T) {
+	for _, populated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "empty", true: "populated"}[populated], func(t *testing.T) {
+			source, target := newTrafficTestStore(t, true), newTrafficTestStore(t, true)
+			var operations []PluginScopedSecretOperationRow
+			var deliveries []PluginScopedSecretDeliveryRow
+			if populated {
+				operations = []PluginScopedSecretOperationRow{{ID: "intent", SecretName: "safe-reference", Action: "rotate", OldVersion: "old", Fingerprint: "keyed-digest", State: "pending", CreatedAt: time.Now().UTC().Truncate(time.Second)}, {ID: "completed", SecretName: "other-reference", Action: "create", State: "completed", NewVersion: "created", Fingerprint: "other-keyed-digest"}}
+				deliveries = []PluginScopedSecretDeliveryRow{{ID: "delivery", SecretName: "safe-reference", Version: "old", AgentID: "edge", InstanceID: "instance", PluginID: "plugin", GenerationID: "runtime", ProviderGenerationID: "provider", Revision: 7, FenceID: "intent"}, {ID: "acknowledged", SecretName: "safe-reference", Version: "old", AgentID: "other-edge", InstanceID: "instance", PluginID: "plugin", GenerationID: "other-runtime", ProviderGenerationID: "provider", Revision: 8, FenceID: "intent", Acknowledged: true}}
+				if err := source.db.Create(&operations).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := source.db.Create(&deliveries).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := CopyDefaultMigrationRows(t.Context(), source, target); err != nil {
+				t.Fatal(err)
+			}
+			var gotOps, wantOps []PluginScopedSecretOperationRow
+			var gotDeliveries, wantDeliveries []PluginScopedSecretDeliveryRow
+			for _, pair := range []struct {
+				store *GormStore
+				rows  any
+			}{{source, &wantOps}, {target, &gotOps}, {source, &wantDeliveries}, {target, &gotDeliveries}} {
+				if err := pair.store.db.Order("id").Find(pair.rows).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !reflect.DeepEqual(gotOps, wantOps) || !reflect.DeepEqual(gotDeliveries, wantDeliveries) {
+				t.Fatal("migration changed scoped intent/recipient recovery authority")
+			}
+		})
+	}
+}
 
 func TestIntegrationCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t *testing.T) {
 	t.Parallel()

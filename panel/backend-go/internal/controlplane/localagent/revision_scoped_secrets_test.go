@@ -2,6 +2,10 @@ package localagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"path/filepath"
 	"testing"
@@ -71,17 +75,37 @@ func newLocalScopedFixture(t *testing.T) localScopedFixture {
 	return localScopedFixture{store: store, db: db, service: plugins, manager: manager, source: source, tasks: tasks, root: root, agentID: agentID}
 }
 
-func (f localScopedFixture) startedLease(t *testing.T, revision int64) service.RemoteRevisionLease {
+func (f localScopedFixture) startedLease(t *testing.T, revision int64, snapshots ...storage.Snapshot) service.RemoteRevisionLease {
 	t.Helper()
 	now := time.Now().UTC()
-	if err := f.store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
-		Operation: storage.OperationRow{ID: "scoped-revision", Kind: "test", Status: storage.OperationStatusPending, PrimaryAgentID: f.agentID, CreatedAt: now, UpdatedAt: now},
-		Revisions: []storage.AgentRevisionRow{{AgentID: f.agentID, Revision: revision, OperationID: "scoped-revision", State: storage.AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 5, CreatedAt: now, UpdatedAt: now}},
+	opID := fmt.Sprintf("scoped-revision-%d", revision)
+	write := storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{ID: opID, Kind: "test", Status: storage.OperationStatusPending, PrimaryAgentID: f.agentID, CreatedAt: now, UpdatedAt: now},
+		Revisions: []storage.AgentRevisionRow{{AgentID: f.agentID, Revision: revision, OperationID: opID, State: storage.AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 5, CreatedAt: now, UpdatedAt: now}},
 		Pointers:  []storage.AgentRevisionPointerRow{{AgentID: f.agentID, DesiredRevision: revision, UpdatedAt: now}},
-	}); err != nil {
+	}
+	if pointer, found, err := f.store.GetAgentRevisionPointer(t.Context(), f.agentID); err != nil {
+		t.Fatal(err)
+	} else if found {
+		write.Pointers[0].AppliedRevision = pointer.AppliedRevision
+		write.Pointers[0].LastKnownGoodRevision = pointer.LastKnownGoodRevision
+	}
+	if len(snapshots) > 0 {
+		payload, err := json.Marshal(snapshots[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(payload)
+		hash := hex.EncodeToString(sum[:])
+		id := "snapshot-" + hash
+		write.Revisions[0].SnapshotArtifactID = id
+		write.Revisions[0].SnapshotDigest = hash
+		write.Artifacts = []storage.GenerationArtifactRow{{ID: id, Kind: "agent_snapshot", SHA256: hash, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}}
+	}
+	if err := f.store.CreateRevisionLedger(t.Context(), write); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := f.store.ClaimLatestAgentRevision(t.Context(), storage.CoordinatorClaimRequest{AgentID: f.agentID, LeaseID: "scoped-lease", Now: now})
+	claim, err := f.store.ClaimLatestAgentRevision(t.Context(), storage.CoordinatorClaimRequest{AgentID: f.agentID, LeaseID: fmt.Sprintf("scoped-lease-%d", revision), Now: now})
 	if err != nil || claim.Lease == nil {
 		t.Fatal("claim", err)
 	}

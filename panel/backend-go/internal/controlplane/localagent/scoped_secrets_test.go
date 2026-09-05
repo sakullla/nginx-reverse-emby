@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/rpcplugin"
@@ -179,6 +180,66 @@ func TestLocalActualScopedPrepareReadAndGenerationRevoke(t *testing.T) {
 			t.Log(row.Message)
 		}
 		t.Fatal("real child did not produce exact durable delivery evidence")
+	}
+	// A dataset/settings revision reuses the active deployment definition. Its
+	// new runtime must redeem during Prepare while the deployment fence stays
+	// at revision 7 and still authorizes the previous bound runtime.
+	if _, err := f.store.ApplyAgentRevisionAttempt(ctx, storage.CoordinatorApplyRequest{Lease: storage.CoordinatorLease{AgentID: f.agentID, Revision: 7, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID}, GenerationID: embeddedGenerationID(lease), Now: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	nextGeneration := generation
+	nextGeneration.Revision = 8
+	nextSnapshot := storage.Snapshot{Revision: 8, PluginGenerations: []storage.PluginGeneration{nextGeneration}}
+	nextLease := f.startedLease(t, 8, nextSnapshot)
+	if err := applyRevisionWithinLease(ctx, outer, nextSnapshot, nextLease); err != nil {
+		t.Fatal("inherited independent revision Prepare/read", err)
+	}
+	nextRevision, _, err := f.store.GetCoordinatorRevision(ctx, f.agentID, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nextDeliveries []storage.PluginScopedSecretDeliveryRow
+	if err := f.db.Where("instance_id = ? AND revision = ?", generation.InstanceID, 8).Find(&nextDeliveries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(nextDeliveries) != 1 || nextDeliveries[0].GenerationID != nextRevision.RuntimeGenerationID || nextDeliveries[0].ProviderGenerationID != generation.ID {
+		t.Fatal("second actual SDK Prepare did not redeem inherited deployment")
+	}
+	read := sdk.ScopedSecretRequest{Action: sdk.ScopedSecretRead, Reference: created.Reference, Binding: sdk.ManagedBinding{InstanceID: generation.InstanceID, EntryID: generation.InstanceID, Generation: revision.RuntimeGenerationID}}
+	oldWire, _ := sdk.EncodeScopedSecretRequest(read)
+	defer clear(oldWire)
+	oldRequest := service.PluginSecretRedemptionRequest{Revision: 7, GenerationID: generation.ID, RuntimeGenerationID: revision.RuntimeGenerationID, InstanceID: generation.InstanceID, PluginID: generation.PluginID, OperationID: generation.OperationID, PackageDigest: generation.PackageDigest, ArtifactDigest: generation.Artifact.SHA256, Scoped: oldWire}
+	oldRead, err := f.service.RedeemAgentPluginSecrets(ctx, f.agentID, oldRequest)
+	if err != nil {
+		t.Fatal("independent revision displaced old authority", err)
+	}
+	clear(oldRead.Scoped)
+	if err := inner.SyncNow(ctx); err != nil {
+		t.Fatal("post-cutover telemetry", err)
+	}
+	read.Binding.Generation = nextRevision.RuntimeGenerationID
+	nextWire, _ := sdk.EncodeScopedSecretRequest(read)
+	defer clear(nextWire)
+	nextRequest := oldRequest
+	nextRequest.Revision = 8
+	nextRequest.RuntimeGenerationID = nextRevision.RuntimeGenerationID
+	nextRequest.Scoped = nextWire
+	postTelemetry, err := f.service.RedeemAgentPluginSecrets(ctx, f.agentID, nextRequest)
+	if err != nil {
+		t.Fatal("inherited generation lost secret authority after telemetry", err)
+	}
+	clear(postTelemetry.Scoped)
+	for _, forgery := range []string{"revision", "runtime"} {
+		bad := oldRequest
+		if forgery == "revision" {
+			bad.Revision = 99
+		} else {
+			bad.RuntimeGenerationID = "generation-8-forged"
+		}
+		if result, err := f.service.RedeemAgentPluginSecrets(ctx, f.agentID, bad); err == nil {
+			clear(result.Scoped)
+			t.Fatal("forged inherited authority accepted", forgery)
+		}
 	}
 	revoke := create
 	revoke.Action, revoke.Reference, revoke.Material = sdk.ScopedSecretRevoke, created.Reference, nil

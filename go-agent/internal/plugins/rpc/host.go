@@ -520,10 +520,10 @@ func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedIn
 	response, err := attempt.client.Activate(ctx, lifecycle)
 	clearLifecycle()
 	if err != nil {
-		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+		return pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 	}
 	if err := validateLifecycleSuccess(response); err != nil {
-		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+		return pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 	}
 	if err := processAttemptError(attempt.handle); err != nil {
 		return err
@@ -765,10 +765,10 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	}
 	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {
-		return attempt, err
+		return attempt, pluginLifecycleCallError("handshake", candidateHasSecretCapability(candidate), err)
 	}
 	if err := ValidateHandshake(handshake, response); err != nil {
-		return attempt, err
+		return attempt, pluginLifecycleCallError("handshake", candidateHasSecretCapability(candidate), err)
 	}
 	lifecycle, clearLifecycle, err := transientLifecycleRequest(ctx, redeemer, candidate, handle)
 	if err != nil {
@@ -777,10 +777,10 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	prepared, err := client.Prepare(ctx, lifecycle)
 	clearLifecycle()
 	if err != nil {
-		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
+		return attempt, pluginLifecycleCallError("prepare", candidateHasSecretCapability(candidate), err)
 	}
 	if err := validateLifecycleSuccess(prepared); err != nil {
-		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
+		return attempt, pluginLifecycleCallError("prepare", candidateHasSecretCapability(candidate), err)
 	}
 	if activate {
 		lifecycle, clearLifecycle, err = transientLifecycleRequest(ctx, redeemer, candidate, handle)
@@ -790,10 +790,10 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		activated, err := client.Activate(ctx, lifecycle)
 		clearLifecycle()
 		if err != nil {
-			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+			return attempt, pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 		}
 		if err := validateLifecycleSuccess(activated); err != nil {
-			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+			return attempt, pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 		}
 		if err := attempt.readyHTTPBackendProviders(ctx); err != nil {
 			return attempt, err
@@ -805,11 +805,26 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	return attempt, nil
 }
 
-func pluginLifecycleCallError(phase string, transientSecrets bool, err error) error {
+// Scoped material can outlive the read callback inside the guest. Treat every
+// lifecycle error from a secret-capable generation as untrusted secret content,
+// including cleanup after a failed Prepare, before logging or status projection.
+func candidateHasSecretCapability(candidate HostCandidate) bool {
+	if len(candidate.SecretHandles) > 0 {
+		return true
+	}
+	for _, scope := range candidate.Scopes {
+		if scope == pluginsdk.PermissionScopedSecretRead || scope == pluginsdk.PermissionScopedSecretWrite {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginLifecycleCallError(phase string, secretCapable bool, err error) error {
 	if err == nil {
 		return nil
 	}
-	if transientSecrets {
+	if secretCapable {
 		return fmt.Errorf("Agent RPC plugin %s failed", phase)
 	}
 	return fmt.Errorf("Agent RPC plugin %s: %w", phase, err)
@@ -1549,7 +1564,7 @@ func (i *HostedInstance) stopRPC(ctx context.Context, attempt *hostAttempt) erro
 	}()
 	select {
 	case err := <-result:
-		return err
+		return pluginLifecycleCallError("stop", candidateHasSecretCapability(i.candidate), err)
 	case <-rpcCtx.Done():
 		attempt.closeTransport()
 		return fmt.Errorf("Agent RPC plugin lifecycle stop: %w", rpcCtx.Err())

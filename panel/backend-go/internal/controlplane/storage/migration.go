@@ -1724,6 +1724,10 @@ func isEmptyMigrationSlice(rows any) bool {
 		return len(*typed) == 0
 	case *[]SecretVersionRow:
 		return len(*typed) == 0
+	case *[]PluginScopedSecretOperationRow:
+		return len(*typed) == 0
+	case *[]PluginScopedSecretDeliveryRow:
+		return len(*typed) == 0
 	case *[]MarketplaceSourceRow:
 		return len(*typed) == 0
 	case *[]MarketSnapshotRow:

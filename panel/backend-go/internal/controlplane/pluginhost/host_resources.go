@@ -51,6 +51,7 @@ func startHostResourceServer(ctx context.Context, candidate Candidate, dispatche
 			return
 		}
 		payload, err := io.ReadAll(io.LimitReader(request.Body, pluginsdk.PluginHostPayloadMaxBytes+4096))
+		defer clear(payload)
 		if err != nil || len(payload) > pluginsdk.PluginHostPayloadMaxBytes+2048 {
 			writeHostRuntimeResponse(writer, http.StatusRequestEntityTooLarge, pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorInvalidArgument, Message: "host resource request exceeds the canonical bound"}})
 			return
@@ -62,13 +63,43 @@ func startHostResourceServer(ctx context.Context, candidate Candidate, dispatche
 			writeHostRuntimeResponse(writer, http.StatusBadRequest, pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorInvalidArgument, Message: "host resource request is invalid"}})
 			return
 		}
+		defer clear(call.Payload)
+		var scoped *pluginsdk.ScopedSecretRequest
+		if call.Operation == pluginsdk.HostRuntimeScopedSecret {
+			decoded, err := pluginsdk.DecodeScopedSecretRequest(call.Payload)
+			if err != nil {
+				writeHostRuntimeResponse(writer, http.StatusBadRequest, pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorInvalidArgument, Message: "scoped secret request is invalid"}})
+				return
+			}
+			scoped = &decoded
+			defer scoped.Material.Close()
+			if scoped.Material != nil {
+				err = scoped.Material.WithBytes(func(value []byte) error { return candidate.logRedactor.addSecrets(string(value)) })
+				if err != nil {
+					writeHostRuntimeResponse(writer, http.StatusServiceUnavailable, pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "scoped secret log guard is unavailable"}})
+					return
+				}
+			}
+		}
 		if dispatcher == nil {
 			writeHostRuntimeResponse(writer, http.StatusServiceUnavailable, pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "host resource dispatcher is unavailable", Retryable: true}})
 			return
 		}
 		response := dispatcher.DispatchPluginHostResource(request.Context(), candidate, call)
+		defer clear(response.Payload)
 		if err := response.Validate(); err != nil {
 			response = pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorInternal, Message: "host resource response is invalid"}}
+		}
+		if scoped != nil && scoped.Action == pluginsdk.ScopedSecretRead && response.Error == nil {
+			delivery, err := pluginsdk.DecodeScopedSecretResponse(*scoped, response.Payload)
+			if err == nil {
+				err = delivery.Material.WithBytes(func(value []byte) error { return candidate.logRedactor.addSecrets(string(value)) })
+			}
+			delivery.Material.Close()
+			if err != nil {
+				clear(response.Payload)
+				response = pluginsdk.HostRuntimeResponse{Error: &pluginsdk.RuntimeError{Code: pluginsdk.ErrorUnavailable, Message: "scoped secret delivery log guard is unavailable"}}
+			}
 		}
 		status := http.StatusOK
 		if response.Error != nil {

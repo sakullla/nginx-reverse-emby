@@ -42,6 +42,7 @@ type Candidate struct {
 	ResolveConfig                                         func(context.Context, string) ([]byte, error)
 	ResolveConfigAndSecrets                               func(context.Context, string) ([]byte, []string, error)
 	LogSecrets                                            []string
+	logRedactor                                           *redactor
 	Args, Environment                                     []string
 	Endpoint                                              Endpoint
 	Requirement                                           SandboxRequirement
@@ -392,14 +393,6 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if instance == nil {
 		return nil, errors.New("control-plane plugin attempt security has no cleanup owner")
 	}
-	h.mu.RLock()
-	hostResources := h.hostResources
-	h.mu.RUnlock()
-	hostResourceCleanup, err := startHostResourceServer(attemptCtx, candidate, hostResources)
-	if err != nil {
-		return nil, err
-	}
-	instance.hostResourceCleanup = hostResourceCleanup
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
@@ -421,6 +414,16 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	defer clear(config)
 	defer clear(logSecrets)
 	logWriter := newRedactor(&candidateLogTarget{host: h, candidate: candidate}, logSecrets)
+	candidate.logRedactor = logWriter
+	h.mu.RLock()
+	hostResources := h.hostResources
+	h.mu.RUnlock()
+	hostResourceCleanup, err := startHostResourceServer(attemptCtx, candidate, hostResources)
+	if err != nil {
+		_ = logWriter.Close()
+		return nil, err
+	}
+	instance.hostResourceCleanup = hostResourceCleanup
 	process, err := h.launcher.Start(attemptCtx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
 	if err != nil {
 		_ = logWriter.Close()
@@ -1844,6 +1847,8 @@ type redactor struct {
 	mu               sync.Mutex
 	line             []byte
 	dropping, closed bool
+	secretBytes      int
+	suppressed       bool
 }
 
 type candidateLogTarget struct {
@@ -1867,7 +1872,61 @@ func (w *candidateLogTarget) Write(p []byte) (int, error) {
 }
 
 func newRedactor(target io.Writer, secrets []string) *redactor {
-	return &redactor{target: target, secrets: secrets}
+	w := &redactor{target: target}
+	_ = w.addSecrets(secrets...)
+	return w
+}
+
+const maxAttemptLogSecrets = 256
+const maxAttemptLogSecretBytes = 2 << 20
+
+// Registration shares the line writer lock, so an in-flight fragmented line
+// cannot flush between registration and the next write. Overflow seals this
+// attempt's log output rather than evicting a still-sensitive value.
+func (w *redactor) addSecrets(values ...string) error {
+	if w == nil {
+		return errors.New("plugin log secret owner is unavailable")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.suppressed {
+		return errors.New("plugin log secret owner is unavailable")
+	}
+	// Plain multiline output is flushed per line. Retain each nonempty line
+	// as well as the full value (used by escaped JSON/text formatting).
+	expanded := make([]string, 0, len(values))
+	for _, value := range values {
+		expanded = append(expanded, value)
+		if strings.Contains(value, "\n") {
+			expanded = append(expanded, strings.Split(value, "\n")...)
+		}
+	}
+	for _, value := range expanded {
+		if value == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range w.secrets {
+			if existing == value {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if len(w.secrets) >= maxAttemptLogSecrets || len(value) > maxAttemptLogSecretBytes-w.secretBytes {
+			w.suppressed = true
+			clear(w.line)
+			w.line = nil
+			clear(w.secrets)
+			w.secrets = nil
+			return errors.New("plugin log secret registration budget exceeded")
+		}
+		w.secrets = append(w.secrets, value)
+		w.secretBytes += len(value)
+	}
+	return nil
 }
 func (w *redactor) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -1901,12 +1960,18 @@ func (w *redactor) Close() error {
 		return nil
 	}
 	w.closed = true
-	return w.flushLocked(false)
+	err := w.flushLocked(false)
+	clear(w.secrets)
+	w.secrets = nil
+	return err
 }
 func (w *redactor) flushLocked(newline bool) error {
 	line := string(w.line)
 	w.line = w.line[:0]
-	if w.dropping {
+	if w.suppressed {
+		line = "[REDACTED plugin log secret budget exceeded]"
+		w.dropping = false
+	} else if w.dropping {
 		line = "[REDACTED oversized plugin log line]"
 		w.dropping = false
 	} else {
