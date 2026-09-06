@@ -16,7 +16,7 @@ func TestPolicyConsumptionSchemaMatchesPublicJSONShapes(t *testing.T) {
 	if err := json.Unmarshal(PolicyConsumptionSchemaV1(), &schema); err != nil {
 		t.Fatal(err)
 	}
-	types := []any{ExecutionTargetSelection{}, DatasetBindingSpec{}, DatasetBindingRequest{}, DatasetBindingRecord{}, DatasetBindingResponse{}, DatasetBindingTargetStatus{}, DatasetBindingInstanceUpdate{}, DatasetAttribute{}, DatasetClassification{}, RuntimeError{}, PolicyDefaultSettingsUpdate{}, PolicyStageIdentity{}, PolicyEntryTarget{}, PolicyModeSettings{}, PolicyControlRequest{}, PolicyControlResponse{}, PolicySettingsVersion{}, PolicySettingsSnapshot{}, PolicySettingsNodeStatus{}, PolicyStageModeProjection{}}
+	types := []any{ExecutionTargetSelection{}, DatasetBindingSpec{}, DatasetBindingRequest{}, DatasetBindingRecord{}, DatasetBindingResponse{}, DatasetBindingTargetStatus{}, DatasetBindingInstanceUpdate{}, DatasetAttribute{}, DatasetClassification{}, RuntimeError{}, PolicyDefaultSettingsUpdate{}, PolicyStageIdentity{}, PolicyEntryTarget{}, PolicyModeSettings{}, PolicyControlRequest{}, PolicyControlResponse{}, PolicySettingsVersion{}, PolicySettingsSnapshot{}, PolicySettingsNodeStatus{}, PolicyEntrySnapshot{}, PolicyStageModeProjection{}}
 	for _, value := range types {
 		kind := reflect.TypeOf(value)
 		definition, exists := schema.Definitions[kind.Name()]

@@ -19,19 +19,23 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 	}
 	for _, permission := range manifest.Permissions {
 		capability := HostCapability(permission.Name)
-		if capability == CapabilityDatasetResolve {
-			queryDeclared := false
+		if capability == CapabilityDatasetResolve || capability == CapabilityPolicyEntryOverlays {
+			dependency := CapabilityDatasetQuery
+			if capability == CapabilityPolicyEntryOverlays {
+				dependency = CapabilityPolicyControl
+			}
+			dependencyDeclared := false
 			for _, declared := range manifest.Permissions {
-				if declared.Name == string(CapabilityDatasetQuery) {
-					queryDeclared = true
+				if declared.Name == string(dependency) {
+					dependencyDeclared = true
 				}
 			}
-			if !queryDeclared {
-				return fmt.Errorf("dataset.resolve requires a dataset.query declaration")
+			if !dependencyDeclared {
+				return fmt.Errorf("%s requires a %s declaration", capability, dependency)
 			}
 		}
 		switch capability {
-		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
+		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
 			if !available[capability] {
 				return fmt.Errorf("Host does not support required managed capability %q", capability)
 			}

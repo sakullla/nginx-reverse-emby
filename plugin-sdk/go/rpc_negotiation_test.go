@@ -59,3 +59,31 @@ func TestNegotiateRPCHandshakeRejectsIdentityAndNonCanonicalLists(t *testing.T) 
 		t.Fatal("duplicate grant was accepted")
 	}
 }
+
+func TestNegotiateRPCHandshakeRejectsOldHostForRequiredPolicyEntryOverlays(t *testing.T) {
+	features := RequiredRPCFeatures([]string{string(CapabilityPolicyControl), string(CapabilityPolicyEntryOverlays)})
+	declaration := RPCPluginDeclaration{
+		PluginID:             "ip-policy",
+		PluginVersion:        "1.0.0",
+		RequiredCapabilities: []string{string(CapabilityPolicyControl), string(CapabilityPolicyEntryOverlays)},
+		SupportedFeatures:    features,
+		RequiredFeatures:     features,
+	}
+	request := RPCHandshakeRequest{
+		ABI: RPCABIV1, PluginID: declaration.PluginID, PluginVersion: declaration.PluginVersion,
+		PackageDigest: "package", ArtifactDigest: "artifact", Generation: "generation",
+		GrantedScopes:    []string{string(CapabilityPolicyControl), string(CapabilityPolicyEntryOverlays)},
+		RequiredFeatures: []string{RPCFeaturePolicyControlsV1},
+	}
+	if _, err := NegotiateRPCHandshake(declaration, request); err == nil || !strings.Contains(err.Error(), RPCFeaturePolicyEntryOverlaysV1) {
+		t.Fatalf("old Host feature request was accepted: %v", err)
+	}
+	request.RequiredFeatures = features
+	response, err := NegotiateRPCHandshake(declaration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(response.Features, features) {
+		t.Fatalf("negotiated entry-overlay features = %v", response.Features)
+	}
+}

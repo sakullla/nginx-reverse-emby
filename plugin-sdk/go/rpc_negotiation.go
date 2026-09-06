@@ -16,6 +16,7 @@ type RPCPluginDeclaration struct {
 	PluginVersion        string
 	RequiredCapabilities []string
 	SupportedFeatures    []string
+	RequiredFeatures     []string
 }
 
 // NegotiateRPCHandshake performs the canonical fail-closed v1 negotiation.
@@ -52,9 +53,35 @@ func NegotiateRPCHandshake(declaration RPCPluginDeclaration, request RPCHandshak
 		}
 	}
 
-	supported, err := canonicalRPCNegotiationSet("supported feature", declaration.SupportedFeatures)
+	supportedNames, err := canonicalRPCNegotiationNames("supported feature", declaration.SupportedFeatures)
 	if err != nil {
 		return RPCHandshakeResponse{}, err
+	}
+	if err := ValidateRPCFeatures(supportedNames, supportedNames); err != nil {
+		return RPCHandshakeResponse{}, err
+	}
+	supported := make(map[string]struct{}, len(supportedNames))
+	for _, feature := range supportedNames {
+		supported[feature] = struct{}{}
+	}
+	requiredFeatures, err := canonicalRPCNegotiationNames("required feature", declaration.RequiredFeatures)
+	if err != nil {
+		return RPCHandshakeResponse{}, err
+	}
+	if err := ValidateRPCFeatures(requiredFeatures, requiredFeatures); err != nil {
+		return RPCHandshakeResponse{}, err
+	}
+	requested := make(map[string]struct{}, len(request.RequiredFeatures))
+	for _, feature := range request.RequiredFeatures {
+		requested[feature] = struct{}{}
+	}
+	for _, feature := range requiredFeatures {
+		if _, ok := supported[feature]; !ok {
+			return RPCHandshakeResponse{}, fmt.Errorf("required RPC feature %q is not supported", feature)
+		}
+		if _, ok := requested[feature]; !ok {
+			return RPCHandshakeResponse{}, fmt.Errorf("required RPC feature %q was not requested", feature)
+		}
 	}
 	features := make([]string, 0, len(request.RequiredFeatures))
 	for _, feature := range request.RequiredFeatures {

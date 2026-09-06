@@ -266,6 +266,13 @@ administrators. No guest free text, request payload or credential is introduced.
 `policy.control` similarly requires `policy.control` and
 `rpc.policy-controls.v1`. Older Hosts must refuse these declared capabilities;
 existing query/open/resolve and the original six policy imports are unchanged.
+The v0.11 entry token/list/overlay extension additionally requires the signed and
+granted `policy.entry-overlays` capability. `RequiredRPCFeatures` maps that public
+manifest scope to both `rpc.policy-controls.v1` and
+`rpc.policy-entry-overlays.v1`; plain `policy.control` intentionally retains the
+v0.10 mode-only projection. Entry-overlay plugins declare the projected pair as
+supported and required features. A Host that does not recognize the capability,
+or requests only `rpc.policy-controls.v1`, rejects the package before activation.
 The bounded JSON payload definitions are available through
 `PolicyConsumptionSchemaV1()` and `go/schema/policy-consumption-v1.schema.json`.
 These operations use HostRuntime JSON; they introduce no protobuf imports.
@@ -326,6 +333,30 @@ its settings clock and shared instance clock both advance. Ordinary Config updat
 must advance that same shared clock. Entry overrides cannot lower an enforced
 instance default or affect another stage. Public stage selectors may omit policy ID
 only when the Host resolves it from the selected owned instance.
+
+Entry overlays require both `policy.control` and `policy.entry-overlays`, and use
+a Host-issued token in `PolicyEntryTarget`. The token is opaque,
+bound to one live owned entry and stage, and must never be reused after deletion or
+replacement. `node_id`, `kind` and `id` remain display identity; they do not
+authorize an overlay mutation. `list-entries` returns at most 64 current entries
+for the selected owned instance/stage as `PolicyEntrySnapshot` values, including
+each exact target/token, typed desired settings, optional stage overlay and any
+available node applied status. Every overlay is a JSON object within the existing
+16 KiB stage bound, and the complete response remains within the 1 MiB HostRuntime
+payload bound; there is no cursor or global entry registry.
+
+`replace-entry` with a token atomically replaces both its typed mode and complete
+stage overlay under the existing operation ID, settings revision and instance
+version CAS. Exact-token `inspect` may return that overlay, and tokened
+`reset-entry` removes both mode and overlay. Config remains the instance-only
+opaque Config and cannot carry entry rules. For v0.10 compatibility, tokenless
+entry inspect and mode-only replace remain valid but cannot read or write an
+overlay; tokenless reset is rejected because reset now also removes overlay state.
+Hosts validate current caller liveness, same plugin/resource group, exact stage,
+entry ownership and the current token even for replay before returning a stored
+result. Entry tokens are management authority only and are never projected into
+trusted-source or the policy WASM ABI; execution continues to consume the
+Host-selected `PolicyRef` overlay.
 
 Raw-decision guests always return their actual allow/deny decision. The explicit
 legacy-WAF bridge sends the existing `{"mode":"deny"}` overlay even for typed
