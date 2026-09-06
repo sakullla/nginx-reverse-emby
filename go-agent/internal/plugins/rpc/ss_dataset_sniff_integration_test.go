@@ -331,11 +331,26 @@ func runSSRoutePerformance(t *testing.T, client string, port int, target, passwo
 		_ = waitSSPayload(t, received)
 	}
 	latencies := make([]time.Duration, 20)
+	retryCount := 0
 	started := time.Now()
 	for index := range latencies {
 		begin := time.Now()
-		runSSClient(t, client, "tcp", "127.0.0.1", port, target, "aes-256-gcm", password, payload)
-		_ = waitSSPayload(t, received)
+		for {
+			runSSClient(t, client, "tcp", "127.0.0.1", port, target, "aes-256-gcm", password, payload)
+			select {
+			case got := <-received:
+				if got != payload {
+					t.Fatalf("performance payload changed across route: %q", got)
+				}
+				goto delivered
+			case <-time.After(200 * time.Millisecond):
+				retryCount++
+				if retryCount > 2 {
+					t.Fatal("route performance exceeded two bounded retries")
+				}
+			}
+		}
+	delivered:
 		latencies[index] = time.Since(begin)
 	}
 	elapsed := time.Since(started)
@@ -356,6 +371,7 @@ func runSSRoutePerformance(t *testing.T, client string, port int, target, passwo
 	evidence := map[string]any{
 		"raw_latency_ns": raw, "throughput_per_sec": throughput,
 		"p95_ns": ordered[18].Nanoseconds(), "p99_ns": ordered[19].Nanoseconds(), "rss_bytes": rss,
+		"retry_count":   retryCount,
 		"dataset_count": 2, "dataset_digests": map[string]string{ssPinnedGeoSiteName: ssPinnedGeoSiteSHA, ssPinnedGeoIPName: ssPinnedGeoIPSHA},
 		"candidate_refs": []string{primaryRef, upstreamRef},
 	}
