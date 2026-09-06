@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +19,8 @@ const (
 	muxFrameData       byte = 3
 	muxFrameFin        byte = 4
 	muxFrameRst        byte = 5
+	muxFramePing       byte = 6
+	muxFramePong       byte = 7
 
 	muxProtocolTCP byte = 1
 	muxProtocolUDP byte = 2
@@ -29,6 +33,7 @@ const (
 
 var (
 	errMuxClosed    = errors.New("channel mux is closed")
+	errMuxKeepalive = errors.New("channel mux keepalive timed out")
 	errStreamClosed = errors.New("channel stream is closed")
 	errStreamReset  = errors.New("channel stream was reset")
 )
@@ -43,35 +48,109 @@ type mux struct {
 
 	writeMu sync.Mutex
 
-	mu      sync.Mutex
-	streams map[uint32]*muxStream
-	nextID  uint32
-	readErr error
+	mu        sync.Mutex
+	streams   map[uint32]*muxStream
+	nextID    uint32
+	readErr   error
+	lastRead  atomic.Int64
+	lastWrite atomic.Int64
 
 	acceptCh  chan *muxStream
+	pongCh    chan uint64
 	done      chan struct{}
 	closeOnce sync.Once
 }
 
-func newMuxOpener(conn net.Conn) *mux {
-	return newMux(conn, true)
+func newMuxOpener(conn net.Conn, keepaliveInterval, keepaliveTimeout time.Duration) *mux {
+	return newMux(conn, true, keepaliveInterval, keepaliveTimeout)
 }
 
-func newMuxAcceptor(conn net.Conn) *mux {
-	return newMux(conn, false)
+func newMuxAcceptor(conn net.Conn, keepaliveInterval, keepaliveTimeout time.Duration) *mux {
+	return newMux(conn, false, keepaliveInterval, keepaliveTimeout)
 }
 
-func newMux(conn net.Conn, opener bool) *mux {
+func newMux(conn net.Conn, opener bool, keepaliveInterval, keepaliveTimeout time.Duration) *mux {
 	m := &mux{
 		conn:     conn,
 		opener:   opener,
 		streams:  make(map[uint32]*muxStream),
 		nextID:   1,
 		acceptCh: make(chan *muxStream, 16),
+		pongCh:   make(chan uint64, 1),
 		done:     make(chan struct{}),
 	}
+	now := time.Now().UnixNano()
+	m.lastRead.Store(now)
+	m.lastWrite.Store(now)
 	go m.readLoop()
+	// The exit/acceptor side alone initiates probes. Each PING receives one
+	// PONG, so a single bounded loop refreshes both directions without peers
+	// producing a synchronized PING storm.
+	if !opener && keepaliveInterval > 0 && keepaliveTimeout > 0 {
+		go m.keepaliveLoop(keepaliveInterval, keepaliveTimeout)
+	}
 	return m
+}
+
+func (m *mux) keepaliveLoop(interval, timeout time.Duration) {
+	timer := time.NewTimer(jitterKeepalive(interval))
+	defer timer.Stop()
+	var sequence uint64
+	for {
+		select {
+		case <-timer.C:
+		case <-m.done:
+			return
+		}
+		now := time.Now()
+		if now.Sub(time.Unix(0, m.lastRead.Load())) < interval && now.Sub(time.Unix(0, m.lastWrite.Load())) < interval {
+			timer.Reset(jitterKeepalive(interval))
+			continue
+		}
+
+		sequence++
+		var payload [8]byte
+		binary.BigEndian.PutUint64(payload[:], sequence)
+		if err := m.writeFrame(muxFramePing, 0, payload[:]); err != nil {
+			return
+		}
+
+		deadline := time.NewTimer(timeout)
+		acknowledged := false
+		for !acknowledged {
+			select {
+			case pong := <-m.pongCh:
+				acknowledged = pong == sequence
+			case <-deadline.C:
+				m.closeWithError(errMuxKeepalive)
+				return
+			case <-m.done:
+				if !deadline.Stop() {
+					<-deadline.C
+				}
+				return
+			}
+		}
+		if !deadline.Stop() {
+			<-deadline.C
+		}
+		timer.Reset(jitterKeepalive(interval))
+	}
+}
+
+func jitterKeepalive(interval time.Duration) time.Duration {
+	spread := interval / 10
+	if spread <= 0 {
+		return interval
+	}
+	return interval - spread + time.Duration(rand.Int64N(int64(2*spread)+1))
+}
+
+func (m *mux) deliverPong(sequence uint64) {
+	select {
+	case m.pongCh <- sequence:
+	default:
+	}
 }
 
 func (m *mux) writeFrame(frameType byte, streamID uint32, payload []byte) error {
@@ -100,6 +179,7 @@ func (m *mux) writeFrame(frameType byte, streamID uint32, payload []byte) error 
 			return err
 		}
 	}
+	m.lastWrite.Store(time.Now().UnixNano())
 	_ = m.conn.SetWriteDeadline(time.Time{})
 	return nil
 }
@@ -130,6 +210,7 @@ func (m *mux) readLoop() {
 				return
 			}
 		}
+		m.lastRead.Store(time.Now().UnixNano())
 		switch frameType {
 		case muxFrameOpen:
 			if !m.handleOpen(streamID, payload) {
@@ -147,6 +228,21 @@ func (m *mux) readLoop() {
 			m.handleFin(streamID)
 		case muxFrameRst:
 			m.handleRst(streamID)
+		case muxFramePing:
+			if streamID != 0 || len(payload) != 8 {
+				readErr = errors.New("channel mux ping frame is invalid")
+				return
+			}
+			if err := m.writeFrame(muxFramePong, 0, payload); err != nil {
+				readErr = err
+				return
+			}
+		case muxFramePong:
+			if streamID != 0 || len(payload) != 8 {
+				readErr = errors.New("channel mux pong frame is invalid")
+				return
+			}
+			m.deliverPong(binary.BigEndian.Uint64(payload))
 		default:
 			readErr = fmt.Errorf("channel mux frame type %d is unsupported", frameType)
 			return

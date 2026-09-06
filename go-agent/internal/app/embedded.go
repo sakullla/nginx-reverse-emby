@@ -71,8 +71,9 @@ func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	app.pkiStore = pkiStore
 	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
 	channelManager, channelErr := modulechannel.NewManager(modulechannel.Config{
-		AgentID:     cfg.AgentID,
-		Credentials: app.relayTunnelCredentials,
+		AgentID:           cfg.AgentID,
+		Credentials:       app.relayTunnelCredentials,
+		KeepaliveInterval: cfg.RelayTimeouts.IdleTimeout / 3,
 	})
 	if channelErr != nil {
 		return nil, fmt.Errorf("initialize channel session manager: %w", channelErr)

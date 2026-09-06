@@ -377,7 +377,7 @@ func (r *entryRuntime) serveIngressConn(ctx context.Context, tlsConfig *tls.Conf
 		return
 	}
 	_ = tlsConn.SetDeadline(time.Time{})
-	muxConn := newMuxOpener(tlsConn)
+	muxConn := newMuxOpener(tlsConn, r.cfg.KeepaliveInterval, r.cfg.KeepaliveTimeout)
 	r.mu.Lock()
 	previous := r.active
 	r.active = muxConn
@@ -669,11 +669,14 @@ func (r *exitRuntime) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		established, err := r.connectOnce(ctx)
+		lifetime, err := r.connectOnce(ctx)
 		if ctx.Err() != nil {
 			return
 		}
-		if established {
+		// Do not reset to the fastest retry after a peer accepts and then
+		// immediately drops a generation. Repeated short-lived handshakes use
+		// the same capped exponential backoff as dial failures.
+		if lifetime >= r.cfg.KeepaliveInterval {
 			backoff = r.cfg.BackoffBase
 		}
 		if err != nil {
@@ -707,20 +710,20 @@ func backoffWithJitter(base time.Duration) time.Duration {
 	return base + time.Duration(rand.Int64N(2*jitter)) - time.Duration(jitter)
 }
 
-// connectOnce dials and serves one channel generation. It returns established
-// = true once the tunnel handshake completed; a later drop is reported through
-// the returned error and triggers a fast reconnect.
-func (r *exitRuntime) connectOnce(ctx context.Context) (bool, error) {
+// connectOnce dials and serves one channel generation. A non-zero lifetime
+// means the tunnel handshake completed; the caller uses it to distinguish a
+// stable generation from a rapid connect/drop loop.
+func (r *exitRuntime) connectOnce(ctx context.Context) (time.Duration, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, r.cfg.ConnectTimeout)
 	conn, err := r.dial(dialCtx)
 	cancel()
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	tlsConfig, err := relay.AgentTunnelClientTLSConfig(ctx, r.cfg.Credentials, r.spec.EntryAgentID)
 	if err != nil {
 		_ = conn.Close()
-		return false, fmt.Errorf("channel exit tunnel tls: %w", err)
+		return 0, fmt.Errorf("channel exit tunnel tls: %w", err)
 	}
 	tlsConn := tls.Client(conn, tlsConfig)
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, r.cfg.ConnectTimeout)
@@ -728,14 +731,15 @@ func (r *exitRuntime) connectOnce(ctx context.Context) (bool, error) {
 	cancelHandshake()
 	if err != nil {
 		_ = tlsConn.Close()
-		return false, fmt.Errorf("channel exit handshake: %w", err)
+		return 0, fmt.Errorf("channel exit handshake: %w", err)
 	}
 	_ = tlsConn.SetDeadline(time.Time{})
+	establishedAt := time.Now()
 	r.setState(true, "")
 	r.reportFirst()
 	defer r.setState(false, "")
 
-	muxConn := newMuxAcceptor(tlsConn)
+	muxConn := newMuxAcceptor(tlsConn, r.cfg.KeepaliveInterval, r.cfg.KeepaliveTimeout)
 	defer muxConn.Close()
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()
@@ -751,9 +755,9 @@ func (r *exitRuntime) connectOnce(ctx context.Context) (bool, error) {
 		stream, acceptErr := muxConn.AcceptStream()
 		if acceptErr != nil {
 			if ctx.Err() != nil {
-				return true, nil
+				return time.Since(establishedAt), nil
 			}
-			return true, fmt.Errorf("channel mux accept: %w", muxConn.Err())
+			return time.Since(establishedAt), fmt.Errorf("channel mux accept: %w", muxConn.Err())
 		}
 		r.wg.Add(1)
 		go func() {

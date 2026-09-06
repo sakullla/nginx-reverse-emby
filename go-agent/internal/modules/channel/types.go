@@ -32,11 +32,14 @@ const (
 )
 
 const (
-	defaultBackoffBase    = 500 * time.Millisecond
-	defaultBackoffLimit   = 30 * time.Second
-	defaultConnectTimeout = 10 * time.Second
-	defaultUDPIdleTimeout = 60 * time.Second
-	maxSessionIDLength    = 190
+	defaultBackoffBase       = 500 * time.Millisecond
+	defaultBackoffLimit      = 30 * time.Second
+	defaultConnectTimeout    = 10 * time.Second
+	defaultKeepaliveInterval = 40 * time.Second
+	defaultKeepaliveTimeout  = 20 * time.Second
+	minimumKeepaliveInterval = time.Second
+	defaultUDPIdleTimeout    = 60 * time.Second
+	maxSessionIDLength       = 190
 )
 
 // Config configures a Manager.
@@ -51,6 +54,10 @@ type Config struct {
 	BackoffLimit time.Duration
 	// ConnectTimeout bounds one dial and handshake attempt.
 	ConnectTimeout time.Duration
+	// KeepaliveInterval and KeepaliveTimeout keep an otherwise idle channel
+	// alive through relay streams and bound detection of an unresponsive peer.
+	KeepaliveInterval time.Duration
+	KeepaliveTimeout  time.Duration
 	// UDPIdleTimeout retires silent UDP associations.
 	UDPIdleTimeout time.Duration
 }
@@ -67,6 +74,15 @@ func (cfg Config) withDefaults() Config {
 	}
 	if cfg.ConnectTimeout <= 0 {
 		cfg.ConnectTimeout = defaultConnectTimeout
+	}
+	if cfg.KeepaliveInterval <= 0 {
+		cfg.KeepaliveInterval = defaultKeepaliveInterval
+	}
+	if cfg.KeepaliveInterval < minimumKeepaliveInterval {
+		cfg.KeepaliveInterval = minimumKeepaliveInterval
+	}
+	if cfg.KeepaliveTimeout <= 0 {
+		cfg.KeepaliveTimeout = defaultKeepaliveTimeout
 	}
 	if cfg.UDPIdleTimeout <= 0 {
 		cfg.UDPIdleTimeout = defaultUDPIdleTimeout
