@@ -5,6 +5,7 @@ package hostapi
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"testing"
 	"time"
@@ -37,35 +38,47 @@ func (recorder *auditRecorder) Audit(_ context.Context, event AuditEvent) error 
 	return recorder.err
 }
 
-func TestHostAPIAuditFailureNeverIssuesProtectedHandle(t *testing.T) {
+func TestHostAPIAuditAvailabilityNeverChangesAuthorizationOrProtectedHandles(t *testing.T) {
 	capability := pluginsdk.CapabilityServiceRevocableResourceHandle
 	target := pluginsdk.HostTarget{Kind: "relay", ID: "relay-1", ResourceGroupID: "group-1"}
 	call := pluginsdk.HostCapabilityCall{PluginID: "official.reverse", InstanceID: "instance-1", Generation: "generation-1", Capability: capability, Actor: pluginsdk.HostActor{ID: "official.reverse", ResourceGroupID: "group-1"}, Target: target, QuotaMetric: "host.calls", QuotaUnits: 1}
 	for _, test := range []struct {
-		name string
-		deny bool
+		name    string
+		deny    bool
+		auditor Auditor
 	}{
-		{name: "otherwise allowed"},
-		{name: "already denied", deny: true},
+		{name: "allowed without auditor"},
+		{name: "allowed with failed auditor", auditor: &auditRecorder{err: errors.New("audit store unavailable")}},
+		{name: "denied without auditor", deny: true},
+		{name: "denied with failed auditor", deny: true, auditor: &auditRecorder{err: errors.New("audit store unavailable")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			quota, _ := NewCallQuota(1)
-			auditErr := errors.New("audit store unavailable")
-			audit := &auditRecorder{err: auditErr}
-			authorizer := Authorizer{PluginID: call.PluginID, InstanceID: call.InstanceID, Generation: call.Generation, Declared: []pluginsdk.HostCapability{capability}, Granted: []pluginsdk.HostCapability{capability}, Actor: call.Actor, ActorCapabilities: []pluginsdk.HostCapability{capability}, Targets: []pluginsdk.HostTarget{target}, Quota: quota, Auditor: audit}
+			quota, _ := NewCallQuota(2)
+			authorizer := Authorizer{PluginID: call.PluginID, InstanceID: call.InstanceID, Generation: call.Generation, Declared: []pluginsdk.HostCapability{capability}, Granted: []pluginsdk.HostCapability{capability}, Actor: call.Actor, ActorCapabilities: []pluginsdk.HostCapability{capability}, Targets: []pluginsdk.HostTarget{target}, Quota: quota, Auditor: test.auditor}
 			if test.deny {
 				authorizer.Granted = nil
 			}
 			handles := NewResourceHandles()
 			token, err := handles.Issue(t.Context(), authorizer, call, "protected-effect")
-			if token != "" || err == nil || !errors.Is(err, ErrDenied) {
-				t.Fatalf("Issue() = token %q error %v", token, err)
+			if test.deny {
+				if token != "" || !errors.Is(err, ErrDenied) || len(handles.handles) != 0 {
+					t.Fatalf("denied Issue() = token %q error %v handles=%+v", token, err, handles.handles)
+				}
+				if !strings.Contains(err.Error(), "not_granted") || strings.Contains(err.Error(), "audit store unavailable") {
+					t.Fatalf("audit failure changed denial reason: %v", err)
+				}
+			} else {
+				if token == "" || err != nil || len(handles.handles) != 1 {
+					t.Fatalf("allowed Issue() = token %q error %v handles=%+v", token, err, handles.handles)
+				}
+				if resolved, resolveErr := handles.Resolve(t.Context(), token, call); resolveErr != nil || resolved != "protected-effect" {
+					t.Fatalf("Resolve() = %v, %v", resolved, resolveErr)
+				}
 			}
-			if len(handles.handles) != 0 {
-				t.Fatalf("audit failure published handles: %+v", handles.handles)
-			}
-			if len(audit.events) != 1 || audit.events[0].Outcome != map[bool]string{false: "allowed", true: "denied"}[test.deny] {
-				t.Fatalf("audit events = %+v", audit.events)
+			if recorder, ok := test.auditor.(*auditRecorder); ok {
+				if len(recorder.events) == 0 || recorder.events[0].Outcome != map[bool]string{false: "allowed", true: "denied"}[test.deny] {
+					t.Fatalf("audit events = %+v", recorder.events)
+				}
 			}
 		})
 	}

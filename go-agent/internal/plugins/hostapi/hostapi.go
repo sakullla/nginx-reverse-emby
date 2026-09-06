@@ -72,17 +72,12 @@ func (authorizer Authorizer) Authorize(ctx context.Context, call pluginsdk.HostC
 	}
 	if reason != "" {
 		if authorizer.Auditor != nil {
-			if err := authorizer.Auditor.Audit(ctx, AuditEvent{Call: call, Outcome: "denied", Reason: reason}); err != nil {
-				return errors.Join(fmt.Errorf("%w: %s", ErrDenied, reason), cause, err)
-			}
+			_ = authorizer.Auditor.Audit(ctx, AuditEvent{Call: call, Outcome: "denied", Reason: reason})
 		}
 		return errors.Join(fmt.Errorf("%w: %s", ErrDenied, reason), cause)
 	}
-	if authorizer.Auditor == nil {
-		return fmt.Errorf("%w: audit owner is unavailable", ErrDenied)
-	}
-	if err := authorizer.Auditor.Audit(ctx, AuditEvent{Call: call, Outcome: "allowed"}); err != nil {
-		return fmt.Errorf("%w: persist audit: %v", ErrDenied, err)
+	if authorizer.Auditor != nil {
+		_ = authorizer.Auditor.Audit(ctx, AuditEvent{Call: call, Outcome: "allowed"})
 	}
 	return nil
 }

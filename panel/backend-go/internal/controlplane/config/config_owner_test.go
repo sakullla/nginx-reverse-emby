@@ -51,6 +51,41 @@ func TestLoadFromEnvDefaultsAndRejectsUnsafeCombinations(t *testing.T) {
 	}
 }
 
+func TestLocalAgentCapabilityAuditConfigIsStrictAndDefaultsOff(t *testing.T) {
+	requiredTokens(t)
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LocalAgentPluginCapabilityAudit.Enabled || cfg.LocalAgentPluginCapabilityAudit.Retention != 24*time.Hour || cfg.LocalAgentPluginCapabilityAudit.MaxBytes != 16<<20 || cfg.LocalAgentPluginCapabilityAudit.MinFreeBytes != 64<<20 {
+		t.Fatalf("default local capability audit = %+v", cfg.LocalAgentPluginCapabilityAudit)
+	}
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_ENABLED", "true")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_QUEUE_SIZE", "32")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_BATCH_SIZE", "4")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_FLUSH_INTERVAL", "50ms")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_RETENTION", "6h")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_MAX_BYTES", "1048576")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_MIN_FREE_BYTES", "2097152")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_CLOSE_TIMEOUT", "1s")
+	cfg, err = LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LocalAgentPluginCapabilityAudit.Enabled || cfg.LocalAgentPluginCapabilityAudit.QueueSize != 32 || cfg.LocalAgentPluginCapabilityAudit.BatchSize != 4 || cfg.LocalAgentPluginCapabilityAudit.FlushInterval != 50*time.Millisecond {
+		t.Fatalf("configured local capability audit = %+v", cfg.LocalAgentPluginCapabilityAudit)
+	}
+	for _, invalid := range []struct{ name, value string }{{"ENABLED", "yes"}, {"QUEUE_SIZE", "0"}, {"BATCH_SIZE", "65537"}, {"MAX_BYTES", "-1"}, {"MIN_FREE_BYTES", "0"}} {
+		t.Run(invalid.name, func(t *testing.T) {
+			requiredTokens(t)
+			t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_"+invalid.name, invalid.value)
+			if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "capability audit") && !strings.Contains(err.Error(), "CAPABILITY_AUDIT") {
+				t.Fatalf("invalid %s=%q error=%v", invalid.name, invalid.value, err)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvTimezoneUsesNRETimezone(t *testing.T) {
 	requiredTokens(t)
 	t.Setenv("NRE_TIMEZONE", "")

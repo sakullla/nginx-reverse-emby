@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata"
+
+	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 )
 
 const (
@@ -59,6 +61,7 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	LocalAgentTrafficStatsEnabled     bool
 	LocalAgentTrafficStatsExplicit    bool
+	LocalAgentPluginCapabilityAudit   goagentembedded.CapabilityAuditConfig
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
 	MarketplaceRefreshTimeout         time.Duration
@@ -174,6 +177,7 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		LocalAgentTrafficStatsEnabled:   true,
+		LocalAgentPluginCapabilityAudit: goagentembedded.DefaultCapabilityAuditConfig(),
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 		MarketplaceRefreshTimeout:       defaultMarketplaceRefresh,
@@ -284,6 +288,10 @@ func LoadFromEnv() (Config, error) {
 	}
 	if val := strings.TrimSpace(firstEnv("NRE_LOCAL_AGENT_NAME", "MASTER_LOCAL_AGENT_NAME")); val != "" {
 		cfg.LocalAgentName = val
+	}
+	var auditErr error
+	if cfg.LocalAgentPluginCapabilityAudit, auditErr = loadLocalCapabilityAuditConfig(cfg.LocalAgentPluginCapabilityAudit); auditErr != nil {
+		return Config{}, auditErr
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HEARTBEAT_INTERVAL")); val != "" {
 		dur, err := time.ParseDuration(val)
@@ -534,6 +542,79 @@ func LoadFromEnv() (Config, error) {
 		cfg.GoVersion = "dev"
 	}
 
+	return cfg, nil
+}
+
+func loadLocalCapabilityAuditConfig(cfg goagentembedded.CapabilityAuditConfig) (goagentembedded.CapabilityAuditConfig, error) {
+	const prefix = "NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_"
+	parseDuration := func(suffix string, target *time.Duration) error {
+		name := prefix + suffix
+		value, present := os.LookupEnv(name)
+		if !present {
+			return nil
+		}
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		*target = parsed
+		return nil
+	}
+	parseInt := func(suffix string, target *int) error {
+		name := prefix + suffix
+		value, present := os.LookupEnv(name)
+		if !present {
+			return nil
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		*target = parsed
+		return nil
+	}
+	if value, present := os.LookupEnv(prefix + "ENABLED"); present {
+		switch value {
+		case "true":
+			cfg.Enabled = true
+		case "false":
+			cfg.Enabled = false
+		default:
+			return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid %sENABLED: expected true or false", prefix)
+		}
+	}
+	if err := parseInt("QUEUE_SIZE", &cfg.QueueSize); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseInt("BATCH_SIZE", &cfg.BatchSize); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseDuration("FLUSH_INTERVAL", &cfg.FlushInterval); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseDuration("RETENTION", &cfg.Retention); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseDuration("CLOSE_TIMEOUT", &cfg.CloseTimeout); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if value, present := os.LookupEnv(prefix + "MAX_BYTES"); present {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid %sMAX_BYTES: %w", prefix, err)
+		}
+		cfg.MaxBytes = parsed
+	}
+	if value, present := os.LookupEnv(prefix + "MIN_FREE_BYTES"); present {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid %sMIN_FREE_BYTES: %w", prefix, err)
+		}
+		cfg.MinFreeBytes = parsed
+	}
+	if err := cfg.Validate(); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid local Agent capability audit config: %w", err)
+	}
 	return cfg, nil
 }
 

@@ -175,6 +175,62 @@ func TestNewWiresRPCHostAsPluginCaller(t *testing.T) {
 	}
 }
 
+func TestCapabilityAuditDefaultsOffWithoutRuntimeOrFilesystemEffects(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fresh", true: "preexisting file"}[existing], func(t *testing.T) {
+			dataDir := t.TempDir()
+			auditPath := filepath.Join(dataDir, "audit", "plugin-capabilities.jsonl")
+			if existing {
+				if err := os.MkdirAll(filepath.Dir(auditPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(auditPath, []byte("legacy-audit\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			app, err := New(Config{DataDir: dataDir, AgentID: "edge-a", AgentName: "edge-a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if app.capabilityAudit != nil || app.CapabilityAuditStatus().Enabled {
+				t.Fatal("default-off App created capability audit runtime")
+			}
+			if err := app.Close(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(auditPath)
+			if existing {
+				if err != nil || string(data) != "legacy-audit\n" {
+					t.Fatalf("default-off App changed old audit: %q %v", data, err)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("default-off App created audit path: %q %v", data, err)
+			}
+		})
+	}
+}
+
+func TestCapabilityAuditEnabledCreatesBoundedAsyncRuntime(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := Config{DataDir: dataDir, AgentID: "edge-a", AgentName: "edge-a", CapabilityAudit: model.DefaultCapabilityAuditConfig()}
+	cfg.CapabilityAudit.Enabled = true
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.capabilityAudit == nil || !app.CapabilityAuditStatus().Enabled {
+		t.Fatal("enabled App omitted capability audit runtime")
+	}
+	auditPath := filepath.Join(dataDir, "audit", "plugin-capabilities.jsonl")
+	waitForAppCondition(t, 2*time.Second, func() bool {
+		_, err := os.Stat(auditPath)
+		return err == nil
+	})
+	if err := app.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRPCRuntimeRootIsolatedAcrossHotRestartProcesses(t *testing.T) {
 	shared := t.TempDir()
 	parentRoot := rpcProcessRuntimeRoot(shared, 101)
@@ -453,12 +509,6 @@ func TestSnapshotActivatorRestoresOutboundProxyOnRegistryFailure(t *testing.T) {
 	if got := modulerelay.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
 		t.Fatalf("OutboundProxyURL() after failed activation = %q, want previous proxy", got)
 	}
-}
-
-type syncClientFunc func(context.Context, SyncRequest) (Snapshot, error)
-
-func (f syncClientFunc) Sync(ctx context.Context, req SyncRequest) (Snapshot, error) {
-	return f(ctx, req)
 }
 
 type appProviderModule struct {

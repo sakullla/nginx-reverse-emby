@@ -121,6 +121,25 @@ ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
 
 也可用 `.env` 管理配置，参考 [`.env.example`](.env.example)。**不要把真实 token、证书或私钥提交到仓库。**
 
+### 插件能力审计
+
+插件 Host 的能力调用审计默认关闭。关闭时 Agent 不创建 `audit/plugin-capabilities.jsonl`、队列或后台任务，已有旧审计文件也不会自动启用该功能。权限允许或拒绝始终由实例、generation、签名声明、管理员授权、actor、目标、配额和撤销状态决定；审计关闭、队列满、磁盘故障或低空间不会改变权限或策略结果。
+
+远端 Agent 使用 `NRE_PLUGIN_CAPABILITY_AUDIT_*`，面板内置 local Agent 使用 `NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_*`。两组变量的后缀和默认值相同：
+
+| 后缀 | 默认值 | 含义 |
+| --- | --- | --- |
+| `ENABLED` | `false` | 只接受 `true` 或 `false` |
+| `QUEUE_SIZE` | `256` | 非阻塞内存队列上限 |
+| `BATCH_SIZE` | `32` | 单次后台写入上限，不能大于队列 |
+| `FLUSH_INTERVAL` | `250ms` | 后台刷新间隔 |
+| `RETENTION` | `24h` | canonical 审计文件保留时间 |
+| `MAX_BYTES` | `16777216` | 活动文件和三个归档的总上限（16 MiB） |
+| `MIN_FREE_BYTES` | `67108864` | 写入后必须保留的文件系统空间（64 MiB） |
+| `CLOSE_TIMEOUT` | `2s` | 关闭时等待后台刷新的最长时间 |
+
+数值变量使用十进制字节或十进制整数，时间变量使用 Go duration 格式；空值、零、负数、非 canonical 布尔值和超过实现上限的值都会使配置加载失败。启用后只会管理 `plugin-capabilities.jsonl` 及其 `.1`、`.2`、`.3` 归档，不会清理同目录的其它文件，也不会触碰数据集、规则、凭据或重放记录。低空间时先清理本组件过期和超量归档，仍不足则暂停并丢弃新审计；空间恢复后后台写入自动继续。
+
 ### 给面板自身上 HTTPS（手动部署时推荐）
 
 一键脚本在填写域名后会尽量自动完成；手动部署时可以自己加一条自代理规则：

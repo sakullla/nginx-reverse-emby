@@ -3,14 +3,39 @@ package embedded
 import (
 	"context"
 	"encoding/json"
-	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type scopedSourceFixture struct {
 	received PluginSecretRedemptionRequest
 	result   json.RawMessage
+}
+
+type capabilityAuditStateSink struct{}
+
+func (capabilityAuditStateSink) Save(context.Context, RuntimeState) error { return nil }
+
+func TestEmbeddedCapabilityAuditDefaultsOffWithoutAuditPath(t *testing.T) {
+	dataDir := t.TempDir()
+	runtime, err := New(Config{AgentID: "local", AgentName: "local", DataDir: dataDir}, &scopedSourceFixture{}, capabilityAuditStateSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := runtime.CapabilityAuditStatus(); status.Enabled || status.Queued != 0 || status.Dropped != 0 || status.WriteErrors != 0 || status.LowSpace || status.LastError != "" || !status.LastFlush.IsZero() {
+		t.Fatalf("default-off embedded capability audit status = %+v", status)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dataDir, "audit", "plugin-capabilities.jsonl")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("default-off embedded runtime created capability audit: %v", err)
+	}
 }
 
 func (s *scopedSourceFixture) Sync(context.Context, SyncRequest) (Snapshot, error) {
