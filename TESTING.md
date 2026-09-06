@@ -42,6 +42,8 @@ The canonical Go commands use 16 package workers so package compilation and exec
 
 Go's `-timeout=30s` bounds each package's test binary. CI gives each fast, full, and integration test step 10 minutes overall so dependency downloads and compilation on a cold cache do not consume a 30-second shell timeout. The per-binary test timeout remains active on both cold and warm caches.
 
+On Linux, the full and integration tiers include real sandboxed RPC children. Run these commands with `CGO_ENABLED=0` and add `-exec 'sudo -n -E --'` to `go test`, as CI does. Static test binaries can execute inside the isolated filesystem without a host dynamic loader; running the test parent as root lets the sandbox allocate a separate UID for each child and enforce process and signal isolation without relying on delegated cgroups or Landlock ABI 6. Compilation still runs as the invoking user, and `-E` preserves the integration fixture environment. The fast tier needs neither sudo nor a sandbox. The SQLite-backed local revision and scoped-secret lifecycle fixtures belong to the full tier and are excluded from fast builds and short runs.
+
 ## Official Plugin Market
 
 The official-market unit suite is offline. It creates nine canonical packages

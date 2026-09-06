@@ -78,7 +78,7 @@ func TestPolicyConsumptionRealControlPlaneScopeAndDispatcher(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			manager, candidate := newPolicyConsumptionFixture(t)
 			root := t.TempDir()
-			host, err := pluginhost.New(filepath.Join(root, "runtime"), nil, pluginhost.GRPCDialer{}, nil)
+			host, err := pluginhost.New(filepath.Join(root, "runtime"), nil, pluginhost.GRPCDialer{}, os.Stderr)
 			if err != nil {
 				t.Fatal(err)
 			}

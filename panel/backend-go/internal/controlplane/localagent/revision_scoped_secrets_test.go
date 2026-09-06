@@ -1,3 +1,5 @@
+//go:build !fast && !integration
+
 package localagent
 
 import (
@@ -35,6 +37,9 @@ type localScopedFixture struct {
 
 func newLocalScopedFixture(t *testing.T) localScopedFixture {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed revision lifecycle runs in the full tier")
+	}
 	root, agentID := t.TempDir(), "local-scoped"
 	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: agentID})
 	if err != nil {

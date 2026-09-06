@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -125,7 +126,7 @@ func TestDatasetRollingRefreshActivatesNewBoundVersionWithoutRepinning(t *testin
 	if err := service.Bind(t.Context(), auth, DatasetBindingRequest{SourceID: source.ID, VersionDigest: firstVersion, AgentID: "local", InstanceID: "rolling-instance", Classifications: []sdk.DatasetClassification{{Name: "cn-44", Kind: sdk.DatasetClassificationRegion}}}); err != nil {
 		t.Fatal(err)
 	}
-	checkMatching := func(want bool) string {
+	checkMatching := func(t *testing.T, want bool) string {
 		t.Helper()
 		bindings, err := service.store.DatasetBindings(t.Context(), source.ID)
 		if err != nil || len(bindings) != 1 {
@@ -144,13 +145,17 @@ func TestDatasetRollingRefreshActivatesNewBoundVersionWithoutRepinning(t *testin
 			t.Fatal(err)
 		}
 		request := sdk.DatasetQueryRequest{Reference: sdk.DatasetReference{Handle: strings.Repeat("x", 32), InstanceID: "rolling-instance", Generation: "test-generation", SourceID: source.ID, VersionDigest: bindings[0].VersionDigest}, Address: "192.0.2.1", Classifications: []sdk.DatasetClassification{{Name: "cn-44", Kind: sdk.DatasetClassificationRegion}}, Budget: sdk.DatasetQueryBudget{MaxDurationMicros: 2000, MaxResponseBytes: 32768}}
-		response, err := index.Query(t.Context(), request)
-		if err != nil || response.Status != sdk.DatasetQueryOK || response.Matches[0].Matched != want {
-			t.Fatalf("bound match did not change: %+v %v", response, err)
-		}
+		// Check the activated index's contents independently of the scheduler;
+		// the production 2 ms query limit is not a refresh latency assertion.
+		synctest.Test(t, func(t *testing.T) {
+			response, err := index.Query(t.Context(), request)
+			if err != nil || response.Status != sdk.DatasetQueryOK || len(response.Matches) != 1 || response.Matches[0].Matched != want {
+				t.Fatalf("bound match did not change: %+v %v", response, err)
+			}
+		})
 		return bindings[0].VersionDigest
 	}
-	if got := checkMatching(true); got != firstVersion {
+	if got := checkMatching(t, true); got != firstVersion {
 		t.Fatal("initial binding differs")
 	}
 	// A deleted consumer must not remain in the source's future rollout targets.
@@ -183,7 +188,7 @@ func TestDatasetRollingRefreshActivatesNewBoundVersionWithoutRepinning(t *testin
 	checksum = datasetServiceDigest(second)[7:] + " *regions.json\n"
 	mu.Unlock()
 	refresh()
-	secondVersion := checkMatching(false)
+	secondVersion := checkMatching(t, false)
 	if secondVersion == firstVersion {
 		t.Fatal("scheduled refresh kept permanently pinned data")
 	}
@@ -231,7 +236,7 @@ func TestDatasetRollingRefreshActivatesNewBoundVersionWithoutRepinning(t *testin
 			if err := service.RefreshDue(t.Context(), time.Now().Add(24*time.Hour)); err == nil {
 				t.Fatal("invalid rolling candidate activated")
 			}
-			if got := checkMatching(false); got != secondVersion {
+			if got := checkMatching(t, false); got != secondVersion {
 				t.Fatal("failed refresh replaced active bound version")
 			}
 			row, _ := service.store.GetDatasetSource(t.Context(), source.ID)

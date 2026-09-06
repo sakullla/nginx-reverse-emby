@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && !fast && !integration
 
 package localagent
 
@@ -80,6 +80,9 @@ func (s scopedHeartbeatStore) LoadLocalSnapshot(context.Context, string) (storag
 }
 
 func TestLocalActualScopedPrepareReadAndGenerationRevoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite and sandboxed RPC lifecycle run in the full tier")
+	}
 	f := newLocalScopedFixture(t)
 	// Heartbeat data is deliberately empty; only the approved snapshot carried
 	// by ApplyRevision can launch this fixture. Secret/lease/artifact owners are

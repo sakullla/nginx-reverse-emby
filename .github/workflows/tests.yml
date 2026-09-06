@@ -83,6 +83,8 @@ jobs:
     name: Full Go (${{ matrix.module }})
     runs-on: ubuntu-latest
     env:
+      # Sandboxed test children must be self-contained, like release binaries.
+      CGO_ENABLED: "0"
       NRE_ACME_TEST_CHALLTESTSRV_URL: http://127.0.0.1:8055
       NRE_ACME_TEST_DIRECTORY_URL: https://127.0.0.1:14000/dir
       NRE_ACME_TEST_MANAGEMENT_URL: https://127.0.0.1:15000
@@ -133,7 +135,8 @@ jobs:
       - name: Run full tests
         timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: go test -p=16 -count=1 -timeout=30s ${{ matrix.full_packages }}
+        # Compile as the runner user; only test binaries need isolated-UID privileges.
+        run: go test -exec 'sudo -n -E --' -p=16 -count=1 -timeout=30s ${{ matrix.full_packages }}
       - name: Start local ACME fixture
         run: |
           docker compose -f scripts/acme-integration/docker-compose.yaml up -d --wait --wait-timeout 60
@@ -178,7 +181,7 @@ jobs:
       - name: Run integration tests
         timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ${{ matrix.integration_packages }}
+        run: go test -exec 'sudo -n -E --' -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ${{ matrix.integration_packages }}
       - name: Stop PostgreSQL fixture
         if: always() && matrix.module == 'panel/backend-go'
         run: |
