@@ -326,27 +326,40 @@ func assertSSNoPayload(t *testing.T, values <-chan string, message string) {
 
 func runSSRoutePerformance(t *testing.T, client string, port int, target, password, payload string, received <-chan string, pid int, primaryRef, upstreamRef string) {
 	t.Helper()
+	lateResponseCount := 0
+	waitForSample := func(want string, timeout time.Duration) bool {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		for {
+			select {
+			case got := <-received:
+				if got == want {
+					return true
+				}
+				lateResponseCount++
+			case <-timer.C:
+				return false
+			}
+		}
+	}
 	latencies := make([]time.Duration, 20)
+	sampleIDs := make([]string, len(latencies))
 	retryCount := 0
 	started := time.Now()
 	for index := range latencies {
+		sampleIDs[index] = fmt.Sprintf("sample-%02d", index)
+		samplePayload := ssRouteSamplePayload(payload, sampleIDs[index])
 		begin := time.Now()
 		for {
-			runSSClient(t, client, "tcp", "127.0.0.1", port, target, "aes-256-gcm", password, payload)
-			select {
-			case got := <-received:
-				if got != payload {
-					t.Fatalf("performance payload changed across route: %q", got)
-				}
-				goto delivered
-			case <-time.After(200 * time.Millisecond):
-				retryCount++
-				if retryCount > 2 {
-					t.Fatal("route performance exceeded two bounded retries")
-				}
+			runSSClient(t, client, "tcp", "127.0.0.1", port, target, "aes-256-gcm", password, samplePayload)
+			if waitForSample(samplePayload, 200*time.Millisecond) {
+				break
+			}
+			retryCount++
+			if retryCount > 2 {
+				t.Fatal("route performance exceeded two bounded retries")
 			}
 		}
-	delivered:
 		latencies[index] = time.Since(begin)
 	}
 	elapsed := time.Since(started)
@@ -367,7 +380,7 @@ func runSSRoutePerformance(t *testing.T, client string, port int, target, passwo
 	evidence := map[string]any{
 		"raw_latency_ns": raw, "throughput_per_sec": throughput,
 		"p95_ns": ordered[18].Nanoseconds(), "p99_ns": ordered[19].Nanoseconds(), "rss_bytes": rss,
-		"retry_count":   retryCount,
+		"retry_count": retryCount, "late_response_count": lateResponseCount, "sample_ids": sampleIDs,
 		"dataset_count": 2, "dataset_digests": map[string]string{ssPinnedGeoSiteName: ssPinnedGeoSiteSHA, ssPinnedGeoIPName: ssPinnedGeoIPSHA},
 		"candidate_refs": []string{primaryRef, upstreamRef},
 	}
@@ -376,6 +389,14 @@ func runSSRoutePerformance(t *testing.T, client string, port int, target, passwo
 		t.Fatal(err)
 	}
 	fmt.Printf("NRE_SS_PERF_JSON=%s\n", encoded)
+}
+
+func ssRouteSamplePayload(base, sampleID string) string {
+	marker := "X-NRE-Perf-Sample: " + sampleID + "\r\n"
+	if index := strings.Index(base, "\r\n\r\n"); index >= 0 {
+		return base[:index+2] + marker + base[index+2:]
+	}
+	return base + "\r\n" + marker
 }
 
 func ssProcessRSS(t *testing.T, pid int) int64 {
