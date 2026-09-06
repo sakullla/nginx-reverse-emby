@@ -491,6 +491,7 @@ func (s *TaskService) CreateAndDispatchContext(ctx context.Context, req TaskCrea
 	s.mu.Unlock()
 
 	if err := sendTaskWithContext(ctx, sessionState.session, envelope); err != nil {
+		log.Printf("[tasks] send failed agent=%q type=%q task=%q: %v", agentID, req.Type, record.ID, err)
 		s.mu.Lock()
 		current, stillPresent := s.sessions[agentID]
 		if stillPresent && current.session == sessionState.session {

@@ -324,6 +324,12 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Publish the session only after the response stream is established. A
+	// replacement may spend time closing its predecessor; exposing its writer
+	// before this flush lets concurrent task dispatch race a half-initialized
+	// HTTP response and poison every reconnect that follows.
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
 		AgentID:    agent.ID,
 		SessionID:  sessionID,
@@ -334,8 +340,6 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		_ = session.Close()
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
 	log.Printf("[tasks] registered stream session agent=%q session=%q", agent.ID, sessionID)
 	defer func() {
 		d.TaskService.UnregisterSession(agent.ID, session)
