@@ -447,6 +447,9 @@ func (s *TaskService) CreateAndDispatchContext(ctx context.Context, req TaskCrea
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return TaskRecord{}, err
+	}
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		return TaskRecord{}, fmt.Errorf("%w: agent_id is required", ErrInvalidArgument)
@@ -491,17 +494,30 @@ func (s *TaskService) CreateAndDispatchContext(ctx context.Context, req TaskCrea
 	s.mu.Unlock()
 
 	if err := sendTaskWithContext(ctx, sessionState.session, envelope); err != nil {
-		log.Printf("[tasks] send failed agent=%q type=%q task=%q: %v", agentID, req.Type, record.ID, err)
-		s.mu.Lock()
-		current, stillPresent := s.sessions[agentID]
-		if stillPresent && current.session == sessionState.session {
-			delete(s.sessions, agentID)
+		callerErr := ctx.Err()
+		if callerErr == nil {
+			log.Printf("[tasks] send failed agent=%q type=%q task=%q: %v", agentID, req.Type, record.ID, err)
 		}
+		s.mu.Lock()
 		currentTask, taskPresent := s.tasks[record.ID]
 		if taskPresent && currentTask.State == "pending" {
 			delete(s.tasks, record.ID)
 		}
+		// A caller cancellation only abandons this dispatch. It says nothing
+		// about the health of the shared agent stream, and evicting the session
+		// here lets one timed-out plugin request disconnect every other caller.
+		// Only a send failure observed while the caller context is still live is
+		// evidence that the stream itself is unusable.
+		if callerErr == nil {
+			current, stillPresent := s.sessions[agentID]
+			if stillPresent && current.session == sessionState.session {
+				delete(s.sessions, agentID)
+			}
+		}
 		s.mu.Unlock()
+		if callerErr != nil {
+			return TaskRecord{}, callerErr
+		}
 		_ = sessionState.session.Close()
 		return TaskRecord{}, errTaskSessionUnavailable
 	}
