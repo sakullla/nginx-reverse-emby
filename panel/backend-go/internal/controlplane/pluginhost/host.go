@@ -57,6 +57,7 @@ type Candidate struct {
 	MaximumBackoff                                        time.Duration
 	Declaration                                           Declaration
 	GrantSelectors                                        map[string][]string
+	RequiredFeatures                                      []string
 	endpointDirectory, credentialDirectory, guestEndpoint string
 	uiEndpoint                                            Endpoint
 	hostEndpoint                                          Endpoint
@@ -377,6 +378,11 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if explicitScope {
 		candidate.attemptEnvironment = append(candidate.attemptEnvironment, pluginsdk.EnvPluginExecutionScope+"="+pluginsdk.HostScopeControlPlane)
 	}
+	runtimeIdentityEnvironment, err := candidateRuntimeIdentityEnvironment(candidate)
+	if err != nil {
+		return nil, err
+	}
+	candidate.attemptEnvironment = append(candidate.attemptEnvironment, runtimeIdentityEnvironment...)
 	if security.cleanup != nil {
 		instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "starting", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt, setupDone: make(chan struct{})}
 		h.mu.Lock()
@@ -1621,6 +1627,20 @@ type launchCleanupError struct {
 
 func (e *launchCleanupError) Error() string { return e.err.Error() }
 func (e *launchCleanupError) Unwrap() error { return e.err }
+
+func candidateRuntimeIdentityEnvironment(candidate Candidate) ([]string, error) {
+	if !slices.Contains(candidate.RequiredFeatures, pluginsdk.RPCFeatureRuntimeIdentityV1) {
+		return nil, nil
+	}
+	if !slices.Contains(candidate.Identity.Scopes, string(pluginsdk.CapabilityRuntimeIdentity)) || !slices.Contains(candidate.Grants, string(pluginsdk.CapabilityRuntimeIdentity)) {
+		return nil, errors.New("runtime identity feature requires its signed and granted capability")
+	}
+	instanceID, err := pluginsdk.ResolvePluginInstanceID(candidate.InstanceID, true)
+	if err != nil {
+		return nil, err
+	}
+	return []string{pluginsdk.EnvPluginInstanceID + "=" + instanceID}, nil
+}
 
 type backendCleanupTask struct {
 	mu   sync.Mutex

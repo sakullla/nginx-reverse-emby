@@ -351,6 +351,26 @@ func TestValidatePackageAllowsHostRuleCapabilitiesByDefault(t *testing.T) {
 	}
 }
 
+func TestValidatePackageAllowsRuntimeIdentityCapabilityByDefault(t *testing.T) {
+	t.Parallel()
+	root := newSignedDualFaceWAFPackage(t)
+	manifest := validDualFaceManifestYAML(t, ownerRPCArtifact(t), ownerWASMArtifact())
+	manifest = strings.Replace(manifest, "permissions: [http.inspect]", fmt.Sprintf("permissions: [http.inspect, %s]", pluginsdk.CapabilityRuntimeIdentity), 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	validated, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package declaring runtime.identity = %v", err)
+	}
+	found := false
+	for _, permission := range validated.Manifest.Permissions {
+		found = found || permission.Name == string(pluginsdk.CapabilityRuntimeIdentity)
+	}
+	if !found {
+		t.Fatal("validated manifest lost runtime.identity")
+	}
+}
+
 func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	t.Parallel()
 	assertCode := func(t *testing.T, err error, code string) {

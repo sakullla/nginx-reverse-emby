@@ -12,6 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/rpcplugin"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,9 @@ func TestIntegrationLegacyExecutionScopeChild(t *testing.T) {
 	}
 	if _, present := os.LookupEnv(sdk.EnvPluginExecutionScope); present {
 		t.Fatal("legacy package received a new execution protocol")
+	}
+	if _, present := os.LookupEnv(sdk.EnvPluginInstanceID); present {
+		t.Fatal("legacy package received runtime identity")
 	}
 	if strings.TrimSpace(os.Getenv(sdk.EnvPluginHostEndpoint)) == "" {
 		t.Fatal("legacy managed package did not receive its HostRuntime endpoint")
@@ -46,8 +50,12 @@ func TestIntegrationOptedExecutionScopeChild(t *testing.T) {
 	if strings.TrimSpace(os.Getenv(sdk.EnvPluginHostEndpoint)) == "" {
 		t.Fatal("opted managed package did not receive its HostRuntime endpoint")
 	}
-	features := sdk.RPCFeaturesWithExecutionScope(sdk.RequiredRPCFeatures([]string{sdk.PermissionManagedNetworkListen}))
-	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "opted.scope", PluginVersion: "1.0.0", RequiredGrants: []string{sdk.PermissionManagedNetworkListen}, SupportedFeatures: features, Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, rpcplugin.HookFuncs{})
+	if instanceID, err := sdk.PluginInstanceIDFromEnvironment(); err != nil || instanceID != "opted" {
+		t.Fatalf("Host runtime identity = %q, %v", instanceID, err)
+	}
+	scopes := []string{sdk.PermissionManagedNetworkListen, string(sdk.CapabilityRuntimeIdentity)}
+	features := sdk.RPCFeaturesWithExecutionScope(sdk.RequiredRPCFeatures(scopes))
+	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "opted.scope", PluginVersion: "1.0.0", RequiredGrants: scopes, SupportedFeatures: features, RequiredFeatures: features, Timeouts: rpcplugin.UniformTimeouts(5 * time.Second)}, rpcplugin.HookFuncs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +98,9 @@ func TestIntegrationLegacyGuestScopeCompatibilityAndOverrideRefusal(t *testing.T
 			Target:         model.PluginTargetBinding{Kind: "agent", ID: "edge", ResourceGroupID: "default", Version: 1},
 			FailurePolicy:  model.PluginFailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
 		}
+		if slices.Contains(requiredFeatures, sdk.RPCFeatureRuntimeIdentityV1) {
+			generation.Grants = append(generation.Grants, model.PluginGrantProjection{Name: string(sdk.CapabilityRuntimeIdentity)})
+		}
 		candidate, err := hostCandidateFromGeneration(generation, generationID+"-runtime")
 		if err != nil {
 			t.Fatal(err)
@@ -108,7 +119,7 @@ func TestIntegrationLegacyGuestScopeCompatibilityAndOverrideRefusal(t *testing.T
 	if running.Status().PID <= 0 {
 		t.Fatal("legacy process not running")
 	}
-	optedFeatures, err := sdk.RequiredRPCFeaturesForExecutionScope([]string{sdk.PermissionManagedNetworkListen}, nil, sdk.HostScopeAgent)
+	optedFeatures, err := sdk.RequiredRPCFeaturesForExecutionScope([]string{sdk.PermissionManagedNetworkListen, string(sdk.CapabilityRuntimeIdentity)}, nil, sdk.HostScopeAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,5 +136,10 @@ func TestIntegrationLegacyGuestScopeCompatibilityAndOverrideRefusal(t *testing.T
 	opted.Process.Environment = []string{sdk.EnvPluginExecutionScope + "=" + sdk.HostScopeControlPlane}
 	if _, err := host.Activate(t.Context(), opted); err == nil {
 		t.Fatal("user environment overrode Host execution scope")
+	}
+	opted.Generation = "identity-override-generation"
+	opted.Process.Environment = []string{sdk.EnvPluginInstanceID + "=user-instance"}
+	if _, err := host.Activate(t.Context(), opted); err == nil {
+		t.Fatal("user environment overrode Host runtime identity")
 	}
 }
