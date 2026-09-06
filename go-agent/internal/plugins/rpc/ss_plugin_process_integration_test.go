@@ -250,6 +250,7 @@ func buildSSProcessClient(t *testing.T, work, pluginRoot string) string {
 	const source = `package main
 import (
  "crypto/rand"
+ "encoding/base64"
  "fmt"
  "net"
  "os"
@@ -260,19 +261,21 @@ import (
 )
 func main() {
  if len(os.Args) != 8 { panic("protocol local proxy-port target method material payload") }
- protocol, localIP, target, method, material, payload := os.Args[1], os.Args[2], os.Args[4], os.Args[5], os.Args[6], os.Args[7]
+ protocol, localIP, target, method, material := os.Args[1], os.Args[2], os.Args[4], os.Args[5], os.Args[6]
+ payload := []byte(os.Args[7])
+ if protocol == "tcpb64" { decoded, decodeErr := base64.RawStdEncoding.DecodeString(os.Args[7]); if decodeErr != nil { panic(decodeErr) }; protocol, payload = "tcp", decoded }
  port, err := strconv.Atoi(os.Args[3]); if err != nil { panic(err) }
  engine, err := ss.NewProtocolEngine(method, []byte(material)); if err != nil { panic(err) }; defer engine.Destroy()
  proxy := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
  if protocol == "tcp" {
   salt := make([]byte, engine.SaltSize()); if _, err = rand.Read(salt); err != nil { panic(err) }
-  wire, err := engine.SealTCPRequest(salt, target, []byte(payload), time.Now(), nil); if err != nil { panic(err) }
+  wire, err := engine.SealTCPRequest(salt, target, payload, time.Now(), nil); if err != nil { panic(err) }
   conn, err := (&net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(localIP)}}).Dial("tcp", proxy); if err != nil { panic(err) }; defer conn.Close()
   _ = conn.SetDeadline(time.Now().Add(3*time.Second)); if _, err = conn.Write(wire); err != nil { panic(err) }; return
  }
  seed := make([]byte, engine.SaltSize()); packetID := uint64(0)
  if strings.HasPrefix(method, "2022-") { seed = []byte{1,2,3,4,5,6,7,8}; packetID = 1 } else if _, err = rand.Read(seed); err != nil { panic(err) }
- wire, err := engine.SealUDPPacket(seed, packetID, target, []byte(payload), time.Now(), nil); if err != nil { panic(err) }
+ wire, err := engine.SealUDPPacket(seed, packetID, target, payload, time.Now(), nil); if err != nil { panic(err) }
  conn, err := net.DialUDP("udp", &net.UDPAddr{IP: net.ParseIP(localIP)}, mustUDP(proxy)); if err != nil { panic(err) }; defer conn.Close()
  _ = conn.SetWriteDeadline(time.Now().Add(3*time.Second)); if _, err = conn.Write(wire); err != nil { panic(err) }
 }
@@ -331,9 +334,10 @@ func startSSTCPReceiver(t *testing.T) (string, <-chan string) {
 			go func() {
 				defer connection.Close()
 				_ = connection.SetReadDeadline(time.Now().Add(3 * time.Second))
-				value, _ := io.ReadAll(connection)
-				if len(value) > 0 {
-					payloads <- string(value)
+				value := make([]byte, 64<<10)
+				n, _ := connection.Read(value)
+				if n > 0 {
+					payloads <- string(value[:n])
 				}
 			}()
 		}
