@@ -177,6 +177,7 @@ func NewValidator(options ValidatorOptions) *Validator {
 			string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyMonotonicClock),
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
 			string(pluginsdk.CapabilityUIDynamicActions),
+			string(pluginsdk.CapabilityRuntimeIdentity),
 		}
 	}
 	if len(options.AllowedExtensionPoints) == 0 {

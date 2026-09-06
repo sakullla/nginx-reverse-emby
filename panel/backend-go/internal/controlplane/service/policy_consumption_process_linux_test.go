@@ -26,14 +26,14 @@ func TestPolicyConsumptionProcessChild(t *testing.T) {
 	scopes := []string{}
 	features := sdk.RequiredRPCFeatures(nil)
 	if mode == "typed" {
-		scopes = []string{"dataset.bind", "policy.control", "storage.write"}
+		scopes = []string{"dataset.bind", "policy.control", "policy.entry-overlays", "storage.write", string(sdk.CapabilityRuntimeIdentity)}
 		var err error
 		features, err = sdk.RequiredRPCFeaturesForExecutionScope(scopes, nil, sdk.HostScopeControlPlane)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "ip-policy", PluginVersion: "1.0.0", RequiredGrants: scopes, SupportedFeatures: features, Timeouts: rpcplugin.UniformTimeouts(3 * time.Second)}, rpcplugin.HookFuncs{PrepareFunc: func(ctx context.Context, _ *rpcplugin.Generation, _ []byte) error {
+	adapter, err := rpcplugin.NewAdapter(rpcplugin.Config{PluginID: "ip-policy", PluginVersion: "1.0.0", RequiredGrants: scopes, SupportedFeatures: features, RequiredFeatures: features, Timeouts: rpcplugin.UniformTimeouts(3 * time.Second)}, rpcplugin.HookFuncs{PrepareFunc: func(ctx context.Context, _ *rpcplugin.Generation, _ []byte) error {
 		scope, present := os.LookupEnv(sdk.EnvPluginExecutionScope)
 		if sdk.AgentExecutionFace() {
 			return errors.New("control-plane process selected Agent face")
@@ -42,10 +42,16 @@ func TestPolicyConsumptionProcessChild(t *testing.T) {
 			if present {
 				return errors.New("legacy guest was forced to new scope contract")
 			}
+			if _, present := os.LookupEnv(sdk.EnvPluginInstanceID); present {
+				return errors.New("legacy guest received runtime identity")
+			}
 			return nil
 		}
 		if !present || scope != sdk.HostScopeControlPlane {
 			return errors.New("Host scope missing")
+		}
+		if instanceID, err := sdk.PluginInstanceIDFromEnvironment(); err != nil || instanceID != "ip-default" {
+			return errors.New("Host runtime instance identity missing")
 		}
 		client, err := sdk.NewHostRuntimeClientFromEnvironment()
 		if err != nil {
@@ -91,6 +97,10 @@ func TestPolicyConsumptionRealControlPlaneScopeAndDispatcher(t *testing.T) {
 			if mode == "legacy" {
 				candidate.Grants = nil
 				candidate.Identity.Scopes = nil
+			} else {
+				candidate.Grants = append(candidate.Grants, string(sdk.CapabilityRuntimeIdentity))
+				candidate.Identity.Scopes = append(candidate.Identity.Scopes, string(sdk.CapabilityRuntimeIdentity))
+				candidate.RequiredFeatures = []string{sdk.RPCFeatureRuntimeIdentityV1}
 			}
 			permissions := []plugins.Permission{}
 			for _, scope := range candidate.Grants {
@@ -117,6 +127,11 @@ func TestPolicyConsumptionRealControlPlaneScopeAndDispatcher(t *testing.T) {
 			candidate.Environment = append(candidate.Environment, sdk.EnvPluginExecutionScope+"="+sdk.HostScopeAgent)
 			if _, err := host.Activate(t.Context(), candidate); err == nil {
 				t.Fatal("guest configuration overrode Host scope")
+			}
+			candidate.Identity.Generation = "identity-override-generation"
+			candidate.Environment = []string{"NRE_CONSUMPTION_TEST_MODE=" + mode, sdk.EnvPluginInstanceID + "=user-instance"}
+			if _, err := host.Activate(t.Context(), candidate); err == nil {
+				t.Fatal("guest configuration overrode Host runtime identity")
 			}
 		})
 	}

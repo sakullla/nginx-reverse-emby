@@ -1855,12 +1855,13 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		for _, handle := range instanceSecretHandles {
 			secretHandles = append(secretHandles, storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose})
 		}
+		requiredFeatures := pluginsdk.RequiredRPCFeaturesForExtensions(granted, manifest.ExtensionPoints)
 		generation := storage.PluginGeneration{
 			InstanceID: instance.ID, OperationID: operation.ID, Revision: operation.TargetRevision,
 			PluginID: manifest.ID, PluginVersion: manifest.Version, PackageDigest: packageRow.Digest,
 			Runtime:         storage.PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, Entry: manifest.Runtime.Entry},
 			Artifact:        storage.PluginGenerationArtifact{ArtifactID: runtimeArtifact.ID, PackageIdentity: packageRow.Identity, RelativePath: runtimeArtifact.Path, SHA256: runtimeArtifact.SHA256, SizeBytes: runtimeArtifact.SizeBytes, Mode: runtimeArtifact.Mode, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
-			ExtensionPoints: manifest.ExtensionPoints, ConfigVersion: configVersion, Config: json.RawMessage(config), Grants: grants, SecretHandles: secretHandles,
+			ExtensionPoints: manifest.ExtensionPoints, RequiredFeatures: requiredFeatures, ConfigVersion: configVersion, Config: json.RawMessage(config), Grants: grants, SecretHandles: secretHandles,
 			ResourceBudget: storage.PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
 			Target:         storage.PluginGenerationTarget{Kind: "control-plane", ID: "control-plane", ResourceGroupID: resourceGroupID, Version: configVersion},
 			FailurePolicy:  storage.PluginGenerationFailurePolicy{OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget, Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback},
@@ -1890,8 +1891,9 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 				exact, err := pluginSecretLogValues(materialized, handles)
 				return append([]byte(nil), materialized...), exact, err
 			}, Endpoint: pluginhost.Endpoint{Network: "unix"}, Requirement: requirement, Grants: append([]string(nil), granted...),
-			GrantSelectors: maps.Clone(grantSelectors),
-			Deadline:       time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
+			GrantSelectors:   maps.Clone(grantSelectors),
+			RequiredFeatures: append([]string(nil), generation.RequiredFeatures...),
+			Deadline:         time.Duration(manifest.ResourceBudget.TimeoutMS) * time.Millisecond, GracePeriod: 5 * time.Second,
 			Restart: manifest.FailurePolicy.Restart, RestartLimit: manifest.ResourceBudget.Restarts, RestartWindow: time.Minute, InitialBackoff: time.Second, MaximumBackoff: 30 * time.Second,
 			Declaration: pluginhost.Declaration{PluginID: manifest.ID, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...), UIRouteID: manifest.UIRouteID, ResourceGroupID: manifest.ResourceGroupID, Metadata: maps.Clone(manifest.Metadata)},
 		})

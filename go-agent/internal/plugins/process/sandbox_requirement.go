@@ -37,6 +37,7 @@ const (
 	PermissionPolicyTrustedSource            SandboxPermission = SandboxPermission(pluginsdk.CapabilityPolicyTrustedSource)
 	PermissionServiceRevocableResourceHandle SandboxPermission = SandboxPermission(pluginsdk.CapabilityServiceRevocableResourceHandle)
 	PermissionUIDynamicActions               SandboxPermission = SandboxPermission(pluginsdk.CapabilityUIDynamicActions)
+	PermissionRuntimeIdentity                SandboxPermission = SandboxPermission(pluginsdk.CapabilityRuntimeIdentity)
 
 	ExtensionHTTPRequest         SandboxExtensionPoint = "http.request"
 	ExtensionHTTPResponse        SandboxExtensionPoint = "http.response"
@@ -98,7 +99,7 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 			requirement.privileged = true
 		case PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 			PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions,
-			PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic:
+			PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic, PermissionRuntimeIdentity:
 			// These operations remain host-mediated and grant the guest no
 			// ambient filesystem, network, or process authority.
 		}
@@ -182,7 +183,7 @@ func knownSandboxPermission(value SandboxPermission) bool {
 		PermissionStorageRead, PermissionStorageWrite, PermissionDNSManage,
 		PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
-		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
+		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions, PermissionRuntimeIdentity:
 		return true
 	case SandboxPermission(pluginsdk.PermissionManagedNetworkListen), SandboxPermission(pluginsdk.PermissionManagedNetworkDial), SandboxPermission(pluginsdk.CapabilityDatasetQuery), SandboxPermission(pluginsdk.CapabilityDatasetResolve), SandboxPermission(pluginsdk.PermissionScopedSecretRead), SandboxPermission(pluginsdk.PermissionScopedSecretWrite):
 		return true

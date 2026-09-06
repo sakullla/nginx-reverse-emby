@@ -54,6 +54,30 @@ func TestCandidateExecutionScopeRequiresImmutableFeatureOptIn(t *testing.T) {
 	}
 }
 
+func TestCandidateRuntimeIdentityEnvironmentRequiresFeature(t *testing.T) {
+	legacy := HostCandidate{InstanceID: "legacy-instance"}
+	if environment, err := candidateRuntimeIdentityEnvironment(legacy); err != nil || environment != nil {
+		t.Fatalf("legacy runtime identity environment = %v, %v", environment, err)
+	}
+	first := legacy
+	first.RequiredFeatures = []string{pluginsdk.RPCFeatureRuntimeIdentityV1}
+	first.Scopes = []string{string(pluginsdk.CapabilityRuntimeIdentity)}
+	environment, err := candidateRuntimeIdentityEnvironment(first)
+	if err != nil || len(environment) != 1 || environment[0] != pluginsdk.EnvPluginInstanceID+"=legacy-instance" {
+		t.Fatalf("opted runtime identity environment = %v, %v", environment, err)
+	}
+	second := first
+	second.InstanceID = "second-instance"
+	secondEnvironment, err := candidateRuntimeIdentityEnvironment(second)
+	if err != nil || secondEnvironment[0] != pluginsdk.EnvPluginInstanceID+"=second-instance" || secondEnvironment[0] == environment[0] {
+		t.Fatalf("multi-instance runtime identity environment = %v, %v", secondEnvironment, err)
+	}
+	first.InstanceID = ""
+	if _, err := candidateRuntimeIdentityEnvironment(first); err == nil {
+		t.Fatal("opted candidate with invalid instance identity was accepted")
+	}
+}
+
 func (hostTestSandbox) Available() bool                       { return true }
 func (hostTestSandbox) Provider() string                      { return "test-kernel-boundary" }
 func (hostTestSandbox) Validate(pluginprocess.Security) error { return nil }

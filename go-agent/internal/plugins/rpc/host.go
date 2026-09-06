@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -728,6 +729,11 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	if candidateUsesExecutionScope(candidate) {
 		security.environment = append(security.environment, pluginsdk.EnvPluginExecutionScope+"="+pluginsdk.HostScopeAgent)
 	}
+	runtimeIdentityEnvironment, err := candidateRuntimeIdentityEnvironment(candidate)
+	if err != nil {
+		return attempt, err
+	}
+	security.environment = append(security.environment, runtimeIdentityEnvironment...)
 	candidate.Dial = security.dial
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
 	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
@@ -1719,6 +1725,24 @@ func candidateUsesExecutionScope(candidate HostCandidate) bool {
 	}
 	return false
 }
+
+func candidateRuntimeIdentityEnvironment(candidate HostCandidate) ([]string, error) {
+	for _, feature := range candidate.RequiredFeatures {
+		if feature != pluginsdk.RPCFeatureRuntimeIdentityV1 {
+			continue
+		}
+		if !slices.Contains(candidate.Scopes, string(pluginsdk.CapabilityRuntimeIdentity)) {
+			return nil, errors.New("runtime identity feature requires its signed capability")
+		}
+		instanceID, err := pluginsdk.ResolvePluginInstanceID(candidate.InstanceID, true)
+		if err != nil {
+			return nil, err
+		}
+		return []string{pluginsdk.EnvPluginInstanceID + "=" + instanceID}, nil
+	}
+	return nil, nil
+}
+
 func candidateRPCFeatures(candidate HostCandidate) []string {
 	features := pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Scopes, candidateExtensionPoints(candidate))
 	if candidateUsesExecutionScope(candidate) {
