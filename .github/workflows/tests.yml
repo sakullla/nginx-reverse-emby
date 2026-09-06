@@ -54,8 +54,9 @@ jobs:
           go-version-file: ${{ matrix.module }}/go.mod
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - name: Run fast tests
+        timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: timeout 30s go test -p=16 -tags=fast -short -count=1 -timeout=30s ${{ matrix.fast_packages }}
+        run: go test -p=16 -tags=fast -short -count=1 -timeout=30s ${{ matrix.fast_packages }}
 
   frontend-fast:
     if: github.event_name != 'schedule'
@@ -130,8 +131,9 @@ jobs:
           go-version-file: ${{ matrix.module }}/go.mod
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - name: Run full tests
+        timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: timeout 30s go test -p=16 -count=1 -timeout=30s ${{ matrix.full_packages }}
+        run: go test -p=16 -count=1 -timeout=30s ${{ matrix.full_packages }}
       - name: Start local ACME fixture
         run: |
           docker compose -f scripts/acme-integration/docker-compose.yaml up -d --wait --wait-timeout 60
@@ -174,8 +176,9 @@ jobs:
           done
           exit "${status}"
       - name: Run integration tests
+        timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: timeout 30s go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ${{ matrix.integration_packages }}
+        run: go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ${{ matrix.integration_packages }}
       - name: Stop PostgreSQL fixture
         if: always() && matrix.module == 'panel/backend-go'
         run: |

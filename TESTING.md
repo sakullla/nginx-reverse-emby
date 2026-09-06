@@ -40,6 +40,8 @@ cd panel/backend-go && go test -tags='exhaustive integration' -count=1 -run '^Te
 
 The canonical Go commands use 16 package workers so package compilation and execution overlap on developer and CI machines. Tests that own isolated temporary stores use `t.Parallel`; process environment, fixed-port, and shared router-state tests remain serial. On constrained machines, reduce `-p` to the logical CPU count; the package manifest, not oversubscription, is the primary speedup.
 
+Go's `-timeout=30s` bounds each package's test binary. CI gives each fast, full, and integration test step 10 minutes overall so dependency downloads and compilation on a cold cache do not consume a 30-second shell timeout. The per-binary test timeout remains active on both cold and warm caches.
+
 ## Official Plugin Market
 
 The official-market unit suite is offline. It creates nine canonical packages

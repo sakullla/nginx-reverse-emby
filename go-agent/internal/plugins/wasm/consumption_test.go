@@ -8,13 +8,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -53,6 +52,14 @@ func (r *consumptionRuntime) Evaluate(ctx context.Context, request policy.Module
 }
 
 func TestWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
+	// This test checks real guest imports and generation ownership. A fake
+	// clock keeps host scheduling from exhausting the production 2 ms budgets
+	// during init, dataset queries, or evaluation. Runtime watchdog behavior is
+	// covered separately by the deadline tests in runtime_test.go.
+	synctest.Test(t, testWASMConsumesGenerationDatasetAndAuthenticatedSource)
+}
+
+func testWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
 	runtime, err := NewRuntime(t.Context(), RuntimeOptions{MaxMemoryPages: 16})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +87,8 @@ func TestWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
 		t.Cleanup(func() { _ = view.Destroy(context.Background()) })
 		return view, nil
 	}
-	evaluate := func(view *module.GenerationView, entry string) policy.Decision {
+	evaluate := func(t *testing.T, view *module.GenerationView, entry string) policy.Decision {
+		t.Helper()
 		metadata, err := policy.NewDirectMetadata(&net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 12345})
 		if err != nil {
 			t.Fatal(err)
@@ -106,19 +114,9 @@ func TestWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
 	}
 	assertResult := func(view *module.GenerationView, snapshot model.Snapshot, matched bool) sdk.DatasetReference {
 		t.Helper()
-		decision := evaluate(view, "tcp-entry-7")
-		// Like the multi-stage generation fixture, retry only scheduling
-		// deadlines. A successful real guest result is still required below.
-		for attempt := 1; goruntime.GOOS == "windows" && attempt < 20; attempt++ {
-			var failure *policy.EvaluationError
-			if !errors.As(factory.errors[view.ID()], &failure) || failure.Kind != policy.FailureBudget || failure.Code != string(ErrorDeadline) || decision.Action != policy.ActionDeny || !decision.Degraded {
-				break
-			}
-			goruntime.Gosched()
-			decision = evaluate(view, "tcp-entry-7")
-		}
+		decision := evaluate(t, view, "tcp-entry-7")
 		if decision.Action != policy.ActionAllow || decision.Degraded {
-			t.Fatalf("real guest evaluation = %+v", decision)
+			t.Fatalf("real guest evaluation = %+v, error=%v", decision, factory.errors[view.ID()])
 		}
 		payload := factory.responses[view.ID()].Payload
 		resolveStatus, resolveFrame := consumptionSlot(t, payload, 0)
@@ -159,33 +157,13 @@ func TestWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
 	if again := assertResult(firstView, first, true); again != oldRef {
 		t.Fatal("reused old guest resolved a new reference after publication")
 	}
-	watchdogDenied := func(t *testing.T, view *module.GenerationView, decision policy.Decision) bool {
-		t.Helper()
-		// Windows scheduling can let the production 2 ms watchdog win the
-		// race with a rejected import. Require the explicit budget failure;
-		// other platforms still require the precise guest import statuses.
-		if goruntime.GOOS != "windows" || len(factory.responses[view.ID()].Payload) != 0 {
-			return false
-		}
-		var failure *policy.EvaluationError
-		if !errors.As(factory.errors[view.ID()], &failure) || failure.Kind != policy.FailureBudget || decision.Action != policy.ActionDeny || !decision.Degraded {
-			t.Fatalf("call disappeared without a visible budget denial: decision=%+v error=%v", decision, factory.errors[view.ID()])
-		}
-		t.Log("production watchdog rejected the call before the guest returned import statuses")
-		return true
+	decision := evaluate(t, secondView, "")
+	payload := factory.responses[secondView.ID()].Payload
+	queryStatus, _ := consumptionSlot(t, payload, 1)
+	sourceStatus, _ := consumptionSlot(t, payload, 2)
+	if queryStatus == sdk.PolicyStatusOK || sourceStatus == sdk.PolicyStatusOK || decision.Action != policy.ActionDeny || !decision.Degraded {
+		t.Fatalf("entry-less source consumption succeeded: query=%v source=%v decision=%+v", queryStatus, sourceStatus, decision)
 	}
-	t.Run("missing connection entry", func(t *testing.T) {
-		decision := evaluate(secondView, "")
-		payload := factory.responses[secondView.ID()].Payload
-		if watchdogDenied(t, secondView, decision) {
-			return
-		}
-		queryStatus, _ := consumptionSlot(t, payload, 1)
-		sourceStatus, _ := consumptionSlot(t, payload, 2)
-		if queryStatus == sdk.PolicyStatusOK || sourceStatus == sdk.PolicyStatusOK || decision.Action != policy.ActionDeny || !decision.Degraded {
-			t.Fatalf("entry-less source consumption succeeded: query=%v source=%v decision=%+v", queryStatus, sourceStatus, decision)
-		}
-	})
 	for _, test := range []struct {
 		name         string
 		source       string
@@ -201,28 +179,27 @@ func TestWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
 		{name: "source read during initialization", source: "regions", initSource: true, wantError: "initialize artifact"},
 		{name: "selected class unavailable", source: "regions", missingClass: true, wantError: "classification"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := consumptionSnapshot(t, 3, "198.51.100.0/24", consumptionGuest(t, test.source, "cn-44", nil, 512, test.initSource))
-			if test.missingClass {
-				candidate.Datasets[0].Bindings[0].Classifications[0].Name = "cn-11"
-			}
-			if test.missingGrant != "" {
-				stage := &candidate.PluginPolicies[0].Stages[0]
-				grants := []string{}
-				for _, grant := range stage.GrantedScopes {
-					if grant != test.missingGrant {
-						grants = append(grants, grant)
-					}
+		t.Logf("case: %s", test.name)
+		candidate := consumptionSnapshot(t, 3, "198.51.100.0/24", consumptionGuest(t, test.source, "cn-44", nil, 512, test.initSource))
+		if test.missingClass {
+			candidate.Datasets[0].Bindings[0].Classifications[0].Name = "cn-11"
+		}
+		if test.missingGrant != "" {
+			stage := &candidate.PluginPolicies[0].Stages[0]
+			grants := []string{}
+			for _, grant := range stage.GrantedScopes {
+				if grant != test.missingGrant {
+					grants = append(grants, grant)
 				}
-				stage.GrantedScopes = grants
 			}
-			if _, err := prepare(second, candidate); err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("required guest failed outside the expected admission boundary %q: %v", test.wantError, err)
-			}
-			if registry.ActiveGeneration() != secondView {
-				t.Fatal("failed guest initialization replaced the active generation")
-			}
-		})
+			stage.GrantedScopes = grants
+		}
+		if _, err := prepare(second, candidate); err == nil || !strings.Contains(err.Error(), test.wantError) {
+			t.Fatalf("required guest failed outside the expected admission boundary %q: %v", test.wantError, err)
+		}
+		if registry.ActiveGeneration() != secondView {
+			t.Fatal("failed guest initialization replaced the active generation")
+		}
 	}
 	staleFrame, err := sdk.MarshalPolicyDatasetQueryRequest(consumptionQuery(oldRef, "cn-44"), 4096)
 	if err != nil {
@@ -238,40 +215,36 @@ func TestWASMConsumesGenerationDatasetAndAuthenticatedSource(t *testing.T) {
 		{name: "old generation reference", class: "cn-44", override: staleFrame, capacity: 512, wantStatus: sdk.PolicyStatusInvalidArgument},
 		{name: "host output budget", class: "cn-44", capacity: 4097, wantStatus: sdk.PolicyStatusResourceExhausted},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := consumptionSnapshot(t, 4, "198.51.100.0/24", consumptionGuest(t, "regions", test.class, test.override, test.capacity, false))
-			view, err := prepare(second, candidate)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decision := evaluate(view, "tcp-entry-7")
-			payload := factory.responses[view.ID()].Payload
-			if watchdogDenied(t, view, decision) {
-				return
-			}
-			status, frame := consumptionSlot(t, payload, 1)
-			if status != test.wantStatus {
-				t.Fatalf("guest query status=%v, want %v", status, test.wantStatus)
-			}
-			if status != sdk.PolicyStatusOK {
-				if decision.Action != policy.ActionDeny || !decision.Degraded {
-					t.Fatalf("ignored Host failure escaped enforcement: %+v", decision)
-				}
-				return
-			}
-			_, resolveFrame := consumptionSlot(t, payload, 0)
-			resolve, err := sdk.UnmarshalPolicyDatasetResolveResponse(resolveFrame, consumptionResolveRequest("regions"))
-			if err != nil || resolve.Reference == nil {
-				t.Fatalf("resolve=%+v err=%v", resolve, err)
-			}
-			response, err := sdk.UnmarshalPolicyDatasetQueryResponse(frame, consumptionQuery(*resolve.Reference, test.class))
-			if err != nil || response.Status != sdk.DatasetQueryUnauthorized || len(response.Matches) != 0 {
-				t.Fatalf("unbound class became a normal miss: %+v err=%v", response, err)
-			}
+		t.Logf("case: %s", test.name)
+		candidate := consumptionSnapshot(t, 4, "198.51.100.0/24", consumptionGuest(t, "regions", test.class, test.override, test.capacity, false))
+		view, err := prepare(second, candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision := evaluate(t, view, "tcp-entry-7")
+		payload := factory.responses[view.ID()].Payload
+		status, frame := consumptionSlot(t, payload, 1)
+		if status != test.wantStatus {
+			t.Fatalf("guest query status=%v, want %v", status, test.wantStatus)
+		}
+		if status != sdk.PolicyStatusOK {
 			if decision.Action != policy.ActionDeny || !decision.Degraded {
-				t.Fatalf("non-OK dataset result with transport OK escaped typed enforcement: %+v", decision)
+				t.Fatalf("ignored Host failure escaped enforcement: %+v", decision)
 			}
-		})
+			continue
+		}
+		_, resolveFrame := consumptionSlot(t, payload, 0)
+		resolve, err := sdk.UnmarshalPolicyDatasetResolveResponse(resolveFrame, consumptionResolveRequest("regions"))
+		if err != nil || resolve.Reference == nil {
+			t.Fatalf("resolve=%+v err=%v", resolve, err)
+		}
+		response, err := sdk.UnmarshalPolicyDatasetQueryResponse(frame, consumptionQuery(*resolve.Reference, test.class))
+		if err != nil || response.Status != sdk.DatasetQueryUnauthorized || len(response.Matches) != 0 {
+			t.Fatalf("unbound class became a normal miss: %+v err=%v", response, err)
+		}
+		if decision.Action != policy.ActionDeny || !decision.Degraded {
+			t.Fatalf("non-OK dataset result with transport OK escaped typed enforcement: %+v", decision)
+		}
 	}
 }
 
