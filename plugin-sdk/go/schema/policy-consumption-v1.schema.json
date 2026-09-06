@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/sakullla/nginx-reverse-emby/plugin-sdk/schema/policy-consumption-v1.schema.json",
   "title": "NRE public policy consumption JSON contracts v1",
-  "description": "JSON payloads for dataset.binding and policy.control. Host authority, CAS, selected-target matching, frame byte budgets and declared/granted scopes are additionally enforced by the SDK helpers. These are not new policy/v1 protobuf imports.",
+  "description": "JSON payloads for dataset.binding and policy.control. Host authority, CAS, selected-target matching, frame byte budgets and declared/granted scopes are additionally enforced by the SDK helpers. Policy entry tokens, list-entries and entry overlays require the signed and granted policy.entry-overlays capability, which projects rpc.policy-entry-overlays.v1 in addition to rpc.policy-controls.v1. These are not new policy/v1 protobuf imports.",
   "$defs": {
     "ExecutionTargetSelection": {
       "type": "object",
@@ -644,6 +644,12 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 256
+        },
+        "token": {
+          "type": "string",
+          "minLength": 22,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
       "required": [
@@ -752,6 +758,7 @@
         "action": {
           "enum": [
             "inspect",
+            "list-entries",
             "replace-instance",
             "replace-entry",
             "reset-entry"
@@ -812,6 +819,9 @@
         },
         "config": {
           "type": "object"
+        },
+        "overlay": {
+          "type": "object"
         }
       },
       "required": [
@@ -823,7 +833,10 @@
           "if": {
             "properties": {
               "action": {
-                "const": "inspect"
+                "enum": [
+                  "inspect",
+                  "list-entries"
+                ]
               }
             }
           },
@@ -843,6 +856,11 @@
                 {
                   "required": [
                     "config"
+                  ]
+                },
+                {
+                  "required": [
+                    "overlay"
                   ]
                 }
               ]
@@ -901,6 +919,125 @@
             "required": [
               "mode"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "list-entries"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "entry"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "replace-instance"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "entry"
+                  ]
+                },
+                {
+                  "required": [
+                    "overlay"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "replace-entry"
+              }
+            }
+          },
+          "then": {
+            "oneOf": [
+              {
+                "required": [
+                  "overlay"
+                ],
+                "properties": {
+                  "entry": {
+                    "required": [
+                      "token"
+                    ]
+                  }
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "overlay"
+                  ]
+                },
+                "properties": {
+                  "entry": {
+                    "not": {
+                      "required": [
+                        "token"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "reset-entry"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "mode"
+                  ]
+                },
+                {
+                  "required": [
+                    "config"
+                  ]
+                },
+                {
+                  "required": [
+                    "overlay"
+                  ]
+                }
+              ]
+            },
+            "properties": {
+              "entry": {
+                "required": [
+                  "token"
+                ]
+              }
+            }
           }
         }
       ]
@@ -976,6 +1113,44 @@
         "phase"
       ]
     },
+    "PolicyEntrySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/PolicyEntryTarget"
+            },
+            {
+              "required": [
+                "token"
+              ]
+            }
+          ]
+        },
+        "desired": {
+          "$ref": "#/$defs/PolicySettingsSnapshot"
+        },
+        "overlay": {
+          "type": "object"
+        },
+        "node": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicySettingsNodeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entry",
+        "desired"
+      ]
+    },
     "PolicyControlResponse": {
       "type": "object",
       "additionalProperties": false,
@@ -1006,6 +1181,9 @@
         "desired": {
           "$ref": "#/$defs/PolicySettingsSnapshot"
         },
+        "overlay": {
+          "type": "object"
+        },
         "node": {
           "anyOf": [
             {
@@ -1015,6 +1193,14 @@
               "type": "null"
             }
           ]
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/PolicyEntrySnapshot"
+          }
         }
       },
       "required": [

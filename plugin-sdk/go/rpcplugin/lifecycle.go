@@ -251,7 +251,7 @@ func (l *Lifecycle) Handshake(ctx context.Context, request pluginsdk.RPCHandshak
 		var err error
 		negotiated, err = pluginsdk.NegotiateRPCHandshake(pluginsdk.RPCPluginDeclaration{
 			PluginID: l.config.PluginID, PluginVersion: l.config.PluginVersion,
-			RequiredCapabilities: l.config.RequiredGrants, SupportedFeatures: l.config.SupportedFeatures,
+			RequiredCapabilities: l.config.RequiredGrants, SupportedFeatures: l.config.SupportedFeatures, RequiredFeatures: l.config.RequiredFeatures,
 		}, request)
 		if err != nil {
 			return pluginsdk.RPCHandshakeResponse{}, runtimeError(pluginsdk.ErrorPermissionDenied, err.Error(), false)

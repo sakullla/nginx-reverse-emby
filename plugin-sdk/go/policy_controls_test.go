@@ -11,9 +11,12 @@ import (
 
 func policyModePointer(mode PolicyMode) *PolicyMode { return &mode }
 func policyVersionPointer(version uint64) *uint64   { return &version }
+
+const policyEntryToken = "entry-token-000000000001"
+
 func policyControlFixture() (PolicyControlRequest, PolicyControlAuthority) {
 	request := PolicyControlRequest{Action: PolicyControlReplaceInstance, OperationID: "set-default", InstanceID: "policy-instance", Stage: PolicyStageIdentity{Kind: PolicyOverlayStageIP, PolicyID: "policy-instance"}, Mode: PolicyModeObserve, ExpectedRevision: policyVersionPointer(0), ExpectedInstanceVersion: policyVersionPointer(3), Config: json.RawMessage(`{"mode":"opaque-business-value","deny":["192.0.2.1"]}`)}
-	authority := PolicyControlAuthority{CallerInstanceID: "management-instance", CallerPluginID: "ip-plugin", CallerGeneration: "generation-a", CallerResourceGroupID: "group-a", CallerLive: true, InstanceID: "policy-instance", PluginID: "ip-plugin", ResourceGroupID: "group-a", Stage: request.Stage, InstanceVersion: 3, Handling: PolicyModeHandlingRaw, Grants: []string{PermissionPolicyControl, PermissionStorageWrite}}
+	authority := PolicyControlAuthority{CallerInstanceID: "management-instance", CallerPluginID: "ip-plugin", CallerGeneration: "generation-a", CallerResourceGroupID: "group-a", CallerLive: true, InstanceID: "policy-instance", PluginID: "ip-plugin", ResourceGroupID: "group-a", Stage: request.Stage, InstanceVersion: 3, Handling: PolicyModeHandlingRaw, Grants: []string{PermissionPolicyControl, PermissionPolicyEntryOverlays, PermissionStorageWrite}}
 	return request, authority
 }
 
@@ -21,6 +24,7 @@ func TestPolicyControlAtomicTransportReplayAndLegacyInspect(t *testing.T) {
 	request, authority := policyControlFixture()
 	state := PolicySettingsSnapshot{Version: PolicySettingsVersion{InstanceVersion: 3}, Settings: PolicyModeSettings{Handling: PolicyModeHandlingLegacy}}
 	var storedConfig json.RawMessage
+	var storedOverlay json.RawMessage
 	type outcome struct {
 		request  []byte
 		response PolicyControlResponse
@@ -67,11 +71,13 @@ func TestPolicyControlAtomicTransportReplayAndLegacyInspect(t *testing.T) {
 				storedConfig = append(json.RawMessage(nil), decoded.Config...)
 			case PolicyControlReplaceEntry:
 				state.Settings.EntryMode = policyModePointer(decoded.Mode)
+				storedOverlay = append(json.RawMessage(nil), decoded.Overlay...)
 			case PolicyControlResetEntry:
 				state.Settings.EntryMode = nil
+				storedOverlay = nil
 			}
 		}
-		response := PolicyControlResponse{OperationID: decoded.OperationID, InstanceID: current.InstanceID, Stage: current.Stage, Entry: decoded.Entry, Desired: state}
+		response := PolicyControlResponse{OperationID: decoded.OperationID, InstanceID: current.InstanceID, Stage: current.Stage, Entry: decoded.Entry, Desired: state, Overlay: append(json.RawMessage(nil), storedOverlay...)}
 		if err := response.ValidateFor(decoded); err != nil {
 			t.Fatal(err)
 		}
@@ -99,10 +105,26 @@ func TestPolicyControlAtomicTransportReplayAndLegacyInspect(t *testing.T) {
 	entry.Config = nil
 	entry.ExpectedRevision = policyVersionPointer(1)
 	entry.ExpectedInstanceVersion = policyVersionPointer(4)
-	entry.Entry = &PolicyEntryTarget{NodeID: "local", Kind: PolicyEntryTCP, ID: "42"}
+	entry.Entry = &PolicyEntryTarget{NodeID: "local", Kind: PolicyEntryTCP, ID: "42", Token: policyEntryToken}
 	entry.Mode = PolicyModeEnforce
-	if _, err := client.ControlPolicy(t.Context(), entry); err != nil {
+	entry.Overlay = json.RawMessage(`{"rules":[{"cidr":"192.0.2.0/24"}]}`)
+	entryResult, err := client.ControlPolicy(t.Context(), entry)
+	if err != nil {
 		t.Fatal(err)
+	}
+	entryReplay, err := client.ControlPolicy(t.Context(), entry)
+	if err != nil || entryReplay.Desired.Version != entryResult.Desired.Version || state.Version.Revision != 2 || !bytes.Equal(entryReplay.Overlay, entry.Overlay) {
+		t.Fatal("entry overlay replay did not return its original result", err)
+	}
+	changedEntry := entry
+	changedEntry.Overlay = json.RawMessage(`{"rules":[]}`)
+	if _, err := client.ControlPolicy(t.Context(), changedEntry); err == nil {
+		t.Fatal("different entry overlay reused an operation result")
+	}
+	entryInspect := PolicyControlRequest{Action: PolicyControlInspect, InstanceID: entry.InstanceID, Stage: entry.Stage, Entry: entry.Entry}
+	inspected, err := client.ControlPolicy(t.Context(), entryInspect)
+	if err != nil || !bytes.Equal(inspected.Overlay, entry.Overlay) {
+		t.Fatal("exact entry inspect did not return its overlay", err)
 	}
 	replayed, err := client.ControlPolicy(t.Context(), request)
 	if err != nil || replayed.Desired.Version != first.Desired.Version || state.Version.Revision != 2 {
@@ -117,10 +139,227 @@ func TestPolicyControlAtomicTransportReplayAndLegacyInspect(t *testing.T) {
 	reset.Action = PolicyControlResetEntry
 	reset.OperationID = "reset-entry"
 	reset.Mode = ""
+	reset.Overlay = nil
 	reset.ExpectedRevision = policyVersionPointer(2)
 	reset.ExpectedInstanceVersion = policyVersionPointer(5)
 	if result, err := client.ControlPolicy(t.Context(), reset); err != nil || result.Desired.Settings.EntryMode != nil {
 		t.Fatal("entry reset did not restore instance default", err)
+	}
+}
+
+func TestPolicyControlEntryListRoundTripAndAuthority(t *testing.T) {
+	request := PolicyControlRequest{Action: PolicyControlListEntries, InstanceID: "policy-instance", Stage: PolicyStageIdentity{Kind: PolicyOverlayStageIP, PolicyID: "policy-instance"}}
+	desired := PolicySettingsSnapshot{Version: PolicySettingsVersion{Revision: 7, InstanceVersion: 11}, Settings: PolicyModeSettings{Handling: PolicyModeHandlingRaw, DefaultMode: policyModePointer(PolicyModeObserve)}}
+	firstDesired := desired
+	firstDesired.Settings.EntryMode = policyModePointer(PolicyModeEnforce)
+	first := PolicyEntrySnapshot{
+		Entry:   PolicyEntryTarget{NodeID: "local", Kind: PolicyEntryHTTP, ID: "1", Token: policyEntryToken},
+		Desired: firstDesired,
+		Overlay: json.RawMessage(`{"rules":[{"cidr":"203.0.113.0/24"}]}`),
+		Node:    &PolicySettingsNodeStatus{Phase: "applied", Applied: &firstDesired, Generation: "generation-7"},
+	}
+	second := PolicyEntrySnapshot{
+		Entry:   PolicyEntryTarget{NodeID: "node-b", Kind: PolicyEntryManagedUDP, ID: "listener", Token: "entry-token-000000000002"},
+		Desired: desired,
+		Node:    &PolicySettingsNodeStatus{Phase: "unavailable"},
+	}
+	response := PolicyControlResponse{InstanceID: request.InstanceID, Stage: request.Stage, Desired: desired, Entries: []PolicyEntrySnapshot{first, second}}
+	authority := PolicyControlAuthority{
+		CallerInstanceID: "manager", CallerPluginID: "ip-plugin", CallerGeneration: "generation-7", CallerResourceGroupID: "group-a", CallerLive: true,
+		InstanceID: request.InstanceID, PluginID: "ip-plugin", ResourceGroupID: "group-a", Stage: request.Stage, InstanceVersion: 11, SettingsRevision: 7,
+		Handling: PolicyModeHandlingRaw, DefaultMode: desired.Settings.DefaultMode, Grants: []string{PermissionPolicyControl, PermissionPolicyEntryOverlays},
+		Entries: []PolicyEntryTarget{first.Entry, second.Entry},
+	}
+	if err := ValidatePolicyControlResponseAuthority(request, response, authority); err != nil {
+		t.Fatal(err)
+	}
+	client := managedTestClient(t, func(_ *http.Request, call HostRuntimeCall) HostRuntimeResponse {
+		if call.Operation != HostRuntimePolicyControl || call.OperationID != "" {
+			t.Fatal("list used a mutation envelope")
+		}
+		decoded, err := DecodePolicyControlRequest(call.Payload)
+		if err != nil || decoded.Action != PolicyControlListEntries {
+			t.Fatal("list request did not round trip", err)
+		}
+		encoded, _ := json.Marshal(response)
+		return HostRuntimeResponse{Payload: encoded}
+	})
+	listed, err := client.ControlPolicy(t.Context(), request)
+	if err != nil || len(listed.Entries) != 2 || listed.Entries[0].Entry.Token != policyEntryToken || !bytes.Equal(listed.Entries[0].Overlay, first.Overlay) {
+		t.Fatal("entry list did not round trip", err)
+	}
+
+	t.Run("foreign token", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[0].Entry.Token = "entry-token-000000000099"
+		if ValidatePolicyControlResponseAuthority(request, changed, authority) == nil {
+			t.Fatal("foreign list token accepted")
+		}
+	})
+	t.Run("duplicate entry", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[1].Entry.NodeID = first.Entry.NodeID
+		changed.Entries[1].Entry.Kind = first.Entry.Kind
+		changed.Entries[1].Entry.ID = first.Entry.ID
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("duplicate list entry accepted")
+		}
+	})
+	t.Run("duplicate token", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[1].Entry.Token = first.Entry.Token
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("duplicate list token accepted")
+		}
+	})
+	t.Run("missing token", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[0].Entry.Token = ""
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("tokenless list entry accepted")
+		}
+	})
+	t.Run("version lie", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[0].Desired.Version.Revision--
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("entry list version lie accepted")
+		}
+	})
+	t.Run("current version lie", func(t *testing.T) {
+		changed := response
+		changed.Desired.Version.Revision++
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		for index := range changed.Entries {
+			changed.Entries[index].Desired.Version = changed.Desired.Version
+		}
+		if ValidatePolicyControlResponseAuthority(request, changed, authority) == nil {
+			t.Fatal("list response escaped current Host version")
+		}
+	})
+	t.Run("status lie", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[1].Node = &PolicySettingsNodeStatus{Phase: "applied"}
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("entry list applied-status lie accepted")
+		}
+	})
+	t.Run("non-object overlay", func(t *testing.T) {
+		changed := response
+		changed.Entries = append([]PolicyEntrySnapshot(nil), response.Entries...)
+		changed.Entries[0].Overlay = json.RawMessage(`[]`)
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("non-object list overlay accepted")
+		}
+	})
+	t.Run("entry limit", func(t *testing.T) {
+		changed := response
+		changed.Entries = make([]PolicyEntrySnapshot, PolicyControlListMaxEntries+1)
+		if changed.ValidateFor(request) == nil {
+			t.Fatal("oversized entry list accepted")
+		}
+	})
+	encoded, _ := json.Marshal(response)
+	overBudget := append(encoded, bytes.Repeat([]byte(" "), PluginHostPayloadMaxBytes)...)
+	if _, err := DecodePolicyControlResponse(request, overBudget); err == nil {
+		t.Fatal("Host over-budget list response accepted")
+	}
+}
+
+func TestPolicyControlEntryTokenOverlayCompatibilityAndAuthorization(t *testing.T) {
+	request, authority := policyControlFixture()
+	request.Action = PolicyControlReplaceEntry
+	request.OperationID = "replace-entry"
+	request.Config = nil
+	request.Entry = &PolicyEntryTarget{NodeID: "local", Kind: PolicyEntryHTTP, ID: "1", Token: policyEntryToken}
+	request.Overlay = json.RawMessage(`{"rules":[]}`)
+	authority.Entry = &PolicyEntryTarget{NodeID: "local", Kind: PolicyEntryHTTP, ID: "1", Token: policyEntryToken}
+	authority.EntryAuthorized = true
+	authority.DefaultMode = policyModePointer(PolicyModeObserve)
+	if err := ValidatePolicyControlAuthority(request, authority); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*PolicyControlRequest){
+		func(r *PolicyControlRequest) { r.Entry.Token = "" },
+		func(r *PolicyControlRequest) { r.Entry.Token = "short" },
+		func(r *PolicyControlRequest) { r.Overlay = nil },
+		func(r *PolicyControlRequest) { r.Overlay = json.RawMessage(`null`) },
+		func(r *PolicyControlRequest) { r.Overlay = json.RawMessage(`[]`) },
+		func(r *PolicyControlRequest) { r.Overlay = json.RawMessage(`{"a":1,"a":2}`) },
+		func(r *PolicyControlRequest) {
+			r.Overlay = json.RawMessage(`{"rules":"` + strings.Repeat("x", PolicyStageOverlayMaxBytes) + `"}`)
+		},
+	} {
+		changed := request
+		entry := *request.Entry
+		changed.Entry = &entry
+		change(&changed)
+		if changed.Validate() == nil {
+			t.Fatal("invalid tokened entry overlay accepted")
+		}
+	}
+	foreign := authority
+	other := *authority.Entry
+	other.Token = "entry-token-000000000099"
+	foreign.Entry = &other
+	if ValidatePolicyControlAuthority(request, foreign) == nil {
+		t.Fatal("foreign current entry token accepted")
+	}
+	missing := authority
+	missing.Entry = nil
+	if ValidatePolicyControlAuthority(request, missing) == nil {
+		t.Fatal("missing current entry token accepted")
+	}
+	missingOverlayGrant := authority
+	missingOverlayGrant.Grants = []string{PermissionPolicyControl}
+	if ValidatePolicyControlAuthority(request, missingOverlayGrant) == nil {
+		t.Fatal("entry overlay accepted without its signed/granted capability")
+	}
+	replay := authority
+	replay.Replaying = true
+	replay.SettingsRevision = 99
+	replay.InstanceVersion = 100
+	if err := ValidatePolicyControlAuthority(request, replay); err != nil {
+		t.Fatal("matching current-token replay could not bypass stale CAS", err)
+	}
+	replay.Entry = &other
+	if ValidatePolicyControlAuthority(request, replay) == nil {
+		t.Fatal("entry replay bypassed the current token")
+	}
+
+	legacy := request
+	legacy.Entry = &PolicyEntryTarget{NodeID: request.Entry.NodeID, Kind: request.Entry.Kind, ID: request.Entry.ID}
+	legacy.Overlay = nil
+	legacyAuthority := authority
+	legacyAuthority.Grants = []string{PermissionPolicyControl}
+	if err := legacy.Validate(); err != nil || ValidatePolicyControlAuthority(legacy, legacyAuthority) != nil {
+		t.Fatal("v0.10 mode-only replace lost compatibility", err)
+	}
+	legacyInspect := PolicyControlRequest{Action: PolicyControlInspect, InstanceID: request.InstanceID, Stage: request.Stage, Entry: legacy.Entry}
+	legacyResponse := PolicyControlResponse{InstanceID: request.InstanceID, Stage: request.Stage, Entry: legacy.Entry, Desired: PolicySettingsSnapshot{Version: PolicySettingsVersion{Revision: 1, InstanceVersion: 4}, Settings: PolicyModeSettings{Handling: PolicyModeHandlingRaw, DefaultMode: policyModePointer(PolicyModeObserve), EntryMode: policyModePointer(PolicyModeObserve)}}}
+	if err := legacyResponse.ValidateFor(legacyInspect); err != nil {
+		t.Fatal("v0.10 tokenless inspect lost compatibility", err)
+	}
+	legacyResponse.Overlay = json.RawMessage(`{}`)
+	if legacyResponse.ValidateFor(legacyInspect) == nil {
+		t.Fatal("tokenless legacy inspect disclosed an overlay")
+	}
+	reset := request
+	reset.Action = PolicyControlResetEntry
+	reset.Mode = ""
+	reset.Overlay = nil
+	if err := reset.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	reset.Entry = legacy.Entry
+	if reset.Validate() == nil {
+		t.Fatal("tokenless reset could remove a new overlay")
 	}
 }
 

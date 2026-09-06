@@ -7,13 +7,14 @@ import (
 )
 
 const (
-	RPCFeatureDurableActionsV1 = "rpc.durable-actions.v1"
-	RPCFeatureDatasetsV1       = "rpc.datasets.v1"
-	RPCFeatureDatasetResolveV1 = "rpc.dataset-resolve.v1"
-	RPCFeatureManagedNetworkV1 = "rpc.managed-network.v1"
-	RPCFeatureScopedSecretsV1  = "rpc.scoped-secrets.v1"
-	RPCFeaturePolicyControlsV1 = "rpc.policy-controls.v1"
-	RPCFeatureExecutionScopeV1 = "rpc.execution-scope.v1"
+	RPCFeatureDurableActionsV1      = "rpc.durable-actions.v1"
+	RPCFeatureDatasetsV1            = "rpc.datasets.v1"
+	RPCFeatureDatasetResolveV1      = "rpc.dataset-resolve.v1"
+	RPCFeatureManagedNetworkV1      = "rpc.managed-network.v1"
+	RPCFeatureScopedSecretsV1       = "rpc.scoped-secrets.v1"
+	RPCFeaturePolicyControlsV1      = "rpc.policy-controls.v1"
+	RPCFeaturePolicyEntryOverlaysV1 = "rpc.policy-entry-overlays.v1"
+	RPCFeatureExecutionScopeV1      = "rpc.execution-scope.v1"
 )
 
 // RequiredRPCFeatures projects protocol extensions from signed/granted
@@ -28,6 +29,9 @@ func RequiredRPCFeatures(scopes []string) []string {
 			features = appendRPCFeature(features, RPCFeatureDatasetBindingsV1)
 		case CapabilityPolicyControl:
 			features = appendRPCFeature(features, RPCFeaturePolicyControlsV1)
+		case CapabilityPolicyEntryOverlays:
+			features = appendRPCFeature(features, RPCFeaturePolicyControlsV1)
+			features = appendRPCFeature(features, RPCFeaturePolicyEntryOverlaysV1)
 		case CapabilityDatasetQuery, CapabilityDatasetManage:
 			features = appendRPCFeature(features, RPCFeatureDatasetsV1)
 		case CapabilityDatasetResolve:
@@ -101,7 +105,7 @@ func ValidateRPCFeatures(required, provided []string) error {
 
 func knownRPCFeature(feature string) bool {
 	switch feature {
-	case RPCFeatureDurableActionsV1, RPCFeatureHTTPBackendProviderV1, RPCFeatureDatasetsV1, RPCFeatureDatasetResolveV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1, RPCFeatureDatasetBindingsV1, RPCFeaturePolicyControlsV1, RPCFeatureExecutionScopeV1:
+	case RPCFeatureDurableActionsV1, RPCFeatureHTTPBackendProviderV1, RPCFeatureDatasetsV1, RPCFeatureDatasetResolveV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1, RPCFeatureDatasetBindingsV1, RPCFeaturePolicyControlsV1, RPCFeaturePolicyEntryOverlaysV1, RPCFeatureExecutionScopeV1:
 		return true
 	default:
 		return false

@@ -9,10 +9,13 @@ import (
 )
 
 const (
-	HostRuntimePolicyControl                   = "policy.control"
-	PermissionPolicyControl                    = "policy.control"
-	CapabilityPolicyControl     HostCapability = PermissionPolicyControl
-	PolicyControlConfigMaxBytes                = 64 << 10
+	HostRuntimePolicyControl                     = "policy.control"
+	PermissionPolicyControl                      = "policy.control"
+	CapabilityPolicyControl       HostCapability = PermissionPolicyControl
+	PermissionPolicyEntryOverlays                = "policy.entry-overlays"
+	CapabilityPolicyEntryOverlays HostCapability = PermissionPolicyEntryOverlays
+	PolicyControlConfigMaxBytes                  = 64 << 10
+	PolicyControlListMaxEntries                  = 64
 	// This signed manifest declaration describes how the guest produces its
 	// decision. It is not an operator's mode and never comes from Config.mode.
 	PolicyModeHandlingMetadataKey = "policy.mode.handling"
@@ -101,6 +104,7 @@ type PolicyEntryTarget struct {
 	NodeID string `json:"node_id"`
 	Kind   string `json:"kind"`
 	ID     string `json:"id"`
+	Token  string `json:"token,omitempty"`
 }
 
 const (
@@ -114,6 +118,9 @@ const (
 func (entry PolicyEntryTarget) Validate() error {
 	if ValidatePolicyIdentity(entry.NodeID) != nil || ValidatePolicyIdentity(entry.ID) != nil {
 		return errors.New("policy entry identity is invalid")
+	}
+	if entry.Token != "" && !validManagedToken(entry.Token) {
+		return errors.New("policy entry token is invalid")
 	}
 	switch entry.Kind {
 	case PolicyEntryHTTP, PolicyEntryTCP, PolicyEntryUDP, PolicyEntryManagedTCP, PolicyEntryManagedUDP:
@@ -202,6 +209,7 @@ type PolicyControlAction string
 
 const (
 	PolicyControlInspect         PolicyControlAction = "inspect"
+	PolicyControlListEntries     PolicyControlAction = "list-entries"
 	PolicyControlReplaceInstance PolicyControlAction = "replace-instance"
 	PolicyControlReplaceEntry    PolicyControlAction = "replace-entry"
 	PolicyControlResetEntry      PolicyControlAction = "reset-entry"
@@ -229,6 +237,7 @@ type PolicyControlRequest struct {
 	ExpectedRevision        *uint64             `json:"expected_revision,omitempty"`
 	ExpectedInstanceVersion *uint64             `json:"expected_instance_version,omitempty"`
 	Config                  json.RawMessage     `json:"config,omitempty"`
+	Overlay                 json.RawMessage     `json:"overlay,omitempty"`
 }
 
 func (request PolicyControlRequest) Validate() error {
@@ -243,9 +252,12 @@ func (request PolicyControlRequest) Validate() error {
 			return errors.New("policy control entry is invalid for the stage")
 		}
 	}
-	if request.Action == PolicyControlInspect {
-		if request.OperationID != "" || request.Mode != "" || request.ExpectedRevision != nil || request.ExpectedInstanceVersion != nil || len(request.Config) != 0 {
-			return errors.New("policy inspect does not accept mutation fields")
+	if request.Action == PolicyControlInspect || request.Action == PolicyControlListEntries {
+		if request.OperationID != "" || request.Mode != "" || request.ExpectedRevision != nil || request.ExpectedInstanceVersion != nil || len(request.Config) != 0 || len(request.Overlay) != 0 {
+			return errors.New("policy read does not accept mutation fields")
+		}
+		if request.Action == PolicyControlListEntries && request.Entry != nil {
+			return errors.New("policy entry list does not accept an entry selector")
 		}
 		return nil
 	}
@@ -254,7 +266,7 @@ func (request PolicyControlRequest) Validate() error {
 	}
 	switch request.Action {
 	case PolicyControlReplaceInstance:
-		if request.Entry != nil || request.Mode.Validate() != nil {
+		if request.Entry != nil || request.Mode.Validate() != nil || len(request.Overlay) != 0 {
 			return errors.New("instance policy mutation is invalid")
 		}
 		if len(request.Config) > 0 {
@@ -266,9 +278,16 @@ func (request PolicyControlRequest) Validate() error {
 		if request.Entry == nil || request.Mode.Validate() != nil || len(request.Config) != 0 {
 			return errors.New("entry policy mutation is invalid")
 		}
+		if request.Entry.Token == "" {
+			if len(request.Overlay) != 0 {
+				return errors.New("entry overlay mutation requires a Host token")
+			}
+		} else if validatePolicyEntryOverlay(request.Overlay) != nil {
+			return errors.New("entry overlay mutation requires a bounded JSON object")
+		}
 	case PolicyControlResetEntry:
-		if request.Entry == nil || request.Mode != "" || len(request.Config) != 0 {
-			return errors.New("entry reset only removes its own override")
+		if request.Entry == nil || request.Entry.Token == "" || request.Mode != "" || len(request.Config) != 0 || len(request.Overlay) != 0 {
+			return errors.New("entry reset requires a Host token and only removes its own override")
 		}
 	default:
 		return errors.New("unsupported policy control action")
@@ -291,6 +310,7 @@ type PolicyControlAuthority struct {
 	Stage                                 PolicyStageIdentity
 	Entry                                 *PolicyEntryTarget
 	EntryAuthorized                       bool
+	Entries                               []PolicyEntryTarget
 	InstanceVersion, SettingsRevision     uint64
 	Handling                              PolicyModeHandling
 	DefaultMode                           *PolicyMode
@@ -309,6 +329,9 @@ func ValidatePolicyControlAuthority(request PolicyControlRequest, authority Poli
 	if !authority.CallerLive || authority.InstanceVersion == 0 || !hasManagedGrant(authority.Grants, PermissionPolicyControl) || authority.CallerPluginID != authority.PluginID || authority.CallerResourceGroupID != authority.ResourceGroupID || authority.Stage.Validate() != nil || !request.Stage.matches(authority.Stage) {
 		return errors.New("policy control authority is denied")
 	}
+	if policyControlRequiresEntryOverlays(request) && !hasManagedGrant(authority.Grants, PermissionPolicyEntryOverlays) {
+		return errors.New("policy entry overlay authority is denied")
+	}
 	wanted := request.InstanceID
 	if wanted == "" {
 		wanted = authority.CallerInstanceID
@@ -316,7 +339,13 @@ func ValidatePolicyControlAuthority(request PolicyControlRequest, authority Poli
 	if wanted != authority.InstanceID {
 		return errors.New("policy control resolved instance differs")
 	}
-	if !equalPolicyEntries(request.Entry, authority.Entry) {
+	if request.Action == PolicyControlListEntries {
+		if authority.Entry != nil || authority.Entries == nil || validatePolicyEntryTargets(authority.Entries, authority.Stage) != nil {
+			return errors.New("policy entry list authority is incomplete")
+		}
+		return nil
+	}
+	if !policyEntryRequestMatchesAuthority(request, authority.Entry) {
 		return errors.New("policy control resolved entry differs")
 	}
 	if request.Entry != nil && (!authority.EntryAuthorized || authority.Entry.Validate() != nil) {
@@ -345,6 +374,31 @@ func ValidatePolicyControlAuthority(request PolicyControlRequest, authority Poli
 	}
 	return (PolicyModeSettings{Handling: authority.Handling, DefaultMode: authority.DefaultMode, EntryMode: &request.Mode}).Validate()
 }
+func policyControlRequiresEntryOverlays(request PolicyControlRequest) bool {
+	switch request.Action {
+	case PolicyControlListEntries, PolicyControlResetEntry:
+		return true
+	case PolicyControlInspect, PolicyControlReplaceEntry:
+		return request.Entry != nil && request.Entry.Token != ""
+	default:
+		return false
+	}
+}
+func policyEntryRequestMatchesAuthority(request PolicyControlRequest, authority *PolicyEntryTarget) bool {
+	if request.Entry == nil || authority == nil {
+		return request.Entry == nil && authority == nil
+	}
+	if !equalPolicyEntryDisplay(*request.Entry, *authority) {
+		return false
+	}
+	if request.Entry.Token == "" {
+		return request.Action == PolicyControlInspect || (request.Action == PolicyControlReplaceEntry && len(request.Overlay) == 0)
+	}
+	return authority.Token != "" && request.Entry.Token == authority.Token
+}
+func equalPolicyEntryDisplay(left, right PolicyEntryTarget) bool {
+	return left.NodeID == right.NodeID && left.Kind == right.Kind && left.ID == right.ID
+}
 func equalPolicyEntries(left, right *PolicyEntryTarget) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
@@ -359,6 +413,17 @@ type PolicySettingsVersion struct {
 type PolicySettingsSnapshot struct {
 	Version  PolicySettingsVersion `json:"version"`
 	Settings PolicyModeSettings    `json:"settings"`
+}
+
+// PolicyEntrySnapshot is one current Host-owned entry at the selected policy
+// stage. Entry.Token is mandatory. Overlay is the complete opaque stage object;
+// absence means that the entry has no stage override. Desired and Node retain
+// the existing settings/version and applied-status semantics.
+type PolicyEntrySnapshot struct {
+	Entry   PolicyEntryTarget         `json:"entry"`
+	Desired PolicySettingsSnapshot    `json:"desired"`
+	Overlay json.RawMessage           `json:"overlay,omitempty"`
+	Node    *PolicySettingsNodeStatus `json:"node,omitempty"`
 }
 
 func (snapshot PolicySettingsSnapshot) Validate() error {
@@ -385,7 +450,9 @@ type PolicyControlResponse struct {
 	Stage       PolicyStageIdentity       `json:"stage"`
 	Entry       *PolicyEntryTarget        `json:"entry,omitempty"`
 	Desired     PolicySettingsSnapshot    `json:"desired"`
+	Overlay     json.RawMessage           `json:"overlay,omitempty"`
 	Node        *PolicySettingsNodeStatus `json:"node,omitempty"`
+	Entries     []PolicyEntrySnapshot     `json:"entries,omitempty"`
 }
 
 func (response PolicyControlResponse) ValidateFor(request PolicyControlRequest) error {
@@ -401,25 +468,44 @@ func (response PolicyControlResponse) ValidateFor(request PolicyControlRequest) 
 	if response.Entry == nil && response.Desired.Settings.EntryMode != nil {
 		return errors.New("instance response contains an entry override")
 	}
+	if request.Action == PolicyControlListEntries {
+		if response.OperationID != "" || response.Entry != nil || len(response.Overlay) != 0 || response.Node != nil || response.Desired.Settings.EntryMode != nil || len(response.Entries) > PolicyControlListMaxEntries {
+			return errors.New("policy entry list response contains unrelated or excessive state")
+		}
+		if err := validatePolicyEntrySnapshots(response.Entries, response.Stage, response.Desired); err != nil {
+			return err
+		}
+	} else if response.Entries != nil {
+		return errors.New("policy response contains an unrelated entry list")
+	}
 	if request.Action == PolicyControlInspect {
 		if response.OperationID != "" {
 			return errors.New("policy inspect response contains operation acknowledgement")
 		}
+		if request.Entry == nil || request.Entry.Token == "" {
+			if len(response.Overlay) != 0 {
+				return errors.New("legacy policy inspect cannot return an entry overlay")
+			}
+		} else if len(response.Overlay) != 0 && validatePolicyEntryOverlay(response.Overlay) != nil {
+			return errors.New("policy inspect response overlay is invalid")
+		}
+	} else if request.Action == PolicyControlListEntries {
+		// Validated above.
 	} else {
 		if response.OperationID != request.OperationID || response.Desired.Version.Revision != *request.ExpectedRevision+1 || response.Desired.Version.InstanceVersion != *request.ExpectedInstanceVersion+1 {
 			return errors.New("policy acknowledgement changed operation or version")
 		}
 		switch request.Action {
 		case PolicyControlReplaceInstance:
-			if response.Desired.Settings.DefaultMode == nil || *response.Desired.Settings.DefaultMode != request.Mode {
+			if response.Desired.Settings.DefaultMode == nil || *response.Desired.Settings.DefaultMode != request.Mode || len(response.Overlay) != 0 {
 				return errors.New("policy default acknowledgement differs")
 			}
 		case PolicyControlReplaceEntry:
-			if response.Desired.Settings.EntryMode == nil || *response.Desired.Settings.EntryMode != request.Mode {
+			if response.Desired.Settings.EntryMode == nil || *response.Desired.Settings.EntryMode != request.Mode || !bytes.Equal(response.Overlay, request.Overlay) {
 				return errors.New("policy entry acknowledgement differs")
 			}
 		case PolicyControlResetEntry:
-			if response.Desired.Settings.EntryMode != nil {
+			if response.Desired.Settings.EntryMode != nil || len(response.Overlay) != 0 {
 				return errors.New("policy reset retained an override")
 			}
 		}
@@ -428,37 +514,132 @@ func (response PolicyControlResponse) ValidateFor(request PolicyControlRequest) 
 		if response.Entry == nil || request.Action != PolicyControlInspect {
 			return errors.New("node application state requires entry inspect")
 		}
-		node := response.Node
-		if node.Applied != nil {
-			if node.Applied.Validate() != nil || ValidatePolicyIdentity(node.Generation) != nil || node.Applied.Version.Revision > response.Desired.Version.Revision || node.Applied.Version.InstanceVersion > response.Desired.Version.InstanceVersion {
-				return errors.New("applied policy state is invalid")
-			}
-			if node.Applied.Settings.Handling == PolicyModeHandlingLegacyWAF && response.Stage.Kind != PolicyOverlayStageWAF {
-				return errors.New("applied WAF mode belongs to another stage")
-			}
-		} else if node.Generation != "" {
-			return errors.New("generation requires applied policy state")
-		}
-		switch node.Phase {
-		case "applied":
-			if node.Applied == nil || !equalPolicySnapshots(*node.Applied, response.Desired) || node.Failure != "" {
-				return errors.New("applied policy state does not match desired")
-			}
-		case "preparing", "unavailable":
-			if node.Failure != "" {
-				return errors.New("pending policy state contains unexpected failure")
-			}
-		case "failed":
-			if !validPolicyCheckFailure(node.Failure) {
-				return errors.New("policy check failure code is invalid")
-			}
-		default:
-			return errors.New("policy node phase is invalid")
+		if err := validatePolicySettingsNodeStatus(*response.Node, response.Stage, response.Desired); err != nil {
+			return err
 		}
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil || len(encoded) > PluginHostPayloadMaxBytes {
 		return errors.New("policy response exceeds transport bound")
+	}
+	return nil
+}
+
+// ValidatePolicyControlResponseAuthority additionally binds a response to the
+// current Host-resolved authority. It is primarily needed for list-entries,
+// whose returned opaque tokens cannot be authenticated from request JSON.
+func ValidatePolicyControlResponseAuthority(request PolicyControlRequest, response PolicyControlResponse, authority PolicyControlAuthority) error {
+	if err := ValidatePolicyControlAuthority(request, authority); err != nil {
+		return err
+	}
+	if err := response.ValidateFor(request); err != nil {
+		return err
+	}
+	if response.InstanceID != authority.InstanceID || response.Stage != authority.Stage {
+		return errors.New("policy response differs from current Host authority")
+	}
+	if request.Action == PolicyControlInspect || request.Action == PolicyControlListEntries {
+		if response.Desired.Version != (PolicySettingsVersion{Revision: authority.SettingsRevision, InstanceVersion: authority.InstanceVersion}) || response.Desired.Settings.Handling != authority.Handling || !equalPolicyModePointers(response.Desired.Settings.DefaultMode, authority.DefaultMode) {
+			return errors.New("policy read response differs from current Host settings")
+		}
+	}
+	if request.Action != PolicyControlListEntries {
+		return nil
+	}
+	if len(response.Entries) != len(authority.Entries) {
+		return errors.New("policy entry list differs from current Host authority")
+	}
+	wanted := make(map[PolicyEntryTarget]struct{}, len(authority.Entries))
+	for _, entry := range authority.Entries {
+		wanted[entry] = struct{}{}
+	}
+	for _, snapshot := range response.Entries {
+		if _, ok := wanted[snapshot.Entry]; !ok {
+			return errors.New("policy entry list contains a foreign token or entry")
+		}
+	}
+	return nil
+}
+
+func validatePolicyEntryOverlay(overlay json.RawMessage) error {
+	if validatePolicyOverlayJSON(overlay, PolicyStageOverlayMaxBytes) != nil || !policyOverlayJSONObject(overlay) {
+		return errors.New("policy entry overlay must be a bounded JSON object")
+	}
+	return nil
+}
+
+func validatePolicyEntryTargets(entries []PolicyEntryTarget, stage PolicyStageIdentity) error {
+	if len(entries) > PolicyControlListMaxEntries {
+		return errors.New("policy entry list exceeds its entry budget")
+	}
+	displays := make(map[[3]string]struct{}, len(entries))
+	tokens := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.Validate() != nil || entry.Token == "" || (stage.Kind == PolicyOverlayStageWAF && entry.Kind != PolicyEntryHTTP) {
+			return errors.New("policy entry list contains an invalid target or token")
+		}
+		display := [3]string{entry.NodeID, entry.Kind, entry.ID}
+		if _, exists := displays[display]; exists {
+			return errors.New("policy entry list contains a duplicate entry")
+		}
+		if _, exists := tokens[entry.Token]; exists {
+			return errors.New("policy entry list contains a duplicate token")
+		}
+		displays[display] = struct{}{}
+		tokens[entry.Token] = struct{}{}
+	}
+	return nil
+}
+
+func validatePolicyEntrySnapshots(entries []PolicyEntrySnapshot, stage PolicyStageIdentity, instance PolicySettingsSnapshot) error {
+	targets := make([]PolicyEntryTarget, len(entries))
+	for index, snapshot := range entries {
+		targets[index] = snapshot.Entry
+		if snapshot.Desired.Validate() != nil || snapshot.Desired.Version != instance.Version || snapshot.Desired.Settings.Handling != instance.Settings.Handling || !equalPolicyModePointers(snapshot.Desired.Settings.DefaultMode, instance.Settings.DefaultMode) {
+			return errors.New("policy entry list contains inconsistent desired settings")
+		}
+		if len(snapshot.Overlay) != 0 && validatePolicyEntryOverlay(snapshot.Overlay) != nil {
+			return errors.New("policy entry list contains an invalid overlay")
+		}
+		if snapshot.Node != nil {
+			if err := validatePolicySettingsNodeStatus(*snapshot.Node, stage, snapshot.Desired); err != nil {
+				return err
+			}
+		}
+	}
+	return validatePolicyEntryTargets(targets, stage)
+}
+
+func equalPolicyModePointers(left, right *PolicyMode) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func validatePolicySettingsNodeStatus(node PolicySettingsNodeStatus, stage PolicyStageIdentity, desired PolicySettingsSnapshot) error {
+	if node.Applied != nil {
+		if node.Applied.Validate() != nil || ValidatePolicyIdentity(node.Generation) != nil || node.Applied.Version.Revision > desired.Version.Revision || node.Applied.Version.InstanceVersion > desired.Version.InstanceVersion {
+			return errors.New("applied policy state is invalid")
+		}
+		if node.Applied.Settings.Handling == PolicyModeHandlingLegacyWAF && stage.Kind != PolicyOverlayStageWAF {
+			return errors.New("applied WAF mode belongs to another stage")
+		}
+	} else if node.Generation != "" {
+		return errors.New("generation requires applied policy state")
+	}
+	switch node.Phase {
+	case "applied":
+		if node.Applied == nil || !equalPolicySnapshots(*node.Applied, desired) || node.Failure != "" {
+			return errors.New("applied policy state does not match desired")
+		}
+	case "preparing", "unavailable":
+		if node.Failure != "" {
+			return errors.New("pending policy state contains unexpected failure")
+		}
+	case "failed":
+		if !validPolicyCheckFailure(node.Failure) {
+			return errors.New("policy check failure code is invalid")
+		}
+	default:
+		return errors.New("policy node phase is invalid")
 	}
 	return nil
 }

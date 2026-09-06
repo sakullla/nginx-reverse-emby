@@ -104,3 +104,39 @@ func TestPolicySecurityImportNeedsBothGrants(t *testing.T) {
 		}
 	}
 }
+
+func TestManifestPolicyEntryOverlayCapabilityProjectsHandshakeFeatures(t *testing.T) {
+	legacyScopes := []string{string(CapabilityPolicyControl)}
+	legacyFeatures := RequiredRPCFeatures(legacyScopes)
+	if !reflect.DeepEqual(legacyFeatures, []string{RPCFeaturePolicyControlsV1}) {
+		t.Fatalf("legacy policy features = %v", legacyFeatures)
+	}
+
+	scopes := []string{string(CapabilityPolicyControl), string(CapabilityPolicyEntryOverlays)}
+	features := RequiredRPCFeatures(scopes)
+	if !reflect.DeepEqual(features, []string{RPCFeaturePolicyControlsV1, RPCFeaturePolicyEntryOverlaysV1}) {
+		t.Fatalf("entry overlay features = %v", features)
+	}
+	manifest := Manifest{Runtime: Runtime{Kind: RuntimeRPCService}, Permissions: []Permission{{Name: string(CapabilityPolicyControl)}, {Name: string(CapabilityPolicyEntryOverlays)}}}
+	supported := []HostCapability{CapabilityPolicyControl, CapabilityPolicyEntryOverlays}
+	if err := ValidateManifestManagedCapabilities(manifest, supported); err != nil {
+		t.Fatal(err)
+	}
+	if ValidateManifestManagedCapabilities(manifest, supported[:1]) == nil {
+		t.Fatal("Host lacking entry-overlay capability accepted the signed manifest")
+	}
+	manifest.Permissions = manifest.Permissions[1:]
+	if ValidateManifestManagedCapabilities(manifest, supported) == nil {
+		t.Fatal("entry-overlay capability without policy.control was accepted")
+	}
+
+	declaration := RPCPluginDeclaration{PluginID: "ip-policy", PluginVersion: "1.0.0", RequiredCapabilities: scopes, SupportedFeatures: features, RequiredFeatures: features}
+	request := RPCHandshakeRequest{ABI: RPCABIV1, PluginID: declaration.PluginID, PluginVersion: declaration.PluginVersion, PackageDigest: "package", ArtifactDigest: "artifact", Generation: "generation", GrantedScopes: scopes, RequiredFeatures: legacyFeatures}
+	if _, err := NegotiateRPCHandshake(declaration, request); err == nil {
+		t.Fatal("manifest projection missing the new feature passed handshake")
+	}
+	request.RequiredFeatures = features
+	if _, err := NegotiateRPCHandshake(declaration, request); err != nil {
+		t.Fatal(err)
+	}
+}
