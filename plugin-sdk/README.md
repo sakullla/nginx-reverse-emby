@@ -171,10 +171,10 @@ without private configuration injection. Admission query still separately needs
 hosts lacking the optional resolver reject guests that import it at admission.
 
 The manifest permissions `dataset.query`, `dataset.resolve`, `dataset.manage`,
-`network.managed.listen`, `network.managed.dial`, `secret.scoped.read`, and
+`runtime.identity`, `network.managed.listen`, `network.managed.dial`, `secret.scoped.read`, and
 `secret.scoped.write` authorize distinct effects. They project the additive RPC
-features `rpc.datasets.v1`, `rpc.dataset-resolve.v1`, `rpc.managed-network.v1`, and
-`rpc.scoped-secrets.v1`. `ValidateManifestManagedCapabilities` rejects unavailable
+features `rpc.datasets.v1`, `rpc.dataset-resolve.v1`, `rpc.runtime-identity.v1`,
+`rpc.managed-network.v1`, and `rpc.scoped-secrets.v1`. `ValidateManifestManagedCapabilities` rejects unavailable
 Host capabilities, and the canonical handshake rejects a missing feature or
 grant before activation. Existing guests without these permissions keep their
 existing handshake. Managed network permissions do not imply `network.full`.
@@ -380,3 +380,13 @@ key uses the legacy endpoint heuristic. This value selects a client face and is
 `RPCFeaturesWithExecutionScope`. The additive `rpc.execution-scope.v1` feature is
 not automatically required by legacy `RequiredRPCFeatures` calls. Actual Host
 process injection and production policy/data wiring follow in the consumer task.
+
+An RPC plugin that declares the signed `runtime.identity` capability receives
+its durable instance ID in the Host-authored `NRE_PLUGIN_INSTANCE_ID`
+environment variable. `PluginInstanceIDFromEnvironment` requires the variable
+and validates it as a canonical policy identity; it never reads plugin Config or
+infers identity from an endpoint. `RequiredRPCFeatures` projects
+`rpc.runtime-identity.v1`, so an opted-in guest may list that feature as both
+supported and required and rejects a Host that cannot inject the identity.
+Legacy manifests do not request the feature. The ID is only a claim input for a
+Host-validated managed binding and does not grant any resource access.
