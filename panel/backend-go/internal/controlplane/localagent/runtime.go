@@ -556,7 +556,16 @@ func toEmbeddedPolicyRef(ref *storage.PolicyRef) *goagentembedded.PolicyRef {
 	if ref == nil {
 		return nil
 	}
-	return &goagentembedded.PolicyRef{ID: ref.ID, Overlay: append(json.RawMessage(nil), ref.Overlay...)}
+	result := &goagentembedded.PolicyRef{
+		ID:             ref.ID,
+		Overlay:        append(json.RawMessage(nil), ref.Overlay...),
+		OverlayFormat:  ref.OverlayFormat,
+		LegacyPolicyID: ref.LegacyPolicyID,
+	}
+	if encoded, err := json.Marshal(ref.StageModes); err == nil {
+		_ = json.Unmarshal(encoded, &result.StageModes)
+	}
+	return result
 }
 
 func toEmbeddedPluginPolicies(policies []storage.PluginPolicy) []goagentembedded.PluginPolicy {

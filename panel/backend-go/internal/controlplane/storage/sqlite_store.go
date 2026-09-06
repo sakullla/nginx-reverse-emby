@@ -1282,6 +1282,22 @@ func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []H
 		rows := make([]HTTPRuleRow, 0, len(rules))
 		for _, row := range rules {
 			row.AgentID = agentID
+			for _, current := range existing {
+				if current.ID == row.ID {
+					row.EntryToken = current.EntryToken
+					break
+				}
+			}
+			if row.EntryToken == "" {
+				var err error
+				row.EntryToken, err = newPolicyEntryToken()
+				if err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", agentID, pluginsdk.PolicyEntryHTTP, strconv.Itoa(row.ID)).Update("entry_token", row.EntryToken).Error; err != nil {
+				return err
+			}
 			normalizeHTTPRuleRow(&row)
 			rows = append(rows, row)
 		}
@@ -1333,6 +1349,26 @@ func (s *GormStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4R
 		rows := make([]L4RuleRow, 0, len(rules))
 		for _, row := range rules {
 			row.AgentID = agentID
+			for _, current := range existing {
+				if current.ID == row.ID && strings.EqualFold(strings.TrimSpace(current.Protocol), strings.TrimSpace(row.Protocol)) {
+					row.EntryToken = current.EntryToken
+					break
+				}
+			}
+			if row.EntryToken == "" {
+				var err error
+				row.EntryToken, err = newPolicyEntryToken()
+				if err != nil {
+					return err
+				}
+			}
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", agentID, kind, strconv.Itoa(row.ID)).Update("entry_token", row.EntryToken).Error; err != nil {
+				return err
+			}
 			normalizeL4RuleRow(&row)
 			rows = append(rows, row)
 		}

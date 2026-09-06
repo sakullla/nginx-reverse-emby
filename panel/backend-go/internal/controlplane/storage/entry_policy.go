@@ -184,9 +184,23 @@ func (s *GormStore) ComposeEntryPolicy(ctx context.Context, entry sdk.PolicyEntr
 				return nil, nil, err
 			}
 			for _, override := range overrides {
-				if override.NodeID == entry.NodeID && override.Kind == entry.Kind && override.EntryID == entry.ID {
+				if override.NodeID == entry.NodeID && override.Kind == entry.Kind && override.EntryID == entry.ID && entry.Token != "" && override.EntryToken == entry.Token {
 					mode := sdk.PolicyMode(override.Mode)
 					selected.Settings.EntryMode = &mode
+					if override.OverlayJSON != "" {
+						replaced := false
+						for i := range envelope.Stages {
+							if envelope.Stages[i].Kind == kind {
+								envelope.Stages[i] = sdk.PolicyStageOverlay{Kind: kind, PolicyID: stage.PolicyID, Payload: json.RawMessage(override.OverlayJSON)}
+								replaced = true
+								break
+							}
+						}
+						if !replaced {
+							envelope.Stages = append(envelope.Stages, sdk.PolicyStageOverlay{Kind: kind, PolicyID: stage.PolicyID, Payload: json.RawMessage(override.OverlayJSON)})
+						}
+					}
+					break
 				}
 			}
 			if err := selected.Validate(); err != nil {
@@ -194,6 +208,13 @@ func (s *GormStore) ComposeEntryPolicy(ctx context.Context, entry sdk.PolicyEntr
 			}
 			ref.StageModes = append(ref.StageModes, PolicyModeBinding{Stage: sdk.PolicyStageIdentity{Kind: kind, PolicyID: stage.PolicyID}, Snapshot: selected})
 		}
+	}
+	sort.Slice(envelope.Stages, func(i, j int) bool {
+		order := map[string]int{"ip": 1, "rate": 2, "waf": 3}
+		return order[envelope.Stages[i].Kind] < order[envelope.Stages[j].Kind]
+	})
+	if err := envelope.Validate(); err != nil {
+		return nil, nil, err
 	}
 	encoded, _ := json.Marshal(identities)
 	sum := sha256.Sum256(encoded)
@@ -226,7 +247,14 @@ func (s *GormStore) composeSnapshotEntryPolicies(ctx context.Context, agent stri
 		return ref, nil
 	}
 	for i := range rules {
-		ref, err := compose(sdk.PolicyEntryTarget{NodeID: agent, Kind: sdk.PolicyEntryHTTP, ID: strconv.Itoa(rules[i].ID)}, rules[i].PolicyRef)
+		stored, found, err := s.GetHTTPRule(ctx, agent, rules[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrCoordinatorNotFound
+		}
+		ref, err := compose(sdk.PolicyEntryTarget{NodeID: agent, Kind: sdk.PolicyEntryHTTP, ID: strconv.Itoa(rules[i].ID), Token: stored.EntryToken}, rules[i].PolicyRef)
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +265,14 @@ func (s *GormStore) composeSnapshotEntryPolicies(ctx context.Context, agent stri
 		if l4[i].Protocol == "udp" {
 			kind = sdk.PolicyEntryUDP
 		}
-		ref, err := compose(sdk.PolicyEntryTarget{NodeID: agent, Kind: kind, ID: strconv.Itoa(l4[i].ID)}, l4[i].PolicyRef)
+		stored, found, err := s.GetL4Rule(ctx, agent, l4[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrCoordinatorNotFound
+		}
+		ref, err := compose(sdk.PolicyEntryTarget{NodeID: agent, Kind: kind, ID: strconv.Itoa(l4[i].ID), Token: stored.EntryToken}, l4[i].PolicyRef)
 		if err != nil {
 			return nil, err
 		}
@@ -270,7 +305,7 @@ func (s *GormStore) composeSnapshotEntryPolicies(ctx context.Context, agent stri
 		}
 		generations[i].ManagedNetworkPolicies = map[string]*PolicyRef{}
 		for protocol, kind := range map[string]string{"tcp": sdk.PolicyEntryManagedTCP, "udp": sdk.PolicyEntryManagedUDP} {
-			ref, err := compose(sdk.PolicyEntryTarget{NodeID: agent, Kind: kind, ID: instance.ID}, original)
+			ref, err := compose(sdk.PolicyEntryTarget{NodeID: agent, Kind: kind, ID: instance.ID, Token: ManagedPolicyEntryToken(instance.IncarnationID, agent, kind)}, original)
 			if err != nil {
 				return nil, err
 			}

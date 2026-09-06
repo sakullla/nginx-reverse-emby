@@ -2,9 +2,14 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,11 +24,13 @@ type PluginPolicySettingsRow struct {
 	DefaultMode string `gorm:"size:16;not null"`
 }
 type PluginPolicyEntryModeRow struct {
-	InstanceID string `gorm:"primaryKey;size:64"`
-	NodeID     string `gorm:"primaryKey;size:64"`
-	Kind       string `gorm:"primaryKey;size:32"`
-	EntryID    string `gorm:"primaryKey;size:190"`
-	Mode       string `gorm:"size:16;not null"`
+	InstanceID  string `gorm:"primaryKey;size:64"`
+	NodeID      string `gorm:"primaryKey;size:64"`
+	Kind        string `gorm:"primaryKey;size:32"`
+	EntryID     string `gorm:"primaryKey;size:190"`
+	EntryToken  string `gorm:"size:64;not null;default:''"`
+	Mode        string `gorm:"size:16;not null"`
+	OverlayJSON string `gorm:"type:text;not null;default:''"`
 }
 type PluginDatasetConsumptionRow struct {
 	InstanceID string `gorm:"primaryKey;size:64"`
@@ -91,6 +98,94 @@ func (s *GormStore) PutPluginPolicyEntryMode(ctx context.Context, row PluginPoli
 		return s.db.WithContext(ctx).Where("instance_id = ? AND node_id = ? AND kind = ? AND entry_id = ?", row.InstanceID, row.NodeID, row.Kind, row.EntryID).Delete(&PluginPolicyEntryModeRow{}).Error
 	}
 	return s.db.WithContext(ctx).Save(&row).Error
+}
+
+func (s *GormStore) GetPluginPolicyEntryMode(ctx context.Context, instanceID string, entry sdk.PolicyEntryTarget) (PluginPolicyEntryModeRow, bool, error) {
+	var row PluginPolicyEntryModeRow
+	query := s.db.WithContext(ctx).Where("instance_id = ? AND node_id = ? AND kind = ? AND entry_id = ?", instanceID, entry.NodeID, entry.Kind, entry.ID)
+	if entry.Token != "" {
+		query = query.Where("entry_token = ?", entry.Token)
+	}
+	err := query.First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, false, nil
+	}
+	return row, err == nil, err
+}
+
+func newPolicyEntryToken() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate policy entry token: %w", err)
+	}
+	return "entry-" + hex.EncodeToString(value), nil
+}
+
+func ManagedPolicyEntryToken(incarnationID, nodeID, kind string) string {
+	suffix := "-tcp"
+	if kind == sdk.PolicyEntryManagedUDP {
+		suffix = "-udp"
+	}
+	digest := sha256.Sum256([]byte(strings.TrimSpace(nodeID)))
+	return strings.TrimSpace(incarnationID) + "-" + hex.EncodeToString(digest[:8]) + suffix
+}
+
+func backfillPolicyEntryTokens(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var httpRows []HTTPRuleRow
+		if err := tx.Where("entry_token = ''").Find(&httpRows).Error; err != nil {
+			return err
+		}
+		for _, row := range httpRows {
+			token, err := newPolicyEntryToken()
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&HTTPRuleRow{}).Where("agent_id = ? AND id = ? AND entry_token = ''", row.AgentID, row.ID).Update("entry_token", token).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", row.AgentID, sdk.PolicyEntryHTTP, strconv.Itoa(row.ID)).Update("entry_token", token).Error; err != nil {
+				return err
+			}
+		}
+		var l4Rows []L4RuleRow
+		if err := tx.Where("entry_token = ''").Find(&l4Rows).Error; err != nil {
+			return err
+		}
+		for _, row := range l4Rows {
+			token, err := newPolicyEntryToken()
+			if err != nil {
+				return err
+			}
+			kind := sdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = sdk.PolicyEntryUDP
+			}
+			if err := tx.Model(&L4RuleRow{}).Where("agent_id = ? AND id = ? AND entry_token = ''", row.AgentID, row.ID).Update("entry_token", token).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", row.AgentID, kind, strconv.Itoa(row.ID)).Update("entry_token", token).Error; err != nil {
+				return err
+			}
+		}
+		var managed []PluginPolicyEntryModeRow
+		if err := tx.Where("entry_token = '' AND kind IN ?", []string{sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP}).Find(&managed).Error; err != nil {
+			return err
+		}
+		for _, row := range managed {
+			var instance PluginInstanceRow
+			if err := tx.Where("id = ?", row.EntryID).First(&instance).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			} else if err != nil {
+				return err
+			}
+			token := ManagedPolicyEntryToken(instance.IncarnationID, row.NodeID, row.Kind)
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("instance_id = ? AND node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", row.InstanceID, row.NodeID, row.Kind, row.EntryID).Update("entry_token", token).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func deletePluginPolicyEntryModesTx(tx *gorm.DB, nodeID, kind string, entryIDs []string) error {
@@ -188,7 +283,7 @@ func (s *GormStore) PolicySettingsSnapshot(ctx context.Context, instance PluginI
 			return result, err
 		}
 		for _, override := range rows {
-			if override.NodeID == entry.NodeID && override.Kind == entry.Kind && override.EntryID == entry.ID {
+			if override.NodeID == entry.NodeID && override.Kind == entry.Kind && override.EntryID == entry.ID && (entry.Token == "" || override.EntryToken == entry.Token) {
 				mode := sdk.PolicyMode(override.Mode)
 				result.Settings.EntryMode = &mode
 				break

@@ -93,6 +93,14 @@ func (journal *CapabilityAuditJournal) Audit(_ context.Context, event hostapi.Au
 }
 
 func (journal *CapabilityAuditJournal) writeBatch(events []hostapi.AuditEvent, now time.Time) error {
+	encoded, _, err := encodeCapabilityAuditBatch(events, now)
+	if err != nil {
+		return err
+	}
+	return journal.writeEncodedBatch(encoded, now)
+}
+
+func (journal *CapabilityAuditJournal) writeEncodedBatch(encoded []byte, now time.Time) error {
 	if journal == nil {
 		return errors.New("capability audit journal is unavailable")
 	}
@@ -104,36 +112,58 @@ func (journal *CapabilityAuditJournal) writeBatch(events []hostapi.AuditEvent, n
 	if err := journal.maintainLocked(now); err != nil {
 		return err
 	}
-	for _, event := range events {
-		encoded, err := encodeCapabilityAuditRecord(event, now)
-		if err != nil {
-			return err
-		}
-		if len(encoded) > maxCapabilityAuditRecordBytes {
-			return errors.New("capability audit record exceeds its bound")
-		}
-		if journal.size+int64(len(encoded)) > journal.maxBytes {
-			if err := journal.rotateLocked(now); err != nil {
-				return fmt.Errorf("rotate capability audit journal: %w", err)
-			}
-		}
-		written, err := journal.file.Write(encoded)
-		if err != nil {
-			return err
-		}
-		if written != len(encoded) {
-			return errors.New("capability audit journal short write")
-		}
-		journal.size += int64(written)
-		journal.lastActivity = now
-	}
-	if len(events) == 0 {
+	if len(encoded) == 0 {
 		return nil
 	}
+	if int64(len(encoded)) > journal.maxBytes {
+		return errors.New("capability audit batch exceeds the active file bound")
+	}
+	if journal.size+int64(len(encoded)) > journal.maxBytes {
+		if err := journal.rotateLocked(now); err != nil {
+			return fmt.Errorf("rotate capability audit journal: %w", err)
+		}
+	}
+	start := journal.size
+	written, writeErr := journal.file.Write(encoded)
+	if writeErr != nil || written != len(encoded) {
+		rollbackErr := journal.file.Truncate(start)
+		journal.size = start
+		if rollbackErr == nil {
+			rollbackErr = journal.file.Sync()
+		}
+		if writeErr == nil {
+			writeErr = errors.New("capability audit journal short write")
+		}
+		return errors.Join(writeErr, rollbackErr)
+	}
+	journal.size += int64(written)
+	journal.lastActivity = now
 	if err := journal.maintainLocked(now); err != nil {
 		return err
 	}
 	return journal.file.Sync()
+}
+
+func encodeCapabilityAuditBatch(events []hostapi.AuditEvent, now time.Time) ([]byte, uint64, error) {
+	var batch bytes.Buffer
+	allocation := uint64(0)
+	maxInt := uint64(^uint(0) >> 1)
+	for _, event := range events {
+		encoded, err := encodeCapabilityAuditRecord(event, now)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(encoded) > maxCapabilityAuditRecordBytes {
+			return nil, 0, errors.New("capability audit record exceeds its bound")
+		}
+		recordBytes := uint64(len(encoded))
+		if recordBytes > math.MaxUint64-allocation || allocation+recordBytes > maxInt {
+			return nil, 0, errors.New("capability audit batch allocation overflows")
+		}
+		allocation += recordBytes
+		_, _ = batch.Write(encoded)
+	}
+	return batch.Bytes(), allocation, nil
 }
 
 func encodeCapabilityAuditRecord(event hostapi.AuditEvent, now time.Time) ([]byte, error) {
@@ -411,7 +441,7 @@ type CapabilityAuditStatus struct {
 }
 
 type capabilityAuditBatchWriter interface {
-	writeBatch([]hostapi.AuditEvent, time.Time) error
+	writeEncodedBatch([]byte, time.Time) error
 	maintain(time.Time) error
 	Close() error
 }
@@ -527,11 +557,26 @@ func (auditor *AsyncCapabilityAuditor) run() {
 			batch = batch[:0]
 			return
 		}
+		var encoded []byte
+		allocation := uint64(0)
+		if len(batch) > 0 {
+			var err error
+			encoded, allocation, err = encodeCapabilityAuditBatch(batch, now)
+			if err != nil || allocation > uint64(auditor.config.MaxBytes/int64(maxCapabilityAuditArchives+1)) {
+				if err == nil {
+					err = errors.New("capability audit batch exceeds the active file allocation")
+				}
+				auditor.recordWriteFailure(err, len(batch))
+				auditor.queued.Add(-int64(len(batch)))
+				batch = batch[:0]
+				return
+			}
+		}
 		free, err := auditor.options.freeSpace(filepath.Dir(auditor.path))
-		if err != nil || free < auditor.config.MinFreeBytes {
+		if err != nil || !capabilityAuditSpaceAvailable(free, auditor.config.MinFreeBytes, allocation) {
 			auditor.lowSpace.Store(true)
 			if err == nil {
-				err = fmt.Errorf("capability audit free space %d is below reserved minimum %d", free, auditor.config.MinFreeBytes)
+				err = fmt.Errorf("capability audit free space %d cannot preserve minimum %d after allocating %d bytes", free, auditor.config.MinFreeBytes, allocation)
 			}
 			auditor.recordWriteFailure(err, len(batch))
 			auditor.queued.Add(-int64(len(batch)))
@@ -542,7 +587,7 @@ func (auditor *AsyncCapabilityAuditor) run() {
 		if maintainOnly || len(batch) == 0 {
 			return
 		}
-		if err := writer.writeBatch(batch, now); err != nil {
+		if err := writer.writeEncodedBatch(encoded, now); err != nil {
 			auditor.recordWriteFailure(err, len(batch))
 			auditor.queued.Add(-int64(len(batch)))
 			_ = writer.Close()
@@ -587,6 +632,13 @@ func (auditor *AsyncCapabilityAuditor) run() {
 			}
 		}
 	}
+}
+
+func capabilityAuditSpaceAvailable(free, minimum, allocation uint64) bool {
+	if allocation > free || minimum > math.MaxUint64-allocation {
+		return false
+	}
+	return free >= minimum+allocation
 }
 
 func (auditor *AsyncCapabilityAuditor) recordWriteFailure(err error, dropped int) {

@@ -220,9 +220,14 @@ func TestPolicyConsumptionManagedEntryCleanupAndInstanceIncarnation(t *testing.T
 	if firstIncarnation == "" {
 		t.Fatal("new instance has no incarnation")
 	}
+	tcpToken := ManagedPolicyEntryToken(firstIncarnation, "local", sdk.PolicyEntryManagedTCP)
+	udpToken := ManagedPolicyEntryToken(firstIncarnation, "local", sdk.PolicyEntryManagedUDP)
+	if tcpToken == udpToken || (sdk.PolicyEntryTarget{NodeID: "local", Kind: sdk.PolicyEntryManagedTCP, ID: managed.ID, Token: tcpToken}).Validate() != nil || (sdk.PolicyEntryTarget{NodeID: "local", Kind: sdk.PolicyEntryManagedUDP, ID: managed.ID, Token: udpToken}).Validate() != nil {
+		t.Fatalf("managed protocol tokens are invalid or reused: tcp=%q udp=%q", tcpToken, udpToken)
+	}
 	for _, node := range []string{"local", "edge-a"} {
 		for _, kind := range []string{sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP} {
-			if err := store.PutPluginPolicyEntryMode(t.Context(), PluginPolicyEntryModeRow{InstanceID: policy.ID, NodeID: node, Kind: kind, EntryID: managed.ID, Mode: "observe"}, false); err != nil {
+			if err := store.PutPluginPolicyEntryMode(t.Context(), PluginPolicyEntryModeRow{InstanceID: policy.ID, NodeID: node, Kind: kind, EntryID: managed.ID, EntryToken: ManagedPolicyEntryToken(firstIncarnation, node, kind), Mode: "observe"}, false); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -267,6 +272,9 @@ func TestPolicyConsumptionManagedEntryCleanupAndInstanceIncarnation(t *testing.T
 	}
 	if recreated.IncarnationID == "" || recreated.IncarnationID == firstIncarnation {
 		t.Fatalf("recreated instance reused incarnation: old=%q new=%q", firstIncarnation, recreated.IncarnationID)
+	}
+	if ManagedPolicyEntryToken(recreated.IncarnationID, "local", sdk.PolicyEntryManagedTCP) == tcpToken {
+		t.Fatal("recreated managed entry retained token")
 	}
 }
 

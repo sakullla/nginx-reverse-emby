@@ -104,7 +104,13 @@ type capabilityAuditWriterFixture struct {
 	startOnce  sync.Once
 }
 
-func (writer *capabilityAuditWriterFixture) writeBatch(events []hostapi.AuditEvent, _ time.Time) error {
+func (writer *capabilityAuditWriterFixture) counts() (int, int) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.batches, writer.events
+}
+
+func (writer *capabilityAuditWriterFixture) writeEncodedBatch(encoded []byte, _ time.Time) error {
 	writer.startOnce.Do(func() {
 		if writer.started != nil {
 			close(writer.started)
@@ -115,7 +121,7 @@ func (writer *capabilityAuditWriterFixture) writeBatch(events []hostapi.AuditEve
 	}
 	writer.mu.Lock()
 	writer.batches++
-	writer.events += len(events)
+	writer.events += bytes.Count(encoded, []byte{'\n'})
 	writer.mu.Unlock()
 	return writer.err
 }
@@ -234,6 +240,77 @@ func TestAsyncCapabilityAuditorWriteFailureAndLowSpaceRecover(t *testing.T) {
 			}
 			if err := auditor.Close(); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestAsyncCapabilityAuditorReservesEncodedBatchBeforeWriting(t *testing.T) {
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	event := boundedCapabilityAuditEvent(capabilityAuditTestEvent("official.policy", "allowed"))
+	encoded, err := encodeCapabilityAuditRecord(event, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		free      uint64
+		wantWrite bool
+	}{
+		{name: "exact post-write reserve", free: model.DefaultCapabilityAuditMinFreeBytes + uint64(len(encoded)), wantWrite: true},
+		{name: "one byte below reserve", free: model.DefaultCapabilityAuditMinFreeBytes + uint64(len(encoded)) - 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := &capabilityAuditWriterFixture{}
+			cfg := model.DefaultCapabilityAuditConfig()
+			cfg.Enabled, cfg.QueueSize, cfg.BatchSize, cfg.FlushInterval = true, 1, 1, time.Minute
+			auditor, err := newAsyncCapabilityAuditor(filepath.Join(t.TempDir(), "audit", "plugin-capabilities.jsonl"), cfg, capabilityAuditAsyncOptions{
+				now:       func() time.Time { return now },
+				freeSpace: func(string) (uint64, error) { return test.free, nil },
+				open: func(string, model.CapabilityAuditConfig, time.Time) (capabilityAuditBatchWriter, error) {
+					return writer, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := auditor.Audit(t.Context(), event); err != nil {
+				t.Fatal(err)
+			}
+			waitCapabilityAuditCondition(t, func() bool {
+				_, events := writer.counts()
+				status := auditor.Status()
+				return status.Queued == 0 && (events > 0 || status.Dropped > 0)
+			})
+			_, events := writer.counts()
+			status := auditor.Status()
+			if test.wantWrite && (events != 1 || status.LowSpace || status.Dropped != 0) {
+				t.Fatalf("exact threshold result: events=%d status=%+v", events, status)
+			}
+			if !test.wantWrite && (events != 0 || !status.LowSpace || status.Dropped != 1 || status.WriteErrors == 0 || status.LastError == "" || status.Queued != 0) {
+				t.Fatalf("below threshold result: events=%d status=%+v", events, status)
+			}
+			if err := auditor.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCapabilityAuditSpaceAdmissionRejectsOversizeAndOverflow(t *testing.T) {
+	for _, test := range []struct {
+		name                      string
+		free, minimum, allocation uint64
+		want                      bool
+	}{
+		{name: "exact", free: 150, minimum: 100, allocation: 50, want: true},
+		{name: "one below", free: 149, minimum: 100, allocation: 50},
+		{name: "batch exceeds free", free: 49, minimum: 1, allocation: 50},
+		{name: "reserve addition overflows", free: math.MaxUint64, minimum: math.MaxUint64, allocation: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := capabilityAuditSpaceAvailable(test.free, test.minimum, test.allocation); got != test.want {
+				t.Fatalf("space admission = %v want=%v", got, test.want)
 			}
 		})
 	}
