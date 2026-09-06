@@ -326,10 +326,6 @@ func assertSSNoPayload(t *testing.T, values <-chan string, message string) {
 
 func runSSRoutePerformance(t *testing.T, client string, port int, target, password, payload string, received <-chan string, pid int, primaryRef, upstreamRef string) {
 	t.Helper()
-	for index := 0; index < 3; index++ {
-		runSSClient(t, client, "tcp", "127.0.0.1", port, target, "aes-256-gcm", password, payload)
-		_ = waitSSPayload(t, received)
-	}
 	latencies := make([]time.Duration, 20)
 	retryCount := 0
 	started := time.Now()
