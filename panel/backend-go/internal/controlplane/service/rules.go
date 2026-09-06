@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2471,12 +2472,10 @@ func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.Policy
 	if len(overlay) != 0 && (len(overlay) > 128<<10 || !json.Valid(overlay)) {
 		return nil, fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
 	}
-	if input.OverlayFormat != "" {
-		if _, err := pluginsdk.DecodePolicyOverlay(overlay, pluginsdk.PolicyOverlayDecodeContext{Format: input.OverlayFormat, LegacyPolicyID: input.LegacyPolicyID}); err != nil {
-			return nil, fmt.Errorf("%w: policy overlay format is invalid", ErrInvalidArgument)
-		}
+	if input.OverlayFormat != "" || input.LegacyPolicyID != "" {
+		return nil, fmt.Errorf("%w: policy overlay metadata is Host-owned", ErrInvalidArgument)
 	}
-	return &storage.PolicyRef{ID: id, Overlay: overlay, OverlayFormat: input.OverlayFormat, LegacyPolicyID: input.LegacyPolicyID}, nil
+	return &storage.PolicyRef{ID: id, Overlay: overlay}, nil
 }
 
 type rulePolicyCatalogStore interface {
@@ -2526,10 +2525,8 @@ func validateRulePolicyReference(ctx context.Context, store any, agentID string,
 	}
 	for _, policy := range policies {
 		if policy.ID == ref.ID {
-			if pluginPolicyIsOfficialWAF(policy) && (ref.OverlayFormat == "" || ref.OverlayFormat == pluginsdk.PolicyOverlayFormatLegacyWAF) {
-				if err := validateWAFPolicyOverlay(ref.Overlay); err != nil {
-					return err
-				}
+			if err := validateRulePolicyOverlay(policy, ref); err != nil {
+				return err
 			}
 			frameBytes, frameErr := pluginsdk.PolicyV1EvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", pluginsdk.PolicyRequestIDMaxBytes), ref.Overlay)
 			if frameErr != nil {
@@ -2547,6 +2544,59 @@ func validateRulePolicyReference(ctx context.Context, store any, agentID string,
 		}
 	}
 	return fmt.Errorf("%w: policy_ref %q is not active for agent %q", ErrInvalidArgument, ref.ID, agentID)
+}
+
+func validateRulePolicyOverlay(policy storage.PluginPolicy, ref *storage.PolicyRef) error {
+	overlay := bytes.TrimSpace(ref.Overlay)
+	if len(overlay) == 0 || string(overlay) == "null" {
+		return nil
+	}
+	format, owner := ref.OverlayFormat, ref.LegacyPolicyID
+	if format == "" {
+		if len(policy.Stages) != 1 {
+			return fmt.Errorf("%w: policy_ref overlay owner is ambiguous", ErrInvalidArgument)
+		}
+		stage := policy.Stages[0]
+		owner = stage.PolicyID
+		switch stage.Kind {
+		case "ip":
+			format = pluginsdk.PolicyOverlayFormatLegacyIP
+		case "rate":
+			format = pluginsdk.PolicyOverlayFormatLegacyRate
+		case "waf":
+			format = pluginsdk.PolicyOverlayFormatLegacyWAF
+		default:
+			return fmt.Errorf("%w: policy_ref overlay owner is unsupported", ErrInvalidArgument)
+		}
+		ref.OverlayFormat, ref.LegacyPolicyID = format, owner
+	}
+	envelope, err := pluginsdk.DecodePolicyOverlay(overlay, pluginsdk.PolicyOverlayDecodeContext{Format: format, LegacyPolicyID: owner})
+	if err != nil {
+		return fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
+	}
+	known := make(map[pluginsdk.PolicyStageIdentity]struct{}, len(policy.Stages))
+	for _, stage := range policy.Stages {
+		known[pluginsdk.PolicyStageIdentity{Kind: stage.Kind, PolicyID: stage.PolicyID}] = struct{}{}
+	}
+	var officialWAFPayload json.RawMessage
+	for _, selected := range envelope.Stages {
+		identity := pluginsdk.PolicyStageIdentity{Kind: selected.Kind, PolicyID: selected.PolicyID}
+		if _, ok := known[identity]; !ok {
+			return fmt.Errorf("%w: policy_ref overlay belongs to an unrelated stage", ErrInvalidArgument)
+		}
+		if pluginPolicyIsOfficialWAF(policy) && selected.Kind == "waf" {
+			officialWAFPayload = selected.Payload
+		}
+	}
+	if pluginPolicyIsOfficialWAF(policy) {
+		if len(officialWAFPayload) == 0 {
+			return fmt.Errorf("%w: policy_ref overlay does not select the official WAF stage", ErrInvalidArgument)
+		}
+		if err := validateWAFPolicyOverlay(officialWAFPayload); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cloneRulePolicyRef(ref *storage.PolicyRef) *storage.PolicyRef {

@@ -42,6 +42,13 @@ const (
 	MaxPolicyReadFieldValueBytes = int(MaxPolicyOutputBytes) - 5
 	MaxBodyPrefixBytes           = 128 << 10
 	MaxPolicyRequestIDBytes      = pluginsdk.PolicyRequestIDMaxBytes
+
+	// These bounds are shared with the HTTP ingress projection so candidate
+	// admission can size the complete Host-authored normalized_http frame.
+	MaxWAFHTTPBodyWindowBytes    = 64 << 10
+	MaxWAFHTTPFieldValueBytes    = MaxPolicyReadFieldValueBytes
+	MaxWAFHTTPHeadersBytes       = 32 << 10
+	MaxWAFHTTPTrustedSourceBytes = len("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
 )
 
 func CanonicalHTTPHeaderField(name string) (string, bool) {

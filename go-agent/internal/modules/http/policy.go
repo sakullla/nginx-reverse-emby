@@ -21,10 +21,10 @@ import (
 // The original request body is rebuilt from this prefix and its unread tail, so
 // policy inspection never requires whole-body buffering.
 const (
-	httpPolicyBodyWindowBytes  = 64 << 10
-	httpPolicyFieldValueBytes  = policy.MaxPolicyReadFieldValueBytes
+	httpPolicyBodyWindowBytes  = policy.MaxWAFHTTPBodyWindowBytes
+	httpPolicyFieldValueBytes  = policy.MaxWAFHTTPFieldValueBytes
 	httpPolicyHeaderValueBytes = httpPolicyFieldValueBytes
-	httpPolicyHeadersBytes     = 32 << 10
+	httpPolicyHeadersBytes     = policy.MaxWAFHTTPHeadersBytes
 )
 
 type httpPolicyRequestIDContextKey struct{}

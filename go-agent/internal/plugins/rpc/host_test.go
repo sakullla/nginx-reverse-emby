@@ -12,6 +12,7 @@ import (
 	"os/exec"
 
 	"sync"
+	"testing"
 
 	"time"
 
@@ -27,6 +28,31 @@ type hostProcess struct {
 }
 
 type hostTestSandbox struct{}
+
+func TestCandidateExecutionScopeRequiresImmutableFeatureOptIn(t *testing.T) {
+	legacyFeatures := pluginsdk.RequiredRPCFeatures([]string{pluginsdk.PermissionManagedNetworkListen})
+	candidate := HostCandidate{Scopes: []string{pluginsdk.PermissionManagedNetworkListen}, RequiredFeatures: legacyFeatures}
+	if candidateUsesExecutionScope(candidate) {
+		t.Fatal("legacy managed feature contract implicitly enabled execution scope")
+	}
+	for _, feature := range candidateRPCFeatures(candidate) {
+		if feature == pluginsdk.RPCFeatureExecutionScopeV1 {
+			t.Fatal("legacy handshake required execution scope")
+		}
+	}
+
+	candidate.RequiredFeatures = pluginsdk.RPCFeaturesWithExecutionScope(legacyFeatures)
+	if !candidateUsesExecutionScope(candidate) {
+		t.Fatal("explicit immutable feature contract did not enable execution scope")
+	}
+	found := false
+	for _, feature := range candidateRPCFeatures(candidate) {
+		found = found || feature == pluginsdk.RPCFeatureExecutionScopeV1
+	}
+	if !found {
+		t.Fatal("opt-in handshake omitted execution scope feature")
+	}
+}
 
 func (hostTestSandbox) Available() bool                       { return true }
 func (hostTestSandbox) Provider() string                      { return "test-kernel-boundary" }

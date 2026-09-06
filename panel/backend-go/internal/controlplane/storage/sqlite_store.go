@@ -1254,6 +1254,23 @@ func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []H
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing []HTTPRuleRow
+		if err := tx.Where("agent_id = ?", agentID).Find(&existing).Error; err != nil {
+			return err
+		}
+		retained := make(map[int]struct{}, len(rules))
+		for _, row := range rules {
+			retained[row.ID] = struct{}{}
+		}
+		removed := make([]string, 0)
+		for _, row := range existing {
+			if _, ok := retained[row.ID]; !ok {
+				removed = append(removed, strconv.Itoa(row.ID))
+			}
+		}
+		if err := deletePluginPolicyEntryModesTx(tx, agentID, pluginsdk.PolicyEntryHTTP, removed); err != nil {
+			return err
+		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
 			return err
 		}
@@ -1278,6 +1295,33 @@ func (s *GormStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4R
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing []L4RuleRow
+		if err := tx.Where("agent_id = ?", agentID).Find(&existing).Error; err != nil {
+			return err
+		}
+		retained := make(map[int]string, len(rules))
+		for _, row := range rules {
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			retained[row.ID] = kind
+		}
+		removed := map[string][]string{pluginsdk.PolicyEntryTCP: {}, pluginsdk.PolicyEntryUDP: {}}
+		for _, row := range existing {
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			if nextKind, ok := retained[row.ID]; !ok || nextKind != kind {
+				removed[kind] = append(removed[kind], strconv.Itoa(row.ID))
+			}
+		}
+		for kind, entryIDs := range removed {
+			if err := deletePluginPolicyEntryModesTx(tx, agentID, kind, entryIDs); err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&L4RuleRow{}).Error; err != nil {
 			return err
 		}

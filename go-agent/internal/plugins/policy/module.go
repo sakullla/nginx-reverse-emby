@@ -448,6 +448,9 @@ func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.Plugin
 			return err
 		}
 		frameBytes, err := PolicyEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		if stage.Kind == model.PolicyKindWAF && extensionPoint == ExtensionHTTP {
+			frameBytes, err = PolicyWAFEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		}
 		if err != nil {
 			return err
 		}

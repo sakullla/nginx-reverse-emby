@@ -379,7 +379,11 @@ func pluginHostStoredOutcome(record storage.IdempotencyRecordRow) pluginsdk.Host
 }
 
 func pluginHostOperationKey(candidate pluginhost.Candidate, operationID string) string {
-	digest := sha256.Sum256([]byte(candidate.Identity.PluginID + "\x00" + candidate.InstanceID + "\x00" + operationID))
+	identity := candidate.Identity.PluginID + "\x00" + candidate.InstanceID
+	if candidate.IncarnationID != "" && !strings.HasPrefix(candidate.IncarnationID, "legacy-") {
+		identity += "\x00" + candidate.IncarnationID
+	}
+	digest := sha256.Sum256([]byte(identity + "\x00" + operationID))
 	return hex.EncodeToString(digest[:])
 }
 

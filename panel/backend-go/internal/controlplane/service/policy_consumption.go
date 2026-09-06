@@ -46,7 +46,7 @@ func (m *PluginCapabilityManager) consumptionOwner(ctx context.Context, tx *stor
 	if err != nil {
 		return result, err
 	}
-	if caller.PluginID != c.Identity.PluginID || caller.ResourceGroupID != c.ResourceGroupID {
+	if caller.PluginID != c.Identity.PluginID || caller.ResourceGroupID != c.ResourceGroupID || c.IncarnationID == "" || caller.IncarnationID != c.IncarnationID {
 		return result, errPluginHostDenied
 	}
 	runtime, found, err := tx.GetPluginRuntime(ctx, c.InstanceID)

@@ -96,12 +96,9 @@ func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID stri
 	for name := range pluginsdk.PolicyV1HostFunctions() {
 		supported = append(supported, name)
 	}
-	if err := pluginsdk.ValidatePolicyV1WASMForHost(wasmBytes, stage.ResourceBudget.MemoryBytes, stage.DeclaredScopes, stage.GrantedScopes, supported); err != nil {
-		return preparedPolicyStage{}, fmt.Errorf("policy import admission: %w", err)
-	}
-	artifact, err := AcceptVerifiedArtifact(wasmBytes, stage.ArtifactDigest, stage.SignatureVerified)
+	artifact, err := verifyPolicyStageArtifact(stage, wasmBytes, supported, pluginsdk.ValidatePolicyV1WASMForHost)
 	if err != nil {
-		return preparedPolicyStage{}, fmt.Errorf("verify artifact: %w", err)
+		return preparedPolicyStage{}, err
 	}
 	initRequest, err := marshalInitRequest(stage.Config, stage.GrantedScopes, generationID)
 	if err != nil {
@@ -126,6 +123,22 @@ func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID stri
 		return preparedPolicyStage{}, fmt.Errorf("initialize artifact: %w", err)
 	}
 	return preparedPolicyStage{definition: clonePolicyStage(stage), generation: generation}, nil
+}
+
+type policyArtifactValidator func([]byte, int64, []string, []string, []string) error
+
+func verifyPolicyStageArtifact(stage model.PolicyStage, wasmBytes []byte, supported []string, validate policyArtifactValidator) (VerifiedArtifact, error) {
+	artifact, err := AcceptVerifiedArtifact(wasmBytes, stage.ArtifactDigest, stage.SignatureVerified)
+	if err != nil {
+		return VerifiedArtifact{}, fmt.Errorf("verify artifact: %w", err)
+	}
+	if validate == nil {
+		return VerifiedArtifact{}, errors.New("policy artifact validator is required")
+	}
+	if err := validate(artifact.wasm, stage.ResourceBudget.MemoryBytes, stage.DeclaredScopes, stage.GrantedScopes, supported); err != nil {
+		return VerifiedArtifact{}, fmt.Errorf("policy import admission: %w", err)
+	}
+	return artifact, nil
 }
 
 // GenerationFactory adapts the process-scoped compiler runtime to policy's

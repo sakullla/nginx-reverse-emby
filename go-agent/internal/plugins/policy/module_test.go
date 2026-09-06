@@ -177,6 +177,70 @@ func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) 
 	}
 }
 
+func TestPolicyModuleRejectsWAFWhenOnlyOverlayFrameFits(t *testing.T) {
+	overlay := json.RawMessage(`{"mode":"deny"}`)
+	overlayOnly, err := PolicyEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := PolicyWAFEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete <= overlayOnly {
+		t.Fatalf("complete WAF frame = %d, overlay-only = %d", complete, overlayOnly)
+	}
+	definition := testPolicy("waf", model.PolicyKindWAF)
+	definition.Stages[0].ResourceBudget.InputBytes = int64(overlayOnly)
+	snapshot := model.Snapshot{
+		PluginPolicies: []model.PluginPolicy{definition},
+		Rules:          []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "waf", Overlay: overlay}}},
+	}
+	policyModule := NewModule(nil, nil)
+	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err == nil {
+		t.Fatal("WAF candidate whose overlay-only frame fits was accepted despite the complete normalized frame")
+	}
+
+	snapshot.PluginPolicies[0].Stages[0].ResourceBudget.InputBytes = int64(complete)
+	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err != nil {
+		t.Fatalf("exact complete WAF frame boundary rejected: %v", err)
+	}
+
+	registry := module.NewRegistry()
+	if err := registry.Register(NewModule(&testGenerationFactory{}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Revision = 1
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := registry.PrepareGeneration(t.Context(), firstContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := first.Publish()
+	t.Cleanup(func() { _ = active.Destroy(context.Background()) })
+
+	rejected := snapshot
+	rejected.Revision = 2
+	rejected.PluginPolicies = clonePolicies(snapshot.PluginPolicies)
+	rejected.PluginPolicies[0].Stages[0].ResourceBudget.InputBytes = int64(overlayOnly)
+	rejectedContext, err := module.NewGenerationContext(snapshot, rejected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.PrepareGeneration(t.Context(), rejectedContext); err == nil {
+		t.Fatal("complete-frame-over-budget candidate was prepared")
+	}
+	if registry.ActiveGeneration() != active || registry.ActiveGeneration().Revision() != 1 {
+		t.Fatal("rejected WAF candidate replaced the last valid generation")
+	}
+}
+
 func TestPolicyModuleOptionalRuntimeFailureDoesNotBlockCoreGeneration(t *testing.T) {
 	factory := &testGenerationFactory{err: errors.New("optional compile failed")}
 	policyModule := NewModule(factory, nil)

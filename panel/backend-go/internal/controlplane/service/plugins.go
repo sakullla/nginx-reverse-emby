@@ -1872,7 +1872,7 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		generationID := generation.ID
 		configRaw, handlesRaw, group, actorID, correlationID := config, secretHandlesJSON, resourceGroupID, operation.ActorID, operation.CorrelationID
 		plan.Candidates = append(plan.Candidates, pluginhost.Candidate{
-			InstanceID: instance.ID, OperationID: operation.ID, ResourceGroupID: resourceGroupID, Revision: operation.TargetRevision,
+			InstanceID: instance.ID, IncarnationID: instance.IncarnationID, OperationID: operation.ID, ResourceGroupID: resourceGroupID, Revision: operation.TargetRevision,
 			Artifact: pluginhost.Artifact{CachePath: filepath.Join(packageRow.CachePath, filepath.FromSlash(runtimeArtifact.Path)), SHA256: runtimeArtifact.SHA256, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH},
 			Identity: pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
 			Config:   append([]byte(nil), generation.Config...), ResolveConfigAndSecrets: func(resolveCtx context.Context, requestedGeneration string) ([]byte, []string, error) {

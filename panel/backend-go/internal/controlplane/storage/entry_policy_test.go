@@ -55,3 +55,69 @@ func TestComposedEntryPolicyIsolationAndCompatibility(t *testing.T) {
 		t.Fatal("legacy chain changed without new IP", kept, err)
 	}
 }
+
+func TestEntryPolicyModesAreRetiredWithExactStoredEntry(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	httpOne := HTTPRuleRow{ID: 1, AgentID: "local"}
+	httpTwo := HTTPRuleRow{ID: 2, AgentID: "local"}
+	tcp := L4RuleRow{ID: 3, AgentID: "local", Protocol: "tcp"}
+	udp := L4RuleRow{ID: 4, AgentID: "local", Protocol: "udp"}
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{httpOne, httpTwo}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{tcp, udp}); err != nil {
+		t.Fatal(err)
+	}
+	rows := []PluginPolicyEntryModeRow{
+		{InstanceID: "ip-a", NodeID: "local", Kind: sdk.PolicyEntryHTTP, EntryID: "1", Mode: "observe"},
+		{InstanceID: "ip-b", NodeID: "local", Kind: sdk.PolicyEntryHTTP, EntryID: "1", Mode: "observe"},
+		{InstanceID: "ip-a", NodeID: "local", Kind: sdk.PolicyEntryHTTP, EntryID: "2", Mode: "observe"},
+		{InstanceID: "ip-a", NodeID: "edge", Kind: sdk.PolicyEntryHTTP, EntryID: "1", Mode: "observe"},
+		{InstanceID: "ip-a", NodeID: "local", Kind: sdk.PolicyEntryTCP, EntryID: "3", Mode: "observe"},
+		{InstanceID: "ip-a", NodeID: "local", Kind: sdk.PolicyEntryUDP, EntryID: "4", Mode: "observe"},
+	}
+	for _, row := range rows {
+		if err := store.PutPluginPolicyEntryMode(t.Context(), row, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{httpTwo}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{ID: 3, AgentID: "local", Protocol: "udp"}, udp}); err != nil {
+		t.Fatal(err)
+	}
+	for _, instanceID := range []string{"ip-a", "ip-b"} {
+		got, err := store.ListPluginPolicyEntryModes(t.Context(), instanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range got {
+			if row.NodeID == "local" && row.EntryID == "1" && row.Kind == sdk.PolicyEntryHTTP {
+				t.Fatalf("deleted HTTP incarnation retained mode: %+v", row)
+			}
+			if row.NodeID == "local" && row.EntryID == "3" && row.Kind == sdk.PolicyEntryTCP {
+				t.Fatalf("replaced TCP incarnation retained mode: %+v", row)
+			}
+		}
+	}
+	kept, err := store.ListPluginPolicyEntryModes(t.Context(), "ip-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 3 {
+		t.Fatalf("entry cleanup removed unrelated modes: %+v", kept)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{ID: 3, AgentID: "local", Protocol: "udp"}}); err != nil {
+		t.Fatal(err)
+	}
+	kept, err = store.ListPluginPolicyEntryModes(t.Context(), "ip-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range kept {
+		if row.NodeID == "local" && row.EntryID == "4" && row.Kind == sdk.PolicyEntryUDP {
+			t.Fatalf("deleted UDP incarnation retained mode: %+v", row)
+		}
+	}
+}

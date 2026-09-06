@@ -188,7 +188,7 @@ func newPolicyConsumptionFixture(t *testing.T, rpcFace ...bool) (*PluginCapabili
 
 	service := NewPluginService(store, cacheRoot)
 	service.ConfigureRevisionMutations(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
-	candidate := pluginhost.Candidate{InstanceID: instanceID, ResourceGroupID: "default", Identity: pluginhost.Identity{PluginID: pluginID, Generation: "generation-policy", PackageDigest: digest, Scopes: []string{"dataset.bind", "policy.control", "storage.write"}}, Grants: []string{"dataset.bind", "policy.control", "storage.write"}}
+	candidate := pluginhost.Candidate{InstanceID: instanceID, IncarnationID: instance.IncarnationID, ResourceGroupID: "default", Identity: pluginhost.Identity{PluginID: pluginID, Generation: "generation-policy", PackageDigest: digest, Scopes: []string{"dataset.bind", "policy.control", "storage.write"}}, Grants: []string{"dataset.bind", "policy.control", "storage.write"}}
 	if err := store.StagePluginRuntime(ctx, storage.PluginRuntimeInstanceRow{InstanceID: instanceID, PluginID: pluginID, HostScope: pluginsdk.HostScopeControlPlane, CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: digest, CandidateResourceGroupID: "default"}); err != nil {
 		t.Fatal(err)
 	}
@@ -348,6 +348,122 @@ func TestPolicyControlFloorCASAndEntryProjection(t *testing.T) {
 	}
 }
 
+func TestConsumptionReplayDoesNotCrossDeletedInstanceIncarnation(t *testing.T) {
+	manager, candidate := newPolicyConsumptionFixture(t)
+	store := manager.datasets.store
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{testHTTPWAFRuleRow(1, "local", "")}); err != nil {
+		t.Fatal(err)
+	}
+	auth := DatasetAuthorization{Administrator: true, Manage: true, ActorID: "admin", ResourceGroupID: "default"}
+	source := pluginsdk.DatasetSource{ID: "incarnation-classes", Name: "Incarnation classes", Format: pluginsdk.DatasetFormatCIDR}
+	if err := manager.datasets.PutSource(t.Context(), auth, source, DatasetRetrieval{}); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(fmt.Sprintf(`{"schema":"%s","classifications":[{"name":"cn-44","kind":"region","cidrs":["192.0.2.0/24"]}]}`, datasets.CIDRSchema))
+	digest, err := manager.datasets.Upload(t.Context(), auth, source.ID, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.datasets.Control(t.Context(), auth, pluginsdk.DatasetControlRequest{Action: pluginsdk.DatasetControlImport, SourceID: source.ID, Candidate: &pluginsdk.DatasetImportCandidate{Revision: "incarnation-v1", ExpectedDigest: digest, ArtifactDigest: digest}}); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := store.ListDatasetVersions(t.Context(), source.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("dataset version unavailable: %+v %v", versions, err)
+	}
+	client := datasetHostRuntimeClient(t, manager, &candidate)
+	entry := &pluginsdk.PolicyEntryTarget{NodeID: "local", Kind: pluginsdk.PolicyEntryHTTP, ID: "1"}
+	stage := pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: candidate.InstanceID}
+	initial, err := client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlInspect, InstanceID: candidate.InstanceID, Stage: stage, Entry: entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRequest := pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlReplaceEntry, OperationID: "incarnation-policy-operation", InstanceID: candidate.InstanceID, Stage: stage, Entry: entry, Mode: pluginsdk.PolicyModeObserve, ExpectedRevision: &initial.Desired.Version.Revision, ExpectedInstanceVersion: &initial.Desired.Version.InstanceVersion}
+	if _, err := client.ControlPolicy(t.Context(), policyRequest); err != nil {
+		t.Fatal(err)
+	}
+	datasetRequest := pluginsdk.DatasetBindingRequest{Action: pluginsdk.DatasetBindingBind, OperationID: "incarnation-dataset-operation", InstanceID: candidate.InstanceID, SourceID: source.ID, Targets: pluginsdk.ExecutionTargetSelection{Mode: pluginsdk.ExecutionTargetsEffective}, Spec: &pluginsdk.DatasetBindingSpec{VersionDigest: versions[0].Digest, Classifications: []pluginsdk.DatasetClassification{{Name: "cn-44", Kind: pluginsdk.DatasetClassificationRegion}}}}
+	if _, err := client.ManageDatasetBinding(t.Context(), datasetRequest); err != nil {
+		t.Fatal(err)
+	}
+	oldInstance, found, err := store.GetPluginInstance(t.Context(), candidate.InstanceID)
+	if err != nil || !found {
+		t.Fatal("old instance unavailable", err)
+	}
+	oldIncarnation := oldInstance.IncarnationID
+	if err := manager.plugins.DeleteInstance(t.Context(), PluginDeleteInstanceRequest{PluginID: oldInstance.PluginID, InstanceID: oldInstance.ID, ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := store.GetPluginDatasetConsumption(t.Context(), oldInstance.ID, source.ID); err != nil || row.Revision != 0 {
+		t.Fatalf("instance deletion retained live dataset mutation: %+v %v", row, err)
+	}
+	if modes, err := store.ListPluginPolicyEntryModes(t.Context(), oldInstance.ID); err != nil || len(modes) != 0 {
+		t.Fatalf("instance deletion retained live policy mutation: %+v %v", modes, err)
+	}
+	recreated := oldInstance
+	recreated.IncarnationID = ""
+	recreated.StateVersion = 0
+	recreated.ConfigVersion = 1
+	recreated.PendingConfigJSON, recreated.PendingTargetJSON, recreated.PendingResourceGroupID, recreated.PendingOperationID = "", "", "", ""
+	recreated.PendingVersion = 0
+	recreated.PendingPolicyChainsJSON, recreated.PendingBindingsJSON, recreated.PendingSecretHandlesJSON = "[]", "[]", "[]"
+	recreated.RollbackConfigJSON, recreated.RollbackResourceGroupID = "", ""
+	recreated.RollbackVersion = 0
+	recreated.RollbackPolicyChainsJSON, recreated.RollbackBindingsJSON, recreated.RollbackSecretHandlesJSON = "[]", "[]", "[]"
+	recreated.CurrentState, recreated.StatusSummaryJSON = "active", "{}"
+	installed, found, err := store.GetInstalledPlugin(t.Context(), recreated.PluginID)
+	if err != nil || !found {
+		t.Fatal("installed plugin unavailable", err)
+	}
+	operation := manager.plugins.operation(t.Context(), recreated.PluginID, "configure", installed.ActivePackageDigest, "admin")
+	if err := bindInstalledActiveOperation(&operation, installed); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation.InstanceID, operation.ResourceGroupID, operation.Status, operation.CompletedAt = recreated.ID, recreated.ResourceGroupID, "succeeded", &now
+	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
+	if err := store.ApplyPluginMutation(t.Context(), storage.PluginMutation{PluginID: recreated.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &recreated, Operation: operation, Audit: pluginLifecycleAudit(operation, "admin", "success", "", now)}); err != nil {
+		t.Fatal(err)
+	}
+	if recreated.IncarnationID == "" || recreated.IncarnationID == oldIncarnation {
+		t.Fatalf("delete/recreate reused incarnation: old=%q new=%q", oldIncarnation, recreated.IncarnationID)
+	}
+	candidate.IncarnationID = recreated.IncarnationID
+	if _, err := client.ControlPolicy(t.Context(), policyRequest); err != nil {
+		t.Fatal("new incarnation could not reuse policy operation ID", err)
+	}
+	modes, err := store.ListPluginPolicyEntryModes(t.Context(), recreated.ID)
+	if err != nil || len(modes) != 1 || modes[0].EntryID != entry.ID {
+		t.Fatalf("new policy operation replayed old ACK without mutation: %+v %v", modes, err)
+	}
+	if _, err := client.ManageDatasetBinding(t.Context(), datasetRequest); err != nil {
+		t.Fatal("new incarnation could not reuse dataset operation ID", err)
+	}
+	binding, err := store.GetPluginDatasetConsumption(t.Context(), recreated.ID, source.ID)
+	if err != nil || binding.Revision != 1 || binding.RecordJSON == "" {
+		t.Fatalf("new dataset operation replayed old ACK without mutation: %+v %v", binding, err)
+	}
+}
+
+func TestConsumptionOperationKeyPreservesLegacyReplayAndScopesNewIncarnations(t *testing.T) {
+	base := pluginhost.Candidate{InstanceID: "instance", Identity: pluginhost.Identity{PluginID: "plugin"}}
+	legacy := base
+	legacy.IncarnationID = "legacy-0123456789abcdef0123456789abcdef"
+	first := base
+	first.IncarnationID = "instance-0123456789abcdef0123456789abcdef"
+	second := base
+	second.IncarnationID = "instance-fedcba9876543210fedcba9876543210"
+	operationID := "same-operation"
+	legacyKey := pluginHostOperationKey(base, operationID)
+	if pluginHostOperationKey(legacy, operationID) != legacyKey {
+		t.Fatal("legacy migration changed an existing replay key")
+	}
+	firstKey, secondKey := pluginHostOperationKey(first, operationID), pluginHostOperationKey(second, operationID)
+	if firstKey == legacyKey || secondKey == legacyKey || firstKey == secondKey {
+		t.Fatal("new instance incarnations shared a replay key")
+	}
+}
+
 func TestDatasetBindingEmptyTargetsRefreshAndHistoricalReplay(t *testing.T) {
 	manager, candidate := newPolicyConsumptionFixture(t, true)
 	store := manager.datasets.store
@@ -442,8 +558,8 @@ func applyConsumptionRevision(t *testing.T, store *storage.GormStore, agent stri
 }
 
 func TestComposedRuleReferenceUsesExplicitOverlayFormat(t *testing.T) {
-	original := &storage.PolicyRef{ID: "waf-chain", OverlayFormat: pluginsdk.PolicyOverlayFormatEnvelopeV1, Overlay: json.RawMessage(`{"schema":"nre.policy-overlay/v1","stages":[{"kind":"waf","policy_id":"waf","payload":{"mode":"deny"}}]}`)}
-	ref, err := normalizeRulePolicyRef(original, nil)
+	trusted := &storage.PolicyRef{ID: "waf-chain", OverlayFormat: pluginsdk.PolicyOverlayFormatEnvelopeV1, Overlay: json.RawMessage(`{"schema":"nre.policy-overlay/v1","stages":[{"kind":"waf","policy_id":"waf","payload":{"mode":"deny"}}]}`)}
+	ref, err := normalizeRulePolicyRef(nil, trusted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,9 +567,29 @@ func TestComposedRuleReferenceUsesExplicitOverlayFormat(t *testing.T) {
 	if err := validateRulePolicyReference(t.Context(), catalog, "local", ref, policyExtensionHTTP); err != nil {
 		t.Fatal("explicit envelope mistaken for legacy WAF config", err)
 	}
-	ref.StageModes = []storage.PolicyModeBinding{{Stage: pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: "forged"}}}
-	if _, err := normalizeRulePolicyRef(ref, nil); err == nil {
-		t.Fatal("untrusted request supplied Host stage modes")
+	if _, err := normalizeRulePolicyRef(trusted, nil); err == nil {
+		t.Fatal("untrusted request supplied Host overlay metadata")
+	}
+	forged, err := normalizeRulePolicyRef(&storage.PolicyRef{ID: "waf-chain", Overlay: trusted.Overlay}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRulePolicyReference(t.Context(), catalog, "local", forged, policyExtensionHTTP); err == nil {
+		t.Fatal("caller-selected envelope bypassed legacy WAF validation")
+	}
+	legacy, err := normalizeRulePolicyRef(&storage.PolicyRef{ID: "waf-chain", Overlay: json.RawMessage(`{"mode":"deny"}`)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRulePolicyReference(t.Context(), catalog, "local", legacy, policyExtensionHTTP); err != nil {
+		t.Fatal("legal legacy WAF overlay rejected", err)
+	}
+	if legacy.OverlayFormat != pluginsdk.PolicyOverlayFormatLegacyWAF || legacy.LegacyPolicyID != "waf" {
+		t.Fatalf("trusted catalog provenance was not persisted: %+v", legacy)
+	}
+	badPayload := &storage.PolicyRef{ID: "waf-chain", OverlayFormat: pluginsdk.PolicyOverlayFormatEnvelopeV1, Overlay: json.RawMessage(`{"schema":"nre.policy-overlay/v1","stages":[{"kind":"waf","policy_id":"waf","payload":{"unexpected":true}}]}`)}
+	if err := validateRulePolicyReference(t.Context(), catalog, "local", badPayload, policyExtensionHTTP); err == nil {
+		t.Fatal("official WAF envelope skipped selected payload validation")
 	}
 }
 

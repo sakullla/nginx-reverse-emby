@@ -56,6 +56,13 @@ func TestPolicyConsumptionCopyDefaultMigrationRows(t *testing.T) {
 			if err := CopyDefaultMigrationRows(t.Context(), source, target); err != nil {
 				t.Fatal(err)
 			}
+			if populated {
+				sourceInstance, sourceFound, sourceErr := source.GetPluginInstance(t.Context(), "instance-policy-probe")
+				targetInstance, targetFound, targetErr := target.GetPluginInstance(t.Context(), "instance-policy-probe")
+				if sourceErr != nil || targetErr != nil || !sourceFound || !targetFound || sourceInstance.IncarnationID == "" || targetInstance.IncarnationID != sourceInstance.IncarnationID {
+					t.Fatalf("migration changed instance incarnation: source=%+v found=%v err=%v target=%+v found=%v err=%v", sourceInstance, sourceFound, sourceErr, targetInstance, targetFound, targetErr)
+				}
+			}
 			// Read all four tables, rather than testing only a hand-picked field.
 			for _, rowSet := range []struct {
 				name, order    string
@@ -198,6 +205,68 @@ func TestPolicyConsumptionTargetExpansionFollowsExecutionFace(t *testing.T) {
 			consumptionStoreBind(t, store, instance.ID, version.Digest, 2, sdk.ExecutionTargetSelection{Mode: sdk.ExecutionTargetsSubset, AgentIDs: []string{"edge-new"}})
 			assertNodes([]string{"edge-new"})
 		})
+	}
+}
+
+func TestPolicyConsumptionManagedEntryCleanupAndInstanceIncarnation(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	consumptionWritableCache(t, store)
+	if err := store.SaveAgent(t.Context(), AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	policy := consumptionStoreInstance(t, store, "policy-owner", true, `[]`)
+	managed := consumptionStoreInstance(t, store, "managed-owner", false, `["local","edge-a"]`)
+	firstIncarnation := managed.IncarnationID
+	if firstIncarnation == "" {
+		t.Fatal("new instance has no incarnation")
+	}
+	for _, node := range []string{"local", "edge-a"} {
+		for _, kind := range []string{sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP} {
+			if err := store.PutPluginPolicyEntryMode(t.Context(), PluginPolicyEntryModeRow{InstanceID: policy.ID, NodeID: node, Kind: kind, EntryID: managed.ID, Mode: "observe"}, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := store.PutPluginPolicyEntryMode(t.Context(), PluginPolicyEntryModeRow{InstanceID: policy.ID, NodeID: "local", Kind: sdk.PolicyEntryManagedTCP, EntryID: "unrelated", Mode: "observe"}, false); err != nil {
+		t.Fatal(err)
+	}
+	consumptionStoreTargets(t, store, &managed, `["edge-a"]`)
+	rows, err := store.ListPluginPolicyEntryModes(t.Context(), policy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.EntryID == managed.ID && row.NodeID == "local" {
+			t.Fatalf("removed managed target retained mode: %+v", row)
+		}
+	}
+	installed, found, err := store.GetInstalledPlugin(t.Context(), managed.PluginID)
+	if err != nil || !found {
+		t.Fatal("managed plugin unavailable", err)
+	}
+	deleteOperation := pluginTargetNormalizationOperation("delete-managed-incarnation", managed.PluginID, managed.ID, "succeeded", time.Now().UTC())
+	if err := store.ApplyPluginMutation(t.Context(), PluginMutation{PluginID: managed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, DeleteInstanceID: managed.ID, ExpectedInstanceVersion: managed.StateVersion, Operation: deleteOperation, Audit: AuditEventRow{ID: deleteOperation.ID, ActorID: "admin", Action: "plugin.delete-instance", TargetKind: "plugin", TargetID: managed.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: deleteOperation.CreatedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = store.ListPluginPolicyEntryModes(t.Context(), policy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].EntryID != "unrelated" {
+		t.Fatalf("managed deletion retained stale or removed unrelated modes: %+v", rows)
+	}
+	recreated := managed
+	recreated.StateVersion = 0
+	recreated.IncarnationID = ""
+	recreated.ConfigVersion++
+	recreated.TargetJSON = `["edge-a"]`
+	recreateOperation := pluginTargetNormalizationOperation("recreate-managed-incarnation", recreated.PluginID, recreated.ID, "succeeded", time.Now().UTC())
+	installed, _, _ = store.GetInstalledPlugin(t.Context(), recreated.PluginID)
+	if err := store.ApplyPluginMutation(t.Context(), PluginMutation{PluginID: recreated.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &recreated, Operation: recreateOperation, Audit: AuditEventRow{ID: recreateOperation.ID, ActorID: "admin", Action: "plugin.configure", TargetKind: "plugin", TargetID: recreated.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: recreateOperation.CreatedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	if recreated.IncarnationID == "" || recreated.IncarnationID == firstIncarnation {
+		t.Fatalf("recreated instance reused incarnation: old=%q new=%q", firstIncarnation, recreated.IncarnationID)
 	}
 }
 

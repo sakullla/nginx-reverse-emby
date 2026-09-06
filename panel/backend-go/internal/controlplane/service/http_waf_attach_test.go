@@ -113,7 +113,7 @@ func TestValidateRulePolicyReferenceRejectsInvalidWAFOverlay(t *testing.T) {
 	store := staticWAFPolicyCatalogStore{policies: []storage.PluginPolicy{{
 		ID: "official.waf-default",
 		Stages: []storage.PolicyStage{{
-			Kind: "waf", ExtensionPoints: []string{policyExtensionHTTP},
+			Kind: "waf", PolicyID: "official.waf-default", ExtensionPoints: []string{policyExtensionHTTP},
 			ResourceBudget: storage.PolicyResourceBudget{InputBytes: 65536},
 		}},
 	}}}

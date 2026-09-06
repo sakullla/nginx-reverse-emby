@@ -187,6 +187,7 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 					status = unavailableStatus(decision)
 					reason = applied.Failure
 				}
+				e.observe(ctx, observability.PolicyRejection, "denied", stage, policyID, reason, duration)
 				return Decision{Action: ActionDeny, StatusCode: status, Stage: stage.Kind, PolicyID: policyID, Reason: reason, Observed: decision.Observed, Degraded: decision.Degraded}
 			}
 			continue

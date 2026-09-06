@@ -68,6 +68,9 @@ func Snapshot(ctx context.Context, root string, revision int64, prefix string, s
 			extensions = []string{"http.request"}
 		}
 		stage := model.PolicyStage{Kind: item.Kind, PolicyID: instance, PluginID: "fixture.policy", PluginVersion: "1.0.0", InstanceID: instance, PackageDigest: artifactSHA, ArtifactPath: path, ArtifactDigest: artifactSHA, SignatureVerified: true, SignerKeyID: "fixture-key", SignerFingerprint: artifactSHA, ABI: model.PolicyABIV1, ExtensionPoints: extensions, ResourceGroupID: "default", Config: json.RawMessage(`{}`), DeclaredScopes: []string{string(sdk.CapabilityDatasetResolve), string(sdk.CapabilityDatasetQuery), string(sdk.CapabilityPolicyTrustedSource), "http.inspect", "l4.inspect"}, ResourceBudget: model.PolicyResourceBudget{TimeoutMS: 2, MemoryBytes: 1 << 20, Concurrency: 1, InputBytes: 4096, OutputBytes: 4096}, FailurePolicy: model.PolicyFailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"}}
+		if item.Kind == model.PolicyKindWAF {
+			stage.ResourceBudget.InputBytes = sdk.PolicyV1MaxInputFrameBytes
+		}
 		stage.GrantedScopes = append([]string(nil), stage.DeclaredScopes...)
 		mode, handling := item.Mode, item.Handling
 		if handling == "" {

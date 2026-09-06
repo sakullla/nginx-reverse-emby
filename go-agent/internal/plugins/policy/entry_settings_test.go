@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
@@ -47,6 +48,76 @@ func TestTypedSourceFailureAndWAFObserveRemainFailedChecks(t *testing.T) {
 			result := evaluator.Evaluate(t.Context(), &model.PolicyRef{ID: definition.ID}, input)
 			if !result.Degraded || !result.Observed || (mode == sdk.PolicyModeEnforce) != (result.Action == ActionDeny) || (result.Reason != "source-unavailable" && result.Reason != "invalid-result") {
 				t.Fatalf("failed check became ordinary allow: %+v", result)
+			}
+		}
+	}
+}
+
+func TestTypedEnforceDenialsEmitCanonicalRejections(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		response   ModuleResponse
+		err        error
+		wantReason string
+	}{
+		{name: "match", response: ModuleResponse{Action: ActionDeny}, wantReason: "policy-deny"},
+		{name: "failure", err: RuntimeError("trap", nil), wantReason: "guest-failure"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition := testPolicy("typed", model.PolicyKindIP)
+			definition.Stages[0].PolicySettings = typedSettings(sdk.PolicyModeEnforce, sdk.PolicyModeHandlingRaw)
+			module := &scriptedModule{
+				responses: map[model.PolicyKind]ModuleResponse{model.PolicyKindIP: test.response},
+				errors:    map[model.PolicyKind]error{model.PolicyKindIP: test.err},
+			}
+			var events []observability.Event
+			evaluator, err := NewGenerationEvaluator("generation", []model.PluginPolicy{definition}, module, observability.ObserverFunc(func(_ context.Context, event observability.Event) {
+				events = append(events, event)
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := evaluator.Evaluate(t.Context(), &model.PolicyRef{ID: definition.ID}, testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil)))
+			if decision.Action != ActionDeny || decision.Reason != test.wantReason {
+				t.Fatalf("decision = %+v", decision)
+			}
+			var rejections []observability.Event
+			for _, event := range events {
+				if event.Name == observability.PolicyRejection {
+					rejections = append(rejections, event)
+				}
+			}
+			if len(rejections) != 1 {
+				t.Fatalf("rejections = %+v, all events = %+v", rejections, events)
+			}
+			rejection := rejections[0]
+			if rejection.Outcome != "denied" || rejection.PolicyID != definition.ID || rejection.PolicyStage != string(model.PolicyKindIP) || rejection.InstanceID != definition.Stages[0].InstanceID || rejection.Reason != test.wantReason {
+				t.Fatalf("rejection = %+v", rejection)
+			}
+		})
+	}
+}
+
+func TestTypedObserveOutcomesDoNotEmitPolicyRejections(t *testing.T) {
+	definition := testPolicy("typed", model.PolicyKindIP)
+	definition.Stages[0].PolicySettings = typedSettings(sdk.PolicyModeObserve, sdk.PolicyModeHandlingRaw)
+	for _, module := range []*scriptedModule{
+		{responses: map[model.PolicyKind]ModuleResponse{model.PolicyKindIP: {Action: ActionDeny}}},
+		{errors: map[model.PolicyKind]error{model.PolicyKindIP: RuntimeError("trap", nil)}},
+	} {
+		var events []observability.Event
+		evaluator, err := NewGenerationEvaluator("generation", []model.PluginPolicy{definition}, module, observability.ObserverFunc(func(_ context.Context, event observability.Event) {
+			events = append(events, event)
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision := evaluator.Evaluate(t.Context(), &model.PolicyRef{ID: definition.ID}, testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))); decision.Action != ActionAllow || !decision.Observed {
+			t.Fatalf("observe decision = %+v", decision)
+		}
+		for _, event := range events {
+			if event.Name == observability.PolicyRejection {
+				t.Fatalf("observe outcome emitted rejection: %+v", event)
 			}
 		}
 	}

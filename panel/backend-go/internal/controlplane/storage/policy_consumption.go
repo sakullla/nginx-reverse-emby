@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -90,6 +91,29 @@ func (s *GormStore) PutPluginPolicyEntryMode(ctx context.Context, row PluginPoli
 		return s.db.WithContext(ctx).Where("instance_id = ? AND node_id = ? AND kind = ? AND entry_id = ?", row.InstanceID, row.NodeID, row.Kind, row.EntryID).Delete(&PluginPolicyEntryModeRow{}).Error
 	}
 	return s.db.WithContext(ctx).Save(&row).Error
+}
+
+func deletePluginPolicyEntryModesTx(tx *gorm.DB, nodeID, kind string, entryIDs []string) error {
+	nodeID, kind = strings.TrimSpace(nodeID), strings.TrimSpace(kind)
+	if nodeID == "" || kind == "" || len(entryIDs) == 0 {
+		return nil
+	}
+	return tx.Where("node_id = ? AND kind = ? AND entry_id IN ?", nodeID, kind, entryIDs).Delete(&PluginPolicyEntryModeRow{}).Error
+}
+
+func deleteManagedPluginPolicyEntryModesTx(tx *gorm.DB, entryID string, nodeIDs []string) error {
+	entryID = strings.TrimSpace(entryID)
+	if entryID == "" {
+		return nil
+	}
+	query := tx.Where("entry_id = ? AND kind IN ?", entryID, []string{sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP})
+	if nodeIDs != nil && len(nodeIDs) == 0 {
+		return nil
+	}
+	if nodeIDs != nil {
+		query = query.Where("node_id IN ?", nodeIDs)
+	}
+	return query.Delete(&PluginPolicyEntryModeRow{}).Error
 }
 func (s *GormStore) GetPluginDatasetConsumption(ctx context.Context, instance, source string) (PluginDatasetConsumptionRow, error) {
 	var row PluginDatasetConsumptionRow

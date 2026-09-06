@@ -34,7 +34,7 @@ type Identity struct {
 	Scopes                                       []string
 }
 type Candidate struct {
-	InstanceID                                            string
+	InstanceID, IncarnationID                             string
 	OperationID, ResourceGroupID                          string
 	Revision                                              int64
 	Artifact                                              Artifact

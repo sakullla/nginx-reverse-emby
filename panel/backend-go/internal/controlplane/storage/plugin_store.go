@@ -3,8 +3,10 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -636,6 +639,17 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&PluginInstanceRow{}).Where("state_version = 0").Update("state_version", 1).Error; err != nil {
 			return err
+		}
+		var legacyInstances []PluginInstanceRow
+		if err := tx.Where("incarnation_id = ?", "").Find(&legacyInstances).Error; err != nil {
+			return err
+		}
+		for _, instance := range legacyInstances {
+			digest := sha256.Sum256([]byte(instance.PluginID + "\x00" + instance.ID))
+			incarnationID := "legacy-" + hex.EncodeToString(digest[:16])
+			if err := tx.Model(&PluginInstanceRow{}).Where("id = ? AND incarnation_id = ?", instance.ID, "").Update("incarnation_id", incarnationID).Error; err != nil {
+				return err
+			}
 		}
 		now := time.Now().UTC()
 		if err := normalizeDeletedPluginAgentTargetsTx(tx, now, defaultTargetID); err != nil {
@@ -3731,6 +3745,11 @@ func (s *GormStore) applyPluginMutationTx(ctx context.Context, tx *gorm.DB, muta
 				if err := deletePluginConsumptionTx(tx, instanceIDs); err != nil {
 					return err
 				}
+				for _, instanceID := range instanceIDs {
+					if err := deleteManagedPluginPolicyEntryModesTx(tx, instanceID, nil); err != nil {
+						return err
+					}
+				}
 				if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&QuotaAllocationRow{}).Error; err != nil {
 					return err
 				}
@@ -3990,6 +4009,9 @@ func (s *GormStore) deletePluginInstanceTx(tx *gorm.DB, mutation PluginMutation)
 	if err := deletePluginConsumptionTx(tx, []string{instanceID}); err != nil {
 		return err
 	}
+	if err := deleteManagedPluginPolicyEntryModesTx(tx, instanceID, nil); err != nil {
+		return err
+	}
 	result := tx.Where("id = ? AND plugin_id = ? AND state_version = ?", instanceID, mutation.PluginID, current.StateVersion).Delete(&PluginInstanceRow{})
 	if result.Error != nil {
 		return result.Error
@@ -4034,6 +4056,9 @@ func cascadePluginInstanceHTTPRulesTx(tx *gorm.DB, instanceID string, now time.T
 			return err
 		}
 		if err := tx.Where("agent_id = ? AND id = ?", rule.AgentID, rule.ID).Delete(&HTTPRuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := deletePluginPolicyEntryModesTx(tx, rule.AgentID, pluginsdk.PolicyEntryHTTP, []string{strconv.Itoa(rule.ID)}); err != nil {
 			return err
 		}
 	}
@@ -4085,6 +4110,13 @@ func cascadePluginL4RulesTx(tx *gorm.DB, pluginID, instanceTag string, now time.
 			return false, err
 		}
 		if err := tx.Where("agent_id = ? AND id = ?", rule.AgentID, rule.ID).Delete(&L4RuleRow{}).Error; err != nil {
+			return false, err
+		}
+		kind := pluginsdk.PolicyEntryTCP
+		if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
+			kind = pluginsdk.PolicyEntryUDP
+		}
+		if err := deletePluginPolicyEntryModesTx(tx, rule.AgentID, kind, []string{strconv.Itoa(rule.ID)}); err != nil {
 			return false, err
 		}
 		removed = true
@@ -4419,10 +4451,32 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 		if current.PluginID != pluginID || instance.StateVersion != current.StateVersion {
 			return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
 		}
+		if instance.IncarnationID == "" {
+			instance.IncarnationID = current.IncarnationID
+		}
+		if instance.IncarnationID != current.IncarnationID {
+			return fmt.Errorf("%w: plugin instance incarnation changed concurrently", ErrPluginConflict)
+		}
+		currentTargets := parseStringSlice(current.TargetJSON)
+		nextTargets := parseStringSlice(instance.TargetJSON)
+		removedTargets := make([]string, 0)
+		for _, target := range currentTargets {
+			if !slices.Contains(nextTargets, target) {
+				removedTargets = append(removedTargets, target)
+			}
+		}
+		if err := deleteManagedPluginPolicyEntryModesTx(tx, instance.ID, removedTargets); err != nil {
+			return err
+		}
 	} else if instance.StateVersion != 0 {
 		return fmt.Errorf("%w: plugin instance changed concurrently", ErrPluginConflict)
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		incarnation, incarnationErr := newPluginInstanceIncarnationID()
+		if incarnationErr != nil {
+			return incarnationErr
+		}
+		instance.IncarnationID = incarnation
 		instance.StateVersion = 1
 		if err := tx.Create(instance).Error; err != nil {
 			return err
@@ -4440,6 +4494,14 @@ func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pl
 	}
 	instance.StateVersion = next.StateVersion
 	return nil
+}
+
+func newPluginInstanceIncarnationID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate plugin instance incarnation: %w", err)
+	}
+	return "instance-" + hex.EncodeToString(value), nil
 }
 
 func resolvePluginInstanceBindingFencesTx(ctx context.Context, tx *gorm.DB, instance *PluginInstanceRow) error {

@@ -1712,9 +1712,6 @@ func safeHostError(err error) string {
 }
 
 func candidateUsesExecutionScope(candidate HostCandidate) bool {
-	if managedRuntimeNeeded(candidate) {
-		return true
-	}
 	for _, feature := range candidate.RequiredFeatures {
 		if feature == pluginsdk.RPCFeatureExecutionScopeV1 {
 			return true
