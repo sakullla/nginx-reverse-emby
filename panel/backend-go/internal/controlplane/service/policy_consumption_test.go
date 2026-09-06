@@ -449,6 +449,60 @@ func TestPolicyControlRejectsStaleEntryTokenAfterReplacement(t *testing.T) {
 	}
 }
 
+func TestManagedEntryAppliedBindingChangesAcrossRecreatedIncarnation(t *testing.T) {
+	manager, candidate := newPolicyConsumptionFixture(t)
+	store := manager.datasets.store
+	instance, found, err := store.GetPluginInstance(t.Context(), candidate.InstanceID)
+	if err != nil || !found {
+		t.Fatal("current managed incarnation unavailable", err)
+	}
+	entry := pluginsdk.PolicyEntryTarget{NodeID: "local", Kind: pluginsdk.PolicyEntryManagedTCP, ID: instance.ID, Token: storage.ManagedPolicyEntryToken(instance.IncarnationID, "local", pluginsdk.PolicyEntryManagedTCP)}
+	stage := pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: instance.ID}
+	desired, err := store.PolicySettingsSnapshot(t.Context(), instance, pluginsdk.PolicyModeHandlingRaw, &entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := &storage.PolicyRef{ID: "effective-policy", StageModes: []storage.PolicyModeBinding{{Stage: stage, Snapshot: desired}}}
+	snapshot := func(revision int64, generationID string) storage.Snapshot {
+		return storage.Snapshot{Revision: revision, PluginGenerations: []storage.PluginGeneration{{
+			ID: generationID, InstanceID: entry.ID, ConfigVersion: 1,
+			ManagedNetworkPolicies: map[string]*storage.PolicyRef{"tcp": ref},
+		}}}
+	}
+	oldArtifact := policyStatusSnapshotArtifact(t, snapshot(1, strings.Repeat("a", 64)))
+	recreatedArtifact := policyStatusSnapshotArtifact(t, snapshot(2, strings.Repeat("b", 64)))
+	now := time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)
+	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{ID: "managed-incarnation-status", Kind: "plugin.configure", Status: storage.OperationStatusPending, PrimaryAgentID: "local", CreatedAt: now, UpdatedAt: now},
+		Revisions: []storage.AgentRevisionRow{
+			{AgentID: "local", Revision: 1, State: storage.AgentRevisionStateApplied, SnapshotArtifactID: oldArtifact.ID, SnapshotDigest: oldArtifact.SHA256, RuntimeGenerationID: strings.Repeat("c", 64), CreatedAt: now, UpdatedAt: now},
+			{AgentID: "local", Revision: 2, State: storage.AgentRevisionStatePending, SnapshotArtifactID: recreatedArtifact.ID, SnapshotDigest: recreatedArtifact.SHA256, CreatedAt: now, UpdatedAt: now},
+		},
+		Pointers:  []storage.AgentRevisionPointerRow{{AgentID: "local", DesiredRevision: 2, AppliedRevision: 1, LastKnownGoodRevision: 1, UpdatedAt: now}},
+		Artifacts: []storage.GenerationArtifactRow{oldArtifact, recreatedArtifact},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node, err := policyEntryNodeStatus(t.Context(), store, entry, stage, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Phase != "unavailable" || node.Applied != nil {
+		t.Fatalf("same managed ID/config version inherited old incarnation status: %+v", node)
+	}
+}
+
+func policyStatusSnapshotArtifact(t *testing.T, snapshot storage.Snapshot) storage.GenerationArtifactRow {
+	t.Helper()
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	return storage.GenerationArtifactRow{ID: "snapshot-" + encoded, Kind: "agent_snapshot", SHA256: encoded, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)}
+}
+
 func TestConsumptionReplayDoesNotCrossDeletedInstanceIncarnation(t *testing.T) {
 	manager, candidate := newPolicyConsumptionFixture(t)
 	store := manager.datasets.store

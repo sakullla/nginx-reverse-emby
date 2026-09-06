@@ -415,11 +415,11 @@ func (m *PluginCapabilityManager) policyResponse(ctx context.Context, tx *storag
 
 func policyEntryNodeStatus(ctx context.Context, tx *storage.GormStore, entry sdk.PolicyEntryTarget, stage sdk.PolicyStageIdentity, desired sdk.PolicySettingsSnapshot) (*sdk.PolicySettingsNodeStatus, error) {
 	node := &sdk.PolicySettingsNodeStatus{Phase: "unavailable"}
-	currentRevision, current, err := policyEntryCurrentRevision(ctx, tx, entry)
+	pointer, found, err := tx.GetAgentRevisionPointer(ctx, entry.NodeID)
 	if err != nil {
 		return nil, err
 	}
-	pointer, found, err := tx.GetAgentRevisionPointer(ctx, entry.NodeID)
+	currentBinding, current, err := policyEntryCurrentBinding(ctx, tx, entry, pointer)
 	if err != nil {
 		return nil, err
 	}
@@ -428,8 +428,8 @@ func policyEntryNodeStatus(ctx context.Context, tx *storage.GormStore, entry sdk
 		if err != nil {
 			return nil, err
 		}
-		ref, appliedEntryRevision := policyEntrySnapshotRef(snapshot, entry)
-		if ref != nil && appliedEntryRevision == currentRevision {
+		ref, appliedBinding := policyEntrySnapshotRef(snapshot, entry)
+		if ref != nil && appliedBinding == currentBinding {
 			for _, mode := range ref.StageModes {
 				if mode.Stage == stage {
 					copy := mode.Snapshot
@@ -475,35 +475,43 @@ func policyEntryNodeStatus(ctx context.Context, tx *storage.GormStore, entry sdk
 	return node, nil
 }
 
-func policyEntryCurrentRevision(ctx context.Context, tx *storage.GormStore, entry sdk.PolicyEntryTarget) (uint64, bool, error) {
+func policyEntryCurrentBinding(ctx context.Context, tx *storage.GormStore, entry sdk.PolicyEntryTarget, pointer storage.AgentRevisionPointerRow) (string, bool, error) {
 	switch entry.Kind {
 	case sdk.PolicyEntryHTTP:
 		id, err := strconv.Atoi(entry.ID)
 		if err != nil {
-			return 0, false, nil
+			return "", false, nil
 		}
 		row, found, err := tx.GetHTTPRule(ctx, entry.NodeID, id)
-		return uint64(max(row.Revision, 0)), found && row.EntryToken == entry.Token, err
+		return "rule:" + strconv.FormatInt(int64(max(row.Revision, 0)), 10), found && row.EntryToken == entry.Token, err
 	case sdk.PolicyEntryTCP, sdk.PolicyEntryUDP:
 		id, err := strconv.Atoi(entry.ID)
 		if err != nil {
-			return 0, false, nil
+			return "", false, nil
 		}
 		row, found, err := tx.GetL4Rule(ctx, entry.NodeID, id)
-		return uint64(max(row.Revision, 0)), found && row.EntryToken == entry.Token, err
+		return "rule:" + strconv.FormatInt(int64(max(row.Revision, 0)), 10), found && row.EntryToken == entry.Token, err
 	case sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP:
 		row, found, err := tx.GetPluginInstance(ctx, entry.ID)
-		return row.ConfigVersion, found && storage.ManagedPolicyEntryToken(row.IncarnationID, entry.NodeID, entry.Kind) == entry.Token, err
+		if err != nil || !found || storage.ManagedPolicyEntryToken(row.IncarnationID, entry.NodeID, entry.Kind) != entry.Token || pointer.DesiredRevision <= 0 {
+			return "", false, err
+		}
+		snapshot, _, err := tx.ImmutableAgentSnapshot(ctx, entry.NodeID, pointer.DesiredRevision)
+		if err != nil {
+			return "", false, err
+		}
+		_, binding := policyEntrySnapshotRef(snapshot, entry)
+		return binding, binding != "", nil
 	}
-	return 0, false, nil
+	return "", false, nil
 }
 
-func policyEntrySnapshotRef(snapshot storage.Snapshot, entry sdk.PolicyEntryTarget) (*storage.PolicyRef, uint64) {
+func policyEntrySnapshotRef(snapshot storage.Snapshot, entry sdk.PolicyEntryTarget) (*storage.PolicyRef, string) {
 	switch entry.Kind {
 	case sdk.PolicyEntryHTTP:
 		for _, row := range snapshot.Rules {
 			if strconv.Itoa(row.ID) == entry.ID {
-				return row.PolicyRef, uint64(max(row.Revision, 0))
+				return row.PolicyRef, "rule:" + strconv.FormatInt(max(row.Revision, 0), 10)
 			}
 		}
 	case sdk.PolicyEntryTCP, sdk.PolicyEntryUDP:
@@ -513,7 +521,7 @@ func policyEntrySnapshotRef(snapshot storage.Snapshot, entry sdk.PolicyEntryTarg
 				kind = sdk.PolicyEntryUDP
 			}
 			if strconv.Itoa(row.ID) == entry.ID && entry.Kind == kind {
-				return row.PolicyRef, uint64(max(row.Revision, 0))
+				return row.PolicyRef, "rule:" + strconv.FormatInt(max(row.Revision, 0), 10)
 			}
 		}
 	case sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP:
@@ -524,11 +532,11 @@ func policyEntrySnapshotRef(snapshot storage.Snapshot, entry sdk.PolicyEntryTarg
 					protocol = "udp"
 				}
 				if ref := generation.ManagedNetworkPolicies[protocol]; ref != nil {
-					return ref, generation.ConfigVersion
+					return ref, "managed:" + generation.ID
 				}
-				return generation.ManagedNetworkPolicy, generation.ConfigVersion
+				return generation.ManagedNetworkPolicy, "managed:" + generation.ID
 			}
 		}
 	}
-	return nil, 0
+	return nil, ""
 }
