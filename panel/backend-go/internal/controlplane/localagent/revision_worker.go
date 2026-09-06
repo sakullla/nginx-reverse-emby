@@ -261,6 +261,8 @@ func (w *RevisionWorker) pluginStatusesForRevision(ctx context.Context, revision
 	return statuses, nil
 }
 
+type localRuntimeLeaseContextKey struct{}
+
 func applyRevisionWithinLease(ctx context.Context, runtime RevisionApplier, snapshot storage.Snapshot, lease service.RemoteRevisionLease) error {
 	if runtime == nil {
 		return errors.New("revision runtime is required")
@@ -270,6 +272,7 @@ func applyRevisionWithinLease(ctx context.Context, runtime RevisionApplier, snap
 	}
 	applyCtx, cancel := context.WithDeadline(ctx, lease.DeadlineAt)
 	defer cancel()
+	applyCtx = context.WithValue(applyCtx, localRuntimeLeaseContextKey{}, lease)
 	return runtime.ApplyRevisionWithDrainTimeout(applyCtx, snapshot, time.Duration(lease.DrainTimeoutSeconds)*time.Second)
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -69,7 +70,7 @@ func (m *GenerationModule) RuntimeLogFenceRetirementReady() bool {
 func (*GenerationModule) Name() string { return "plugin-rpc" }
 
 func (*GenerationModule) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{Name: "plugin-rpc", Provides: []module.ProviderRef{ProviderHTTPBackendProviders}}
+	return module.ModuleDescriptor{Name: "plugin-rpc", Optional: []module.ProviderRef{policy.ProviderEvaluator, policy.ProviderDatasets}, Provides: []module.ProviderRef{ProviderHTTPBackendProviders}}
 }
 
 func (*GenerationModule) RegisterProviders(reg module.ProviderRegistry) error {
@@ -130,6 +131,15 @@ func (m *GenerationModule) Prepare(ctx context.Context, request module.ApplyRequ
 			}
 			transaction.failOptionalCandidate(index, "prepare", candidateErr)
 			continue
+		}
+		candidate.services = &runtimeServices{policy: generation.ManagedNetworkPolicy, policies: model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)}
+		if request.Providers != nil {
+			if value, ok := request.Providers.Resolve(policy.ProviderDatasets); ok {
+				candidate.services.datasets, _ = value.(*policy.DatasetGeneration)
+			}
+			if value, ok := request.Providers.Resolve(policy.ProviderEvaluator); ok {
+				candidate.services.evaluator, _ = value.(policy.Evaluator)
+			}
 		}
 		instance, prepareErr := host.PrepareCandidate(ctx, candidate)
 		if prepareErr != nil {
@@ -544,7 +554,12 @@ func pluginRuntimeReportState(state string) string {
 func hostCandidateFromGeneration(generation model.PluginGeneration, generationID string) (HostCandidate, error) {
 	permissions := make([]pluginprocess.SandboxPermission, 0, len(generation.Grants))
 	scopes := make([]string, 0, len(generation.Grants))
+	seenScopes := map[string]bool{}
 	for _, grant := range generation.Grants {
+		if seenScopes[grant.Name] {
+			continue
+		}
+		seenScopes[grant.Name] = true
 		permissions = append(permissions, pluginprocess.SandboxPermission(grant.Name))
 		scopes = append(scopes, grant.Name)
 	}
@@ -582,7 +597,7 @@ func hostCandidateFromGeneration(generation model.PluginGeneration, generationID
 		ProviderGenerationID: generation.ID, AgentID: generation.Target.ID,
 		Artifact: pluginprocess.Artifact{CachePath: generation.Artifact.LocalPath, SHA256: generation.Artifact.SHA256,
 			GOOS: generation.Artifact.GOOS, GOARCH: generation.Artifact.GOARCH},
-		Requirement: requirement, Scopes: scopes, Grants: append([]model.PluginGrantProjection(nil), generation.Grants...), SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
+		Requirement: requirement, Scopes: scopes, RequiredFeatures: append([]string(nil), generation.RequiredFeatures...), Grants: append([]model.PluginGrantProjection(nil), generation.Grants...), SecretHandles: append([]model.PluginSecretHandle(nil), generation.SecretHandles...),
 		Config: append([]byte(nil), generation.Config...), Restart: generation.FailurePolicy.Restart,
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), generation.HTTPBackendProviders...),
 		Process: pluginprocess.InstanceSpec{GracePeriod: grace, RestartLimit: generation.ResourceBudget.Restarts, RestartWindow: time.Minute,
@@ -665,6 +680,10 @@ func clonePluginGenerations(generations []model.PluginGeneration) []model.Plugin
 	cloned := make([]model.PluginGeneration, len(generations))
 	for index, generation := range generations {
 		cloned[index] = generation
+		cloned[index].ManagedNetworkPolicies = model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)
+		if generation.ManagedNetworkPolicy != nil {
+			cloned[index].ManagedNetworkPolicy = model.ClonePolicyRef(generation.ManagedNetworkPolicy)
+		}
 		cloned[index].Config = append([]byte(nil), generation.Config...)
 		cloned[index].ExtensionPoints = append([]string(nil), generation.ExtensionPoints...)
 		cloned[index].Grants = append([]model.PluginGrantProjection(nil), generation.Grants...)

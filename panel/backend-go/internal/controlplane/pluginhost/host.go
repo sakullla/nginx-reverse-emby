@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ type Identity struct {
 	Scopes                                       []string
 }
 type Candidate struct {
-	InstanceID                                            string
+	InstanceID, IncarnationID                             string
 	OperationID, ResourceGroupID                          string
 	Revision                                              int64
 	Artifact                                              Artifact
@@ -42,6 +43,8 @@ type Candidate struct {
 	ResolveConfig                                         func(context.Context, string) ([]byte, error)
 	ResolveConfigAndSecrets                               func(context.Context, string) ([]byte, []string, error)
 	LogSecrets                                            []string
+	logRedactor                                           *redactor
+	secretBearing                                         bool
 	Args, Environment                                     []string
 	Endpoint                                              Endpoint
 	Requirement                                           SandboxRequirement
@@ -132,23 +135,32 @@ type Launcher interface {
 }
 
 type Host struct {
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	closed         bool
-	prepareWG      sync.WaitGroup
-	runtimeRoot    string
-	launcher       Launcher
-	dialer         RPCDialer
-	authorize      func(Candidate) error
-	provision      func(string, Endpoint) (controlAttemptSecurity, error)
-	logs           io.Writer
-	active         map[string]*Instance
-	prepared       map[*Instance]struct{}
-	observer       func(RuntimeStatus) error
-	logObserver    func(Candidate, string)
-	observerErrors map[string]error
-	hostResources  HostResourceDispatcher
+	mu                     sync.RWMutex
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	closed                 bool
+	prepareWG              sync.WaitGroup
+	runtimeRoot            string
+	launcher               Launcher
+	dialer                 RPCDialer
+	authorize              func(Candidate) error
+	provision              func(string, Endpoint) (controlAttemptSecurity, error)
+	logs                   io.Writer
+	active                 map[string]*Instance
+	prepared               map[*Instance]struct{}
+	observer               func(RuntimeStatus) error
+	logObserver            func(Candidate, string)
+	observerErrors         map[string]error
+	hostResources          HostResourceDispatcher
+	revokedGenerations     map[hostGenerationIdentity]bool
+	generationPreparations map[hostGenerationIdentity]*hostGenerationPreparation
+}
+
+type hostGenerationIdentity struct{ instance, generation string }
+
+type hostGenerationPreparation struct {
+	wg    sync.WaitGroup
+	count int // protected by Host.mu
 }
 
 type RuntimeStatus struct {
@@ -283,6 +295,7 @@ func (h *Host) StatusPersistenceError(instanceID string) error {
 }
 
 func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (instance *Instance, resultErr error) {
+	defer func() { resultErr = controlLifecycleError(candidate, "preparation", resultErr) }()
 	if h == nil {
 		return nil, errors.New("control-plane plugin host is required")
 	}
@@ -290,14 +303,38 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 		return nil, errors.New("control-plane plugin instance and generation are required")
 	}
 	h.mu.Lock()
+	identity := hostGenerationIdentity{candidate.InstanceID, candidate.Identity.Generation}
+	if h.revokedGenerations[identity] {
+		h.mu.Unlock()
+		return nil, errors.New("control-plane plugin generation is revoked")
+	}
 	if h.closed {
 		h.mu.Unlock()
 		return nil, errors.New("control-plane plugin host is closed")
 	}
 	h.prepareWG.Add(1)
+	if h.generationPreparations == nil {
+		h.generationPreparations = make(map[hostGenerationIdentity]*hostGenerationPreparation)
+	}
+	preparations := h.generationPreparations[identity]
+	if preparations == nil {
+		preparations = &hostGenerationPreparation{}
+		h.generationPreparations[identity] = preparations
+	}
+	preparations.wg.Add(1)
+	preparations.count++
 	hostCtx := h.ctx
 	h.mu.Unlock()
 	defer h.prepareWG.Done()
+	defer func() {
+		h.mu.Lock()
+		preparations.count--
+		preparations.wg.Done()
+		if preparations.count == 0 {
+			delete(h.generationPreparations, identity)
+		}
+		h.mu.Unlock()
+	}()
 	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
 	stopHostCancellation := context.AfterFunc(hostCtx, cancelAttempt)
 	stopCallerCancellation := context.AfterFunc(ctx, cancelAttempt)
@@ -334,11 +371,17 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	candidate.endpointDirectory, candidate.credentialDirectory, candidate.guestEndpoint = security.endpointDirectory, security.credentialDirectory, security.guestEndpoint
 	candidate.sandboxUID = security.sandboxUID
 	candidate.attemptEnvironment = security.environment
+	// Old control-plane packages already identify this face from their Host
+	// endpoint. Negotiate explicit scope only with consumption-capable guests.
+	explicitScope := slices.Contains(candidate.Grants, string(pluginsdk.CapabilityDatasetBind)) || slices.Contains(candidate.Grants, string(pluginsdk.CapabilityPolicyControl))
+	if explicitScope {
+		candidate.attemptEnvironment = append(candidate.attemptEnvironment, pluginsdk.EnvPluginExecutionScope+"="+pluginsdk.HostScopeControlPlane)
+	}
 	if security.cleanup != nil {
 		instance = &Instance{ID: candidate.InstanceID, Generation: candidate.Identity.Generation, Executable: executable, State: "starting", grace: candidate.GracePeriod, candidate: candidate, securityCleanup: security.cleanup, processCancel: cancelAttempt, setupDone: make(chan struct{})}
 		h.mu.Lock()
 		h.prepared[instance] = struct{}{}
-		closed := h.closed
+		closed := h.closed || h.revokedGenerations[identity]
 		h.mu.Unlock()
 		ownedInstance := instance
 		defer func() {
@@ -359,14 +402,6 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if instance == nil {
 		return nil, errors.New("control-plane plugin attempt security has no cleanup owner")
 	}
-	h.mu.RLock()
-	hostResources := h.hostResources
-	h.mu.RUnlock()
-	hostResourceCleanup, err := startHostResourceServer(attemptCtx, candidate, hostResources)
-	if err != nil {
-		return nil, err
-	}
-	instance.hostResourceCleanup = hostResourceCleanup
 	if err := validateEndpoint(filepath.Dir(executable), candidate.Endpoint); err != nil {
 		return nil, err
 	}
@@ -375,6 +410,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	if candidate.ResolveConfigAndSecrets != nil {
 		var exact []string
 		config, exact, err = candidate.ResolveConfigAndSecrets(attemptCtx, candidate.Identity.Generation)
+		candidate.secretBearing = len(exact) > 0
 		if err != nil {
 			return nil, errors.Join(errors.New("control-plane plugin config redemption failed"), err)
 		}
@@ -388,6 +424,19 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	defer clear(config)
 	defer clear(logSecrets)
 	logWriter := newRedactor(&candidateLogTarget{host: h, candidate: candidate}, logSecrets)
+	candidate.logRedactor = logWriter
+	instance.mu.Lock()
+	instance.candidate = candidate
+	instance.mu.Unlock()
+	h.mu.RLock()
+	hostResources := h.hostResources
+	h.mu.RUnlock()
+	hostResourceCleanup, err := startHostResourceServer(attemptCtx, candidate, hostResources)
+	if err != nil {
+		_ = logWriter.Close()
+		return nil, err
+	}
+	instance.hostResourceCleanup = hostResourceCleanup
 	process, err := h.launcher.Start(attemptCtx, executable, candidate.Args, candidate.Environment, logWriter, candidate)
 	if err != nil {
 		_ = logWriter.Close()
@@ -410,39 +459,45 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate Candidate) (insta
 	go instance.monitor()
 	client, closer, err := h.dialer.Dial(attemptCtx, candidate.Endpoint, candidate.Deadline)
 	if err != nil {
-		return nil, err
+		return nil, controlLifecycleError(candidate, "dial", err)
 	}
 	instance.mu.Lock()
 	instance.client, instance.closer = client, closer
 	instance.mu.Unlock()
 	handshake := pluginsdk.RPCHandshakeRequest{ABI: pluginsdk.RPCABIV1, PluginID: candidate.Identity.PluginID, PluginVersion: candidate.Identity.Version, PackageDigest: candidate.Identity.PackageDigest, ArtifactDigest: candidate.Artifact.SHA256, GrantedScopes: append([]string(nil), candidate.Grants...), Generation: candidate.Identity.Generation, RequiredFeatures: pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Grants, candidate.Declaration.ExtensionPoints)}
+	if explicitScope {
+		handshake.RequiredFeatures, err = pluginsdk.RequiredRPCFeaturesForExecutionScope(candidate.Grants, candidate.Declaration.ExtensionPoints, pluginsdk.HostScopeControlPlane)
+		if err != nil {
+			return nil, err
+		}
+	}
 	response, err := retryControlHandshake(attemptCtx, candidate.Deadline, process, client, handshake)
 	if err != nil {
-		return nil, err
+		return nil, controlLifecycleError(candidate, "handshake", err)
 	}
 	if err := validateHandshake(handshake, response); err != nil {
-		return nil, err
+		return nil, controlLifecycleError(candidate, "handshake", err)
 	}
 	request := pluginsdk.LifecycleRequest{Generation: candidate.Identity.Generation, Config: config}
 	prepareResponse, err := client.Prepare(attemptCtx, request)
 	if err != nil {
-		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err)
+		return nil, controlLifecycleError(candidate, "prepare", errors.Join(errors.New("control-plane plugin prepare failed"), err))
 	}
 	if err := lifecycleResponseError(prepareResponse); err != nil {
-		return nil, errors.Join(errors.New("control-plane plugin prepare failed"), err)
+		return nil, controlLifecycleError(candidate, "prepare", errors.Join(errors.New("control-plane plugin prepare failed"), err))
 	}
 	instance.mu.Lock()
 	instance.rpcStopEligible = true
 	instance.mu.Unlock()
 	activateResponse, err := client.Activate(attemptCtx, request)
 	if err != nil {
-		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
+		return nil, controlLifecycleError(candidate, "activate", errors.Join(errors.New("control-plane plugin activate failed"), err))
 	}
 	if err := lifecycleResponseError(activateResponse); err != nil {
 		instance.mu.Lock()
 		instance.rpcStopEligible = false
 		instance.mu.Unlock()
-		return nil, errors.Join(errors.New("control-plane plugin activate failed"), err)
+		return nil, controlLifecycleError(candidate, "activate", errors.Join(errors.New("control-plane plugin activate failed"), err))
 	}
 	if hasExtension(candidate.Declaration.ExtensionPoints, extensionUIRoute) {
 		if err := waitPluginUIReady(attemptCtx, instance.pluginUIClient(), candidate.uiEndpoint.Cookie, candidate.Deadline); err != nil {
@@ -522,6 +577,13 @@ func (h *Host) PreparePublication(instances []*Instance) (*PreparedPublication, 
 	}
 	for index := range entries {
 		entry := &entries[index]
+		if h.revokedGenerations[hostGenerationIdentity{entry.instance.ID, entry.instance.Generation}] {
+			h.mu.Unlock()
+			for _, cleanup := range entries {
+				cleanup.control.cancel()
+			}
+			return nil, errors.New("control-plane plugin generation is revoked")
+		}
 		if _, prepared := h.prepared[entry.instance]; !prepared {
 			h.mu.Unlock()
 			for _, cleanup := range entries {
@@ -614,7 +676,7 @@ func (h *Host) cleanupPreviousGeneration(entry preparedPublicationEntry) {
 	defer entry.control.wg.Done()
 	if err := h.stopPublished(context.Background(), entry.previous); err != nil {
 		entry.instance.mu.Lock()
-		entry.instance.LastError = "previous generation cleanup: " + safeError(err)
+		entry.instance.LastError = "previous generation cleanup: " + safeError(controlLifecycleError(entry.previous.candidate, "cleanup", err))
 		entry.instance.mu.Unlock()
 		h.notifyOwned(entry.instance, entry.control, false)
 	}
@@ -760,6 +822,76 @@ func (h *Host) Stop(ctx context.Context, instanceID string) error {
 	return err
 }
 
+// StopGenerationWithResults fences one exact generation before waiting for
+// in-flight preparations. It includes active, prepared and draining objects,
+// and suppresses their restart loop without touching a replacement generation.
+// The controller persists its revocation fence before calling this method so
+// the same generation also cannot be restored after a Host restart.
+func (h *Host) StopGenerationWithResults(ctx context.Context, instanceID, generation string) ([]TerminalResult, error) {
+	if h == nil || ctx == nil || instanceID == "" || generation == "" {
+		return nil, errors.New("exact control-plane plugin generation is required")
+	}
+	identity := hostGenerationIdentity{instanceID, generation}
+	h.mu.Lock()
+	if h.revokedGenerations == nil {
+		h.revokedGenerations = make(map[hostGenerationIdentity]bool)
+	}
+	h.revokedGenerations[identity] = true
+	if instance := h.active[instanceID]; instance != nil && instance.Generation == generation && instance.control != nil {
+		instance.control.cancel()
+	}
+	for instance := range h.prepared {
+		if instance.ID == instanceID && instance.Generation == generation && instance.processCancel != nil {
+			instance.processCancel()
+		}
+	}
+	preparations := h.generationPreparations[identity]
+	h.mu.Unlock()
+	if preparations != nil {
+		joined := make(chan struct{})
+		go func() { preparations.wg.Wait(); close(joined) }()
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("plugin generation preparation termination is pending")
+		case <-joined:
+		}
+	}
+	h.mu.Lock()
+	instances := make(map[*Instance]bool)
+	if instance := h.active[instanceID]; instance != nil && instance.Generation == generation {
+		instances[instance] = true
+	}
+	for instance := range h.prepared {
+		if instance.ID == instanceID && instance.Generation == generation {
+			instances[instance] = instances[instance] || instance.control != nil
+		}
+	}
+	h.mu.Unlock()
+	var results []TerminalResult
+	var failures []error
+	for instance, published := range instances {
+		stopErr := h.stopPublished(ctx, instance)
+		result := terminalResult(instance, published)
+		results = append(results, result)
+		failures = append(failures, stopErr)
+		if !result.Terminated {
+			failures = append(failures, errors.New("plugin generation process termination is pending"))
+			continue
+		}
+		h.mu.Lock()
+		delete(h.prepared, instance)
+		removed := h.active[instanceID] == instance
+		if removed {
+			delete(h.active, instanceID)
+		}
+		h.mu.Unlock()
+		if removed {
+			h.unpublishPluginUI(instance)
+		}
+	}
+	return results, errors.Join(failures...)
+}
+
 func (h *Host) StopWithResults(ctx context.Context, instanceID string) ([]TerminalResult, error) {
 	h.mu.Lock()
 	instance := h.active[instanceID]
@@ -899,16 +1031,17 @@ func (i *Instance) monitor() {
 	if i.State != "stopping" && i.State != "stopped" {
 		i.State = "failed"
 		if waitErr := errors.Join(processErr, logErr); waitErr != nil {
-			i.LastError = safeError(waitErr)
+			i.LastError = safeError(controlLifecycleError(i.candidate, "process exit", waitErr))
 		}
 	}
 	i.mu.Unlock()
 	close(i.done)
 }
-func (i *Instance) Stop(ctx context.Context) error {
+func (i *Instance) Stop(ctx context.Context) (resultErr error) {
 	if i == nil {
 		return nil
 	}
+	defer func() { resultErr = controlLifecycleError(i.candidate, "stop", resultErr) }()
 	i.stopMu.Lock()
 	defer i.stopMu.Unlock()
 	return i.stop(ctx)
@@ -940,7 +1073,7 @@ func (i *Instance) stop(ctx context.Context) error {
 				err := fmt.Errorf("join control-plane plugin process setup: %w", setupCtx.Err())
 				i.mu.Lock()
 				i.State = "failed"
-				i.LastError = safeError(err)
+				i.LastError = safeError(controlLifecycleError(i.candidate, "setup cleanup", err))
 				i.mu.Unlock()
 				return err
 			}
@@ -1052,7 +1185,7 @@ func (i *Instance) stop(ctx context.Context) error {
 		if terminated {
 			i.PID = 0
 		}
-		i.LastError = safeError(errors.Join(killErr, joinErr, waitErr, cleanupErr))
+		i.LastError = safeError(controlLifecycleError(i.candidate, "stop", errors.Join(killErr, joinErr, waitErr, cleanupErr)))
 	}
 	i.mu.Unlock()
 	if processExited && i.processCancel != nil {
@@ -1084,7 +1217,7 @@ func (i *Instance) cleanupSecurity() error {
 	if i.securityCleanup != nil {
 		credentialCleanupErr = i.securityCleanup()
 	}
-	i.cleanupErr = errors.Join(processCleanupErr, hostResourceCleanupErr, credentialCleanupErr)
+	i.cleanupErr = controlLifecycleError(i.candidate, "cleanup", errors.Join(processCleanupErr, hostResourceCleanupErr, credentialCleanupErr))
 	if i.cleanupErr == nil {
 		i.cleanupDone = true
 	}
@@ -1110,7 +1243,7 @@ func (i *Instance) stopRPC(ctx context.Context) error {
 		if err == nil {
 			err = lifecycleResponseError(response)
 		}
-		result <- err
+		result <- controlLifecycleError(i.candidate, "stop", err)
 	}()
 	select {
 	case err := <-result:
@@ -1236,7 +1369,7 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 				return
 			}
 			instance.mu.Lock()
-			instance.LastError = safeError(err)
+			instance.LastError = safeError(controlLifecycleError(instance.candidate, "restart", err))
 			instance.mu.Unlock()
 			failure = err
 			continue
@@ -1262,7 +1395,7 @@ func (h *Host) watch(control *runtimeControl, instance *Instance) {
 			control.launchMu.Unlock()
 			_ = replacement.Stop(context.Background())
 			instance.mu.Lock()
-			instance.LastError = safeError(routeErr)
+			instance.LastError = safeError(controlLifecycleError(instance.candidate, "publication", routeErr))
 			instance.mu.Unlock()
 			failure = routeErr
 			continue
@@ -1318,7 +1451,7 @@ func (h *Host) recordRestartFailure(control *runtimeControl, instance *Instance,
 	control.exits = append(kept, now)
 	instance.mu.Lock()
 	defer instance.mu.Unlock()
-	instance.LastError = safeError(failure)
+	instance.LastError = safeError(controlLifecycleError(instance.candidate, "runtime", failure))
 	instance.PID = 0
 	if control.candidate.Restart == "never" || len(control.exits) > control.candidate.RestartLimit {
 		instance.State, instance.CircuitOpen = "failed", true
@@ -1345,7 +1478,7 @@ func (h *Host) recordCleanupFailure(control *runtimeControl, instance *Instance,
 	defer instance.mu.Unlock()
 	instance.State = "failed"
 	instance.PID = 0
-	instance.LastError = safeError(cleanupErr)
+	instance.LastError = safeError(controlLifecycleError(instance.candidate, "cleanup", cleanupErr))
 	return true
 }
 
@@ -1361,7 +1494,7 @@ func (i *Instance) PendingExitError() error {
 	processWaitErr := normalizeExpectedTerminationWaitError(i.processWaitErr, i.interruptAccepted, i.killAccepted)
 	exitErr := errors.Join(processWaitErr, i.logErr)
 	i.mu.RUnlock()
-	return exitErr
+	return controlLifecycleError(i.candidate, "process exit", exitErr)
 }
 
 func (i *Instance) CleanupError() error {
@@ -1370,7 +1503,7 @@ func (i *Instance) CleanupError() error {
 	}
 	i.cleanupMu.Lock()
 	defer i.cleanupMu.Unlock()
-	return i.cleanupErr
+	return controlLifecycleError(i.candidate, "cleanup", i.cleanupErr)
 }
 
 func (h *Host) ownsRuntime(instance *Instance, control *runtimeControl) bool {
@@ -1431,7 +1564,7 @@ func (h *Host) notifyOwned(instance *Instance, control *runtimeControl, consumeE
 	}
 	h.mu.Unlock()
 	instance.mu.Lock()
-	instance.LastError = safeError(errors.Join(errors.New("runtime status persistence failed"), err))
+	instance.LastError = safeError(controlLifecycleError(instance.candidate, "status persistence", errors.Join(errors.New("runtime status persistence failed"), err)))
 	instance.mu.Unlock()
 	return false
 }
@@ -1726,6 +1859,37 @@ func safeError(err error) string {
 	return value
 }
 
+type controlSecretLifecycleError struct{ phase string }
+
+func (e *controlSecretLifecycleError) Error() string {
+	return "control-plane plugin " + e.phase + " failed"
+}
+
+// A secret-capable guest can retain material and echo it through arbitrary
+// RPC failure text, including after its log registry was closed. Drop the raw
+// cause before it can escape or be persisted; exact logging redaction alone
+// cannot protect errors.Join/Unwrap chains. Non-secret diagnostics are kept.
+func controlLifecycleError(candidate Candidate, phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	secretCapable := candidate.secretBearing || len(candidate.LogSecrets) > 0
+	for _, grant := range candidate.Grants {
+		if grant == pluginsdk.PermissionScopedSecretRead || grant == pluginsdk.PermissionScopedSecretWrite || grant == "secret.use" {
+			secretCapable = true
+			break
+		}
+	}
+	if !secretCapable {
+		return err
+	}
+	var safe *controlSecretLifecycleError
+	if errors.As(err, &safe) {
+		phase = safe.phase
+	}
+	return &controlSecretLifecycleError{phase: phase}
+}
+
 const maxPluginLogLine = 64 << 10
 
 type redactor struct {
@@ -1734,6 +1898,8 @@ type redactor struct {
 	mu               sync.Mutex
 	line             []byte
 	dropping, closed bool
+	secretBytes      int
+	suppressed       bool
 }
 
 type candidateLogTarget struct {
@@ -1757,7 +1923,61 @@ func (w *candidateLogTarget) Write(p []byte) (int, error) {
 }
 
 func newRedactor(target io.Writer, secrets []string) *redactor {
-	return &redactor{target: target, secrets: secrets}
+	w := &redactor{target: target}
+	_ = w.addSecrets(secrets...)
+	return w
+}
+
+const maxAttemptLogSecrets = 256
+const maxAttemptLogSecretBytes = 2 << 20
+
+// Registration shares the line writer lock, so an in-flight fragmented line
+// cannot flush between registration and the next write. Overflow seals this
+// attempt's log output rather than evicting a still-sensitive value.
+func (w *redactor) addSecrets(values ...string) error {
+	if w == nil {
+		return errors.New("plugin log secret owner is unavailable")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.suppressed {
+		return errors.New("plugin log secret owner is unavailable")
+	}
+	// Plain multiline output is flushed per line. Retain each nonempty line
+	// as well as the full value (used by escaped JSON/text formatting).
+	expanded := make([]string, 0, len(values))
+	for _, value := range values {
+		expanded = append(expanded, value)
+		if strings.Contains(value, "\n") {
+			expanded = append(expanded, strings.Split(value, "\n")...)
+		}
+	}
+	for _, value := range expanded {
+		if value == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range w.secrets {
+			if existing == value {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if len(w.secrets) >= maxAttemptLogSecrets || len(value) > maxAttemptLogSecretBytes-w.secretBytes {
+			w.suppressed = true
+			clear(w.line)
+			w.line = nil
+			clear(w.secrets)
+			w.secrets = nil
+			return errors.New("plugin log secret registration budget exceeded")
+		}
+		w.secrets = append(w.secrets, value)
+		w.secretBytes += len(value)
+	}
+	return nil
 }
 func (w *redactor) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -1791,12 +2011,18 @@ func (w *redactor) Close() error {
 		return nil
 	}
 	w.closed = true
-	return w.flushLocked(false)
+	err := w.flushLocked(false)
+	clear(w.secrets)
+	w.secrets = nil
+	return err
 }
 func (w *redactor) flushLocked(newline bool) error {
 	line := string(w.line)
 	w.line = w.line[:0]
-	if w.dropping {
+	if w.suppressed {
+		line = "[REDACTED plugin log secret budget exceeded]"
+		w.dropping = false
+	} else if w.dropping {
 		line = "[REDACTED oversized plugin log line]"
 		w.dropping = false
 	} else {

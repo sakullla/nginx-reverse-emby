@@ -9,10 +9,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 
@@ -144,6 +146,40 @@ func TestWASMVerifiedBoundaryAndGenerationReuse(t *testing.T) {
 	}
 	if host.readFieldCalls != 4 {
 		t.Fatalf("host read calls=%d, want two bounded retries per evaluation", host.readFieldCalls)
+	}
+}
+
+func TestPolicyStageArtifactIntegrityPrecedesImportValidation(t *testing.T) {
+	wasmBytes := compatfixture.PolicyV1GuestWASM()
+	digest := sha256.Sum256(wasmBytes)
+	stage := model.PolicyStage{
+		ArtifactDigest:    hex.EncodeToString(digest[:]),
+		SignatureVerified: true,
+		ResourceBudget:    model.PolicyResourceBudget{MemoryBytes: 16 * int64(pluginsdk.WASMPageSizeBytes)},
+	}
+	validationCalls := 0
+	validator := func(got []byte, _ int64, _, _, _ []string) error {
+		validationCalls++
+		if !bytes.Equal(got, wasmBytes) {
+			t.Fatal("import validator did not receive the accepted artifact bytes")
+		}
+		return nil
+	}
+
+	corrupted := append([]byte(nil), wasmBytes...)
+	corrupted[len(corrupted)-1] ^= 0xff
+	if _, err := verifyPolicyStageArtifact(stage, corrupted, nil, validator); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("corrupted artifact error = %v, want digest mismatch", err)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("corrupted artifact reached import validation %d time(s)", validationCalls)
+	}
+
+	if _, err := verifyPolicyStageArtifact(stage, wasmBytes, nil, validator); err != nil {
+		t.Fatalf("verified artifact rejected: %v", err)
+	}
+	if validationCalls != 1 {
+		t.Fatalf("verified artifact validation calls = %d, want 1", validationCalls)
 	}
 }
 

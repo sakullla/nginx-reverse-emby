@@ -12,6 +12,15 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
+// RuntimeGenerationBinder is a trusted Host callback at the actual candidate boundary.
+// It is never populated from a plugin request or unmaterialized control-plane snapshot.
+type RuntimeGenerationBinder func(context.Context, GenerationIdentity) error
+type runtimeGenerationBinderKey struct{}
+
+func WithRuntimeGenerationBinder(ctx context.Context, binder RuntimeGenerationBinder) context.Context {
+	return context.WithValue(ctx, runtimeGenerationBinderKey{}, binder)
+}
+
 type Activator func(ctx context.Context, previous, next model.Snapshot) error
 
 type Runtime struct {
@@ -178,6 +187,15 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 	}
 
 	if r.generations != nil {
+		if binder, ok := ctx.Value(runtimeGenerationBinderKey{}).(RuntimeGenerationBinder); ok && binder != nil {
+			identity, _, err := r.candidateGenerationIdentity(previous, next, snapshotHash)
+			if err != nil {
+				return err
+			}
+			if err := binder(ctx, identity); err != nil {
+				return fmt.Errorf("bind runtime generation before prepare: %w", err)
+			}
+		}
 		var cutover GenerationCutover
 		var err error
 		if trafficRuntime != nil {
@@ -306,7 +324,7 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.CertificatePolicies) == 0 &&
 		len(s.PluginGenerations) == 0 &&
 		len(s.PluginDependencies) == 0 &&
-		len(s.PluginPolicies) == 0
+		len(s.PluginPolicies) == 0 && len(s.Datasets) == 0
 }
 
 func snapshotEqual(left, right model.Snapshot) bool {
@@ -314,6 +332,7 @@ func snapshotEqual(left, right model.Snapshot) bool {
 }
 
 func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
+	snapshot.Datasets = model.CloneDatasetSnapshots(snapshot.Datasets)
 	cloned := snapshot
 	cloned.AgentConfig.TrafficStatsEnabled = clonePtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = clonePtr(snapshot.VersionPackage)
@@ -371,9 +390,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			cloned.PluginPolicies[i].Stages = slices.Clone(policy.Stages)
 			for stageIndex, stage := range policy.Stages {
 				clonedStage := &cloned.PluginPolicies[i].Stages[stageIndex]
-				clonedStage.ExtensionPoints = slices.Clone(stage.ExtensionPoints)
-				clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
-				clonedStage.Config = slices.Clone(stage.Config)
+				*clonedStage = model.ClonePolicyStage(stage)
 			}
 		}
 	}
@@ -381,7 +398,9 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.PluginGenerations = slices.Clone(snapshot.PluginGenerations)
 		for i, generation := range snapshot.PluginGenerations {
 			clonedGeneration := &cloned.PluginGenerations[i]
+			clonedGeneration.ManagedNetworkPolicies = model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)
 			clonedGeneration.Config = slices.Clone(generation.Config)
+			clonedGeneration.ManagedNetworkPolicy = clonePolicyRef(generation.ManagedNetworkPolicy)
 			clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
 			clonedGeneration.RequiredFeatures = slices.Clone(generation.RequiredFeatures)
 			clonedGeneration.HTTPBackendProviders = slices.Clone(generation.HTTPBackendProviders)
@@ -395,14 +414,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	return cloned
 }
 
-func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef {
-	if ref == nil {
-		return nil
-	}
-	cloned := *ref
-	cloned.Overlay = slices.Clone(ref.Overlay)
-	return &cloned
-}
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef { return model.ClonePolicyRef(ref) }
 
 func clonePtr[T any](value *T) *T {
 	if value == nil {

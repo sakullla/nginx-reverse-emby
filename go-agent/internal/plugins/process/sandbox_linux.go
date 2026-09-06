@@ -800,6 +800,11 @@ func linuxChildEnvironment(environment []string, endpointFD, credentialFD int, g
 	if endpointFD != 0 && guestEndpoint != "" {
 		endpointRoot := "/proc/self/fd/" + strconv.Itoa(endpointFD)
 		values["NRE_PLUGIN_ENDPOINT"] = "unix:" + endpointRoot + "/" + filepath.Base(guestEndpoint)
+		if endpoint := strings.TrimSpace(values["NRE_PLUGIN_HOST_ENDPOINT"]); endpoint != "" {
+			if _, address, ok := strings.Cut(endpoint, ":"); ok {
+				values["NRE_PLUGIN_HOST_ENDPOINT"] = "unix:" + endpointRoot + "/" + filepath.Base(address)
+			}
+		}
 		if uiEndpoint := strings.TrimSpace(values["NRE_PLUGIN_UI_ENDPOINT"]); uiEndpoint != "" {
 			if network, address, ok := strings.Cut(uiEndpoint, ":"); ok && network == "unix" {
 				values["NRE_PLUGIN_UI_ENDPOINT"] = "unix:" + endpointRoot + "/" + filepath.Base(address)

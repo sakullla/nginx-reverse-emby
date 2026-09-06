@@ -21,6 +21,7 @@ type GenerationSpec struct {
 	Revision          int64
 	Policies          []model.PluginPolicy
 	RequiredPolicyIDs []string
+	Datasets          *DatasetGeneration
 }
 
 // GenerationFactory is the narrow process-to-generation bridge. A factory may
@@ -39,8 +40,9 @@ type GenerationRuntime interface {
 }
 
 type Module struct {
-	factory  GenerationFactory
-	observer observability.Observer
+	factory     GenerationFactory
+	observer    observability.Observer
+	datasetPool datasetIndexPool
 
 	mu         sync.Mutex
 	standalone *transaction
@@ -63,11 +65,14 @@ func NewValidationModule(observer observability.Observer) *Module {
 func (*Module) Name() string { return "plugin-policy" }
 
 func (m *Module) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{Name: m.Name(), Provides: []module.ProviderRef{ProviderEvaluator}}
+	return module.ModuleDescriptor{Name: m.Name(), Provides: []module.ProviderRef{ProviderEvaluator, ProviderDatasets}}
 }
 
 func (*Module) RegisterProviders(reg module.ProviderRegistry) error {
-	return reg.Provide(ProviderEvaluator, Evaluator(disabledEvaluator{}))
+	if err := reg.Provide(ProviderEvaluator, Evaluator(disabledEvaluator{})); err != nil {
+		return err
+	}
+	return reg.Provide(ProviderDatasets, &DatasetGeneration{closed: true})
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -92,6 +97,16 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	if err != nil {
 		return nil, err
 	}
+	datasetGeneration, err := prepareDatasetGeneration(ctx, generationContext.ID(), request.Next, &m.datasetPool)
+	if err != nil {
+		return nil, fmt.Errorf("prepare dataset generation: %w", err)
+	}
+	datasetOwned := false
+	defer func() {
+		if !datasetOwned {
+			datasetGeneration.Close()
+		}
+	}()
 	if len(required) > 0 && m.factory == nil {
 		return nil, errors.New("policy execution runtime is unavailable")
 	}
@@ -101,7 +116,7 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 	var runtime GenerationRuntime
 	if len(definitions) > 0 && m.factory != nil {
 		runtime, err = m.factory.PrepareGeneration(ctx, GenerationSpec{
-			ID: generationContext.ID(), Revision: generationContext.Revision(), Policies: definitions,
+			ID: generationContext.ID(), Revision: generationContext.Revision(), Policies: definitions, Datasets: datasetGeneration,
 			RequiredPolicyIDs: append([]string(nil), required...),
 		})
 		if err != nil {
@@ -129,7 +144,9 @@ func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (modu
 		}
 		return nil, err
 	}
-	return &transaction{module: m, runtime: runtime, evaluator: evaluator}, nil
+	evaluator.datasets = datasetGeneration
+	datasetOwned = true
+	return &transaction{module: m, runtime: runtime, evaluator: evaluator, datasets: datasetGeneration}, nil
 }
 
 func (m *Module) Apply(ctx context.Context, request module.ApplyRequest) error {
@@ -166,6 +183,7 @@ type transaction struct {
 	module    *Module
 	runtime   GenerationRuntime
 	evaluator *GenerationEvaluator
+	datasets  *DatasetGeneration
 	previous  *transaction
 
 	mu        sync.Mutex
@@ -177,7 +195,10 @@ func (transaction *transaction) RegisterProviders(reg module.ProviderRegistry) e
 	if transaction == nil || transaction.evaluator == nil {
 		return errors.New("policy evaluator is unavailable")
 	}
-	return reg.Provide(ProviderEvaluator, Evaluator(transaction.evaluator))
+	if err := reg.Provide(ProviderEvaluator, Evaluator(transaction.evaluator)); err != nil {
+		return err
+	}
+	return reg.Provide(ProviderDatasets, transaction.datasets)
 }
 
 func (transaction *transaction) Ready(ctx context.Context) error {
@@ -255,7 +276,9 @@ func (transaction *transaction) Destroy(ctx context.Context) error {
 	runtime := transaction.runtime
 	transaction.runtime = nil
 	transaction.evaluator = nil
+	datasets := transaction.datasets
 	transaction.mu.Unlock()
+	datasets.Close()
 	if runtime != nil {
 		return runtime.Close(ctx)
 	}
@@ -314,6 +337,24 @@ func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Sna
 		id := strings.TrimSpace(rule.PolicyRef.ID)
 		l4Required[id] = struct{}{}
 	}
+	for _, instance := range snapshot.PluginGenerations {
+		for protocol, ref := range instance.ManagedNetworkPolicies {
+			if protocol != "tcp" && protocol != "udp" {
+				return nil, nil, errors.New("invalid managed entry protocol")
+			}
+			if err := validatePolicyRef(ref, rawDefinitions, ExtensionL4); err != nil {
+				return nil, nil, err
+			}
+			l4Required[ref.ID] = struct{}{}
+		}
+		if instance.ManagedNetworkPolicy == nil {
+			continue
+		}
+		if err := validatePolicyRef(instance.ManagedNetworkPolicy, rawDefinitions, ExtensionL4); err != nil {
+			return nil, nil, fmt.Errorf("managed entry %s: %w", instance.InstanceID, err)
+		}
+		l4Required[instance.ManagedNetworkPolicy.ID] = struct{}{}
+	}
 	definitions := make([]model.PluginPolicy, 0, len(rawDefinitions))
 	for _, definition := range snapshot.PluginPolicies {
 		cloned, err := validateAndClonePolicy(definition)
@@ -356,6 +397,18 @@ func RequiredPolicyIDs(snapshot model.Snapshot) []string {
 			}
 		}
 	}
+	for _, instance := range snapshot.PluginGenerations {
+		for _, ref := range instance.ManagedNetworkPolicies {
+			if ref != nil && strings.TrimSpace(ref.ID) != "" {
+				required[ref.ID] = struct{}{}
+			}
+		}
+		if instance.ManagedNetworkPolicy != nil {
+			if id := strings.TrimSpace(instance.ManagedNetworkPolicy.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
 	ids := make([]string, 0, len(required))
 	for id := range required {
 		ids = append(ids, id)
@@ -375,23 +428,34 @@ func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.Plugin
 	if !ok {
 		return fmt.Errorf("policy %q is unavailable", ref.ID)
 	}
-	// A request ID may legally reach its canonical bound at runtime. Admission
-	// therefore uses that exact worst-case deterministic wire frame so every
-	// published stage can accept every legal rule overlay.
-	frameBytes, err := PolicyEvaluateRequestFrameBytes(
-		extensionPoint,
-		strings.Repeat("r", MaxPolicyRequestIDBytes),
-		ref.Overlay,
-	)
+	if err := validateEntryModeBindings(ref, definition); err != nil {
+		return err
+	}
+	envelope, err := resolveEntryOverlays(ref, definition)
 	if err != nil {
-		return fmt.Errorf("encode policy evaluate request: %w", err)
+		return err
 	}
 	for index, stage := range definition.Stages {
 		if !slices.Contains(stage.ExtensionPoints, extensionPoint) {
-			return fmt.Errorf("policy %q stage %d (%q) does not support extension %q", ref.ID, index, stage.InstanceID, extensionPoint)
+			return fmt.Errorf("policy stage %d does not support %s", index, extensionPoint)
+		}
+		projection, err := stageModeProjection(stage, ref)
+		if err != nil {
+			return err
+		}
+		payload, err := selectedStageOverlay(envelope, projection)
+		if err != nil {
+			return err
+		}
+		frameBytes, err := PolicyEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		if stage.Kind == model.PolicyKindWAF && extensionPoint == ExtensionHTTP {
+			frameBytes, err = PolicyWAFEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		}
+		if err != nil {
+			return err
 		}
 		if err := AdmitPolicyInputFrame(stage.ResourceBudget, frameBytes); err != nil {
-			return fmt.Errorf("policy %q stage %d (%q) evaluate request: %w", ref.ID, index, stage.InstanceID, err)
+			return err
 		}
 	}
 	return nil

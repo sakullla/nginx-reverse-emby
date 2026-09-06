@@ -27,6 +27,10 @@ type localPluginArtifactResolver interface {
 	ResolveLocalPluginGenerationArtifact(context.Context, storage.PluginGeneration) (string, error)
 }
 
+type localDatasetArtifactResolver interface {
+	ResolveLocalDatasetArtifact(context.Context, storage.DatasetSnapshot) (string, error)
+}
+
 type tunnelPKICredentialTargetStore interface {
 	LoadRelayListenerCredentialTargets(context.Context, string) ([]storage.RelayListener, error)
 }
@@ -182,10 +186,49 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	if err != nil {
 		return err
 	}
+	if lease, ok := ctx.Value(localRuntimeLeaseContextKey{}).(service.RemoteRevisionLease); ok {
+		ctx = goagentembedded.WithRuntimeGenerationBinder(ctx, func(bindCtx context.Context, binding goagentembedded.RuntimeGenerationBinding) error {
+			if lease.AgentID != r.agentID || lease.Revision != binding.Revision || r.source == nil {
+				return errors.New("embedded runtime identity does not match the approved lease")
+			}
+			binder, ok := r.source.pluginSecrets.(interface {
+				BindLocalPluginRuntimeGeneration(context.Context, string, service.RemoteRevisionStart) error
+			})
+			if !ok {
+				return errors.New("embedded runtime generation binding is unavailable")
+			}
+			return binder.BindLocalPluginRuntimeGeneration(bindCtx, r.agentID, service.RemoteRevisionStart{
+				AgentID: r.agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID,
+				GenerationID: embeddedGenerationID(lease), RuntimeGenerationID: binding.GenerationID, RuntimeSnapshotHash: binding.SnapshotHash,
+			})
+		})
+	}
 	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(materialized), drainTimeout)
 }
 
+func (r *Runtime) RevokePluginGeneration(ctx context.Context, request goagentembedded.PluginGenerationRevokeRequest) error {
+	if r == nil || r.runtime == nil || request.Validate() != nil {
+		return errors.New("embedded plugin generation revocation is invalid")
+	}
+	runner, ok := r.runtime.(interface {
+		RevokePluginGeneration(context.Context, goagentembedded.PluginGenerationRevokeRequest) error
+	})
+	if !ok {
+		return errors.New("embedded plugin generation revocation is unavailable")
+	}
+	return runner.RevokePluginGeneration(ctx, request)
+}
+
 func (r *Runtime) materializeLocalPluginGenerations(ctx context.Context, snapshot Snapshot) (Snapshot, error) {
+	var resolver localDatasetArtifactResolver
+	if r.source != nil {
+		resolver, _ = r.source.store.(localDatasetArtifactResolver)
+	}
+	var err error
+	snapshot, err = materializeLocalDatasets(ctx, resolver, snapshot)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if len(snapshot.PluginGenerations) == 0 {
 		return snapshot, nil
 	}
@@ -260,6 +303,10 @@ func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.Syn
 	if err != nil {
 		return goagentembedded.Snapshot{}, err
 	}
+	// This heartbeat snapshot is not an approved candidate. The embedded bridge
+	// selects its explicit approved snapshot after telemetry synchronization.
+	// Materialization belongs to ApplyRevision/DiagnoseSnapshot, so an unrelated
+	// broken desired index cannot prevent applying a retained valid revision.
 	if len(request.PluginLogs) > 0 && request.PluginLogsAcknowledged != nil {
 		if err := request.PluginLogsAcknowledged(); err != nil {
 			return goagentembedded.Snapshot{}, err
@@ -287,6 +334,20 @@ func (a syncSourceAdapter) RedeemPluginSecrets(ctx context.Context, request goag
 	return result, nil
 }
 
+func (a syncSourceAdapter) RedeemScopedPluginSecret(ctx context.Context, request goagentembedded.PluginSecretRedemptionRequest) (json.RawMessage, error) {
+	if a.source == nil || a.source.pluginSecrets == nil || request.Validate() != nil || len(request.Scoped) == 0 || len(request.Handles) != 0 {
+		return nil, errors.New("embedded scoped secret redemption is unavailable")
+	}
+	response, err := a.source.pluginSecrets.RedeemAgentPluginSecrets(ctx, a.source.agentID, service.PluginSecretRedemptionRequest{
+		Revision: request.Revision, GenerationID: request.GenerationID, RuntimeGenerationID: request.RuntimeGenerationID, InstanceID: request.InstanceID,
+		PluginID: request.PluginID, OperationID: request.OperationID, PackageDigest: request.PackageDigest, ArtifactDigest: request.ArtifactDigest, Scoped: request.Scoped,
+	})
+	if err != nil || len(response.Scoped) == 0 || len(response.Secrets) != 0 {
+		return nil, errors.New("embedded scoped secret redemption failed")
+	}
+	return response.Scoped, nil
+}
+
 type stateSinkAdapter struct {
 	sink *StateSink
 }
@@ -297,6 +358,7 @@ func (a stateSinkAdapter) Save(ctx context.Context, state goagentembedded.Runtim
 
 func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded := goagentembedded.Snapshot{
+		Datasets:           toEmbeddedDatasets(snapshot.Datasets),
 		DesiredVersion:     snapshot.DesiredVersion,
 		Revision:           snapshot.Revision,
 		PluginGenerations:  toEmbeddedPluginGenerations(snapshot.PluginGenerations),
@@ -452,6 +514,37 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 		})
 	}
 	return embedded
+}
+
+func toEmbeddedDatasets(values []storage.DatasetSnapshot) []goagentembedded.DatasetSnapshot {
+	if values == nil {
+		return nil
+	}
+	result := make([]goagentembedded.DatasetSnapshot, len(values))
+	for i, value := range values {
+		result[i] = goagentembedded.DatasetSnapshot{Version: value.Version, Artifact: goagentembedded.DatasetArtifact{ID: value.Artifact.ID, Kind: value.Artifact.Kind, SHA256: value.Artifact.SHA256, SizeBytes: value.Artifact.SizeBytes, LocalPath: value.Artifact.LocalPath}}
+		encoded, _ := json.Marshal(value.Bindings)
+		_ = json.Unmarshal(encoded, &result[i].Bindings)
+	}
+	return result
+}
+
+func materializeLocalDatasets(ctx context.Context, resolver localDatasetArtifactResolver, snapshot Snapshot) (Snapshot, error) {
+	if len(snapshot.Datasets) == 0 {
+		return snapshot, nil
+	}
+	if resolver == nil {
+		return Snapshot{}, errors.New("embedded dataset artifact resolver is unavailable")
+	}
+	snapshot.Datasets = append([]storage.DatasetSnapshot(nil), snapshot.Datasets...)
+	for i, entry := range snapshot.Datasets {
+		path, err := resolver.ResolveLocalDatasetArtifact(ctx, entry)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("materialize embedded dataset: %w", err)
+		}
+		snapshot.Datasets[i].Artifact.LocalPath = path
+	}
+	return snapshot, nil
 }
 
 func toEmbeddedPolicyRef(ref *storage.PolicyRef) *goagentembedded.PolicyRef {

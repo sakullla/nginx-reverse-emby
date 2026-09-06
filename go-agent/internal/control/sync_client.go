@@ -247,6 +247,11 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	if err := c.preparePluginArtifacts(ctx, &snapshot, snapshot.Revision, syncMeta.SnapshotDigest); err != nil {
 		return Snapshot{}, err
 	}
+	// Dataset preparation belongs to the revision lease path, where a failed
+	// candidate can be reported without confusing it with an applied revision.
+	for i := range snapshot.Datasets {
+		snapshot.Datasets[i].Artifact.LocalPath = ""
+	}
 	if err := acknowledgePluginLogs(request); err != nil {
 		return Snapshot{}, err
 	}
@@ -318,6 +323,9 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
 	if err := c.preparePluginArtifacts(ctx, &snapshot, pull.Lease.Revision, pull.Lease.SnapshotDigest); err != nil {
 		return model.RevisionPull{}, err
+	}
+	if err := c.prepareDatasetArtifacts(ctx, &snapshot, pull.Lease.Revision, pull.Lease.SnapshotDigest); err != nil {
+		return model.RevisionPull{}, errors.Join(err, c.reportDatasetPreparationFailure(ctx, *pull.Lease))
 	}
 	pull.Snapshot = &snapshot
 	pull.VerifiedSnapshotDigest = digest

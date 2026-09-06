@@ -10,6 +10,7 @@ import (
 	stdhttp "net/http"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -20,10 +21,10 @@ import (
 // The original request body is rebuilt from this prefix and its unread tail, so
 // policy inspection never requires whole-body buffering.
 const (
-	httpPolicyBodyWindowBytes  = 64 << 10
-	httpPolicyFieldValueBytes  = policy.MaxPolicyReadFieldValueBytes
+	httpPolicyBodyWindowBytes  = policy.MaxWAFHTTPBodyWindowBytes
+	httpPolicyFieldValueBytes  = policy.MaxWAFHTTPFieldValueBytes
 	httpPolicyHeaderValueBytes = httpPolicyFieldValueBytes
-	httpPolicyHeadersBytes     = 32 << 10
+	httpPolicyHeadersBytes     = policy.MaxWAFHTTPHeadersBytes
 )
 
 type httpPolicyRequestIDContextKey struct{}
@@ -53,27 +54,31 @@ func (s *Server) allowPolicyRequest(req *stdhttp.Request, rule model.HTTPRule) (
 		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "runtime-unavailable", Degraded: true}, false
 	}
 
+	failed := func(reason string) (policy.Decision, bool) {
+		decision := policy.AdmissionFailure(req.Context(), s.policyEvaluator, rule.PolicyRef, policy.ExtensionHTTP, strconv.Itoa(rule.ID), reason)
+		return decision, decision.Action == policy.ActionAllow || decision.Action == policy.ActionObserve
+	}
 	network := "tcp"
 	if req.ProtoMajor == 3 {
 		network = "udp"
 	}
 	metadata, err := httpPolicyMetadata(req, network, rule.TrustedProxyRanges)
 	if err != nil {
-		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "invalid-source", Degraded: true}, false
+		return failed("source-unavailable")
 	}
 	body, err := prepareHTTPPolicyBodyWindow(req)
 	if err != nil {
-		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "body-window", Degraded: true}, false
+		return failed("invalid-result")
 	}
 	fields, err := httpPolicyFields(req)
 	if err != nil {
-		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "input-projection", Degraded: true}, false
+		return failed("budget-exceeded")
 	}
 	input, err := policy.NewInput(policy.ExtensionHTTP, httpPolicyRequestID(req.Context()), metadata, fields, body)
 	if err != nil {
-		return policy.Decision{Action: policy.ActionDeny, StatusCode: stdhttp.StatusServiceUnavailable, Reason: "invalid-input", Degraded: true}, false
+		return failed("invalid-result")
 	}
-	decision := s.policyEvaluator.Evaluate(req.Context(), rule.PolicyRef, input)
+	decision := s.policyEvaluator.Evaluate(req.Context(), rule.PolicyRef, input.WithEntryID(strconv.Itoa(rule.ID)))
 	return decision, decision.Action == policy.ActionAllow || decision.Action == policy.ActionObserve
 }
 

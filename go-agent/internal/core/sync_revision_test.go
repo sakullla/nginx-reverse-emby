@@ -686,3 +686,39 @@ func assertEventOrder(t *testing.T, events []string, expected ...string) {
 		t.Fatalf("events = %v, missing ordered suffix from %v", events, expected[next:])
 	}
 }
+
+func TestRevisionStartBindsActualRuntimeIdentityBeforePrepare(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	pull := revisionPull(7, "lease-actual", "verified-digest-7")
+	runtime := newManagedRevisionRuntime(t)
+	client := &revisionClientStub{events: &events, pull: pull}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+	observed := false
+	ctx := WithRuntimeGenerationBinder(t.Context(), func(ctx context.Context, identity GenerationIdentity) error {
+		observed = true
+		if len(client.starts) != 1 {
+			t.Fatal("Prepare preceded authenticated Start")
+		}
+		start := client.starts[0]
+		if start.RuntimeGenerationID != identity.ID || start.RuntimeSnapshotHash != identity.SnapshotHash || start.GenerationID == identity.ID {
+			t.Fatalf("attempt/runtime authority collapsed: %+v %+v", start, identity)
+		}
+		return nil
+	})
+	if err := controller.PerformSync(ctx, control.SyncRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if !observed {
+		t.Fatal("actual runtime boundary was not bound")
+	}
+	deniedRuntime := newManagedRevisionRuntime(t)
+	denied := errors.New("lease rejected")
+	ctx = WithRuntimeGenerationBinder(t.Context(), func(context.Context, GenerationIdentity) error { return denied })
+	if err := deniedRuntime.Apply(ctx, model.Snapshot{}, *pull.Snapshot); !errors.Is(err, denied) {
+		t.Fatalf("binding refusal ignored: %v", err)
+	}
+	if identity, _ := deniedRuntime.ActiveGenerationIdentity(); identity.ID != "" {
+		t.Fatal("denied binding published candidate")
+	}
+}

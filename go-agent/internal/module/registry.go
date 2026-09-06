@@ -916,6 +916,7 @@ func hashGenerationProviders(generationContext GenerationContext, providers prov
 
 func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
+	cloned.Datasets = model.CloneDatasetSnapshots(snapshot.Datasets)
 	cloned.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = cloneGenerationPtr(snapshot.VersionPackage)
 	cloned.DDNSConfig = cloneGenerationPtr(snapshot.DDNSConfig)
@@ -959,16 +960,18 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.PluginPolicies[i].Stages = slices.Clone(policy.Stages)
 		for stageIndex, stage := range policy.Stages {
 			clonedStage := &cloned.PluginPolicies[i].Stages[stageIndex]
-			clonedStage.ExtensionPoints = slices.Clone(stage.ExtensionPoints)
-			clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
-			clonedStage.Config = slices.Clone(stage.Config)
+			*clonedStage = model.ClonePolicyStage(stage)
 		}
 	}
 	cloned.PluginGenerations = slices.Clone(snapshot.PluginGenerations)
 	for i, generation := range snapshot.PluginGenerations {
 		clonedGeneration := &cloned.PluginGenerations[i]
+		clonedGeneration.ManagedNetworkPolicies = model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)
 		clonedGeneration.Config = slices.Clone(generation.Config)
+		clonedGeneration.ManagedNetworkPolicy = cloneGenerationPolicyRef(generation.ManagedNetworkPolicy)
 		clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
+		clonedGeneration.RequiredFeatures = slices.Clone(generation.RequiredFeatures)
+		clonedGeneration.HTTPBackendProviders = slices.Clone(generation.HTTPBackendProviders)
 		clonedGeneration.Grants = slices.Clone(generation.Grants)
 		clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
 	}
@@ -977,12 +980,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 }
 
 func cloneGenerationPolicyRef(ref *model.PolicyRef) *model.PolicyRef {
-	if ref == nil {
-		return nil
-	}
-	cloned := *ref
-	cloned.Overlay = slices.Clone(ref.Overlay)
-	return &cloned
+	return model.ClonePolicyRef(ref)
 }
 
 func cloneGenerationPtr[T any](value *T) *T {

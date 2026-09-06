@@ -85,6 +85,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	}
 
 	if err := tx.AutoMigrate(
+		&DatasetSourceRow{}, &DatasetVersionRow{}, &DatasetBindingRow{}, &DatasetUploadRow{},
 		&AgentRow{},
 		&HTTPRuleRow{},
 		&L4RuleRow{},
@@ -131,6 +132,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&AuditEventRow{},
 		&SecretRow{},
 		&SecretVersionRow{},
+		&PluginScopedSecretOperationRow{},
+		&PluginScopedSecretDeliveryRow{},
+		&PluginPolicySettingsRow{}, &PluginPolicyEntryModeRow{}, &PluginDatasetConsumptionRow{}, &PluginConsumptionOperationRow{},
 		&MarketplaceSourceRow{},
 		&MarketSnapshotRow{},
 		&MarketEntryRow{},

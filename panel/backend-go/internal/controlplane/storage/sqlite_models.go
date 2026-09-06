@@ -298,6 +298,8 @@ type AgentRevisionRow struct {
 	AttemptCount        int        `gorm:"column:attempt_count;not null;default:0"`
 	NextAttemptAt       *time.Time `gorm:"column:next_attempt_at;index:idx_agent_revisions_state_next,priority:3"`
 	GenerationID        string     `gorm:"column:generation_id;not null;default:''"`
+	RuntimeGenerationID string     `gorm:"column:runtime_generation_id;not null;default:''"`
+	RuntimeSnapshotHash string     `gorm:"column:runtime_snapshot_hash;not null;default:''"`
 	DrainState          string     `gorm:"column:drain_state;not null;default:''"`
 	ErrorCode           string     `gorm:"column:error_code;not null;default:''"`
 	ErrorMessage        string     `gorm:"column:error_message;not null;default:''"`

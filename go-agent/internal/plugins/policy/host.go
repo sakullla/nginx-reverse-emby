@@ -94,6 +94,8 @@ func (state *generationState) put(instanceID, key string, value []byte) error {
 }
 
 type requestHost struct {
+	datasets          *DatasetGeneration
+	checkFailure      string
 	input             Input
 	generationID      string
 	instanceID        string
@@ -249,9 +251,24 @@ func (host *requestHost) EmitEvent(ctx context.Context, event pluginsdk.PolicySe
 	if !host.granted("event.emit") {
 		return permissionDenied("policy event emission is not granted")
 	}
-	event, err := pluginsdk.PolicySecurityEventFromWire(int32(event.Code), int32(event.Action))
-	if err != nil {
+	if err := event.Validate(); err != nil {
 		return err
+	}
+	if event.Code == pluginsdk.PolicySecurityEventCodeIPCheckFailure || event.Code == pluginsdk.PolicySecurityEventCodeRoutingFailure {
+		reason := "guest-failure"
+		switch event.Reason {
+		case pluginsdk.PolicySecurityEventReasonSourceUnauthenticated:
+			reason = "source-unavailable"
+		case pluginsdk.PolicySecurityEventReasonDatasetUnavailable:
+			reason = "dataset-unavailable"
+		case pluginsdk.PolicySecurityEventReasonClassificationMissing:
+			reason = "classification-missing"
+		case pluginsdk.PolicySecurityEventReasonBudgetExceeded:
+			reason = "budget-exceeded"
+		case pluginsdk.PolicySecurityEventReasonRevoked:
+			reason = "revoked"
+		}
+		host.checkFailure = reason
 	}
 	host.observe(ctx, observability.Event{
 		Name: observability.PolicyHostEvent, Outcome: "observed", Reason: event.Code.String(),

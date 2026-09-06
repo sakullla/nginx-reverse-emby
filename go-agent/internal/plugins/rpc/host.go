@@ -17,6 +17,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/dockerproxy"
+	managed "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/network"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
@@ -82,6 +83,7 @@ type closeFunc func() error
 func (fn closeFunc) Close() error { return fn() }
 
 type HostCandidate struct {
+	RequiredFeatures                                                            []string
 	InstanceID, PluginID, PluginVersion, PackageDigest, Generation, OperationID string
 	Revision                                                                    int64
 	ProviderGenerationID, AgentID                                               string
@@ -95,6 +97,7 @@ type HostCandidate struct {
 	Process                                                                     pluginprocess.InstanceSpec
 	Dial                                                                        DialConfig
 	HTTPBackendProviders                                                        []pluginsdk.HTTPBackendProviderDescriptor
+	services                                                                    *runtimeServices
 }
 
 func candidateExtensionPoints(candidate HostCandidate) []string {
@@ -119,6 +122,7 @@ type RuntimeStatus struct {
 }
 
 type hostAttempt struct {
+	handleReady chan struct{}
 	stopMu      sync.Mutex
 	handle      *pluginprocess.Handle
 	client      LifecycleClient
@@ -132,9 +136,13 @@ type hostAttempt struct {
 	cleanupDone bool
 	cleanupErr  error
 	providers   map[string]*httpBackendProviderAttempt
+	network     *managed.Owner
 }
 
 type HostedInstance struct {
+	retired         bool
+	restartCancel   context.CancelFunc
+	owner           *Host
 	mu              sync.RWMutex
 	candidate       HostCandidate
 	supervisor      *pluginprocess.Supervisor
@@ -162,23 +170,29 @@ type HostedInstance struct {
 }
 
 type Host struct {
-	mu              sync.RWMutex
-	ctx             context.Context
-	cancel          context.CancelFunc
-	closed          bool
-	activationWG    sync.WaitGroup
-	installer       pluginprocess.Installer
-	install         func(context.Context, string, pluginprocess.Artifact) (string, error)
-	supervisor      *pluginprocess.Supervisor
-	dial            DialFunc
-	provision       func(string, DialConfig) (attemptSecurity, error)
-	redeemer        SecretRedeemer
-	active          map[string]*HostedInstance
-	pending         map[*HostedInstance]struct{}
-	locks           sync.Map
-	afterStartOnce  func()
-	dockerProxyRoot string
-	dockerRunner    dockerproxy.Runner
+	beforeRestartActivation func()
+	mu                      sync.RWMutex
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	closed                  bool
+	activationWG            sync.WaitGroup
+	installer               pluginprocess.Installer
+	install                 func(context.Context, string, pluginprocess.Artifact) (string, error)
+	supervisor              *pluginprocess.Supervisor
+	dial                    DialFunc
+	provision               func(string, DialConfig) (attemptSecurity, error)
+	redeemer                SecretRedeemer
+	active                  map[string]*HostedInstance
+	pending                 map[*HostedInstance]struct{}
+	locks                   sync.Map
+	afterStartOnce          func()
+	dockerProxyRoot         string
+	dockerRunner            dockerproxy.Runner
+	managed                 *managed.Manager
+	networkSessions         NetworkSessionRegistrar
+	instances               map[*HostedInstance]struct{}
+	revoked                 map[string]model.PluginGenerationRevokeRequest
+	revocationPath          string
 }
 
 type PreparedHostGeneration struct {
@@ -201,7 +215,7 @@ func NewHost(installer pluginprocess.Installer, supervisor *pluginprocess.Superv
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}}, nil
+	return &Host{ctx: ctx, cancel: cancel, installer: installer, install: installer.InstallContext, supervisor: supervisor, dial: dial, active: map[string]*HostedInstance{}, pending: map[*HostedInstance]struct{}{}, managed: managed.NewManager(), instances: map[*HostedInstance]struct{}{}, revoked: map[string]model.PluginGenerationRevokeRequest{}}, nil
 }
 
 func (h *Host) SetSecretRedeemer(redeemer SecretRedeemer) {
@@ -294,6 +308,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 
 	runCtx, cancel := context.WithCancel(hostCtx)
 	instance := &HostedInstance{
+		owner:      h,
 		candidate:  candidate,
 		supervisor: h.supervisor,
 		dial:       h.dial,
@@ -317,6 +332,7 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 		instance.mu.Unlock()
 		h.mu.Lock()
 		h.pending[instance] = struct{}{}
+		h.instances[instance] = struct{}{}
 		h.mu.Unlock()
 	})
 	if err != nil {
@@ -379,6 +395,16 @@ func (h *Host) Activate(ctx context.Context, candidate HostCandidate) (*HostedIn
 	instance.runStarted = true
 	instance.mu.Unlock()
 	go instance.run(runCtx)
+	h.mu.Lock()
+	if h.active[candidate.InstanceID] == instance {
+		instance.mu.RLock()
+		retired := instance.retired
+		instance.mu.RUnlock()
+		if !retired && attempt.network != nil {
+			attempt.network.Activate()
+		}
+	}
+	h.mu.Unlock()
 	return instance, nil
 }
 
@@ -423,6 +449,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*
 	}
 	runCtx, cancel := context.WithCancel(hostCtx)
 	instance := &HostedInstance{
+		owner:     h,
 		candidate: candidate, supervisor: h.supervisor, dial: h.dial, provision: h.provision, redeemer: h.secretRedeemer(),
 		status: RuntimeStatus{InstanceID: candidate.InstanceID, Generation: candidate.Generation, OperationID: candidate.OperationID,
 			Revision: candidate.Revision, PackageDigest: candidate.PackageDigest, State: "preparing"},
@@ -436,6 +463,7 @@ func (h *Host) PrepareCandidate(ctx context.Context, candidate HostCandidate) (*
 		instance.mu.Unlock()
 		h.mu.Lock()
 		h.pending[instance] = struct{}{}
+		h.instances[instance] = struct{}{}
 		h.mu.Unlock()
 	}, false)
 	if err != nil {
@@ -476,6 +504,15 @@ func (h *Host) ReadyCandidate(instance *HostedInstance) error {
 // ActivatePreparedCandidate performs the rollback-capable lifecycle step. The
 // Host still does not publish the candidate until the generation view swaps.
 func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedInstance) error {
+	if h == nil || instance == nil {
+		return errors.New("RPC plugin candidate is required")
+	}
+	lock := h.instanceLock(instance.candidate.InstanceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := h.checkGenerationRevoked(instance.candidate); err != nil {
+		return err
+	}
 	if err := h.ReadyCandidate(instance); err != nil {
 		return err
 	}
@@ -494,10 +531,10 @@ func (h *Host) ActivatePreparedCandidate(ctx context.Context, instance *HostedIn
 	response, err := attempt.client.Activate(ctx, lifecycle)
 	clearLifecycle()
 	if err != nil {
-		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+		return pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 	}
 	if err := validateLifecycleSuccess(response); err != nil {
-		return pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+		return pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 	}
 	if err := processAttemptError(attempt.handle); err != nil {
 		return err
@@ -546,6 +583,10 @@ func (h *Host) PrepareGenerationPublication(generation string, instances []*Host
 			h.mu.Unlock()
 			return nil, errors.New("RPC plugin candidate is not activated")
 		}
+		if _, revoked := h.revoked[generationFenceKey(instance.candidate.InstanceID, instance.candidate.Generation)]; revoked {
+			h.mu.Unlock()
+			return nil, errors.New("RPC plugin candidate was revoked")
+		}
 		if _, duplicate := seen[instance.candidate.InstanceID]; duplicate {
 			h.mu.Unlock()
 			return nil, errors.New("RPC plugin generation duplicates an instance")
@@ -564,11 +605,35 @@ func (prepared *PreparedHostGeneration) Publish() {
 		return
 	}
 	h := prepared.host
+	previousInstances := h.active
 	next := make(map[string]*HostedInstance, len(prepared.instances))
 	for _, instance := range prepared.instances {
 		next[instance.candidate.InstanceID] = instance
 	}
 	h.active = next
+	for _, instance := range prepared.instances {
+		instance.mu.RLock()
+		attempt := instance.attempt
+		instance.mu.RUnlock()
+		if attempt != nil && attempt.network != nil {
+			attempt.network.Activate()
+		}
+	}
+	for id, instance := range previousInstances {
+		if next[id] == instance {
+			continue
+		}
+		instance.mu.Lock()
+		instance.retired = true
+		if instance.restartCancel != nil {
+			instance.restartCancel()
+		}
+		attempt := instance.attempt
+		instance.mu.Unlock()
+		if attempt != nil && attempt.network != nil {
+			attempt.network.Retire()
+		}
+	}
 	for _, instance := range prepared.instances {
 		delete(h.pending, instance)
 		instance.mu.Lock()
@@ -607,6 +672,9 @@ func (h *Host) startAttempt(ctx context.Context, candidate HostCandidate, launch
 }
 
 func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, launched func(*hostAttempt), activate bool) (*hostAttempt, error) {
+	if err := h.checkGenerationRevoked(candidate); err != nil {
+		return nil, err
+	}
 	redeemer := h.secretRedeemer()
 	var security attemptSecurity
 	var err error
@@ -622,7 +690,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	}
 	var attempt *hostAttempt
 	if security.cleanup != nil {
-		attempt = &hostAttempt{cleanup: security.cleanup}
+		attempt = &hostAttempt{cleanup: security.cleanup, handleReady: make(chan struct{})}
 		if launched != nil {
 			launched(attempt)
 		}
@@ -652,6 +720,14 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		baseCleanup := attempt.cleanup
 		attempt.cleanup = func() error { return errors.Join(closeProxy(), baseCleanup()) }
 	}
+	hostEnvironment, hostErr := h.startHostRuntime(candidate, security, attempt)
+	if hostErr != nil {
+		return attempt, hostErr
+	}
+	security.environment = append(security.environment, hostEnvironment...)
+	if candidateUsesExecutionScope(candidate) {
+		security.environment = append(security.environment, pluginsdk.EnvPluginExecutionScope+"="+pluginsdk.HostScopeAgent)
+	}
 	candidate.Dial = security.dial
 	candidate.Process.Security.EndpointDirectory = security.endpointDirectory
 	candidate.Process.Security.CredentialDirectory = security.credentialDirectory
@@ -680,6 +756,7 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		h.afterStartOnce()
 	}
 	attempt.handle = handle
+	close(attempt.handleReady)
 	processStatus := handle.Status()
 	attempt.providers = make(map[string]*httpBackendProviderAttempt, len(security.providers))
 	for providerID, providerSecurity := range security.providers {
@@ -702,14 +779,14 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		ArtifactDigest:   candidate.Artifact.SHA256,
 		GrantedScopes:    append([]string(nil), candidate.Scopes...),
 		Generation:       candidate.Generation,
-		RequiredFeatures: pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Scopes, candidateExtensionPoints(candidate)),
+		RequiredFeatures: candidateRPCFeatures(candidate),
 	}
 	response, err := retryAgentHandshake(ctx, candidate.Dial.Deadline, handle, client, handshake)
 	if err != nil {
-		return attempt, err
+		return attempt, pluginLifecycleCallError("handshake", candidateHasSecretCapability(candidate), err)
 	}
 	if err := ValidateHandshake(handshake, response); err != nil {
-		return attempt, err
+		return attempt, pluginLifecycleCallError("handshake", candidateHasSecretCapability(candidate), err)
 	}
 	lifecycle, clearLifecycle, err := transientLifecycleRequest(ctx, redeemer, candidate, handle)
 	if err != nil {
@@ -718,10 +795,10 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	prepared, err := client.Prepare(ctx, lifecycle)
 	clearLifecycle()
 	if err != nil {
-		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
+		return attempt, pluginLifecycleCallError("prepare", candidateHasSecretCapability(candidate), err)
 	}
 	if err := validateLifecycleSuccess(prepared); err != nil {
-		return attempt, pluginLifecycleCallError("prepare", len(candidate.SecretHandles) > 0, err)
+		return attempt, pluginLifecycleCallError("prepare", candidateHasSecretCapability(candidate), err)
 	}
 	if activate {
 		lifecycle, clearLifecycle, err = transientLifecycleRequest(ctx, redeemer, candidate, handle)
@@ -731,10 +808,10 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 		activated, err := client.Activate(ctx, lifecycle)
 		clearLifecycle()
 		if err != nil {
-			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+			return attempt, pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 		}
 		if err := validateLifecycleSuccess(activated); err != nil {
-			return attempt, pluginLifecycleCallError("activate", len(candidate.SecretHandles) > 0, err)
+			return attempt, pluginLifecycleCallError("activate", candidateHasSecretCapability(candidate), err)
 		}
 		if err := attempt.readyHTTPBackendProviders(ctx); err != nil {
 			return attempt, err
@@ -746,11 +823,26 @@ func (h *Host) startAttemptMode(ctx context.Context, candidate HostCandidate, la
 	return attempt, nil
 }
 
-func pluginLifecycleCallError(phase string, transientSecrets bool, err error) error {
+// Scoped material can outlive the read callback inside the guest. Treat every
+// lifecycle error from a secret-capable generation as untrusted secret content,
+// including cleanup after a failed Prepare, before logging or status projection.
+func candidateHasSecretCapability(candidate HostCandidate) bool {
+	if len(candidate.SecretHandles) > 0 {
+		return true
+	}
+	for _, scope := range candidate.Scopes {
+		if scope == pluginsdk.PermissionScopedSecretRead || scope == pluginsdk.PermissionScopedSecretWrite {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginLifecycleCallError(phase string, secretCapable bool, err error) error {
 	if err == nil {
 		return nil
 	}
-	if transientSecrets {
+	if secretCapable {
 		return fmt.Errorf("Agent RPC plugin %s failed", phase)
 	}
 	return fmt.Errorf("Agent RPC plugin %s: %w", phase, err)
@@ -1162,8 +1254,15 @@ func (h *Host) Close(ctx context.Context) error {
 	h.activationWG.Wait()
 	h.mu.Lock()
 	instances := make([]*HostedInstance, 0, len(h.active))
-	for _, instance := range h.active {
+	seenInstances := map[*HostedInstance]bool{}
+	for instance := range h.instances {
 		instances = append(instances, instance)
+		seenInstances[instance] = true
+	}
+	for _, instance := range h.active {
+		if !seenInstances[instance] {
+			instances = append(instances, instance)
+		}
 	}
 	pending := make([]*HostedInstance, 0, len(h.pending))
 	for instance := range h.pending {
@@ -1258,6 +1357,11 @@ func (i *HostedInstance) stop(ctx context.Context) error {
 		}
 	}
 	i.mu.Unlock()
+	if terminated && i.owner != nil {
+		i.owner.mu.Lock()
+		delete(i.owner.instances, i)
+		i.owner.mu.Unlock()
+	}
 	if !attemptTerminal(attempt) {
 		return errors.Join(stopErr, errors.New("Agent RPC plugin process did not terminate"))
 	}
@@ -1347,20 +1451,21 @@ func (i *HostedInstance) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			i.mu.Lock()
-			if i.status.State == "stopping" || i.status.State == "stopped" {
-				i.mu.Unlock()
+			restartCtx, finishRestart, allowed := i.beginRestart(ctx)
+			if !allowed {
 				return
 			}
-			i.status.State = "starting"
-			i.mu.Unlock()
-
-			replacement, err := (&Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce, dockerProxyRoot: i.dockerProxyRoot, dockerRunner: i.dockerRunner}).startAttempt(ctx, i.candidate, func(replacement *hostAttempt) {
+			restartHost := i.owner
+			if restartHost == nil {
+				restartHost = &Host{supervisor: i.supervisor, dial: i.dial, provision: i.provision, redeemer: i.redeemer, afterStartOnce: i.afterStartOnce, dockerProxyRoot: i.dockerProxyRoot, dockerRunner: i.dockerRunner}
+			}
+			replacement, err := restartHost.startAttempt(restartCtx, i.candidate, func(replacement *hostAttempt) {
 				i.mu.Lock()
 				i.attempt = replacement
 				i.mu.Unlock()
 			})
 			if err != nil {
+				finishRestart()
 				if replacement != nil {
 					err = errors.Join(err, i.stopAttemptWithTimeout(replacement, true))
 					if attemptTerminal(replacement) {
@@ -1383,27 +1488,69 @@ func (i *HostedInstance) run(ctx context.Context) {
 				failure = err
 				continue
 			}
-			status := replacement.handle.Status()
-			i.mu.Lock()
-			if i.status.State == "stopping" || i.status.State == "stopped" {
-				i.mu.Unlock()
+			if restartHost.beforeRestartActivation != nil {
+				restartHost.beforeRestartActivation()
+			}
+			if !i.publishRestart(replacement) {
+				finishRestart()
 				_ = i.stopAttempt(context.Background(), replacement, true)
 				return
 			}
-			i.attempt = replacement
-			i.status.State = "healthy"
-			i.status.LastError = ""
-			i.status.PID = status.PID
-			i.status.SandboxProvider = status.Sandbox.Provider
-			i.mu.Unlock()
+			finishRestart()
 			break
 		}
 	}
 }
 
+// beginRestart serializes restart admission with generation publication. Its
+// cancellation belongs only to the replacement attempt, never to draining flows.
+func (i *HostedInstance) beginRestart(ctx context.Context) (context.Context, func(), bool) {
+	if i.owner != nil {
+		i.owner.mu.RLock()
+		defer i.owner.mu.RUnlock()
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.retired || i.status.State == "stopping" || i.status.State == "stopped" || (i.owner != nil && (i.owner.closed || i.owner.active[i.candidate.InstanceID] != i)) {
+		return nil, nil, false
+	}
+	restartCtx, cancel := context.WithCancel(ctx)
+	i.restartCancel = cancel
+	i.status.State = "starting"
+	return restartCtx, func() { cancel(); i.mu.Lock(); i.restartCancel = nil; i.mu.Unlock() }, true
+}
+
+// publishRestart holds the same Host lock as generation publication until both
+// process status and listener ownership have committed. An already completed
+// restart cannot reclaim an entry after its generation has been replaced.
+func (i *HostedInstance) publishRestart(replacement *hostAttempt) bool {
+	if i.owner != nil {
+		i.owner.mu.Lock()
+		defer i.owner.mu.Unlock()
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.retired || i.status.State == "stopping" || i.status.State == "stopped" || (i.owner != nil && (i.owner.closed || i.owner.active[i.candidate.InstanceID] != i)) {
+		return false
+	}
+	status := replacement.handle.Status()
+	i.attempt = replacement
+	i.status.State = "healthy"
+	i.status.LastError = ""
+	i.status.PID = status.PID
+	i.status.SandboxProvider = status.Sandbox.Provider
+	if replacement.network != nil {
+		replacement.network.Activate()
+	}
+	return true
+}
+
 func (i *HostedInstance) recordFailure(now time.Time, err error) (time.Duration, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.retired {
+		return 0, false
+	}
 	cutoff := now.Add(-i.candidate.Process.RestartWindow)
 	kept := i.exits[:0]
 	for _, exit := range i.exits {
@@ -1471,7 +1618,7 @@ func (i *HostedInstance) stopRPC(ctx context.Context, attempt *hostAttempt) erro
 	}()
 	select {
 	case err := <-result:
-		return err
+		return pluginLifecycleCallError("stop", candidateHasSecretCapability(i.candidate), err)
 	case <-rpcCtx.Done():
 		attempt.closeTransport()
 		return fmt.Errorf("Agent RPC plugin lifecycle stop: %w", rpcCtx.Err())
@@ -1562,4 +1709,31 @@ func safeHostError(err error) string {
 		return value[:256]
 	}
 	return value
+}
+
+func candidateUsesExecutionScope(candidate HostCandidate) bool {
+	for _, feature := range candidate.RequiredFeatures {
+		if feature == pluginsdk.RPCFeatureExecutionScopeV1 {
+			return true
+		}
+	}
+	return false
+}
+func candidateRPCFeatures(candidate HostCandidate) []string {
+	features := pluginsdk.RequiredRPCFeaturesForExtensions(candidate.Scopes, candidateExtensionPoints(candidate))
+	if candidateUsesExecutionScope(candidate) {
+		features, _ = pluginsdk.RequiredRPCFeaturesForExecutionScope(candidate.Scopes, candidateExtensionPoints(candidate), pluginsdk.HostScopeAgent)
+	}
+	for _, required := range candidate.RequiredFeatures {
+		found := false
+		for _, feature := range features {
+			if feature == required {
+				found = true
+			}
+		}
+		if !found {
+			features = append(features, required)
+		}
+	}
+	return features
 }

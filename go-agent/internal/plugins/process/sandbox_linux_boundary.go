@@ -89,7 +89,7 @@ func linuxChildEnvironmentForIsolation(environment []string, endpointFD, credent
 			if namespaces {
 				result[index] = key + "=unix:/run/nre-plugin/" + filepath.Base(guestEndpoint)
 			}
-		case "NRE_PLUGIN_UI_ENDPOINT":
+		case "NRE_PLUGIN_UI_ENDPOINT", "NRE_PLUGIN_HOST_ENDPOINT":
 			if namespaces {
 				_, address, ok := strings.Cut(entry[len(key)+1:], ":")
 				socket := filepath.Base(address)

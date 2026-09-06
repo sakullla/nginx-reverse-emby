@@ -228,3 +228,45 @@ func waitEmbeddedRuntimeExit(t *testing.T, result <-chan error) error {
 		return nil
 	}
 }
+func TestIntegrationEmbeddedActualRuntimeBindingBeforePublication(t *testing.T) {
+	source := newEmbeddedRuntimeSource(Snapshot{Revision: 9})
+	sink := &embeddedRuntimeSink{states: make(chan RuntimeState, 16)}
+	runtime := newEmbeddedRuntimeFixture(t, t.TempDir(), source, sink)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	exit := make(chan error, 1)
+	go func() { exit <- runtime.Run(ctx) }()
+	waitEmbeddedSyncRequest(t, source)
+	denied := errors.New("exact lease rejected")
+	seen := false
+	bound := WithRuntimeGenerationBinder(ctx, func(ctx context.Context, identity RuntimeGenerationBinding) error {
+		seen = true
+		if identity.GenerationID == "" || identity.SnapshotHash == "" || identity.Revision != 7 {
+			t.Fatalf("incomplete actual binding: %+v", identity)
+		}
+		return denied
+	})
+	if err := runtime.ApplyRevision(bound, Snapshot{Revision: 7}); !errors.Is(err, denied) {
+		t.Fatalf("binder rejection not propagated: %v", err)
+	}
+	if !seen {
+		t.Fatal("local runtime never reached trusted binder")
+	}
+	assertEmbeddedRevisionNotPublished(t, sink, 7)
+	var actual RuntimeGenerationBinding
+	bound = WithRuntimeGenerationBinder(ctx, func(ctx context.Context, identity RuntimeGenerationBinding) error { actual = identity; return nil })
+	if err := runtime.ApplyRevision(bound, Snapshot{Revision: 7}); err != nil {
+		t.Fatal(err)
+	}
+	waitEmbeddedRuntimeRevision(t, sink, 7)
+	if actual.GenerationID == "" {
+		t.Fatal("successful local apply omitted binding")
+	}
+	cancel()
+	if err := waitEmbeddedRuntimeExit(t, exit); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

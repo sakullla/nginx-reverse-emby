@@ -36,7 +36,7 @@ artifacts belong only in `sakullla/sakullla-plugins`.
   from both v1 IDLs. From `plugin-sdk`,
   `go run ./go/protoschema/cmd/generate` reproduces it without a
   platform `protoc` installation. Its SHA-256 is
-  `f5a79c6246f603bac7a24cb824337783e14e43d4b6569148370efad9bd454755`.
+  `2abec011209434be336af2a245d10268c891914aa6f12b60c8eea2d71a8d5170`.
   Fast tests recompile both checked-in sources, require byte-for-byte descriptor
   and generator equality, and lock every policy message plus the RPC message,
   service, method, and streaming surface. The golden guest round trip creates
@@ -136,3 +136,247 @@ the legacy custom-source package path and are not an alternate official format.
 RPC files remain non-executable in the verified cache and gain execution
 permission only after a target host re-verifies and copies one platform
 artifact into an isolated runtime directory.
+
+## Dataset and managed connection contracts
+
+`HostRuntimeClient.ResolveDataset` invokes the source-only `dataset.resolve`
+operation. Declare and grant both `dataset.resolve` and `dataset.query`; the
+new permission requires the additive `rpc.dataset-resolve.v1` handshake feature.
+Older `dataset.query`/`dataset.open` users still require only `rpc.datasets.v1`.
+Host package admission must check actual resolver capability availability.
+
+Resolve selects the authenticated instance/generation's already-prepared source
+binding, with a stable reference for repeated calls in that generation. A new
+generation may resolve the same source to a different immutable version while
+the old generation continues using its own binding. Resolve never reads global
+latest, changes Config, downloads data, or activates a source. The original
+`OpenDataset` still requires and verifies an explicit version digest.
+
+Host RPC adapters use `DecodeDatasetResolveRequest` and `CallDatasetResolveHost`;
+the latter checks both grants, a 2 ms ceiling and the returned source/instance/
+generation against `DatasetResolveAuthorization`. `DatasetResolveHost` owns
+the actual binding registry, source authorization and revocation checks. RPC
+resolve success frames are capped at 4 KiB. The client validates the source and
+reference structure; callers knowing their lifecycle binding can additionally
+call `ValidateDatasetResolvedReference`.
+
+Policy guests may optionally import `nre_host_dataset_resolve`, using the same
+four-i32/i64 calling convention, `DatasetResolveRequest`/`DatasetResolveResponse`
+protobuf messages and `CallPolicyDatasetResolveHost`. Requests contain a source
+ID and explicit time/response budget; the complete response is capped at 4 KiB
+and work consumes the enclosing invocation deadline. Resolution needs both
+dataset grants but no connection source, so it can bootstrap resource references
+without private configuration injection. Admission query still separately needs
+`policy.trusted-source`. The original six required imports remain unchanged;
+hosts lacking the optional resolver reject guests that import it at admission.
+
+The manifest permissions `dataset.query`, `dataset.resolve`, `dataset.manage`,
+`network.managed.listen`, `network.managed.dial`, `secret.scoped.read`, and
+`secret.scoped.write` authorize distinct effects. They project the additive RPC
+features `rpc.datasets.v1`, `rpc.dataset-resolve.v1`, `rpc.managed-network.v1`, and
+`rpc.scoped-secrets.v1`. `ValidateManifestManagedCapabilities` rejects unavailable
+Host capabilities, and the canonical handshake rejects a missing feature or
+grant before activation. Existing guests without these permissions keep their
+existing handshake. Managed network permissions do not imply `network.full`.
+
+`HostRuntimeClient.OpenDataset` obtains a Host-issued reference to an already
+prepared immutable snapshot. `QueryDatasets` performs a bounded local target
+lookup; `ControlDataset`, `DatasetStatus`, and `DatasetCatalog` expose authorized
+source/import/rollback operations, actual per-node desired/applied/last-good
+state, and bounded pages of metadata. `DatasetRuntimeCapability` maps these
+operations to query, resolve or management authorization. Imports reference complete
+artifacts or pinned remote inputs with expected digests, never inline blobs.
+Formats include GeoIP, GeoSite, complete community input, CIDR, and generic
+`geo-mmdb`; parsing and semantic adaptation remain Host-owned. Per-classification
+address coverage distinguishes complete, partial and absent support. A region
+query reports unknown or unsupported family explicitly; a country match does
+not imply region coverage. Classification keys such as `category-ai-!cn` retain
+their source spelling, with typed conjunctive attribute filters kept separate.
+
+Version manifests pin raw/index digests, revision, format, coverage and source
+license/attribution metadata. Source changes cannot rewrite old-version credit.
+Render attribution as escaped text and a separately validated HTTP(S) link;
+these metadata fields do not themselves prove licensing authority. Fetchers
+must authorize actual destinations, DNS resolution and redirects independently
+of URL syntax validation. Failed candidates retain last-good data, and Host
+must refuse deletion of versions still referenced by rules, flows or nodes.
+
+`ManagedNetworkRequest` and `ScopedSecretRequest` use the existing private
+HostRuntime transport. Host accepts real sockets and authenticates their source
+before returning admitted flows. Handles are bound to instance, generation and
+entry; Host must resolve opaque tokens in its live registry and enforce grants,
+revocation and quotas on every call. TCP supports bounded chunks, backpressure,
+half-close and cancellation; UDP supports complete bounded datagrams over an
+idle-bounded multi-response flow. Secret delivery uses the dedicated encoders;
+ordinary material JSON serialization fails and formatting redacts values.
+Shape/binding validation is never cryptographic proof or a substitute for the
+Host resource registry.
+
+## Additive policy security interfaces
+
+The original six required policy/v1 imports and `PolicyHost` interface remain
+unchanged. The optional `nre_host_read_trusted_source` and
+`nre_host_dataset_query` imports use the existing four-i32/i64 convention.
+`ValidatePolicyV1WASMForHost` checks the actual import registry as well as signed
+and granted capabilities. Source reads require `policy.trusted-source`; dataset
+admission queries require both `dataset.query` and `policy.trusted-source`.
+Recheck live grants at dispatch with `ValidatePolicyV1ImportGrant` or the SDK
+`CallPolicyTrustedSourceHost`/`CallPolicyDatasetHost` boundaries.
+
+The trusted source request is empty. Source address, peer and socket/XFF/PROXY/
+relay authority come only from Host-authenticated call context. Dataset admission
+requests likewise contain no address or trusted flag, only a snapshot reference,
+up to 64 address classifications and explicit time/response budgets. Target
+domain matching remains in the RPC dataset lookup contract. `PolicyDatasetHost`
+and `PolicyTrustedSourceHost` are optional interfaces, so existing implementations
+continue compiling. Host implementations must resolve actual authorization and
+cooperate with cancellation, using the enclosing admission context so query time
+cannot reset the 2 ms deadline. The 16 MiB memory and complete input/output frame
+limits remain unchanged.
+
+The SDK policy codecs validate raw frames before protobuf decoding, rejecting
+duplicate scalars, conflicting results, unknown fields, invalid enums and bounds.
+Responses contain one snapshot reference and compact indexed matches, including
+explicit coverage and failure status; even 64 matches with maximum reference
+lengths fit the 4 KiB ceiling. Smaller manifest/caller limits still apply to the
+complete encoded frame. Prepare should validate/encode configured queries before
+admission, initializing the fixed descriptor cache outside the request deadline.
+
+`PolicyOverlayEnvelope` separates IP, rate and WAF payloads in that order.
+`SelectPolicyStageOverlay` selects by stage and policy identity. Legacy WAF,
+IP and rate payloads are accepted only through explicit trusted decode context;
+an ambiguous legacy payload cannot be applied to multiple stages. Overlay
+payloads remain plugin-owned, and Host preserves global policy constraints,
+existing effective configuration, and WAF's HTTP-only applicability.
+
+`PolicySecurityEvent` adds fixed IP/routing code, action, reason and domain-source
+catalogs plus one-based indices into Host-pinned dictionaries. The raw event
+codec and `ValidateForCatalog` reject nonexistent references and ambiguous
+success/failure actions. Observation failures use an anomaly event rather than
+claiming a successful non-match; routing failure cannot claim direct fallback.
+`PolicyDiagnosticContext` supplements resolved events with Host-owned entry,
+source, node, generation, region, rule and dataset version facts for authorized
+administrators. No guest free text, request payload or credential is introduced.
+
+## Public policy consumption and execution scope
+
+`dataset.binding` is the RPC-only management operation behind
+`HostRuntimeClient.ManageDatasetBinding`. It requires the signed and granted
+`dataset.bind` capability and additive `rpc.dataset-bindings.v1` feature.
+`policy.control` similarly requires `policy.control` and
+`rpc.policy-controls.v1`. Older Hosts must refuse these declared capabilities;
+existing query/open/resolve and the original six policy imports are unchanged.
+The v0.11 entry token/list/overlay extension additionally requires the signed and
+granted `policy.entry-overlays` capability. `RequiredRPCFeatures` maps that public
+manifest scope to both `rpc.policy-controls.v1` and
+`rpc.policy-entry-overlays.v1`; plain `policy.control` intentionally retains the
+v0.10 mode-only projection. Entry-overlay plugins declare the projected pair as
+supported and required features. A Host that does not recognize the capability,
+or requests only `rpc.policy-controls.v1`, rejects the package before activation.
+The bounded JSON payload definitions are available through
+`PolicyConsumptionSchemaV1()` and `go/schema/policy-consumption-v1.schema.json`.
+These operations use HostRuntime JSON; they introduce no protobuf imports.
+
+A binding request names the **execution instance** explicitly, together with its
+source, exact immutable version digest and classifications. The management
+caller can own a different execution instance, but the Host must resolve its
+actual plugin ownership, resource group, live grants and execution targets.
+`targets.mode=effective` uses that instance's actual Host projection;
+`targets.mode=subset` contains sorted, unique, explicitly authorized Agent IDs.
+An empty RPC target list stays empty. A policy's all-Agent projection may include
+the embedded local Agent, and an explicit local target is valid. This does not
+make a caller equivalent to every target selected by `plugin.call`.
+
+`bind` creates an absent source-consumption record. `replace` and `unbind`
+compare its persisted revision; `inspect` obtains current status. Mutations carry
+one operation ID in both the HostRuntime envelope and request. The Host helper
+validates both before dispatch. The Host must check all current authorization,
+classification/version availability and revision comparisons **inside the write
+transaction**, reserve output/storage budgets before commit, publish one immutable
+Agent revision, and persist one outcome keyed by caller plugin, caller instance,
+operation ID and complete request digest. Store the original resolved target set
+with that outcome. Repeating the same operation replays its original ACK, including
+pending status; it does not repeat the mutation or silently address new targets.
+An old version/catalog is unnecessary for a historical replay, but current caller,
+instance, capability and source authority are still checked. Use `inspect` for
+fresh applied state. These SDK helpers define the boundary; production storage,
+transactional replay, target projection and Agent wiring are Host responsibilities.
+
+Desired binding records and per-node desired/applied/last-good values are separate.
+An offline or preparing node cannot be reported as applied. Applied data includes
+the actual runtime generation and immutable configuration revision. Unbind may
+remove desired state while old applied data remains until removal acknowledgement.
+Removed targets remain in `BoundAgentIDs` while cleanup is pending. The effective
+selector can legitimately resolve to zero nodes; it still persists desired intent
+and must not fabricate applied nodes. Frames are capped at 64 KiB, each selection
+at 256 Agents, affected status unions at 512, and selectors at the SDK query bound.
+Hosts must honor the enclosing context and a 30-second mutation ceiling.
+
+When rules and binding versions must move together, include `InstanceUpdate` on
+the binding mutation. It carries opaque Config and/or `PolicyDefaultSettingsUpdate`,
+with the shared instance version and separate policy-settings revision. Check
+binding, instance and settings CAS values before **any** write; commit Config,
+binding and defaults together, publish one Agent snapshot, and store one replayable
+outcome. Config requires `storage.write`; typed defaults also require
+`policy.control` and a compatible signed mode-handling declaration. Config-only
+updates do not change the policy-settings clock. Do not parse business rules in
+the Host or work around incompatible versions using separate intermediate commits.
+
+Typed policy settings use `observe` or `enforce`, attached to an owned stage
+(kind plus policy ID), and optionally an exact node/entry-kind/entry-ID. The signed
+manifest metadata key `policy.mode.handling` declares `raw-decision-v1` or the
+explicit `legacy-waf-v1` bridge; absence preserves `legacy`. Empty and unsupported
+values are rejected. `ProjectAgentPolicy` includes this validated declaration.
+The metadata describes guest behavior, not the administrator's chosen mode.
+`policy.control` can commit Config and trusted instance defaults atomically;
+its settings clock and shared instance clock both advance. Ordinary Config updates
+must advance that same shared clock. Entry overrides cannot lower an enforced
+instance default or affect another stage. Public stage selectors may omit policy ID
+only when the Host resolves it from the selected owned instance.
+
+Entry overlays require both `policy.control` and `policy.entry-overlays`, and use
+a Host-issued token in `PolicyEntryTarget`. The token is opaque,
+bound to one live owned entry and stage, and must never be reused after deletion or
+replacement. `node_id`, `kind` and `id` remain display identity; they do not
+authorize an overlay mutation. `list-entries` returns at most 64 current entries
+for the selected owned instance/stage as `PolicyEntrySnapshot` values, including
+each exact target/token, typed desired settings, optional stage overlay and any
+available node applied status. Every overlay is a JSON object within the existing
+16 KiB stage bound, and the complete response remains within the 1 MiB HostRuntime
+payload bound; there is no cursor or global entry registry.
+
+`replace-entry` with a token atomically replaces both its typed mode and complete
+stage overlay under the existing operation ID, settings revision and instance
+version CAS. Exact-token `inspect` may return that overlay, and tokened
+`reset-entry` removes both mode and overlay. Config remains the instance-only
+opaque Config and cannot carry entry rules. For v0.10 compatibility, tokenless
+entry inspect and mode-only replace remain valid but cannot read or write an
+overlay; tokenless reset is rejected because reset now also removes overlay state.
+Hosts validate current caller liveness, same plugin/resource group, exact stage,
+entry ownership and the current token even for replay before returning a stored
+result. Entry tokens are management authority only and are never projected into
+trusted-source or the policy WASM ABI; execution continues to consume the
+Host-selected `PolicyRef` overlay.
+
+Raw-decision guests always return their actual allow/deny decision. The explicit
+legacy-WAF bridge sends the existing `{"mode":"deny"}` overlay even for typed
+observe settings, then the Host translates a deny into checked `would-deny`.
+Untyped legacy WAF/IP/rate payload handling remains unchanged. The Host must use
+`ApplyPolicyMode` against trusted generation settings, never guess opaque
+`Config.mode` or equate static `fail-open` with observe. Failed observe checks
+remain unchecked and visibly failed, continue subsequent stages, and cannot clear
+an earlier/global denial; enforced failed checks deny. Overlay format and legacy
+owner identity come from persisted Host context, never payload field guessing.
+
+`NRE_PLUGIN_EXECUTION_SCOPE` is authored by the Host launcher and accepts exactly
+`control-plane` or `agent`. Hosts must prevent user environment overrides.
+`ExecutionScopeFromEnvironment` rejects an empty or invalid explicit value;
+`RunRPCEntrypoint` validates it before startup. `AgentExecutionFace` prioritizes it,
+so an Agent with a HostRuntime endpoint remains an Agent; invalid explicit scope
+returns false and must be surfaced by the strict parser/entrypoint. Only an absent
+key uses the legacy endpoint heuristic. This value selects a client face and is
+**not authorization evidence**. Hosts injecting it request
+`RequiredRPCFeaturesForExecutionScope`; updated guests can advertise support using
+`RPCFeaturesWithExecutionScope`. The additive `rpc.execution-scope.v1` feature is
+not automatically required by legacy `RequiredRPCFeatures` calls. Actual Host
+process injection and production policy/data wiring follow in the consumer task.

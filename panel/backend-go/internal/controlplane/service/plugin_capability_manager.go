@@ -84,6 +84,7 @@ type PluginCapabilityManager struct {
 	operationLocks     map[string]*pluginCapabilityOperationLock
 	secretVault        *secrets.Vault
 	trafficSummary     PluginCapabilityTrafficSummaryProvider
+	datasets           *DatasetService
 }
 
 type pluginCapabilityOperationLock struct {
@@ -97,6 +98,7 @@ func NewPluginCapabilityManager(store PluginCapabilityManagerStore, resourceAuth
 	}
 	manager := &PluginCapabilityManager{store: store, resourceAuthorizer: resourceAuthorizer, runtime: runtime, plugins: packages, handles: pluginhost.NewResourceHandleBroker(), actions: pluginhost.NewDynamicActionRegistry(), operationLocks: make(map[string]*pluginCapabilityOperationLock)}
 	manager.loadPackage = packages.loadValidatedCapabilityPackage
+	packages.scopedSecretManager = manager
 	return manager, nil
 }
 

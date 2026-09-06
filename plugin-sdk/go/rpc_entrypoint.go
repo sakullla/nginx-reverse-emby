@@ -52,6 +52,9 @@ func RunRPCEntrypoint(ctx context.Context, args []string, output io.Writer, conf
 	if ctx == nil || output == nil {
 		return errors.New("RPC entrypoint context and output are required")
 	}
+	if err := ValidateExecutionScopeEnvironment(); err != nil {
+		return err
+	}
 	identity, probe, err := ResolveRPCHandshakeProbe(args, config.Declaration)
 	if err != nil {
 		return err

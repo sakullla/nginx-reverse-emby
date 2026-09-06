@@ -31,6 +31,9 @@ func (FullSnapshotValidator) Validate(_ context.Context, input revision.Snapshot
 	if err := validateSnapshotDDNS(snapshot.DDNSConfig); err != nil {
 		return err
 	}
+	if err := validateSnapshotDatasets(snapshot); err != nil {
+		return err
+	}
 	if err := validateSnapshotResources(snapshot); err != nil {
 		return err
 	}

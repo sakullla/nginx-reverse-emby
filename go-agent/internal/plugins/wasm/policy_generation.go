@@ -46,7 +46,7 @@ func PreparePolicyGeneration(ctx context.Context, runtime *Runtime, generationID
 	return preparePolicyGeneration(ctx, runtime, generationID, stages, required, observer)
 }
 
-func preparePolicyGeneration(ctx context.Context, runtime *Runtime, generationID string, stages []model.PolicyStage, required map[string]struct{}, observer Observer) (*PolicyGeneration, error) {
+func preparePolicyGeneration(ctx context.Context, runtime *Runtime, generationID string, stages []model.PolicyStage, required map[string]struct{}, observer Observer, datasets ...*policy.DatasetGeneration) (*PolicyGeneration, error) {
 	if runtime == nil {
 		return nil, errors.New("wasm runtime is required")
 	}
@@ -69,7 +69,7 @@ func preparePolicyGeneration(ctx context.Context, runtime *Runtime, generationID
 		}
 		var compiled preparedPolicyStage
 		if stageErr == nil {
-			compiled, stageErr = preparePolicyStage(ctx, runtime, generationID, stage)
+			compiled, stageErr = preparePolicyStage(ctx, runtime, generationID, stage, datasets...)
 		}
 		if stageErr != nil {
 			if _, isRequired := required[stage.InstanceID]; isRequired {
@@ -84,7 +84,7 @@ func preparePolicyGeneration(ctx context.Context, runtime *Runtime, generationID
 	return prepared, nil
 }
 
-func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID string, stage model.PolicyStage) (preparedPolicyStage, error) {
+func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID string, stage model.PolicyStage, datasets ...*policy.DatasetGeneration) (preparedPolicyStage, error) {
 	if err := validatePolicyStageEvidence(stage); err != nil {
 		return preparedPolicyStage{}, err
 	}
@@ -92,9 +92,13 @@ func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID stri
 	if err != nil {
 		return preparedPolicyStage{}, fmt.Errorf("read artifact: %w", err)
 	}
-	artifact, err := AcceptVerifiedArtifact(wasmBytes, stage.ArtifactDigest, stage.SignatureVerified)
+	supported := []string{}
+	for name := range pluginsdk.PolicyV1HostFunctions() {
+		supported = append(supported, name)
+	}
+	artifact, err := verifyPolicyStageArtifact(stage, wasmBytes, supported, pluginsdk.ValidatePolicyV1WASMForHost)
 	if err != nil {
-		return preparedPolicyStage{}, fmt.Errorf("verify artifact: %w", err)
+		return preparedPolicyStage{}, err
 	}
 	initRequest, err := marshalInitRequest(stage.Config, stage.GrantedScopes, generationID)
 	if err != nil {
@@ -103,8 +107,13 @@ func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID stri
 	if err := policy.AdmitPolicyInputFrame(stage.ResourceBudget, len(initRequest)); err != nil {
 		return preparedPolicyStage{}, fmt.Errorf("admit init request frame: %w", err)
 	}
+	var provider *policy.DatasetGeneration
+	if len(datasets) > 0 {
+		provider = datasets[0]
+	}
 	generation, err := runtime.CompileGeneration(ctx, artifact, GenerationConfig{
-		ID: generationID + "/" + stage.InstanceID, InitRequest: initRequest, Budget: stageBudget(stage.ResourceBudget),
+		InitHost: policy.NewInitializationHost(generationID, stage, provider),
+		ID:       generationID + "/" + stage.InstanceID, InitRequest: initRequest, Budget: stageBudget(stage.ResourceBudget),
 	})
 	if err != nil {
 		return preparedPolicyStage{}, fmt.Errorf("compile artifact: %w", err)
@@ -114,6 +123,22 @@ func preparePolicyStage(ctx context.Context, runtime *Runtime, generationID stri
 		return preparedPolicyStage{}, fmt.Errorf("initialize artifact: %w", err)
 	}
 	return preparedPolicyStage{definition: clonePolicyStage(stage), generation: generation}, nil
+}
+
+type policyArtifactValidator func([]byte, int64, []string, []string, []string) error
+
+func verifyPolicyStageArtifact(stage model.PolicyStage, wasmBytes []byte, supported []string, validate policyArtifactValidator) (VerifiedArtifact, error) {
+	artifact, err := AcceptVerifiedArtifact(wasmBytes, stage.ArtifactDigest, stage.SignatureVerified)
+	if err != nil {
+		return VerifiedArtifact{}, fmt.Errorf("verify artifact: %w", err)
+	}
+	if validate == nil {
+		return VerifiedArtifact{}, errors.New("policy artifact validator is required")
+	}
+	if err := validate(artifact.wasm, stage.ResourceBudget.MemoryBytes, stage.DeclaredScopes, stage.GrantedScopes, supported); err != nil {
+		return VerifiedArtifact{}, fmt.Errorf("policy import admission: %w", err)
+	}
+	return artifact, nil
 }
 
 // GenerationFactory adapts the process-scoped compiler runtime to policy's
@@ -147,7 +172,7 @@ func (factory GenerationFactory) PrepareGeneration(ctx context.Context, spec pol
 			}
 		}
 	}
-	return preparePolicyGeneration(ctx, factory.Runtime, spec.ID, stages, requiredStages, factory.Observer)
+	return preparePolicyGeneration(ctx, factory.Runtime, spec.ID, stages, requiredStages, factory.Observer, spec.Datasets)
 }
 
 func (generation *PolicyGeneration) Ready(context.Context) error {
@@ -273,10 +298,7 @@ func stageBudget(budget model.PolicyResourceBudget) Budget {
 }
 
 func clonePolicyStage(stage model.PolicyStage) model.PolicyStage {
-	stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
-	stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
-	stage.Config = append([]byte(nil), stage.Config...)
-	return stage
+	return model.ClonePolicyStage(stage)
 }
 
 func marshalInitRequest(config []byte, grants []string, generation string) ([]byte, error) {

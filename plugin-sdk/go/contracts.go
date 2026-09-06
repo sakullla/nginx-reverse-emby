@@ -100,6 +100,9 @@ const (
 	PolicyHostModule             = PolicyABIV1
 	PolicyHostReadField          = "nre_host_read_field"
 	PolicyHostReadNormalizedHTTP = "nre_host_read_normalized_http"
+	PolicyHostReadTrustedSource  = "nre_host_read_trusted_source"
+	PolicyHostDatasetQuery       = "nre_host_dataset_query"
+	PolicyHostDatasetResolve     = "nre_host_dataset_resolve"
 	PolicyHostReadBodyWindow     = "nre_host_read_body_window"
 	PolicyHostStateGet           = "nre_host_state_get"
 	PolicyHostStatePut           = "nre_host_state_put"
@@ -141,10 +144,13 @@ func PolicyV1GuestFunctions() map[string]WASMFunctionSignature {
 // Every call uses protobuf request bytes and a caller-owned response buffer:
 // (request_ptr, request_len, response_ptr, response_capacity) -> status/length.
 func PolicyV1HostFunctions() map[string]WASMFunctionSignature {
-	result := make(map[string]WASMFunctionSignature, 7)
+	result := make(map[string]WASMFunctionSignature, 9)
 	for _, name := range []string{
 		PolicyHostReadField,
 		PolicyHostReadNormalizedHTTP,
+		PolicyHostReadTrustedSource,
+		PolicyHostDatasetQuery,
+		PolicyHostDatasetResolve,
 		PolicyHostReadBodyWindow,
 		PolicyHostStateGet,
 		PolicyHostStatePut,
@@ -165,6 +171,9 @@ func PolicyV1HostFunctions() map[string]WASMFunctionSignature {
 func PolicyV1RequiredHostFunctions() map[string]WASMFunctionSignature {
 	result := PolicyV1HostFunctions()
 	delete(result, PolicyHostReadNormalizedHTTP)
+	delete(result, PolicyHostReadTrustedSource)
+	delete(result, PolicyHostDatasetQuery)
+	delete(result, PolicyHostDatasetResolve)
 	return result
 }
 

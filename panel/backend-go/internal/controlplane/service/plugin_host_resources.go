@@ -49,6 +49,14 @@ func (manager *PluginCapabilityManager) DispatchPluginHostResource(ctx context.C
 	if manager == nil || ctx == nil || candidate.InstanceID == "" || candidate.Identity.PluginID == "" || candidate.Identity.Generation == "" {
 		return pluginHostRuntimeFailure(pluginsdk.ErrorUnavailable, "host resource owner is unavailable", true)
 	}
+	// Secret delivery must never enter the durable response cache. Its payload
+	// is encoded exclusively by the SDK's authenticated secret wire codec.
+	if call.Operation == pluginsdk.HostRuntimeScopedSecret {
+		return manager.dispatchPluginScopedSecret(ctx, candidate, call)
+	}
+	if call.Operation == pluginsdk.HostRuntimeDatasetBinding || call.Operation == pluginsdk.HostRuntimePolicyControl {
+		return manager.dispatchPolicyConsumption(ctx, candidate, call)
+	}
 	if call.Operation == "operation.inspect" {
 		if !pluginCandidateHasGrant(candidate, "storage.read") {
 			return pluginHostRuntimeFailure(pluginsdk.ErrorPermissionDenied, "host resource permission was not granted", false)
@@ -111,6 +119,8 @@ func (manager *PluginCapabilityManager) dispatchPluginHostResource(ctx context.C
 		payload, err = manager.pluginHostInstanceConfig(ctx, candidate, call.Payload)
 	case pluginsdk.HostRuntimeEventList:
 		payload, err = manager.pluginHostEventList(ctx, candidate, call.Payload)
+	case pluginsdk.HostRuntimeDatasetControl, pluginsdk.HostRuntimeDatasetCatalog, pluginsdk.HostRuntimeDatasetStatus:
+		payload, err = manager.pluginHostDataset(ctx, candidate, call)
 	default:
 		return pluginHostRuntimeFailure(pluginsdk.ErrorInvalidArgument, "host resource operation is unsupported", false)
 	}
@@ -162,6 +172,8 @@ func pluginHostOperationPermission(operation string) string {
 		return pluginsdk.PermissionStorageWrite
 	case pluginsdk.HostRuntimeEventList:
 		return "event.emit"
+	case pluginsdk.HostRuntimeDatasetControl, pluginsdk.HostRuntimeDatasetCatalog, pluginsdk.HostRuntimeDatasetStatus:
+		return string(pluginsdk.CapabilityDatasetManage)
 	default:
 		return ""
 	}
@@ -234,6 +246,9 @@ func pluginCandidateHasGrant(candidate pluginhost.Candidate, permission string) 
 }
 
 func pluginHostCallRequiresOperation(call pluginsdk.HostRuntimeCall) bool {
+	if call.Operation == pluginsdk.HostRuntimeDatasetControl {
+		return true
+	}
 	if call.Operation == "secret.put" || call.Operation == pluginsdk.HostRuntimeL4Rule || call.Operation == pluginsdk.HostRuntimeInstanceConfig {
 		return true
 	}
@@ -364,7 +379,11 @@ func pluginHostStoredOutcome(record storage.IdempotencyRecordRow) pluginsdk.Host
 }
 
 func pluginHostOperationKey(candidate pluginhost.Candidate, operationID string) string {
-	digest := sha256.Sum256([]byte(candidate.Identity.PluginID + "\x00" + candidate.InstanceID + "\x00" + operationID))
+	identity := candidate.Identity.PluginID + "\x00" + candidate.InstanceID
+	if candidate.IncarnationID != "" && !strings.HasPrefix(candidate.IncarnationID, "legacy-") {
+		identity += "\x00" + candidate.IncarnationID
+	}
+	digest := sha256.Sum256([]byte(identity + "\x00" + operationID))
 	return hex.EncodeToString(digest[:])
 }
 

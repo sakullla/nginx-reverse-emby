@@ -1,0 +1,67 @@
+package pluginsdk
+
+import "fmt"
+
+// ValidateManifestManagedCapabilities is the additive package gate for managed
+// resources. Call it alongside structural/artifact validation, before Prepare.
+// A hybrid RPC/control-plane + Agent policy package may declare permissions for
+// both faces; the runtime grants only the effects usable on the current face.
+func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapability) error {
+	if _, err := PolicyModeHandlingForManifest(manifest); err != nil {
+		return err
+	}
+	available := make(map[HostCapability]bool, len(supported))
+	for _, capability := range supported {
+		if err := capability.Validate(); err != nil {
+			return err
+		}
+		available[capability] = true
+	}
+	for _, permission := range manifest.Permissions {
+		capability := HostCapability(permission.Name)
+		if capability == CapabilityDatasetResolve || capability == CapabilityPolicyEntryOverlays {
+			dependency := CapabilityDatasetQuery
+			if capability == CapabilityPolicyEntryOverlays {
+				dependency = CapabilityPolicyControl
+			}
+			dependencyDeclared := false
+			for _, declared := range manifest.Permissions {
+				if declared.Name == string(dependency) {
+					dependencyDeclared = true
+				}
+			}
+			if !dependencyDeclared {
+				return fmt.Errorf("%s requires a %s declaration", capability, dependency)
+			}
+		}
+		switch capability {
+		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
+			if !available[capability] {
+				return fmt.Errorf("Host does not support required managed capability %q", capability)
+			}
+			if manifest.Runtime.Kind == RuntimeWASMPolicy && capability != CapabilityDatasetQuery && capability != CapabilityDatasetResolve {
+				return fmt.Errorf("managed capability %q is not available to a WASM policy", capability)
+			}
+			if manifest.Runtime.Kind != RuntimeWASMPolicy && manifest.Runtime.Kind != RuntimeRPCService {
+				return fmt.Errorf("managed capability %q requires a known runtime", capability)
+			}
+		}
+	}
+	return nil
+}
+
+// DatasetRuntimeCapability maps public operations to their explicit grant.
+func DatasetRuntimeCapability(operation string) (HostCapability, error) {
+	switch operation {
+	case HostRuntimeDatasetBinding:
+		return CapabilityDatasetBind, nil
+	case HostRuntimeDatasetResolve:
+		return CapabilityDatasetResolve, nil
+	case HostRuntimeDatasetOpen, HostRuntimeDatasetQuery:
+		return CapabilityDatasetQuery, nil
+	case HostRuntimeDatasetControl, HostRuntimeDatasetStatus, HostRuntimeDatasetCatalog:
+		return CapabilityDatasetManage, nil
+	default:
+		return "", fmt.Errorf("unknown dataset operation %q", operation)
+	}
+}

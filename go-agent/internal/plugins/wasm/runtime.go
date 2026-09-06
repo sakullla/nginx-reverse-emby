@@ -89,6 +89,7 @@ func (budget Budget) normalized(runtimeMemoryPages uint32) (Budget, error) {
 }
 
 type GenerationConfig struct {
+	InitHost    pluginsdk.PolicyHost
 	ID          string
 	InitRequest []byte
 	Budget      Budget
@@ -211,6 +212,7 @@ func (runtime *Runtime) CompileGeneration(ctx context.Context, artifact Verified
 		digest:      artifact.Digest(),
 		compiled:    compiled,
 		initRequest: append([]byte(nil), configuration.InitRequest...),
+		initHost:    configuration.InitHost,
 		budget:      budget,
 		idle:        make(chan *instance, budget.MaxConcurrency),
 		active:      make(map[*instance]struct{}),
@@ -272,6 +274,7 @@ func budgetDimensionForRuntimeCode(code ErrorCode) pluginsdk.BudgetDimension {
 }
 
 type Generation struct {
+	initHost    pluginsdk.PolicyHost
 	runtime     *Runtime
 	id          string
 	digest      string
@@ -424,6 +427,9 @@ func (generation *Generation) instantiate(ctx context.Context) (*instance, error
 	}
 	initContext, cancel := context.WithTimeout(ctx, maxPolicyInitTimeout)
 	defer cancel()
+	if generation.initHost != nil {
+		initContext = contextWithHost(initContext, generation.id, generation.initHost, generation.budget)
+	}
 	if err := guest.init(initContext, generation.initRequest); err != nil {
 		_ = module.Close(context.Background())
 		return nil, generation.runtime.failure(generation.id, "init", ErrorGuest, err)

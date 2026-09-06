@@ -63,6 +63,9 @@ func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, jo
 		&AuditEventRow{},
 		&SecretRow{},
 		&SecretVersionRow{},
+		&PluginScopedSecretOperationRow{},
+		&PluginScopedSecretDeliveryRow{},
+		&PluginPolicySettingsRow{}, &PluginPolicyEntryModeRow{}, &PluginDatasetConsumptionRow{}, &PluginConsumptionOperationRow{},
 		&MarketplaceSourceRow{},
 		&MarketSnapshotRow{},
 		&MarketEntryRow{},
@@ -1599,6 +1602,18 @@ func newSliceForModel(model any) any {
 		return &[]SecretRow{}
 	case *SecretVersionRow:
 		return &[]SecretVersionRow{}
+	case *PluginScopedSecretOperationRow:
+		return &[]PluginScopedSecretOperationRow{}
+	case *PluginScopedSecretDeliveryRow:
+		return &[]PluginScopedSecretDeliveryRow{}
+	case *PluginPolicySettingsRow:
+		return &[]PluginPolicySettingsRow{}
+	case *PluginPolicyEntryModeRow:
+		return &[]PluginPolicyEntryModeRow{}
+	case *PluginDatasetConsumptionRow:
+		return &[]PluginDatasetConsumptionRow{}
+	case *PluginConsumptionOperationRow:
+		return &[]PluginConsumptionOperationRow{}
 	case *MarketplaceSourceRow:
 		return &[]MarketplaceSourceRow{}
 	case *MarketSnapshotRow:
@@ -1717,6 +1732,18 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]SecretRow:
 		return len(*typed) == 0
 	case *[]SecretVersionRow:
+		return len(*typed) == 0
+	case *[]PluginScopedSecretOperationRow:
+		return len(*typed) == 0
+	case *[]PluginScopedSecretDeliveryRow:
+		return len(*typed) == 0
+	case *[]PluginPolicySettingsRow:
+		return len(*typed) == 0
+	case *[]PluginPolicyEntryModeRow:
+		return len(*typed) == 0
+	case *[]PluginDatasetConsumptionRow:
+		return len(*typed) == 0
+	case *[]PluginConsumptionOperationRow:
 		return len(*typed) == 0
 	case *[]MarketplaceSourceRow:
 		return len(*typed) == 0

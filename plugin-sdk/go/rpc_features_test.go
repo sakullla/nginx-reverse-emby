@@ -30,3 +30,23 @@ func TestHTTPOutboundOnlyRequiresProviderFeatureForProviderExtension(t *testing.
 		t.Fatalf("provider features = %#v", features)
 	}
 }
+
+func TestPolicyEntryOverlayFeaturePreservesV010ModeOnlyNegotiation(t *testing.T) {
+	legacy := RequiredRPCFeatures([]string{string(CapabilityPolicyControl)})
+	if len(legacy) != 1 || legacy[0] != RPCFeaturePolicyControlsV1 {
+		t.Fatalf("v0.10 policy-control features = %v", legacy)
+	}
+	required := RequiredRPCFeatures([]string{string(CapabilityPolicyControl), string(CapabilityPolicyEntryOverlays)})
+	if len(required) != 2 || required[0] != RPCFeaturePolicyControlsV1 || required[1] != RPCFeaturePolicyEntryOverlaysV1 {
+		t.Fatalf("entry-overlay features = %v", required)
+	}
+	if err := ValidateRPCFeatures(required, legacy); err == nil {
+		t.Fatal("v0.10 Host acknowledgement accepted for entry overlays")
+	}
+	if err := ValidateRPCFeatures(required, required); err != nil {
+		t.Fatal(err)
+	}
+	if features := RequiredRPCFeatures([]string{string(CapabilityPolicyEntryOverlays)}); len(features) != 2 || features[0] != RPCFeaturePolicyControlsV1 || features[1] != RPCFeaturePolicyEntryOverlaysV1 {
+		t.Fatalf("entry-overlay capability features = %v", features)
+	}
+}

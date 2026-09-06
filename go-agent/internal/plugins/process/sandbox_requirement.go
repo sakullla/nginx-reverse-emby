@@ -132,6 +132,11 @@ func NewSandboxRequirement(projection SandboxRequirementProjection) (SandboxRequ
 		network = true
 	}
 	requirement.networkBound = network
+	for _, permission := range []SandboxPermission{SandboxPermission(pluginsdk.PermissionManagedNetworkListen), SandboxPermission(pluginsdk.PermissionManagedNetworkDial)} {
+		if _, ok := seenPermissions[permission]; ok {
+			requirement.networkBound = true
+		}
+	}
 	processes := budget.Concurrency + 4
 	if processes < minimumPluginProcessLimit {
 		processes = minimumPluginProcessLimit
@@ -178,6 +183,8 @@ func knownSandboxPermission(value SandboxPermission) bool {
 		PermissionHTTPRule, PermissionL4Rule, PermissionChannelReverse, PermissionUIDynamic,
 		PermissionPolicyAtomicState, PermissionPolicyMonotonicClock, PermissionPolicyTrustedSource,
 		PermissionServiceRevocableResourceHandle, PermissionUIDynamicActions:
+		return true
+	case SandboxPermission(pluginsdk.PermissionManagedNetworkListen), SandboxPermission(pluginsdk.PermissionManagedNetworkDial), SandboxPermission(pluginsdk.CapabilityDatasetQuery), SandboxPermission(pluginsdk.CapabilityDatasetResolve), SandboxPermission(pluginsdk.PermissionScopedSecretRead), SandboxPermission(pluginsdk.PermissionScopedSecretWrite):
 		return true
 	default:
 		return false

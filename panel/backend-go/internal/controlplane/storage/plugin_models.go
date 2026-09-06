@@ -291,6 +291,7 @@ func (InstalledPluginRow) TableName() string { return "installed_plugins" }
 
 type PluginInstanceRow struct {
 	ID                        string    `gorm:"primaryKey;size:64" json:"id"`
+	IncarnationID             string    `gorm:"index;size:64;not null;default:''" json:"-"`
 	PluginID                  string    `gorm:"index;size:190;not null" json:"plugin_id"`
 	ResourceGroupID           string    `gorm:"index;size:64;not null" json:"resource_group_id"`
 	TargetJSON                string    `gorm:"type:text;not null" json:"targets"`

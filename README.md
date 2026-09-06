@@ -14,6 +14,20 @@
 
 ## 它能做什么
 
+共享规则数据集由 Host 管理，支持 GeoIP、GeoSite、完整社区文件集和本产品省份 CIDR 模型。管理员通过 `/api/datasets` 管理源，`PUT /api/datasets/{sourceID}` 设置源描述和固定修订/摘要；私网来源及重定向目标需在 retrieval 配置中明确授权。`POST /api/datasets/control` 提供 import、refresh、activate、rollback 及受引用保护的删除操作；原始上传走 `/api/datasets/{sourceID}/uploads` 二进制路径，分类与版本历史通过 `/catalog` 分页查询。
+
+retrieval 默认使用固定 `revision` + `expected_digest`；管理员也可选择 `mode: "rolling-sha256"` 并设置 `checksum_url`，例如指向对应数据文件的 `.sha256sum`。滚动模式每次先读取有界校验文件（最多 4 KiB、15 秒），接受单个 SHA256 或文件名匹配的 sha256sum 行，再按取得的精确摘要下载数据。捕获的摘要形成 `checksum-sha256:…` 不可变修订，同时保存校验文件 URL、摘要和取得时间；它是完整性证据，不是独立发布者签名。私网和重定向授权同样适用于校验文件。
+
+下载在拨号前验证全部 DNS 结果，IPv4-mapped IPv6 先转换为 IPv4。公共源仅接受一般全局单播地址（IPv6 限 `2000::/3`），排除私网、回环、链路本地及特殊用途段。显式 `allow_private` 额外允许 RFC1918、ULA 和回环源，但不开放链路本地、`100.64.0.0/10`（包含 `100.100.100.200`）、文档/基准测试段、协议转换段、保留地址及 `168.63.129.16`、`fd00:ec2::254` 平台端点；具体拒绝前缀见 `service/dataset_fetch.go`。该规则同样约束数据、校验文件和重定向后的拨号。
+
+手动 refresh 和定时刷新均在完整校验后，通过既有 revision 事务激活源及全部消费者绑定；import 仍只准备候选，可另行 activate。`/bindings` 把实例、节点与最多 64 个分类选择器绑定到版本。本机和远端 Agent 都验证独立 `dataset-index-v1` 产物，索引随 generation 准备、切换和释放。`/status?node_id=…` 区分 desired、applied、last-good 和失败/离线；坏摘要、更新中的摘要/数据不一致、缺失分类或准备失败保留旧版本。最近三个成功版本及仍被配置、会话或 revision 引用的版本不能删除。来源、许可、覆盖与容量证据见 [规则数据集说明](docs/reference/rule-datasets.md)。
+
+SDK 的 `dataset.control/catalog/status` 接入控制面 HostRuntime；RPC Agent 的公开 `dataset.resolve/open/query` 使用调用 generation 的本地已授权绑定。resolve 不要求连接入口，也不下载或选择全局 latest；显式 open 仍要求准确版本摘要。旧会话持有旧代索引，新代解析新绑定。WASM 来源查询的组合入口 adapter 由策略执行模块接入。
+
+受管 RPC 网络通过私有、带凭据的 HostRuntime 套接字提供 TCP listener/stream 和 UDP flow。Host 入口 ID 等于实例 ID；监听和出站使用 `network.managed.listen/dial` 授权，资源选择器为精确 `tcp://host:port` 或 `udp://host:port`。Host 根据真实 socket peer 在交付数据前执行 `managed_network_policy`，不解析插件业务帧。句柄绑定实例和 runtime generation；候选可准备同实例的端口，发布后切换新接入，旧流随旧代排空。TCP 支持有界读写、背压、半关闭及取消；只有明确无字节消费的 idle 结果可安全续读。UDP 固定 peer，支持多响应，并受数量、队列和 idle 预算限制。
+
+Scoped secret 只通过认证 redemption 交付，快照与普通 state 保存引用和版本。Rotate/Revoke 先冻结新交付，再关闭所有曾读取旧版本的精确 runtime generations；进程、受管连接和重启 fence 确认完成后才返回成功，未确认返回 pending/unavailable。同一旧版本 mutation 的重试恢复原结果引用，不自动换成 latest。管理插件如果也读取过旧 material，应通过公开 durable 实例更新采用新引用、准备新配置 generation，再撤销旧引用，避免只停止自身而没有接替 generation；Host 不包含 SS 专用续代逻辑。
+
 - **HTTP / HTTPS 反代**：按域名转发 Web 服务，支持 ACME 自动证书
 - **L4 端口转发**：转发 TCP / UDP 端口
 - **多节点 Agent**：本机 `local` 节点可直接代理；也可把远端机器加入面板统一管理

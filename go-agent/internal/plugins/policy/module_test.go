@@ -5,7 +5,9 @@ package policy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 
 	"strings"
 	"testing"
@@ -144,7 +146,7 @@ func TestPolicyModuleRejectsWAFOnL4(t *testing.T) {
 }
 
 func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) {
-	overlay := bytes.Repeat([]byte("x"), 900)
+	overlay, _ := json.Marshal(map[string]string{"probe": string(bytes.Repeat([]byte("x"), 900))})
 	frameBytes, err := PolicyEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
 	if err != nil {
 		t.Fatal(err)
@@ -153,10 +155,15 @@ func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) 
 	for index := range definition.Stages {
 		definition.Stages[index].ResourceBudget.InputBytes = int64(frameBytes)
 	}
+	envelope := sdk.PolicyOverlayEnvelope{Schema: sdk.PolicyOverlaySchemaV1, Stages: []sdk.PolicyStageOverlay{}}
+	for _, stage := range definition.Stages {
+		envelope.Stages = append(envelope.Stages, sdk.PolicyStageOverlay{Kind: string(stage.Kind), PolicyID: stage.PolicyID, Payload: overlay})
+	}
+	encoded, _ := json.Marshal(envelope)
 	snapshot := model.Snapshot{
 		PluginPolicies: []model.PluginPolicy{definition},
 		Rules: []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{
-			ID: "shared", Overlay: overlay,
+			ID: "shared", Overlay: encoded, OverlayFormat: sdk.PolicyOverlayFormatEnvelopeV1,
 		}}},
 	}
 	policyModule := NewModule(nil, nil)
@@ -167,6 +174,70 @@ func TestPolicyModuleAdmitsExactEvaluateRequestFrameForEveryStage(t *testing.T) 
 	snapshot.PluginPolicies[0].Stages[1].ResourceBudget.InputBytes--
 	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err == nil {
 		t.Fatal("one-byte-over-budget frame accepted by second stage")
+	}
+}
+
+func TestPolicyModuleRejectsWAFWhenOnlyOverlayFrameFits(t *testing.T) {
+	overlay := json.RawMessage(`{"mode":"deny"}`)
+	overlayOnly, err := PolicyEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := PolicyWAFEvaluateRequestFrameBytes(ExtensionHTTP, strings.Repeat("r", MaxPolicyRequestIDBytes), overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete <= overlayOnly {
+		t.Fatalf("complete WAF frame = %d, overlay-only = %d", complete, overlayOnly)
+	}
+	definition := testPolicy("waf", model.PolicyKindWAF)
+	definition.Stages[0].ResourceBudget.InputBytes = int64(overlayOnly)
+	snapshot := model.Snapshot{
+		PluginPolicies: []model.PluginPolicy{definition},
+		Rules:          []model.HTTPRule{{ID: 1, Enabled: true, PolicyRef: &model.PolicyRef{ID: "waf", Overlay: overlay}}},
+	}
+	policyModule := NewModule(nil, nil)
+	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err == nil {
+		t.Fatal("WAF candidate whose overlay-only frame fits was accepted despite the complete normalized frame")
+	}
+
+	snapshot.PluginPolicies[0].Stages[0].ResourceBudget.InputBytes = int64(complete)
+	if _, _, err := policyModule.prepareSnapshotPolicies(context.Background(), snapshot); err != nil {
+		t.Fatalf("exact complete WAF frame boundary rejected: %v", err)
+	}
+
+	registry := module.NewRegistry()
+	if err := registry.Register(NewModule(&testGenerationFactory{}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Revision = 1
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := registry.PrepareGeneration(t.Context(), firstContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := first.Publish()
+	t.Cleanup(func() { _ = active.Destroy(context.Background()) })
+
+	rejected := snapshot
+	rejected.Revision = 2
+	rejected.PluginPolicies = clonePolicies(snapshot.PluginPolicies)
+	rejected.PluginPolicies[0].Stages[0].ResourceBudget.InputBytes = int64(overlayOnly)
+	rejectedContext, err := module.NewGenerationContext(snapshot, rejected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.PrepareGeneration(t.Context(), rejectedContext); err == nil {
+		t.Fatal("complete-frame-over-budget candidate was prepared")
+	}
+	if registry.ActiveGeneration() != active || registry.ActiveGeneration().Revision() != 1 {
+		t.Fatal("rejected WAF candidate replaced the last valid generation")
 	}
 }
 
@@ -187,5 +258,25 @@ func TestPolicyModuleOptionalRuntimeFailureDoesNotBlockCoreGeneration(t *testing
 	}
 	if err := transaction.Destroy(context.Background()); err != nil {
 		t.Fatalf("Destroy() error = %v", err)
+	}
+}
+
+func TestManagedEntryPolicyAdmissionRequiresExistingL4Policy(t *testing.T) {
+	owner := NewModule(nil, nil)
+	snapshot := model.Snapshot{PluginGenerations: []model.PluginGeneration{{InstanceID: "instance", ManagedNetworkPolicy: &model.PolicyRef{ID: "managed"}}}}
+	if _, _, err := owner.prepareSnapshotPolicies(t.Context(), snapshot); err == nil {
+		t.Fatal("missing managed entry policy accepted")
+	}
+	snapshot.PluginPolicies = []model.PluginPolicy{testPolicy("managed", model.PolicyKindWAF)}
+	if _, _, err := owner.prepareSnapshotPolicies(t.Context(), snapshot); err == nil {
+		t.Fatal("WAF attached to managed L4 entry")
+	}
+	snapshot.PluginPolicies = []model.PluginPolicy{testPolicy("managed", model.PolicyKindIP)}
+	_, required, err := owner.prepareSnapshotPolicies(t.Context(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(required) != 1 || required[0] != "managed" {
+		t.Fatal("managed policy did not become required generation dependency")
 	}
 }

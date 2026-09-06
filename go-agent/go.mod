@@ -3,6 +3,7 @@ module github.com/sakullla/nginx-reverse-emby/go-agent
 go 1.27.0
 
 require (
+	github.com/oschwald/maxminddb-golang/v2 v2.5.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/sakullla/nginx-reverse-emby/plugin-sdk v0.0.0
 	github.com/tetratelabs/wazero v1.12.0

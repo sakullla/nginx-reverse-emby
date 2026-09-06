@@ -15,6 +15,7 @@ import (
 )
 
 type GenerationEvaluator struct {
+	datasets          *DatasetGeneration
 	generationID      string
 	policies          map[string]model.PluginPolicy
 	modules           ModuleEvaluator
@@ -72,7 +73,7 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 	if !canonicalIdentity(ref.ID) {
 		return unavailableDecision("", "invalid-policy-ref")
 	}
-	if e == nil || input.extensionPoint == "" || !input.metadata.authorized {
+	if e == nil || input.extensionPoint == "" {
 		return unavailableDecision(strings.TrimSpace(ref.ID), "invalid-input")
 	}
 	policyID := strings.TrimSpace(ref.ID)
@@ -85,23 +86,28 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 		e.observe(ctx, observability.PolicyRejection, "denied", model.PolicyStage{}, policyID, "waf-not-supported-on-l4", 0)
 		return unavailableDecision(policyID, "waf-not-supported-on-l4")
 	}
-	if containsStage(definition.Stages, model.PolicyKindWAF) {
-		if err := ValidateWAFPolicyOverlay(ref.Overlay); err != nil {
-			e.observe(ctx, observability.PolicyRejection, "denied", model.PolicyStage{}, policyID, "invalid-overlay", 0)
-			return unavailableDecision(policyID, "invalid-overlay")
-		}
+	if err := validateEntryModeBindings(ref, definition); err != nil {
+		return unavailableDecision(policyID, "invalid-mode-binding")
+	}
+	envelope, err := resolveEntryOverlays(ref, definition)
+	if err != nil {
+		return unavailableDecision(policyID, "invalid-overlay")
 	}
 
 	decision := Decision{Action: ActionAllow, PolicyID: policyID}
 	for _, stage := range definition.Stages {
-		if !containsString(stage.ExtensionPoints, input.extensionPoint) {
-			return e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "extension-point-unavailable", decision)
+		projection, modeErr := stageModeProjection(stage, ref)
+		if modeErr != nil {
+			return unavailableDecision(policyID, "invalid-mode-binding")
 		}
-		if e.modules == nil {
-			return e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "runtime-unavailable", decision)
+		payload, overlayErr := selectedStageOverlay(envelope, projection)
+		if overlayErr != nil {
+			return unavailableDecision(policyID, "invalid-overlay")
 		}
+		typed := projection.Settings.Handling != pluginsdk.PolicyModeHandlingLegacy
 		requestHost := &requestHost{
 			input:             input,
+			datasets:          e.datasets,
 			generationID:      e.generationID,
 			instanceID:        stage.InstanceID,
 			policyID:          definition.ID,
@@ -114,25 +120,95 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 		deadline := time.Duration(stage.ResourceBudget.TimeoutMS) * time.Millisecond
 		stageCtx, cancel := context.WithTimeout(ctx, deadline)
 		started := time.Now()
-		response, err := e.modules.Evaluate(stageCtx, ModuleRequest{
-			GenerationID:   e.generationID,
-			PolicyID:       stage.PolicyID,
-			PolicyKind:     stage.Kind,
-			InstanceID:     stage.InstanceID,
-			ExtensionPoint: input.extensionPoint,
-			RequestID:      input.requestID,
-			Payload:        append([]byte(nil), ref.Overlay...),
-			Budget:         stage.ResourceBudget,
-			Host:           requestHost,
-		})
+		var response ModuleResponse
+		var err error
+		preflight := input.preflightFailure
+		if !input.metadata.authorized && preflight == "" {
+			preflight = "source-unavailable"
+		}
+		if preflight != "" {
+			if !typed {
+				cancel()
+				if preflight == "source-unavailable" {
+					preflight = "invalid-source"
+				}
+				return unavailableDecision(policyID, preflight)
+			}
+			requestHost.checkFailure = preflight
+		} else if !containsString(stage.ExtensionPoints, input.extensionPoint) {
+			err = RuntimeError("extension-point-unavailable", nil)
+		} else if e.modules == nil {
+			err = RuntimeError("runtime-unavailable", nil)
+		} else {
+			response, err = e.modules.Evaluate(stageCtx, ModuleRequest{
+				GenerationID:   e.generationID,
+				PolicyID:       stage.PolicyID,
+				PolicyKind:     stage.Kind,
+				InstanceID:     stage.InstanceID,
+				ExtensionPoint: input.extensionPoint,
+				RequestID:      input.requestID,
+				Payload:        payload,
+				Budget:         stage.ResourceBudget,
+				Host:           requestHost,
+			})
+		}
 		cancel()
 		duration := time.Since(started)
+		if typed {
+			check := pluginsdk.PolicyCheckResult{Outcome: pluginsdk.PolicyCheckAllow}
+			if requestHost.checkFailure != "" {
+				check = pluginsdk.PolicyCheckResult{Outcome: pluginsdk.PolicyCheckError, Failure: requestHost.checkFailure}
+			} else if err != nil {
+				check = pluginsdk.PolicyCheckResult{Outcome: pluginsdk.PolicyCheckError, Failure: "guest-failure"}
+				if failureKind(err) == FailureBudget {
+					check.Failure = "budget-exceeded"
+				}
+			} else if response.Action == ActionDeny {
+				check.Outcome = pluginsdk.PolicyCheckDeny
+			} else if response.Action != ActionAllow {
+				check = pluginsdk.PolicyCheckResult{Outcome: pluginsdk.PolicyCheckError, Failure: "invalid-result"}
+			}
+			applied, modeErr := pluginsdk.ApplyPolicyMode(projection, check, decision.Action == ActionDeny)
+			if modeErr != nil {
+				return unavailableDecision(policyID, "invalid-mode-result")
+			}
+			decision.Observed = decision.Observed || applied.WouldDeny || applied.CheckFailed
+			decision.Degraded = decision.Degraded || applied.CheckFailed
+			if applied.CheckFailed {
+				decision.Reason = applied.Failure
+				e.observe(ctx, observability.PolicyDegraded, "check-failed", stage, policyID, applied.Failure, duration)
+			} else {
+				e.observe(ctx, observability.PolicyEvaluation, map[bool]string{true: "would-deny", false: "checked"}[applied.WouldDeny], stage, policyID, "", duration)
+			}
+			if applied.Denied {
+				status := denyStatus(input.extensionPoint, stage.Kind)
+				reason := "policy-deny"
+				if applied.CheckFailed {
+					status = unavailableStatus(decision)
+					reason = applied.Failure
+				}
+				e.observe(ctx, observability.PolicyRejection, "denied", stage, policyID, reason, duration)
+				return Decision{Action: ActionDeny, StatusCode: status, Stage: stage.Kind, PolicyID: policyID, Reason: reason, Observed: decision.Observed, Degraded: decision.Degraded}
+			}
+			continue
+		}
 		if err != nil {
-			return e.handleFailure(ctx, definition.ID, stage, failureKind(err), failureCode(err), decision)
+			failed := e.handleFailure(ctx, definition.ID, stage, failureKind(err), failureCode(err), decision)
+			if failed.Action == ActionDeny {
+				return failed
+			}
+			decision = failed
+			continue
 		}
 		if !response.Action.valid() {
-			return e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "invalid-action", decision)
+			failed := e.handleFailure(ctx, definition.ID, stage, FailureRuntime, "invalid-action", decision)
+			if failed.Action == ActionDeny {
+				return failed
+			}
+			decision = failed
+			continue
 		}
+
 		outcome := map[Action]string{ActionAllow: "allowed", ActionDeny: "denied", ActionObserve: "observed"}[response.Action]
 		e.observe(ctx, observability.PolicyEvaluation, outcome, stage, definition.ID, "", duration)
 
@@ -140,7 +216,7 @@ func (e *GenerationEvaluator) Evaluate(ctx context.Context, ref *model.PolicyRef
 		case ActionDeny:
 			status := denyStatus(input.extensionPoint, stage.Kind)
 			e.observe(ctx, observability.PolicyRejection, "denied", stage, definition.ID, "policy-deny", duration)
-			return Decision{Action: ActionDeny, StatusCode: status, Stage: stage.Kind, PolicyID: definition.ID, Reason: "policy-deny", Observed: decision.Observed}
+			return Decision{Action: ActionDeny, StatusCode: status, Stage: stage.Kind, PolicyID: definition.ID, Reason: "policy-deny", Observed: decision.Observed, Degraded: decision.Degraded}
 		case ActionObserve:
 			decision.Observed = true
 		}
@@ -208,6 +284,11 @@ func validateAndClonePolicy(policy model.PluginPolicy) (model.PluginPolicy, erro
 }
 
 func validateStage(stage model.PolicyStage) error {
+	if stage.PolicySettings != nil {
+		if stage.PolicySettings.Validate() != nil || stage.PolicySettings.Settings.EntryMode != nil {
+			return errors.New("invalid trusted instance policy settings")
+		}
+	}
 	identities := []struct{ name, value string }{
 		{"policy id", stage.PolicyID}, {"plugin id", stage.PluginID}, {"plugin version", stage.PluginVersion},
 		{"instance id", stage.InstanceID}, {"package digest", stage.PackageDigest}, {"artifact path", stage.ArtifactPath},
@@ -261,13 +342,7 @@ func validateStage(stage model.PolicyStage) error {
 	return nil
 }
 
-func cloneStage(stage model.PolicyStage) model.PolicyStage {
-	stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
-	stage.DeclaredScopes = append([]string(nil), stage.DeclaredScopes...)
-	stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
-	stage.Config = append([]byte(nil), stage.Config...)
-	return stage
-}
+func cloneStage(stage model.PolicyStage) model.PolicyStage { return model.ClonePolicyStage(stage) }
 
 func canonicalScopeSet(name string, scopes []string) (map[string]struct{}, error) {
 	result := make(map[string]struct{}, len(scopes))
@@ -352,3 +427,18 @@ func denyStatus(extensionPoint string, kind model.PolicyKind) int {
 func unavailableStatus(Decision) int { return 503 }
 
 var _ Evaluator = (*GenerationEvaluator)(nil)
+
+func (e *GenerationEvaluator) EvaluateAdmissionFailure(ctx context.Context, ref *model.PolicyRef, extension, entryID, reason string) Decision {
+	return e.Evaluate(ctx, ref, NewFailedAdmissionInput(extension, "admission-failure", entryID, reason))
+}
+func AdmissionFailure(ctx context.Context, evaluator Evaluator, ref *model.PolicyRef, extension, entryID, reason string) Decision {
+	if handler, ok := evaluator.(interface {
+		EvaluateAdmissionFailure(context.Context, *model.PolicyRef, string, string, string) Decision
+	}); ok {
+		return handler.EvaluateAdmissionFailure(ctx, ref, extension, entryID, reason)
+	}
+	if reason == "source-unavailable" {
+		reason = "invalid-source"
+	}
+	return unavailableDecision(ref.ID, reason)
+}

@@ -483,12 +483,20 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	datasetSnapshots, err := s.loadAgentDatasetSnapshots(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	pluginGenerations, err := s.loadAgentPluginGenerations(ctx, resolvedAgentID, input.Platform)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	snapshotRules := snapshotHTTPRules(httpRows, !runtimeFiltered)
 	snapshotL4 := snapshotL4Rules(l4Rows, !runtimeFiltered)
+	pluginPolicies, err = s.composeSnapshotEntryPolicies(ctx, resolvedAgentID, pluginPolicies, snapshotRules, snapshotL4, pluginGenerations)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	snapshotRules = filterUnavailablePluginProviderRules(snapshotRules, pluginGenerations)
 	pluginDependencies, err := s.loadAgentPluginDependencies(ctx, resolvedAgentID, pluginGenerations, snapshotRules, snapshotL4)
 	if err != nil {
@@ -498,6 +506,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	for index := range pluginGenerations {
 		pluginGenerations[index].Revision = desiredRevision
 	}
+	datasetSnapshots = activeDatasetSnapshots(datasetSnapshots, pluginPolicies, pluginGenerations)
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
@@ -514,6 +523,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		PluginGenerations:   pluginGenerations,
 		PluginDependencies:  pluginDependencies,
 		PluginPolicies:      pluginPolicies,
+		Datasets:            datasetSnapshots,
 		PKISecurity:         pkiSecurity,
 	}, nil
 }
@@ -1144,6 +1154,11 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 		if err := tx.Where("agent_id = ?", agentID).Delete(&RelayListenerRow{}).Error; err != nil {
 			return err
 		}
+		// Desired references belong to the deleted node; historical revision
+		// artifact references retain their existing ledger lifecycle.
+		if err := tx.Where("agent_id = ?", agentID).Delete(&DatasetBindingRow{}).Error; err != nil {
+			return err
+		}
 		if err := retireCoordinatorAgentTx(tx, agentID, now); err != nil {
 			return err
 		}
@@ -1239,6 +1254,23 @@ func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []H
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing []HTTPRuleRow
+		if err := tx.Where("agent_id = ?", agentID).Find(&existing).Error; err != nil {
+			return err
+		}
+		retained := make(map[int]struct{}, len(rules))
+		for _, row := range rules {
+			retained[row.ID] = struct{}{}
+		}
+		removed := make([]string, 0)
+		for _, row := range existing {
+			if _, ok := retained[row.ID]; !ok {
+				removed = append(removed, strconv.Itoa(row.ID))
+			}
+		}
+		if err := deletePluginPolicyEntryModesTx(tx, agentID, pluginsdk.PolicyEntryHTTP, removed); err != nil {
+			return err
+		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
 			return err
 		}
@@ -1263,6 +1295,33 @@ func (s *GormStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4R
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing []L4RuleRow
+		if err := tx.Where("agent_id = ?", agentID).Find(&existing).Error; err != nil {
+			return err
+		}
+		retained := make(map[int]string, len(rules))
+		for _, row := range rules {
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			retained[row.ID] = kind
+		}
+		removed := map[string][]string{pluginsdk.PolicyEntryTCP: {}, pluginsdk.PolicyEntryUDP: {}}
+		for _, row := range existing {
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			if nextKind, ok := retained[row.ID]; !ok || nextKind != kind {
+				removed[kind] = append(removed[kind], strconv.Itoa(row.ID))
+			}
+		}
+		for kind, entryIDs := range removed {
+			if err := deletePluginPolicyEntryModesTx(tx, agentID, kind, entryIDs); err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&L4RuleRow{}).Error; err != nil {
 			return err
 		}

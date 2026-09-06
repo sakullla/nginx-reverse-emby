@@ -134,11 +134,13 @@ func (body BodyWindow) Complete() bool             { return body.complete }
 func (body BodyWindow) SkipReason() BodySkipReason { return body.skipReason }
 
 type Input struct {
-	extensionPoint string
-	requestID      string
-	metadata       CanonicalMetadata
-	fields         map[string][]byte
-	body           BodyWindow
+	entryID          string
+	preflightFailure string
+	extensionPoint   string
+	requestID        string
+	metadata         CanonicalMetadata
+	fields           map[string][]byte
+	body             BodyWindow
 }
 
 func NewInput(extensionPoint, requestID string, metadata CanonicalMetadata, fields map[string][]byte, body BodyWindow) (Input, error) {
@@ -226,4 +228,11 @@ func canonicalAddrPort(address net.Addr) (netip.AddrPort, error) {
 		return netip.AddrPort{}, fmt.Errorf("address %q is not a canonical client address", address.String())
 	}
 	return parsed, nil
+}
+
+// WithEntryID binds a Host-owned entry identity, never a guest or header value.
+func (input Input) WithEntryID(id string) Input { input.entryID = id; return input }
+func (input Input) EntryID() string             { return input.entryID }
+func NewFailedAdmissionInput(extension, requestID, entryID, reason string) Input {
+	return Input{extensionPoint: extension, requestID: requestID, entryID: entryID, preflightFailure: reason}
 }

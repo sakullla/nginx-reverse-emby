@@ -379,6 +379,7 @@ type PluginService struct {
 	secretVault         *secrets.Vault
 	postCommitActions   *[]func()
 	controlPlaneRuntime PluginControlPlaneRuntime
+	scopedSecretManager *PluginCapabilityManager
 }
 
 func (s *PluginService) SetSecretVault(vault *secrets.Vault) {
@@ -1871,7 +1872,7 @@ func (s *PluginService) controlPlaneRuntimePlan(ctx context.Context, operation s
 		generationID := generation.ID
 		configRaw, handlesRaw, group, actorID, correlationID := config, secretHandlesJSON, resourceGroupID, operation.ActorID, operation.CorrelationID
 		plan.Candidates = append(plan.Candidates, pluginhost.Candidate{
-			InstanceID: instance.ID, OperationID: operation.ID, ResourceGroupID: resourceGroupID, Revision: operation.TargetRevision,
+			InstanceID: instance.ID, IncarnationID: instance.IncarnationID, OperationID: operation.ID, ResourceGroupID: resourceGroupID, Revision: operation.TargetRevision,
 			Artifact: pluginhost.Artifact{CachePath: filepath.Join(packageRow.CachePath, filepath.FromSlash(runtimeArtifact.Path)), SHA256: runtimeArtifact.SHA256, GOOS: runtimeArtifact.GOOS, GOARCH: runtimeArtifact.GOARCH},
 			Identity: pluginhost.Identity{PluginID: manifest.ID, Version: manifest.Version, PackageDigest: packageRow.Digest, Generation: generation.ID, Scopes: append([]string(nil), declared...)},
 			Config:   append([]byte(nil), generation.Config...), ResolveConfigAndSecrets: func(resolveCtx context.Context, requestedGeneration string) ([]byte, []string, error) {
@@ -2055,7 +2056,7 @@ func (s *PluginService) controlPlaneGenerationGrants(ctx context.Context, instal
 		if !strings.EqualFold(row.PackageDigest, packageRow.Digest) || (row.PackageIdentity != "" && row.PackageIdentity != packageRow.Identity) {
 			continue
 		}
-		kind, id := splitPluginResourceSelector(row.ResourceSelector)
+		kind, id := storage.SplitPluginGenerationGrantResource(row.Permission, row.ResourceSelector)
 		result = append(result, storage.PluginGenerationGrant{Name: row.Permission, ResourceKind: kind, ResourceID: id})
 	}
 	return result, nil
@@ -4119,7 +4120,7 @@ func clearStagedSource(installed *storage.InstalledPluginRow) {
 func pluginGenerationGrants(permissions []plugins.Permission) []storage.PluginGenerationGrant {
 	result := make([]storage.PluginGenerationGrant, 0, len(permissions))
 	for _, permission := range permissions {
-		kind, id := splitPluginResourceSelector(permission.Resource)
+		kind, id := storage.SplitPluginGenerationGrantResource(permission.Name, permission.Resource)
 		result = append(result, storage.PluginGenerationGrant{Name: strings.TrimSpace(permission.Name), ResourceKind: kind, ResourceID: id})
 	}
 	return result
