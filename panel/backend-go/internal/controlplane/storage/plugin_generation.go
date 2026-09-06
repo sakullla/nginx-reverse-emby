@@ -271,12 +271,16 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	if err != nil {
 		return PluginGeneration{}, fmt.Errorf("plugin instance %s secret handles: %w", instance.ID, err)
 	}
+	requiredFeatures, err := pluginGenerationRequiredFeatures(manifest, grants)
+	if err != nil {
+		return PluginGeneration{}, err
+	}
 	generation := PluginGeneration{
 		OperationID: operationID, InstanceID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version, PackageDigest: packageRow.Digest,
 		Artifact:             PluginGenerationArtifact{ArtifactID: artifact.ID, PackageIdentity: packageRow.Identity, RelativePath: artifact.Path, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, Mode: artifact.Mode, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH, SignatureVerified: packageRow.SignatureVerdict == "verified", SignerKeyID: packageRow.SignatureKeyID, SignerFingerprint: packageRow.SignatureFingerprint},
 		Runtime:              PluginGenerationRuntime{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: pluginsdk.RuntimeAgentFaceHostScope(manifest.Runtime), Entry: artifact.Path},
 		ExtensionPoints:      canonicalPluginGenerationStrings(manifest.ExtensionPoints),
-		RequiredFeatures:     canonicalPluginGenerationStrings(pluginGenerationRequiredFeatures(grants, manifest.ExtensionPoints)),
+		RequiredFeatures:     canonicalPluginGenerationStrings(requiredFeatures),
 		HTTPBackendProviders: append([]pluginsdk.HTTPBackendProviderDescriptor(nil), manifest.HTTPBackendProviders...),
 		ConfigVersion:        configVersion, Config: canonicalConfig, Grants: append([]PluginGenerationGrant(nil), grants...), SecretHandles: secretHandles,
 		ResourceBudget: PluginGenerationResourceBudget{TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes, Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes, OutputBytes: manifest.ResourceBudget.OutputBytes, CPUMillis: manifest.ResourceBudget.CPUMillis, Restarts: manifest.ResourceBudget.Restarts},
@@ -291,12 +295,41 @@ func BuildPluginGeneration(installed InstalledPluginRow, instance PluginInstance
 	return generation, nil
 }
 
-func pluginGenerationRequiredFeatures(grants []PluginGenerationGrant, extensionPoints []string) []string {
+func pluginGenerationRequiredFeatures(manifest plugins.Manifest, grants []PluginGenerationGrant) ([]string, error) {
 	scopes := make([]string, 0, len(grants))
 	for _, grant := range grants {
 		scopes = append(scopes, grant.Name)
 	}
-	return pluginsdk.RequiredRPCFeaturesForExtensions(scopes, extensionPoints)
+	optedIn, err := pluginManifestExecutionScopeOptIn(manifest)
+	if err != nil {
+		return nil, err
+	}
+	if optedIn {
+		features, err := pluginsdk.RequiredRPCFeaturesForExecutionScope(scopes, manifest.ExtensionPoints, pluginsdk.HostScopeAgent)
+		if err != nil {
+			return nil, fmt.Errorf("plugin execution scope feature projection: %w", err)
+		}
+		return features, nil
+	}
+	return pluginsdk.RequiredRPCFeaturesForExtensions(scopes, manifest.ExtensionPoints), nil
+}
+
+// rpc.execution-scope.v1 is both the public negotiated feature identity and
+// the signed manifest metadata key. The only accepted opt-in value is the
+// execution face the Agent Host will author; configuration, targets, and
+// grants cannot enable this protocol.
+func pluginManifestExecutionScopeOptIn(manifest plugins.Manifest) (bool, error) {
+	value, present := manifest.Metadata[pluginsdk.RPCFeatureExecutionScopeV1]
+	if !present {
+		return false, nil
+	}
+	if value != pluginsdk.HostScopeAgent {
+		return false, fmt.Errorf("plugin execution scope metadata must equal %q", pluginsdk.HostScopeAgent)
+	}
+	if !pluginsdk.RuntimeProjectsAgentRPC(manifest.Runtime) {
+		return false, errors.New("plugin execution scope metadata requires an Agent RPC face")
+	}
+	return true, nil
 }
 
 func splitPluginGrantSelector(selector string) (string, string) {

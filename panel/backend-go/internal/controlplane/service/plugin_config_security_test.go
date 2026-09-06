@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 const hostInjectedConfigSchema = `{
@@ -122,6 +124,92 @@ func TestPluginConfigureInjectsHostInjectedKeysThenValidates(t *testing.T) {
 		t.Fatalf("injected config failed ValidateConfig: %v", err)
 	}
 	assertInjectedGenerationMatchesLifecycle(t, fixture, instance.ID, generation)
+}
+
+func TestSignedExecutionScopeMetadataProjectsToAgentGeneration(t *testing.T) {
+	key := publishFixtureSigningKey()
+	validator := plugins.NewValidator(plugins.ValidatorOptions{
+		HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": key.Public().(ed25519.PublicKey)},
+		TrustedSignerPolicy: plugins.TrustedSignerPolicyExact, TargetGOOS: runtime.GOOS, TargetGOARCH: runtime.GOARCH,
+	})
+	build := func(name string, metadata *string, rpcFace bool) plugins.ValidatedPackage {
+		t.Helper()
+		root := t.TempDir()
+		writePublishFile(t, root, plugins.ConfigSchemaFile, `{"type":"object"}`)
+		var manifest string
+		if rpcFace {
+			artifact, path := publishRPCArtifact(t, root)
+			sum := sha256.Sum256(artifact)
+			manifest = fmtPublishRPCManifest(name, path, hex.EncodeToString(sum[:]), int64(len(artifact)))
+		} else {
+			artifact := publishWASMArtifact(t)
+			sum := sha256.Sum256(artifact)
+			writePublishBytes(t, root, "artifacts/policy.wasm", artifact)
+			manifest = fmtPublishWASMManifest(name, hex.EncodeToString(sum[:]), int64(len(artifact)))
+		}
+		if metadata != nil {
+			manifest = strings.Replace(manifest, "name: ", "metadata:\n  "+pluginsdk.RPCFeatureExecutionScopeV1+": "+strconv.Quote(*metadata)+"\nname: ", 1)
+		}
+		writePublishFile(t, root, plugins.PackageManifestFile, manifest)
+		digest, err := plugins.ComputePackageDigest(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writePublishFile(t, root, plugins.PackageDigestFile, digest+"\n")
+		writePublishFile(t, root, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte(digest)))+"\n")
+		validated, err := validator.ValidatePackage(root, plugins.PackageExpectation{ID: name, Version: "1.0.0", SignatureKeyID: "test-fixture"})
+		if err != nil {
+			t.Fatal("signed manifest validation", err)
+		}
+		return validated
+	}
+	project := func(validated plugins.ValidatedPackage) (storage.PluginPackageRow, []storage.PluginArtifactRow, error) {
+		encoded, _ := json.Marshal(validated.Manifest)
+		return storage.ProjectPluginPackage(storage.PluginPackageRow{Identity: strings.Repeat("1", 64), Digest: validated.Digest, PluginID: validated.Manifest.ID, Version: validated.Manifest.Version, ManifestJSON: string(encoded), SourceID: "fixture", SourceKind: marketplace.SourceKindCustom, SignatureKeyID: "test-fixture", SignatureFingerprint: strings.Repeat("2", 64)}, validated.Manifest)
+	}
+	agentScope := pluginsdk.HostScopeAgent
+	opted, err := func() (storage.PluginGeneration, error) {
+		validated := build("scope-opted", &agentScope, true)
+		row, artifacts, err := project(validated)
+		if err != nil {
+			return storage.PluginGeneration{}, err
+		}
+		var stored plugins.Manifest
+		if err := json.Unmarshal([]byte(row.ManifestJSON), &stored); err != nil {
+			return storage.PluginGeneration{}, err
+		}
+		return storage.BuildPluginGeneration(storage.InstalledPluginRow{LastOperationID: "install"}, storage.PluginInstanceRow{ID: "scope-opted", ResourceGroupID: "default", ConfigJSON: `{}`, ConfigVersion: 1}, row, stored, artifacts[0], []storage.PluginGenerationGrant{{Name: pluginsdk.PermissionHTTPOutbound}}, "edge")
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsExact(opted.RequiredFeatures, pluginsdk.RPCFeatureExecutionScopeV1) {
+		t.Fatalf("signed opt-in absent from generation: %+v", opted.RequiredFeatures)
+	}
+	legacyValidated := build("scope-legacy", nil, true)
+	legacyRow, legacyArtifacts, err := project(legacyValidated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := storage.BuildPluginGeneration(storage.InstalledPluginRow{LastOperationID: "install"}, storage.PluginInstanceRow{ID: "scope-legacy", ResourceGroupID: "default", ConfigJSON: `{}`, ConfigVersion: 1}, legacyRow, legacyValidated.Manifest, legacyArtifacts[0], []storage.PluginGenerationGrant{{Name: pluginsdk.PermissionHTTPOutbound}}, "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsExact(legacy.RequiredFeatures, pluginsdk.RPCFeatureExecutionScopeV1) {
+		t.Fatalf("legacy package implicitly opted in: %+v", legacy.RequiredFeatures)
+	}
+	for _, test := range []struct {
+		name    string
+		value   string
+		rpcFace bool
+	}{{"wrong-value", pluginsdk.HostScopeControlPlane, true}, {"noncanonical-value", " agent", true}, {"wasm-face", pluginsdk.HostScopeAgent, false}} {
+		t.Run(test.name, func(t *testing.T) {
+			validated := build("scope-"+test.name, &test.value, test.rpcFace)
+			if _, _, err := project(validated); err == nil {
+				t.Fatal("invalid execution-scope metadata reached package projection")
+			}
+		})
+	}
 }
 
 func TestPluginConfigureRecreatesHostSecretAfterRetiredNameCollision(t *testing.T) {

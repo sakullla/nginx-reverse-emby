@@ -41,6 +41,9 @@ var (
 // manifest JSON, while these columns and rows support safe runtime selection
 // without interpreting arbitrary package content.
 func ProjectPluginPackage(row PluginPackageRow, manifest plugins.Manifest) (PluginPackageRow, []PluginArtifactRow, error) {
+	if _, err := pluginManifestExecutionScopeOptIn(manifest); err != nil {
+		return PluginPackageRow{}, nil, err
+	}
 	if row.Identity == "" {
 		row.Identity = PluginPackageIdentity(row.Digest, row.SourceID, row.SignatureFingerprint)
 	}
