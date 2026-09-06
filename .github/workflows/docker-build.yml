@@ -57,16 +57,19 @@ jobs:
 
       - name: Run Go release tests
         shell: bash
+        env:
+          # Match the full test tier: sandboxed children cannot use host libraries.
+          CGO_ENABLED: "0"
         run: |
           go -C plugin-sdk test -count=1 ./...
-          go -C go-agent test -p=16 -count=1 -timeout=30s \
+          go -C go-agent test -exec 'sudo -n -E --' -p=16 -count=1 -timeout=30s \
             ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module \
             ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics \
             ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4 \
             ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy \
             ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc \
             ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
-          go -C panel/backend-go test -p=16 -count=1 -timeout=30s \
+          go -C panel/backend-go test -exec 'sudo -n -E --' -p=16 -count=1 -timeout=30s \
             ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/authz \
             ./internal/controlplane/config ./internal/controlplane/coordinator ./internal/controlplane/dependency \
             ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace \
