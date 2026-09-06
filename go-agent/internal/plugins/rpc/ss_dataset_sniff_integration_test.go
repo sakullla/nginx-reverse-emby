@@ -58,6 +58,7 @@ func TestIntegrationRealShadowsocksDatasetSniffAndIPPolicy(t *testing.T) {
 
 	view, datasetProvider, evaluator, closePolicy := prepareSSRealPolicyGeneration(t, work, ipArtifact, dataCache, "ss-primary")
 	defer closePolicy()
+	warmSSPolicyEvaluator(t, evaluator)
 
 	upstreamPassword := "controlled-upstream-password"
 	inboundPassword := "primary-inbound-password"
@@ -143,6 +144,31 @@ func TestIntegrationRealShadowsocksDatasetSniffAndIPPolicy(t *testing.T) {
 	if err := primaryHost.RevokeGeneration(t.Context(), primaryRevoke); err != nil || !primaryInstance.terminated() {
 		t.Fatalf("revoke routed SS: %v", err)
 	}
+}
+
+func warmSSPolicyEvaluator(t *testing.T, evaluator policy.Evaluator) {
+	t.Helper()
+	metadata, err := policy.NewDirectMetadata(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := policy.NewBodyWindow(nil, true, policy.BodyNotSkipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := policy.NewInput(policy.ExtensionL4, "ss-policy-warmup", metadata, nil, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input = input.WithEntryID("managed-entry")
+	var decision policy.Decision
+	for attempt := 0; attempt < 3; attempt++ {
+		decision = evaluator.Evaluate(t.Context(), &model.PolicyRef{ID: "effective"}, input)
+		if decision.Action == policy.ActionAllow && !decision.Degraded {
+			return
+		}
+	}
+	t.Fatalf("real IP policy did not become ready within warmup bound: %+v", decision)
 }
 
 func requiredSSPath(t *testing.T, name string) string {
