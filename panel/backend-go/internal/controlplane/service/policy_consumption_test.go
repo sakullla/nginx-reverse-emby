@@ -80,7 +80,7 @@ func newPolicyConsumptionFixture(t *testing.T, rpcFace ...bool) (*PluginCapabili
 		Artifacts:       artifacts,
 		ExtensionPoints: []string{pluginsdk.ExtensionUIRoute, pluginsdk.ExtensionHTTPRequest, pluginsdk.ExtensionL4Accept},
 		Metadata:        map[string]string{pluginsdk.PolicyModeHandlingMetadataKey: string(pluginsdk.PolicyModeHandlingRaw)},
-		Permissions:     []plugins.Permission{{Name: "dataset.bind"}, {Name: "policy.control"}, {Name: "storage.write"}},
+		Permissions:     []plugins.Permission{{Name: "dataset.bind"}, {Name: "policy.control"}, {Name: "policy.entry-overlays"}, {Name: "storage.write"}},
 		ResourceBudget:  plugins.ResourceBudget{TimeoutMS: 2000, MemoryBytes: 1048576, Concurrency: 8, InputBytes: 65536, OutputBytes: 4096, CPUMillis: 100, Restarts: 1},
 		FailurePolicy:   plugins.FailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "on-failure", CoreFallback: "preserve"},
 		Signature:       plugins.Signature{Algorithm: "ed25519", KeyID: plugins.OfficialSignatureKeyID},
@@ -146,7 +146,7 @@ func newPolicyConsumptionFixture(t *testing.T, rpcFace ...bool) (*PluginCapabili
 	}
 	if err := store.InstallPlugin(ctx, storage.PluginInstallTransaction{
 		Package: projected, Artifacts: projectedArtifacts, Installed: installed, Operation: installOp,
-		Grants: []storage.PluginGrantRow{{ID: "data-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "dataset.bind"}, {ID: "policy-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "policy.control"}, {ID: "config-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "storage.write"}},
+		Grants: []storage.PluginGrantRow{{ID: "data-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "dataset.bind"}, {ID: "policy-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "policy.control"}, {ID: "entry-overlay-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "policy.entry-overlays"}, {ID: "config-grant", PluginID: pluginID, PackageDigest: digest, PackageIdentity: identity, Permission: "storage.write"}},
 		Audit: storage.AuditEventRow{
 			ID: "audit-install-" + pluginID, ActorID: "admin", Action: "plugin.install",
 			TargetKind: "plugin", TargetID: pluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now,
@@ -188,7 +188,7 @@ func newPolicyConsumptionFixture(t *testing.T, rpcFace ...bool) (*PluginCapabili
 
 	service := NewPluginService(store, cacheRoot)
 	service.ConfigureRevisionMutations(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
-	candidate := pluginhost.Candidate{InstanceID: instanceID, IncarnationID: instance.IncarnationID, ResourceGroupID: "default", Identity: pluginhost.Identity{PluginID: pluginID, Generation: "generation-policy", PackageDigest: digest, Scopes: []string{"dataset.bind", "policy.control", "storage.write"}}, Grants: []string{"dataset.bind", "policy.control", "storage.write"}}
+	candidate := pluginhost.Candidate{InstanceID: instanceID, IncarnationID: instance.IncarnationID, ResourceGroupID: "default", Identity: pluginhost.Identity{PluginID: pluginID, Generation: "generation-policy", PackageDigest: digest, Scopes: []string{"dataset.bind", "policy.control", "policy.entry-overlays", "storage.write"}}, Grants: []string{"dataset.bind", "policy.control", "policy.entry-overlays", "storage.write"}}
 	if err := store.StagePluginRuntime(ctx, storage.PluginRuntimeInstanceRow{InstanceID: instanceID, PluginID: pluginID, HostScope: pluginsdk.HostScopeControlPlane, CandidateGeneration: candidate.Identity.Generation, CandidatePackageDigest: digest, CandidateResourceGroupID: "default"}); err != nil {
 		t.Fatal(err)
 	}
@@ -288,16 +288,35 @@ func TestPolicyControlFloorCASAndEntryProjection(t *testing.T) {
 	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{testHTTPWAFRuleRow(1, "local", "")}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{ID: 2, AgentID: "local", Protocol: "tcp", Enabled: true}, {ID: 3, AgentID: "local", Protocol: "udp", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
 	client := datasetHostRuntimeClient(t, manager, &candidate)
 	stage := pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: candidate.InstanceID}
-	entry := &pluginsdk.PolicyEntryTarget{NodeID: "local", Kind: pluginsdk.PolicyEntryHTTP, ID: "1"}
+	listed, err := client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlListEntries, InstanceID: candidate.InstanceID, Stage: stage})
+	if err != nil || len(listed.Entries) != 3 {
+		t.Fatalf("list actual entry: %+v %v", listed, err)
+	}
+	var entry *pluginsdk.PolicyEntryTarget
+	for i := range listed.Entries {
+		if listed.Entries[i].Entry.Kind == pluginsdk.PolicyEntryHTTP {
+			entry = &listed.Entries[i].Entry
+		}
+	}
+	if entry == nil {
+		t.Fatal("HTTP entry missing from list")
+	}
 	inspect := pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlInspect, InstanceID: candidate.InstanceID, Stage: stage, Entry: entry}
 	initial, err := client.ControlPolicy(t.Context(), inspect)
 	if err != nil {
 		t.Fatal("inspect actual entry", err)
 	}
 	mutate := func(action pluginsdk.PolicyControlAction, mode pluginsdk.PolicyMode, op string, at *pluginsdk.PolicyEntryTarget, version pluginsdk.PolicySettingsVersion) (pluginsdk.PolicyControlResponse, error) {
-		return client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: action, InstanceID: candidate.InstanceID, OperationID: op, Stage: stage, Entry: at, Mode: mode, ExpectedRevision: &version.Revision, ExpectedInstanceVersion: &version.InstanceVersion})
+		request := pluginsdk.PolicyControlRequest{Action: action, InstanceID: candidate.InstanceID, OperationID: op, Stage: stage, Entry: at, Mode: mode, ExpectedRevision: &version.Revision, ExpectedInstanceVersion: &version.InstanceVersion}
+		if action == pluginsdk.PolicyControlReplaceEntry && at != nil && at.Token != "" {
+			request.Overlay = json.RawMessage(`{"rules":["192.0.2.0/24"]}`)
+		}
+		return client.ControlPolicy(t.Context(), request)
 	}
 	observed, err := mutate(pluginsdk.PolicyControlReplaceEntry, pluginsdk.PolicyModeObserve, "entry-observe", entry, initial.Desired.Version)
 	if err != nil {
@@ -306,6 +325,10 @@ func TestPolicyControlFloorCASAndEntryProjection(t *testing.T) {
 	snapshot := latestWAFCoordinatorSnapshot(t, store, "local")
 	if len(snapshot.Rules[0].PolicyRef.StageModes) != 1 || snapshot.Rules[0].PolicyRef.StageModes[0].Snapshot.Settings.EntryMode == nil {
 		t.Fatal("trusted entry mode absent from published immutable snapshot")
+	}
+	envelope, err := pluginsdk.DecodePolicyOverlay(snapshot.Rules[0].PolicyRef.Overlay, pluginsdk.PolicyOverlayDecodeContext{Format: snapshot.Rules[0].PolicyRef.OverlayFormat})
+	if err != nil || len(envelope.Stages) != 1 || string(envelope.Stages[0].Payload) != `{"rules":["192.0.2.0/24"]}` {
+		t.Fatalf("entry overlay absent from published immutable snapshot: %+v %v", envelope, err)
 	}
 	if _, err := mutate(pluginsdk.PolicyControlReplaceInstance, pluginsdk.PolicyModeEnforce, "default-enforce-conflict", nil, observed.Desired.Version); err == nil {
 		t.Fatal("enforce default persisted invalid observe override")
@@ -346,6 +369,138 @@ func TestPolicyControlFloorCASAndEntryProjection(t *testing.T) {
 	if err != nil || replay.Desired.Version != enforced.Desired.Version {
 		t.Fatal("policy historical replay resolved latest state", replay, err)
 	}
+}
+
+func TestPolicyControlRejectsStaleEntryTokenAfterReplacement(t *testing.T) {
+	manager, candidate := newPolicyConsumptionFixture(t)
+	store := manager.datasets.store
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{testHTTPWAFRuleRow(7, "local", "")}); err != nil {
+		t.Fatal(err)
+	}
+	client := datasetHostRuntimeClient(t, manager, &candidate)
+	stage := pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: candidate.InstanceID}
+	list := func() pluginsdk.PolicyControlResponse {
+		response, err := client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlListEntries, InstanceID: candidate.InstanceID, Stage: stage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	first := list()
+	if len(first.Entries) != 1 {
+		t.Fatalf("entry token missing: %+v", first)
+	}
+	var entry pluginsdk.PolicyEntryTarget
+	for _, snapshot := range first.Entries {
+		if snapshot.Entry.Kind == pluginsdk.PolicyEntryHTTP {
+			entry = snapshot.Entry
+		}
+	}
+	if entry.Token == "" {
+		t.Fatalf("HTTP entry token missing: %+v", first)
+	}
+	request := pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlReplaceEntry, OperationID: "token-overlay", InstanceID: candidate.InstanceID, Stage: stage, Entry: &entry, Mode: pluginsdk.PolicyModeObserve, ExpectedRevision: &first.Desired.Version.Revision, ExpectedInstanceVersion: &first.Desired.Version.InstanceVersion, Overlay: json.RawMessage(`{"rules":["198.51.100.0/24"]}`)}
+	written, err := client.ControlPolicy(t.Context(), request)
+	if err != nil || string(written.Overlay) != string(request.Overlay) {
+		t.Fatalf("entry overlay write failed: %+v %v", written, err)
+	}
+	inspected, err := client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlInspect, InstanceID: candidate.InstanceID, Stage: stage, Entry: &entry})
+	if err != nil || string(inspected.Overlay) != string(request.Overlay) {
+		t.Fatalf("inspect did not return exact overlay: %+v %v", inspected, err)
+	}
+	applyConsumptionRevision(t, store, "local")
+	inspected, err = client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlInspect, InstanceID: candidate.InstanceID, Stage: stage, Entry: &entry})
+	if err != nil || inspected.Node == nil || inspected.Node.Phase != "applied" {
+		t.Fatalf("applied entry status unavailable: %+v %v", inspected, err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", nil); err != nil {
+		t.Fatal(err)
+	}
+	recreatedRow := testHTTPWAFRuleRow(7, "local", "")
+	recreatedRow.Revision = 2
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{recreatedRow}); err != nil {
+		t.Fatal(err)
+	}
+	second := list()
+	var recreated pluginsdk.PolicyEntrySnapshot
+	for _, snapshot := range second.Entries {
+		if snapshot.Entry.Kind == pluginsdk.PolicyEntryHTTP {
+			recreated = snapshot
+		}
+	}
+	if len(second.Entries) != 1 || recreated.Entry.Token == "" || recreated.Entry.Token == entry.Token || len(recreated.Overlay) != 0 || recreated.Desired.Settings.EntryMode != nil {
+		t.Fatalf("recreated entry inherited old state: old=%q next=%+v", entry.Token, second)
+	}
+	if recreated.Node == nil || recreated.Node.Phase != "unavailable" || recreated.Node.Applied != nil {
+		t.Fatalf("recreated numeric ID inherited applied status: %+v", recreated.Node)
+	}
+	if _, err := client.ControlPolicy(t.Context(), pluginsdk.PolicyControlRequest{Action: pluginsdk.PolicyControlInspect, InstanceID: candidate.InstanceID, Stage: stage, Entry: &entry}); err == nil {
+		t.Fatal("stale entry token was accepted")
+	}
+	beforeInstance, _, _ := store.GetPluginInstance(t.Context(), candidate.InstanceID)
+	beforeSettings, _ := store.GetPluginPolicySettings(t.Context(), candidate.InstanceID)
+	if _, err := client.ControlPolicy(t.Context(), request); err == nil {
+		t.Fatal("historical operation replay ignored current token")
+	}
+	afterInstance, _, _ := store.GetPluginInstance(t.Context(), candidate.InstanceID)
+	afterSettings, _ := store.GetPluginPolicySettings(t.Context(), candidate.InstanceID)
+	if afterInstance.StateVersion != beforeInstance.StateVersion || afterSettings.Revision != beforeSettings.Revision {
+		t.Fatalf("rejected stale replay advanced CAS: instance %d->%d settings %d->%d", beforeInstance.StateVersion, afterInstance.StateVersion, beforeSettings.Revision, afterSettings.Revision)
+	}
+}
+
+func TestManagedEntryAppliedBindingChangesAcrossRecreatedIncarnation(t *testing.T) {
+	manager, candidate := newPolicyConsumptionFixture(t)
+	store := manager.datasets.store
+	instance, found, err := store.GetPluginInstance(t.Context(), candidate.InstanceID)
+	if err != nil || !found {
+		t.Fatal("current managed incarnation unavailable", err)
+	}
+	entry := pluginsdk.PolicyEntryTarget{NodeID: "local", Kind: pluginsdk.PolicyEntryManagedTCP, ID: instance.ID, Token: storage.ManagedPolicyEntryToken(instance.IncarnationID, "local", pluginsdk.PolicyEntryManagedTCP)}
+	stage := pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: instance.ID}
+	desired, err := store.PolicySettingsSnapshot(t.Context(), instance, pluginsdk.PolicyModeHandlingRaw, &entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := &storage.PolicyRef{ID: "effective-policy", StageModes: []storage.PolicyModeBinding{{Stage: stage, Snapshot: desired}}}
+	snapshot := func(revision int64, generationID string) storage.Snapshot {
+		return storage.Snapshot{Revision: revision, PluginGenerations: []storage.PluginGeneration{{
+			ID: generationID, InstanceID: entry.ID, ConfigVersion: 1,
+			ManagedNetworkPolicies: map[string]*storage.PolicyRef{"tcp": ref},
+		}}}
+	}
+	oldArtifact := policyStatusSnapshotArtifact(t, snapshot(1, strings.Repeat("a", 64)))
+	recreatedArtifact := policyStatusSnapshotArtifact(t, snapshot(2, strings.Repeat("b", 64)))
+	now := time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)
+	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{ID: "managed-incarnation-status", Kind: "plugin.configure", Status: storage.OperationStatusPending, PrimaryAgentID: "local", CreatedAt: now, UpdatedAt: now},
+		Revisions: []storage.AgentRevisionRow{
+			{AgentID: "local", Revision: 1, State: storage.AgentRevisionStateApplied, SnapshotArtifactID: oldArtifact.ID, SnapshotDigest: oldArtifact.SHA256, RuntimeGenerationID: strings.Repeat("c", 64), CreatedAt: now, UpdatedAt: now},
+			{AgentID: "local", Revision: 2, State: storage.AgentRevisionStatePending, SnapshotArtifactID: recreatedArtifact.ID, SnapshotDigest: recreatedArtifact.SHA256, CreatedAt: now, UpdatedAt: now},
+		},
+		Pointers:  []storage.AgentRevisionPointerRow{{AgentID: "local", DesiredRevision: 2, AppliedRevision: 1, LastKnownGoodRevision: 1, UpdatedAt: now}},
+		Artifacts: []storage.GenerationArtifactRow{oldArtifact, recreatedArtifact},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node, err := policyEntryNodeStatus(t.Context(), store, entry, stage, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Phase != "unavailable" || node.Applied != nil {
+		t.Fatalf("same managed ID/config version inherited old incarnation status: %+v", node)
+	}
+}
+
+func policyStatusSnapshotArtifact(t *testing.T, snapshot storage.Snapshot) storage.GenerationArtifactRow {
+	t.Helper()
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	encoded := hex.EncodeToString(digest[:])
+	return storage.GenerationArtifactRow{ID: "snapshot-" + encoded, Kind: "agent_snapshot", SHA256: encoded, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)}
 }
 
 func TestConsumptionReplayDoesNotCrossDeletedInstanceIncarnation(t *testing.T) {

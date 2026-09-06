@@ -83,7 +83,7 @@ type App struct {
 	generations            *core.GenerationManager
 	policyWASM             *pluginwasm.Runtime
 	rpcGeneration          *pluginrpc.GenerationModule
-	capabilityAudit        *observability.CapabilityAuditJournal
+	capabilityAudit        *observability.AsyncCapabilityAuditor
 	rpcProcesses           *pluginprocess.Supervisor
 	rpcHost                *pluginrpc.Host
 	rpcProcessesClose      func(context.Context) error
@@ -140,6 +140,7 @@ func normalizeConstructorConfig(cfg Config) Config {
 	if !cfg.TrafficStatsExplicit {
 		cfg.TrafficStatsEnabled = defaults.TrafficStatsEnabled
 	}
+	cfg.CapabilityAudit = model.NormalizeCapabilityAuditConfig(cfg.CapabilityAudit)
 
 	return cfg
 }
@@ -208,7 +209,7 @@ type configuredModules struct {
 	generations     *core.GenerationManager
 	policyWASM      *pluginwasm.Runtime
 	rpcGeneration   *pluginrpc.GenerationModule
-	capabilityAudit *observability.CapabilityAuditJournal
+	capabilityAudit *observability.AsyncCapabilityAuditor
 	processStreams  *ingress.ProcessStreamRegistry
 	processPackets  *ingress.ProcessPacketRegistry
 }
@@ -270,6 +271,10 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 type policyRuntimeFactory func(context.Context, pluginwasm.RuntimeOptions) (*pluginwasm.Runtime, error)
 
 func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRuntimeFactory, certOptions ...modulecerts.Option) (configuredModules, error) {
+	cfg.CapabilityAudit = model.NormalizeCapabilityAuditConfig(cfg.CapabilityAudit)
+	if err := cfg.CapabilityAudit.Validate(); err != nil {
+		return configuredModules{}, fmt.Errorf("invalid plugin capability audit config: %w", err)
+	}
 	registry := agentmodule.NewRegistry()
 	drain := core.NewGenerationDrain(nil)
 	// Revision applies supply their leased drain timeout per cutover. Zero keeps
@@ -279,17 +284,20 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 	if err != nil {
 		return configuredModules{}, err
 	}
-	auditPath, err := filepath.Abs(filepath.Join(cfg.DataDir, "audit", "plugin-capabilities.jsonl"))
-	if err != nil {
-		return configuredModules{}, fmt.Errorf("resolve plugin capability audit path: %w", err)
-	}
-	capabilityAudit, err := observability.NewCapabilityAuditJournal(auditPath)
-	if err != nil {
-		return configuredModules{}, err
+	var capabilityAudit *observability.AsyncCapabilityAuditor
+	if cfg.CapabilityAudit.Enabled {
+		auditPath, err := filepath.Abs(filepath.Join(cfg.DataDir, "audit", "plugin-capabilities.jsonl"))
+		if err != nil {
+			return configuredModules{}, fmt.Errorf("resolve plugin capability audit path: %w", err)
+		}
+		capabilityAudit, err = observability.NewAsyncCapabilityAuditor(auditPath, cfg.CapabilityAudit)
+		if err != nil {
+			return configuredModules{}, err
+		}
 	}
 	keepCapabilityAudit := false
 	defer func() {
-		if !keepCapabilityAudit {
+		if capabilityAudit != nil && !keepCapabilityAudit {
 			_ = capabilityAudit.Close()
 		}
 	}()
@@ -374,7 +382,7 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 		return configuredModules{}, err
 	}
 	keepPolicyRuntime = policyRuntime != nil
-	keepCapabilityAudit = true
+	keepCapabilityAudit = capabilityAudit != nil
 	return configuredModules{
 		registry:        registry,
 		diagnostics:     diagnosticModule,
@@ -389,6 +397,13 @@ func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRunt
 		processStreams:  processStreams,
 		processPackets:  processPackets,
 	}, nil
+}
+
+func (a *App) CapabilityAuditStatus() observability.CapabilityAuditStatus {
+	if a == nil || a.capabilityAudit == nil {
+		return observability.CapabilityAuditStatus{}
+	}
+	return a.capabilityAudit.Status()
 }
 
 func newCapabilityModuleRegistry(cfg Config) (*agentmodule.Registry, error) {

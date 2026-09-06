@@ -7,7 +7,7 @@ import (
 )
 
 func TestManagedCapabilitiesAgreeWithSchemaAndHandshake(t *testing.T) {
-	capabilities := []HostCapability{CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite}
+	capabilities := []HostCapability{CapabilityDatasetQuery, CapabilityDatasetManage, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity}
 	var schema struct {
 		Defs map[string]struct {
 			Enum []string `json:"enum"`
@@ -39,7 +39,7 @@ func TestManagedCapabilitiesAgreeWithSchemaAndHandshake(t *testing.T) {
 		}
 	}
 	features := RequiredRPCFeatures(scopes)
-	want := []string{RPCFeatureDatasetsV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1}
+	want := []string{RPCFeatureDatasetsV1, RPCFeatureManagedNetworkV1, RPCFeatureScopedSecretsV1, RPCFeatureRuntimeIdentityV1}
 	if !reflect.DeepEqual(features, want) {
 		t.Fatalf("features = %v", features)
 	}

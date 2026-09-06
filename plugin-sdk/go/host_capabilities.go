@@ -39,7 +39,7 @@ func (capability HostCapability) Validate() error {
 		CapabilityServiceRevocableResourceHandle, CapabilityUIDynamicActions, CapabilityHTTPOutbound,
 		CapabilityHTTPRule, CapabilityL4Rule, CapabilityChannelReverse, CapabilityUIDynamic,
 		CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial,
-		CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
+		CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity:
 		return nil
 	default:
 		return fmt.Errorf("host capability %q is not in the canonical catalog", value)

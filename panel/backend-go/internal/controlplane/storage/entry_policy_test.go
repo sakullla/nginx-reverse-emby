@@ -4,9 +4,10 @@ package storage
 
 import (
 	"encoding/json"
-	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"reflect"
 	"testing"
+
+	sdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestComposedEntryPolicyIsolationAndCompatibility(t *testing.T) {
@@ -29,6 +30,18 @@ func TestComposedEntryPolicyIsolationAndCompatibility(t *testing.T) {
 	envelope, err := sdk.DecodePolicyOverlay(ref.Overlay, sdk.PolicyOverlayDecodeContext{Format: ref.OverlayFormat})
 	if err != nil || len(envelope.Stages) != 1 || envelope.Stages[0].PolicyID != "waf" || string(envelope.Stages[0].Payload) != `{"mode":"deny"}` {
 		t.Fatal("legacy WAF overlay leaked into other stages", envelope, err)
+	}
+	entry.Token = "entry-0123456789abcdef0123456789abcdef"
+	if err := store.PutPluginPolicyEntryMode(t.Context(), PluginPolicyEntryModeRow{InstanceID: "ip-default", NodeID: entry.NodeID, Kind: entry.Kind, EntryID: entry.ID, EntryToken: entry.Token, Mode: string(mode), OverlayJSON: `{"rules":["cn-44"]}`}, false); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err = store.ComposeEntryPolicy(t.Context(), entry, original, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err = sdk.DecodePolicyOverlay(ref.Overlay, sdk.PolicyOverlayDecodeContext{Format: ref.OverlayFormat})
+	if err != nil || len(envelope.Stages) != 2 || envelope.Stages[0].Kind != "ip" || envelope.Stages[1].Kind != "waf" {
+		t.Fatalf("stage overlay replaced another stage: %+v %v", envelope, err)
 	}
 	for _, kind := range []string{sdk.PolicyEntryTCP, sdk.PolicyEntryUDP, sdk.PolicyEntryManagedTCP, sdk.PolicyEntryManagedUDP} {
 		entry.Kind = kind
@@ -53,6 +66,73 @@ func TestComposedEntryPolicyIsolationAndCompatibility(t *testing.T) {
 	kept, composed, err := store.ComposeEntryPolicy(t.Context(), entry, original, legacy)
 	if err != nil || composed != nil || !reflect.DeepEqual(kept, original) {
 		t.Fatal("legacy chain changed without new IP", kept, err)
+	}
+}
+
+func TestPolicyEntryTokensPersistAndRotateWithEntryIncarnation(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{ID: 2, Protocol: "tcp"}}); err != nil {
+		t.Fatal(err)
+	}
+	httpFirst, _, _ := store.GetHTTPRule(t.Context(), "local", 1)
+	l4First, _, _ := store.GetL4Rule(t.Context(), "local", 2)
+	if httpFirst.EntryToken == "" || l4First.EntryToken == "" || httpFirst.EntryToken == l4First.EntryToken {
+		t.Fatalf("Host tokens are absent or reused: http=%q l4=%q", httpFirst.EntryToken, l4First.EntryToken)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{ID: 1, EntryToken: "caller-token-must-not-win"}}); err != nil {
+		t.Fatal(err)
+	}
+	httpStable, _, _ := store.GetHTTPRule(t.Context(), "local", 1)
+	if httpStable.EntryToken != httpFirst.EntryToken {
+		t.Fatalf("HTTP update rotated token: old=%q new=%q", httpFirst.EntryToken, httpStable.EntryToken)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{ID: 2, Protocol: "udp"}}); err != nil {
+		t.Fatal(err)
+	}
+	l4UDP, _, _ := store.GetL4Rule(t.Context(), "local", 2)
+	if l4UDP.EntryToken == l4First.EntryToken {
+		t.Fatal("L4 protocol replacement retained token")
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	httpRecreated, _, _ := store.GetHTTPRule(t.Context(), "local", 1)
+	if httpRecreated.EntryToken == httpFirst.EntryToken {
+		t.Fatal("deleted and recreated HTTP entry retained token")
+	}
+}
+
+func TestComposedEntryPolicyUsesOnlyCurrentTokenOverlay(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	mode := sdk.PolicyModeObserve
+	stage := PolicyStage{Kind: "ip", PolicyID: "ip-default", InstanceID: "ip-default", Automatic: true, PolicySettings: &sdk.PolicySettingsSnapshot{Version: sdk.PolicySettingsVersion{Revision: 1, InstanceVersion: 1}, Settings: sdk.PolicyModeSettings{Handling: sdk.PolicyModeHandlingRaw, DefaultMode: &mode}}}
+	entry := sdk.PolicyEntryTarget{NodeID: "local", Kind: sdk.PolicyEntryHTTP, ID: "1", Token: "entry-0123456789abcdef0123456789abcdef"}
+	if err := store.PutPluginPolicyEntryMode(t.Context(), PluginPolicyEntryModeRow{InstanceID: "ip-default", NodeID: entry.NodeID, Kind: entry.Kind, EntryID: entry.ID, EntryToken: entry.Token, Mode: string(mode), OverlayJSON: `{"rules":["cn-44"]}`}, false); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := store.ComposeEntryPolicy(t.Context(), entry, nil, []PluginPolicy{{ID: "ip-default", Stages: []PolicyStage{stage}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := sdk.DecodePolicyOverlay(ref.Overlay, sdk.PolicyOverlayDecodeContext{Format: ref.OverlayFormat})
+	if err != nil || len(envelope.Stages) != 1 || string(envelope.Stages[0].Payload) != `{"rules":["cn-44"]}` {
+		t.Fatalf("current overlay missing: %+v %v", envelope, err)
+	}
+	stale := entry
+	stale.Token = "entry-fedcba9876543210fedcba9876543210"
+	ref, _, err = store.ComposeEntryPolicy(t.Context(), stale, nil, []PluginPolicy{{ID: "ip-default", Stages: []PolicyStage{stage}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err = sdk.DecodePolicyOverlay(ref.Overlay, sdk.PolicyOverlayDecodeContext{Format: ref.OverlayFormat})
+	if err != nil || len(envelope.Stages) != 0 {
+		t.Fatalf("stale token overlay leaked: %+v %v", envelope, err)
 	}
 }
 

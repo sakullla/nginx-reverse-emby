@@ -12,6 +12,7 @@ import (
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
 	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
@@ -53,6 +54,8 @@ type PluginRuntimeLogReport = model.PluginRuntimeLogReport
 type PluginGenerationSecretHandle = model.PluginGenerationSecretHandle
 type PluginSecretRedemptionRequest = model.PluginSecretRedemptionRequest
 type PluginRedeemedSecret = model.PluginRedeemedSecret
+type CapabilityAuditConfig = model.CapabilityAuditConfig
+type CapabilityAuditStatus = observability.CapabilityAuditStatus
 type RuntimeState = model.RuntimeState
 type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage
@@ -114,6 +117,15 @@ type Config struct {
 	BackendFailures         BackendFailureConfig
 	BackendFailuresExplicit bool
 	RelayTimeouts           RelayTimeoutConfig
+	CapabilityAudit         CapabilityAuditConfig
+}
+
+func DefaultCapabilityAuditConfig() CapabilityAuditConfig {
+	return model.DefaultCapabilityAuditConfig()
+}
+
+func NormalizeCapabilityAuditConfig(cfg CapabilityAuditConfig) CapabilityAuditConfig {
+	return model.NormalizeCapabilityAuditConfig(cfg)
 }
 
 type HTTPTransportConfig struct {
@@ -200,6 +212,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			IPProbeInterval: cfg.DDNSIPProbeInterval,
 		},
 		CurrentVersion:       cfg.CurrentVersion,
+		CapabilityAudit:      model.NormalizeCapabilityAuditConfig(cfg.CapabilityAudit),
 		HTTP3Enabled:         cfg.HTTP3Enabled,
 		TrafficStatsEnabled:  cfg.TrafficStatsEnabled,
 		TrafficStatsExplicit: cfg.TrafficStatsExplicit,
@@ -247,6 +260,19 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
+}
+
+func (r *Runtime) CapabilityAuditStatus() CapabilityAuditStatus {
+	if r == nil || r.app == nil {
+		return CapabilityAuditStatus{}
+	}
+	owner, ok := r.app.(interface {
+		CapabilityAuditStatus() observability.CapabilityAuditStatus
+	})
+	if !ok {
+		return CapabilityAuditStatus{}
+	}
+	return owner.CapabilityAuditStatus()
 }
 
 func (r *Runtime) GenerationDrainSnapshot() GenerationDrainSnapshot {

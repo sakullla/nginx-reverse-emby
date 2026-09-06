@@ -85,39 +85,7 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	sink := newStateSinkWithBridge(store, cfg.LocalAgentID, bridge)
 
 	runtime, err := newEmbeddedRuntime(
-		goagentembedded.Config{
-			AgentID:              cfg.LocalAgentID,
-			AgentName:            cfg.LocalAgentName,
-			DataDir:              cfg.DataDir,
-			HeartbeatInterval:    cfg.HeartbeatInterval,
-			DDNSIPProbeInterval:  cfg.LocalAgentDDNSIPProbeInterval,
-			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
-			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
-			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
-			HTTPTransport: goagentembedded.HTTPTransportConfig{
-				DialTimeout:           cfg.LocalAgentHTTPTransport.DialTimeout,
-				TLSHandshakeTimeout:   cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
-				ResponseHeaderTimeout: cfg.LocalAgentHTTPTransport.ResponseHeaderTimeout,
-				IdleConnTimeout:       cfg.LocalAgentHTTPTransport.IdleConnTimeout,
-				KeepAlive:             cfg.LocalAgentHTTPTransport.KeepAlive,
-			},
-			HTTPResilience: goagentembedded.HTTPResilienceConfig{
-				ResumeEnabled:            cfg.LocalAgentHTTPResilience.ResumeEnabled,
-				ResumeMaxAttempts:        cfg.LocalAgentHTTPResilience.ResumeMaxAttempts,
-				SameBackendRetryAttempts: cfg.LocalAgentHTTPResilience.SameBackendRetryAttempts,
-			},
-			BackendFailures: goagentembedded.BackendFailureConfig{
-				BackoffBase:  cfg.LocalAgentBackendFailures.BackoffBase,
-				BackoffLimit: cfg.LocalAgentBackendFailures.BackoffLimit,
-			},
-			BackendFailuresExplicit: cfg.LocalAgentBackendFailuresExplicit,
-			RelayTimeouts: goagentembedded.RelayTimeoutConfig{
-				DialTimeout:      cfg.LocalAgentRelayTimeouts.DialTimeout,
-				HandshakeTimeout: cfg.LocalAgentRelayTimeouts.HandshakeTimeout,
-				FrameTimeout:     cfg.LocalAgentRelayTimeouts.FrameTimeout,
-				IdleTimeout:      cfg.LocalAgentRelayTimeouts.IdleTimeout,
-			},
-		},
+		embeddedConfig(cfg),
 		syncSourceAdapter{source: source},
 		stateSinkAdapter{sink: sink},
 	)
@@ -142,6 +110,30 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	return result, nil
 }
 
+func embeddedConfig(cfg config.Config) goagentembedded.Config {
+	return goagentembedded.Config{
+		AgentID: cfg.LocalAgentID, AgentName: cfg.LocalAgentName, DataDir: cfg.DataDir,
+		HeartbeatInterval: cfg.HeartbeatInterval, DDNSIPProbeInterval: cfg.LocalAgentDDNSIPProbeInterval,
+		HTTP3Enabled: cfg.LocalAgentHTTP3Enabled, TrafficStatsEnabled: cfg.LocalAgentTrafficStatsEnabled,
+		TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit, CapabilityAudit: cfg.LocalAgentPluginCapabilityAudit,
+		HTTPTransport: goagentembedded.HTTPTransportConfig{
+			DialTimeout: cfg.LocalAgentHTTPTransport.DialTimeout, TLSHandshakeTimeout: cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: cfg.LocalAgentHTTPTransport.ResponseHeaderTimeout, IdleConnTimeout: cfg.LocalAgentHTTPTransport.IdleConnTimeout,
+			KeepAlive: cfg.LocalAgentHTTPTransport.KeepAlive,
+		},
+		HTTPResilience: goagentembedded.HTTPResilienceConfig{
+			ResumeEnabled: cfg.LocalAgentHTTPResilience.ResumeEnabled, ResumeMaxAttempts: cfg.LocalAgentHTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.LocalAgentHTTPResilience.SameBackendRetryAttempts,
+		},
+		BackendFailures:         goagentembedded.BackendFailureConfig{BackoffBase: cfg.LocalAgentBackendFailures.BackoffBase, BackoffLimit: cfg.LocalAgentBackendFailures.BackoffLimit},
+		BackendFailuresExplicit: cfg.LocalAgentBackendFailuresExplicit,
+		RelayTimeouts: goagentembedded.RelayTimeoutConfig{
+			DialTimeout: cfg.LocalAgentRelayTimeouts.DialTimeout, HandshakeTimeout: cfg.LocalAgentRelayTimeouts.HandshakeTimeout,
+			FrameTimeout: cfg.LocalAgentRelayTimeouts.FrameTimeout, IdleTimeout: cfg.LocalAgentRelayTimeouts.IdleTimeout,
+		},
+	}
+}
+
 func (r *Runtime) Start(ctx context.Context) error {
 	if !r.tunnelPKIConfigured() {
 		return r.runtime.Run(ctx)
@@ -154,6 +146,19 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.runtime.SyncNow(ctx)
+}
+
+func (r *Runtime) CapabilityAuditStatus() goagentembedded.CapabilityAuditStatus {
+	if r == nil || r.runtime == nil {
+		return goagentembedded.CapabilityAuditStatus{}
+	}
+	owner, ok := r.runtime.(interface {
+		CapabilityAuditStatus() goagentembedded.CapabilityAuditStatus
+	})
+	if !ok {
+		return goagentembedded.CapabilityAuditStatus{}
+	}
+	return owner.CapabilityAuditStatus()
 }
 
 func (r *Runtime) GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot {
@@ -551,7 +556,16 @@ func toEmbeddedPolicyRef(ref *storage.PolicyRef) *goagentembedded.PolicyRef {
 	if ref == nil {
 		return nil
 	}
-	return &goagentembedded.PolicyRef{ID: ref.ID, Overlay: append(json.RawMessage(nil), ref.Overlay...)}
+	result := &goagentembedded.PolicyRef{
+		ID:             ref.ID,
+		Overlay:        append(json.RawMessage(nil), ref.Overlay...),
+		OverlayFormat:  ref.OverlayFormat,
+		LegacyPolicyID: ref.LegacyPolicyID,
+	}
+	if encoded, err := json.Marshal(ref.StageModes); err == nil {
+		_ = json.Unmarshal(encoded, &result.StageModes)
+	}
+	return result
 }
 
 func toEmbeddedPluginPolicies(policies []storage.PluginPolicy) []goagentembedded.PluginPolicy {

@@ -220,7 +220,7 @@ func TestPolicyGenerationStateIsInstanceScopedAndCopiesValues(t *testing.T) {
 
 func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
-	host := &requestHost{input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a"}, capabilityAuditor: acknowledgedCapabilityAudit{}}
+	host := &requestHost{input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(), stage: model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a"}}
 	if _, err := host.ReadField(context.Background(), FieldRequestPath); !isPermissionDenied(err) {
 		t.Fatalf("ReadField() error = %v", err)
 	}
@@ -239,6 +239,32 @@ func TestPolicyHostAPIsRequireExplicitGrantedScopes(t *testing.T) {
 	if err := host.StatePut(context.Background(), "bucket", []byte("value")); err != nil {
 		t.Fatalf("granted StatePut() error = %v", err)
 	}
+}
+
+func TestPolicyHostAuditErrorDoesNotChangeCapabilityAuthorization(t *testing.T) {
+	input := testInput(t, ExtensionHTTP, nil, testCompleteBody(t, nil))
+	auditErr := errors.New("capability audit writer failed")
+	newHost := func(declared, granted []string) *requestHost {
+		return &requestHost{
+			input: input, generationID: "generation-1", instanceID: "instance", state: newGenerationState(),
+			stage:             model.PolicyStage{PluginID: "official.policy", ResourceGroupID: "group-a", DeclaredScopes: declared, GrantedScopes: granted},
+			capabilityAuditor: acknowledgedCapabilityAudit{err: auditErr},
+		}
+	}
+	capabilities := []string{string(pluginsdk.CapabilityPolicyAtomicState), string(pluginsdk.CapabilityPolicyTrustedSource)}
+	allowed := newHost(capabilities, append([]string{"http.inspect", "policy.write"}, capabilities...))
+	if err := allowed.StatePut(t.Context(), "bucket", []byte("value")); err != nil {
+		t.Fatalf("authorized atomic state changed by audit error: %v", err)
+	}
+	if source, err := allowed.ReadField(t.Context(), "source.ip"); err != nil || string(source) != "198.51.100.10" {
+		t.Fatalf("authorized trusted source changed by audit error: source=%q err=%v", source, err)
+	}
+
+	notGranted := newHost([]string{string(pluginsdk.CapabilityPolicyAtomicState)}, []string{"policy.write"})
+	if err := notGranted.StatePut(t.Context(), "bucket", []byte("value")); !isPermissionDenied(err) || strings.Contains(err.Error(), auditErr.Error()) {
+		t.Fatalf("not-granted denial was replaced by audit failure: %v", err)
+	}
+
 }
 
 func TestPolicyGuestCannotRelayHeaderOrBodySecretsToRecorder(t *testing.T) {

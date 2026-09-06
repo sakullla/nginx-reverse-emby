@@ -41,6 +41,7 @@ type AgentRow struct {
 type HTTPRuleRow struct {
 	ID                     int    `gorm:"column:id;primaryKey"`
 	AgentID                string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
+	EntryToken             string `gorm:"column:entry_token;size:64;not null;default:''" json:"-"`
 	FrontendURL            string `gorm:"column:frontend_url"`
 	BackendURL             string `gorm:"column:backend_url"`
 	BackendsJSON           string `gorm:"column:backends"`
@@ -76,6 +77,7 @@ type LocalAgentStateRow struct {
 type L4RuleRow struct {
 	ID                 int    `gorm:"column:id;primaryKey"`
 	AgentID            string `gorm:"column:agent_id;primaryKey;index:idx_l4_rules_agent"`
+	EntryToken         string `gorm:"column:entry_token;size:64;not null;default:''" json:"-"`
 	Name               string `gorm:"column:name"`
 	Protocol           string `gorm:"column:protocol"`
 	ListenHost         string `gorm:"column:listen_host"`
