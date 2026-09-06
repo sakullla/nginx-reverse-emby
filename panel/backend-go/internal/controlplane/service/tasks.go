@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -697,16 +698,20 @@ type PluginHostChannelTaskDispatcher interface {
 func (s *TaskService) DispatchAgentTask(ctx context.Context, agentID, taskType string, payload map[string]any) (map[string]any, error) {
 	record, err := s.CreateAndDispatchContext(ctx, TaskCreateRequest{AgentID: agentID, Type: taskType, Payload: payload})
 	if err != nil {
+		log.Printf("[tasks] dispatch failed agent=%q type=%q stage=create: %v", agentID, taskType, err)
 		return nil, err
 	}
 	record, err = s.WaitForTask(ctx, record.ID)
 	if err != nil {
+		log.Printf("[tasks] dispatch failed agent=%q type=%q task=%q stage=wait: %v", agentID, taskType, record.ID, err)
 		return nil, err
 	}
 	if record.State != "completed" {
 		if strings.TrimSpace(record.Error) != "" {
+			log.Printf("[tasks] dispatch failed agent=%q type=%q task=%q stage=agent: %s", agentID, taskType, record.ID, record.Error)
 			return nil, fmt.Errorf("agent task failed: %s", record.Error)
 		}
+		log.Printf("[tasks] dispatch failed agent=%q type=%q task=%q stage=terminal state=%q", agentID, taskType, record.ID, record.State)
 		return nil, fmt.Errorf("agent task ended in state %q", record.State)
 	}
 	return record.Result, nil

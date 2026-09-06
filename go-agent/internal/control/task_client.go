@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -110,6 +111,9 @@ func (c *TaskClient) Run(ctx context.Context) error {
 			return nil
 		}
 		err := c.runStreamSession(ctx)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[agent] task stream session ended: %v", err)
+		}
 		if ctx.Err() == nil {
 			// A completed stream is no proof that its underlying HTTP/2
 			// connection is reusable. In particular, a half-open connection can
