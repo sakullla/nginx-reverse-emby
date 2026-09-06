@@ -35,7 +35,7 @@ func ValidateManifestManagedCapabilities(manifest Manifest, supported []HostCapa
 			}
 		}
 		switch capability {
-		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite:
+		case CapabilityDatasetQuery, CapabilityDatasetResolve, CapabilityDatasetManage, CapabilityDatasetBind, CapabilityPolicyControl, CapabilityPolicyEntryOverlays, CapabilityManagedNetworkListen, CapabilityManagedNetworkDial, CapabilityScopedSecretRead, CapabilityScopedSecretWrite, CapabilityRuntimeIdentity:
 			if !available[capability] {
 				return fmt.Errorf("Host does not support required managed capability %q", capability)
 			}
