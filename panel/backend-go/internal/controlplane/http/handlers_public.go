@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -57,9 +59,10 @@ func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.R
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Type", "application/wasm")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(verified)
+	// ServeContent gives slow agents byte-range resume while preserving the
+	// revision-bound integrity check above. This prevents a transient transfer
+	// failure from forcing a multi-MiB plugin artifact back to byte zero.
+	http.ServeContent(w, r, artifact.SHA256, time.Time{}, bytes.NewReader(verified))
 }
 
 func (d Dependencies) handleAgentPluginSecretRedemption(w http.ResponseWriter, r *http.Request) {

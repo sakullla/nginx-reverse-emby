@@ -113,6 +113,53 @@ func TestPluginArtifactPreparationDownloadsAcrossFilesystemsAndPublishesVerified
 	}
 }
 
+func TestPluginArtifactPreparationResumesPartialDownload(t *testing.T) {
+	payload := bytes.Repeat([]byte("resume-artifact-"), 64*1024)
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	cut := len(payload) / 2
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		if request == 1 {
+			w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload[:cut])
+			return
+		}
+		if want := fmt.Sprintf("bytes=%d-", cut); r.Header.Get("Range") != want {
+			http.Error(w, "missing resume range", http.StatusBadRequest)
+			return
+		}
+		http.ServeContent(w, r, digest, time.Time{}, bytes.NewReader(payload))
+	}))
+	t.Cleanup(server.Close)
+
+	cacheRoot := t.TempDir()
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret", PluginCacheDir: cacheRoot}, server.Client())
+	snapshot := pluginArtifactSnapshot("artifact-resume", digest, int64(len(payload)))
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest); err == nil {
+		t.Fatal("truncated first artifact download unexpectedly succeeded")
+	}
+	partials, err := filepath.Glob(filepath.Join(cacheRoot, "sha256", digest[:2], "*.partial"))
+	if err != nil || len(partials) != 1 {
+		t.Fatalf("partial artifact files = %v, error = %v", partials, err)
+	}
+	if info, err := os.Stat(partials[0]); err != nil || info.Size() != int64(cut) {
+		t.Fatalf("partial artifact size = %v, error = %v, want %d", info, err, cut)
+	}
+
+	if err := client.preparePluginArtifacts(t.Context(), &snapshot, snapshot.Revision, testPluginSnapshotDigest); err != nil {
+		t.Fatalf("resume artifact download: %v", err)
+	}
+	got, err := os.ReadFile(snapshot.PluginPolicies[0].Stages[0].ArtifactPath)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("resumed artifact size = %d, error = %v", len(got), err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("artifact requests = %d, want initial plus resume", requests.Load())
+	}
+}
+
 func TestPluginArtifactPreparationDropsFailedOptionalPolicyAndKeepsRequiredPolicy(t *testing.T) {
 	goodPayload := []byte("required policy wasm")
 	goodDigest := fmt.Sprintf("%x", sha256.Sum256(goodPayload))

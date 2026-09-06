@@ -27,6 +27,7 @@ const (
 	maximumPluginArtifactDownloadTimeout = 30 * time.Minute
 	minimumPluginArtifactBytesPerSecond  = 16 << 10
 	pluginArtifactResponseAllowance      = 30 * time.Second
+	pluginArtifactAttemptTimeout         = 45 * time.Second
 )
 
 var pluginArtifactMaterializeLocks [64]sync.Mutex
@@ -166,22 +167,49 @@ func (c *SyncClient) materializePluginArtifactSource(ctx context.Context, cacheD
 	query.Set("revision", strconv.FormatInt(revision, 10))
 	query.Set("snapshot_digest", snapshotDigest)
 	endpoint := c.cfg.MasterURL + "/api/agent-plugin-artifacts/" + url.PathEscape(artifactID) + "?" + query.Encode()
-	temporary, err := os.CreateTemp(targetDir, ".artifact-*.tmp")
+	temporaryPath := target + ".partial"
+	temporary, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create artifact temporary file: %w", err)
 	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
+	defer temporary.Close()
 	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
 		return "", err
 	}
-	if err := c.downloadPluginArtifact(ctx, endpoint, temporary, digest, sizeBytes, accept); err != nil {
-		_ = temporary.Close()
+	info, err := temporary.Stat()
+	if err != nil {
+		return "", fmt.Errorf("inspect artifact partial file: %w", err)
+	}
+	if info.Size() < 0 || info.Size() > sizeBytes {
+		if err := temporary.Truncate(0); err != nil {
+			return "", fmt.Errorf("reset invalid artifact partial file: %w", err)
+		}
+		info, err = temporary.Stat()
+		if err != nil {
+			return "", fmt.Errorf("inspect reset artifact partial file: %w", err)
+		}
+	}
+	hash := sha256.New()
+	if info.Size() > 0 {
+		if _, err := temporary.Seek(0, io.SeekStart); err != nil {
+			return "", fmt.Errorf("seek artifact partial prefix: %w", err)
+		}
+		if _, err := io.Copy(hash, io.LimitReader(temporary, info.Size())); err != nil {
+			return "", fmt.Errorf("hash artifact partial prefix: %w", err)
+		}
+	}
+	if _, err := temporary.Seek(info.Size(), io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek artifact partial append: %w", err)
+	}
+	if err := c.downloadPluginArtifactRange(ctx, endpoint, io.MultiWriter(temporary, hash), info.Size(), sizeBytes, accept, pluginArtifactAttemptTimeout); err != nil {
 		return "", err
+	}
+	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), digest) {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+		return "", errors.New("downloaded artifact digest differs from snapshot identity")
 	}
 	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
 		return "", fmt.Errorf("sync artifact temporary file: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
@@ -215,42 +243,72 @@ func clonePluginGeneration(generation model.PluginGeneration) model.PluginGenera
 }
 
 func (c *SyncClient) downloadPluginArtifact(ctx context.Context, endpoint string, target io.Writer, digest string, size int64, accept string) error {
+	hash := sha256.New()
+	if err := c.downloadPluginArtifactRange(ctx, endpoint, io.MultiWriter(target, hash), 0, size, accept, pluginArtifactDownloadTimeout(size)); err != nil {
+		return err
+	}
+	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), digest) {
+		return errors.New("downloaded artifact digest differs from snapshot identity")
+	}
+	return nil
+}
+
+func (c *SyncClient) downloadPluginArtifactRange(ctx context.Context, endpoint string, target io.Writer, offset, size int64, accept string, timeout time.Duration) error {
+	if offset < 0 || offset > size {
+		return errors.New("artifact resume offset is invalid")
+	}
+	if offset == size {
+		return nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("build artifact request: %w", err)
 	}
 	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
 	req.Header.Set("Accept", accept)
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
 	client := *c.client
 	// Heartbeats are small and retain the shared client's short total timeout.
 	// Plugin artifacts can be tens of MiB and cross slow Agent links, so bound
 	// this transfer independently while the transport still enforces its
 	// response-header timeout.
-	client.Timeout = pluginArtifactDownloadTimeout(size)
+	client.Timeout = timeout
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("download artifact: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if offset == 0 && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download artifact failed: %s", resp.Status)
 	}
-	if resp.ContentLength >= 0 && resp.ContentLength != size {
+	if offset > 0 {
+		if resp.StatusCode != http.StatusPartialContent || !validPluginArtifactContentRange(resp.Header.Get("Content-Range"), offset, size) {
+			return errors.New("artifact server rejected resume range")
+		}
+	}
+	remaining := size - offset
+	if resp.ContentLength >= 0 && resp.ContentLength != remaining {
 		return errors.New("downloaded artifact size differs from snapshot identity")
 	}
-	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(target, hash), io.LimitReader(resp.Body, size+1))
+	written, err := io.Copy(target, io.LimitReader(resp.Body, remaining+1))
 	if err != nil {
 		return fmt.Errorf("download artifact body: %w", err)
 	}
-	if written != size {
+	if written != remaining {
 		return errors.New("downloaded artifact size differs from snapshot identity")
 	}
-	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), digest) {
-		return errors.New("downloaded artifact digest differs from snapshot identity")
-	}
 	return nil
+}
+
+func validPluginArtifactContentRange(value string, offset, size int64) bool {
+	if offset < 0 || offset >= size {
+		return false
+	}
+	want := fmt.Sprintf("bytes %d-%d/%d", offset, size-1, size)
+	return strings.TrimSpace(value) == want
 }
 
 func pluginArtifactDownloadTimeout(size int64) time.Duration {
