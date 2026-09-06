@@ -219,6 +219,7 @@ func runGo(t *testing.T, directory string, args ...string) {
 	t.Helper()
 	command := exec.Command("go", args...)
 	command.Dir = directory
+	command.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
