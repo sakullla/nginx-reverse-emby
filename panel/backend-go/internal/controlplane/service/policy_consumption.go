@@ -362,6 +362,15 @@ func (m *PluginCapabilityManager) manageDatasetBinding(ctx context.Context, c pl
 	var response sdk.DatasetBindingResponse
 	var selected, affected []string
 	var replayed bool
+	affectedAgents := func(selected []string, a sdk.DatasetBindingAuthorization) []string {
+		agents := append(append([]string(nil), selected...), a.BoundAgentIDs...)
+		// Config and policy defaults belong to the whole instance, even when
+		// the dataset selection only covers a subset of its execution targets.
+		if request.InstanceUpdate != nil {
+			agents = append(agents, a.EffectiveAgentIDs...)
+		}
+		return uniqueAgentIDs(agents)
+	}
 	err := store.SecurityTransaction(ctx, func(tx *storage.GormStore) error {
 		var replay *storage.PluginConsumptionOperationRow
 		if request.Action != sdk.DatasetBindingInspect {
@@ -389,7 +398,7 @@ func (m *PluginCapabilityManager) manageDatasetBinding(ctx context.Context, c pl
 			replayed = true
 			return response.ValidateFor(request)
 		}
-		affected = uniqueAgentIDs(append(append([]string(nil), selected...), a.BoundAgentIDs...))
+		affected = affectedAgents(selected, a)
 		if request.Action == sdk.DatasetBindingInspect {
 			response, err = m.bindingResponse(ctx, tx, request, affected)
 			return err
@@ -408,7 +417,7 @@ func (m *PluginCapabilityManager) manageDatasetBinding(ctx context.Context, c pl
 		if err != nil {
 			return errPluginHostDenied
 		}
-		if !slices.Equal(agents, selected) || !slices.Equal(uniqueAgentIDs(append(append([]string(nil), agents...), a.BoundAgentIDs...)), affected) {
+		if !slices.Equal(agents, selected) || !slices.Equal(affectedAgents(agents, a), affected) {
 			return storage.ErrPluginConflict
 		}
 		if request.Action == sdk.DatasetBindingBind {

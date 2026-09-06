@@ -518,11 +518,14 @@ func (s *GormStore) ResolveAgentRevisionDatasetArtifact(ctx context.Context, age
 // an offline node has prepared or switched to it.
 func (s *GormStore) DatasetNodeStatus(ctx context.Context, sourceID, agentID string, now time.Time) (pluginsdk.DatasetStatusResponse, error) {
 	status := pluginsdk.DatasetStatusResponse{SourceID: sourceID, NodeID: agentID, Phase: pluginsdk.DatasetNodeUnavailable}
-	var bindings []DatasetBindingRow
-	if err := s.db.WithContext(ctx).Where("source_id = ? AND agent_id = ?", sourceID, agentID).Find(&bindings).Error; err != nil {
+	bindings, err := s.ResolveDatasetBindings(ctx, agentID)
+	if err != nil {
 		return status, err
 	}
 	for _, binding := range bindings {
+		if binding.SourceID != sourceID {
+			continue
+		}
 		if status.Desired != "" && status.Desired != binding.VersionDigest {
 			return status, errors.New("inconsistent desired dataset versions")
 		}

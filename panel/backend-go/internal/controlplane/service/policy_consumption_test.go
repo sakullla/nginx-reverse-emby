@@ -282,6 +282,85 @@ func TestPolicyConsumptionTransactionsAndPublishedSnapshots(t *testing.T) {
 	}
 }
 
+func TestDatasetBindingSubsetPublishesInstanceUpdatesToAllTargets(t *testing.T) {
+	for _, updateKind := range []string{"binding only", "config", "policy defaults"} {
+		t.Run(updateKind, func(t *testing.T) {
+			manager, candidate := newPolicyConsumptionFixture(t)
+			store := manager.datasets.store
+			ctx := t.Context()
+			if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge", Name: "edge"}); err != nil {
+				t.Fatal(err)
+			}
+			client := datasetHostRuntimeClient(t, manager, &candidate)
+			source := pluginsdk.DatasetSource{ID: "classes", Name: "Classes", Format: pluginsdk.DatasetFormatCIDR}
+			auth := DatasetAuthorization{Administrator: true, Manage: true, ActorID: "admin", ResourceGroupID: "default"}
+			if err := manager.datasets.PutSource(ctx, auth, source, DatasetRetrieval{}); err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := json.Marshal(datasets.CIDRDocument{Schema: datasets.CIDRSchema, Classifications: []datasets.CIDRClassification{{Name: "region", Kind: pluginsdk.DatasetClassificationRegion, CIDRs: []string{"192.0.2.0/24"}}}})
+			digest, err := manager.datasets.Upload(ctx, auth, source.ID, bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.datasets.Control(ctx, auth, pluginsdk.DatasetControlRequest{Action: pluginsdk.DatasetControlImport, SourceID: source.ID, Candidate: &pluginsdk.DatasetImportCandidate{Revision: "v1", ExpectedDigest: digest, ArtifactDigest: digest}}); err != nil {
+				t.Fatal(err)
+			}
+			versions, err := store.ListDatasetVersions(ctx, source.ID)
+			if err != nil || len(versions) != 1 {
+				t.Fatalf("versions=%+v err=%v", versions, err)
+			}
+			instance, _, err := store.GetPluginInstance(ctx, candidate.InstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := pluginsdk.DatasetBindingRequest{Action: pluginsdk.DatasetBindingBind, OperationID: "bind-subset", InstanceID: instance.ID, SourceID: source.ID, Targets: pluginsdk.ExecutionTargetSelection{Mode: pluginsdk.ExecutionTargetsSubset, AgentIDs: []string{"local"}}, Spec: &pluginsdk.DatasetBindingSpec{VersionDigest: versions[0].Digest, Classifications: []pluginsdk.DatasetClassification{{Name: "region", Kind: pluginsdk.DatasetClassificationRegion}}}}
+			if updateKind != "binding only" {
+				req.InstanceUpdate = &pluginsdk.DatasetBindingInstanceUpdate{ExpectedRevision: instance.StateVersion}
+				if updateKind == "config" {
+					req.InstanceUpdate.Config = json.RawMessage(`{"rules":"region"}`)
+				} else {
+					settings, err := store.GetPluginPolicySettings(ctx, instance.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.InstanceUpdate.PolicyDefaults = &pluginsdk.PolicyDefaultSettingsUpdate{Stage: pluginsdk.PolicyStageIdentity{Kind: "ip", PolicyID: instance.ID}, Mode: pluginsdk.PolicyModeEnforce, ExpectedRevision: settings.Revision}
+				}
+			}
+			if _, err := client.ManageDatasetBinding(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			local := latestWAFCoordinatorSnapshot(t, store, "local")
+			if len(local.Datasets) != 1 {
+				t.Fatal("selected node did not receive its dataset")
+			}
+			pointer, found, err := store.GetAgentRevisionPointer(ctx, "edge")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updateKind == "binding only" {
+				if found && pointer.DesiredRevision > 0 {
+					t.Fatal("binding-only subset updated an unrelated target")
+				}
+				return
+			}
+			edge := latestWAFCoordinatorSnapshot(t, store, "edge")
+			if len(edge.Datasets) != 0 {
+				t.Fatal("instance update expanded the dataset selection")
+			}
+			if len(edge.PluginPolicies) != 1 || len(edge.PluginPolicies[0].Stages) != 1 {
+				t.Fatalf("instance missing from published target: %+v", edge.PluginPolicies)
+			}
+			stage := edge.PluginPolicies[0].Stages[0]
+			if updateKind == "config" && string(stage.Config) != string(req.InstanceUpdate.Config) {
+				t.Fatalf("target retained old config: %s", stage.Config)
+			}
+			if updateKind == "policy defaults" && (stage.PolicySettings == nil || stage.PolicySettings.Settings.DefaultMode == nil || *stage.PolicySettings.Settings.DefaultMode != pluginsdk.PolicyModeEnforce) {
+				t.Fatalf("target retained old policy settings: %+v", stage.PolicySettings)
+			}
+		})
+	}
+}
+
 func TestPolicyControlFloorCASAndEntryProjection(t *testing.T) {
 	manager, candidate := newPolicyConsumptionFixture(t)
 	store := manager.datasets.store

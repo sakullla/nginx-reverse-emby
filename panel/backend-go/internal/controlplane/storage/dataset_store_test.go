@@ -121,6 +121,60 @@ func TestDatasetRevisionArtifactsBindIssuedSnapshotAndProtectOfflineLastGood(t *
 	}
 }
 
+func TestDatasetNodeStatusFollowsEffectiveTargetExpansion(t *testing.T) {
+	for _, policyFace := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new RPC target", true: "new policy node"}[policyFace], func(t *testing.T) {
+			store := newTrafficTestStore(t, true)
+			consumptionWritableCache(t, store)
+			instance := consumptionStoreInstance(t, store, "status-probe", policyFace, `[]`)
+			version, data := storeDatasetFixture(t, store, "v1", "192.0.2.0/24")
+			data.Bindings[0].InstanceID = instance.ID
+			consumptionStoreBind(t, store, instance.ID, version.Digest, 1, sdk.ExecutionTargetSelection{Mode: sdk.ExecutionTargetsEffective})
+			now := time.Now().UTC()
+			if err := store.SaveAgent(t.Context(), AgentRow{ID: "edge-new", Name: "edge-new", LastSeenAt: now.Format(time.RFC3339Nano)}); err != nil {
+				t.Fatal(err)
+			}
+			if !policyFace {
+				consumptionStoreTargets(t, store, &instance, `["edge-new"]`)
+			}
+			physical, err := store.ListInstanceDatasetBindings(t.Context(), instance.ID, "regions")
+			for _, binding := range physical {
+				if binding.AgentID != "edge-new" {
+					continue
+				}
+				t.Fatalf("new target already has a physical binding: %+v", binding)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, err := store.DatasetNodeStatus(t.Context(), "regions", "edge-new", now)
+			if err != nil || status.Desired != version.Digest || status.Applied != "" || status.Phase != sdk.DatasetNodePreparing {
+				t.Fatalf("expanded target before delivery: %+v err=%v", status, err)
+			}
+			snapshot := Snapshot{Revision: 1, Datasets: []DatasetSnapshot{data}}
+			encoded, _ := json.Marshal(snapshot)
+			sum := sha256.Sum256(encoded)
+			if _, err := store.EnsureAgentHeartbeatRevision(t.Context(), "edge-new", snapshot, encoded, hex.EncodeToString(sum[:]), now); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.Model(&AgentRevisionRow{}).Where("agent_id = ? AND revision = ?", "edge-new", 1).Updates(map[string]any{"state": AgentRevisionStateApplied, "generation_id": "generation-one"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.Model(&AgentRevisionPointerRow{}).Where("agent_id = ?", "edge-new").Updates(map[string]any{"applied_revision": 1, "last_known_good_revision": 1}).Error; err != nil {
+				t.Fatal(err)
+			}
+			status, err = store.DatasetNodeStatus(t.Context(), "regions", "edge-new", now)
+			if err != nil || status.Desired != version.Digest || status.Applied != version.Digest || status.Phase != sdk.DatasetNodeApplied {
+				t.Fatalf("expanded target after delivery: %+v err=%v", status, err)
+			}
+			status, err = store.DatasetNodeStatus(t.Context(), "other-source", "edge-new", now)
+			if err != nil || status.Desired != "" || status.Phase != sdk.DatasetNodeUnavailable {
+				t.Fatalf("unrelated source inherited a binding: %+v err=%v", status, err)
+			}
+		})
+	}
+}
+
 func TestDatasetVersionHistoryRetentionAndImmutableMetadata(t *testing.T) {
 	root := t.TempDir()
 	store, err := newStorageTestSQLiteStore(t, root, "local", true)
