@@ -1659,6 +1659,9 @@ func heartbeatRevisionSnapshot(snapshot storage.Snapshot) storage.Snapshot {
 
 func heartbeatComparableSnapshot(snapshot storage.Snapshot) storage.Snapshot {
 	snapshot = heartbeatRevisionSnapshot(snapshot)
+	// Comparison must not erase the live identity subsequently returned to the
+	// Agent or persisted as a fresh immutable heartbeat revision.
+	snapshot.RelayListeners = slices.Clone(snapshot.RelayListeners)
 	for index := range snapshot.RelayListeners {
 		snapshot.RelayListeners[index].PKIIdentityID = ""
 		snapshot.RelayListeners[index].PKIIdentityState = ""

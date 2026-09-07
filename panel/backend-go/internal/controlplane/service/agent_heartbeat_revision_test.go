@@ -40,6 +40,9 @@ func TestHeartbeatComparableSnapshotIgnoresRelayPKIRuntimeOverlay(t *testing.T) 
 	if baseComparable != decoratedComparable {
 		t.Fatalf("heartbeat comparable digests differ: base=%s decorated=%s", baseComparable, decoratedComparable)
 	}
+	if decorated.RelayListeners[0].PKIIdentityID != "identity-1" || decorated.RelayListeners[0].PKICertificateID != "certificate-1" || decorated.RelayListeners[0].PKIIdentityState != "active" {
+		t.Fatalf("comparison erased the live relay identity: %+v", decorated.RelayListeners[0])
+	}
 }
 
 func TestBindHeartbeatRevisionKeepsLiveWhenComparableMatches(t *testing.T) {
@@ -74,6 +77,9 @@ func TestBindHeartbeatRevisionKeepsLiveWhenComparableMatches(t *testing.T) {
 	}
 	if len(bound.Certificates) != 1 || bound.Certificates[0].Domain != "a.example" {
 		t.Fatalf("matched bind dropped live certificates: %+v", bound.Certificates)
+	}
+	if bound.RelayListeners[0].PKIIdentityID != "identity-1" || bound.RelayListeners[0].PKIIdentityState != "active" {
+		t.Fatalf("matched bind dropped the authenticated relay identity: %+v", bound.RelayListeners[0])
 	}
 }
 
