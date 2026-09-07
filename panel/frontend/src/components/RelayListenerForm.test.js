@@ -150,6 +150,59 @@ describe('RelayListenerForm transport behavior', () => {
     })
   })
 
+  it.each(['tls_tcp', 'quic'])('edits a PKI listener over %s without requiring a legacy certificate', async (transportMode) => {
+    const wrapper = mountForm({
+      initialData: baseInitialData({
+        certificate_source: undefined,
+        trust_mode_source: undefined,
+        certificate_id: null,
+        tls_mode: 'pki_mtls',
+        pin_set: null,
+        trusted_ca_certificate_ids: null,
+        allow_self_signed: false,
+        transport_mode: transportMode
+      })
+    })
+
+    await wrapper.get('input[placeholder="例如 hk-edge-1"]').setValue('relay-renamed')
+    await submit(wrapper)
+
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    const payload = mocks.updateMutateAsync.mock.calls[0][0]
+    expect(payload).toMatchObject({ id: 7, name: 'relay-renamed', transport_mode: transportMode })
+    for (const field of ['certificate_id', 'certificate_source', 'trust_mode_source', 'tls_mode', 'pin_set', 'trusted_ca_certificate_ids', 'allow_self_signed']) {
+      expect(payload).not.toHaveProperty(field)
+    }
+    expect(wrapper.text()).toContain('内部 PKI（双向 TLS）')
+    expect(wrapper.text()).toContain('证书中心 → 内部 PKI')
+    expect(wrapper.text()).not.toContain('绑定监听证书')
+    expect(wrapper.text()).not.toContain('信任策略')
+    expect(wrapper.find('.advanced-toggle').exists()).toBe(false)
+    expect(wrapper.emitted('success')).toHaveLength(1)
+  })
+
+  it('still validates the endpoint when editing a PKI listener', async () => {
+    const wrapper = mountForm({ initialData: baseInitialData({ tls_mode: 'pki_mtls' }) })
+    await wrapper.get('input[placeholder="relay.example.com:7443"]').setValue('')
+    await submit(wrapper)
+
+    expect(mocks.updateMutateAsync).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('使用通配绑定地址时必须填写公网入口')
+  })
+
+  it('still requires a bound certificate for an enabled legacy listener', async () => {
+    const wrapper = mountForm({
+      initialData: baseInitialData({
+        certificate_source: 'existing_certificate',
+        tls_mode: 'pin_only'
+      })
+    })
+    await submit(wrapper)
+
+    expect(mocks.updateMutateAsync).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('启用监听器时必须绑定监听证书')
+  })
+
   it('rejects empty bind hosts and zero ports before submit', async () => {
     const wrapper = mountForm()
 

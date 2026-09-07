@@ -116,7 +116,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">传输与证书</h3>
-            <p class="section-description">默认自动签发证书并启用 Relay CA + Pin</p>
+            <p class="section-description">{{ isPkiManaged ? '内部 PKI 自动管理监听器身份与双向 TLS 证书' : '默认自动签发证书并启用 Relay CA + Pin' }}</p>
           </div>
         </div>
 
@@ -153,7 +153,12 @@
           </div>
         </div>
 
-        <div class="form-row">
+        <div v-if="isPkiManaged" class="path-chip">
+          <span class="path-chip__dot"></span>
+          <span>内部 PKI（双向 TLS）：监听证书与信任由系统托管，可在「证书中心 → 内部 PKI」查看和管理。</span>
+        </div>
+
+        <div v-else class="form-row">
           <div class="form-group">
             <label class="form-label">监听证书来源</label>
             <select v-model="form.certificate_source" class="input">
@@ -172,7 +177,7 @@
         </div>
 
         <div
-          v-if="form.certificate_source === 'existing_certificate'"
+          v-if="!isPkiManaged && form.certificate_source === 'existing_certificate'"
           class="form-group"
         >
           <label class="form-label" :class="{ 'form-label--required': form.enabled }">绑定监听证书</label>
@@ -190,7 +195,7 @@
         </div>
 
         <div
-          v-else-if="form.certificate_source === 'auto_relay_ca' && form.trust_mode_source === 'auto'"
+          v-else-if="!isPkiManaged && form.certificate_source === 'auto_relay_ca' && form.trust_mode_source === 'auto'"
           class="path-chip"
         >
           <span class="path-chip__dot"></span>
@@ -210,7 +215,7 @@
       </section>
 
       <!-- 高级设置 -->
-      <section class="settings-card settings-card--compact">
+      <section v-if="!isPkiManaged" class="settings-card settings-card--compact">
         <button type="button" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
           <svg
             class="advanced-toggle__arrow"
@@ -348,6 +353,7 @@ const { data: certificatesData } = useCertificates(props.agentId)
 
 const certificates = computed(() => certificatesData.value ?? [])
 const isEdit = computed(() => !!props.initialData?.id)
+const isPkiManaged = computed(() => props.initialData?.tls_mode === 'pki_mtls')
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
 const publicEndpointLabel = computed(() => '公网入口')
 const publicEndpointPlaceholder = computed(() => 'relay.example.com:7443')
@@ -615,12 +621,12 @@ function validate() {
   if (listenPort == null || listenPort < 1 || listenPort > 65535) {
     errors.value.listen_port = '监听端口必须在 1-65535 之间'
   }
-  if (form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
+  if (!isPkiManaged.value && form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
     errors.value.certificate_id = '启用监听器时必须绑定监听证书'
   }
   const pinSet = parsePinSetRows()
   const trustedCaIds = [...trustedCaSet.value]
-  if (form.value.trust_mode_source === 'custom') {
+  if (!isPkiManaged.value && form.value.trust_mode_source === 'custom') {
     errors.value.trust_material = validateCustomTrustMaterial(pinSet, trustedCaIds)
   }
 
@@ -682,16 +688,21 @@ async function handleSubmit() {
       ? form.value.obfs_mode
       : 'off',
     enabled: form.value.enabled,
-    certificate_id: form.value.certificate_source === 'existing_certificate'
-      ? (form.value.certificate_id == null ? null : Number(form.value.certificate_id))
-      : null,
-    certificate_source: form.value.certificate_source,
-    trust_mode_source: form.value.trust_mode_source,
-    tls_mode: form.value.trust_mode_source === 'auto' ? 'pin_and_ca' : form.value.tls_mode,
-    pin_set: pinSet,
-    trusted_ca_certificate_ids: trustedCaIds,
-    allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: [...form.value.tags]
+  }
+  // PKI identity and trust are owned by the control plane, not this form.
+  if (!isPkiManaged.value) {
+    Object.assign(payload, {
+      certificate_id: form.value.certificate_source === 'existing_certificate'
+        ? (form.value.certificate_id == null ? null : Number(form.value.certificate_id))
+        : null,
+      certificate_source: form.value.certificate_source,
+      trust_mode_source: form.value.trust_mode_source,
+      tls_mode: form.value.trust_mode_source === 'auto' ? 'pin_and_ca' : form.value.tls_mode,
+      pin_set: pinSet,
+      trusted_ca_certificate_ids: trustedCaIds,
+      allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed
+    })
   }
   payload.bind_hosts = bindHosts
   if (publicEndpoint.publicHost) {
