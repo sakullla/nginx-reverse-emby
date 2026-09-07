@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -45,6 +47,12 @@ func datasetPolicyQuery(reference sdk.DatasetReference) sdk.DatasetQueryRequest 
 }
 
 func TestDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing.T) {
+	// This checks ownership, not scheduler latency against the real 2 ms
+	// query budget. Deadline behavior is exercised separately below.
+	synctest.Test(t, testDatasetGenerationSharesVersionWithIndependentInstanceHandles)
+}
+
+func testDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing.T) {
 	snapshot := datasetPolicySnapshot(t, 1, "192.0.2.0/24")
 	snapshot.PluginGenerations = []model.PluginGeneration{{InstanceID: "ss-instance", ID: "ss-generation"}}
 	snapshot.Datasets[0].Bindings = append(snapshot.Datasets[0].Bindings, model.DatasetInstanceBinding{InstanceID: "ss-instance", Classifications: snapshot.Datasets[0].Bindings[0].Classifications})
@@ -74,8 +82,8 @@ func TestDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing
 		ref  sdk.DatasetReference
 	}{{ipAuth, ip}, {ssAuth, ss}} {
 		response, err := provider.Query(t.Context(), item.auth, datasetPolicyQuery(item.ref))
-		if err != nil || response.Status != sdk.DatasetQueryOK || !response.Matches[0].Matched {
-			t.Fatal("authorized shared-source query failed", err)
+		if err != nil || response.Status != sdk.DatasetQueryOK || len(response.Matches) != 1 || !response.Matches[0].Matched {
+			t.Fatalf("authorized shared-source query for %s failed: response=%+v err=%v", item.auth.InstanceID, response, err)
 		}
 	}
 	response, err := provider.Query(t.Context(), ssAuth, datasetPolicyQuery(ip))
@@ -90,6 +98,10 @@ func TestDatasetGenerationSharesVersionWithIndependentInstanceHandles(t *testing
 }
 
 func TestDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles(t *testing.T) {
+	synctest.Test(t, testDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles)
+}
+
+func testDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles(t *testing.T) {
 	registry := module.NewRegistry()
 	owner := NewModule(&testGenerationFactory{}, nil)
 	if err := registry.Register(owner); err != nil {
@@ -117,7 +129,7 @@ func TestDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles(t *test
 		t.Fatal(err)
 	}
 	response, err := provider.Query(t.Context(), auth, datasetPolicyQuery(reference))
-	if err != nil || response.Status != sdk.DatasetQueryOK || !response.Matches[0].Matched {
+	if err != nil || response.Status != sdk.DatasetQueryOK || len(response.Matches) != 1 || !response.Matches[0].Matched {
 		t.Fatalf("actual index query: %+v %v", response, err)
 	}
 	failed := model.CloneDatasetSnapshots(first.Datasets)
@@ -147,8 +159,8 @@ func TestDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles(t *test
 		t.Fatal("old dataset view lost before drain")
 	}
 	response, err = provider.Query(t.Context(), auth, datasetPolicyQuery(reference))
-	if err != nil || !response.Matches[0].Matched {
-		t.Fatal("old session mixed new data version")
+	if err != nil || response.Status != sdk.DatasetQueryOK || len(response.Matches) != 1 || !response.Matches[0].Matched {
+		t.Fatalf("old session query failed: response=%+v err=%v", response, err)
 	}
 	value, _ = newView.Resolve(ProviderDatasets)
 	nextProvider := value.(*DatasetGeneration)
@@ -158,8 +170,8 @@ func TestDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles(t *test
 		t.Fatal(err)
 	}
 	response, err = nextProvider.Query(t.Context(), nextAuth, datasetPolicyQuery(nextRef))
-	if err != nil || response.Status != sdk.DatasetQueryOK || response.Matches[0].Matched {
-		t.Fatal("new generation reused old data")
+	if err != nil || response.Status != sdk.DatasetQueryOK || len(response.Matches) != 1 || response.Matches[0].Matched {
+		t.Fatalf("new generation query failed: response=%+v err=%v", response, err)
 	}
 	if err := oldView.Destroy(t.Context()); err != nil {
 		t.Fatal(err)
@@ -175,6 +187,32 @@ func TestDatasetGenerationPublishesAtomicallyRetainsOldAndRevokesHandles(t *test
 	if owner.datasetPool.memory != 0 || len(owner.datasetPool.values) != 0 {
 		t.Fatal("dataset index memory leaked after close")
 	}
+}
+
+func TestDatasetGenerationExpiredDeadlineReturnsBudgetStatus(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		snapshot := datasetPolicySnapshot(t, 1, "192.0.2.0/24")
+		provider, err := prepareDatasetGeneration(t.Context(), "generation", snapshot, &datasetIndexPool{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer provider.Close()
+		auth := datasetPolicyAuthorization("generation")
+		ref, err := provider.Open(auth, sdk.DatasetOpenRequest{SourceID: "regions", VersionDigest: snapshot.Datasets[0].Version.Digest})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := datasetPolicyQuery(ref)
+		budget := time.Duration(request.Budget.MaxDurationMicros) * time.Microsecond
+		ctx, cancel := context.WithTimeout(t.Context(), budget)
+		defer cancel()
+		time.Sleep(budget + time.Nanosecond)
+		synctest.Wait()
+		response, err := provider.Query(ctx, auth, request)
+		if err != nil || response.Status != sdk.DatasetQueryBudgetExceeded || len(response.Matches) != 0 {
+			t.Fatalf("expired query deadline: response=%+v err=%v", response, err)
+		}
+	})
 }
 
 func TestDatasetGenerationRejectsAuthorityBudgetAndPreparationFailures(t *testing.T) {
