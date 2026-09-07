@@ -3,11 +3,108 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+type heartbeatPKIRevisionStore struct {
+	agentStore
+	row      storage.AgentRow
+	snapshot storage.Snapshot
+	payload  []byte
+}
+
+func (s *heartbeatPKIRevisionStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	return []storage.AgentRow{s.row}, nil
+}
+
+func (s *heartbeatPKIRevisionStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	s.row = row
+	return nil
+}
+
+func (s *heartbeatPKIRevisionStore) ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error) {
+	return nil, nil
+}
+
+func (s *heartbeatPKIRevisionStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
+	return nil, nil
+}
+
+func (s *heartbeatPKIRevisionStore) LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error) {
+	return s.snapshot, nil
+}
+
+func (s *heartbeatPKIRevisionStore) EnsureAgentHeartbeatRevision(_ context.Context, _ string, snapshot storage.Snapshot, payload []byte, digest string, _ time.Time) (storage.AgentRevisionRow, error) {
+	s.payload = append([]byte(nil), payload...)
+	return storage.AgentRevisionRow{Revision: snapshot.Revision, SnapshotDigest: digest}, nil
+}
+
+type heartbeatRevisionPKIController struct {
+	AgentPKIController
+	state storage.PKICanonicalState
+}
+
+func (p heartbeatRevisionPKIController) ControlSyncAndPrepare(_ context.Context, agentID string, _ *storage.PKISecurityAcknowledgement, _ []PKIControlEnrollmentRequest, listeners []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error) {
+	prepared, err := prepareRelayListenersWithPKIState(p.state, agentID, listeners)
+	return storage.PKISecuritySnapshot{}, nil, prepared, err
+}
+
+func TestHeartbeatIssuesRevisionWithPreparedRelayIdentity(t *testing.T) {
+	const agentID = "relay-agent"
+	store := &heartbeatPKIRevisionStore{
+		row: storage.AgentRow{ID: agentID, AgentToken: "test-token"},
+		snapshot: storage.Snapshot{Revision: 116, RelayListeners: []storage.RelayListener{{
+			ID: 2, AgentID: agentID, TLSMode: "pki_mtls", Enabled: true,
+		}}},
+	}
+	certificateID := "listener-certificate"
+	ownerDigest := sha256.Sum256([]byte(strings.Join([]string{
+		"pki-identity-owner-v1", "test-domain", storage.PKIIdentityKindListener, agentID, "2",
+	}, "\x00")))
+	ownerKey := hex.EncodeToString(ownerDigest[:])
+	svc := NewAgentService(config.Config{}, store)
+	svc.pki = heartbeatRevisionPKIController{state: storage.PKICanonicalState{
+		Settings: &storage.PKISettingsRow{PKIDomainID: "test-domain", UpgradeState: storage.PKIUpgradeStateTunnelMTLSOnly},
+		Identities: []storage.PKIIdentityRow{{
+			ID: "listener-identity", PKIDomainID: "test-domain", ActiveOwnerKey: &ownerKey,
+			Kind: storage.PKIIdentityKindListener, AgentID: agentID,
+			ListenerID: "2", State: storage.PKIIdentityStateActive, CurrentCertificateID: &certificateID,
+		}},
+	}}
+	reply, err := svc.Heartbeat(t.Context(), HeartbeatRequest{AgentID: agentID, CurrentRevision: 114}, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issued storage.Snapshot
+	if err := json.Unmarshal(store.payload, &issued); err != nil {
+		t.Fatal(err)
+	}
+	for source, listeners := range map[string][]storage.RelayListener{
+		"heartbeat": reply.RelayListeners, "immutable artifact": issued.RelayListeners,
+	} {
+		if len(listeners) != 1 || listeners[0].PKIIdentityID != "listener-identity" ||
+			listeners[0].PKIIdentityState != storage.PKIIdentityStateActive || listeners[0].PKICertificateID != certificateID {
+			t.Fatalf("%s lost the canonical relay identity: %+v", source, listeners)
+		}
+	}
+	_, digest, err := revision.CanonicalSnapshotPayload(issued)
+	if err != nil || digest != reply.SnapshotDigest {
+		t.Fatalf("issued digest = %q, heartbeat = %q, error = %v", digest, reply.SnapshotDigest, err)
+	}
+	if store.snapshot.RelayListeners[0].PKIIdentityID != "" {
+		t.Fatal("heartbeat mutated the source listener slice")
+	}
+}
 
 func TestHeartbeatComparableSnapshotIgnoresRelayPKIRuntimeOverlay(t *testing.T) {
 	base := storage.Snapshot{Revision: 7, RelayListeners: []storage.RelayListener{{ID: 1, AgentID: "relay-agent"}}}

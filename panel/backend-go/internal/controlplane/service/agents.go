@@ -1479,6 +1479,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 				wirePKISecurity = &pkiSnapshot
 			}
 			pkiCredentials = credentials
+			// Fresh heartbeat revisions are pulled from their immutable artifact.
+			// Persist the canonical listener identities there as well as in the
+			// heartbeat so generation preparation receives the same PKI bindings.
+			snapshot.RelayListeners = slices.Clone(wireRelayListeners)
 		}
 		if pkiDegraded {
 			pkiStatus = &PKIControlStatus{Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync; relay credentials remain disabled"}
