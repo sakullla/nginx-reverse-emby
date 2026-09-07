@@ -34,13 +34,18 @@ func DecodeConfigSchema(raw []byte) (map[string]any, error) {
 		}
 		return nil, err
 	}
-	return schema, nil
+	return expandConfigSchema(schema)
 }
 
 // ValidateConfig applies the deterministic subset of JSON Schema supported by
 // plugin configuration: object/array/scalar types, required, properties,
-// additionalProperties, enum, items, and numeric/string bounds.
+// additionalProperties, enum/const, local definitions, oneOf, items, and
+// numeric/string bounds. Local references are expanded before validation.
 func ValidateConfig(schema map[string]any, raw json.RawMessage) error {
+	schema, err := expandConfigSchema(schema)
+	if err != nil {
+		return err
+	}
 	if err := validateJSONSchema(schema); err != nil {
 		return err
 	}
@@ -61,6 +66,27 @@ func ValidateConfig(schema map[string]any, raw json.RawMessage) error {
 }
 
 func validateSchemaValue(schema map[string]any, value any, location string) error {
+	if constant, exists := schema["const"]; exists && !enumEqual(constant, value) {
+		return fmt.Errorf("%s does not match const", location)
+	}
+	if branches, ok := schema["oneOf"].([]any); ok {
+		matches := 0
+		for _, raw := range branches {
+			if validateSchemaValue(raw.(map[string]any), value, location) == nil {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return fmt.Errorf("%s must match exactly one oneOf schema (matched %d)", location, matches)
+		}
+	}
+	if object, ok := value.(map[string]any); ok {
+		for _, required := range stringList(schema["required"]) {
+			if _, exists := object[required]; !exists {
+				return fmt.Errorf("%s.%s is required", location, required)
+			}
+		}
+	}
 	if values, ok := schema["enum"].([]any); ok {
 		matched := false
 		for _, candidate := range values {
@@ -81,11 +107,6 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 			return fmt.Errorf("%s must be an object", location)
 		}
 		properties, _ := schema["properties"].(map[string]any)
-		for _, required := range stringList(schema["required"]) {
-			if _, exists := object[required]; !exists {
-				return fmt.Errorf("%s.%s is required", location, required)
-			}
-		}
 		additional, hasAdditional := schema["additionalProperties"].(bool)
 		for name, child := range object {
 			childSchema, exists := properties[name].(map[string]any)

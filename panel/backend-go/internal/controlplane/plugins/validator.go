@@ -178,6 +178,11 @@ func NewValidator(options ValidatorOptions) *Validator {
 			string(pluginsdk.CapabilityPolicyTrustedSource), string(pluginsdk.CapabilityServiceRevocableResourceHandle),
 			string(pluginsdk.CapabilityUIDynamicActions),
 			string(pluginsdk.CapabilityRuntimeIdentity),
+			string(pluginsdk.CapabilityDatasetQuery), string(pluginsdk.CapabilityDatasetResolve),
+			string(pluginsdk.CapabilityDatasetManage), string(pluginsdk.CapabilityDatasetBind),
+			string(pluginsdk.CapabilityPolicyControl), string(pluginsdk.CapabilityPolicyEntryOverlays),
+			pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial,
+			pluginsdk.PermissionScopedSecretRead, pluginsdk.PermissionScopedSecretWrite,
 		}
 	}
 	if len(options.AllowedExtensionPoints) == 0 {
@@ -383,17 +388,8 @@ func (v *Validator) validatePackageContent(root, sourceRoot string, expected Pac
 	if err != nil {
 		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
 	}
-	var schema map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(schemaData))
-	decoder.UseNumber()
-	if err := decoder.Decode(&schema); err != nil {
-		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = errors.New("multiple JSON values are forbidden")
-		}
+	schema, err := DecodeConfigSchema(schemaData)
+	if err != nil {
 		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
 	}
 	if err := validateJSONSchema(schema); err != nil {
@@ -1625,6 +1621,10 @@ func validJSONPointer(value string) bool {
 }
 
 func validateJSONSchema(schema map[string]any) error {
+	schema, err := expandConfigSchema(schema)
+	if err != nil {
+		return err
+	}
 	if len(schema) == 0 {
 		return errors.New("schema must be an object")
 	}
@@ -1639,6 +1639,10 @@ func validateJSONSchema(schema map[string]any) error {
 // readOnly fields remain part of the single declarative schema for display,
 // but clients cannot persist or stage them through configure operations.
 func ValidateConfigWritableInput(schema map[string]any, raw json.RawMessage) error {
+	schema, err := expandConfigSchema(schema)
+	if err != nil {
+		return err
+	}
 	if err := validateJSONSchema(schema); err != nil {
 		return err
 	}
@@ -1697,7 +1701,7 @@ func rejectReadOnlyConfigValue(schema map[string]any, value any, pointer string)
 }
 
 func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) error {
-	allowed := map[string]bool{"$schema": true, "type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true, "hostInjected": true}
+	allowed := map[string]bool{"$schema": true, "type": true, "enum": true, "const": true, "oneOf": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true, "hostInjected": true}
 	for keyword := range schema {
 		if !allowed[keyword] {
 			return fmt.Errorf("unsupported JSON Schema keyword %q", keyword)
@@ -1779,7 +1783,7 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 		}
 	}
 	if required, ok := schema["required"]; ok {
-		if !hasType || typeName != "object" {
+		if hasType && typeName != "object" {
 			return errors.New("required requires an object schema")
 		}
 		items, valid := required.([]any)
@@ -1789,6 +1793,13 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 		for _, item := range items {
 			if _, valid := item.(string); !valid {
 				return errors.New("required entries must be strings")
+			}
+		}
+	}
+	if branches, ok := schema["oneOf"].([]any); ok {
+		for _, branch := range branches {
+			if err := validateSchemaNode(branch.(map[string]any), false, false); err != nil {
+				return fmt.Errorf("oneOf: %w", err)
 			}
 		}
 	}

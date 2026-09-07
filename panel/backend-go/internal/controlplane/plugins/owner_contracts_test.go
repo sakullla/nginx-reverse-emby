@@ -371,6 +371,41 @@ func TestValidatePackageAllowsRuntimeIdentityCapabilityByDefault(t *testing.T) {
 	}
 }
 
+func TestValidatePackageAllowsManagedCapabilitiesByDefault(t *testing.T) {
+	t.Parallel()
+	for _, permission := range []string{
+		string(pluginsdk.CapabilityDatasetQuery), string(pluginsdk.CapabilityDatasetResolve),
+		string(pluginsdk.CapabilityDatasetManage), string(pluginsdk.CapabilityDatasetBind),
+		string(pluginsdk.CapabilityPolicyControl), string(pluginsdk.CapabilityPolicyEntryOverlays),
+		pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial,
+		pluginsdk.PermissionScopedSecretRead, pluginsdk.PermissionScopedSecretWrite,
+	} {
+		t.Run(permission, func(t *testing.T) {
+			t.Parallel()
+			root := newSignedWASMPackage(t, "")
+			manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]",
+				fmt.Sprintf("permissions: [http.inspect, {name: %s, resource: fixture-scope}]", permission), 1)
+			writeOwnerFile(t, root, PackageManifestFile, manifest)
+			refreshOwnerPackage(t, root)
+			validated, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+			if err != nil {
+				t.Fatalf("signed package declaring %s: %v", permission, err)
+			}
+			if len(validated.Manifest.Permissions) != 2 || validated.Manifest.Permissions[1].Name != permission || validated.Manifest.Permissions[1].Resource != "fixture-scope" {
+				t.Fatalf("permission scope lost: %+v", validated.Manifest.Permissions)
+			}
+			// Recognizing SDK permissions must not override an explicit host policy.
+			options := newOwnerValidator().options
+			options.AllowedPermissions = []string{"http.inspect"}
+			_, err = NewValidator(options).ValidatePackage(root, PackageExpectation{})
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Code != "permission" {
+				t.Fatalf("explicit permission restriction ignored: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
 	t.Parallel()
 	assertCode := func(t *testing.T, err error, code string) {
