@@ -361,14 +361,19 @@ func validateArgs(args []string) error {
 	if len(args) == 0 || len(args) > 8 {
 		return errors.New("Docker command arguments are invalid")
 	}
-	for _, arg := range args {
-		if len(arg) > 1024 || strings.ContainsAny(arg, "\x00\r\n") {
+	for index, arg := range args {
+		format := (args[0] == "info" || len(args) > 1 && args[0] == "image" && args[1] == "inspect") && ((index > 0 && (args[index-1] == "--format" || args[index-1] == "-f")) || strings.HasPrefix(arg, "--format=") || strings.HasPrefix(arg, "-f="))
+		if len(arg) > 1024 || strings.ContainsAny(arg, "\x00\r") || strings.Contains(arg, "\n") && !format {
 			return errors.New("Docker command argument is invalid")
 		}
 	}
 	switch args[0] {
 	case "version":
 		if len(args) == 3 && args[1] == "--format" && args[2] == "{{.Server.Version}}" {
+			return nil
+		}
+	case "info":
+		if len(args) == 1 || len(args) == 3 && (args[1] == "--format" || args[1] == "-f") || len(args) == 2 && (strings.HasPrefix(args[1], "--format=") || strings.HasPrefix(args[1], "-f=")) {
 			return nil
 		}
 	case "compose":
@@ -397,8 +402,28 @@ func validateArgs(args []string) error {
 			return nil
 		}
 	case "image":
-		if len(args) == 5 && args[1] == "inspect" && args[2] == "--format" && args[3] == "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}" && validImage(args[4]) {
-			return nil
+		if len(args) >= 3 && args[1] == "inspect" {
+			images := 0
+			for index := 2; index < len(args); index++ {
+				arg := args[index]
+				if arg == "--format" || arg == "-f" {
+					index++
+					if index >= len(args) {
+						return errors.New("Docker image inspect format is missing")
+					}
+					continue
+				}
+				if strings.HasPrefix(arg, "--format=") || strings.HasPrefix(arg, "-f=") {
+					continue
+				}
+				if !validImage(arg) {
+					return errors.New("Docker image inspect reference is invalid")
+				}
+				images++
+			}
+			if images > 0 {
+				return nil
+			}
 		}
 		// Dangling images only; -a/--all and filters stay denied.
 		if len(args) == 3 && args[1] == "prune" && args[2] == "-f" {

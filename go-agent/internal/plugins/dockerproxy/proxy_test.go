@@ -63,11 +63,23 @@ func TestGuestEnvironmentIncludesDockerAppWorkDir(t *testing.T) {
 func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 	allowed := [][]string{
 		{"version", "--format", "{{.Server.Version}}"},
+		{"info", "--format", "{{json .RegistryConfig.Mirrors}}"},
+		{"info"},
+		{"info", "--format", "{{json .}}"},
+		{"info", "-f", "{{json .RegistryConfig}}"},
+		{"info", "--format=json"},
+		{"info", "-f={{.ServerVersion}}"},
 		{"compose", "up", "-d"},
 		{"compose", "logs", "--no-color", "web"},
 		{"workspace", "remove"},
 		{"system", "df"},
 		{"image", "inspect", "--format", "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}", "nginx:latest"},
+		{"image", "inspect", "--format", "{{.Architecture}}\n{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}", "example/worker:latest"},
+		{"image", "inspect", "nginx:latest"},
+		{"image", "inspect", "nginx:latest", "example/worker:latest"},
+		{"image", "inspect", "-f", "{{json .}}", "nginx:latest"},
+		{"image", "inspect", "nginx:latest", "--format={{json .Config.Labels}}"},
+		{"image", "inspect", "--format", "{{.Architecture}}\n{{json .}}", "nginx:latest"},
 		{"image", "prune", "-f"},
 		{"builder", "prune", "-f", "--keep-storage", "2GB"},
 		{"builder", "prune", "-f", "--keep-storage", "2G"},
@@ -81,6 +93,12 @@ func TestValidateArgsAllowsOnlyManagedComposeCommandShapes(t *testing.T) {
 		}
 	}
 	denied := [][]string{
+		{"info", "--format"},
+		{"info", "--host", "tcp://unrelated:2375"},
+		{"info", "--format", "{{json .RegistryConfig.Mirrors}}", "--debug"},
+		{"image", "inspect", "--format", "{{json .}}"},
+		{"image", "inspect", "nginx:latest", "--format"},
+		{"image", "inspect", "--host=tcp://unrelated:2375", "nginx:latest"},
 		{"run", "--privileged", "alpine"},
 		{"compose", "-f", "/etc/passwd", "up"},
 		{"image", "rm", "nginx"},

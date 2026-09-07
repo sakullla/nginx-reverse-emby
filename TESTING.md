@@ -1,5 +1,12 @@
 # Test Policy
 
+For an explicit read-only Docker metadata diagnostic on an Agent, compile the
+`go-agent/internal/plugins/dockerproxy` tests for that host and run
+`TestLiveDockerProxyReadOnlyMetadata` with `NRE_DOCKER_APP_LIVE_IMAGES` containing
+space-separated, already installed image references. It exercises the command
+handler and real Docker daemon without pulling images or changing containers.
+This is a test-only input; ordinary runs skip the diagnostic when it is unset.
+
 Run tests by module. The fast commands are:
 
 ```sh
