@@ -207,9 +207,11 @@ func (s *PluginService) rewriteOfficialWAFHTTPPolicyRefs(ctx context.Context, at
 		if attach {
 			kind = "http_rule.waf_attach"
 		}
+		// Policy-ref changes preserve Relay and Egress routing. Only HTTP
+		// consumers participate in this rollout, so a dependency plan would
+		// incorrectly require unchanged relay-only Agents to join it.
 		_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-			Kind:             kind,
-			DependencyAction: revision.DependencyActionApply,
+			Kind: kind,
 			Request: officialWAFHTTPPolicyRefMutationRequest{
 				AttachID: attachID, InstanceIDs: append([]string(nil), instanceIDs...), Attach: attach,
 			},

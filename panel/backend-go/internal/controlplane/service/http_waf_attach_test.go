@@ -227,6 +227,18 @@ func TestRewriteOfficialWAFHTTPPolicyRefsPublishesCoordinatorSnapshots(t *testin
 	localKept.FrontendURL = "http://app-b.example"
 	remoteEmpty := testHTTPWAFRuleRow(3, "edge-a", "")
 	remoteEmpty.FrontendURL = "http://app-c.example"
+	// A stable relay-only Agent is not part of the WAF policy-ref rollout.
+	// Production HTTP rules can still depend on its listener.
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "relay-only", Name: "relay-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRelayListeners(ctx, "relay-only", []storage.RelayListenerRow{{
+		ID: 10, AgentID: "relay-only", Name: "relay", Enabled: true,
+		ListenHost: "0.0.0.0", ListenPort: 18443, PublicHost: "relay.example", PublicPort: 18443,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	remoteEmpty.RelayLayersJSON = `[[10]]`
 	if err := store.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{localEmpty, localKept}); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +249,7 @@ func TestRewriteOfficialWAFHTTPPolicyRefsPublishesCoordinatorSnapshots(t *testin
 	service := NewPluginService(store, t.TempDir())
 	service.ConfigureRevisionMutations(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
 	if err := service.rewriteOfficialWAFHTTPPolicyRefs(ctx, "official.waf-default", []string{"official.waf-default"}, true); err != nil {
-		t.Fatalf("attach error = %v", err)
+		t.Fatalf("attach error = %v; cause = %v", err, errors.Unwrap(err))
 	}
 
 	localSnapshot := latestWAFCoordinatorSnapshot(t, store, "local")
@@ -283,6 +295,18 @@ func TestRewriteOfficialWAFHTTPPolicyRefsPublishesCoordinatorSnapshots(t *testin
 	remoteDetached := latestWAFCoordinatorSnapshot(t, store, "edge-a")
 	if snapshotHTTPRuleByID(t, remoteDetached, 3).PolicyRef != nil {
 		t.Fatalf("remote dangling ref after detach snapshot: %+v", remoteDetached.Rules)
+	}
+	for _, snapshot := range []storage.Snapshot{remoteSnapshot, remoteDetached} {
+		rule := snapshotHTTPRuleByID(t, snapshot, 3)
+		if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 10 {
+			t.Fatalf("WAF rollout changed relay routing: %+v", rule.RelayLayers)
+		}
+		if len(snapshot.RelayListeners) != 1 || snapshot.RelayListeners[0].AgentID != "relay-only" {
+			t.Fatalf("WAF rollout lost remote listener: %+v", snapshot.RelayListeners)
+		}
+	}
+	if pointer, found, err := store.GetAgentRevisionPointer(ctx, "relay-only"); err != nil || found {
+		t.Fatalf("stable relay Agent was rolled out: %+v found=%v err=%v", pointer, found, err)
 	}
 }
 
