@@ -290,6 +290,31 @@ func (s *GormStore) pluginMutationPolicyAgents(ctx context.Context, mutation Plu
 			return nil, err
 		}
 	}
+	// A control-plane policy face is projected to every Agent, independently
+	// of the management instance's explicit targets. Its revision fences must
+	// cover the same population as agentPolicyTargetKey.
+	var packages []PluginPackageRow
+	if err := s.db.WithContext(ctx).Where("plugin_id = ?", mutation.PluginID).Find(&packages).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range packages {
+		var manifest pluginsdk.Manifest
+		if err := json.Unmarshal([]byte(row.ManifestJSON), &manifest); err != nil {
+			return nil, err
+		}
+		if !pluginsdk.RuntimeProjectsControlPlaneUIAndAgentPolicy(manifest.Runtime) {
+			continue
+		}
+		var ids []string
+		if err := s.db.WithContext(ctx).Model(&AgentRow{}).Order("id").Pluck("id", &ids).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			result[id] = struct{}{}
+		}
+		result[s.LocalAgentID()] = struct{}{}
+		break
+	}
 	agents := make([]string, 0, len(result))
 	for agentID := range result {
 		agents = append(agents, agentID)
@@ -322,7 +347,7 @@ func (s *GormStore) EnsureAgentPluginPolicyCatalog(ctx context.Context, agentID 
 		return fmt.Errorf("plugin policy Agent catalog fence must be ensured before the revision transaction")
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		scoped := &GormStore{db: tx, localAgentID: s.localAgentID, transactionScoped: true}
+		scoped := s.transactionView(tx)
 		return scoped.ensurePluginPolicyAgentCatalogs(ctx, []string{agentID}, time.Now().UTC())
 	})
 }
@@ -365,6 +390,20 @@ func (s *GormStore) ensurePluginPolicyAgentCatalogs(ctx context.Context, agents 
 			DoNothing: true,
 		}).Create(&row).Error; err != nil {
 			return err
+		}
+		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ?", agentID).First(&row).Error; err != nil {
+			return err
+		}
+		if row.Revision == 0 {
+			policies, err := s.loadAgentPluginPolicies(ctx, agentID)
+			if err != nil {
+				return err
+			}
+			if len(policies) > 0 {
+				if err := s.bumpPluginPolicyCatalogRevision(ctx, agentID, now); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
