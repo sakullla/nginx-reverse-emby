@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
-	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
 )
 
 const officialPackageBlobFormatV1 = "tar+gzip-v1"
@@ -146,8 +145,8 @@ func validateOfficialMarketProvenanceV2(marketData []byte, market officialMarket
 	if provenance.SchemaVersion != 2 || provenance.RepositoryCommit != market.Commit || provenance.MarketSHA256 != marketDigest || provenance.SignerIdentity != OfficialSignatureKeyID {
 		return errors.New("market source, digest, signer, or schema differs from provenance")
 	}
-	if !officialCommitOIDPattern.MatchString(provenance.SDKRepositoryCommit) || provenance.SDKRepositoryCommit == strings.Repeat("0", 40) || provenance.SDKDescriptorSHA256 != protoschema.CanonicalDescriptorSetSHA256 {
-		return errors.New("SDK provenance is invalid")
+	if err := validateOfficialSDKProvenance(provenance.SDKRepositoryCommit, provenance.SDKDescriptorSHA256); err != nil {
+		return err
 	}
 	if len(provenance.SDKABIs) != 2 || provenance.SDKABIs[0] != pluginsdk.PolicyABIV1 || provenance.SDKABIs[1] != pluginsdk.RPCABIV1 || len(provenance.Packages) != len(market.Packages) {
 		return errors.New("SDK ABI or package provenance count differs")

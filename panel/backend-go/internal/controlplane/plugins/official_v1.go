@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
-	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
 )
 
 const (
@@ -294,11 +293,8 @@ func validateOfficialMarketProvenanceV1(marketData []byte, market officialMarket
 	if provenance.SchemaVersion != 1 || provenance.RepositoryCommit != market.Commit || provenance.MarketSHA256 != hex.EncodeToString(marketDigest[:]) {
 		return errors.New("market source commit or SHA-256 differs from provenance")
 	}
-	if !officialCommitOIDPattern.MatchString(provenance.SDKRepositoryCommit) || provenance.SDKRepositoryCommit == strings.Repeat("0", 40) {
-		return errors.New("SDK provenance requires a non-zero lowercase full commit")
-	}
-	if provenance.SDKDescriptorSHA256 != protoschema.CanonicalDescriptorSetSHA256 {
-		return errors.New("SDK descriptor digest differs from the host contract")
+	if err := validateOfficialSDKProvenance(provenance.SDKRepositoryCommit, provenance.SDKDescriptorSHA256); err != nil {
+		return err
 	}
 	if len(provenance.SDKABIs) != 2 || provenance.SDKABIs[0] != pluginsdk.PolicyABIV1 || provenance.SDKABIs[1] != pluginsdk.RPCABIV1 || provenance.SignerIdentity != OfficialSignatureKeyID {
 		return errors.New("SDK ABI or signer provenance is invalid")
@@ -311,6 +307,20 @@ func validateOfficialMarketProvenanceV1(marketData []byte, market officialMarket
 		if evidence.ID != entry.ID || evidence.Version != entry.Version || evidence.Path != entry.PackageURL || evidence.PackageSHA256 != entry.PackageSHA256 {
 			return fmt.Errorf("package provenance %d differs from market", index)
 		}
+	}
+	return nil
+}
+
+func validateOfficialSDKProvenance(commit, descriptorDigest string) error {
+	if !officialCommitOIDPattern.MatchString(commit) || commit == strings.Repeat("0", 40) {
+		return errors.New("SDK provenance requires a non-zero lowercase full commit")
+	}
+	// The signed digest identifies the SDK used to build the release, not
+	// the SDK embedded in this host. Compatible SDK revisions can have
+	// different descriptors; package compatibility and runtime handshakes
+	// enforce the actual ABI, version and capability requirements.
+	if !hexDigestPattern.MatchString(descriptorDigest) || descriptorDigest == strings.Repeat("0", 64) {
+		return errors.New("SDK provenance requires a non-zero lowercase descriptor SHA-256")
 	}
 	return nil
 }
