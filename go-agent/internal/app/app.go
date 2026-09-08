@@ -964,6 +964,11 @@ func (a *App) validateActiveHotRestartRuntime(identity hotrestart.Identity) erro
 }
 
 func (a *App) runControlLoop(ctx context.Context, startup Snapshot) error {
+	if cleaner, ok := a.updater.(interface{ CleanupPackages(context.Context) error }); ok {
+		if err := cleaner.CleanupPackages(ctx); err != nil {
+			log.Printf("[agent] startup update package cleanup failed: %v", err)
+		}
+	}
 	if err := a.performSync(ctx); err != nil {
 		if errors.Is(err, core.ErrRestartRequested) {
 			return nil

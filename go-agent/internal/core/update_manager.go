@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -60,6 +61,8 @@ type UpdateManager struct {
 	platform              string
 	syncDirectory         func(string) error
 	savePointer           func(string, PackagePointer) error
+	runningPackageDigests func() ([]string, error)
+	stagedPackageSHA      string
 	mu                    sync.Mutex
 }
 
@@ -96,7 +99,7 @@ func (m *UpdateManager) Preflight(pkg model.VersionPackage) error {
 	return err
 }
 
-func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (string, error) {
+func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (stagedPath string, stageErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -104,6 +107,14 @@ func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (st
 	if err != nil {
 		return "", err
 	}
+	if err := m.cleanupPackagesLocked(ctx, manifest.SHA256); err != nil {
+		log.Printf("[agent] update package cleanup failed: %v", err)
+	}
+	defer func() {
+		if stageErr == nil {
+			m.stagedPackageSHA = manifest.SHA256
+		}
+	}()
 	packageRoot := m.packageRoot()
 	targetDir := filepath.Join(packageRoot, manifest.SHA256)
 	targetPath := filepath.Join(targetDir, packageBinaryFile)

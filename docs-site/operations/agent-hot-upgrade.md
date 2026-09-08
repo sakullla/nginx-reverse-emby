@@ -36,9 +36,19 @@ Package 下载、校验和 immutable 暂存由 Agent 进程内的单飞协调器
 1. Parent 继续服务旧 generation，并把新 stream/packet authority 有序交给 child。
 2. Child ready 后新连接进入目标 generation；旧 TCP 会话与 UDP/QUIC association 仍由原 owner 服务。
 3. Parent 按该 revision 固化的 drain timeout 排空；authority journal 记录 launch、activation 和 transfer checkpoint。
-4. 接管完成后 current pointer 保持目标 binary，previous pointer 保留前一版本；parent 退出，child 成为 supervisor。
+4. 接管完成后 current pointer 保持目标 binary，previous pointer 保留前一版本。最初的 systemd 主进程保留为监督进程，后续业务进程在完成下一次交接后退出；核对运行包 SHA 时应查看 authority journal 指向的业务进程，而不是只查看 systemd MainPID。
 
 Child prepare、activation、authority transfer 或 identity 校验失败时，parent 保持或恢复 authority 和 last-known-good generation，失败 child 被终止，current pointer 恢复 previous。失败不会把未 ready generation 报为 applied。
+
+## 更新包自动回收
+
+业务进程启动并取得控制权后，以及每次下载或复用升级包前，Agent 自动检查 `updates/packages/`。无引用且目录修改时间超过 24 小时的完整历史包会被删除。以下包始终保留：
+
+- `updates/state/current.json` 和 `previous.json` 引用的当前包、回滚包。
+- Linux `/proc` 中仍在运行的业务进程、排空进程或监督进程所用的包。
+- 本进程已暂存的升级包，以及本次请求准备下载或复用的目标包。
+
+最近 24 小时的包保留到后续启动或升级时再检查。首次安装尚无 current pointer、指针损坏或无法完整读取进程信息时，会跳过回收；清理错误记录到 Agent 日志，不阻断启动或升级。回收只删除经过校验的包内 `nre-agent`、`manifest.json` 和空目录，不递归删除未知文件或跟随符号链接，也不处理日志、证书和配置数据。
 
 ## 操作步骤
 
