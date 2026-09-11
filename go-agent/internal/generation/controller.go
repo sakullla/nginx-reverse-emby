@@ -56,7 +56,7 @@ type drainEntry struct {
 	timer            Timer
 	cleanupRetry     Timer
 	cleanupAttempts  int
-	lifecycleMu      sync.Mutex
+	lifecycleMu      chan struct{}
 	finalState       string
 	destroyed        bool
 	destroyDone      chan error
@@ -65,6 +65,24 @@ type drainEntry struct {
 	cleanupTimeout   time.Duration
 	observabilityCtx context.Context
 }
+
+func (e *drainEntry) lockLifecycle(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case e.lifecycleMu <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *drainEntry) unlockLifecycle() { <-e.lifecycleMu }
+
 type DrainController struct {
 	mu       sync.Mutex
 	clock    Clock
@@ -122,7 +140,7 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		c.mu.Unlock()
 		return errors.New("generation revision must increase")
 	}
-	entry := &drainEntry{generation: next, observabilityCtx: ctx, status: model.GenerationDrainStatus{GenerationID: next.ID, Revision: next.Revision, State: model.GenerationDrainStateApplied, AppliedAt: now}}
+	entry := &drainEntry{generation: next, lifecycleMu: make(chan struct{}, 1), observabilityCtx: ctx, status: model.GenerationDrainStatus{GenerationID: next.ID, Revision: next.Revision, State: model.GenerationDrainStateApplied, AppliedAt: now}}
 	c.entries[next.ID] = entry
 	c.order = append(c.order, next.ID)
 	c.active = next.ID
@@ -158,7 +176,10 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		if len(previous.revoked) > 0 {
 			_, drainErr = c.registry.ForceEntities(ctx, previous.generation.ID, previous.revoked)
 		}
-		c.onEmpty(previous.generation.ID)
+		// Pending protocol dispatches may still need the entire drain timeout
+		// even when there are no registered sessions. Keep natural resource
+		// cleanup off the publication/heartbeat stack, just as on final Finish.
+		c.onSessionEmpty(previous.generation.ID)
 	}
 	return errors.Join(drainErr, c.enforceLimit(ctx))
 }
@@ -177,7 +198,7 @@ func (c *DrainController) forceNonProviderSessions(ctx context.Context, id strin
 	entry.status.ForcedSessionCount += count
 	entry.status.SessionCount = c.registry.GenerationCount(id)
 	c.mu.Unlock()
-	c.onEmpty(id)
+	c.onSessionEmpty(id)
 	return err
 }
 
@@ -213,7 +234,7 @@ func (c *DrainController) retireActive(ctx context.Context, id string, timeout t
 	forceCtx := context.WithoutCancel(ctx)
 	entry.timer = c.clock.AfterFunc(timeout, func() { _ = c.force(forceCtx, id, model.GenerationForceReasonTimeout) })
 	c.mu.Unlock()
-	c.onEmpty(id)
+	c.onSessionEmpty(id)
 	return nil
 }
 
@@ -277,8 +298,8 @@ func (c *DrainController) onSessionEmpty(id string) {
 }
 
 func (c *DrainController) completeNaturalCleanup(entry *drainEntry) {
-	entry.lifecycleMu.Lock()
-	defer entry.lifecycleMu.Unlock()
+	_ = entry.lockLifecycle(context.Background())
+	defer entry.unlockLifecycle()
 	c.mu.Lock()
 	if entry.released || entry.status.State != model.GenerationDrainStateDrained {
 		c.mu.Unlock()
@@ -292,41 +313,6 @@ func (c *DrainController) completeNaturalCleanup(entry *drainEntry) {
 	}
 }
 
-func (c *DrainController) onEmpty(id string) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	entry := c.entries[id]
-	if entry == nil || entry.status.State != model.GenerationDrainStateDraining {
-		c.mu.Unlock()
-		return
-	}
-	c.mu.Unlock()
-	entry.lifecycleMu.Lock()
-	defer entry.lifecycleMu.Unlock()
-	c.mu.Lock()
-	if c.registry.GenerationCount(id) != 0 {
-		c.mu.Unlock()
-		return
-	}
-	if entry.status.State != model.GenerationDrainStateDraining {
-		c.mu.Unlock()
-		return
-	}
-	if entry.timer != nil {
-		entry.timer.Stop()
-	}
-	entry.status.State = model.GenerationDrainStateDrained
-	entry.status.SessionCount = 0
-	entry.finalState = model.GenerationDrainStateDrained
-	c.mu.Unlock()
-	err := c.completeCleanup(context.Background(), entry)
-	c.observeDrainCompletion(entry, err)
-	if err == nil {
-		c.clearObservabilityContext(entry)
-	}
-}
 func (c *DrainController) enforceLimit(ctx context.Context) error {
 	attempted := make(map[string]bool)
 	var forceErr error
@@ -362,14 +348,16 @@ func (c *DrainController) forceGeneration(ctx context.Context, id, reason string
 	if entry == nil {
 		return nil
 	}
-	entry.lifecycleMu.Lock()
-	defer entry.lifecycleMu.Unlock()
+	if err := entry.lockLifecycle(ctx); err != nil {
+		return err
+	}
+	defer entry.unlockLifecycle()
 	c.mu.Lock()
 	if entry.released {
 		c.mu.Unlock()
 		return nil
 	}
-	if entry.status.State == model.GenerationDrainStateCleanupFailed && c.registry.GenerationCount(id) == 0 {
+	if (entry.status.State == model.GenerationDrainStateCleanupFailed || entry.status.State == model.GenerationDrainStateDrained) && c.registry.GenerationCount(id) == 0 {
 		c.mu.Unlock()
 		return c.completeCleanup(ctx, entry)
 	}
@@ -416,8 +404,10 @@ func (c *DrainController) RetryCleanup(ctx context.Context, id string) error {
 	if entry == nil {
 		return errors.New("unknown generation")
 	}
-	entry.lifecycleMu.Lock()
-	defer entry.lifecycleMu.Unlock()
+	if err := entry.lockLifecycle(ctx); err != nil {
+		return err
+	}
+	defer entry.unlockLifecycle()
 	c.mu.Lock()
 	if entry.status.State != model.GenerationDrainStateCleanupFailed {
 		c.mu.Unlock()

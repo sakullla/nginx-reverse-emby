@@ -22,6 +22,9 @@ func TestReleasedGenerationsDropResourcesAndStayBounded(t *testing.T) {
 		}, nil, time.Minute); err != nil {
 			t.Fatalf("Activate(%d) error = %v", index+1, err)
 		}
+		if index > 0 {
+			waitGenerationCleanup(t, controller, fmt.Sprintf("generation-%02d", index), model.GenerationDrainStateDrained)
+		}
 	}
 
 	controller.mu.Lock()
@@ -80,9 +83,7 @@ func TestCleanupFailureRetriesWithoutAnotherRollout(t *testing.T) {
 	if err := controller.Activate(t.Context(), Generation{ID: "generation-2", Revision: 2, Resource: &retentionResource{}}, nil, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if state := cleanupState(t, controller, "generation-1"); state != model.GenerationDrainStateCleanupFailed {
-		t.Fatalf("cleanup state = %q", state)
-	}
+	waitGenerationCleanup(t, controller, "generation-1", model.GenerationDrainStateCleanupFailed)
 
 	clock.Advance(cleanupRetryBase)
 	if state := cleanupState(t, controller, "generation-1"); state != model.GenerationDrainStateDrained {
@@ -300,6 +301,7 @@ type cleanupRetryClock struct {
 }
 
 type cleanupRetryTimer struct {
+	clock   *cleanupRetryClock
 	due     time.Time
 	fn      func()
 	stopped bool
@@ -316,7 +318,7 @@ func (c *cleanupRetryClock) Now() time.Time {
 func (c *cleanupRetryClock) AfterFunc(delay time.Duration, fn func()) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timer := &cleanupRetryTimer{due: c.now.Add(delay), fn: fn}
+	timer := &cleanupRetryTimer{clock: c, due: c.now.Add(delay), fn: fn}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -338,6 +340,8 @@ func (c *cleanupRetryClock) Advance(delay time.Duration) {
 }
 
 func (t *cleanupRetryTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
 	if t.stopped {
 		return false
 	}
