@@ -16,6 +16,7 @@ type TransportOptions struct {
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
 	MaxConnsPerHost       int
+	DisableHTTP2          bool
 }
 
 type StreamResilienceOptions struct {
@@ -41,6 +42,21 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 	if options.MaxConnsPerHost > 0 {
 		transport.MaxConnsPerHost = options.MaxConnsPerHost
 	}
+	if options.DisableHTTP2 {
+		// A custom DialContext conservatively disables HTTP/2 by default, but
+		// make the intent explicit and also clear any previously installed
+		// alternate protocol handler when a transport is reused in tests or by
+		// an embedding caller.
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = nil
+		if transport.Protocols != nil {
+			protocols := *transport.Protocols
+			protocols.SetHTTP1(true)
+			protocols.SetHTTP2(false)
+			protocols.SetUnencryptedHTTP2(false)
+			transport.Protocols = &protocols
+		}
+	}
 
 	if options.DialTimeout <= 0 && options.KeepAlive <= 0 {
 		return
@@ -65,9 +81,16 @@ func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Tr
 	interactive := cloneTransport(base)
 	bulk := cloneTransport(base)
 
-	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: 16})
-	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: 64})
+	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, 16)})
+	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, 64)})
 	return interactive, bulk
+}
+
+func classedMaxConnsPerHost(base *http.Transport, classDefault int) int {
+	if base != nil && base.MaxConnsPerHost > 0 && base.MaxConnsPerHost < classDefault {
+		return base.MaxConnsPerHost
+	}
+	return classDefault
 }
 
 func NewClassedRelayTransports(

@@ -141,6 +141,7 @@ type HTTPTransportConfig struct {
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
 	MaxConnsPerHost       int
+	DisableHTTP2          bool
 }
 
 type HTTPResilienceConfig struct {
@@ -259,6 +260,13 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid NRE_HTTP3_ENABLED: %w", err)
 		}
 		cfg.HTTP3Enabled = enabled
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP2_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_HTTP2_ENABLED: %w", err)
+		}
+		cfg.HTTPTransport.DisableHTTP2 = !enabled
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_STATS_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)

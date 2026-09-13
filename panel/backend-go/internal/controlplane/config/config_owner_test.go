@@ -51,6 +51,24 @@ func TestLoadFromEnvDefaultsAndRejectsUnsafeCombinations(t *testing.T) {
 	}
 }
 
+func TestHTTPTransportConfigSupportsUpstreamHTTP2DisableAndConnectionCap(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("NRE_HTTP2_ENABLED", "false")
+	t.Setenv("NRE_HTTP_MAX_CONNS_PER_HOST", "8")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LocalAgentHTTPTransport.DisableHTTP2 || cfg.LocalAgentHTTPTransport.MaxConnsPerHost != 8 {
+		t.Fatalf("local HTTP transport = %+v", cfg.LocalAgentHTTPTransport)
+	}
+
+	t.Setenv("NRE_HTTP2_ENABLED", "invalid")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "NRE_HTTP2_ENABLED") {
+		t.Fatalf("invalid NRE_HTTP2_ENABLED error = %v", err)
+	}
+}
+
 func TestLocalAgentCapabilityAuditConfigIsStrictAndDefaultsOff(t *testing.T) {
 	requiredTokens(t)
 	cfg, err := LoadFromEnv()

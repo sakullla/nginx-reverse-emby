@@ -26,6 +26,17 @@ func TestEmbeddedConfigProjectsLocalCapabilityAuditExactly(t *testing.T) {
 	}
 }
 
+func TestEmbeddedConfigProjectsHTTPTransportOptionsExactly(t *testing.T) {
+	cfg := config.Default()
+	cfg.LocalAgentHTTPTransport.MaxConnsPerHost = 8
+	cfg.LocalAgentHTTPTransport.DisableHTTP2 = true
+
+	got := embeddedConfig(cfg).HTTPTransport
+	if got.MaxConnsPerHost != 8 || !got.DisableHTTP2 {
+		t.Fatalf("embedded HTTP transport = %+v", got)
+	}
+}
+
 func TestEmbeddedPolicyRefProjectsCompositionMetadata(t *testing.T) {
 	mode := sdk.PolicyModeObserve
 	want := &storage.PolicyRef{

@@ -107,7 +107,8 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_HTTP_RESPONSE_HEADER_TIMEOUT` | `30s` | 等待上游服务器响应头的超时时间。 |
 | `NRE_HTTP_IDLE_CONN_TIMEOUT` | `90s` | 空闲连接保持打开的时间，之后关闭。 |
 | `NRE_HTTP_KEEP_ALIVE` | `30s` | 上游连接的 TCP keep-alive 间隔。 |
-| `NRE_HTTP_MAX_CONNS_PER_HOST` | `64` | 每个上游主机的最大并发连接数（代理端）。 |
+| `NRE_HTTP_MAX_CONNS_PER_HOST` | `64` | 每个上游主机的最大并发连接数（代理端）；内嵌 local Agent 也适用。 |
+| `NRE_HTTP2_ENABLED` | `true` | 是否允许代理到上游 HTTP/HTTPS 后端使用 HTTP/2；设为 `false` 强制 HTTP/1.1。 |
 | `NRE_HTTP_STREAM_RESUME_ENABLED` | `true` | 启用中断流/下载的自动恢复。 |
 | `NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS` | `2` | 单个请求的最大恢复尝试次数。 |
 | `NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` | `1` | 对同一后端的额外重试次数，仅适用于可重试的 HTTP 方法（GET、HEAD 等）。 |

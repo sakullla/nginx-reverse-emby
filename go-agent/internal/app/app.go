@@ -160,6 +160,7 @@ func httpModuleConfigFromAppConfig(cfg Config) modulehttp.Config {
 			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
 			KeepAlive:             cfg.HTTPTransport.KeepAlive,
 			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
+			DisableHTTP2:          cfg.HTTPTransport.DisableHTTP2,
 		},
 		Resilience: modulehttp.StreamResilienceOptions{
 			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,

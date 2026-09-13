@@ -42,6 +42,9 @@ nginx-reverse-emby 一键部署脚本：下载 compose、生成 token、按需�
   NRE_REPO_RAW_BASE    docker-compose.yaml 下载地址前缀
   NRE_INSTALL_DIR / NRE_IMAGE / NRE_TIMEZONE / NRE_PUBLIC_URL
   NRE_TRUST_FORWARDED_HEADERS 显式覆盖代理头信任；反代模式默认 true，直连默认 false
+  NRE_HTTP2_ENABLED=false 可强制代理到上游后端使用 HTTP/1.1
+  NRE_HTTP_RESPONSE_HEADER_TIMEOUT / NRE_HTTP_MAX_CONNS_PER_HOST
+  NRE_HTTP_STREAM_RESUME_ENABLED / NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS
   API_TOKEN            已有面板 token；不设置则自动生成
   MASTER_REGISTER_TOKEN 已有 Agent 注册 token；不设置则自动生成
   PANEL_VAULT_MASTER_KEY 已有 secret-vault 32-byte key；不设置则自动生成并持久保留

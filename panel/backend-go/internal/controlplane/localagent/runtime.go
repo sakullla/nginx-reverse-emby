@@ -119,7 +119,8 @@ func embeddedConfig(cfg config.Config) goagentembedded.Config {
 		HTTPTransport: goagentembedded.HTTPTransportConfig{
 			DialTimeout: cfg.LocalAgentHTTPTransport.DialTimeout, TLSHandshakeTimeout: cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: cfg.LocalAgentHTTPTransport.ResponseHeaderTimeout, IdleConnTimeout: cfg.LocalAgentHTTPTransport.IdleConnTimeout,
-			KeepAlive: cfg.LocalAgentHTTPTransport.KeepAlive,
+			KeepAlive: cfg.LocalAgentHTTPTransport.KeepAlive, MaxConnsPerHost: cfg.LocalAgentHTTPTransport.MaxConnsPerHost,
+			DisableHTTP2: cfg.LocalAgentHTTPTransport.DisableHTTP2,
 		},
 		HTTPResilience: goagentembedded.HTTPResilienceConfig{
 			ResumeEnabled: cfg.LocalAgentHTTPResilience.ResumeEnabled, ResumeMaxAttempts: cfg.LocalAgentHTTPResilience.ResumeMaxAttempts,

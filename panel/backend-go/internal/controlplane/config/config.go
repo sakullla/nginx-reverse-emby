@@ -109,6 +109,8 @@ type HTTPTransportConfig struct {
 	ResponseHeaderTimeout time.Duration
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
+	MaxConnsPerHost       int
+	DisableHTTP2          bool
 }
 
 type HTTPResilienceConfig struct {
@@ -160,6 +162,7 @@ func Default() Config {
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			KeepAlive:             30 * time.Second,
+			MaxConnsPerHost:       64,
 		},
 		LocalAgentHTTPResilience: HTTPResilienceConfig{
 			ResumeEnabled:            true,
@@ -345,6 +348,13 @@ func LoadFromEnv() (Config, error) {
 		}
 		cfg.LocalAgentHTTP3Enabled = enabled
 	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP2_ENABLED")); val != "" {
+		enabled, err := parseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_HTTP2_ENABLED: %w", err)
+		}
+		cfg.LocalAgentHTTPTransport.DisableHTTP2 = !enabled
+	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_STATS_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
 		if err != nil {
@@ -401,6 +411,13 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, err
 		}
 		cfg.LocalAgentHTTPTransport.KeepAlive = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_MAX_CONNS_PER_HOST")); val != "" {
+		maxConns, err := parsePositiveIntEnv("NRE_HTTP_MAX_CONNS_PER_HOST", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.MaxConnsPerHost = maxConns
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_STREAM_RESUME_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)

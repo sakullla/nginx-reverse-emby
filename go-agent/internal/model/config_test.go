@@ -63,3 +63,29 @@ func TestCapabilityAuditConfigRejectsInvalidEnvironment(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPTransportConfigSupportsUpstreamHTTP2Disable(t *testing.T) {
+	capabilityAuditRequiredEnv(t)
+	t.Setenv("NRE_HTTP2_ENABLED", "false")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HTTPTransport.DisableHTTP2 {
+		t.Fatal("NRE_HTTP2_ENABLED=false did not disable upstream HTTP/2")
+	}
+
+	t.Setenv("NRE_HTTP2_ENABLED", "true")
+	cfg, err = LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPTransport.DisableHTTP2 {
+		t.Fatal("NRE_HTTP2_ENABLED=true disabled upstream HTTP/2")
+	}
+
+	t.Setenv("NRE_HTTP2_ENABLED", "maybe")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "NRE_HTTP2_ENABLED") {
+		t.Fatalf("invalid NRE_HTTP2_ENABLED error = %v", err)
+	}
+}
