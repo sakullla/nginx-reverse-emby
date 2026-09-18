@@ -272,6 +272,39 @@ func TestHandlerReplacesEmptyFileBindDirectory(t *testing.T) {
 	}
 }
 
+func TestHandlerKeepsEmptyDotDirectoryBinds(t *testing.T) {
+	root := t.TempDir()
+	app := filepath.Join(root, "danmu-api")
+	if err := os.MkdirAll(filepath.Join(app, ".chche"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(app, ".env"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handler := &handler{workspaceRoot: root, runner: &recordingRunner{}}
+	dir, err := handler.prepare(Request{
+		Args: []string{"compose", "up", "-d"}, AppID: "danmu-api",
+		Compose: "services:\n  api:\n    image: nginx\n    volumes:\n      - ./.chche:/app/.cache\n      - ./.env:/app/config/.env\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheInfo, err := os.Lstat(filepath.Join(dir, ".chche"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheInfo.IsDir() {
+		t.Fatal("empty .chche directory was replaced with a file")
+	}
+	envInfo, err := os.Lstat(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envInfo.IsDir() {
+		t.Fatal("empty .env directory was not replaced with a file")
+	}
+}
+
 func TestHandlerRunsValidatedCommandAndBoundsErrors(t *testing.T) {
 	runner := &recordingRunner{output: []byte("29.7.2\n")}
 	handler := &handler{workspaceRoot: t.TempDir(), runner: runner}

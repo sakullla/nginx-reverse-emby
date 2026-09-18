@@ -539,6 +539,21 @@ func chownIfSandbox(path string, uid int) error {
 	return nil
 }
 
+// fileBindName reports names that should materialize as files, not directories.
+// filepath.Ext(".env") and filepath.Ext(".cache") both return the whole name, so
+// a non-empty Ext() check would convert cache directories into files.
+func fileBindName(base string) bool {
+	if base == "" {
+		return false
+	}
+	lower := strings.ToLower(base)
+	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
+		return true
+	}
+	ext := filepath.Ext(base)
+	return ext != "" && ext != base
+}
+
 func repairEmptyFileBindDirectories(dir string, uid int) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -548,7 +563,7 @@ func repairEmptyFileBindDirectories(dir string, uid int) error {
 		if !entry.IsDir() {
 			continue
 		}
-		if filepath.Ext(entry.Name()) == "" {
+		if !fileBindName(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
