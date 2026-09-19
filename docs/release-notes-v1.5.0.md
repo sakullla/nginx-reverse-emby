@@ -91,11 +91,9 @@ SQLite 部署可从内部 PKI 页导出带 passphrase 的受保护备份（整�
 - 若你中途跑过 `develop` 并建了用户名密码，v1.5.0 面板操作员仍只认访问令牌；用户 / 资源组菜单已去掉。
 - Windows 原生 `nre-agent.exe` 不随控制面镜像发布，从 GitHub Release 下客户端。
 
-## 建议一起看的项目
+## 作者的其它独立软件
 
-同一作者的两个轻量项目，适合和本面板搭配自建：
+和 nginx-reverse-emby 无关，是两款独立桌面应用：
 
-- [LightInk](https://github.com/sakullla/LightInk)：Markdown 优先的轻量博客 / 知识库，静态生成，可选 Node 服务。
-- [Rillight](https://github.com/sakullla/Rillight)：轻量视频分享，Docker 一键部署，可对接 Emby / Jellyfin。
-
-把它们的 HTTP 入口交给本面板反代即可。
+- [LightInk](https://github.com/sakullla/LightInk)：本地电子书阅读器 + Typora 风格 Markdown 编辑器（Tauri v2 + Milkdown）。覆盖 EPUB / PDF / TXT / Markdown / 漫画（CBZ/CBR），所见即所得编辑、书库与 OPDS、WebDAV 同步。Windows / macOS / Linux。
+- [Rillight](https://github.com/sakullla/Rillight)：独立的跨平台 Emby 桌面客户端（Windows / macOS / Linux）。连已有 Emby 服务器看影片和剧集，播放走 libmpv，不替代服务端。

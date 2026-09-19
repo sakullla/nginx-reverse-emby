@@ -34,12 +34,10 @@ https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki
 
 ---
 
-另外推荐两个同作者的轻量项目，和本面板很搭：
+另外推荐我另外两款独立软件（和本面板不是配套，各管各的）：
 
-📝 **LightInk** — Markdown 优先的轻量博客 / 知识库，静态生成，想挂文档站或个人笔记很合适。
+📖 **LightInk** — 本地电子书阅读器 + Typora 风格 Markdown 编辑器。EPUB / PDF / TXT / Markdown / 漫画都能看，所见即所得写笔记，书库、OPDS、WebDAV 都有。Win / macOS / Linux。
 https://github.com/sakullla/LightInk
 
-🎬 **Rillight** — 轻量视频分享，Docker 一键拉起，可以对接 Emby / Jellyfin，给家人朋友传片子不用上完整媒体库。
+🎬 **Rillight** — 独立的跨平台 Emby 桌面客户端。连你现有的 Emby 服务器看电影追剧，播放用 libmpv，不是再搭一套媒体库。
 https://github.com/sakullla/Rillight
-
-域名解析到 VPS 后，用 nginx-reverse-emby 给它们套 HTTPS 即可。
