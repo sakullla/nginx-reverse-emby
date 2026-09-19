@@ -330,9 +330,7 @@ func (m *PluginCapabilityManager) bindingAuthority(ctx context.Context, tx *stor
 		if m.datasets == nil {
 			return a, owner, errPluginHostUnavailable
 		}
-		scoped := *m.datasets
-		scoped.store = tx
-		index, err := scoped.loadIndex(ctx, request.SourceID, request.Spec.VersionDigest)
+		index, err := loadDatasetIndex(ctx, tx, request.SourceID, request.Spec.VersionDigest)
 		if err != nil {
 			return a, owner, err
 		}

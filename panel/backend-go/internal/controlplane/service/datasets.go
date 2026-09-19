@@ -368,7 +368,14 @@ func (s *DatasetService) recordRefresh(ctx context.Context, id string, source pl
 }
 
 func (s *DatasetService) loadIndex(ctx context.Context, sourceID, digest string) (*datasets.Index, error) {
-	row, encoded, err := s.store.ReadDatasetIndex(ctx, sourceID, digest)
+	return loadDatasetIndex(ctx, s.store, sourceID, digest)
+}
+
+// loadDatasetIndex reads an immutable index through the caller's store view.
+// DatasetService carries process lifecycle state (closeOnce, refresh gates),
+// so a transaction must never be scoped by copying the service value.
+func loadDatasetIndex(ctx context.Context, store *storage.GormStore, sourceID, digest string) (*datasets.Index, error) {
+	row, encoded, err := store.ReadDatasetIndex(ctx, sourceID, digest)
 	if err != nil {
 		return nil, err
 	}
