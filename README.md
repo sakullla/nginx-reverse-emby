@@ -3,8 +3,10 @@
 [![Docker Build](https://github.com/sakullla/nginx-reverse-emby/actions/workflows/docker-build.yml/badge.svg)](https://github.com/sakullla/nginx-reverse-emby/actions/workflows/docker-build.yml)
 ![Docker Pulls](https://img.shields.io/docker/pulls/sakullla/nginx-reverse-emby?color=blue)
 
-面向 Emby、Jellyfin 以及常见 HTTP/TCP 服务的反向代理控制面。  
+面向 Emby、Jellyfin 以及常见 HTTP / TCP 服务的反向代理控制面。  
 典型场景：你有一台线路较好的 VPS，想把公费服 / 公益服 Emby、Jellyfin 或其它服务反代到自己的域名，减少观看时必须挂代理的问题。
+
+不需要自己写 Nginx 配置。一个 Docker Compose 就能拉起面板，并在本机自带一个 `local` 节点负责真正转发流量。
 
 完整中文文档：
 
@@ -14,28 +16,28 @@
 
 ## 它能做什么
 
-共享规则数据集由 Host 管理，支持 GeoIP、GeoSite、完整社区文件集和本产品省份 CIDR 模型。管理员通过 `/api/datasets` 管理源，`PUT /api/datasets/{sourceID}` 设置源描述和固定修订/摘要；私网来源及重定向目标需在 retrieval 配置中明确授权。`POST /api/datasets/control` 提供 import、refresh、activate、rollback 及受引用保护的删除操作；原始上传走 `/api/datasets/{sourceID}/uploads` 二进制路径，分类与版本历史通过 `/catalog` 分页查询。
-
-retrieval 默认使用固定 `revision` + `expected_digest`；管理员也可选择 `mode: "rolling-sha256"` 并设置 `checksum_url`，例如指向对应数据文件的 `.sha256sum`。滚动模式每次先读取有界校验文件（最多 4 KiB、15 秒），接受单个 SHA256 或文件名匹配的 sha256sum 行，再按取得的精确摘要下载数据。捕获的摘要形成 `checksum-sha256:…` 不可变修订，同时保存校验文件 URL、摘要和取得时间；它是完整性证据，不是独立发布者签名。私网和重定向授权同样适用于校验文件。
-
-下载在拨号前验证全部 DNS 结果，IPv4-mapped IPv6 先转换为 IPv4。公共源仅接受一般全局单播地址（IPv6 限 `2000::/3`），排除私网、回环、链路本地及特殊用途段。显式 `allow_private` 额外允许 RFC1918、ULA 和回环源，但不开放链路本地、`100.64.0.0/10`（包含 `100.100.100.200`）、文档/基准测试段、协议转换段、保留地址及 `168.63.129.16`、`fd00:ec2::254` 平台端点；具体拒绝前缀见 `service/dataset_fetch.go`。该规则同样约束数据、校验文件和重定向后的拨号。
-
-手动 refresh 和定时刷新均在完整校验后，通过既有 revision 事务激活源及全部消费者绑定；import 仍只准备候选，可另行 activate。`/bindings` 把实例、节点与最多 64 个分类选择器绑定到版本。本机和远端 Agent 都验证独立 `dataset-index-v1` 产物，索引随 generation 准备、切换和释放。`/status?node_id=…` 区分 desired、applied、last-good 和失败/离线；坏摘要、更新中的摘要/数据不一致、缺失分类或准备失败保留旧版本。最近三个成功版本及仍被配置、会话或 revision 引用的版本不能删除。来源、许可、覆盖与容量证据见 [规则数据集说明](docs/reference/rule-datasets.md)。
-
-SDK 的 `dataset.control/catalog/status` 接入控制面 HostRuntime；RPC Agent 的公开 `dataset.resolve/open/query` 使用调用 generation 的本地已授权绑定。resolve 不要求连接入口，也不下载或选择全局 latest；显式 open 仍要求准确版本摘要。旧会话持有旧代索引，新代解析新绑定。WASM 来源查询的组合入口 adapter 由策略执行模块接入。
-
-受管 RPC 网络通过私有、带凭据的 HostRuntime 套接字提供 TCP listener/stream 和 UDP flow。Host 入口 ID 等于实例 ID；监听和出站使用 `network.managed.listen/dial` 授权，资源选择器为精确 `tcp://host:port` 或 `udp://host:port`。Host 根据真实 socket peer 在交付数据前执行 `managed_network_policy`，不解析插件业务帧。句柄绑定实例和 runtime generation；候选可准备同实例的端口，发布后切换新接入，旧流随旧代排空。TCP 支持有界读写、背压、半关闭及取消；只有明确无字节消费的 idle 结果可安全续读。UDP 固定 peer，支持多响应，并受数量、队列和 idle 预算限制。
-
-Scoped secret 只通过认证 redemption 交付，快照与普通 state 保存引用和版本。Rotate/Revoke 先冻结新交付，再关闭所有曾读取旧版本的精确 runtime generations；进程、受管连接和重启 fence 确认完成后才返回成功，未确认返回 pending/unavailable。同一旧版本 mutation 的重试恢复原结果引用，不自动换成 latest。管理插件如果也读取过旧 material，应通过公开 durable 实例更新采用新引用、准备新配置 generation，再撤销旧引用，避免只停止自身而没有接替 generation；Host 不包含 SS 专用续代逻辑。
-
 - **HTTP / HTTPS 反代**：按域名转发 Web 服务，支持 ACME 自动证书
 - **L4 端口转发**：转发 TCP / UDP 端口
 - **多节点 Agent**：本机 `local` 节点可直接代理；也可把远端机器加入面板统一管理
-- **Relay 隧道**：需要时再启用节点间中继（见文档站）
+- **Relay 隧道**：入口节点到后端不通时，再启用节点间中继（见文档站）
 
-默认运行时是 **纯 Go 控制面容器**，不再依赖 Nginx。一个 Compose 即可拉起控制面和内置 local Agent。
+默认运行时是 **纯 Go 控制面容器**，不再依赖 Nginx。
 
 ## 5 分钟上手
+
+### 你需要准备什么
+
+1. 一台能装 Docker 的 Linux VPS
+2. （推荐）一个域名，DNS 已解析到这台 VPS
+3. 后端服务地址，例如 `https://origin.example.net` 或 `http://192.168.1.100:8096`
+
+先确认 VPS 自己能访问后端：
+
+```bash
+curl -I https://origin.example.net
+```
+
+这一步不通，后面的反代也一定不通。
 
 ### 1. 一键部署（推荐）
 
@@ -45,30 +47,49 @@ Scoped secret 只通过认证 redemption 交付，快照与普通 state 保存�
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
 ```
 
-脚本会创建目录、生成随机 token、启动服务，并在结束时打印**访问地址**和 **Panel token**（`API_TOKEN` / `NRE_PANEL_TOKEN` 面板访问令牌）。
+脚本会创建目录、生成随机 token、启动服务。如果系统还没有 Docker Compose，会询问后自动安装。结束时会打印**访问地址**和 **Panel token**（登录用的访问令牌）。
 
 交互通常只需两步：
 
 1. **面板域名**：DNS 已指向本机则填入；直接回车 = 临时 HTTP
-2. **Cloudflare Token**（可选）：粘贴后自动 DNS-01 申请证书；回车跳过则用 HTTP-01
+2. **Cloudflare Token**（可选）：粘贴后自动用 DNS-01 申请证书；回车跳过则用 HTTP-01
+
+Cloudflare Token 权限需要包含：`区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`。不要用 Global API Key。
 
 把脚本输出的地址和 token 保存好。临时 HTTP 的随机路径只能降低被扫到的概率，**不能替代 HTTPS 和足够长的随机令牌**。
 
 ### 2. 用访问令牌登录
 
-用脚本输出的地址打开面板，输入 **Panel token** 登录。全新部署只强制现有 token，不提供用户名或密码。登录成功后即可直接使用面板。
+用脚本输出的地址打开面板，输入 **Panel token** 登录。全新部署没有用户名和密码，只用这一条令牌。
+
+如果暂时没有公网域名，先在你的电脑上开 SSH 隧道：
+
+```bash
+ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
+```
+
+然后浏览器打开 `http://127.0.0.1:8080`。
 
 ### 3. 添加第一条规则
 
-进入 **流量管理 → HTTP 规则**，选择节点后添加规则。普通服务填写后端地址；已安装的加速源等插件可以直接选择“插件提供商”，不需要填写插件端口或额外参数。
+进入 **流量管理 → HTTP 规则**，节点选 `local`，添加规则：
 
 | 字段 | 示例 | 说明 |
 | --- | --- | --- |
-| 入口域名 | `https://app.example.com` | 你访问用的域名；HTTPS 沿用规则的证书流程 |
-| 后端 | `加速源` | 选择“插件提供商”后，从当前节点的可用插件中选择 |
-| 发布 | `发布规则` | 一次提交入口、证书和插件后端 |
+| 入口域名 | `https://emby.example.com` | 你访问用的域名；选 HTTPS 时会自动申请证书 |
+| 后端地址 | `https://origin.example.net` | 真正的服务地址，带协议和端口 |
+| 启用规则 | 开 | 只有开启才会生效 |
 
-点击发布后，Agent 会自动应用完整配置；插件更新或重启时，已建立的请求会继续完成。更完整的图文步骤见 [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)。
+确认 DNS 已指向 VPS，防火墙放行 `80` / `443`。保存后，`local` 节点会自动同步配置。
+
+浏览器打开入口域名，能看到后端页面就说明跑通了。打不开时按顺序检查：
+
+1. DNS 是否解析到 VPS
+2. 防火墙是否放行了 80 / 443
+3. VPS 能不能访问后端（上面的 `curl -I`）
+4. 规则是否选了 `local` 并且已启用
+
+节点上如果已经安装了加速源等插件，也可以在后端里选择「插件提供商」，不必自己填插件端口。第一次上手建议先用普通后端地址把链路跑通。更完整的图文步骤见 [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)。
 
 ## 手动部署
 
@@ -80,30 +101,16 @@ curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docke
 mkdir -p data
 ```
 
-配置两个访问 token 和通用 secret vault 的 envelope key。可先生成 vault key：
-
-```bash
-openssl rand -hex 32
-```
-
-可将输出的 64 位 hex 字符串写入 `PANEL_VAULT_MASTER_KEY`：
+编辑 `docker-compose.yaml`，至少改这两个值（用 32 位以上随机字符串，且互不相同）：
 
 ```yaml
 environment:
-  API_TOKEN: <面板 bootstrap 令牌>
+  API_TOKEN: <面板登录令牌>
   MASTER_REGISTER_TOKEN: <远程节点注册令牌>
-  PANEL_VAULT_MASTER_KEY: <64 位随机 hex>
-  PANEL_VAULT_KEY_ID: primary
   NRE_TIMEZONE: Asia/Shanghai
 ```
 
-`API_TOKEN` 和 `MASTER_REGISTER_TOKEN` 都要用 32 位以上随机字符串，且互不相同；仓库附带的 Compose 会同时要求这两个值。`PANEL_VAULT_MASTER_KEY` 可省略；省略时控制面会从 `API_TOKEN` 确定性派生标准 32-byte Vault key，重启不需要额外迁移。显式配置仍优先，一键部署脚本也会继续生成并持久保留独立 key。请把包含这些值的 `.env` 权限收紧为 `0600` 并纳入受控备份，不要只备份数据库。
-
-已存储 secret 后不能只更换 `API_TOKEN`，也不能单独填入一个新的 `PANEL_VAULT_MASTER_KEY`，否则既有 ciphertext 将无法解密。允许在线替换 Vault key：设置新的 `PANEL_VAULT_MASTER_KEY` 和不同的 `PANEL_VAULT_KEY_ID`，再临时设置旧的 `PANEL_VAULT_PREVIOUS_MASTER_KEY`；旧部署由 API token 派生时，改用 `PANEL_VAULT_PREVIOUS_API_TOKEN`。同时用 `PANEL_VAULT_PREVIOUS_KEY_ID` 指明旧部署的 key ID（Compose 默认是 `primary`）。控制面启动时会在事务内重加密全部 active secret，版本号和引用不变；确认启动和 secret 读取成功后，再删除三个 `PANEL_VAULT_PREVIOUS_*` 变量并备份新 key。
-
-官方插件市场默认读取镜像内的 `/opt/nginx-reverse-emby/official-market.lock`，并跟踪 `sakullla/sakullla-plugins` 的 `official-market` 分支。需要使用其它策略文件时，可设置 `PANEL_OFFICIAL_MARKET_LOCK_FILE`；该值必须是容器内的绝对路径，并指向普通文件而非符号链接。该文件只固定官方仓库身份、可切换的 `ref_kind: branch`/`ref_name` 更新通道、支持的 SDK ABI 与官方签名根，不固定 commit、tag、版本或 `market.yaml` 摘要。每次刷新都会解析所配置 branch 的当前 full OID，复核刷新期间 ref 未移动，完整验证市场与包签名后才持久化该 OID 和摘要 provenance；切换 branch 会先使旧 catalog 失效并建立新的 source generation。文件缺失、身份或签名验证失败会拒绝刷新并保留当前快照。
-
-官方发布物只接受一套 v1 契约：`market.yaml` 使用 `schema_version`、`commit`、`sdk_abi` 与 `packages`；根目录 `provenance.json` 必须配套 `provenance.signature.json`；每个包使用完整的 `plugin.yaml` runtime manifest、`package.files.json` 和 `signature.json`。两类签名都必须由 `sakullla-official-root-2026` 对各自 `payload_sha256` 解码后的原始 32-byte SHA-256 做 Ed25519 签名，其中根签名的 payload 是 `provenance.json` 原始字节的 SHA-256。旧的 `package.sha256`、`package.sig`、未签名 provenance 或对 ASCII hex digest 的签名不会作为官方兼容格式接受。包内 manifest、文件清单、任一 payload 文件、签名、完整 package digest 或 SDK provenance 不一致时，整个市场刷新失败并保留上一个可用快照。
+也可以把配置写在 `.env` 里，参考 [`.env.example`](.env.example)。**不要把真实 token、证书或私钥提交到仓库。** `./data` 目录是运行数据，同样不要上传到 Git 或网盘。
 
 启动：
 
@@ -111,38 +118,11 @@ environment:
 docker compose up -d
 ```
 
-默认只监听本机 `127.0.0.1:8080`。首次访问可先开 SSH 隧道：
+默认只监听本机 `127.0.0.1:8080`。首次访问用上面的 SSH 隧道打开面板，用 `API_TOKEN` 登录。
 
-```bash
-ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
-```
+### 给面板自身上 HTTPS
 
-浏览器打开 `http://127.0.0.1:8080`，用 `API_TOKEN` 令牌登录后即可使用面板。
-
-也可用 `.env` 管理配置，参考 [`.env.example`](.env.example)。**不要把真实 token、证书或私钥提交到仓库。**
-
-### 插件能力审计
-
-插件 Host 的能力调用审计默认关闭。关闭时 Agent 不创建 `audit/plugin-capabilities.jsonl`、队列或后台任务，已有旧审计文件也不会自动启用该功能。权限允许或拒绝始终由实例、generation、签名声明、管理员授权、actor、目标、配额和撤销状态决定；审计关闭、队列满、磁盘故障或低空间不会改变权限或策略结果。
-
-远端 Agent 使用 `NRE_PLUGIN_CAPABILITY_AUDIT_*`，面板内置 local Agent 使用 `NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_*`。两组变量的后缀和默认值相同：
-
-| 后缀 | 默认值 | 含义 |
-| --- | --- | --- |
-| `ENABLED` | `false` | 只接受 `true` 或 `false` |
-| `QUEUE_SIZE` | `256` | 非阻塞内存队列上限 |
-| `BATCH_SIZE` | `32` | 单次后台写入上限，不能大于队列 |
-| `FLUSH_INTERVAL` | `250ms` | 后台刷新间隔 |
-| `RETENTION` | `24h` | canonical 审计文件保留时间 |
-| `MAX_BYTES` | `16777216` | 活动文件和三个归档的总上限（16 MiB） |
-| `MIN_FREE_BYTES` | `67108864` | 写入后必须保留的文件系统空间（64 MiB） |
-| `CLOSE_TIMEOUT` | `2s` | 关闭时等待后台刷新的最长时间 |
-
-数值变量使用十进制字节或十进制整数，时间变量使用 Go duration 格式；空值、零、负数、非 canonical 布尔值和超过实现上限的值都会使配置加载失败。启用后只会管理 `plugin-capabilities.jsonl` 及其 `.1`、`.2`、`.3` 归档，不会清理同目录的其它文件，也不会触碰数据集、规则、凭据或重放记录。低空间时先清理本组件过期和超量归档，仍不足则暂停并丢弃新审计；空间恢复后后台写入自动继续。
-
-### 给面板自身上 HTTPS（手动部署时推荐）
-
-一键脚本在填写域名后会尽量自动完成；手动部署时可以自己加一条自代理规则：
+一键脚本在填写域名后会尽量自动完成。手动部署时，登录后加一条自代理规则即可：
 
 | 字段 | 示例 |
 | --- | --- |
@@ -154,11 +134,10 @@ ssh -L 8080:127.0.0.1:8080 root@<服务器 IP>
 ```yaml
 environment:
   NRE_PUBLIC_URL: https://panel.example.com
-  # bundled local Agent 会清洗并重写 X-Forwarded-*；其它上游代理必须具备同样行为
   NRE_TRUST_FORWARDED_HEADERS: "true"
 ```
 
-然后 `docker compose up -d`。
+然后 `docker compose up -d`。这样加入节点的命令和 Agent 更新地址都会走 HTTPS。
 
 ### 非交互部署
 
@@ -169,16 +148,20 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
   sh -s -- --public-url https://panel.example.com --cf-token YOUR_CF_TOKEN --yes --non-interactive
 ```
 
+也可用环境变量 `API_TOKEN`、`MASTER_REGISTER_TOKEN`、`CF_TOKEN`、`NRE_NONINTERACTIVE=1` 达到同样效果。
+
 ## 加入更多节点
 
-面板所在机器默认已有 `local` 节点。如果还要在其它服务器上跑代理：
+面板所在机器默认已有 `local` 节点。单机使用时，所有规则选 `local` 就够了。
+
+如果还要在其它服务器上跑代理：
 
 1. 打开面板 **节点管理**
 2. 点击 **加入节点**
 3. 选择 Linux / macOS，复制一键命令到目标机执行
 
-默认会签发**一次性登记令牌**（约 10 分钟有效）。节点上线后会出现在列表中。  
-Windows 目前需要手工安装 Go agent，详见 [Agent 指南](https://sakullla.github.io/nginx-reverse-emby/guides/agents)。
+Agent 会主动连接面板拉取配置，所以即使节点在内网或 NAT 后面也能工作。  
+Windows 安装方式见 [Agent 指南](https://sakullla.github.io/nginx-reverse-emby/guides/agents)。
 
 ## 接下来看什么
 
@@ -194,7 +177,7 @@ Windows 目前需要手工安装 Go agent，详见 [Agent 指南](https://sakull
 | 备份与恢复 | [备份恢复](https://sakullla.github.io/nginx-reverse-emby/operations/backup-restore) |
 | 故障排查 | [故障排查](https://sakullla.github.io/nginx-reverse-emby/operations/troubleshooting) |
 
-更偏运维与内部机制的内容（内部 PKI、revision 异步生效、热升级等）已放在文档站的运维章节，不在本 README 展开。
+更偏运维与内部机制的内容（环境变量全表、内部 PKI、revision 异步生效、热升级等）已放在文档站，不在本 README 展开。
 
 ## 本地开发
 
