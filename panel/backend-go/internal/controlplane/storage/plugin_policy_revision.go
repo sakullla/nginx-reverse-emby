@@ -292,19 +292,46 @@ func (s *GormStore) pluginMutationPolicyAgents(ctx context.Context, mutation Plu
 	}
 	// A control-plane policy face is projected to every Agent, independently
 	// of the management instance's explicit targets. Its revision fences must
-	// cover the same population as agentPolicyTargetKey.
-	var packages []PluginPackageRow
-	if err := s.db.WithContext(ctx).Where("plugin_id = ?", mutation.PluginID).Find(&packages).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range packages {
-		var manifest pluginsdk.Manifest
-		if err := json.Unmarshal([]byte(row.ManifestJSON), &manifest); err != nil {
+	// cover the same population as agentPolicyTargetKey, which derives the
+	// projection from the installed row's active or staged package. Historical
+	// package rows can never publish that face, so they are not scanned here:
+	// an unparseable manifest on a retired version must not be able to brick
+	// the reinstall or upgrade that would repair it.
+	var installed InstalledPluginRow
+	if err := s.db.WithContext(ctx).Where("plugin_id = ?", mutation.PluginID).First(&installed).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
-		if !pluginsdk.RuntimeProjectsControlPlaneUIAndAgentPolicy(manifest.Runtime) {
+		installed = InstalledPluginRow{}
+	}
+	faces := make([][2]string, 0, 2)
+	if installed.ActivePackageIdentity != "" && installed.ActivePackageDigest != "" {
+		faces = append(faces, [2]string{installed.ActivePackageIdentity, installed.ActivePackageDigest})
+	}
+	if installed.StagedPackageIdentity != "" && installed.StagedPackageDigest != "" &&
+		(installed.StagedPackageIdentity != installed.ActivePackageIdentity || installed.StagedPackageDigest != installed.ActivePackageDigest) {
+		faces = append(faces, [2]string{installed.StagedPackageIdentity, installed.StagedPackageDigest})
+	}
+	controlPlaneFace := false
+	for _, face := range faces {
+		var row PluginPackageRow
+		err := s.db.WithContext(ctx).Where("identity = ? AND digest = ?", face[0], face[1]).First(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		var manifest pluginsdk.Manifest
+		if err := json.Unmarshal([]byte(row.ManifestJSON), &manifest); err != nil {
+			return nil, fmt.Errorf("plugin %s package %s manifest: %w", mutation.PluginID, face[1], err)
+		}
+		if pluginsdk.RuntimeProjectsControlPlaneUIAndAgentPolicy(manifest.Runtime) {
+			controlPlaneFace = true
+			break
+		}
+	}
+	if controlPlaneFace {
 		var ids []string
 		if err := s.db.WithContext(ctx).Model(&AgentRow{}).Order("id").Pluck("id", &ids).Error; err != nil {
 			return nil, err
@@ -313,7 +340,6 @@ func (s *GormStore) pluginMutationPolicyAgents(ctx context.Context, mutation Plu
 			result[id] = struct{}{}
 		}
 		result[s.LocalAgentID()] = struct{}{}
-		break
 	}
 	agents := make([]string, 0, len(result))
 	for agentID := range result {
