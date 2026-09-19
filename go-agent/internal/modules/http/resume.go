@@ -26,6 +26,22 @@ type responseValidator struct {
 	ifRange      string
 }
 
+type resumeTransferError struct {
+	stage         string
+	attempts      int
+	sentBytes     int64
+	expectedBytes int64
+	err           error
+}
+
+func (e *resumeTransferError) Error() string {
+	return fmt.Sprintf("resume failed stage=%s attempts=%d sent_bytes=%d expected_bytes=%d: %v", e.stage, e.attempts, e.sentBytes, e.expectedBytes, e.err)
+}
+
+func (e *resumeTransferError) Unwrap() error {
+	return e.err
+}
+
 const resumableCopyBufferSize = 256 * 1024
 
 var resumableCopyBufferPool = sync.Pool{
@@ -46,8 +62,14 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.Header().Set("Content-Length", strconv.FormatInt(state.responseLength(), 10))
 	w.WriteHeader(resp.StatusCode)
-	fail := func(sentBytes int64, err error) (int64, error) {
-		return sentBytes, newStartedResponseError(err)
+	fail := func(stage string, attempts int, sentBytes int64, err error) (int64, error) {
+		return sentBytes, newStartedResponseError(&resumeTransferError{
+			stage:         stage,
+			attempts:      attempts,
+			sentBytes:     sentBytes,
+			expectedBytes: state.responseLength(),
+			err:           err,
+		})
 	}
 
 	var (
@@ -63,7 +85,7 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		trafficWriter.FlushTraffic()
 		if writeErr != nil {
 			_ = current.Body.Close()
-			return fail(sentBytes, writeErr)
+			return fail("downstream_write", attempts, sentBytes, writeErr)
 		}
 		if sentBytes >= expectedBytes {
 			_ = current.Body.Close()
@@ -74,31 +96,37 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		}
 		if !isResumableReadError(req, readErr) {
 			_ = current.Body.Close()
-			return fail(sentBytes, readErr)
+			return fail("upstream_read", attempts, sentBytes, readErr)
 		}
 		if attempts >= e.resilience.ResumeMaxAttempts {
 			_ = current.Body.Close()
-			return fail(sentBytes, readErr)
+			return fail("attempts_exhausted", attempts, sentBytes, readErr)
 		}
 		drainResponseBody(current.Body)
 		_ = current.Body.Close()
 
 		nextStart := state.rangeStart + sentBytes
-		nextReq, err := newResumeRequest(req, state, nextStart)
-		if err != nil {
-			return fail(sentBytes, err)
-		}
-		nextResp, err := e.transportForRequest(nextReq).RoundTrip(nextReq)
-		if err != nil {
-			return fail(sentBytes, err)
-		}
-		if err := validateResumeResponse(nextResp, state, nextStart); err != nil {
-			_ = nextResp.Body.Close()
-			return fail(sentBytes, err)
-		}
+		for {
+			nextReq, err := newResumeRequest(req, state, nextStart)
+			if err != nil {
+				return fail("request_build", attempts, sentBytes, err)
+			}
+			attempts++
+			nextResp, err := e.transportForRequest(nextReq).RoundTrip(nextReq)
+			if err != nil {
+				if attempts < e.resilience.ResumeMaxAttempts && isBackendRetryable(nextReq, err) {
+					continue
+				}
+				return fail("resume_roundtrip", attempts, sentBytes, err)
+			}
+			if err := validateResumeResponse(nextResp, state, nextStart); err != nil {
+				_ = nextResp.Body.Close()
+				return fail("response_validation", attempts, sentBytes, err)
+			}
 
-		current = nextResp
-		attempts++
+			current = nextResp
+			break
+		}
 	}
 }
 
@@ -143,10 +171,6 @@ func newResumableResponse(req *http.Request, resp *http.Response) (resumableResp
 	if req == nil || resp == nil || req.Method != http.MethodGet {
 		return resumableResponse{}, false
 	}
-	if !acceptsByteRanges(resp.Header) {
-		return resumableResponse{}, false
-	}
-
 	validator, ok := newResponseValidator(resp.Header)
 	if !ok {
 		return resumableResponse{}, false
@@ -197,9 +221,6 @@ func validateResumeResponse(resp *http.Response, state resumableResponse, nextSt
 	}
 	if resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("resume response returned unexpected status %d", resp.StatusCode)
-	}
-	if !acceptsByteRanges(resp.Header) {
-		return fmt.Errorf("resume response no longer advertises byte ranges")
 	}
 	if isMultipartByteranges(resp.Header) {
 		return fmt.Errorf("resume response returned unsupported multipart byte ranges")
@@ -262,13 +283,14 @@ func newResponseValidator(header http.Header) (responseValidator, bool) {
 }
 
 func (v responseValidator) matches(header http.Header) bool {
-	if v.etag != "" && strings.TrimSpace(header.Get("ETag")) != v.etag {
+	switch v.ifRange {
+	case v.etag:
+		return v.etag != "" && strings.TrimSpace(header.Get("ETag")) == v.etag
+	case v.lastModified:
+		return v.lastModified != "" && strings.TrimSpace(header.Get("Last-Modified")) == v.lastModified
+	default:
 		return false
 	}
-	if v.lastModified != "" && strings.TrimSpace(header.Get("Last-Modified")) != v.lastModified {
-		return false
-	}
-	return true
 }
 
 func (r resumableResponse) responseLength() int64 {

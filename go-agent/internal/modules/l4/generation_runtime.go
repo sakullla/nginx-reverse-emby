@@ -69,7 +69,7 @@ func (m *Module) prepareGeneration(
 	if err := validateL4Rules(activeRules, relayListeners, providers.Relay); err != nil {
 		return nil, err
 	}
-	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
+	generationContext, err := req.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +86,7 @@ func (m *Module) prepareGeneration(
 		egressResolver:    providers.egressResolver(),
 		finalHopDialer:    providers.FinalHopDialer,
 		egressProfiles:    providers.EgressProfiles,
+		policyEvaluator:   providers.PolicyEvaluator,
 		generationID:      generationContext.ID(),
 		ingress:           m.ingress,
 		sessionRegistrar:  m.sessions,
@@ -192,8 +193,25 @@ func (t *l4GenerationTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.finalizedSuccess = true
+	t.retireInactiveIngressBindings()
 	if t.previousServer != nil {
 		t.previousServer.revokeRules(t.revokedEntities)
+	}
+}
+
+func (t *l4GenerationTransaction) FinalizeGenerationPublication() {
+	if t == nil {
+		return
+	}
+	t.retireInactiveIngressBindings()
+}
+
+func (t *l4GenerationTransaction) retireInactiveIngressBindings() {
+	if t == nil || t.module == nil || t.module.ingress == nil || t.server == nil {
+		return
+	}
+	if err := t.module.ingress.retireExcept(t.server.ingressBindings()); err != nil {
+		log.Printf("[l4] retire inactive generation ingress: %v", err)
 	}
 }
 
@@ -720,6 +738,40 @@ func (l *l4IngressLease) release() error {
 	return l.releaseErr
 }
 
+func (m *l4IngressManager) retireExcept(activeBindings []*l4IngressBinding) error {
+	if m == nil {
+		return nil
+	}
+	active := make(map[*l4IngressBinding]struct{}, len(activeBindings))
+	for _, binding := range activeBindings {
+		if binding != nil {
+			active[binding] = struct{}{}
+		}
+	}
+
+	m.mu.Lock()
+	retired := make([]*l4IngressBinding, 0)
+	for key, binding := range m.bindings {
+		if _, keep := active[binding]; keep {
+			continue
+		}
+		delete(m.bindings, key)
+		retired = append(retired, binding)
+	}
+	m.mu.Unlock()
+
+	var closeErr error
+	for _, binding := range retired {
+		if binding.stream != nil {
+			closeErr = errors.Join(closeErr, binding.stream.Close())
+		}
+		if binding.packet != nil {
+			closeErr = errors.Join(closeErr, binding.packet.Close())
+		}
+	}
+	return closeErr
+}
+
 func (m *l4IngressManager) close() error {
 	if m == nil {
 		return nil
@@ -792,6 +844,21 @@ func (s *Server) packetEndpoint(bindingKey string) *ingress.PacketEndpoint {
 		}
 	}
 	return nil
+}
+
+func (s *Server) ingressBindings() []*l4IngressBinding {
+	if s == nil {
+		return nil
+	}
+	s.ingressMu.Lock()
+	defer s.ingressMu.Unlock()
+	bindings := make([]*l4IngressBinding, 0, len(s.ingressLeases))
+	for _, lease := range s.ingressLeases {
+		if lease != nil && lease.binding != nil {
+			bindings = append(bindings, lease.binding)
+		}
+	}
+	return bindings
 }
 
 func closeL4StreamEndpoint(endpoint *ingress.StreamEndpoint) error {

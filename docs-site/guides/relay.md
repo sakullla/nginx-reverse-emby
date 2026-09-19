@@ -15,7 +15,7 @@ Relay 在 Agent 之间建立加密通道。流量经过中继节点再到后端�
 | 字段 | 示例 | 说明 |
 | --- | --- | --- |
 | 名称 | `relay-fast-vps` | 给中继起个名字 |
-| 监听证书来源 | 自动签发（Relay CA） | 默认即可，系统自动维护证书 |
+| 监听证书来源 | 自动签发（Relay CA） | 维护升级前由系统管理；内部 PKI 激活后由 tunnel identity 接管 |
 | 绑定地址 | `0.0.0.0` | 监听所有网卡 |
 | 监听端口 | `7443` | 中继节点实际监听的端口 |
 | 公网入口 | `relay.example.com:7443` | 其他节点连接中继时用的地址 |
@@ -24,6 +24,8 @@ Relay 在 Agent 之间建立加密通道。流量经过中继节点再到后端�
 ![创建 Relay 监听器](/screenshots/panel-relay-form.png)
 
 保存后在列表中确认监听器已启用。
+
+生产环境应先完成[内部 PKI 升级与激活](../operations/internal-pki.md)。激活后的 TLS/TCP 与 QUIC Relay 都使用双向 TLS，双方证书必须属于当前 PKI domain，并匹配 Agent/listener identity、用途、有效期和撤销状态。界面中仍可见的旧 Relay CA/Pin 字段只服务维护升级前的兼容状态，不是故障时的安全回退。
 
 ![Relay 监听器列表](/screenshots/panel-relay-listener.png)
 
@@ -42,6 +44,8 @@ Relay 在 Agent 之间建立加密通道。流量经过中继节点再到后端�
 ## 验证
 
 保存规则后回到列表，规则卡片带 `Relay` 标记说明已关联隧道。测试入口端口或域名确认连通。
+
+还应验证无证书、错误 CA/EKU/identity/domain、过期或已撤销证书均被拒绝；同时 Agent 的 heartbeat/revision 等控制请求仍通过原 URL 和 `X-Agent-Token` 成功。PKI degraded 时 Relay 数据面会 fail closed，但不会把控制协议切换成 mTLS。
 
 ## Relay vs 直接转发
 

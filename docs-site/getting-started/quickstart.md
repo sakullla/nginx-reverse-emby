@@ -7,7 +7,7 @@
 1. 一台装了 Docker 和 Docker Compose 的 VPS
 2. 一个域名（比如 `app.example.com`），把它的 DNS 解析到 VPS 的 IP
 3. 后端服务的地址（比如 `https://origin.example.net` 或 `http://192.168.1.100:8096`）
-4. 一个你自己设置的强密码（后面称为 `API_TOKEN`）
+4. 一个你自己设置的访问令牌（后面称为 `API_TOKEN`）
 
 先确认 VPS 能访问后端：
 
@@ -25,7 +25,7 @@ curl -I https://origin.example.net
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
 ```
 
-脚本会自动创建目录、生成随机 token 并启动服务。输出里的 `Panel token` 就是登录密码。
+脚本会自动创建目录、生成随机 token 并启动服务。交互时填域名（可回车跳过）和可选 Cloudflare Token 即可；输出里的 `Panel token` 就是登录用的访问令牌。登录后即可直接使用面板。
 
 也可以手动部署：
 
@@ -35,17 +35,20 @@ curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docke
 mkdir -p data
 ```
 
-编辑 `docker-compose.yaml`，修改密码：
+编辑 `docker-compose.yaml`，设置访问令牌：
 
 ```yaml
 environment:
-  API_TOKEN: 改成你自己的强密码
-  MASTER_REGISTER_TOKEN: 改成另一个强密码
+  API_TOKEN: 改成你自己的访问令牌
+  MASTER_REGISTER_TOKEN: 改成另一个访问令牌
+  PANEL_VAULT_MASTER_KEY: 改成 openssl rand -hex 32 的输出
+  PANEL_VAULT_KEY_ID: primary
   NRE_TIMEZONE: Asia/Shanghai
 ```
 
-- `API_TOKEN`：登录面板用的密码，越随机越好。
-- `MASTER_REGISTER_TOKEN`：远程 Agent 注册用的密码。只在一台机器上用的话可以先随便填。
+- `API_TOKEN`：登录面板用的访问令牌，使用 32 位以上随机字符串。
+- `MASTER_REGISTER_TOKEN`：远程 Agent 注册用的独立令牌；仓库附带的 Compose 即使只运行本机节点也要求设置，不能与 `API_TOKEN` 相同。
+- `PANEL_VAULT_MASTER_KEY`：通用 secret vault 的 32-byte envelope key；若把 token/key 放在 `.env`，请将其权限设为 `0600`，并把实际 secret 配置纳入受控备份。
 
 启动：
 
@@ -59,7 +62,7 @@ docker compose up -d
 ssh -L 8080:127.0.0.1:8080 root@<你的 VPS IP>
 ```
 
-浏览器访问 `http://127.0.0.1:8080`，输入 `API_TOKEN` 登录。
+浏览器访问 `http://127.0.0.1:8080`，输入 `API_TOKEN` 登录后即可使用面板。
 
 ![登录面板](/screenshots/panel-login.png)
 
@@ -98,7 +101,10 @@ ssh -L 8080:127.0.0.1:8080 root@<你的 VPS IP>
 ```yaml
 environment:
   NRE_PUBLIC_URL: https://panel.example.com
+  NRE_TRUST_FORWARDED_HEADERS: "true"
 ```
+
+这里的 local Agent 会清洗并重写 `X-Forwarded-*`。如果改用其它上游代理，只能在它也会丢弃客户端伪造值并写入自身值时开启该选项。
 
 ## 第四步：验证业务反代
 

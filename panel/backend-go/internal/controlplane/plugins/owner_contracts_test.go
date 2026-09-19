@@ -1,0 +1,715 @@
+//go:build !integration
+
+package plugins
+
+import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+)
+
+func TestDeclarativeUIProjectionRejectsExecutableMarkupAndWriteOnlyMismatch(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "token": map[string]any{"type": "string", "writeOnly": true}}}
+	valid := map[string]any{
+		"schema_version": 1, "title": "Plugin settings",
+		"components": []any{
+			map[string]any{"type": "text", "id": "name", "label": "Name", "binding": "/name"},
+			map[string]any{"type": "secret", "id": "token", "label": "Token", "binding": "/token"},
+		},
+		"actions": []any{map[string]any{"type": "submit", "id": "save", "label": "Save"}},
+	}
+	data, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document, err := ProjectDeclarativeUI(data, schema, nil); err != nil || len(document.Components) != 2 {
+		t.Fatalf("valid=%+v err=%v", document, err)
+	}
+	valid["title"] = "<script>run()</script>"
+	bad, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDeclarativeUI(bad, schema, nil); err == nil {
+		t.Fatal("executable markup accepted")
+	}
+
+	mismatch := map[string]any{
+		"schema_version": 1, "title": "Plugin settings",
+		"components": []any{map[string]any{"type": "text", "id": "token", "label": "Token", "binding": "/token"}},
+		"actions":    []any{map[string]any{"type": "submit", "id": "save", "label": "Save"}},
+	}
+	mismatchData, err := json.Marshal(mismatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDeclarativeUI(mismatchData, schema, nil); err == nil || !strings.Contains(err.Error(), "writeOnly") {
+		t.Fatalf("writeOnly mismatch error = %v", err)
+	}
+
+	unbound := map[string]any{
+		"schema_version": 1, "title": "Plugin settings",
+		"components": []any{map[string]any{"type": "text", "id": "missing", "label": "Missing", "binding": "/missing"}},
+		"actions":    []any{map[string]any{"type": "submit", "id": "save", "label": "Save"}},
+	}
+	unboundData, err := json.Marshal(unbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDeclarativeUI(unboundData, schema, nil); err == nil {
+		t.Fatal("undeclared binding accepted")
+	}
+
+	dynamic := map[string]any{
+		"schema_version": 1, "title": "Plugin settings",
+		"components": []any{map[string]any{"type": "text", "id": "name", "label": "Name", "binding": "/name"}},
+		"actions": []any{map[string]any{
+			"type": "dynamic", "id": "refresh", "label": "Refresh",
+			"capability": "policy.atomic-state", "target_kind": "agent",
+		}},
+	}
+	dynamicData, err := json.Marshal(dynamic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDeclarativeUI(dynamicData, schema, nil); err == nil || !strings.Contains(err.Error(), "ui.dynamic-actions") {
+		t.Fatalf("missing dynamic-actions error = %v", err)
+	}
+}
+
+func TestValidatorRuntimeConfigExactNumericConstraints(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"number","minimum":-1.25,"maximum":2.5,"multipleOf":0.125}},"required":["value"],"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"-1.25", "2.5", "0.375"} {
+		if err := ValidateConfig(schema, json.RawMessage(`{"value":`+value+`}`)); err != nil {
+			t.Fatalf("ValidateConfig(%s) = %v", value, err)
+		}
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"value":-1.251}`)); err == nil || !strings.Contains(err.Error(), "below minimum") {
+		t.Fatalf("below minimum error = %v", err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"value":0.38}`)); err == nil || !strings.Contains(err.Error(), "not an exact multipleOf value") {
+		t.Fatalf("multipleOf error = %v", err)
+	}
+	zeroSchema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"number","multipleOf":0}},"required":["value"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(zeroSchema, json.RawMessage(`{"value":1}`)); err == nil || !strings.Contains(err.Error(), "multipleOf must be") {
+		t.Fatalf("non-positive multipleOf error = %v", err)
+	}
+}
+
+func TestConfigSchemaVocabularyAcceptsHostInjectedAndRejectsWriteOnlyConflict(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"mode":{"type":"string"},"generation":{"type":"string","hostInjected":true},"apps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","hostInjected":true},"name":{"type":"string"}},"required":["id","name"]}}},"required":["mode","generation"],"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"mode":"strict","generation":"gen-1","apps":[{"id":"app-1","name":"web"}]}`)); err != nil {
+		t.Fatalf("hostInjected schema = %v", err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"mode":"strict"}`)); err == nil || !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("required hostInjected field error = %v", err)
+	}
+
+	falseFlag, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"mode":{"type":"string","hostInjected":false}},"required":["mode"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(falseFlag, json.RawMessage(`{"mode":"strict"}`)); err != nil {
+		t.Fatalf("hostInjected false = %v", err)
+	}
+
+	conflict, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"token":{"type":"string","writeOnly":true,"hostInjected":true}},"required":["token"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(conflict, json.RawMessage(`{"token":"secret"}`)); err == nil || !strings.Contains(err.Error(), "hostInjected") || !strings.Contains(err.Error(), "writeOnly") {
+		t.Fatalf("hostInjected+writeOnly error = %v", err)
+	}
+
+	rootInjected, err := DecodeConfigSchema([]byte(`{"type":"object","hostInjected":true,"properties":{"mode":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(rootInjected, json.RawMessage(`{"mode":"strict"}`)); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Fatalf("root hostInjected error = %v", err)
+	}
+
+	itemsInjected, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string","hostInjected":true}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(itemsInjected, json.RawMessage(`{"tags":["a"]}`)); err == nil || !strings.Contains(err.Error(), "named object properties") {
+		t.Fatalf("items hostInjected error = %v", err)
+	}
+
+	notBool, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"generation":{"type":"string","hostInjected":"yes"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(notBool, json.RawMessage(`{"generation":"g"}`)); err == nil || !strings.Contains(err.Error(), "hostInjected must be boolean") {
+		t.Fatalf("non-boolean hostInjected error = %v", err)
+	}
+
+	unmarked, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(unmarked, json.RawMessage(`{"mode":"strict"}`)); err != nil {
+		t.Fatalf("unmarked schema = %v", err)
+	}
+	if err := ValidateConfig(unmarked, json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("unmarked required error = %v", err)
+	}
+
+	root := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"},"generation":{"type":"string","hostInjected":true}},"required":["mode","generation"],"additionalProperties":false}`)
+	refreshOwnerPackage(t, root)
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package with hostInjected schema = %v", err)
+	}
+	properties, _ := got.ConfigSchema["properties"].(map[string]any)
+	generation, _ := properties["generation"].(map[string]any)
+	if injected, _ := generation["hostInjected"].(bool); !injected {
+		t.Fatalf("validated schema lost hostInjected: %+v", got.ConfigSchema)
+	}
+}
+
+func TestValidatePackageRejectsRemovedDockerComposeContracts(t *testing.T) {
+	t.Parallel()
+	assertCode := func(t *testing.T, err error, code string) {
+		t.Helper()
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || validationErr.Code != code {
+			t.Fatalf("expected validation code %q, got %v", code, err)
+		}
+	}
+
+	compose := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, compose, PackageManifestFile, strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]", "permissions: [http.inspect, container.compose]", 1))
+	refreshOwnerPackage(t, compose)
+	_, err := newOwnerValidator().ValidatePackage(compose, PackageExpectation{})
+	assertCode(t, err, "permission")
+	if !strings.Contains(err.Error(), "container.compose") {
+		t.Fatalf("container.compose error = %v", err)
+	}
+
+	provider := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, provider, PackageManifestFile, strings.Replace(validOwnerManifestYAML(), "extension_points: [http.request]", "extension_points: [http.request, container.provider]", 1))
+	refreshOwnerPackage(t, provider)
+	_, err = newOwnerValidator().ValidatePackage(provider, PackageExpectation{})
+	assertCode(t, err, "extension_point")
+	if !strings.Contains(err.Error(), "container.provider") {
+		t.Fatalf("container.provider error = %v", err)
+	}
+}
+
+func TestValidatePackageIntegrityAcceptsRetiredDockerComposeContracts(t *testing.T) {
+	t.Parallel()
+
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]", "permissions: [http.inspect, container.compose]", 1)
+	manifest = strings.Replace(manifest, "extension_points: [http.request]", "extension_points: [http.request, container.provider]", 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+
+	legacyValidator := NewValidator(ValidatorOptions{
+		AllowedPermissions:     []string{"http.inspect", "container.compose"},
+		AllowedExtensionPoints: []string{"http.request", "container.provider"},
+		TrustedSigners:         map[string]ed25519.PublicKey{"test-fixture": ownerSigningKey().Public().(ed25519.PublicKey)},
+	})
+	if _, err := legacyValidator.ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("historically valid package = %v", err)
+	}
+
+	currentValidator := newOwnerValidator()
+	if _, err := currentValidator.ValidatePackage(root, PackageExpectation{}); err == nil || !strings.Contains(err.Error(), "container.compose") {
+		t.Fatalf("current execution validation error = %v", err)
+	}
+	if _, err := currentValidator.ValidatePackageIntegrity(root, PackageExpectation{}); err != nil {
+		t.Fatalf("installed package integrity validation = %v", err)
+	}
+
+	artifactPath := filepath.Join(root, "artifacts", "policy.wasm")
+	artifact, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifactPath, append(artifact, 0), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := currentValidator.ValidatePackageIntegrity(root, PackageExpectation{}); err == nil {
+		t.Fatal("integrity validation accepted a tampered retired package")
+	}
+
+	malformed := newSignedWASMPackage(t, "")
+	writeOwnerFile(t, malformed, PackageManifestFile, strings.Replace(validOwnerManifestYAML(), "extension_points: [http.request]", "extension_points: [container/provider]", 1))
+	refreshOwnerPackage(t, malformed)
+	if _, err := currentValidator.ValidatePackageIntegrity(malformed, PackageExpectation{}); err == nil || !strings.Contains(err.Error(), "canonical identifier") {
+		t.Fatalf("integrity validation accepted a malformed retired identifier: %v", err)
+	}
+}
+
+func TestValidatePackageAllowsResourceGroupExtension(t *testing.T) {
+	t.Parallel()
+
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "extension_points: [http.request]", "extension_points: [http.request, resource.group]", 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	if _, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("package with resource.group extension = %v", err)
+	}
+}
+
+func TestValidatePackageAcceptsControlPlaneUIAndAgentWAFPolicyFace(t *testing.T) {
+	t.Parallel()
+	root := newSignedDualFaceWAFPackage(t)
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("dual-face waf package = %v", err)
+	}
+	if got.Manifest.ID != "official.waf" || !pluginsdk.RuntimeProjectsControlPlaneUIAndAgentPolicy(got.Manifest.Runtime) || pluginsdk.RuntimeProjectsAgentRPC(got.Manifest.Runtime) {
+		t.Fatalf("dual-face projection = %+v", got.Manifest.Runtime)
+	}
+	projection, ok := pluginsdk.ProjectAgentPolicy(got.Manifest)
+	if !ok || projection.PolicyKind != "waf" || projection.Entry != "artifacts/policy.wasm" || projection.ResourceBudget.TimeoutMS != 2 {
+		t.Fatalf("dual-face policy projection = %+v ok=%v", projection, ok)
+	}
+	if len(projection.ExtensionPoints) != 1 || projection.ExtensionPoints[0] != pluginsdk.ExtensionHTTPRequest {
+		t.Fatalf("dual-face policy-face extensions = %v", projection.ExtensionPoints)
+	}
+}
+
+func TestValidatePackageKeepsWASMPolicyOnAgentHost(t *testing.T) {
+	t.Parallel()
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "host_scope: agent", "host_scope: control-plane", 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	_, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err == nil || !strings.Contains(err.Error(), "wasm-policy requires nre:policy/v1 on the agent host") {
+		t.Fatalf("wasm-policy control-plane error = %v", err)
+	}
+}
+
+func TestValidatePackageRejectsRPCPolicyKindWithoutNestedFace(t *testing.T) {
+	t.Parallel()
+	root := newSignedDualFaceWAFPackage(t)
+	stripped := strings.Replace(validDualFaceManifestYAML(t, ownerRPCArtifact(t), ownerWASMArtifact()), dualFacePolicyYAML(), "", 1)
+	writeOwnerFile(t, root, PackageManifestFile, stripped)
+	refreshOwnerPackage(t, root)
+	_, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err == nil || !strings.Contains(err.Error(), "nested agent policy face") {
+		t.Fatalf("rpc policy_kind without nested face error = %v", err)
+	}
+}
+
+func TestValidatePackageAllowsHostRuleCapabilitiesByDefault(t *testing.T) {
+	t.Parallel()
+
+	// Packages reach install, market import, and validator CLI paths through
+	// validators built without an explicit AllowedPermissions list, so the
+	// default catalog must accept every published host-mediated rule
+	// capability. A capability dropped here strands its plugins with
+	// permission "..." is not allowed before any grant can be issued.
+	root := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]",
+		fmt.Sprintf("permissions: [http.inspect, %s, %s, %s, %s]", pluginsdk.CapabilityHTTPRule, pluginsdk.CapabilityL4Rule, pluginsdk.CapabilityChannelReverse, pluginsdk.PermissionNetworkFull), 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package declaring l4.rule and channel.reverse = %v", err)
+	}
+	declared := map[string]struct{}{}
+	for _, permission := range got.Manifest.Permissions {
+		declared[permission.Name] = struct{}{}
+	}
+	for _, capability := range []pluginsdk.HostCapability{pluginsdk.CapabilityHTTPRule, pluginsdk.CapabilityL4Rule, pluginsdk.CapabilityChannelReverse} {
+		if _, ok := declared[string(capability)]; !ok {
+			t.Fatalf("validated manifest lost %q: %+v", string(capability), got.Manifest.Permissions)
+		}
+	}
+	if _, ok := declared[pluginsdk.PermissionNetworkFull]; !ok {
+		t.Fatalf("validated manifest lost %q: %+v", pluginsdk.PermissionNetworkFull, got.Manifest.Permissions)
+	}
+}
+
+func TestValidatePackageAllowsRuntimeIdentityCapabilityByDefault(t *testing.T) {
+	t.Parallel()
+	root := newSignedDualFaceWAFPackage(t)
+	manifest := validDualFaceManifestYAML(t, ownerRPCArtifact(t), ownerWASMArtifact())
+	manifest = strings.Replace(manifest, "permissions: [http.inspect]", fmt.Sprintf("permissions: [http.inspect, %s]", pluginsdk.CapabilityRuntimeIdentity), 1)
+	writeOwnerFile(t, root, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, root)
+	validated, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("package declaring runtime.identity = %v", err)
+	}
+	found := false
+	for _, permission := range validated.Manifest.Permissions {
+		found = found || permission.Name == string(pluginsdk.CapabilityRuntimeIdentity)
+	}
+	if !found {
+		t.Fatal("validated manifest lost runtime.identity")
+	}
+}
+
+func TestValidatePackageAllowsManagedCapabilitiesByDefault(t *testing.T) {
+	t.Parallel()
+	for _, permission := range []string{
+		string(pluginsdk.CapabilityDatasetQuery), string(pluginsdk.CapabilityDatasetResolve),
+		string(pluginsdk.CapabilityDatasetManage), string(pluginsdk.CapabilityDatasetBind),
+		string(pluginsdk.CapabilityPolicyControl), string(pluginsdk.CapabilityPolicyEntryOverlays),
+		pluginsdk.PermissionManagedNetworkListen, pluginsdk.PermissionManagedNetworkDial,
+		pluginsdk.PermissionScopedSecretRead, pluginsdk.PermissionScopedSecretWrite,
+	} {
+		t.Run(permission, func(t *testing.T) {
+			t.Parallel()
+			root := newSignedWASMPackage(t, "")
+			manifest := strings.Replace(validOwnerManifestYAML(), "permissions: [http.inspect]",
+				fmt.Sprintf("permissions: [http.inspect, {name: %s, resource: fixture-scope}]", permission), 1)
+			writeOwnerFile(t, root, PackageManifestFile, manifest)
+			refreshOwnerPackage(t, root)
+			validated, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+			if err != nil {
+				t.Fatalf("signed package declaring %s: %v", permission, err)
+			}
+			if len(validated.Manifest.Permissions) != 2 || validated.Manifest.Permissions[1].Name != permission || validated.Manifest.Permissions[1].Resource != "fixture-scope" {
+				t.Fatalf("permission scope lost: %+v", validated.Manifest.Permissions)
+			}
+			// Recognizing SDK permissions must not override an explicit host policy.
+			options := newOwnerValidator().options
+			options.AllowedPermissions = []string{"http.inspect"}
+			_, err = NewValidator(options).ValidatePackage(root, PackageExpectation{})
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Code != "permission" {
+				t.Fatalf("explicit permission restriction ignored: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidatePackageRejectsIndependentSecurityFailures(t *testing.T) {
+	t.Parallel()
+	assertCode := func(t *testing.T, err error, code string) {
+		t.Helper()
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || validationErr.Code != code {
+			t.Fatalf("expected validation code %q, got %v", code, err)
+		}
+	}
+
+	root := newSignedWASMPackage(t, "")
+	got, err := newOwnerValidator().ValidatePackage(root, PackageExpectation{})
+	if err != nil || got.Digest == "" || got.Manifest.ID != "official.waf" {
+		t.Fatalf("valid package = %+v err=%v", got, err)
+	}
+
+	tampered := newSignedWASMPackage(t, "")
+	if err := os.WriteFile(filepath.Join(tampered, PackageSignatureFile), []byte(base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newOwnerValidator().ValidatePackage(tampered, PackageExpectation{})
+	assertCode(t, err, "signature_mismatch")
+
+	official := newSignedWASMPackage(t, "")
+	manifest := strings.Replace(validOwnerManifestYAML(), "key_id: test-fixture", "key_id: "+OfficialSignatureKeyID, 1)
+	if err := os.WriteFile(filepath.Join(official, PackageManifestFile), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refreshOwnerPackage(t, official)
+	overridden := NewValidator(ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{OfficialSignatureKeyID: ownerSigningKey().Public().(ed25519.PublicKey)}})
+	_, err = overridden.ValidatePackage(official, PackageExpectation{})
+	assertCode(t, err, "signature_mismatch")
+
+	digestRoot := newSignedWASMPackage(t, "")
+	if err := os.WriteFile(filepath.Join(digestRoot, "artifacts", "policy.wasm"), append(ownerWASMArtifact(), 0), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newOwnerValidator().ValidatePackage(digestRoot, PackageExpectation{})
+	assertCode(t, err, "artifact_size")
+
+	modeRoot := newSignedWASMPackage(t, "")
+	if err := os.Chmod(filepath.Join(modeRoot, "artifacts", "policy.wasm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(modeRoot, "artifacts", "policy.wasm")); err != nil || info.Mode().Perm()&0o111 == 0 {
+		t.Skip("filesystem does not preserve POSIX execute bits")
+	}
+	_, err = newOwnerValidator().ValidatePackage(modeRoot, PackageExpectation{})
+	assertCode(t, err, "artifact_mode")
+
+	uppercaseDigest := newSignedWASMPackage(t, "")
+	artifactDigest := sha256.Sum256(ownerWASMArtifact())
+	manifest = strings.Replace(validOwnerManifestYAML(), fmt.Sprintf("sha256: %x", artifactDigest), fmt.Sprintf("sha256: %X", artifactDigest), 1)
+	writeOwnerFile(t, uppercaseDigest, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, uppercaseDigest)
+	_, err = newOwnerValidator().ValidatePackage(uppercaseDigest, PackageExpectation{})
+	assertCode(t, err, "artifact")
+
+	unknownHostScope := newSignedWASMPackage(t, "")
+	manifest = strings.Replace(validOwnerManifestYAML(), "  host_scope: agent\n", "  host_scope: agent\n  host_scopes: [sidecar]\n", 1)
+	writeOwnerFile(t, unknownHostScope, PackageManifestFile, manifest)
+	refreshOwnerPackage(t, unknownHostScope)
+	_, err = newOwnerValidator().ValidatePackage(unknownHostScope, PackageExpectation{})
+	assertCode(t, err, "runtime")
+
+	cycle := newSignedWASMPackage(t, "migrations:\n  - {from: 0.8.0, to: 0.9.0, file: migrations/a.json}\n  - {from: 0.9.0, to: 0.8.0, file: migrations/b.json}\n")
+	writeOwnerFile(t, cycle, "migrations/a.json", `{"operations":[{"op":"set","path":"/a","value":true}]}`)
+	writeOwnerFile(t, cycle, "migrations/b.json", `{"operations":[{"op":"set","path":"/b","value":true}]}`)
+	refreshOwnerPackage(t, cycle)
+	_, err = newOwnerValidator().ValidatePackage(cycle, PackageExpectation{})
+	assertCode(t, err, "migration")
+	if !strings.Contains(err.Error(), "contains a cycle") {
+		t.Fatalf("cycle error = %v", err)
+	}
+}
+
+func newSignedWASMPackage(t *testing.T, extraManifest string) string {
+	t.Helper()
+	root := t.TempDir()
+	writeOwnerFile(t, root, PackageManifestFile, validOwnerManifestYAML()+extraManifest)
+	writeOwnerFile(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"additionalProperties":false}`)
+	writeOwnerBytes(t, root, "artifacts/policy.wasm", ownerWASMArtifact())
+	refreshOwnerPackage(t, root)
+	return root
+}
+
+func validOwnerManifestYAML() string {
+	artifact := ownerWASMArtifact()
+	digest := sha256.Sum256(artifact)
+	return fmt.Sprintf(`schema_version: 1
+id: official.waf
+version: 1.0.0
+name: WAF
+compatibility:
+  host: ">=1.0.0 <2.0.0"
+  agent: ">=1.0.0 <2.0.0"
+runtime:
+  kind: wasm-policy
+  abi: nre:policy/v1
+  host_scope: agent
+  entry: artifacts/policy.wasm
+  policy_kind: waf
+artifacts:
+  - path: artifacts/policy.wasm
+    sha256: %x
+    size: %d
+    mode: wasm
+extension_points: [http.request]
+permissions: [http.inspect]
+config_schema: config.schema.json
+resource_budget:
+  timeout_ms: 2
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 4096
+failure_policy:
+  on_error: fail-open
+  on_budget: fail-open
+  restart: never
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
+cleanup:
+  instances: delete
+  config: delete
+  owned_data: delete
+  grants: delete
+  shared_refs: retain
+  audit_events: retain
+`, digest, len(artifact))
+}
+
+func refreshOwnerPackage(t *testing.T, root string) {
+	t.Helper()
+	digest, err := ComputePackageDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOwnerFile(t, root, PackageDigestFile, digest+"\n")
+	writeOwnerFile(t, root, PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(ownerSigningKey(), []byte(digest)))+"\n")
+}
+
+func newOwnerValidator() *Validator {
+	return NewValidator(ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": ownerSigningKey().Public().(ed25519.PublicKey)}})
+}
+
+func ownerSigningKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("nre-validator-test-fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func ownerWASMArtifact() []byte {
+	name := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex")
+	encoded, err := os.ReadFile(name)
+	if err != nil {
+		panic(err)
+	}
+	artifact, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		panic(err)
+	}
+	return artifact
+}
+
+func writeOwnerFile(t *testing.T, root, name, value string) {
+	t.Helper()
+	writeOwnerBytes(t, root, name, []byte(value))
+}
+
+func writeOwnerBytes(t *testing.T, root, name string, value []byte) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, value, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newSignedDualFaceWAFPackage(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	rpcArtifact := ownerRPCArtifact(t)
+	wasmArtifact := ownerWASMArtifact()
+	writeOwnerFile(t, root, PackageManifestFile, validDualFaceManifestYAML(t, rpcArtifact, wasmArtifact))
+	writeOwnerFile(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"additionalProperties":false}`)
+	writeOwnerBytes(t, root, ownerRPCArtifactPath(), rpcArtifact)
+	writeOwnerBytes(t, root, "artifacts/policy.wasm", wasmArtifact)
+	refreshOwnerPackage(t, root)
+	return root
+}
+
+func validDualFaceManifestYAML(t *testing.T, rpcArtifact, wasmArtifact []byte) string {
+	t.Helper()
+	rpcDigest := sha256.Sum256(rpcArtifact)
+	wasmDigest := sha256.Sum256(wasmArtifact)
+	rpcPath := ownerRPCArtifactPath()
+	return fmt.Sprintf(`schema_version: 1
+id: official.waf
+version: 1.0.0
+name: WAF
+compatibility:
+  host: ">=1.0.0 <2.0.0"
+  agent: ">=1.0.0 <2.0.0"
+runtime:
+  kind: rpc-service
+  abi: nre:rpc/v1
+  host_scope: control-plane
+  entry: plugin
+  policy_kind: waf
+%s
+artifacts:
+  - path: %s
+    sha256: %x
+    size: %d
+    mode: executable
+    goos: %s
+    goarch: %s
+  - path: artifacts/policy.wasm
+    sha256: %x
+    size: %d
+    mode: wasm
+extension_points: [ui.route, http.request]
+ui_route_id: official.waf
+permissions: [http.inspect]
+config_schema: config.schema.json
+resource_budget:
+  timeout_ms: 2000
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 4096
+  cpu_millis: 100
+  restarts: 1
+failure_policy:
+  on_error: fail-closed
+  on_budget: fail-closed
+  restart: on-failure
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
+cleanup:
+  instances: delete
+  config: delete
+  owned_data: delete
+  grants: delete
+  shared_refs: retain
+  audit_events: retain
+`, dualFacePolicyYAML(), rpcPath, rpcDigest, len(rpcArtifact), runtime.GOOS, runtime.GOARCH, wasmDigest, len(wasmArtifact))
+}
+
+func dualFacePolicyYAML() string {
+	return `  policy:
+    kind: wasm-policy
+    abi: nre:policy/v1
+    host_scope: agent
+    entry: artifacts/policy.wasm
+    resource_budget:
+      timeout_ms: 2
+      memory_bytes: 1048576
+      concurrency: 8
+      input_bytes: 65536
+      output_bytes: 4096
+    failure_policy:
+      on_error: fail-closed
+      on_budget: fail-closed
+      restart: never
+      core_fallback: preserve
+`
+}
+
+func ownerRPCArtifactPath() string {
+	name := "plugin"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.ToSlash(filepath.Join("artifacts", runtime.GOOS+"-"+runtime.GOARCH, name))
+}
+
+func ownerRPCArtifact(t *testing.T) []byte {
+	t.Helper()
+	candidates := []string{"true", "sleep"}
+	if runtime.GOOS == "windows" {
+		candidates = []string{filepath.Join(os.Getenv("SystemRoot"), "System32", "where.exe"), filepath.Join(os.Getenv("SystemRoot"), "System32", "hostname.exe")}
+	}
+	for _, candidate := range candidates {
+		data, err := os.ReadFile(candidate)
+		if err == nil && len(data) > 0 {
+			return data
+		}
+	}
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(source)
+	if err != nil || len(data) == 0 {
+		t.Fatalf("rpc fixture executable: %v", err)
+	}
+	return data
+}

@@ -10,16 +10,16 @@
 | **DNS-01 验证** | 无法开放 80 端口，或需要通配符证书（`*.example.com`） |
 | **手动上传** | 已有商业证书或自签证书 |
 
-## 证书管理页面
+## 证书中心
 
-进入 **基础设施 → 证书管理**。创建证书时选一个用途模板，系统会帮你填好大部分设置：
+进入 **基础设施 → 证书中心**。中心内一级切换 **公网证书** 与 **内部 PKI** 两个安全域。公网域管理 HTTPS/ACME 与手动上传的业务证书；创建时选一个模板，系统会帮你填好大部分设置：
 
 | 模板 | 说明 |
 | --- | --- |
-| HTTPS 入口 | 给 HTTP 代理规则使用 |
-| Relay 监听 | 给 Relay 隧道监听器使用 |
-| 混合用途 | 同一份证书同时用于 HTTPS 和 Relay |
-| IP 证书 | 给 IP 地址（而非域名）签发证书 |
+| 网站 HTTPS | 给 HTTP 代理规则使用 |
+| 手动上传证书 | 粘贴已有 PEM 证书、私钥和可选 CA 链 |
+
+Relay 的 tunnel identity、内部 CA、轮转和撤销属于另一安全域，通过证书中心顶部切换到 **内部 PKI** 管理。侧栏只保留「证书中心」一个入口，不再平行挂独立 PKI 菜单。
 
 ![证书管理列表](/screenshots/panel-certificates.png)
 
@@ -43,14 +43,14 @@
 - 需要通配符证书（`*.example.com`）
 - 给内网域名签发证书
 
-在控制面的环境变量中配置：
+在控制面设置 `ACME_DNS_PROVIDER=cf`。签发和续期会按证书域名向统一解析入口取 Token：已为该域配置的 `cloudflare-dns` 映射优先；未命中时才使用环境变量全局 Token。
 
 ```ini
 ACME_DNS_PROVIDER=cf
 CF_TOKEN=your-cloudflare-api-token
 ```
 
-两个变量都配置且非空时，DNS-01 才会启用。
+`ACME_DNS_PROVIDER=cf` 且存在环境变量 Token **或** 已安装并可提供映射的 `cloudflare-dns` 插件时，DNS-01 才会启用。某个域名既无映射又无环境变量 Token 时，该次签发或续期失败。
 
 ### 获取 Cloudflare API Token
 
@@ -69,7 +69,7 @@ CF_TOKEN=your-cloudflare-api-token
 
 ![Cloudflare API Token 权限](/screenshots/cloudflare-token-permissions.png)
 
-Token 支持多种环境变量名，按优先级依次尝试：`CLOUDFLARE_DNS_API_TOKEN` > `CF_DNS_API_TOKEN` > `CF_TOKEN` > `CF_Token`。填任意一个即可，同时设置了多个时优先级高的生效。
+环境变量全局 Token 只在解析未命中时作为兜底。支持多种名称，按优先级依次尝试：`CLOUDFLARE_DNS_API_TOKEN` > `CF_DNS_API_TOKEN` > `CF_TOKEN` > `CF_Token`。填任意一个即可，同时设置了多个时优先级高的生效。映射命中时不会再混用这份全局 Token。
 
 ::: warning Token 安全
 CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更多安全建议见 [安全最佳实践](../reference/security.md)。
@@ -87,15 +87,15 @@ CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更
 到期前需要手动更新。优先使用自动签发。
 :::
 
-## Relay 证书
+## 内部 Relay PKI
 
-Relay 监听器默认使用系统自动签发的 Relay CA 和监听证书。普通用户无需手动创建，也无需维护 Pin Set。只有特殊合规或安全要求时才需要手动配置。详见 [Relay 协议内幕](../reference/relay-internals.md)。
+生产 Relay mTLS 使用内部 PKI 签发的 Agent/listener tunnel identity，不从公网证书域创建，也不能用公网 ACME 或普通手动上传证书替代。请在 **证书中心 → 内部 PKI** 查看 identity、CA generation、有效期、轮转、撤销和受保护备份。既有 Relay CA/Pin 配置仅在维护升级激活前保留；完成激活后不能作为降级或恢复路径。详见[内部 PKI 升级与运维](../operations/internal-pki.md)和 [Relay 协议内幕](../reference/relay-internals.md)。
 
 ## 自动续期
 
 Let's Encrypt 证书有效期 90 天。控制面每 24 小时检查一次，对临近到期的证书自动续期。
 
-DNS-01 续期需要 CF_TOKEN 持续有效。Token 过期会导致续期失败。
+DNS-01 续期需要该域名解析到的 Token（映射或环境变量兜底）持续有效。Token 过期会导致续期失败。
 
 ## HTTP/3
 

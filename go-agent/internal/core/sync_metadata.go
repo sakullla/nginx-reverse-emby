@@ -12,6 +12,7 @@ import (
 
 const (
 	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
+	runtimeMetaTrafficStatsEnabled        = "traffic_stats_enabled"
 	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
 	runtimeMetaTrafficBlocked             = "traffic_blocked"
 	runtimeMetaTrafficBlockReason         = "traffic_block_reason"
@@ -74,6 +75,50 @@ func SetTrafficBlockedMetadata(meta map[string]string, cfg model.AgentConfig) {
 	meta[runtimeMetaTrafficBlockReason] = cfg.TrafficBlockReason
 }
 
+func SetTrafficRuntimeMetadata(meta map[string]string, cfg model.AgentConfig) {
+	if cfg.TrafficStatsEnabled != nil {
+		meta[runtimeMetaTrafficStatsEnabled] = strconv.FormatBool(*cfg.TrafficStatsEnabled)
+	}
+	SetTrafficBlockedMetadata(meta, cfg)
+}
+
+func trafficRuntimeConfigFromMetadata(meta map[string]string, legacyConfig model.AgentConfig) (model.AgentConfig, bool, error) {
+	enabledText, hasEnabled := meta[runtimeMetaTrafficStatsEnabled]
+	blockedText, hasBlocked := meta[runtimeMetaTrafficBlocked]
+	reason, hasReason := meta[runtimeMetaTrafficBlockReason]
+	if !hasEnabled && !hasBlocked && !hasReason {
+		return model.AgentConfig{}, false, nil
+	}
+	enabled := false
+	var err error
+	if hasEnabled {
+		enabled, err = strconv.ParseBool(strings.TrimSpace(enabledText))
+		if err != nil {
+			return model.AgentConfig{}, false, fmt.Errorf("traffic_stats_enabled metadata: %w", err)
+		}
+	} else if legacyConfig.TrafficStatsEnabled != nil {
+		// Runtime metadata written before traffic_stats_enabled was introduced
+		// only proves block state. Recover enabled from the immutable applied
+		// artifact that originally configured that runtime instead of guessing.
+		enabled = *legacyConfig.TrafficStatsEnabled
+	}
+	blocked := false
+	if hasBlocked {
+		blocked, err = strconv.ParseBool(strings.TrimSpace(blockedText))
+		if err != nil {
+			return model.AgentConfig{}, false, fmt.Errorf("traffic_blocked metadata: %w", err)
+		}
+	}
+	// When neither metadata nor the old artifact proves enabled, false is the
+	// only safe upgrade value. This prevents module preparation from falling
+	// back to a process-global true default while heartbeat remains unavailable.
+	return model.AgentConfig{
+		TrafficStatsEnabled: &enabled,
+		TrafficBlocked:      blocked,
+		TrafficBlockReason:  strings.TrimSpace(reason),
+	}, true, nil
+}
+
 func (c *SyncController) recordRuntimeError(syncErr error) error {
 	return c.recordRuntimeErrorWithRevision(syncErr, c.Runtime.ActiveSnapshot().Revision)
 }
@@ -99,10 +144,10 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 	state.Metadata = ensureMetadata(state.Metadata)
 	lastSyncError := strings.TrimSpace(state.Metadata["last_sync_error"])
 	if lastSyncError == "" {
-		if !hasLegacyHeartbeatApplyError(state.Metadata) {
+		lastSyncError = recoverableApplyErrorMessage(state.Metadata)
+		if lastSyncError == "" {
 			return nil
 		}
-		lastSyncError = strings.TrimSpace(state.Metadata["last_apply_message"])
 	}
 	delete(state.Metadata, "last_sync_error")
 	if isRecoverableSyncApplyError(state.Metadata, lastSyncError) {
@@ -111,11 +156,24 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 	return c.Store.SaveRuntimeState(state)
 }
 
+func recoverableApplyErrorMessage(metadata map[string]string) string {
+	message := strings.TrimSpace(metadata["last_apply_message"])
+	if !isRecoverableSyncApplyError(metadata, message) {
+		return ""
+	}
+	return message
+}
+
 func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError string) bool {
 	normalizedError := strings.ToLower(strings.TrimSpace(lastSyncError))
 	restartRequested := strings.ToLower(ErrRestartRequested.Error())
 	recovered := isLegacyHeartbeatSyncError(normalizedError) ||
+		isRevisionReportAckError(normalizedError) ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
+		strings.HasPrefix(normalizedError, "durable generation does not match the desired runtime snapshot") ||
+		strings.HasPrefix(normalizedError, "start hot restart child:") ||
+		strings.HasPrefix(normalizedError, "activate hot restart child:") ||
+		strings.HasPrefix(normalizedError, "transfer hot restart authority:") ||
 		strings.HasPrefix(normalizedError, "open current executable:") ||
 		normalizedError == restartRequested ||
 		strings.HasSuffix(normalizedError, "\n"+restartRequested) ||
@@ -130,26 +188,38 @@ func isLegacyHeartbeatSyncError(message string) bool {
 	return strings.HasPrefix(normalized, "heartbeat failed:") || isLegacyHeartbeatTransportError(normalized)
 }
 
+func isRevisionReportAckError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(normalized, "/api/agent-revisions/") && strings.Contains(normalized, "/report failed")
+}
+
 func hasLegacyHeartbeatApplyError(metadata map[string]string) bool {
 	return strings.EqualFold(strings.TrimSpace(metadata["last_apply_status"]), "error") &&
 		isLegacyHeartbeatSyncError(metadata["last_apply_message"])
 }
 
 func isLegacyHeartbeatTransportError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
 	const methodPrefix = `post "`
-	if !strings.HasPrefix(message, methodPrefix) {
+	if strings.HasPrefix(normalized, methodPrefix) {
+		remainder := strings.TrimPrefix(normalized, methodPrefix)
+		quote := strings.IndexByte(remainder, '"')
+		if quote >= 0 && strings.HasPrefix(remainder[quote+1:], ":") {
+			endpoint, err := url.Parse(remainder[:quote])
+			if err == nil && strings.HasSuffix(strings.TrimRight(endpoint.Path, "/"), "/api/agents/heartbeat") {
+				return true
+			}
+		}
+	}
+	if !strings.HasPrefix(normalized, "read tcp ") && !strings.HasPrefix(normalized, "write tcp ") && !strings.HasPrefix(normalized, "dial tcp ") {
 		return false
 	}
-	remainder := strings.TrimPrefix(message, methodPrefix)
-	quote := strings.IndexByte(remainder, '"')
-	if quote < 0 || !strings.HasPrefix(remainder[quote+1:], ":") {
-		return false
+	for _, marker := range []string{"connection reset by peer", "broken pipe", "i/o timeout", "use of closed network connection", "connection refused"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
 	}
-	endpoint, err := url.Parse(remainder[:quote])
-	if err != nil {
-		return false
-	}
-	return strings.HasSuffix(strings.TrimRight(endpoint.Path, "/"), "/api/agents/heartbeat")
+	return false
 }
 
 func (c *SyncController) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
@@ -168,6 +238,15 @@ func (c *SyncController) recordRuntimeErrorFromState(syncErr error, revision int
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
 	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
+	if c.Runtime != nil {
+		activeTraffic := c.Runtime.ActiveSnapshot().AgentConfig
+		if activeTraffic.TrafficStatsEnabled != nil {
+			// Error recovery must persist the state the active provider actually
+			// enforces, not an unconfirmed traffic intent left by a failed write or
+			// rollback. This keeps restart fail-closed.
+			SetTrafficRuntimeMetadata(state.Metadata, activeTraffic)
+		}
+	}
 	if err := c.Store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
@@ -197,7 +276,7 @@ func (c *SyncController) persistRuntimeState(clearLastSyncError bool) error {
 	if err := SetTrafficStatsIntervalMetadata(state.Metadata, activeConfig.TrafficStatsInterval); err != nil {
 		return err
 	}
-	SetTrafficBlockedMetadata(state.Metadata, activeConfig)
+	SetTrafficRuntimeMetadata(state.Metadata, activeConfig)
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
@@ -214,6 +293,7 @@ func (c *SyncController) runtimeStateForPersistence() (RuntimeState, error) {
 	state := existing
 	state.Status = current.Status
 	state.CurrentRevision = current.CurrentRevision
+	state.PluginStatuses = reconcilePluginRuntimeStatuses(existing.PluginStatuses, current.PluginStatuses)
 	state.Metadata = ensureMetadata(existing.Metadata)
 	for key, value := range current.Metadata {
 		state.Metadata[key] = value

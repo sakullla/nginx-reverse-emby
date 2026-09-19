@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -15,6 +20,19 @@ import (
 type Store interface {
 	SnapshotStore
 	RuntimeStateStore
+	tunnelPKICredentialTargetStore
+}
+
+type localPluginArtifactResolver interface {
+	ResolveLocalPluginGenerationArtifact(context.Context, storage.PluginGeneration) (string, error)
+}
+
+type localDatasetArtifactResolver interface {
+	ResolveLocalDatasetArtifact(context.Context, storage.DatasetSnapshot) (string, error)
+}
+
+type tunnelPKICredentialTargetStore interface {
+	LoadRelayListenerCredentialTargets(context.Context, string) ([]storage.RelayListener, error)
 }
 
 type embeddedRuntimeRunner interface {
@@ -30,70 +48,118 @@ var newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded
 }
 
 type Runtime struct {
-	source  *SyncSource
-	sink    *StateSink
-	runtime embeddedRuntimeRunner
+	source            *SyncSource
+	sink              *StateSink
+	runtime           embeddedRuntimeRunner
+	agentID           string
+	heartbeatInterval time.Duration
+	credentials       tunnelCredentialStore
+	credentialTargets tunnelPKICredentialTargetStore
+	pluginArtifacts   localPluginArtifactResolver
+	pkiMu             sync.RWMutex
+	tunnelPKI         TunnelPKIService
+	pkiReconcileMu    sync.Mutex
+	now               func() time.Time
 }
 
 func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	bridge := newSyncRequestBridge()
 	source := newSyncSourceWithBridge(store, cfg.LocalAgentID, bridge)
+	if secretStore, ok := store.(*storage.GormStore); ok {
+		keyring, keyErr := secrets.KeyringFromEnvironment()
+		if keyErr == nil {
+			vault, vaultErr := secrets.NewVault(secretStore, keyring)
+			if vaultErr != nil {
+				return nil, vaultErr
+			}
+			if _, migrateErr := vault.MigrateToCurrentKey(context.Background()); migrateErr != nil {
+				return nil, migrateErr
+			}
+			pluginService := service.NewPluginService(secretStore, filepath.Join(cfg.DataDir, "plugins", "packages"))
+			pluginService.SetSecretVault(vault)
+			source.SetPluginSecretSource(pluginService)
+		} else if !errors.Is(keyErr, secrets.ErrKeyNotConfigured) {
+			return nil, keyErr
+		}
+	}
 	sink := newStateSinkWithBridge(store, cfg.LocalAgentID, bridge)
 
 	runtime, err := newEmbeddedRuntime(
-		goagentembedded.Config{
-			AgentID:              cfg.LocalAgentID,
-			AgentName:            cfg.LocalAgentName,
-			DataDir:              cfg.DataDir,
-			HeartbeatInterval:    cfg.HeartbeatInterval,
-			DDNSIPProbeInterval:  cfg.LocalAgentDDNSIPProbeInterval,
-			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
-			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
-			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
-			HTTPTransport: goagentembedded.HTTPTransportConfig{
-				DialTimeout:           cfg.LocalAgentHTTPTransport.DialTimeout,
-				TLSHandshakeTimeout:   cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
-				ResponseHeaderTimeout: cfg.LocalAgentHTTPTransport.ResponseHeaderTimeout,
-				IdleConnTimeout:       cfg.LocalAgentHTTPTransport.IdleConnTimeout,
-				KeepAlive:             cfg.LocalAgentHTTPTransport.KeepAlive,
-			},
-			HTTPResilience: goagentembedded.HTTPResilienceConfig{
-				ResumeEnabled:            cfg.LocalAgentHTTPResilience.ResumeEnabled,
-				ResumeMaxAttempts:        cfg.LocalAgentHTTPResilience.ResumeMaxAttempts,
-				SameBackendRetryAttempts: cfg.LocalAgentHTTPResilience.SameBackendRetryAttempts,
-			},
-			BackendFailures: goagentembedded.BackendFailureConfig{
-				BackoffBase:  cfg.LocalAgentBackendFailures.BackoffBase,
-				BackoffLimit: cfg.LocalAgentBackendFailures.BackoffLimit,
-			},
-			BackendFailuresExplicit: cfg.LocalAgentBackendFailuresExplicit,
-			RelayTimeouts: goagentembedded.RelayTimeoutConfig{
-				DialTimeout:      cfg.LocalAgentRelayTimeouts.DialTimeout,
-				HandshakeTimeout: cfg.LocalAgentRelayTimeouts.HandshakeTimeout,
-				FrameTimeout:     cfg.LocalAgentRelayTimeouts.FrameTimeout,
-				IdleTimeout:      cfg.LocalAgentRelayTimeouts.IdleTimeout,
-			},
-		},
+		embeddedConfig(cfg),
 		syncSourceAdapter{source: source},
 		stateSinkAdapter{sink: sink},
 	)
 	if err != nil {
 		return nil, err
 	}
+	var credentials tunnelCredentialStore
+	if owner, ok := runtime.(interface {
+		TunnelCredentialStore() *goagentembedded.CredentialStore
+	}); ok {
+		credentials = owner.TunnelCredentialStore()
+	}
 
-	return &Runtime{
-		source:  source,
-		sink:    sink,
-		runtime: runtime,
-	}, nil
+	result := &Runtime{
+		source: source, sink: sink, runtime: runtime,
+		agentID: cfg.LocalAgentID, heartbeatInterval: cfg.HeartbeatInterval,
+		credentials: credentials, credentialTargets: store, now: time.Now,
+	}
+	if resolver, ok := store.(localPluginArtifactResolver); ok {
+		result.pluginArtifacts = resolver
+	}
+	return result, nil
+}
+
+func embeddedConfig(cfg config.Config) goagentembedded.Config {
+	return goagentembedded.Config{
+		AgentID: cfg.LocalAgentID, AgentName: cfg.LocalAgentName, DataDir: cfg.DataDir,
+		HeartbeatInterval: cfg.HeartbeatInterval, DDNSIPProbeInterval: cfg.LocalAgentDDNSIPProbeInterval,
+		HTTP3Enabled: cfg.LocalAgentHTTP3Enabled, TrafficStatsEnabled: cfg.LocalAgentTrafficStatsEnabled,
+		TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit, CapabilityAudit: cfg.LocalAgentPluginCapabilityAudit,
+		HTTPTransport: goagentembedded.HTTPTransportConfig{
+			DialTimeout: cfg.LocalAgentHTTPTransport.DialTimeout, TLSHandshakeTimeout: cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: cfg.LocalAgentHTTPTransport.ResponseHeaderTimeout, IdleConnTimeout: cfg.LocalAgentHTTPTransport.IdleConnTimeout,
+			KeepAlive: cfg.LocalAgentHTTPTransport.KeepAlive, MaxConnsPerHost: cfg.LocalAgentHTTPTransport.MaxConnsPerHost,
+			DisableHTTP2: cfg.LocalAgentHTTPTransport.DisableHTTP2,
+		},
+		HTTPResilience: goagentembedded.HTTPResilienceConfig{
+			ResumeEnabled: cfg.LocalAgentHTTPResilience.ResumeEnabled, ResumeMaxAttempts: cfg.LocalAgentHTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.LocalAgentHTTPResilience.SameBackendRetryAttempts,
+		},
+		BackendFailures:         goagentembedded.BackendFailureConfig{BackoffBase: cfg.LocalAgentBackendFailures.BackoffBase, BackoffLimit: cfg.LocalAgentBackendFailures.BackoffLimit},
+		BackendFailuresExplicit: cfg.LocalAgentBackendFailuresExplicit,
+		RelayTimeouts: goagentembedded.RelayTimeoutConfig{
+			DialTimeout: cfg.LocalAgentRelayTimeouts.DialTimeout, HandshakeTimeout: cfg.LocalAgentRelayTimeouts.HandshakeTimeout,
+			FrameTimeout: cfg.LocalAgentRelayTimeouts.FrameTimeout, IdleTimeout: cfg.LocalAgentRelayTimeouts.IdleTimeout,
+		},
+	}
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
-	return r.runtime.Run(ctx)
+	if !r.tunnelPKIConfigured() {
+		return r.runtime.Run(ctx)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go r.runTunnelPKIReconciler(runCtx)
+	return r.runtime.Run(runCtx)
 }
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.runtime.SyncNow(ctx)
+}
+
+func (r *Runtime) CapabilityAuditStatus() goagentembedded.CapabilityAuditStatus {
+	if r == nil || r.runtime == nil {
+		return goagentembedded.CapabilityAuditStatus{}
+	}
+	owner, ok := r.runtime.(interface {
+		CapabilityAuditStatus() goagentembedded.CapabilityAuditStatus
+	})
+	if !ok {
+		return goagentembedded.CapabilityAuditStatus{}
+	}
+	return owner.CapabilityAuditStatus()
 }
 
 func (r *Runtime) GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot {
@@ -117,7 +183,82 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	if r == nil || r.runtime == nil {
 		return errors.New("embedded runtime is not initialized")
 	}
-	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(snapshot), drainTimeout)
+	if snapshotRequiresTunnelPKI(snapshot) && r.tunnelPKIConfigured() {
+		if err := r.ReconcileTunnelPKI(ctx); err != nil {
+			return fmt.Errorf("reconcile embedded tunnel PKI before revision apply: %w", err)
+		}
+	}
+	materialized, err := r.materializeLocalPluginGenerations(ctx, snapshot)
+	if err != nil {
+		return err
+	}
+	if lease, ok := ctx.Value(localRuntimeLeaseContextKey{}).(service.RemoteRevisionLease); ok {
+		ctx = goagentembedded.WithRuntimeGenerationBinder(ctx, func(bindCtx context.Context, binding goagentembedded.RuntimeGenerationBinding) error {
+			if lease.AgentID != r.agentID || lease.Revision != binding.Revision || r.source == nil {
+				return errors.New("embedded runtime identity does not match the approved lease")
+			}
+			binder, ok := r.source.pluginSecrets.(interface {
+				BindLocalPluginRuntimeGeneration(context.Context, string, service.RemoteRevisionStart) error
+			})
+			if !ok {
+				return errors.New("embedded runtime generation binding is unavailable")
+			}
+			return binder.BindLocalPluginRuntimeGeneration(bindCtx, r.agentID, service.RemoteRevisionStart{
+				AgentID: r.agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID,
+				GenerationID: embeddedGenerationID(lease), RuntimeGenerationID: binding.GenerationID, RuntimeSnapshotHash: binding.SnapshotHash,
+			})
+		})
+	}
+	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(materialized), drainTimeout)
+}
+
+func (r *Runtime) RevokePluginGeneration(ctx context.Context, request goagentembedded.PluginGenerationRevokeRequest) error {
+	if r == nil || r.runtime == nil || request.Validate() != nil {
+		return errors.New("embedded plugin generation revocation is invalid")
+	}
+	runner, ok := r.runtime.(interface {
+		RevokePluginGeneration(context.Context, goagentembedded.PluginGenerationRevokeRequest) error
+	})
+	if !ok {
+		return errors.New("embedded plugin generation revocation is unavailable")
+	}
+	return runner.RevokePluginGeneration(ctx, request)
+}
+
+func (r *Runtime) materializeLocalPluginGenerations(ctx context.Context, snapshot Snapshot) (Snapshot, error) {
+	var resolver localDatasetArtifactResolver
+	if r.source != nil {
+		resolver, _ = r.source.store.(localDatasetArtifactResolver)
+	}
+	var err error
+	snapshot, err = materializeLocalDatasets(ctx, resolver, snapshot)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if len(snapshot.PluginGenerations) == 0 {
+		return snapshot, nil
+	}
+	if r.pluginArtifacts == nil {
+		return Snapshot{}, errors.New("embedded plugin artifact resolver is unavailable")
+	}
+	snapshot.PluginGenerations = append([]storage.PluginGeneration(nil), snapshot.PluginGenerations...)
+	for index := range snapshot.PluginGenerations {
+		artifactPath, err := r.pluginArtifacts.ResolveLocalPluginGenerationArtifact(ctx, snapshot.PluginGenerations[index])
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("materialize embedded plugin generation %q: %w", snapshot.PluginGenerations[index].InstanceID, err)
+		}
+		snapshot.PluginGenerations[index].Artifact.LocalPath = artifactPath
+	}
+	return snapshot, nil
+}
+
+func snapshotRequiresTunnelPKI(snapshot Snapshot) bool {
+	for _, listener := range snapshot.RelayListeners {
+		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) SyncSource() *SyncSource {
@@ -128,6 +269,19 @@ func (r *Runtime) StateSink() *StateSink {
 	return r.sink
 }
 
+func (r *Runtime) Call(ctx context.Context, pluginID, name string, payload json.RawMessage) (json.RawMessage, error) {
+	if r == nil || r.runtime == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	caller, ok := r.runtime.(interface {
+		Call(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	})
+	if !ok {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	return caller.Call(ctx, pluginID, name, payload)
+}
+
 func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
 	if r == nil || r.runtime == nil {
 		return nil, errors.New("embedded runtime is not initialized")
@@ -136,7 +290,11 @@ func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, envel
 	if err != nil {
 		return nil, err
 	}
-	return r.runtime.DiagnoseSnapshot(ctx, toEmbeddedSnapshot(snapshot), goagentembedded.DiagnosticRequest{
+	materialized, err := r.materializeLocalPluginGenerations(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return r.runtime.DiagnoseSnapshot(ctx, toEmbeddedSnapshot(materialized), goagentembedded.DiagnosticRequest{
 		TaskType: envelope.Type,
 		RuleID:   ruleID,
 	})
@@ -151,7 +309,49 @@ func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.Syn
 	if err != nil {
 		return goagentembedded.Snapshot{}, err
 	}
+	// This heartbeat snapshot is not an approved candidate. The embedded bridge
+	// selects its explicit approved snapshot after telemetry synchronization.
+	// Materialization belongs to ApplyRevision/DiagnoseSnapshot, so an unrelated
+	// broken desired index cannot prevent applying a retained valid revision.
+	if len(request.PluginLogs) > 0 && request.PluginLogsAcknowledged != nil {
+		if err := request.PluginLogsAcknowledged(); err != nil {
+			return goagentembedded.Snapshot{}, err
+		}
+	}
 	return toEmbeddedSnapshot(snapshot), nil
+}
+
+func (a syncSourceAdapter) RedeemPluginSecrets(ctx context.Context, request goagentembedded.PluginSecretRedemptionRequest) ([]goagentembedded.PluginRedeemedSecret, error) {
+	if a.source == nil || a.source.pluginSecrets == nil {
+		return nil, errors.New("embedded plugin secret redemption is unavailable")
+	}
+	handles := make([]storage.PluginGenerationSecretHandle, len(request.Handles))
+	for index, handle := range request.Handles {
+		handles[index] = storage.PluginGenerationSecretHandle{ID: handle.ID, Version: handle.Version, Digest: handle.Digest, Purpose: handle.Purpose}
+	}
+	response, err := a.source.pluginSecrets.RedeemAgentPluginSecrets(ctx, a.source.agentID, service.PluginSecretRedemptionRequest{Revision: request.Revision, GenerationID: request.GenerationID, InstanceID: request.InstanceID, PluginID: request.PluginID, OperationID: request.OperationID, PackageDigest: request.PackageDigest, ArtifactDigest: request.ArtifactDigest, Handles: handles})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]goagentembedded.PluginRedeemedSecret, len(response.Secrets))
+	for index, secret := range response.Secrets {
+		result[index] = goagentembedded.PluginRedeemedSecret{ID: secret.ID, Version: secret.Version, Digest: secret.Digest, Purpose: secret.Purpose, Value: secret.Value}
+	}
+	return result, nil
+}
+
+func (a syncSourceAdapter) RedeemScopedPluginSecret(ctx context.Context, request goagentembedded.PluginSecretRedemptionRequest) (json.RawMessage, error) {
+	if a.source == nil || a.source.pluginSecrets == nil || request.Validate() != nil || len(request.Scoped) == 0 || len(request.Handles) != 0 {
+		return nil, errors.New("embedded scoped secret redemption is unavailable")
+	}
+	response, err := a.source.pluginSecrets.RedeemAgentPluginSecrets(ctx, a.source.agentID, service.PluginSecretRedemptionRequest{
+		Revision: request.Revision, GenerationID: request.GenerationID, RuntimeGenerationID: request.RuntimeGenerationID, InstanceID: request.InstanceID,
+		PluginID: request.PluginID, OperationID: request.OperationID, PackageDigest: request.PackageDigest, ArtifactDigest: request.ArtifactDigest, Scoped: request.Scoped,
+	})
+	if err != nil || len(response.Scoped) == 0 || len(response.Secrets) != 0 {
+		return nil, errors.New("embedded scoped secret redemption failed")
+	}
+	return response.Scoped, nil
 }
 
 type stateSinkAdapter struct {
@@ -164,8 +364,12 @@ func (a stateSinkAdapter) Save(ctx context.Context, state goagentembedded.Runtim
 
 func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded := goagentembedded.Snapshot{
-		DesiredVersion: snapshot.DesiredVersion,
-		Revision:       snapshot.Revision,
+		Datasets:           toEmbeddedDatasets(snapshot.Datasets),
+		DesiredVersion:     snapshot.DesiredVersion,
+		Revision:           snapshot.Revision,
+		PluginGenerations:  toEmbeddedPluginGenerations(snapshot.PluginGenerations),
+		PluginDependencies: toEmbeddedPluginDependencies(snapshot.PluginDependencies),
+		PluginPolicies:     toEmbeddedPluginPolicies(snapshot.PluginPolicies),
 		AgentConfig: goagentembedded.AgentConfig{
 			OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
 			TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
@@ -203,17 +407,19 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
-			ID:               rule.ID,
-			Enabled:          true,
-			FrontendURL:      rule.FrontendURL,
-			Backends:         toEmbeddedHTTPBackends(rule.Backends),
-			LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
-			ProxyRedirect:    rule.ProxyRedirect,
-			PassProxyHeaders: rule.PassProxyHeaders,
-			UserAgent:        rule.UserAgent,
-			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
-			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
-			Revision:         rule.Revision,
+			ID:                 rule.ID,
+			Enabled:            true,
+			FrontendURL:        rule.FrontendURL,
+			Backends:           toEmbeddedHTTPBackends(rule.Backends),
+			LoadBalancing:      goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
+			ProxyRedirect:      rule.ProxyRedirect,
+			PassProxyHeaders:   rule.PassProxyHeaders,
+			UserAgent:          rule.UserAgent,
+			CustomHeaders:      toEmbeddedHTTPHeaders(rule.CustomHeaders),
+			TrustedProxyRanges: append([]string(nil), rule.TrustedProxyRanges...),
+			PolicyRef:          toEmbeddedPolicyRef(rule.PolicyRef),
+			RelayLayers:        cloneRelayLayers(rule.RelayLayers),
+			Revision:           rule.Revision,
 		})
 	}
 	embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))
@@ -229,8 +435,9 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			LoadBalancing: goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
 			Tuning: goagentembedded.L4Tuning{
 				ProxyProtocol: goagentembedded.L4ProxyProtocolTuning{
-					Decode: rule.Tuning.ProxyProtocol.Decode,
-					Send:   rule.Tuning.ProxyProtocol.Send,
+					Decode:       rule.Tuning.ProxyProtocol.Decode,
+					Send:         rule.Tuning.ProxyProtocol.Send,
+					TrustedPeers: append([]string(nil), rule.Tuning.ProxyProtocol.TrustedPeers...),
 				},
 			},
 			RelayLayers:     cloneRelayLayers(rule.RelayLayers),
@@ -242,7 +449,8 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 				Username: rule.ProxyEntryAuth.Username,
 				Password: rule.ProxyEntryAuth.Password,
 			},
-			Revision: rule.Revision,
+			PolicyRef: toEmbeddedPolicyRef(rule.PolicyRef),
+			Revision:  rule.Revision,
 		})
 	}
 	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
@@ -266,6 +474,9 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			PinSet:                  toEmbeddedRelayPins(listener.PinSet),
 			TrustedCACertificateIDs: append([]int(nil), listener.TrustedCACertificateIDs...),
 			AllowSelfSigned:         listener.AllowSelfSigned,
+			PKIIdentityID:           listener.PKIIdentityID,
+			PKIIdentityState:        listener.PKIIdentityState,
+			PKICertificateID:        listener.PKICertificateID,
 			Tags:                    append([]string(nil), listener.Tags...),
 			Revision:                listener.Revision,
 		})
@@ -311,6 +522,98 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	return embedded
 }
 
+func toEmbeddedDatasets(values []storage.DatasetSnapshot) []goagentembedded.DatasetSnapshot {
+	if values == nil {
+		return nil
+	}
+	result := make([]goagentembedded.DatasetSnapshot, len(values))
+	for i, value := range values {
+		result[i] = goagentembedded.DatasetSnapshot{Version: value.Version, Artifact: goagentembedded.DatasetArtifact{ID: value.Artifact.ID, Kind: value.Artifact.Kind, SHA256: value.Artifact.SHA256, SizeBytes: value.Artifact.SizeBytes, LocalPath: value.Artifact.LocalPath}}
+		encoded, _ := json.Marshal(value.Bindings)
+		_ = json.Unmarshal(encoded, &result[i].Bindings)
+	}
+	return result
+}
+
+func materializeLocalDatasets(ctx context.Context, resolver localDatasetArtifactResolver, snapshot Snapshot) (Snapshot, error) {
+	if len(snapshot.Datasets) == 0 {
+		return snapshot, nil
+	}
+	if resolver == nil {
+		return Snapshot{}, errors.New("embedded dataset artifact resolver is unavailable")
+	}
+	snapshot.Datasets = append([]storage.DatasetSnapshot(nil), snapshot.Datasets...)
+	for i, entry := range snapshot.Datasets {
+		path, err := resolver.ResolveLocalDatasetArtifact(ctx, entry)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("materialize embedded dataset: %w", err)
+		}
+		snapshot.Datasets[i].Artifact.LocalPath = path
+	}
+	return snapshot, nil
+}
+
+func toEmbeddedPolicyRef(ref *storage.PolicyRef) *goagentembedded.PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	result := &goagentembedded.PolicyRef{
+		ID:             ref.ID,
+		Overlay:        append(json.RawMessage(nil), ref.Overlay...),
+		OverlayFormat:  ref.OverlayFormat,
+		LegacyPolicyID: ref.LegacyPolicyID,
+	}
+	if encoded, err := json.Marshal(ref.StageModes); err == nil {
+		_ = json.Unmarshal(encoded, &result.StageModes)
+	}
+	return result
+}
+
+func toEmbeddedPluginPolicies(policies []storage.PluginPolicy) []goagentembedded.PluginPolicy {
+	if policies == nil {
+		return nil
+	}
+	data, err := json.Marshal(policies)
+	if err != nil {
+		return nil
+	}
+	var embedded []goagentembedded.PluginPolicy
+	if err := json.Unmarshal(data, &embedded); err != nil {
+		return nil
+	}
+	return embedded
+}
+
+func toEmbeddedPluginGenerations(generations []storage.PluginGeneration) []goagentembedded.PluginGeneration {
+	if generations == nil {
+		return nil
+	}
+	data, err := json.Marshal(generations)
+	if err != nil {
+		return nil
+	}
+	var embedded []goagentembedded.PluginGeneration
+	if err := json.Unmarshal(data, &embedded); err != nil {
+		return nil
+	}
+	return embedded
+}
+
+func toEmbeddedPluginDependencies(dependencies []storage.PluginDependencyEdge) []goagentembedded.PluginDependencyEdge {
+	if dependencies == nil {
+		return nil
+	}
+	data, err := json.Marshal(dependencies)
+	if err != nil {
+		return nil
+	}
+	var embedded []goagentembedded.PluginDependencyEdge
+	if err := json.Unmarshal(data, &embedded); err != nil {
+		return nil
+	}
+	return embedded
+}
+
 func copyEmbeddedEgressProfiles(embedded *goagentembedded.Snapshot, profiles []storage.EgressProfile) {
 	data, err := json.Marshal(profiles)
 	if err != nil {
@@ -324,6 +627,9 @@ func fromEmbeddedRuntimeState(state goagentembedded.RuntimeState) RuntimeState {
 		NodeID:          state.NodeID,
 		CurrentRevision: state.CurrentRevision,
 		Status:          state.Status,
+	}
+	if data, err := json.Marshal(state.PluginStatuses); err == nil {
+		_ = json.Unmarshal(data, &copyValue.PluginStatuses)
 	}
 	if state.Metadata == nil {
 		return copyValue
@@ -347,6 +653,12 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastSeenIPv6:      request.LastSeenIPv6,
 		StatsPresent:      statsPresent,
 	}
+	if data, err := json.Marshal(request.PluginStatuses); err == nil {
+		_ = json.Unmarshal(data, &copyValue.PluginStatuses)
+	}
+	if data, err := json.Marshal(request.PluginLogs); err == nil {
+		_ = json.Unmarshal(data, &copyValue.PluginLogs)
+	}
 	if statsPresent {
 		if data, err := json.Marshal(request.Stats); err == nil {
 			var stats map[string]any
@@ -362,13 +674,16 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 	copyValue.ManagedCertificateReports = make([]storage.ManagedCertificateReport, 0, len(request.ManagedCertificateReports))
 	for _, report := range request.ManagedCertificateReports {
 		copyValue.ManagedCertificateReports = append(copyValue.ManagedCertificateReports, storage.ManagedCertificateReport{
-			ID:           report.ID,
-			Domain:       report.Domain,
-			Status:       report.Status,
-			LastIssueAt:  report.LastIssueAt,
-			LastError:    report.LastError,
-			MaterialHash: report.MaterialHash,
-			NotAfter:     report.NotAfter,
+			ID:              report.ID,
+			Domain:          report.Domain,
+			Status:          report.Status,
+			LastIssueAt:     report.LastIssueAt,
+			LastError:       report.LastError,
+			MaterialHash:    report.MaterialHash,
+			NotAfter:        report.NotAfter,
+			NextRetryAtUnix: report.NextRetryAtUnix,
+			RetryCount:      report.RetryCount,
+			BackoffClass:    report.BackoffClass,
 			ACMEInfo: storage.ManagedCertificateACMEInfo{
 				MainDomain: report.ACMEInfo.MainDomain,
 				KeyLength:  report.ACMEInfo.KeyLength,
@@ -401,7 +716,12 @@ func toEmbeddedHTTPBackends(backends []storage.HTTPBackend) []goagentembedded.HT
 	}
 	embedded := make([]goagentembedded.HTTPBackend, 0, len(backends))
 	for _, backend := range backends {
-		embedded = append(embedded, goagentembedded.HTTPBackend{URL: backend.URL})
+		copyValue := goagentembedded.HTTPBackend{Kind: backend.Kind, URL: backend.URL}
+		if backend.PluginProvider != nil {
+			provider := *backend.PluginProvider
+			copyValue.PluginProvider = &provider
+		}
+		embedded = append(embedded, copyValue)
 	}
 	return embedded
 }

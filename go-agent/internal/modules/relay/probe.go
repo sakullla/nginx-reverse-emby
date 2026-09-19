@@ -51,7 +51,7 @@ func ProbePath(ctx context.Context, network, target string, chain []Hop, provide
 }
 
 func (s *Server) probeRelayPath(ctx context.Context, network, target string, chain []Hop, options DialOptions) ([]ProbeTiming, error) {
-	options.poolScope = s.poolScope
+	options.poolScope = s.outboundPoolScope()
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = s.currentOutboundProxyURL()
 	}
@@ -122,6 +122,11 @@ func probeRelayRequest(ctx context.Context, hop Hop, provider TLSMaterialProvide
 	if strings.TrimSpace(hop.Address) == "" {
 		return relayResponse{}, fmt.Errorf("relay hop address is required")
 	}
+	bound, err := bindTunnelSecurityToHop(ctx, provider, hop)
+	if err != nil {
+		return relayResponse{}, fmt.Errorf("bind relay tunnel security: %w", err)
+	}
+	hop = bound
 
 	transportMode := selectRelayRuntimeTransport(hop)
 	if transportMode == ListenerTransportModeQUIC {
@@ -146,7 +151,7 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 	if err != nil {
 		return relayResponse{}, err
 	}
-	pool := relaySessionPool
+	pool := globalRelayPoolScope().quic
 	if options.poolScope != nil {
 		pool = options.poolScope.quic
 	}
@@ -178,7 +183,7 @@ func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMateri
 	if err != nil {
 		return relayResponse{}, err
 	}
-	pool := relayTLSTCPSessionPool
+	pool := globalRelayPoolScope().tls
 	if options.poolScope != nil {
 		pool = options.poolScope.tls
 	}

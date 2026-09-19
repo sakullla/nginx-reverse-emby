@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,6 +121,7 @@ type MutationRequest struct {
 	ReplayResourceField    string
 	ReplayResource         func() any
 	ReplayExtra            func() map[string]any
+	BeforeCommit           func(context.Context, *storage.GormStore) error
 	httpRequestFingerprint string
 }
 
@@ -466,8 +468,19 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			allNoOp = false
 			allApplied = false
 			changedTargets++
-			revision := allocated[target.AgentID]
-			snapshot.Revision = revision
+			// A mutation can make the target inherit an already-higher global
+			// resource revision (for example when its first relay listener joins an
+			// existing egress cleanup scope). Preserve that post-mutation floor so
+			// the next heartbeat cannot immediately supersede this operation with
+			// an implicit repair revision.
+			revision := maxRevision(allocated[target.AgentID], snapshot.Revision)
+			allocated[target.AgentID] = revision
+			stampSnapshotRevision(&snapshot, revision)
+			// PKI security is authenticated heartbeat runtime state. Every newly
+			// issued immutable revision artifact shares this boundary, regardless
+			// of whether a rule, plugin, certificate, or another resource caused
+			// the revision. Historical artifacts remain byte-for-byte untouched.
+			snapshot.PKISecurity = nil
 			payload, digest, payloadErr := CanonicalSnapshotPayload(snapshot)
 			if payloadErr != nil {
 				return storage.RevisionMutationDecision{}, payloadErr
@@ -477,6 +490,24 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				ID: artifactID, Kind: "agent_snapshot", SHA256: digest,
 				Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
 			})
+			policyArtifacts, policyArtifactRefs, policyArtifactErr := tx.BuildAgentRevisionPolicyArtifacts(ctx, target.AgentID, revision, snapshot, now)
+			if policyArtifactErr != nil {
+				return storage.RevisionMutationDecision{}, policyArtifactErr
+			}
+			ledger.Artifacts = append(ledger.Artifacts, policyArtifacts...)
+			ledger.ArtifactRefs = append(ledger.ArtifactRefs, policyArtifactRefs...)
+			statusRows, statusErr := pluginRuntimeStatusRowsForMutation(
+				target.AgentID, revision, operationID, before[target.AgentID], snapshot,
+			)
+			if statusErr != nil {
+				return storage.RevisionMutationDecision{}, statusErr
+			}
+			if statusErr = tx.RebaseInheritedPluginAgentRuntimeStatuses(ctx, target.AgentID, revision, snapshot.PluginGenerations, now); statusErr != nil {
+				return storage.RevisionMutationDecision{}, statusErr
+			}
+			if statusErr = tx.StagePluginAgentRuntimeStatuses(ctx, statusRows); statusErr != nil {
+				return storage.RevisionMutationDecision{}, statusErr
+			}
 			ledger.Revisions = append(ledger.Revisions, storage.AgentRevisionRow{
 				AgentID: target.AgentID, Revision: revision, OperationID: operationID,
 				State: storage.AgentRevisionStatePending, SnapshotArtifactID: artifactID, SnapshotDigest: digest,
@@ -563,6 +594,11 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			})
 		}
 		decision := storage.RevisionMutationDecision{Ledger: &ledger, RollbackResources: allNoOp}
+		if request.BeforeCommit != nil {
+			decision.BeforeCommit = func(store *storage.GormStore) error {
+				return request.BeforeCommit(ctx, store)
+			}
+		}
 		if expiredIdempotencyRecord != nil {
 			decision.DeleteIdempotencyRecords = append(decision.DeleteIdempotencyRecords, storage.IdempotencyRecordMatch{
 				Scope:              expiredIdempotencyRecord.Scope,
@@ -618,6 +654,48 @@ func snapshotForTargetPackageEligibility(snapshot storage.Snapshot, target Targe
 	}
 	snapshot.VersionPackage = nil
 	return snapshot
+}
+
+func stampSnapshotRevision(snapshot *storage.Snapshot, revision int64) {
+	if snapshot == nil {
+		return
+	}
+	snapshot.Revision = revision
+	for index := range snapshot.PluginGenerations {
+		snapshot.PluginGenerations[index].Revision = revision
+	}
+}
+
+func pluginRuntimeStatusRowsForMutation(agentID string, revision int64, operationID string, before, after storage.Snapshot) ([]storage.PluginAgentRuntimeStatusRow, error) {
+	current := make([]storage.PluginGeneration, 0, len(after.PluginGenerations))
+	present := make(map[string]struct{}, len(after.PluginGenerations))
+	for _, generation := range after.PluginGenerations {
+		present[generation.InstanceID] = struct{}{}
+		if generation.OperationID == operationID {
+			current = append(current, generation)
+		}
+	}
+	rows, err := storage.BuildPluginAgentRuntimeStatuses(agentID, revision, current)
+	if err != nil {
+		return nil, err
+	}
+	removed := make([]storage.PluginGeneration, 0)
+	for _, generation := range before.PluginGenerations {
+		if _, found := present[generation.InstanceID]; found {
+			continue
+		}
+		generation.OperationID = operationID
+		generation.Revision = revision
+		removed = append(removed, generation)
+	}
+	draining, err := storage.BuildPluginAgentRuntimeStatuses(agentID, revision, removed)
+	if err != nil {
+		return nil, err
+	}
+	for index := range draining {
+		draining[index].State = "draining"
+	}
+	return append(rows, draining...), nil
 }
 
 func (e *Executor) loadReplay(ctx context.Context, scope, key, fingerprint string, now time.Time) (MutationResult, bool, error) {
@@ -794,10 +872,17 @@ func includeSelectedIntentResources(
 
 func buildStorageSnapshotMode(ctx context.Context, store *storage.GormStore, target Target, intent bool) (storage.Snapshot, error) {
 	if target.Local {
+		var snapshot storage.Snapshot
+		var err error
 		if intent {
-			return store.LoadLocalIntentSnapshot(ctx, target.AgentID)
+			snapshot, err = store.LoadLocalIntentSnapshot(ctx, target.AgentID)
+		} else {
+			snapshot, err = store.LoadLocalSnapshot(ctx, target.AgentID)
 		}
-		return store.LoadLocalSnapshot(ctx, target.AgentID)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		return projectRevisionPKIRelayListeners(ctx, store, target.AgentID, snapshot)
 	}
 	agents, err := store.ListAgents(ctx)
 	if err != nil {
@@ -819,12 +904,70 @@ func buildStorageSnapshotMode(ctx context.Context, store *storage.GormStore, tar
 			DesiredVersion: desiredVersion, DesiredRevision: agent.DesiredRevision,
 			CurrentRevision: agent.CurrentRevision, Platform: platform,
 		}
+		var snapshot storage.Snapshot
 		if intent {
-			return store.LoadAgentIntentSnapshot(ctx, target.AgentID, input)
+			snapshot, err = store.LoadAgentIntentSnapshot(ctx, target.AgentID, input)
+		} else {
+			snapshot, err = store.LoadAgentSnapshot(ctx, target.AgentID, input)
 		}
-		return store.LoadAgentSnapshot(ctx, target.AgentID, input)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		return projectRevisionPKIRelayListeners(ctx, store, target.AgentID, snapshot)
 	}
 	return storage.Snapshot{}, wrapError(ErrorCodeNotFound, "agent %q was not found", target.AgentID)
+}
+
+func projectRevisionPKIRelayListeners(ctx context.Context, store *storage.GormStore, agentID string, snapshot storage.Snapshot) (storage.Snapshot, error) {
+	if len(snapshot.RelayListeners) == 0 {
+		return snapshot, nil
+	}
+	present, err := store.HasPKICanonicalSchema(ctx)
+	if err != nil || !present {
+		return snapshot, err
+	}
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil || state.Settings == nil {
+		return snapshot, err
+	}
+	return projectRevisionPKIRelayListenersWithState(state, agentID, snapshot)
+}
+
+func projectRevisionPKIRelayListenersWithState(state storage.PKICanonicalState, agentID string, snapshot storage.Snapshot) (storage.Snapshot, error) {
+	activated := state.Settings != nil && state.Settings.UpgradeState == storage.PKIUpgradeStateTunnelMTLSOnly
+	for index := range snapshot.RelayListeners {
+		listener := &snapshot.RelayListeners[index]
+		if activated {
+			listener.CertificateID = nil
+			listener.TLSMode = "pki_mtls"
+			listener.PinSet = nil
+			listener.TrustedCACertificateIDs = nil
+			listener.AllowSelfSigned = false
+		}
+		ownerAgentID := strings.TrimSpace(listener.AgentID)
+		if ownerAgentID == "" {
+			ownerAgentID = strings.TrimSpace(agentID)
+		}
+		listener.AgentID = ownerAgentID
+		listener.PKIIdentityID = ""
+		listener.PKICertificateID = ""
+		listener.PKIIdentityState = storage.PKIIdentityStateEnrollmentRequired
+		identity, found, err := storage.FindActivePKIIdentity(
+			state, storage.PKIIdentityKindListener, ownerAgentID, strconv.Itoa(listener.ID),
+		)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		if !found {
+			continue
+		}
+		listener.PKIIdentityID = identity.ID
+		listener.PKIIdentityState = identity.State
+		if identity.CurrentCertificateID != nil {
+			listener.PKICertificateID = *identity.CurrentCertificateID
+		}
+	}
+	return snapshot, nil
 }
 
 func resolveTargetMetadata(ctx context.Context, store *storage.GormStore, target Target) (Target, error) {

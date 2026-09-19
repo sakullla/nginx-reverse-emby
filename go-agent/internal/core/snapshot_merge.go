@@ -3,6 +3,15 @@ package core
 import "github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 
 func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
+	if next.Datasets == nil {
+		next.Datasets = previous.Datasets
+	}
+	if next.PluginGenerations == nil {
+		next.PluginGenerations = previous.PluginGenerations
+	}
+	if next.PluginDependencies == nil {
+		next.PluginDependencies = previous.PluginDependencies
+	}
 	merged := next
 	if next.VersionPackage == nil {
 		merged.VersionPackage = previous.VersionPackage
@@ -31,5 +40,8 @@ func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if next.CertificatePolicies == nil {
 		merged.CertificatePolicies = previous.CertificatePolicies
 	}
-	return merged
+	if next.PluginPolicies == nil {
+		merged.PluginPolicies = previous.PluginPolicies
+	}
+	return cloneSnapshot(merged)
 }

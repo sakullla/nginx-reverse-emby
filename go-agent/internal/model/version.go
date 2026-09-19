@@ -23,4 +23,7 @@ type RuntimePackage struct {
 	Platform string `json:"platform,omitempty"`
 	Arch     string `json:"arch,omitempty"`
 	SHA256   string `json:"sha256,omitempty"`
+	// Staging is true while this process is still downloading or activating a
+	// candidate package. Heartbeats must keep reporting the running image.
+	Staging bool `json:"staging,omitempty"`
 }

@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -116,6 +118,7 @@ func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) 
 	if err == nil {
 		normalizeAgentRow(&row)
 		return LocalAgentStateRow{
+			Version:         row.Version,
 			DesiredRevision: row.DesiredRevision,
 			CurrentRevision: row.CurrentRevision,
 		}, nil
@@ -124,6 +127,27 @@ func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) 
 		return LocalAgentStateRow{}, nil
 	}
 	return LocalAgentStateRow{}, err
+}
+
+func (s *GormStore) SetLocalAgentVersion(ctx context.Context, version string) error {
+	return s.SetLocalAgentBuild(ctx, version, true)
+}
+
+func (s *GormStore) SetLocalAgentBuild(ctx context.Context, version string, present bool) error {
+	if !present {
+		s.localAgentPresent.Store(false)
+		return nil
+	}
+	if err := s.db.WithContext(ctx).Model(&LocalAgentStateRow{}).Where("id = ?", 1).Update("version", strings.TrimSpace(version)).Error; err != nil {
+		return err
+	}
+	s.localAgentPresent.Store(true)
+	return nil
+}
+
+func (s *GormStore) LocalAgentBuild(ctx context.Context) (string, string, bool, error) {
+	state, err := s.LoadLocalAgentState(ctx)
+	return s.localAgentID, state.Version, s.localAgentPresent.Load(), err
 }
 
 func (s *GormStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
@@ -215,11 +239,27 @@ func (s *GormStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, er
 }
 
 func (s *GormStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
-	return s.loadLocalSnapshot(ctx, agentID, true)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadLocalSnapshot(ctx, agentID, true)
+	})
 }
 
 func (s *GormStore) LoadLocalIntentSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
-	return s.loadLocalSnapshot(ctx, agentID, false)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadLocalSnapshot(ctx, agentID, false)
+	})
+}
+
+// LoadRelayListenerCredentialTargets returns configured relay listeners without
+// applying the runtime fail-closed projection. PKI credential reconciliation
+// must continue while relay publication is fenced during emergency rotation.
+func (s *GormStore) LoadRelayListenerCredentialTargets(ctx context.Context, agentID string) ([]RelayListener, error) {
+	rows, err := s.ListRelayListeners(ctx, s.resolveAgentID(agentID))
+	if err != nil {
+		return nil, err
+	}
+	rows, _ = partitionSnapshotRelayRows(rows)
+	return snapshotRelayListeners(rows, nil), nil
 }
 
 func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runtimeFiltered bool) (Snapshot, error) {
@@ -236,15 +276,96 @@ func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runti
 }
 
 func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
-	return s.loadAgentSnapshot(ctx, agentID, input, true)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadAgentSnapshot(ctx, agentID, input, true)
+	})
 }
 
 func (s *GormStore) LoadAgentIntentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
-	return s.loadAgentSnapshot(ctx, agentID, input, false)
+	return s.loadCompleteSnapshot(ctx, func(scoped *GormStore) (Snapshot, error) {
+		return scoped.loadAgentSnapshot(ctx, agentID, input, false)
+	})
+}
+
+func (s *GormStore) LoadAgentHeartbeatSnapshot(ctx context.Context, agentID string, overlay AgentHeartbeatSnapshotOverlay) (AgentHeartbeatSnapshot, error) {
+	var result AgentHeartbeatSnapshot
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var row AgentRow
+		if err := scoped.db.WithContext(ctx).Where("id = ?", scoped.resolveAgentID(agentID)).First(&row).Error; err != nil {
+			return err
+		}
+		normalizeAgentRow(&row)
+		pointer, found, err := scoped.GetAgentRevisionPointer(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		desiredRevision := heartbeatDesiredRevision(row.DesiredRevision, pointer, found)
+		snapshot, err := scoped.loadAgentSnapshot(ctx, row.ID, AgentSnapshotInput{
+			DesiredVersion: row.DesiredVersion, DesiredRevision: desiredRevision,
+			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+		}, true)
+		if err != nil {
+			return err
+		}
+		if overlay != nil {
+			snapshot, err = overlay(ctx, scoped, row.ID, snapshot)
+			if err != nil {
+				return err
+			}
+		}
+		// Heartbeat PKI is a separately authenticated runtime projection. It is
+		// intentionally excluded from the immutable revision candidate so a PKI
+		// security rotation cannot change the digest of a fixed Agent revision.
+		snapshot.PKISecurity = nil
+		result = AgentHeartbeatSnapshot{
+			Snapshot: snapshot,
+			Metadata: AgentSnapshotMetadata{
+				Platform: strings.TrimSpace(row.Platform), DesiredVersion: strings.TrimSpace(row.DesiredVersion),
+				DesiredRevision: desiredRevision, CurrentRevision: row.CurrentRevision,
+				LastApplyStatus:  strings.TrimSpace(row.LastApplyStatus),
+				OutboundProxyURL: strings.TrimSpace(row.OutboundProxyURL), TrafficInterval: strings.TrimSpace(row.TrafficStatsInterval),
+				TrafficBlocked: row.TrafficBlocked, TrafficBlockReason: strings.TrimSpace(row.TrafficBlockReason),
+			},
+		}
+		return nil
+	})
+	return result, err
+}
+
+func heartbeatDesiredRevision(agentDesired int, pointer AgentRevisionPointerRow, found bool) int {
+	if !found {
+		return agentDesired
+	}
+	return maxInt(agentDesired, boundedIntFromInt64(pointer.DesiredRevision))
+}
+
+func (s *GormStore) loadCompleteSnapshot(ctx context.Context, load func(*GormStore) (Snapshot, error)) (Snapshot, error) {
+	var snapshot Snapshot
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var err error
+		snapshot, err = load(scoped)
+		return err
+	})
+	return snapshot, err
 }
 
 func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput, runtimeFiltered bool) (Snapshot, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
+	var remoteAgent AgentRow
+	remoteAgentFound := false
+	if resolvedAgentID != s.localAgentID {
+		if err := s.db.WithContext(ctx).Where("id = ?", resolvedAgentID).Limit(1).Find(&remoteAgent).Error; err != nil {
+			return Snapshot{}, err
+		}
+		if remoteAgent.ID != "" {
+			normalizeAgentRow(&remoteAgent)
+			remoteAgentFound = true
+			input.DesiredVersion = remoteAgent.DesiredVersion
+			input.DesiredRevision = maxInt(input.DesiredRevision, remoteAgent.DesiredRevision)
+			input.CurrentRevision = maxInt(input.CurrentRevision, remoteAgent.CurrentRevision)
+			input.Platform = remoteAgent.Platform
+		}
+	}
 
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
 	if err != nil {
@@ -280,6 +401,19 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 	allRelayRows, excludedRelayIDs := partitionSnapshotRelayRows(storedRelayRows)
+	relayFailClosed, err := s.pkiRelayFailClosed(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if relayFailClosed {
+		for _, row := range storedRelayRows {
+			if row.ID > 0 {
+				excludedRelayIDs[row.ID] = struct{}{}
+			}
+		}
+		relayRows = nil
+		allRelayRows = nil
+	}
 	httpRows = filterHTTPRuleRowsForSnapshot(httpRows, excludedRelayIDs, excludedEgressIDs)
 	l4Rows = filterL4RuleRowsForSnapshot(l4Rows, excludedRelayIDs, excludedEgressIDs)
 	allHTTPRows = filterHTTPRuleRowsForSnapshot(allHTTPRows, excludedRelayIDs, excludedEgressIDs)
@@ -301,14 +435,29 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	agentConfig := AgentConfig{}
 	if resolvedAgentID == s.localAgentID {
 		agentRevisionState, err = s.LoadLocalAgentState(ctx)
+	} else if remoteAgentFound {
+		agentRevisionState = LocalAgentStateRow{
+			Version: remoteAgent.Version, DesiredRevision: remoteAgent.DesiredRevision,
+			CurrentRevision: remoteAgent.CurrentRevision,
+		}
 	} else {
 		agentRevisionState, err = s.loadAgentRevisionState(ctx, resolvedAgentID)
 	}
 	if err != nil {
 		return Snapshot{}, err
 	}
-	agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
+	if remoteAgentFound {
+		agentConfig = AgentConfig{
+			OutboundProxyURL:     strings.TrimSpace(remoteAgent.OutboundProxyURL),
+			TrafficStatsInterval: strings.TrimSpace(remoteAgent.TrafficStatsInterval),
+			TrafficBlocked:       remoteAgent.TrafficBlocked,
+			TrafficBlockReason:   strings.TrimSpace(remoteAgent.TrafficBlockReason),
+		}
+	} else {
+		agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
+	}
 	revisionState := LocalAgentStateRow{
+		Version:         agentRevisionState.Version,
 		DesiredRevision: maxInt(input.DesiredRevision, agentRevisionState.DesiredRevision),
 		CurrentRevision: maxInt(input.CurrentRevision, agentRevisionState.CurrentRevision),
 	}
@@ -326,20 +475,112 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	for _, bundle := range certBundles {
 		certMaterialDomains[strings.TrimSpace(bundle.Domain)] = true
 	}
+	pkiSecurity, err := s.LoadLatestPKISecuritySnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	pluginPolicies, err := s.loadAgentPluginPolicies(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	datasetSnapshots, err := s.loadAgentDatasetSnapshots(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	pluginGenerations, err := s.loadAgentPluginGenerations(ctx, resolvedAgentID, input.Platform)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshotRules := snapshotHTTPRules(httpRows, !runtimeFiltered)
+	snapshotL4 := snapshotL4Rules(l4Rows, !runtimeFiltered)
+	pluginPolicies, err = s.composeSnapshotEntryPolicies(ctx, resolvedAgentID, pluginPolicies, snapshotRules, snapshotL4, pluginGenerations)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshotRules = filterUnavailablePluginProviderRules(snapshotRules, pluginGenerations)
+	pluginDependencies, err := s.loadAgentPluginDependencies(ctx, resolvedAgentID, pluginGenerations, snapshotRules, snapshotL4)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	desiredRevision := int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision, highestPluginPolicyRevision(pluginPolicies), highestPluginGenerationRevision(pluginGenerations)))
+	for index := range pluginGenerations {
+		pluginGenerations[index].Revision = desiredRevision
+	}
+	datasetSnapshots = activeDatasetSnapshots(datasetSnapshots, pluginPolicies, pluginGenerations)
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision)),
+		Revision:            desiredRevision,
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
-		Rules:               snapshotHTTPRules(httpRows, !runtimeFiltered),
-		L4Rules:             snapshotL4Rules(l4Rows, !runtimeFiltered),
+		Rules:               snapshotRules,
+		L4Rules:             snapshotL4,
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
+		PluginGenerations:   pluginGenerations,
+		PluginDependencies:  pluginDependencies,
+		PluginPolicies:      pluginPolicies,
+		Datasets:            datasetSnapshots,
+		PKISecurity:         pkiSecurity,
 	}, nil
+}
+
+func highestPluginGenerationRevision(generations []PluginGeneration) int {
+	result := 0
+	for _, generation := range generations {
+		if generation.Target.Version > uint64(^uint(0)>>1) {
+			return int(^uint(0) >> 1)
+		}
+		if int(generation.Target.Version) > result {
+			result = int(generation.Target.Version)
+		}
+	}
+	return result
+}
+
+func highestPluginPolicyRevision(policies []PluginPolicy) int {
+	result := 0
+	for _, policy := range policies {
+		if policy.Revision > int64(result) {
+			if policy.Revision > int64(^uint(0)>>1) {
+				return int(^uint(0) >> 1)
+			}
+			result = int(policy.Revision)
+		}
+	}
+	return result
+}
+
+func (s *GormStore) pkiRelayFailClosed(ctx context.Context) (bool, error) {
+	if enabled, overridden := ctx.Value(emergencyPKIRelayAvailabilityContextKey{}).(bool); overridden {
+		return !enabled, nil
+	}
+	present, err := s.HasPKICanonicalSchema(ctx)
+	if err != nil || !present {
+		return false, err
+	}
+	var settings PKISettingsRow
+	err = s.db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return settings.RelayFailClosed, nil
+}
+
+type emergencyPKIRelayAvailabilityContextKey struct{}
+
+// WithEmergencyPKIRelayAvailability is restricted to the emergency revision
+// coordinator. It projects the one relay-enable revision while the canonical
+// fail-closed latch remains set until every exact revision is applied and
+// drained.
+func WithEmergencyPKIRelayAvailability(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, emergencyPKIRelayAvailabilityContextKey{}, enabled)
 }
 
 func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID string) (AgentConfig, bool) {
@@ -524,61 +765,66 @@ func (s *GormStore) ListManagedCertificates(ctx context.Context) ([]ManagedCerti
 
 func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, runtimeState RuntimeState) error {
 	_ = s.resolveAgentID(agentID)
-
-	currentState, err := s.LoadLocalAgentState(ctx)
-	if err != nil {
-		return err
-	}
-
-	outcome := NormalizeLocalApplyOutcome(runtimeState)
-	lastApplyStatus := outcome.Status
-	if lastApplyStatus == "" {
-		lastApplyStatus = currentState.LastApplyStatus
-	}
-
-	lastApplyMessage := outcome.Message
-	lastApplyRevision := outcome.Revision
-	if lastApplyRevision <= 0 {
-		lastApplyRevision = runtimeState.CurrentRevision
-	}
-
-	desiredRevision := currentState.DesiredRevision
-	lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
-	if lastApplyStatus == "success" {
-		desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
-	}
-
-	row := LocalAgentStateRow{
-		ID:                1,
-		DesiredRevision:   desiredRevision,
-		CurrentRevision:   boundedIntFromInt64(runtimeState.CurrentRevision),
-		LastApplyRevision: lastApplyRevisionInt,
-		LastApplyStatus:   lastApplyStatus,
-		LastApplyMessage:  lastApplyMessage,
-		DesiredVersion:    currentState.DesiredVersion,
-	}
-	normalizeLocalAgentStateRow(&row)
-
 	stateJSON, err := json.Marshal(runtimeState)
 	if err != nil {
 		return err
 	}
 	stateJSONString := string(stateJSON)
-	if localAgentStateRowsEqual(currentState, row) {
-		var existingMeta MetaRow
-		err := s.db.WithContext(ctx).
-			Where("key = ?", localRuntimeStateMetaKey).
-			Limit(1).
-			Find(&existingMeta).Error
-		if err != nil {
+	outcome := NormalizeLocalApplyOutcome(runtimeState)
+
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var currentState LocalAgentStateRow
+		err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", 1).
+			First(&currentState).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			currentState = LocalAgentStateRow{ID: 1, LastApplyStatus: "success"}
+		} else if err != nil {
 			return err
 		}
-		if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
-			return nil
-		}
-	}
+		normalizeLocalAgentStateRow(&currentState)
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lastApplyStatus := outcome.Status
+		if lastApplyStatus == "" {
+			lastApplyStatus = currentState.LastApplyStatus
+		}
+		lastApplyRevision := outcome.Revision
+		if lastApplyRevision <= 0 {
+			lastApplyRevision = runtimeState.CurrentRevision
+		}
+		desiredRevision := currentState.DesiredRevision
+		lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
+		if lastApplyStatus == "success" {
+			desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
+		}
+		row := LocalAgentStateRow{
+			ID:                 1,
+			Version:            currentState.Version,
+			DesiredRevision:    desiredRevision,
+			CurrentRevision:    boundedIntFromInt64(runtimeState.CurrentRevision),
+			LastApplyRevision:  lastApplyRevisionInt,
+			LastApplyStatus:    lastApplyStatus,
+			LastApplyMessage:   outcome.Message,
+			DesiredVersion:     currentState.DesiredVersion,
+			PKISecurityAckJSON: currentState.PKISecurityAckJSON,
+			PKISecurityAckAt:   currentState.PKISecurityAckAt,
+		}
+		normalizeLocalAgentStateRow(&row)
+
+		if localAgentStateRowsEqual(currentState, row) {
+			var existingMeta MetaRow
+			err := tx.WithContext(ctx).
+				Where("key = ?", localRuntimeStateMetaKey).
+				Limit(1).
+				Find(&existingMeta).Error
+			if err != nil {
+				return err
+			}
+			if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
+				return nil
+			}
+		}
 		if err := tx.
 			Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "id"}},
@@ -602,13 +848,18 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
 	normalizeLocalAgentStateRow(&a)
 	normalizeLocalAgentStateRow(&b)
+	acknowledgementTimesEqual := a.PKISecurityAckAt == nil && b.PKISecurityAckAt == nil ||
+		a.PKISecurityAckAt != nil && b.PKISecurityAckAt != nil && a.PKISecurityAckAt.Equal(*b.PKISecurityAckAt)
 	return a.ID == b.ID &&
+		a.Version == b.Version &&
 		a.DesiredRevision == b.DesiredRevision &&
 		a.CurrentRevision == b.CurrentRevision &&
 		a.LastApplyRevision == b.LastApplyRevision &&
 		a.LastApplyStatus == b.LastApplyStatus &&
 		a.LastApplyMessage == b.LastApplyMessage &&
-		a.DesiredVersion == b.DesiredVersion
+		a.DesiredVersion == b.DesiredVersion &&
+		a.PKISecurityAckJSON == b.PKISecurityAckJSON &&
+		acknowledgementTimesEqual
 }
 
 func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
@@ -619,6 +870,37 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 			UpdateAll: true,
 		}).
 		Create(&row).Error
+}
+
+// SaveAuthenticatedAgentRegistration updates only registration metadata and
+// only while the credential authenticated by the caller is still current. It
+// cannot recreate a token that a concurrent revoke has cleared.
+func (s *GormStore) SaveAuthenticatedAgentRegistration(ctx context.Context, expectedToken string, row AgentRow) error {
+	normalizeAgentRow(&row)
+	expectedToken = strings.TrimSpace(expectedToken)
+	if row.ID == "" || expectedToken == "" || row.AgentToken != expectedToken {
+		return ErrAgentControlTokenChanged
+	}
+	result := s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ? AND agent_token = ? AND agent_token <> ''", row.ID, expectedToken).
+		Updates(map[string]any{
+			"name":         row.Name,
+			"agent_url":    row.AgentURL,
+			"version":      row.Version,
+			"platform":     row.Platform,
+			"tags":         row.TagsJSON,
+			"capabilities": row.CapabilitiesJSON,
+			"mode":         row.Mode,
+			"is_local":     false,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrAgentControlTokenChanged
+	}
+	return nil
 }
 
 // UpdateDdnsStatusColumn writes only the ddns_status column for agentID. It is a
@@ -723,9 +1005,161 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
+	_, _, err := s.DeleteAgentWithAssociations(ctx, agentID)
+	return err
+}
+
+// DeleteAgentWithAssociations performs the final PKI tombstone guard, all
+// database-owned association cleanup, and the AgentRow hard delete in one
+// write transaction. Callers may clean certificate material only after this
+// method commits successfully.
+func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID string) ([]ManagedCertificateRow, []ManagedCertificateRow, error) {
 	agentID = strings.TrimSpace(agentID)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := retireCoordinatorAgentTx(tx, agentID, time.Now().UTC()); err != nil {
+	var originalCertificates []ManagedCertificateRow
+	var nextCertificates []ManagedCertificateRow
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		if err := requireAgentPKIRevokedForDeletion(ctx, tx, agentID); err != nil {
+			return err
+		}
+		if err := requireAgentRelayListenersUnreferenced(tx, agentID); err != nil {
+			return err
+		}
+		if err := tx.Order("id").Find(&originalCertificates).Error; err != nil {
+			return err
+		}
+		resourceKeys := [][2]string{{"agent", agentID}}
+		for _, spec := range []struct {
+			model any
+			kind  string
+		}{
+			{model: &HTTPRuleRow{}, kind: "http_rule"},
+			{model: &L4RuleRow{}, kind: "l4_rule"},
+			{model: &RelayListenerRow{}, kind: "relay_listener"},
+		} {
+			var ids []int
+			if err := tx.Model(spec.model).Where("agent_id = ?", agentID).Pluck("id", &ids).Error; err != nil {
+				return err
+			}
+			for _, id := range ids {
+				resourceKeys = append(resourceKeys, [2]string{spec.kind, agentID + ":" + strconv.Itoa(id)})
+			}
+		}
+		var childBindings []ResourceBindingRow
+		if err := tx.Where("parent_resource_kind = ? AND parent_resource_id = ?", "agent", agentID).Find(&childBindings).Error; err != nil {
+			return err
+		}
+		for _, binding := range childBindings {
+			resourceKeys = append(resourceKeys, [2]string{binding.ResourceKind, binding.ResourceID})
+		}
+		changedCertificates := make([]ManagedCertificateRow, 0)
+		deletedCertificateIDs := make([]int, 0)
+		nextCertificates = make([]ManagedCertificateRow, 0, len(originalCertificates))
+		for _, row := range originalCertificates {
+			targets, err := decodeAgentIDList(row.TargetAgentIDs)
+			if err != nil {
+				return err
+			}
+			filtered := targets[:0]
+			for _, target := range targets {
+				if target != agentID {
+					filtered = append(filtered, target)
+				}
+			}
+			if len(filtered) == len(targets) {
+				nextCertificates = append(nextCertificates, row)
+				continue
+			}
+			reports := make(map[string]json.RawMessage)
+			if strings.TrimSpace(row.AgentReports) != "" && row.AgentReports != "{}" {
+				if err := json.Unmarshal([]byte(row.AgentReports), &reports); err != nil {
+					return fmt.Errorf("decode managed certificate agent reports: %w", err)
+				}
+			}
+			delete(reports, agentID)
+			if len(filtered) == 0 {
+				if err := tx.Where("id = ?", row.ID).Delete(&ManagedCertificateRow{}).Error; err != nil {
+					return err
+				}
+				deletedCertificateIDs = append(deletedCertificateIDs, row.ID)
+				continue
+			}
+			encodedTargets, err := json.Marshal(filtered)
+			if err != nil {
+				return err
+			}
+			encodedReports, err := json.Marshal(reports)
+			if err != nil {
+				return err
+			}
+			row.TargetAgentIDs = string(encodedTargets)
+			row.AgentReports = string(encodedReports)
+			if err := tx.Model(&ManagedCertificateRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+				"target_agent_ids": row.TargetAgentIDs,
+				"agent_reports":    row.AgentReports,
+			}).Error; err != nil {
+				return err
+			}
+			changedCertificates = append(changedCertificates, row)
+			nextCertificates = append(nextCertificates, row)
+		}
+		for _, certificateID := range deletedCertificateIDs {
+			resourceKeys = append(resourceKeys, [2]string{"certificate", strconv.Itoa(certificateID)})
+		}
+		for _, certificate := range changedCertificates {
+			resourceID := strconv.Itoa(certificate.ID)
+			groupID, err := managedCertificateResourceGroupTx(tx, certificate, "", "")
+			if err != nil {
+				return err
+			}
+			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: "certificate", ResourceID: resourceID, ResourceGroupID: groupID, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"}),
+			}).Create(&binding).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", "certificate", resourceID).Delete(&QuotaAllocationRow{}).Error; err != nil {
+				return err
+			}
+		}
+		for _, binding := range childBindings {
+			if err := detachPluginConsumerBindingsTx(tx, binding.ResourceKind, binding.ResourceID, now); err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("parent_resource_kind = ? AND parent_resource_id = ?", "agent", agentID).Delete(&ResourceBindingRow{}).Error; err != nil {
+			return err
+		}
+		for _, key := range resourceKeys {
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", key[0], key[1]).Delete(&ResourceBindingRow{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", key[0], key[1]).Delete(&QuotaAllocationRow{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := recomputeCountQuotaUsageTx(tx, now); err != nil {
+			return err
+		}
+		if err := removeAgentBandwidthTx(tx, agentID, now); err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&L4RuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&RelayListenerRow{}).Error; err != nil {
+			return err
+		}
+		// Desired references belong to the deleted node; historical revision
+		// artifact references retain their existing ledger lifecycle.
+		if err := tx.Where("agent_id = ?", agentID).Delete(&DatasetBindingRow{}).Error; err != nil {
+			return err
+		}
+		if err := retireCoordinatorAgentTx(tx, agentID, now); err != nil {
 			return err
 		}
 		if _, err := s.deleteTrafficByAgentTx(tx, agentID); err != nil {
@@ -733,6 +1167,85 @@ func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 		}
 		return tx.Where("id = ?", agentID).Delete(&AgentRow{}).Error
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return originalCertificates, nextCertificates, nil
+}
+
+func requireAgentRelayListenersUnreferenced(tx *gorm.DB, agentID string) error {
+	var listenerIDs []int
+	if err := tx.Model(&RelayListenerRow{}).
+		Where("agent_id = ?", agentID).
+		Pluck("id", &listenerIDs).Error; err != nil {
+		return err
+	}
+	if len(listenerIDs) == 0 {
+		return nil
+	}
+	listenerSet := make(map[int]struct{}, len(listenerIDs))
+	for _, listenerID := range listenerIDs {
+		listenerSet[listenerID] = struct{}{}
+	}
+	check := func(ruleType string, ruleID int, ruleAgentID, relayChainJSON, relayLayersJSON string) error {
+		references := append(parseIntSlice(relayChainJSON), flattenIntLayers(parseIntLayers(relayLayersJSON))...)
+		for _, listenerID := range references {
+			if _, referenced := listenerSet[listenerID]; referenced {
+				return fmt.Errorf("%w: listener %d is referenced by %s rule #%d on agent %s", ErrAgentRelayListenerReferenced, listenerID, ruleType, ruleID, ruleAgentID)
+			}
+		}
+		return nil
+	}
+	var httpRows []HTTPRuleRow
+	if err := tx.Select("id", "agent_id", "relay_chain", "relay_layers").Where("agent_id <> ?", agentID).Find(&httpRows).Error; err != nil {
+		return err
+	}
+	for _, row := range httpRows {
+		if err := check("HTTP", row.ID, row.AgentID, row.RelayChainJSON, row.RelayLayersJSON); err != nil {
+			return err
+		}
+	}
+	var l4Rows []L4RuleRow
+	if err := tx.Select("id", "agent_id", "relay_chain", "relay_layers").Where("agent_id <> ?", agentID).Find(&l4Rows).Error; err != nil {
+		return err
+	}
+	for _, row := range l4Rows {
+		if err := check("L4", row.ID, row.AgentID, row.RelayChainJSON, row.RelayLayersJSON); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeAgentIDList(encoded string) ([]string, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return []string{}, nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(encoded), &values); err != nil {
+		return nil, fmt.Errorf("decode managed certificate target agents: %w", err)
+	}
+	return values, nil
+}
+
+func (s *GormStore) RequireAgentPKIRevokedForDeletion(ctx context.Context, agentID string) error {
+	return requireAgentPKIRevokedForDeletion(ctx, s.db.WithContext(ctx), strings.TrimSpace(agentID))
+}
+
+func requireAgentPKIRevokedForDeletion(ctx context.Context, db *gorm.DB, agentID string) error {
+	if !db.Migrator().HasTable(&PKIIdentityRow{}) {
+		return nil
+	}
+	var rows []PKIIdentityRow
+	if err := db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND state <> ?", agentID, PKIIdentityStateRevoked).
+		Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) != 0 {
+		return ErrPKIAgentIdentityNotRevoked
+	}
+	return nil
 }
 
 func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
@@ -741,6 +1254,23 @@ func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []H
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing []HTTPRuleRow
+		if err := tx.Where("agent_id = ?", agentID).Find(&existing).Error; err != nil {
+			return err
+		}
+		retained := make(map[int]struct{}, len(rules))
+		for _, row := range rules {
+			retained[row.ID] = struct{}{}
+		}
+		removed := make([]string, 0)
+		for _, row := range existing {
+			if _, ok := retained[row.ID]; !ok {
+				removed = append(removed, strconv.Itoa(row.ID))
+			}
+		}
+		if err := deletePluginPolicyEntryModesTx(tx, agentID, pluginsdk.PolicyEntryHTTP, removed); err != nil {
+			return err
+		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
 			return err
 		}
@@ -752,6 +1282,22 @@ func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []H
 		rows := make([]HTTPRuleRow, 0, len(rules))
 		for _, row := range rules {
 			row.AgentID = agentID
+			for _, current := range existing {
+				if current.ID == row.ID {
+					row.EntryToken = current.EntryToken
+					break
+				}
+			}
+			if row.EntryToken == "" {
+				var err error
+				row.EntryToken, err = newPolicyEntryToken()
+				if err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", agentID, pluginsdk.PolicyEntryHTTP, strconv.Itoa(row.ID)).Update("entry_token", row.EntryToken).Error; err != nil {
+				return err
+			}
 			normalizeHTTPRuleRow(&row)
 			rows = append(rows, row)
 		}
@@ -765,6 +1311,33 @@ func (s *GormStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4R
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing []L4RuleRow
+		if err := tx.Where("agent_id = ?", agentID).Find(&existing).Error; err != nil {
+			return err
+		}
+		retained := make(map[int]string, len(rules))
+		for _, row := range rules {
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			retained[row.ID] = kind
+		}
+		removed := map[string][]string{pluginsdk.PolicyEntryTCP: {}, pluginsdk.PolicyEntryUDP: {}}
+		for _, row := range existing {
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			if nextKind, ok := retained[row.ID]; !ok || nextKind != kind {
+				removed[kind] = append(removed[kind], strconv.Itoa(row.ID))
+			}
+		}
+		for kind, entryIDs := range removed {
+			if err := deletePluginPolicyEntryModesTx(tx, agentID, kind, entryIDs); err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&L4RuleRow{}).Error; err != nil {
 			return err
 		}
@@ -776,6 +1349,26 @@ func (s *GormStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4R
 		rows := make([]L4RuleRow, 0, len(rules))
 		for _, row := range rules {
 			row.AgentID = agentID
+			for _, current := range existing {
+				if current.ID == row.ID && strings.EqualFold(strings.TrimSpace(current.Protocol), strings.TrimSpace(row.Protocol)) {
+					row.EntryToken = current.EntryToken
+					break
+				}
+			}
+			if row.EntryToken == "" {
+				var err error
+				row.EntryToken, err = newPolicyEntryToken()
+				if err != nil {
+					return err
+				}
+			}
+			kind := pluginsdk.PolicyEntryTCP
+			if strings.EqualFold(strings.TrimSpace(row.Protocol), "udp") {
+				kind = pluginsdk.PolicyEntryUDP
+			}
+			if err := tx.Model(&PluginPolicyEntryModeRow{}).Where("node_id = ? AND kind = ? AND entry_id = ? AND entry_token = ''", agentID, kind, strconv.Itoa(row.ID)).Update("entry_token", row.EntryToken).Error; err != nil {
+				return err
+			}
 			normalizeL4RuleRow(&row)
 			rows = append(rows, row)
 		}
@@ -1215,7 +1808,9 @@ func (s *GormStore) saveManagedCertificateMaterialLocked(ctx context.Context, do
 }
 
 func (s *GormStore) initializeSchema(ctx context.Context) error {
-	return BootstrapSQLiteSchema(ctx, s.db)
+	options := SchemaOptionsForDriver("sqlite", true)
+	options.LocalAgentID = s.LocalAgentID()
+	return BootstrapSchema(ctx, s.db, options)
 }
 
 func normalizeAgentRow(row *AgentRow) {
@@ -1251,6 +1846,7 @@ func normalizeLocalAgentStateRow(row *LocalAgentStateRow) {
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "success")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
 	row.DesiredVersion = defaultString(row.DesiredVersion, "")
+	row.PKISecurityAckJSON = defaultString(row.PKISecurityAckJSON, "")
 }
 
 func normalizeL4RuleRow(row *L4RuleRow) {
@@ -1904,10 +2500,12 @@ func snapshotHTTPRules(rows []HTTPRuleRow, intent bool) []HTTPRule {
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
 
-			EgressProfileID: copyOptionalPositiveInt(row.EgressProfileID),
+			EgressProfileID:    copyOptionalPositiveInt(row.EgressProfileID),
+			TrustedProxyRanges: parseStringSlice(row.TrustedProxyRangesJSON),
 
 			RelayLayers: parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:   row.RelayObfs,
+			PolicyRef:   parsePolicyRef(row.PolicyRefJSON),
 			Revision:    int64(row.Revision),
 		})
 	}
@@ -1945,10 +2543,26 @@ func snapshotL4Rules(rows []L4RuleRow, intent bool) []L4Rule {
 			EgressProfileID: copyOptionalPositiveInt(row.EgressProfileID),
 
 			ProxyEntryAuth: parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+			PolicyRef:      parsePolicyRef(row.PolicyRefJSON),
 			Revision:       int64(row.Revision),
 		})
 	}
 	return rules
+}
+
+func parsePolicyRef(raw string) *PolicyRef {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var ref PolicyRef
+	if err := json.Unmarshal([]byte(raw), &ref); err != nil || ValidatePluginPolicyIdentity(ref.ID) != nil {
+		// Preserve fail-closed behavior: malformed persisted attachment must make
+		// the Agent reject the candidate instead of silently dropping protection.
+		return &PolicyRef{ID: "\x00invalid-policy-ref"}
+	}
+	ref.Overlay = append(json.RawMessage(nil), ref.Overlay...)
+	return &ref
 }
 
 func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {
@@ -2279,10 +2893,16 @@ func parseHTTPBackends(raw string) []HTTPBackend {
 	values := parseHTTPBackendsForIntent(raw)
 	normalized := make([]HTTPBackend, 0, len(values))
 	for _, value := range values {
-		if value.URL == "" {
-			continue
+		if (value.Kind == "" || value.Kind == pluginsdk.HTTPBackendKindURL) && value.PluginProvider == nil {
+			if value.URL == "" {
+				continue
+			}
+			value.Kind = ""
 		}
 		normalized = append(normalized, value)
+	}
+	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
+		return []HTTPBackend{}
 	}
 	return normalized
 }
@@ -2292,8 +2912,11 @@ func parseHTTPBackendsForIntent(raw string) []HTTPBackend {
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []HTTPBackend{}
 	}
-	for i := range values {
-		values[i].URL = strings.TrimSpace(values[i].URL)
+	for index := range values {
+		if (values[index].Kind == "" || values[index].Kind == pluginsdk.HTTPBackendKindURL) && values[index].PluginProvider == nil {
+			values[index].URL = strings.TrimSpace(values[index].URL)
+			values[index].Kind = ""
+		}
 	}
 	return values
 }

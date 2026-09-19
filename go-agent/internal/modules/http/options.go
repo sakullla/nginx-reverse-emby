@@ -16,6 +16,7 @@ type TransportOptions struct {
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
 	MaxConnsPerHost       int
+	DisableHTTP2          bool
 }
 
 type StreamResilienceOptions struct {
@@ -41,6 +42,21 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 	if options.MaxConnsPerHost > 0 {
 		transport.MaxConnsPerHost = options.MaxConnsPerHost
 	}
+	if options.DisableHTTP2 {
+		// A custom DialContext conservatively disables HTTP/2 by default, but
+		// make the intent explicit and also clear any previously installed
+		// alternate protocol handler when a transport is reused in tests or by
+		// an embedding caller.
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = nil
+		if transport.Protocols != nil {
+			protocols := *transport.Protocols
+			protocols.SetHTTP1(true)
+			protocols.SetHTTP2(false)
+			protocols.SetUnencryptedHTTP2(false)
+			transport.Protocols = &protocols
+		}
+	}
 
 	if options.DialTimeout <= 0 && options.KeepAlive <= 0 {
 		return
@@ -61,13 +77,32 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 	}
 }
 
+const (
+	interactiveClassMaxConnsPerHost = 16
+	bulkClassMaxConnsPerHost        = 64
+)
+
 func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Transport) {
 	interactive := cloneTransport(base)
 	bulk := cloneTransport(base)
 
-	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: 16})
-	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: 64})
+	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, interactiveClassMaxConnsPerHost)})
+	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, bulkClassMaxConnsPerHost)})
 	return interactive, bulk
+}
+
+// classedMaxConnsPerHost keeps a class's default ceiling unless the shared
+// transport was configured with a tighter cap. A configured value above every
+// class default is an explicit capacity raise and applies to both classes:
+// keeping the class ceilings would silently make the raise a no-op.
+func classedMaxConnsPerHost(base *http.Transport, classDefault int) int {
+	if base == nil || base.MaxConnsPerHost <= 0 {
+		return classDefault
+	}
+	if base.MaxConnsPerHost > bulkClassMaxConnsPerHost || base.MaxConnsPerHost < classDefault {
+		return base.MaxConnsPerHost
+	}
+	return classDefault
 }
 
 func NewClassedRelayTransports(

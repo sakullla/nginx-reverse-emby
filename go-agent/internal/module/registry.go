@@ -46,13 +46,38 @@ type GenerationContext struct {
 	snapshot     model.Snapshot
 }
 
+// WithTrafficRuntimeConfig overlays authenticated heartbeat-only traffic state
+// onto module preparation without changing the immutable revision identity.
+// The generation ID and snapshot hash continue to bind the verified pull
+// artifact created by NewGenerationContext.
+func (c GenerationContext) WithTrafficRuntimeConfig(config model.AgentConfig) GenerationContext {
+	c.snapshot.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(config.TrafficStatsEnabled)
+	c.snapshot.AgentConfig.TrafficBlocked = config.TrafficBlocked
+	c.snapshot.AgentConfig.TrafficBlockReason = config.TrafficBlockReason
+	return c
+}
+
 func NewGenerationContext(previous, next model.Snapshot) (GenerationContext, error) {
 	snapshotJSON, err := json.Marshal(next)
 	if err != nil {
 		return GenerationContext{}, fmt.Errorf("encode generation snapshot: %w", err)
 	}
 	digest := sha256.Sum256(snapshotJSON)
-	hash := hex.EncodeToString(digest[:])
+	return NewGenerationContextWithSnapshotHash(previous, next, hex.EncodeToString(digest[:]))
+}
+
+// NewGenerationContextWithSnapshotHash restores or creates a generation with
+// an identity established outside the current Go snapshot schema. Revision
+// sync uses the control plane's verified artifact digest for new generations,
+// while process recovery uses the exact identity persisted in the generation
+// journal. Neither path is allowed to derive a new identity by re-encoding a
+// snapshot with the current binary.
+func NewGenerationContextWithSnapshotHash(previous, next model.Snapshot, snapshotHash string) (GenerationContext, error) {
+	hash := strings.ToLower(strings.TrimSpace(snapshotHash))
+	decoded, err := hex.DecodeString(hash)
+	if err != nil || len(decoded) != sha256.Size {
+		return GenerationContext{}, errors.New("generation snapshot hash must be a 64-character hex digest")
+	}
 	return GenerationContext{
 		id:           fmt.Sprintf("generation-%d-%s", next.Revision, hash[:16]),
 		revision:     next.Revision,
@@ -103,6 +128,16 @@ type PreparedGeneration interface {
 type GenerationPreparer interface {
 	PrepareGeneration(context.Context, GenerationContext) (PreparedGeneration, error)
 	ActiveGeneration() *GenerationView
+}
+
+// TrafficRuntimeReconciler atomically updates heartbeat-owned traffic state on
+// the already active generation. It must not change generation identity or any
+// immutable snapshot field.
+type TrafficRuntimeReconciler interface {
+	ReconcileTrafficRuntime(context.Context, model.AgentConfig) error
+	// FailClosedTrafficRuntime synchronously installs a blocked state without
+	// external I/O when the normal reconciliation path reports an error.
+	FailClosedTrafficRuntime(model.AgentConfig)
 }
 
 // GenerationView is immutable after publication. Its providers and snapshot
@@ -156,6 +191,42 @@ func (v *GenerationView) ProviderHash() string {
 		return ""
 	}
 	return v.providerHash
+}
+
+func (v *GenerationView) PluginRuntimeStatuses() []model.PluginRuntimeStatus {
+	if v == nil {
+		return nil
+	}
+	statuses := make(map[string]model.PluginRuntimeStatus, len(v.context.snapshot.PluginGenerations))
+	order := make([]string, 0, len(v.context.snapshot.PluginGenerations))
+	for _, generation := range v.context.snapshot.PluginGenerations {
+		budget, _ := json.Marshal(generation.ResourceBudget)
+		order = append(order, generation.InstanceID)
+		statuses[generation.InstanceID] = model.PluginRuntimeStatus{
+			InstanceID: generation.InstanceID, PluginID: generation.PluginID, OperationID: generation.OperationID, Revision: generation.Revision,
+			GenerationID: generation.ID, PackageDigest: generation.PackageDigest, ArtifactDigest: generation.Artifact.SHA256,
+			ConfigVersion: generation.ConfigVersion, RuntimeKind: generation.Runtime.Kind, State: "active", Sequence: 1,
+			Details: json.RawMessage(`{}`), Budget: budget,
+		}
+	}
+	for _, prepared := range v.transactions {
+		source, ok := prepared.transaction.(interface {
+			PluginRuntimeStatuses() []model.PluginRuntimeStatus
+		})
+		if !ok {
+			continue
+		}
+		for _, status := range source.PluginRuntimeStatuses() {
+			if _, exists := statuses[status.InstanceID]; exists {
+				statuses[status.InstanceID] = status
+			}
+		}
+	}
+	result := make([]model.PluginRuntimeStatus, 0, len(order))
+	for _, instanceID := range order {
+		result = append(result, statuses[instanceID])
+	}
+	return result
 }
 
 func (v *GenerationView) Resolve(ref ProviderRef) (any, bool) {
@@ -390,9 +461,10 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 	}
 	providers := newProviderSet()
 	request := ApplyRequest{
-		Previous:  generationContext.Previous(),
-		Next:      generationContext.Snapshot(),
-		Providers: providers,
+		Previous:   generationContext.Previous(),
+		Next:       generationContext.Snapshot(),
+		Providers:  providers,
+		Generation: generationContext,
 	}
 	candidate := &generationCandidate{
 		registry:  r,
@@ -844,6 +916,7 @@ func hashGenerationProviders(generationContext GenerationContext, providers prov
 
 func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
+	cloned.Datasets = model.CloneDatasetSnapshots(snapshot.Datasets)
 	cloned.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = cloneGenerationPtr(snapshot.VersionPackage)
 	cloned.DDNSConfig = cloneGenerationPtr(snapshot.DDNSConfig)
@@ -851,18 +924,22 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	for i, rule := range snapshot.Rules {
 		cloned.Rules[i].Backends = slices.Clone(rule.Backends)
 		cloned.Rules[i].CustomHeaders = slices.Clone(rule.CustomHeaders)
+		cloned.Rules[i].TrustedProxyRanges = slices.Clone(rule.TrustedProxyRanges)
 		cloned.Rules[i].EgressProfileID = cloneGenerationPtr(rule.EgressProfileID)
 		cloned.Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned.Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
 		cloned.Rules[i].Tags = slices.Clone(rule.Tags)
+		cloned.Rules[i].PolicyRef = cloneGenerationPolicyRef(rule.PolicyRef)
 	}
 	cloned.L4Rules = slices.Clone(snapshot.L4Rules)
 	for i, rule := range snapshot.L4Rules {
 		cloned.L4Rules[i].Backends = slices.Clone(rule.Backends)
+		cloned.L4Rules[i].Tuning.ProxyProtocol.TrustedPeers = slices.Clone(rule.Tuning.ProxyProtocol.TrustedPeers)
 		cloned.L4Rules[i].EgressProfileID = cloneGenerationPtr(rule.EgressProfileID)
 		cloned.L4Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned.L4Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
 		cloned.L4Rules[i].Tags = slices.Clone(rule.Tags)
+		cloned.L4Rules[i].PolicyRef = cloneGenerationPolicyRef(rule.PolicyRef)
 	}
 	cloned.RelayListeners = slices.Clone(snapshot.RelayListeners)
 	for i, listener := range snapshot.RelayListeners {
@@ -878,7 +955,32 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	for i, policy := range snapshot.CertificatePolicies {
 		cloned.CertificatePolicies[i].Tags = slices.Clone(policy.Tags)
 	}
+	cloned.PluginPolicies = slices.Clone(snapshot.PluginPolicies)
+	for i, policy := range snapshot.PluginPolicies {
+		cloned.PluginPolicies[i].Stages = slices.Clone(policy.Stages)
+		for stageIndex, stage := range policy.Stages {
+			clonedStage := &cloned.PluginPolicies[i].Stages[stageIndex]
+			*clonedStage = model.ClonePolicyStage(stage)
+		}
+	}
+	cloned.PluginGenerations = slices.Clone(snapshot.PluginGenerations)
+	for i, generation := range snapshot.PluginGenerations {
+		clonedGeneration := &cloned.PluginGenerations[i]
+		clonedGeneration.ManagedNetworkPolicies = model.CloneManagedNetworkPolicies(generation.ManagedNetworkPolicies)
+		clonedGeneration.Config = slices.Clone(generation.Config)
+		clonedGeneration.ManagedNetworkPolicy = cloneGenerationPolicyRef(generation.ManagedNetworkPolicy)
+		clonedGeneration.ExtensionPoints = slices.Clone(generation.ExtensionPoints)
+		clonedGeneration.RequiredFeatures = slices.Clone(generation.RequiredFeatures)
+		clonedGeneration.HTTPBackendProviders = slices.Clone(generation.HTTPBackendProviders)
+		clonedGeneration.Grants = slices.Clone(generation.Grants)
+		clonedGeneration.SecretHandles = slices.Clone(generation.SecretHandles)
+	}
+	cloned.PluginDependencies = slices.Clone(snapshot.PluginDependencies)
 	return cloned
+}
+
+func cloneGenerationPolicyRef(ref *model.PolicyRef) *model.PolicyRef {
+	return model.ClonePolicyRef(ref)
 }
 
 func cloneGenerationPtr[T any](value *T) *T {

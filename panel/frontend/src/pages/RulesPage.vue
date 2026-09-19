@@ -25,6 +25,14 @@
 
     <OperationStatusList />
 
+    <div v-if="providerCatalogStatus === 'error'" class="provider-catalog-notice provider-catalog-notice--error" role="alert">
+      <span :title="providerCatalogErrorTitle">插件状态加载失败</span>
+      <button type="button" class="btn btn--sm btn--secondary" @click="refetchHTTPBackendProviders">重试</button>
+    </div>
+    <div v-else-if="providerCatalogStatus === 'loading' && hasAgentFilter" class="provider-catalog-notice" role="status">
+      正在确认插件状态…
+    </div>
+
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agent-baseline="ALL_AGENTS_FILTER"
@@ -80,6 +88,8 @@
         :key="`${rule.agent_id || ''}:${rule.id}`"
         :rule="rule"
         :agent="selectedAgent"
+        :provider-catalog="httpBackendProviders"
+        :provider-catalog-status="providerCatalogStatus"
         :traffic="trafficForRule(rule)"
         :agent-node-total="nodeTotalFor(rule)"
         @edit="startEdit"
@@ -96,6 +106,8 @@
       v-show="hasAgentFilter && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
+      :provider-catalog="httpBackendProviders"
+      :provider-catalog-status="providerCatalogStatus"
       @edit="startEdit"
       @toggle="toggleRule"
       @delete="startDelete"
@@ -193,7 +205,7 @@ import { useAgent } from '../context/AgentContext'
 import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchRules, fetchAllAgentsRules, fetchCertificates, fetchRelayListeners, fetchEgressProfiles, fetchAllAgentsCertificates, fetchAllAgentsRelayListeners } from '../api'
+import { fetchRules, fetchAllAgentsRules, fetchCertificates, fetchRelayListeners, fetchEgressProfiles, fetchAllAgentsCertificates, fetchAllAgentsRelayListeners, fetchHTTPBackendProviders } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
@@ -215,6 +227,7 @@ import { messageStore } from '../stores/messages'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
+import { describeHTTPBackends } from '../utils/httpBackend.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -254,6 +267,59 @@ const canCreate = computed(() => (
 ))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
+const providerCatalogAgentIds = computed(() => {
+  if (agentId.value) return [String(agentId.value)]
+  if (!isAllAgentsFilter(agentFilter.value)) return []
+  return allAgents.value.map((agent) => String(agent.id)).filter(Boolean).sort()
+})
+const providerCatalogRequestKey = computed(() => providerCatalogAgentIds.value.join('\u0000'))
+const {
+  data: httpBackendProvidersData,
+  isLoading: httpBackendProvidersLoading,
+  isFetching: httpBackendProvidersFetching,
+  isError: httpBackendProvidersError,
+  isSuccess: httpBackendProvidersSuccess,
+  error: httpBackendProvidersFailure,
+  refetch: refetchHTTPBackendProviders
+} = useQuery({
+  queryKey: computed(() => ['http-backend-providers', providerCatalogRequestKey.value]),
+  enabled: computed(() => providerCatalogAgentIds.value.length > 0),
+  queryFn: async () => {
+    const agentIds = [...providerCatalogAgentIds.value]
+    const groups = await Promise.all(agentIds.map(async (targetAgentId) => ({
+      agentId: targetAgentId,
+      providers: await fetchHTTPBackendProviders(targetAgentId)
+    })))
+    return {
+      requestKey: agentIds.join('\u0000'),
+      providers: groups.flatMap(({ agentId: targetAgentId, providers }) => (
+        (Array.isArray(providers) ? providers : []).map((provider) => ({
+          ...provider,
+          agent_id: targetAgentId
+        }))
+      ))
+    }
+  }
+})
+const providerCatalogCurrent = computed(() => (
+  httpBackendProvidersSuccess.value === true
+  && httpBackendProvidersData.value?.requestKey === providerCatalogRequestKey.value
+))
+const providerCatalogStatus = computed(() => {
+  if (httpBackendProvidersError.value === true) return 'error'
+  if (
+    httpBackendProvidersLoading.value === true
+    || httpBackendProvidersFetching.value === true
+    || !providerCatalogCurrent.value
+  ) return 'loading'
+  return 'ready'
+})
+const providerCatalogErrorTitle = computed(() => String(httpBackendProvidersFailure.value?.message || '').trim())
+const httpBackendProviders = computed(() => (
+  providerCatalogStatus.value === 'ready' && Array.isArray(httpBackendProvidersData.value?.providers)
+    ? httpBackendProvidersData.value.providers
+    : []
+))
 const formAgent = computed(() => agentsData.value?.find((a) => String(a.id) === String(formAgentId.value)))
 const formModalSubtitle = computed(() => {
   const name = String(formAgent.value?.name || formAgentId.value || '').trim()
@@ -472,12 +538,9 @@ function handleAgentSelect(id) {
 }
 
 function httpBackends(rule) {
-  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
-    return rule.backends
-      .map((backend) => String(backend?.url || '').trim())
-      .filter(Boolean)
-  }
-  return []
+  return describeHTTPBackends(rule, httpBackendProviders.value, providerCatalogStatus.value).map((backend) => (
+    backend.kind === 'provider' ? `${backend.label} · ${backend.detail}` : backend.label
+  ))
 }
 
 function formatHttpBackend(rule) {
@@ -761,6 +824,21 @@ async function confirmDelete() {
   margin: 0;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
+}
+
+.provider-catalog-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.provider-catalog-notice--error {
+  color: var(--color-danger);
+  font-weight: 600;
 }
 
 .rules-page__prompt,

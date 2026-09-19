@@ -12,6 +12,13 @@ import (
 )
 
 func serverTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener Listener) (*tls.Config, error) {
+	mode, err := normalizeTLSMode(listener.TLSMode)
+	if err != nil {
+		return nil, err
+	}
+	if mode == tlsModePKIMTLS {
+		return serverTunnelTLSConfig(ctx, provider, listener)
+	}
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -42,6 +49,9 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 	mode, err := normalizeTLSMode(listener.TLSMode)
 	if err != nil {
 		return nil, err
+	}
+	if mode == tlsModePKIMTLS {
+		return clientTunnelTLSConfig(ctx, provider, listener, address, serverNameOverride)
 	}
 
 	rootCAs, err := provider.TrustedCAPool(ctx, listener.TrustedCACertificateIDs)

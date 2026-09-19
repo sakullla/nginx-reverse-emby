@@ -52,6 +52,35 @@ export function accountedBytes(bytes, direction = 'both') {
   }
 }
 
+function hasByteField(value, key) {
+  return value != null && Object.prototype.hasOwnProperty.call(value, key) && value[key] != null && value[key] !== ''
+}
+
+function trafficDirection(summary = {}) {
+  return summary.policy?.direction || summary.direction || 'both'
+}
+
+// Agent-page totals must use this agent's own accounted traffic, not a shared
+// resource-group used_bytes overlay.
+export function agentTrafficBytes(summary = {}) {
+  if (summary == null || typeof summary !== 'object') return 0
+  if (hasByteField(summary, 'accounted_bytes')) {
+    return normalizeBytes(summary.accounted_bytes)
+  }
+  const host = summary.host_total
+  if (host && hasByteField(host, 'accounted_bytes')) {
+    return normalizeBytes(host.accounted_bytes)
+  }
+  if (host && (hasByteField(host, 'rx_bytes') || hasByteField(host, 'tx_bytes'))) {
+    return accountedBytes(host, trafficDirection(summary))
+  }
+  if (hasByteField(summary, 'rx_bytes') || hasByteField(summary, 'tx_bytes')) {
+    const fromIo = accountedBytes(summary, trafficDirection(summary))
+    if (fromIo > 0) return fromIo
+  }
+  return normalizeBytes(summary.used_bytes)
+}
+
 export function normalizeTrafficPolicy(policy = {}) {
   const direction = ['rx', 'tx', 'both', 'max'].includes(String(policy.direction || '').toLowerCase())
     ? String(policy.direction).toLowerCase()

@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
 )
@@ -21,6 +22,8 @@ type Module struct {
 	reporter *Reporter
 	meta     map[string]string
 	selector interface{ ActiveGeneration() *module.GenerationView }
+	// Used by package tests to exercise the controller's fail-closed path.
+	reconcileTrafficRuntime func(context.Context, model.AgentConfig) error
 
 	blockState BlockStateValue
 }
@@ -163,6 +166,7 @@ func (m *Module) TrafficBlockState() BlockState {
 }
 
 type transaction struct {
+	mu     sync.RWMutex
 	module *Module
 
 	previousEnabled    bool
@@ -187,6 +191,8 @@ func (tx *transaction) Publish() {
 	if tx == nil || tx.module == nil {
 		return
 	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
 	if tx.published {
 		return
 	}
@@ -213,6 +219,8 @@ func (tx *transaction) Rollback() error {
 	if tx == nil || tx.module == nil {
 		return nil
 	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
 	if !tx.published {
 		return nil
 	}
@@ -228,6 +236,8 @@ func (tx *transaction) TrafficBlockState() BlockState {
 	if tx == nil {
 		return BlockState{}
 	}
+	tx.mu.RLock()
+	defer tx.mu.RUnlock()
 	return tx.nextBlockState
 }
 
@@ -235,7 +245,56 @@ func (tx *transaction) TrafficReport(ctx context.Context, meta map[string]string
 	if tx == nil || tx.module == nil {
 		return core.TrafficReport{}, nil
 	}
-	return tx.module.trafficReport(ctx, meta, tx.nextEnabled, tx.nextMeta)
+	tx.mu.RLock()
+	enabled := tx.nextEnabled
+	configuredMeta := cloneStringMap(tx.nextMeta)
+	tx.mu.RUnlock()
+	return tx.module.trafficReport(ctx, meta, enabled, configuredMeta)
+}
+
+func (tx *transaction) ReconcileTrafficRuntime(ctx context.Context, config model.AgentConfig) error {
+	if tx == nil || tx.module == nil || config.TrafficStatsEnabled == nil {
+		return nil
+	}
+	if hook := tx.module.reconcileTrafficRuntime; hook != nil {
+		if err := hook(ctx, config); err != nil {
+			return err
+		}
+	}
+	nextEnabled := *config.TrafficStatsEnabled
+	nextBlockState := BlockState{Blocked: config.TrafficBlocked, Reason: config.TrafficBlockReason}.Normalized()
+	tx.mu.Lock()
+	SetEnabled(nextEnabled)
+	tx.nextEnabled = nextEnabled
+	tx.nextBlockState = nextBlockState
+	tx.mu.Unlock()
+	return nil
+}
+
+// FinalizeGenerationPublication runs after the immutable active view swap and
+// before provider readers are released. The active generation therefore owns
+// both report visibility and the process-wide collectors used by HTTP/L4/relay
+// and embedded consumers.
+func (tx *transaction) FinalizeGenerationPublication() {
+	if tx == nil || tx.module == nil {
+		return
+	}
+	tx.mu.Lock()
+	tx.module.installState(tx.nextEnabled, tx.nextMeta, tx.nextBlockState)
+	tx.mu.Unlock()
+}
+
+func (tx *transaction) FailClosedTrafficRuntime(config model.AgentConfig) {
+	if tx == nil || tx.module == nil {
+		return
+	}
+	tx.mu.Lock()
+	if config.TrafficStatsEnabled != nil {
+		tx.nextEnabled = *config.TrafficStatsEnabled
+		SetEnabled(tx.nextEnabled)
+	}
+	tx.nextBlockState = BlockState{Blocked: true, Reason: config.TrafficBlockReason}.Normalized()
+	tx.mu.Unlock()
 }
 
 func (m *Module) committedMeta() map[string]string {

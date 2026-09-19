@@ -20,8 +20,20 @@ function mutationEnvelope(data) {
 function normalizeHttpBackends(rule = {}) {
   if (Array.isArray(rule.backends) && rule.backends.length > 0) {
     return rule.backends
-      .map((backend) => ({ url: String(backend?.url || '').trim() }))
-      .filter((backend) => backend.url)
+      .map((backend) => {
+        if (backend?.kind === 'plugin_provider') {
+          const instanceId = String(backend?.plugin_provider?.instance_id || '').trim()
+          const providerId = String(backend?.plugin_provider?.provider_id || '').trim()
+          if (!instanceId || !providerId) return null
+          return {
+            kind: 'plugin_provider',
+            plugin_provider: { instance_id: instanceId, provider_id: providerId }
+          }
+        }
+        const url = String(backend?.url || '').trim()
+        return url ? { url } : null
+      })
+      .filter(Boolean)
   }
   return []
 }
@@ -362,6 +374,11 @@ export async function fetchRules(agentId) {
   return (data.rules || []).map((rule) => normalizeHttpRule(rule))
 }
 
+export async function fetchHTTPBackendProviders(agentId) {
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/http-backend-providers`)
+  return data.providers || []
+}
+
 export async function createRule(agentId, payloadOrFrontend) {
   const payload = normalizeHttpRulePayloadObject(payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
     ? payloadOrFrontend
@@ -697,4 +714,32 @@ export async function fetchTrafficAggregate(agentId, granularity) {
 export async function fetchDashboardAttention() {
   const { data } = await api.get('/dashboard/attention')
   return data
+}
+
+export async function fetchPluginUIRoutes() {
+  const { data } = await api.get('/plugin-ui-routes')
+  return Array.isArray(data?.routes)
+    ? data.routes.map((route) => ({
+      id: String(route?.id || ''),
+      label: String(route?.label || route?.id || ''),
+      group: String(route?.group || ''),
+      href: String(route?.href || '')
+    })).filter((route) => route.id && route.href)
+    : []
+}
+
+export async function fetchPluginResourceGroups() {
+  const { data } = await api.get('/plugin-resource-groups')
+  return Array.isArray(data?.groups)
+    ? data.groups.map((group) => ({
+      id: String(group?.id || ''),
+      plugin_id: String(group?.plugin_id || ''),
+      ref: String(group?.ref || ''),
+      label: String(group?.label || group?.id || ''),
+      description: String(group?.description || ''),
+      status: String(group?.status || ''),
+      ui_route_id: String(group?.ui_route_id || ''),
+      ui_href: String(group?.ui_href || '')
+    })).filter((group) => group.id && group.ref)
+    : []
 }

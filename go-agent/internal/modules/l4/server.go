@@ -7,6 +7,7 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 	"net"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ type serverOptions struct {
 	sessionRegistrar  L4SessionRegistrar
 	registrationReady bool
 	lifetimeContext   context.Context
+	policyEvaluator   policy.Evaluator
 }
 
 type Server struct {
@@ -52,6 +54,8 @@ type Server struct {
 	udpMu                 sync.Mutex
 	udpSessions           map[string]*udpSession
 	udpAssociations       map[string]udpProxyAssociation
+	udpPolicyLocksMu      sync.Mutex
+	udpPolicyLocks        map[string]*udpPolicyFlowLock
 	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
 	upstreamScore         *model.ScoreStore
@@ -62,6 +66,7 @@ type Server struct {
 	// growth under packet floods (R6) without blocking the read loop deadlines.
 	udpPacketSem      chan struct{}
 	udpDroppedPackets atomic.Int64
+	policyRequestSeq  atomic.Uint64
 
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
@@ -70,6 +75,7 @@ type Server struct {
 	egressDialer       moduleegress.Dialer
 	tcpDialer          func(context.Context, string, string) (net.Conn, error)
 	udpDialer          func(model.L4Rule, string) (udpUpstream, l4Candidate, error)
+	policyEvaluator    policy.Evaluator
 
 	tcpMu           sync.Mutex
 	tcpConns        map[net.Conn]int
@@ -148,6 +154,7 @@ func newServerWithOptions(
 		udpConns:              nil,
 		udpSessions:           make(map[string]*udpSession),
 		udpAssociations:       make(map[string]udpProxyAssociation),
+		udpPolicyLocks:        make(map[string]*udpPolicyFlowLock),
 		udpReplyTimeout:       defaultUDPReplyTimeout,
 		udpSessionIdleTimeout: 30 * time.Second,
 		upstreamScore:         model.NewScoreStore(time.Now),
@@ -160,6 +167,7 @@ func newServerWithOptions(
 		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 		generationID:          options.generationID,
+		policyEvaluator:       options.policyEvaluator,
 		revokedRules:          make(map[int]struct{}),
 	}
 	s.sessions = newL4SessionTracker(options.generationID, options.sessionRegistrar, options.registrationReady)

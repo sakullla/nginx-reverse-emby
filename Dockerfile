@@ -7,12 +7,17 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM golang:1.26.4-trixie AS go-builder
+FROM golang:1.27.0-trixie AS go-builder
 ARG GO_AGENT_LDFLAGS="-s -w"
+WORKDIR /src
+COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
+COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 WORKDIR /src/go-agent
-COPY go-agent/go.mod go-agent/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY go-agent/ ./
+WORKDIR /src
+COPY plugin-sdk/ ./plugin-sdk/
+COPY go-agent/ ./go-agent/
+WORKDIR /src/go-agent
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
@@ -32,16 +37,18 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent ./cmd/nre-agent
 
-FROM golang:1.26.4-trixie AS backend-go-builder
+FROM golang:1.27.0-trixie AS backend-go-builder
 ARG APP_VERSION=dev
 ARG BUILD_TIME=dev
 ARG GO_VERSION=dev
 WORKDIR /src
+COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
 COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 COPY panel/backend-go/go.mod panel/backend-go/go.sum ./panel/backend-go/
 WORKDIR /src/panel/backend-go
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 WORKDIR /src
+COPY plugin-sdk/ ./plugin-sdk/
 COPY go-agent/ ./go-agent/
 COPY panel/backend-go/ ./panel/backend-go/
 WORKDIR /src/panel/backend-go
@@ -64,6 +71,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates tzdata; \
     rm -rf /var/lib/apt/lists/*
 COPY scripts/ ./scripts/
+COPY official-market.lock ./official-market.lock
 COPY --from=frontend-builder /build/dist ./panel/frontend/dist/
 COPY --from=backend-go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
 COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nre-agent-linux-amd64
@@ -81,5 +89,7 @@ RUN set -eux; \
     mkdir -p ./panel/data
 
 VOLUME ["/opt/nginx-reverse-emby/panel/data"]
+# The image exposes only the existing panel/control listener. Internal relay
+# mTLS runs on agent-managed data-plane listeners, not a second control port.
 EXPOSE 8080
 CMD ["/usr/local/bin/nre-control-plane"]

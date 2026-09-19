@@ -7,8 +7,15 @@ import (
 )
 
 func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
-	return moduleutil.CloneHTTPRules(rules)
+	cloned := moduleutil.CloneHTTPRules(rules)
+	for i := range cloned {
+		cloned[i].TrustedProxyRanges = append([]string(nil), rules[i].TrustedProxyRanges...)
+		cloned[i].PolicyRef = clonePolicyRef(rules[i].PolicyRef)
+	}
+	return cloned
 }
+
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef { return model.ClonePolicyRef(ref) }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
 	return moduleutil.CloneRelayListeners(listeners)

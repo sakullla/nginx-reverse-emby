@@ -18,11 +18,11 @@ import StatusMessage from './components/StatusMessage.vue'
 
 const router = useRouter()
 const route = useRoute()
-const { token } = useAuthState()
+const { hasToken } = useAuthState()
 
 // If token is cleared (401, logout), redirect to login immediately
-watch(token, (val) => {
-  if (val === null && route.name !== 'login') {
+watch(hasToken, (authenticated) => {
+  if (!authenticated && route.name !== 'login') {
     router.replace({ name: 'login' })
   }
 })

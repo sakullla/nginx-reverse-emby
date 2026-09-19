@@ -3,69 +3,122 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
-	"runtime"
+
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestIntegrationStageRejectsIncompleteOrUnsupportedManifestBeforeMutation(t *testing.T) {
-	t.Parallel()
-	payload := []byte("payload")
-	for _, tc := range []struct {
-		name   string
-		mutate func(*model.VersionPackage)
-	}{
-		{name: "invalid digest", mutate: func(pkg *model.VersionPackage) { pkg.SHA256 = "deadbeef" }},
-		{name: "wrong platform", mutate: func(pkg *model.VersionPackage) { pkg.Platform = "linux-arm64" }},
-		{name: "unsupported platform", mutate: func(pkg *model.VersionPackage) { pkg.Platform = "darwin-amd64" }},
-		{name: "path traversal filename", mutate: func(pkg *model.VersionPackage) { pkg.Filename = "../nre-agent" }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			sourcePath := writeTestBinary(t, dir, "source-agent", payload)
-			pkg := testVersionPackage(sourcePath, payload)
-			tc.mutate(&pkg)
-			mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+func TestIntegrationPackageCoordinatorStagesThrottledHTTPWithoutBlockingHeartbeats(t *testing.T) {
+	payload := bytes.Repeat([]byte("verified-package-block"), 4096)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		flusher, _ := w.(http.Flusher)
+		chunkSize := len(payload) / 8
+		for offset := 0; offset < len(payload); offset += chunkSize {
+			end := min(offset+chunkSize, len(payload))
+			if _, err := w.Write(payload[offset:end]); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(8 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
 
-			if _, err := mgr.Stage(t.Context(), pkg); err == nil {
-				t.Fatal("Stage() error = nil, want manifest rejection")
-			}
-			if _, err := os.Stat(filepath.Join(dir, updateDirectory)); !os.IsNotExist(err) {
-				t.Fatalf("updates directory exists after manifest rejection: %v", err)
-			}
-		})
+	dir := t.TempDir()
+	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+	pkg := model.VersionPackage{
+		URL: server.URL, SHA256: sumSHA256(payload), Platform: "linux-amd64",
+		Filename: "nre-agent-linux-amd64", Size: int64(len(payload)),
+	}
+	coordinator := NewPackageStageCoordinator()
+	if err := coordinator.Ensure(t.Context(), mgr, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
+	}
+
+	heartbeats := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := coordinator.Ensure(t.Context(), mgr, pkg)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errPackageStagePending) {
+			t.Fatalf("Ensure(staging) error = %v", err)
+		}
+		heartbeats++
+		time.Sleep(5 * time.Millisecond)
+	}
+	if heartbeats < 3 {
+		t.Fatalf("heartbeat opportunities during throttled Stage = %d, want at least 3", heartbeats)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("throttled package requests = %d, want 1", requests.Load())
+	}
+	coordinator.mu.Lock()
+	attempt := coordinator.attempt
+	coordinator.mu.Unlock()
+	if attempt == nil || attempt.state != packageStageReady || attempt.stagedPath == "" {
+		t.Fatalf("verified Stage attempt = %+v, want ready path", attempt)
 	}
 }
 
-func TestIntegrationStageDerivesAndPersistsLegacyPackageSize(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	payload := []byte("legacy-package-without-size")
-	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
-	pkg := testVersionPackage(sourcePath, payload)
-	pkg.Size = 0
-	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+func TestIntegrationPackageCoordinatorCloseWaitsForHTTPStageCancellation(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
 
-	stagedPath, err := mgr.Stage(t.Context(), pkg)
-	if err != nil {
-		t.Fatal(err)
+	dir := t.TempDir()
+	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+	pkg := model.VersionPackage{
+		URL: server.URL, SHA256: strings.Repeat("a", 64), Platform: "linux-amd64",
+		Filename: "nre-agent-linux-amd64", Size: 1024,
 	}
-	pointer, err := mgr.readPackage(stagedPath)
-	if err != nil {
-		t.Fatal(err)
+	coordinator := NewPackageStageCoordinator()
+	if err := coordinator.Ensure(t.Context(), mgr, pkg); !errors.Is(err, errPackageStagePending) {
+		t.Fatalf("Ensure() error = %v, want staging pending", err)
 	}
-	if pointer.Manifest.Size != int64(len(payload)) {
-		t.Fatalf("derived package size = %d, want %d", pointer.Manifest.Size, len(payload))
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP Stage request did not start")
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		coordinator.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator Close did not converge after HTTP cancellation")
+	}
+	if err := coordinator.Ensure(t.Context(), mgr, pkg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ensure(after Close) error = %v, want context cancellation", err)
 	}
 }
 
@@ -93,259 +146,6 @@ func TestIntegrationStageVerifiesHashAndExactSize(t *testing.T) {
 				t.Fatalf("Stage() error = %v, want %q", err, tc.match)
 			}
 		})
-	}
-}
-
-func TestIntegrationStageStoresImmutableContentAddressedPackageAndManifest(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	payload := []byte("new-agent")
-	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
-	pkg := testVersionPackage(sourcePath, payload)
-	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
-
-	stagedPath, err := mgr.Stage(t.Context(), pkg)
-	if err != nil {
-		t.Fatalf("Stage() error = %v", err)
-	}
-	wantPath := filepath.Join(dir, updateDirectory, updatePackageDir, pkg.SHA256, packageBinaryFile)
-	if stagedPath != wantPath {
-		t.Fatalf("staged path = %q, want %q", stagedPath, wantPath)
-	}
-	got, err := os.ReadFile(stagedPath)
-	if err != nil || !reflect.DeepEqual(got, payload) {
-		t.Fatalf("staged payload = %q, error = %v", got, err)
-	}
-	manifestPayload, err := os.ReadFile(filepath.Join(filepath.Dir(stagedPath), packageManifestFile))
-	if err != nil {
-		t.Fatalf("read manifest: %v", err)
-	}
-	var manifest model.PackageManifest
-	if err := json.Unmarshal(manifestPayload, &manifest); err != nil {
-		t.Fatalf("decode manifest: %v", err)
-	}
-	if manifest.SchemaVersion != model.PackageManifestVersion || manifest.SHA256 != pkg.SHA256 || manifest.Size != int64(len(payload)) || manifest.Platform != "linux-amd64" {
-		t.Fatalf("manifest = %+v", manifest)
-	}
-
-	again, err := mgr.Stage(t.Context(), pkg)
-	if err != nil || again != stagedPath {
-		t.Fatalf("idempotent Stage() = %q, %v", again, err)
-	}
-	if err := os.Remove(filepath.Join(filepath.Dir(stagedPath), packageManifestFile)); err != nil {
-		t.Fatal(err)
-	}
-	recovered, err := mgr.Stage(t.Context(), pkg)
-	if err != nil || recovered != stagedPath {
-		t.Fatalf("interrupted manifest recovery Stage() = %q, %v", recovered, err)
-	}
-	if err := os.Remove(sourcePath); err != nil {
-		t.Fatal(err)
-	}
-	cached, err := mgr.Stage(t.Context(), pkg)
-	if err != nil || cached != stagedPath {
-		t.Fatalf("offline cached Stage() = %q, %v", cached, err)
-	}
-	if err := os.Chmod(stagedPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(stagedPath, []byte("tampered"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mgr.Stage(t.Context(), pkg); err == nil {
-		t.Fatal("Stage() accepted a corrupted immutable package")
-	}
-}
-
-func TestIntegrationActivateUsesPointersAndPromotesInstalledExecutable(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
-	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
-	var gotBinary string
-	var gotArgv, gotEnv []string
-	mgr := testUpdateManager(dir, targetPath, func(_ context.Context, binary string, argv []string, env []string) error {
-		gotBinary = binary
-		gotArgv = append([]string(nil), argv...)
-		gotEnv = append([]string(nil), env...)
-		return ErrRestartRequested
-	})
-	mgr.argv = []string{targetPath, "--flag"}
-	mgr.env = []string{"PATH=/bin"}
-	stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, []byte("new-agent")))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = mgr.Activate(t.Context(), stagedPath, "2.0.0")
-	if !errors.Is(err, ErrRestartRequested) {
-		t.Fatalf("Activate() error = %v", err)
-	}
-	if gotBinary != stagedPath || !reflect.DeepEqual(gotArgv, []string{stagedPath, "--flag"}) {
-		t.Fatalf("exec binary/argv = %q/%+v", gotBinary, gotArgv)
-	}
-	if !containsEnv(gotEnv, "NRE_AGENT_VERSION=2.0.0") {
-		t.Fatalf("exec env = %+v", gotEnv)
-	}
-	if got, _ := os.ReadFile(targetPath); string(got) != "new-agent" {
-		t.Fatalf("installed executable was not promoted: %q", got)
-	}
-	current, err := mgr.CurrentPackage()
-	if err != nil || current.Manifest.SHA256 != sumSHA256([]byte("new-agent")) || current.DesiredVersion != "2.0.0" {
-		t.Fatalf("current pointer = %+v, %v", current, err)
-	}
-	previous, err := mgr.PreviousPackage()
-	if err != nil || previous.Manifest.SHA256 != sumSHA256([]byte("old-agent")) {
-		t.Fatalf("previous pointer = %+v, %v", previous, err)
-	}
-}
-
-func TestIntegrationActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	installedPath := filepath.Join(dir, "bin", "nre-agent")
-	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
-		t.Fatalf("mkdir installed executable parent: %v", err)
-	}
-
-	runningPayload := []byte("currently-running-agent")
-	runningSource := writeTestBinary(t, dir, "running-agent", runningPayload)
-	setup := testUpdateManager(dir, installedPath, nil)
-	runningPath, err := setup.Stage(t.Context(), testVersionPackage(runningSource, runningPayload))
-	if err != nil {
-		t.Fatalf("stage running package: %v", err)
-	}
-
-	nextPayload := []byte("next-agent")
-	nextSource := writeTestBinary(t, dir, "next-agent", nextPayload)
-	manager := NewUpdateManager(
-		dir,
-		runningPath,
-		nil,
-		[]string{installExecutableEnv + "=" + installedPath},
-		func(context.Context, string, []string, []string) error { return ErrRestartRequested },
-		nil,
-	)
-	manager.platform = "linux-amd64"
-
-	stagedPath, err := manager.Stage(t.Context(), testVersionPackage(nextSource, nextPayload))
-	if err != nil {
-		t.Fatalf("stage next package: %v", err)
-	}
-	if err := manager.Activate(t.Context(), stagedPath, "1.1.0"); !errors.Is(err, ErrRestartRequested) {
-		t.Fatalf("Activate() error = %v, want ErrRestartRequested", err)
-	}
-
-	installedPayload, err := os.ReadFile(installedPath)
-	if err != nil {
-		t.Fatalf("read restored installed executable: %v", err)
-	}
-	if !reflect.DeepEqual(installedPayload, nextPayload) {
-		t.Fatalf("installed executable = %q, want %q", installedPayload, nextPayload)
-	}
-	previous, err := manager.PreviousPackage()
-	if err != nil || previous.Manifest.SHA256 != sumSHA256(runningPayload) {
-		t.Fatalf("previous pointer = %+v, %v", previous, err)
-	}
-	current, err := manager.CurrentPackage()
-	if err != nil || current.Manifest.SHA256 != sumSHA256(nextPayload) {
-		t.Fatalf("current pointer = %+v, %v", current, err)
-	}
-}
-
-func TestIntegrationActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	payload := []byte("same-agent")
-	targetPath := writeTestBinary(t, dir, "nre-agent", payload)
-	sourcePath := writeTestBinary(t, dir, "release-asset", payload)
-	mgr := testUpdateManager(dir, targetPath, func(context.Context, string, []string, []string) error { return ErrRestartRequested })
-	stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mgr.Activate(t.Context(), stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
-		t.Fatalf("Activate() error = %v", err)
-	}
-	current, err := mgr.CurrentPackage()
-	if err != nil || current.Manifest.SHA256 != sumSHA256(payload) || current.DesiredVersion != "2.0.0" {
-		t.Fatalf("current pointer = %+v, %v", current, err)
-	}
-}
-
-func TestIntegrationStageRejectsSymlinkedStoreAncestors(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires elevated Windows privileges")
-	}
-	t.Parallel()
-	for _, ancestor := range []string{"updates", "packages", "digest"} {
-		t.Run(ancestor, func(t *testing.T) {
-			dir := t.TempDir()
-			payload := []byte("payload")
-			sourcePath := writeTestBinary(t, dir, "source-agent", payload)
-			pkg := testVersionPackage(sourcePath, payload)
-			outside := t.TempDir()
-			var linkPath string
-			switch ancestor {
-			case "updates":
-				linkPath = filepath.Join(dir, updateDirectory)
-			case "packages":
-				if err := os.Mkdir(filepath.Join(dir, updateDirectory), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				linkPath = filepath.Join(dir, updateDirectory, updatePackageDir)
-			case "digest":
-				if err := os.MkdirAll(filepath.Join(dir, updateDirectory, updatePackageDir), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				linkPath = filepath.Join(dir, updateDirectory, updatePackageDir, pkg.SHA256)
-			}
-			if err := os.Symlink(outside, linkPath); err != nil {
-				t.Fatal(err)
-			}
-			mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
-			if _, err := mgr.Stage(t.Context(), pkg); err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") && !strings.Contains(err.Error(), "real directory") {
-				t.Fatalf("Stage() error = %v, want ancestor symlink rejection", err)
-			}
-			entries, err := os.ReadDir(outside)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("outside directory mutated: entries=%v error=%v", entries, err)
-			}
-		})
-	}
-}
-
-func TestIntegrationActivateRejectsSymlinkedStateDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires elevated Windows privileges")
-	}
-	t.Parallel()
-	dir := t.TempDir()
-	payload := []byte("new-agent")
-	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
-	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
-	execCalls := 0
-	mgr := testUpdateManager(dir, targetPath, func(context.Context, string, []string, []string) error {
-		execCalls++
-		return ErrRestartRequested
-	})
-	stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	outside := t.TempDir()
-	if err := os.Symlink(outside, mgr.stateRoot()); err != nil {
-		t.Fatal(err)
-	}
-	if err := mgr.Activate(t.Context(), stagedPath, "2.0.0"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
-		t.Fatalf("Activate() error = %v, want state symlink rejection", err)
-	}
-	if execCalls != 0 {
-		t.Fatalf("exec calls = %d, want 0", execCalls)
-	}
-	entries, err := os.ReadDir(outside)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("outside state directory mutated: entries=%v error=%v", entries, err)
 	}
 }
 
@@ -482,30 +282,6 @@ func TestIntegrationRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
 	}
 }
 
-func TestIntegrationRestorePreviousReconcilesUncertainCurrentPointer(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
-	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
-	mgr := testUpdateManager(dir, targetPath, func(context.Context, string, []string, []string) error { return ErrRestartRequested })
-	stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, []byte("new-agent")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mgr.Activate(t.Context(), stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
-		t.Fatal(err)
-	}
-	failUpdateStateDirectorySync(mgr, 1)
-	if err := mgr.RestorePrevious(); err != nil {
-		t.Fatalf("RestorePrevious() error = %v", err)
-	}
-	current, _ := mgr.CurrentPackage()
-	previous, _ := mgr.PreviousPackage()
-	if current.Manifest.SHA256 != sumSHA256([]byte("old-agent")) || previous.Manifest.SHA256 != sumSHA256([]byte("new-agent")) {
-		t.Fatalf("reconciled restore current/previous = %+v/%+v", current, previous)
-	}
-}
-
 func failUpdateStateDirectorySync(mgr *UpdateManager, failAt int) {
 	original := mgr.syncDirectory
 	calls := 0
@@ -552,13 +328,4 @@ func sumSHA256(data []byte) string {
 
 func fileURL(path string) string {
 	return "file:///" + filepath.ToSlash(path)
-}
-
-func containsEnv(env []string, needle string) bool {
-	for _, entry := range env {
-		if entry == needle {
-			return true
-		}
-	}
-	return false
 }

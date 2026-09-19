@@ -8,8 +8,9 @@ type L4Backend struct {
 }
 
 type L4ProxyProtocolTuning struct {
-	Decode bool `json:"decode,omitempty"`
-	Send   bool `json:"send,omitempty"`
+	Decode       bool     `json:"decode,omitempty"`
+	Send         bool     `json:"send,omitempty"`
+	TrustedPeers []string `json:"trusted_peers,omitempty"`
 }
 
 type L4ProxyEntryAuth struct {
@@ -43,6 +44,7 @@ type L4Rule struct {
 	ListenMode      string           `json:"listen_mode,omitempty"`
 	EgressProfileID *int             `json:"egress_profile_id,omitempty"`
 	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	PolicyRef       *PolicyRef       `json:"policy_ref,omitempty"`
 	Enabled         bool             `json:"enabled"`
 	Tags            []string         `json:"tags,omitempty"`
 	Revision        int64            `json:"revision,omitempty"`

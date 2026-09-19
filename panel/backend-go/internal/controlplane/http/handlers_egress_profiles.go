@@ -17,6 +17,11 @@ func (d Dependencies) handleEgressProfiles(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, status, payload)
 			return
 		}
+		profiles, err = d.filterEgressProfiles(r.Context(), profiles)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":       true,
 			"profiles": profiles,

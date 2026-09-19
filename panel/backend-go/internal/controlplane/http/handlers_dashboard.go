@@ -3,6 +3,8 @@ package http
 import (
 	"net/http"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
 const attentionCertExpiryWindow = 30 * 24 * time.Hour
@@ -32,6 +34,18 @@ func (d Dependencies) handleDashboardAttention(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list agents"))
 		return
+	}
+	agents, err = d.filterAgents(r.Context(), agents)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		agentIDs := make([]string, 0, len(agents))
+		for _, agent := range agents {
+			agentIDs = append(agentIDs, agent.ID)
+		}
+		r = r.WithContext(service.WithVisibleTrafficAgents(r.Context(), agentIDs))
 	}
 
 	offline := attentionAgentGroup{AgentIDs: []string{}}
@@ -79,18 +93,16 @@ func (d Dependencies) handleDashboardAttention(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list certificates"))
 		return
 	}
+	certs, err = d.filterCertificates(r.Context(), "", certs)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
 	now := time.Now()
 	threshold := now.Add(attentionCertExpiryWindow)
 	expiring := attentionCertGroup{Items: []attentionCertItem{}}
 	for _, cert := range certs {
-		if cert.NotAfter == "" {
-			continue
-		}
-		notAfter, err := time.Parse(time.RFC3339, cert.NotAfter)
-		if err != nil {
-			continue
-		}
-		if notAfter.After(now) && !notAfter.After(threshold) {
+		if attentionCertificateExpiresSoon(cert, now, threshold) {
 			expiring.Items = append(expiring.Items, attentionCertItem{
 				ID:       cert.ID,
 				Domain:   cert.Domain,
@@ -108,4 +120,29 @@ func (d Dependencies) handleDashboardAttention(w http.ResponseWriter, r *http.Re
 		"sync_failed":    syncFailed,
 		"certs_total":    len(certs),
 	})
+}
+
+func attentionCertificateExpiresSoon(cert service.ManagedCertificate, now, defaultThreshold time.Time) bool {
+	if cert.NotAfter == "" {
+		return false
+	}
+	notAfter, err := time.Parse(time.RFC3339, cert.NotAfter)
+	if err != nil || !notAfter.After(now) {
+		return false
+	}
+	threshold := defaultThreshold
+	// Let's Encrypt's short-lived IP profile produces certificates whose total
+	// lifetime is far below the normal 30-day warning window. Match the Agent's
+	// renewal policy for these automatically managed certificates so a freshly
+	// issued IP certificate is not permanently reported as about to expire.
+	if cert.Scope == "ip" && cert.CertificateType == "acme" && cert.IssuerMode == "local_http01" {
+		issuedAt, parseErr := time.Parse(time.RFC3339Nano, cert.LastIssueAt)
+		if parseErr == nil && issuedAt.Before(notAfter) {
+			lifetime := notAfter.Sub(issuedAt)
+			if scaled := lifetime / 3; scaled > 0 && scaled < attentionCertExpiryWindow {
+				threshold = now.Add(scaled)
+			}
+		}
+	}
+	return !notAfter.After(threshold)
 }

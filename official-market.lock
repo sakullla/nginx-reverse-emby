@@ -1,0 +1,10 @@
+# This file pins the official repository identity and trust contract, not a
+# repository version. Each refresh resolves the built-in official branch to a
+# full Git OID, validates the complete signed market, and records that resolved
+# OID in the promoted snapshot provenance.
+schema_version: 1
+repository: https://github.com/sakullla/sakullla-plugins.git
+ref_kind: branch
+ref_name: official-market
+sdk_abis: [nre:policy/v1, nre:rpc/v1]
+signature_key_id: sakullla-official-root-2026

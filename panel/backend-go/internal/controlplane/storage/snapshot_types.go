@@ -1,11 +1,17 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
+	"time"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type Snapshot struct {
+	Datasets            []DatasetSnapshot          `json:"datasets"`
 	DesiredVersion      string                     `json:"desired_version"`
 	Revision            int64                      `json:"desired_revision"`
 	VersionPackage      *VersionPackage            `json:"version_package,omitempty"`
@@ -13,10 +19,223 @@ type Snapshot struct {
 	DDNSConfig          *DDNSConfig                `json:"ddns_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
+	PluginGenerations   []PluginGeneration         `json:"plugin_generations"`
+	PluginDependencies  []PluginDependencyEdge     `json:"plugin_dependencies"`
+	PluginPolicies      []PluginPolicy             `json:"plugin_policies"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+	PKISecurity         *PKISecuritySnapshot       `json:"pki_security,omitempty"`
+}
+
+// PluginDependencyEdge makes a core resource's required RPC provider part of
+// the signed snapshot. Generations without an edge are optional and may fail
+// without blocking the core snapshot.
+type PluginDependencyEdge struct {
+	Consumer           PluginDependencyConsumer `json:"consumer"`
+	ProviderInstanceID string                   `json:"provider_instance_id"`
+	Target             PluginDependencyTarget   `json:"target"`
+}
+
+type PluginDependencyConsumer struct {
+	Kind            string `json:"kind"`
+	ID              string `json:"id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         string `json:"version"`
+}
+
+type PluginDependencyTarget struct {
+	AgentID         string `json:"agent_id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         uint64 `json:"version"`
+}
+
+// PluginGeneration is the complete, target-specific runtime projection. It
+// deliberately contains no marketplace source, cache path, manifest, UI
+// metadata, or secret plaintext.
+type PluginGeneration struct {
+	ID                     string                                    `json:"id"`
+	InstanceID             string                                    `json:"instance_id"`
+	OperationID            string                                    `json:"operation_id,omitempty"`
+	Revision               int64                                     `json:"revision"`
+	PluginID               string                                    `json:"plugin_id"`
+	PluginVersion          string                                    `json:"plugin_version"`
+	PackageDigest          string                                    `json:"package_digest"`
+	Runtime                PluginGenerationRuntime                   `json:"runtime"`
+	Artifact               PluginGenerationArtifact                  `json:"artifact"`
+	ExtensionPoints        []string                                  `json:"extension_points"`
+	RequiredFeatures       []string                                  `json:"required_features"`
+	HTTPBackendProviders   []pluginsdk.HTTPBackendProviderDescriptor `json:"http_backend_providers,omitempty"`
+	ConfigVersion          uint64                                    `json:"config_version"`
+	Config                 json.RawMessage                           `json:"config"`
+	ManagedNetworkPolicy   *PolicyRef                                `json:"managed_network_policy,omitempty"`
+	ManagedNetworkPolicies map[string]*PolicyRef                     `json:"managed_network_policies,omitempty"`
+	Grants                 []PluginGenerationGrant                   `json:"grants"`
+	SecretHandles          []PluginGenerationSecretHandle            `json:"secret_handles"`
+	ResourceBudget         PluginGenerationResourceBudget            `json:"resource_budget"`
+	Target                 PluginGenerationTarget                    `json:"target"`
+	FailurePolicy          PluginGenerationFailurePolicy             `json:"failure_policy"`
+}
+
+type PluginGenerationArtifact struct {
+	ArtifactID        string `json:"artifact_id"`
+	PackageIdentity   string `json:"package_identity"`
+	RelativePath      string `json:"relative_path"`
+	SHA256            string `json:"sha256"`
+	SizeBytes         int64  `json:"size_bytes"`
+	Mode              string `json:"mode"`
+	GOOS              string `json:"goos,omitempty"`
+	GOARCH            string `json:"goarch,omitempty"`
+	LocalPath         string `json:"local_path,omitempty"`
+	SignatureVerified bool   `json:"signature_verified"`
+	SignerKeyID       string `json:"signer_key_id"`
+	SignerFingerprint string `json:"signer_fingerprint"`
+}
+
+type PluginGenerationRuntime struct {
+	Kind      string `json:"kind"`
+	ABI       string `json:"abi"`
+	HostScope string `json:"host_scope"`
+	Entry     string `json:"entry"`
+}
+
+type PluginGenerationGrant struct {
+	Name         string `json:"name"`
+	ResourceKind string `json:"resource_kind,omitempty"`
+	ResourceID   string `json:"resource_id,omitempty"`
+}
+
+// PluginGenerationSecretHandle is a revocable reference. Value is never part
+// of a snapshot; secret delivery remains owned by the authenticated lease.
+type PluginGenerationSecretHandle struct {
+	ID      string `json:"id"`
+	Version uint64 `json:"version"`
+	Digest  string `json:"digest"`
+	Purpose string `json:"purpose,omitempty"`
+}
+
+// PluginInstanceSecretHandle binds a schema JSON pointer to an opaque Vault
+// version. The plaintext is deliberately absent from every durable plugin
+// configuration column and read projection.
+type PluginInstanceSecretHandle struct {
+	Pointer string `json:"pointer"`
+	ID      string `json:"id"`
+	Version uint64 `json:"version"`
+	Digest  string `json:"digest"`
+	Purpose string `json:"purpose"`
+}
+
+type PluginGenerationResourceBudget struct {
+	TimeoutMS   int64 `json:"timeout_ms"`
+	MemoryBytes int64 `json:"memory_bytes"`
+	Concurrency int   `json:"concurrency"`
+	InputBytes  int64 `json:"input_bytes"`
+	OutputBytes int64 `json:"output_bytes"`
+	CPUMillis   int64 `json:"cpu_millis,omitempty"`
+	Restarts    int   `json:"restarts,omitempty"`
+}
+
+type PluginGenerationTarget struct {
+	Kind            string `json:"kind"`
+	ID              string `json:"id"`
+	ResourceGroupID string `json:"resource_group_id"`
+	Version         uint64 `json:"version"`
+}
+
+type PluginGenerationFailurePolicy struct {
+	OnError      string `json:"on_error"`
+	OnBudget     string `json:"on_budget"`
+	Restart      string `json:"restart"`
+	CoreFallback string `json:"core_fallback"`
+}
+
+// AgentSnapshotMetadata carries database-owned values needed to finish a
+// heartbeat response without consulting an AgentRow captured before the
+// snapshot transaction. It is deliberately separate from the JSON snapshot.
+type AgentSnapshotMetadata struct {
+	Platform           string
+	DesiredVersion     string
+	DesiredRevision    int
+	CurrentRevision    int
+	LastApplyStatus    string
+	OutboundProxyURL   string
+	TrafficInterval    string
+	TrafficBlocked     bool
+	TrafficBlockReason string
+}
+
+type AgentHeartbeatSnapshot struct {
+	Snapshot Snapshot
+	Metadata AgentSnapshotMetadata `json:"-"`
+}
+
+// AgentHeartbeatSnapshotOverlay runs inside the same stable read transaction
+// as the base snapshot. It is used by the service layer to project pending
+// certificate generations without creating a storage-to-service dependency.
+type AgentHeartbeatSnapshotOverlay func(context.Context, *GormStore, string, Snapshot) (Snapshot, error)
+
+// PKISecurityAcknowledgement is reported over the existing authenticated
+// control channel. It never authenticates that channel; X-Agent-Token remains
+// the control-plane credential while this value only advances PKI delivery
+// state.
+type PKISecurityAcknowledgement struct {
+	PKIDomainID         string                                 `json:"pki_domain_id"`
+	PKIEpoch            int64                                  `json:"pki_epoch"`
+	SecurityRevision    int64                                  `json:"security_revision"`
+	Full                bool                                   `json:"full"`
+	CertificateID       string                                 `json:"certificate_id,omitempty"`
+	TrustGenerations    []int64                                `json:"trust_generations,omitempty"`
+	ListenerCredentials []PKIListenerCredentialAcknowledgement `json:"listener_credentials,omitempty"`
+}
+
+type PKIListenerCredentialAcknowledgement struct {
+	ListenerID    string `json:"listener_id"`
+	IdentityID    string `json:"identity_id"`
+	CertificateID string `json:"certificate_id"`
+	CAGeneration  int64  `json:"ca_generation"`
+}
+
+// PKITrustRoot is public trust material only. Endpoint and listener private
+// keys are deliberately absent from every control snapshot.
+type PKITrustRoot struct {
+	AuthorityID       string    `json:"authority_id"`
+	Generation        int64     `json:"generation"`
+	Status            string    `json:"status"`
+	CertificatePEM    string    `json:"certificate_pem"`
+	FingerprintSHA256 string    `json:"fingerprint_sha256"`
+	NotBefore         time.Time `json:"not_before"`
+	NotAfter          time.Time `json:"not_after"`
+}
+
+// PKISecuritySnapshot is carried by registration, heartbeat and revision
+// responses on the existing control listener. Signature is base64 encoded by
+// encoding/json; no endpoint private key is part of this contract.
+type PKISecuritySnapshot struct {
+	PKIDomainID        string         `json:"pki_domain_id"`
+	PKIEpoch           int64          `json:"pki_epoch"`
+	SecurityRevision   int64          `json:"security_revision"`
+	Full               bool           `json:"full"`
+	IssuedAt           time.Time      `json:"issued_at"`
+	TrustRoots         []PKITrustRoot `json:"trust_roots"`
+	RevokedIdentityIDs []string       `json:"revoked_identity_ids"`
+	RevokedSerials     []string       `json:"revoked_serials"`
+	SignerGeneration   int64          `json:"signer_generation"`
+	Signature          []byte         `json:"signature"`
+}
+
+// PKITunnelCredential is the public half of an enrolled relay identity. The
+// matching private key is generated and retained by the owning agent.
+type PKITunnelCredential struct {
+	IdentityID           string    `json:"identity_id"`
+	CertificateID        string    `json:"certificate_id"`
+	Purpose              string    `json:"purpose"`
+	CertificatePEM       string    `json:"certificate_pem"`
+	PublicKeyFingerprint string    `json:"public_key_fingerprint_sha256"`
+	AuthorityID          string    `json:"authority_id"`
+	CAGeneration         int64     `json:"ca_generation"`
+	NotBefore            time.Time `json:"not_before"`
+	NotAfter             time.Time `json:"not_after"`
 }
 
 // FilterSupportedSnapshotResources removes resource kinds retired by the
@@ -107,6 +326,32 @@ func filterSupportedSnapshotResources(snapshot Snapshot, excludedRelayIDs, exclu
 		}
 		filtered.L4Rules = append(filtered.L4Rules, rule)
 	}
+	retainedHTTP := make(map[string]struct{}, len(filtered.Rules))
+	for _, rule := range filtered.Rules {
+		retainedHTTP[strconv.Itoa(rule.ID)] = struct{}{}
+	}
+	retainedL4 := make(map[string]struct{}, len(filtered.L4Rules))
+	for _, rule := range filtered.L4Rules {
+		retainedL4[strconv.Itoa(rule.ID)] = struct{}{}
+	}
+	filtered.PluginDependencies = nil
+	if snapshot.PluginDependencies != nil {
+		filtered.PluginDependencies = make([]PluginDependencyEdge, 0, len(snapshot.PluginDependencies))
+	}
+	for _, edge := range snapshot.PluginDependencies {
+		keep := false
+		switch edge.Consumer.Kind {
+		case PluginDependencyConsumerHTTPRule:
+			_, keep = retainedHTTP[edge.Consumer.ID]
+		case PluginDependencyConsumerL4Rule:
+			_, keep = retainedL4[edge.Consumer.ID]
+		}
+		if !keep {
+			changed = true
+			continue
+		}
+		filtered.PluginDependencies = append(filtered.PluginDependencies, edge)
+	}
 
 	return filtered, changed
 }
@@ -171,9 +416,9 @@ func typedSnapshotRuleReferencesExcludedResource(
 type AgentConfig struct {
 	OutboundProxyURL     string `json:"outbound_proxy_url,omitempty"`
 	TrafficStatsInterval string `json:"traffic_stats_interval,omitempty"`
-	TrafficStatsEnabled  *bool  `json:"traffic_stats_enabled,omitempty"`
-	TrafficBlocked       bool   `json:"traffic_blocked,omitempty"`
-	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
+	TrafficStatsEnabled  *bool  `json:"-"`
+	TrafficBlocked       bool   `json:"-"`
+	TrafficBlockReason   string `json:"-"`
 }
 
 // DDNSConfig is the per-agent dynamic DNS extraction configuration. It is the
@@ -254,7 +499,32 @@ type RuntimeState struct {
 	LastApplyStatus           string                     `json:"last_apply_status,omitempty"`
 	LastApplyMessage          string                     `json:"last_apply_message,omitempty"`
 	ManagedCertificateReports []ManagedCertificateReport `json:"managed_certificate_reports,omitempty"`
+	PluginStatuses            []PluginRuntimeStatus      `json:"plugin_statuses,omitempty"`
 	Metadata                  map[string]string          `json:"metadata,omitempty"`
+}
+
+// PluginRuntimeStatus is the Agent-reported, generation-fenced runtime view.
+// Agent identity is supplied by the authenticated transport and is never
+// accepted from this payload.
+type PluginRuntimeStatus struct {
+	InstanceID      string          `json:"instance_id"`
+	PluginID        string          `json:"plugin_id"`
+	OperationID     string          `json:"operation_id"`
+	Revision        int64           `json:"revision"`
+	GenerationID    string          `json:"generation_id"`
+	PackageDigest   string          `json:"package_digest"`
+	ArtifactDigest  string          `json:"artifact_digest"`
+	ConfigVersion   uint64          `json:"config_version"`
+	RuntimeKind     string          `json:"runtime_kind"`
+	State           string          `json:"state"`
+	Sequence        uint64          `json:"sequence"`
+	ErrorCode       string          `json:"error_code,omitempty"`
+	SafeDetail      string          `json:"safe_detail,omitempty"`
+	Details         json.RawMessage `json:"details,omitempty"`
+	Budget          json.RawMessage `json:"budget,omitempty"`
+	SandboxProvider string          `json:"sandbox_provider,omitempty"`
+	RestartCount    int             `json:"restart_count,omitempty"`
+	CircuitOpen     bool            `json:"circuit_open,omitempty"`
 }
 
 type VersionPackage struct {
@@ -270,30 +540,101 @@ type HTTPHeader struct {
 	Value string `json:"value"`
 }
 
-type HTTPBackend struct {
-	URL string `json:"url"`
-}
+type HTTPBackend = pluginsdk.HTTPBackend
 
 type LoadBalancing struct {
 	Strategy string `json:"strategy,omitempty"`
 }
 
+type PolicyRef struct {
+	ID             string              `json:"id"`
+	Overlay        json.RawMessage     `json:"overlay,omitempty"`
+	OverlayFormat  string              `json:"overlay_format,omitempty"`
+	LegacyPolicyID string              `json:"legacy_policy_id,omitempty"`
+	StageModes     []PolicyModeBinding `json:"stage_modes,omitempty"`
+}
+
+type PolicyModeBinding struct {
+	Stage    pluginsdk.PolicyStageIdentity    `json:"stage"`
+	Snapshot pluginsdk.PolicySettingsSnapshot `json:"snapshot"`
+}
+
+type PolicyResourceBudget struct {
+	TimeoutMS   int64 `json:"timeout_ms"`
+	MemoryBytes int64 `json:"memory_bytes"`
+	Concurrency int   `json:"concurrency"`
+	InputBytes  int64 `json:"input_bytes"`
+	OutputBytes int64 `json:"output_bytes"`
+}
+
+type PolicyFailurePolicy struct {
+	OnError      string `json:"on_error"`
+	OnBudget     string `json:"on_budget"`
+	Restart      string `json:"restart"`
+	CoreFallback string `json:"core_fallback"`
+}
+
+// PolicyArtifactSource is the durable, location-independent identity of a
+// policy artifact. ArtifactPath remains an optional embedded-Agent execution
+// hint and is empty for remotes.
+type PolicyArtifactSource struct {
+	ArtifactID      string `json:"artifact_id"`
+	PackageIdentity string `json:"package_identity"`
+	PackageDigest   string `json:"package_digest"`
+	RelativePath    string `json:"relative_path"`
+	SHA256          string `json:"sha256"`
+	SizeBytes       int64  `json:"size_bytes"`
+}
+
+type PolicyStage struct {
+	PolicySettings    *pluginsdk.PolicySettingsSnapshot `json:"policy_settings,omitempty"`
+	Automatic         bool                              `json:"-"`
+	Kind              string                            `json:"kind"`
+	PolicyID          string                            `json:"policy_id"`
+	PluginID          string                            `json:"plugin_id"`
+	PluginVersion     string                            `json:"plugin_version"`
+	InstanceID        string                            `json:"instance_id"`
+	PackageDigest     string                            `json:"package_digest"`
+	ArtifactPath      string                            `json:"artifact_path"`
+	ArtifactDigest    string                            `json:"artifact_digest"`
+	ArtifactSource    PolicyArtifactSource              `json:"artifact_source"`
+	SignatureVerified bool                              `json:"signature_verified"`
+	SignerKeyID       string                            `json:"signer_key_id"`
+	SignerFingerprint string                            `json:"signer_fingerprint"`
+	ABI               string                            `json:"abi"`
+	ExtensionPoints   []string                          `json:"extension_points"`
+	DeclaredScopes    []string                          `json:"declared_scopes"`
+	GrantedScopes     []string                          `json:"granted_scopes"`
+	ResourceGroupID   string                            `json:"resource_group_id"`
+	Config            json.RawMessage                   `json:"config,omitempty"`
+	ResourceBudget    PolicyResourceBudget              `json:"resource_budget"`
+	FailurePolicy     PolicyFailurePolicy               `json:"failure_policy"`
+}
+
+type PluginPolicy struct {
+	ID       string        `json:"id"`
+	Revision int64         `json:"revision"`
+	Stages   []PolicyStage `json:"stages"`
+}
+
 type HTTPRule struct {
-	ID               int           `json:"id,omitempty"`
-	AgentID          string        `json:"agent_id,omitempty"`
-	FrontendURL      string        `json:"frontend_url"`
-	BackendURL       string        `json:"-"`
-	Backends         []HTTPBackend `json:"backends,omitempty"`
-	LoadBalancing    LoadBalancing `json:"load_balancing,omitempty"`
-	ProxyRedirect    bool          `json:"proxy_redirect,omitempty"`
-	PassProxyHeaders bool          `json:"pass_proxy_headers,omitempty"`
-	UserAgent        string        `json:"user_agent,omitempty"`
-	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
-	EgressProfileID  *int          `json:"egress_profile_id,omitempty"`
-	RelayChain       []int         `json:"-"`
-	RelayLayers      [][]int       `json:"relay_layers,omitempty"`
-	RelayObfs        bool          `json:"relay_obfs,omitempty"`
-	Revision         int64         `json:"revision,omitempty"`
+	ID                 int           `json:"id,omitempty"`
+	AgentID            string        `json:"agent_id,omitempty"`
+	FrontendURL        string        `json:"frontend_url"`
+	BackendURL         string        `json:"-"`
+	Backends           []HTTPBackend `json:"backends,omitempty"`
+	LoadBalancing      LoadBalancing `json:"load_balancing,omitempty"`
+	ProxyRedirect      bool          `json:"proxy_redirect,omitempty"`
+	PassProxyHeaders   bool          `json:"pass_proxy_headers,omitempty"`
+	UserAgent          string        `json:"user_agent,omitempty"`
+	CustomHeaders      []HTTPHeader  `json:"custom_headers,omitempty"`
+	EgressProfileID    *int          `json:"egress_profile_id,omitempty"`
+	TrustedProxyRanges []string      `json:"trusted_proxy_ranges,omitempty"`
+	RelayChain         []int         `json:"-"`
+	RelayLayers        [][]int       `json:"relay_layers,omitempty"`
+	RelayObfs          bool          `json:"relay_obfs,omitempty"`
+	PolicyRef          *PolicyRef    `json:"policy_ref,omitempty"`
+	Revision           int64         `json:"revision,omitempty"`
 }
 
 type L4Backend struct {
@@ -302,8 +643,9 @@ type L4Backend struct {
 }
 
 type L4ProxyProtocolTuning struct {
-	Decode bool `json:"decode,omitempty"`
-	Send   bool `json:"send,omitempty"`
+	Decode       bool     `json:"decode,omitempty"`
+	Send         bool     `json:"send,omitempty"`
+	TrustedPeers []string `json:"trusted_peers,omitempty"`
 }
 
 type L4ProxyEntryAuth struct {
@@ -334,6 +676,7 @@ type L4Rule struct {
 	ListenMode      string           `json:"listen_mode,omitempty"`
 	EgressProfileID *int             `json:"egress_profile_id,omitempty"`
 	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	PolicyRef       *PolicyRef       `json:"policy_ref,omitempty"`
 	Revision        int64            `json:"revision,omitempty"`
 }
 
@@ -361,6 +704,9 @@ type RelayListener struct {
 	PinSet                  []RelayPin `json:"pin_set"`
 	TrustedCACertificateIDs []int      `json:"trusted_ca_certificate_ids"`
 	AllowSelfSigned         bool       `json:"allow_self_signed"`
+	PKIIdentityID           string     `json:"pki_identity_id,omitempty"`
+	PKIIdentityState        string     `json:"pki_identity_state,omitempty"`
+	PKICertificateID        string     `json:"pki_certificate_id,omitempty"`
 	Tags                    []string   `json:"tags"`
 	Revision                int64      `json:"revision"`
 }
@@ -384,15 +730,18 @@ type ManagedCertificateBundle struct {
 }
 
 type ManagedCertificateReport struct {
-	ID           int                        `json:"id,omitempty"`
-	Domain       string                     `json:"domain,omitempty"`
-	Status       string                     `json:"status,omitempty"`
-	LastIssueAt  string                     `json:"last_issue_at,omitempty"`
-	LastError    string                     `json:"last_error,omitempty"`
-	MaterialHash string                     `json:"material_hash,omitempty"`
-	NotAfter     string                     `json:"not_after,omitempty"`
-	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
-	UpdatedAt    string                     `json:"updated_at,omitempty"`
+	ID              int                        `json:"id,omitempty"`
+	Domain          string                     `json:"domain,omitempty"`
+	Status          string                     `json:"status,omitempty"`
+	LastIssueAt     string                     `json:"last_issue_at,omitempty"`
+	LastError       string                     `json:"last_error,omitempty"`
+	MaterialHash    string                     `json:"material_hash,omitempty"`
+	NotAfter        string                     `json:"not_after,omitempty"`
+	NextRetryAtUnix int64                      `json:"next_retry_at_unix,omitempty"`
+	RetryCount      int                        `json:"retry_count,omitempty"`
+	BackoffClass    string                     `json:"backoff_class,omitempty"`
+	ACMEInfo        ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
+	UpdatedAt       string                     `json:"updated_at,omitempty"`
 }
 
 type ManagedCertificateACMEInfo struct {

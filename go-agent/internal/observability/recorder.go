@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -12,25 +13,67 @@ import (
 )
 
 const (
-	RevisionApply     = "nre_agent_revision_apply"
-	GenerationDrain   = "nre_agent_generation_drain"
-	GenerationCutover = "nre_agent_generation_cutover"
-	HotRestartUpgrade = "nre_agent_hot_restart_upgrade"
+	RevisionApply        = "nre_agent_revision_apply"
+	GenerationDrain      = "nre_agent_generation_drain"
+	GenerationCutover    = "nre_agent_generation_cutover"
+	HotRestartUpgrade    = "nre_agent_hot_restart_upgrade"
+	PolicyEvaluation     = "nre_agent_policy_evaluation"
+	PolicyRejection      = "nre_agent_policy_rejection"
+	PolicyBudget         = "nre_agent_policy_budget"
+	PolicyDegraded       = "nre_agent_policy_degraded"
+	PolicyHostEvent      = "nre_agent_policy_host_event"
+	PolicyHostMetric     = "nre_agent_policy_host_metric"
+	PolicyHostCapability = "nre_agent_policy_host_capability"
+	PluginProcess        = "nre_agent_plugin_process"
+	PluginRPC            = "nre_agent_plugin_rpc"
+	PluginSandbox        = "nre_agent_plugin_sandbox"
+	PluginBudget         = "nre_agent_plugin_budget"
 )
 
 var metricNames = map[string]struct{}{
 	RevisionApply: {}, GenerationDrain: {}, GenerationCutover: {}, HotRestartUpgrade: {},
+	PolicyEvaluation: {}, PolicyRejection: {}, PolicyBudget: {}, PolicyDegraded: {}, PolicyHostEvent: {}, PolicyHostMetric: {}, PolicyHostCapability: {},
+	PluginProcess: {}, PluginRPC: {}, PluginSandbox: {}, PluginBudget: {},
+}
+
+var policyGuestMetrics = map[string]string{
+	"ip.allowed":     "nre_agent_policy_guest_ip_allowed",
+	"ip.denied":      "nre_agent_policy_guest_ip_denied",
+	"policy.allowed": "nre_agent_policy_guest_allowed",
+	"policy.denied":  "nre_agent_policy_guest_denied",
+	"rate.allowed":   "nre_agent_policy_guest_rate_allowed",
+	"rate.denied":    "nre_agent_policy_guest_rate_denied",
+	"waf.matches":    "nre_agent_policy_guest_waf_matches",
+}
+
+func PolicyGuestMetric(name string) (string, bool) {
+	metric, ok := policyGuestMetrics[strings.TrimSpace(name)]
+	return metric, ok
 }
 
 type Event struct {
-	Name         string
-	Outcome      string
-	OperationID  string
-	AgentID      string
-	Revision     int64
-	GenerationID string
-	Attempt      int
-	Duration     time.Duration
+	Name             string
+	Outcome          string
+	OperationID      string
+	AgentID          string
+	Revision         int64
+	GenerationID     string
+	Attempt          int
+	Duration         time.Duration
+	PluginID         string
+	InstanceID       string
+	PolicyID         string
+	PolicyStage      string
+	Reason           string
+	RequestID        string
+	Source           string
+	SourceKind       string
+	NodeLocal        bool
+	GuestMetric      string
+	MetricDelta      int64
+	SecurityCode     string
+	SecurityAction   string
+	SecurityTemplate string
 }
 
 type Correlation struct {
@@ -98,17 +141,18 @@ func Observe(ctx context.Context, event Event) {
 
 type metricKey struct{ name, outcome string }
 type Recorder struct {
-	mu        sync.Mutex
-	logger    *slog.Logger
-	counts    map[metricKey]uint64
-	durations map[metricKey]time.Duration
+	mu           sync.Mutex
+	logger       *slog.Logger
+	counts       map[metricKey]uint64
+	durations    map[metricKey]time.Duration
+	guestMetrics map[string]int64
 }
 
 func NewRecorder(logger *slog.Logger) *Recorder {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Recorder{logger: logger, counts: make(map[metricKey]uint64), durations: make(map[metricKey]time.Duration)}
+	return &Recorder{logger: logger, counts: make(map[metricKey]uint64), durations: make(map[metricKey]time.Duration), guestMetrics: make(map[string]int64)}
 }
 
 var defaultRecorder = NewRecorder(slog.Default())
@@ -125,6 +169,17 @@ func (r *Recorder) Observe(ctx context.Context, event Event) {
 	r.mu.Lock()
 	r.counts[key]++
 	r.durations[key] += event.Duration
+	metricOverflow := false
+	if name == PolicyHostMetric {
+		if metricName, ok := PolicyGuestMetric(event.GuestMetric); ok {
+			current := r.guestMetrics[metricName]
+			if (event.MetricDelta > 0 && current > math.MaxInt64-event.MetricDelta) || (event.MetricDelta < 0 && current < math.MinInt64-event.MetricDelta) {
+				metricOverflow = true
+			} else {
+				r.guestMetrics[metricName] = current + event.MetricDelta
+			}
+		}
+	}
 	r.mu.Unlock()
 	if outcome == "noop" {
 		return
@@ -134,6 +189,13 @@ func (r *Recorder) Observe(ctx context.Context, event Event) {
 		"operation_id", clean(event.OperationID), "agent_id", clean(event.AgentID),
 		"revision", event.Revision, "generation_id", clean(event.GenerationID),
 		"attempt", event.Attempt, "duration_ms", event.Duration.Milliseconds(),
+		"plugin_id", clean(event.PluginID), "instance_id", clean(event.InstanceID),
+		"policy_id", clean(event.PolicyID), "policy_stage", clean(event.PolicyStage),
+		"reason", clean(event.Reason), "request_id", clean(event.RequestID),
+		"source", clean(event.Source), "source_kind", clean(event.SourceKind),
+		"node_local", event.NodeLocal, "guest_metric", clean(event.GuestMetric), "metric_delta", event.MetricDelta,
+		"metric_overflow", metricOverflow, "security_code", clean(event.SecurityCode),
+		"security_action", clean(event.SecurityAction), "security_template", clean(event.SecurityTemplate),
 	)
 }
 
@@ -145,10 +207,14 @@ func (r *Recorder) WritePrometheus(w io.Writer) error {
 	keys := make([]metricKey, 0, len(r.counts))
 	counts := make(map[metricKey]uint64, len(r.counts))
 	durations := make(map[metricKey]time.Duration, len(r.durations))
+	guestMetrics := make(map[string]int64, len(r.guestMetrics))
 	for key, count := range r.counts {
 		keys = append(keys, key)
 		counts[key] = count
 		durations[key] = r.durations[key]
+	}
+	for name, value := range r.guestMetrics {
+		guestMetrics[name] = value
 	}
 	r.mu.Unlock()
 	sort.Slice(keys, func(i, j int) bool {
@@ -162,6 +228,16 @@ func (r *Recorder) WritePrometheus(w io.Writer) error {
 			return err
 		}
 		if _, err := fmt.Fprintf(w, "%s_duration_seconds_sum{outcome=%q} %.6f\n", key.name, key.outcome, durations[key].Seconds()); err != nil {
+			return err
+		}
+	}
+	guestNames := make([]string, 0, len(guestMetrics))
+	for name := range guestMetrics {
+		guestNames = append(guestNames, name)
+	}
+	sort.Strings(guestNames)
+	for _, name := range guestNames {
+		if _, err := fmt.Fprintf(w, "%s %d\n", name, guestMetrics[name]); err != nil {
 			return err
 		}
 	}
@@ -194,7 +270,7 @@ func normalizeName(name string) string {
 
 func normalizeOutcome(outcome string) string {
 	switch strings.ToLower(strings.TrimSpace(outcome)) {
-	case "started", "applied", "drained", "forced", "succeeded", "failed", "rejected", "noop":
+	case "started", "applied", "drained", "forced", "succeeded", "failed", "rejected", "noop", "allowed", "denied", "observed", "degraded", "exhausted":
 		return strings.ToLower(strings.TrimSpace(outcome))
 	default:
 		return "unknown"

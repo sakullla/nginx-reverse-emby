@@ -7,8 +7,15 @@ import (
 )
 
 func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
-	return moduleutil.CloneL4Rules(rules)
+	cloned := moduleutil.CloneL4Rules(rules)
+	for i := range cloned {
+		cloned[i].Tuning.ProxyProtocol.TrustedPeers = append([]string(nil), rules[i].Tuning.ProxyProtocol.TrustedPeers...)
+		cloned[i].PolicyRef = clonePolicyRef(rules[i].PolicyRef)
+	}
+	return cloned
 }
+
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef { return model.ClonePolicyRef(ref) }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
 	return moduleutil.CloneRelayListeners(listeners)

@@ -80,12 +80,30 @@
 
         <div class="form-group form-group--block">
           <div class="backends-header">
-            <label class="form-label form-label--required">后端服务器</label>
-            <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
+            <label class="form-label form-label--required">后端</label>
+            <button v-if="form.backend_mode === 'url'" type="button" class="btn btn--sm btn--secondary" @click="addBackend">
               添加后端
             </button>
           </div>
-          <div class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
+          <div v-if="showBackendMode" class="backend-mode" role="group" aria-label="后端类型">
+            <button
+              type="button"
+              class="backend-mode__option"
+              :class="{ 'backend-mode__option--active': form.backend_mode === 'url' }"
+              @click="setBackendMode('url')"
+            >
+              后端地址
+            </button>
+            <button
+              type="button"
+              class="backend-mode__option"
+              :class="{ 'backend-mode__option--active': form.backend_mode === 'provider' }"
+              @click="setBackendMode('provider')"
+            >
+              插件提供商
+            </button>
+          </div>
+          <div v-if="form.backend_mode === 'url'" class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
             <div
               v-for="(backend, index) in form.backends"
               :key="backend.id"
@@ -148,6 +166,39 @@
               </button>
             </div>
           </div>
+          <div v-else class="provider-picker">
+            <select
+              v-model="form.provider_key"
+              name="http-backend-provider"
+              class="input"
+              :class="{ 'input--error': errors.backend }"
+              :disabled="!providerCatalogReady"
+              @change="handleProviderSelectionChange"
+            >
+              <option value="">{{ providersLoading ? '正在加载...' : '选择当前节点的后端' }}</option>
+              <option
+                v-for="provider in providerOptions"
+                :key="providerKey(provider)"
+                :value="providerKey(provider)"
+                :disabled="provider.state !== 'active'"
+              >
+                {{ providerLabel(provider) }}{{ provider.state === 'active' ? '' : '（当前不可用）' }}
+              </option>
+            </select>
+            <div v-if="selectedProvider && providerCatalogReady" class="provider-picker__status" role="status">
+              <span class="provider-picker__dot" aria-hidden="true"></span>
+              已就绪 · {{ providerLabel(selectedProvider) }}
+            </div>
+            <div v-else-if="providerCatalogError" class="provider-picker__error" role="alert">
+              <span :title="providerCatalogErrorTitle">插件列表加载失败</span>
+              <button type="button" class="btn btn--sm btn--secondary" :disabled="providersLoading" @click="retryProviderCatalog">
+                重试
+              </button>
+            </div>
+            <p v-else-if="providerCatalogReady && providerOptions.length === 0" class="field-hint">
+              当前节点没有可用的插件提供商
+            </p>
+          </div>
           <p v-if="errors.backend" class="form-error">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
@@ -156,7 +207,7 @@
             </svg>
             {{ errors.backend }}
           </p>
-          <p class="field-hint">可填多台后端，多后端时按负载策略分发</p>
+          <p v-if="form.backend_mode === 'url'" class="field-hint">可填多台后端，多后端时按负载策略分发</p>
         </div>
       </div>
 
@@ -522,7 +573,7 @@
         :disabled="isLoading"
       >
         <span v-if="isLoading" class="spinner spinner--sm"></span>
-        <span v-else>{{ isEdit ? '保存修改' : '创建规则' }}</span>
+        <span v-else>{{ isEdit ? '保存并发布' : '发布规则' }}</span>
       </button>
     </div>
   </form>
@@ -530,10 +581,12 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
 import { useCreateRule, useUpdateRule } from '../hooks/useRules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
+import { fetchHTTPBackendProviders } from '../api'
 import RelayChainInput from './RelayChainInput.vue'
 
 const UA_PRESETS = [
@@ -555,10 +608,27 @@ const emit = defineEmits(['success'])
 
 const { systemInfo } = useAgent()
 
-const createRule = useCreateRule(props.agentId)
-const updateRule = useUpdateRule(props.agentId)
+const resolvedAgentId = computed(() => String(props.agentId?.value ?? props.agentId ?? '').trim())
+const createRule = useCreateRule(resolvedAgentId)
+const updateRule = useUpdateRule(resolvedAgentId)
 const { data: relayListenersData } = useAllRelayListeners()
 const { data: egressProfilesData } = useEgressProfiles()
+const {
+  data: providerCatalogResult,
+  isLoading: providerQueryLoading,
+  isFetching: providerQueryFetching,
+  isError: providerQueryError,
+  isSuccess: providerQuerySuccess,
+  error: providerQueryFailure,
+  refetch: refetchProviderCatalog
+} = useQuery({
+  queryKey: computed(() => ['rule-form-http-backend-providers', resolvedAgentId.value]),
+  enabled: computed(() => Boolean(resolvedAgentId.value)),
+  queryFn: async () => {
+    const agentId = resolvedAgentId.value
+    return { agentId, providers: await fetchHTTPBackendProviders(agentId) }
+  }
+})
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)
@@ -568,6 +638,47 @@ const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profil
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
 }))
+const providerCatalogCurrent = computed(() => (
+  providerQuerySuccess.value === true
+  && String(providerCatalogResult.value?.agentId || '') === resolvedAgentId.value
+))
+const providerCatalogReady = computed(() => (
+  providerCatalogCurrent.value
+  && providerQueryFetching.value !== true
+  && providerQueryError.value !== true
+))
+const providersLoading = computed(() => Boolean(resolvedAgentId.value) && (
+  providerQueryLoading.value === true
+  || providerQueryFetching.value === true
+  || (!providerCatalogCurrent.value && providerQueryError.value !== true)
+))
+const providerCatalogError = computed(() => (
+  providerQueryError.value === true
+  && !providersLoading.value
+))
+const providerCatalogErrorTitle = computed(() => String(providerQueryFailure.value?.message || '').trim())
+const providerOptions = computed(() => {
+  if (!providerCatalogReady.value) return []
+  const providers = Array.isArray(providerCatalogResult.value?.providers) ? providerCatalogResult.value.providers : []
+  const current = form.value.provider_ref
+  if (!current || providers.some((provider) => providerKey(provider) === form.value.provider_key)) return providers
+  return [...providers, {
+    instance_id: current.instance_id,
+    provider_id: current.provider_id,
+    display_name: `${current.instance_id} / ${current.provider_id}`,
+    state: 'unavailable'
+  }]
+})
+const showBackendMode = computed(() => (
+  !providerCatalogReady.value
+  || providerOptions.value.length > 0
+  || form.value.backend_mode === 'provider'
+))
+const selectedProvider = computed(() => {
+  if (!providerCatalogReady.value) return null
+  const selected = providerOptions.value.find((provider) => providerKey(provider) === form.value.provider_key)
+  return selected?.state === 'active' ? selected : null
+})
 const selectedEgressProfileID = computed(() => {
   const id = Number(form.value.egress_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
@@ -738,7 +849,13 @@ watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
 function createDefaultForm() {
   return {
     frontend_url: '',
+    backend_mode: 'url',
     backends: [createBackend()],
+    provider_key: '',
+    provider_ref: null,
+    initial_backends: [],
+    initial_backend_mode: 'url',
+    initial_provider_key: '',
     load_balancing: { strategy: 'adaptive' },
     tags: [],
     enabled: true,
@@ -779,14 +896,48 @@ function normalizeHttpBackends(initialData) {
   return [createBackend()]
 }
 
+function normalizeProviderRef(initialData) {
+  const backend = Array.isArray(initialData?.backends)
+    ? initialData.backends.find((item) => item?.kind === 'plugin_provider')
+    : null
+  const instanceId = String(backend?.plugin_provider?.instance_id || '').trim()
+  const providerId = String(backend?.plugin_provider?.provider_id || '').trim()
+  return instanceId && providerId ? { instance_id: instanceId, provider_id: providerId } : null
+}
+
+function normalizeCanonicalHTTPBackends(initialData) {
+  if (!Array.isArray(initialData?.backends)) return []
+  return initialData.backends.map((backend) => {
+    if (backend?.kind === 'plugin_provider') {
+      const instanceId = String(backend?.plugin_provider?.instance_id || '').trim()
+      const providerId = String(backend?.plugin_provider?.provider_id || '').trim()
+      if (!instanceId || !providerId) return null
+      return {
+        kind: 'plugin_provider',
+        plugin_provider: { instance_id: instanceId, provider_id: providerId }
+      }
+    }
+    const url = String(backend?.url || '').trim()
+    return url ? { url } : null
+  }).filter(Boolean)
+}
+
 function createFormState(initialData) {
   if (!initialData) {
     return createDefaultForm()
   }
 
+  const providerRef = normalizeProviderRef(initialData)
+  const initialBackends = normalizeCanonicalHTTPBackends(initialData)
   return {
     frontend_url: initialData.frontend_url || '',
+    backend_mode: providerRef ? 'provider' : 'url',
     backends: normalizeHttpBackends(initialData),
+    provider_key: providerRef ? providerKey(providerRef) : '',
+    provider_ref: providerRef,
+    initial_backends: initialBackends,
+    initial_backend_mode: providerRef ? 'provider' : 'url',
+    initial_provider_key: providerRef ? providerKey(providerRef) : '',
     load_balancing: {
       strategy: normalizeHttpStrategy(initialData.load_balancing?.strategy)
     },
@@ -800,6 +951,65 @@ function createFormState(initialData) {
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData.relay_obfs === true
   }
+}
+
+function isPublishedPortOffer(provider) {
+  return String(provider?.kind || '').trim() === 'published_port'
+}
+
+function publishedPortBackendURL(provider) {
+  const port = Number(provider?.port)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return ''
+  return `http://127.0.0.1:${port}`
+}
+
+function providerKey(provider) {
+  if (isPublishedPortOffer(provider)) {
+    const instanceId = String(provider?.instance_id || '').trim()
+    const resourceId = String(provider?.resource_id || '').trim()
+    const port = Number(provider?.port) || 0
+    return `port:${encodeURIComponent(instanceId)}:${encodeURIComponent(resourceId)}:${port}`
+  }
+  const instanceId = String(provider?.instance_id || '').trim()
+  const providerId = String(provider?.provider_id || '').trim()
+  return `${encodeURIComponent(instanceId)}:${encodeURIComponent(providerId)}`
+}
+
+function providerLabel(provider) {
+  if (isPublishedPortOffer(provider)) {
+    const displayName = String(provider?.display_name || provider?.resource_id || '').trim()
+    const port = Number(provider?.port)
+    return Number.isInteger(port) && port > 0 ? `${displayName} · ${port}` : displayName
+  }
+  const displayName = String(provider?.display_name || provider?.provider_id || '').trim()
+  const instanceId = String(provider?.instance_id || '').trim()
+  return instanceId ? `${displayName} · ${instanceId}` : displayName
+}
+
+function setBackendMode(mode) {
+  form.value.backend_mode = mode
+  clearBackendError()
+}
+
+function handleProviderSelectionChange() {
+  clearBackendError()
+}
+
+function shouldPreserveInitialBackends() {
+  if (form.value.initial_backends.length === 0) return false
+  if (form.value.backend_mode !== form.value.initial_backend_mode) return false
+  return form.value.backend_mode !== 'provider'
+    || form.value.provider_key === form.value.initial_provider_key
+}
+
+function clearBackendError() {
+  errors.value.backend = ''
+  errors.value.submit = ''
+}
+
+async function retryProviderCatalog() {
+  clearBackendError()
+  await refetchProviderCatalog()
 }
 
 function normalizeCustomHeaders(value) {
@@ -996,11 +1206,23 @@ function validateBasicFields() {
     errors.value.frontend_url = '请输入前端访问地址'
   }
 
-  const validBackends = form.value.backends
-    .map((backend) => ({ url: String(backend?.url || '').trim() }))
-    .filter((backend) => backend.url)
-  if (validBackends.length === 0) {
-    errors.value.backend = '至少需要一个后端服务器'
+  if (form.value.backend_mode === 'provider') {
+    if (providerCatalogError.value) {
+      errors.value.backend = '插件列表加载失败，请重试'
+    } else if (!providerCatalogReady.value) {
+      errors.value.backend = '插件列表尚未加载完成'
+    } else if (!selectedProvider.value) {
+      errors.value.backend = '请选择当前可用的后端'
+    } else if (isPublishedPortOffer(selectedProvider.value) && !publishedPortBackendURL(selectedProvider.value)) {
+      errors.value.backend = '所选发布端口不可用'
+    }
+  } else {
+    const validBackends = form.value.backends
+      .map((backend) => ({ url: String(backend?.url || '').trim() }))
+      .filter((backend) => backend.url)
+    if (validBackends.length === 0) {
+      errors.value.backend = '至少需要一个后端服务器'
+    }
   }
 
   return !errors.value.frontend_url && !errors.value.backend
@@ -1072,9 +1294,25 @@ async function handleSubmit() {
   if (!validate()) return
 
   try {
-    const validBackends = form.value.backends
-      .map((backend) => ({ url: String(backend?.url || '').trim() }))
-      .filter((backend) => backend.url)
+    const validBackends = form.value.backend_mode === 'provider'
+      ? (shouldPreserveInitialBackends()
+          ? form.value.initial_backends.map((backend) => (
+              backend.kind === 'plugin_provider'
+                ? { kind: 'plugin_provider', plugin_provider: { ...backend.plugin_provider } }
+                : { url: backend.url }
+            ))
+          : (isPublishedPortOffer(selectedProvider.value)
+              ? [{ url: publishedPortBackendURL(selectedProvider.value) }]
+              : [{
+                  kind: 'plugin_provider',
+                  plugin_provider: {
+                    instance_id: selectedProvider.value.instance_id,
+                    provider_id: selectedProvider.value.provider_id
+                  }
+                }]))
+      : form.value.backends
+          .map((backend) => ({ url: String(backend?.url || '').trim() }))
+          .filter((backend) => backend.url)
     const payload = {
       frontend_url: form.value.frontend_url.trim(),
       backends: validBackends,
@@ -1109,8 +1347,8 @@ async function handleSubmit() {
     }
 
     emit('success')
-  } catch (err) {
-    errors.value.submit = err?.message || '操作失败'
+  } catch {
+    // API failures are toasted by useRules.
   }
 }
 </script>
@@ -1722,6 +1960,67 @@ async function handleSubmit() {
   gap: 0.5rem;
   margin-bottom: 0.4rem;
   width: 100%;
+}
+
+.backend-mode {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(100%, 22rem);
+  padding: 3px;
+  margin-bottom: 0.65rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
+
+.backend-mode__option {
+  min-height: 34px;
+  padding: 0.35rem 0.75rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.backend-mode__option--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+.provider-picker {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.provider-picker__status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--color-success);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.provider-picker__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--color-danger);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.provider-picker__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .backends-list {

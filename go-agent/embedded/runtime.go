@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -10,9 +11,51 @@ import (
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	pluginprocess "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/process"
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
 
 type Snapshot = model.Snapshot
+type DatasetSnapshot = model.DatasetSnapshot
+type DatasetArtifact = model.DatasetArtifact
+type DatasetInstanceBinding = model.DatasetInstanceBinding
+type PolicyRef = model.PolicyRef
+type PluginPolicy = model.PluginPolicy
+type PluginGenerationRevokeRequest = model.PluginGenerationRevokeRequest
+
+// RuntimeGenerationBinding identifies the materialized candidate used for Prepare.
+type RuntimeGenerationBinding struct {
+	GenerationID, SnapshotHash string
+	Revision                   int64
+}
+
+func WithRuntimeGenerationBinder(ctx context.Context, binder func(context.Context, RuntimeGenerationBinding) error) context.Context {
+	if binder == nil {
+		return ctx
+	}
+	return agentcore.WithRuntimeGenerationBinder(ctx, func(ctx context.Context, identity agentcore.GenerationIdentity) error {
+		return binder(ctx, RuntimeGenerationBinding{GenerationID: identity.ID, SnapshotHash: identity.SnapshotHash, Revision: identity.Revision})
+	})
+}
+
+type PluginScopedSecretSource interface {
+	RedeemScopedPluginSecret(context.Context, PluginSecretRedemptionRequest) (json.RawMessage, error)
+}
+
+type PluginGeneration = model.PluginGeneration
+type PluginDependencyEdge = model.PluginDependencyEdge
+type PluginDependencyConsumer = model.PluginDependencyConsumer
+type PluginDependencyTarget = model.PluginDependencyTarget
+type PluginRuntimeStatus = model.PluginRuntimeStatus
+type PluginRuntimeLogEntry = model.PluginRuntimeLogEntry
+type PluginRuntimeLogReport = model.PluginRuntimeLogReport
+type PluginGenerationSecretHandle = model.PluginGenerationSecretHandle
+type PluginSecretRedemptionRequest = model.PluginSecretRedemptionRequest
+type PluginRedeemedSecret = model.PluginRedeemedSecret
+type CapabilityAuditConfig = model.CapabilityAuditConfig
+type CapabilityAuditStatus = observability.CapabilityAuditStatus
 type RuntimeState = model.RuntimeState
 type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage
@@ -34,6 +77,11 @@ type RelayListener = model.RelayListener
 type ManagedCertificateBundle = model.ManagedCertificateBundle
 type ManagedCertificateACMEInfo = model.ManagedCertificateACMEInfo
 type ManagedCertificatePolicy = model.ManagedCertificatePolicy
+type PKISecurityAcknowledgement = model.PKISecurityAcknowledgement
+type PKITrustRoot = model.PKITrustRoot
+type PKISecuritySnapshot = model.PKISecuritySnapshot
+type PKITunnelCredential = model.PKITunnelCredential
+type PKIEnrollmentRequest = model.PKIEnrollmentRequest
 type SyncRequest = agentapp.SyncRequest
 
 const (
@@ -44,6 +92,10 @@ const (
 
 type SyncSource interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
+}
+
+type PluginSecretSource interface {
+	RedeemPluginSecrets(context.Context, PluginSecretRedemptionRequest) ([]PluginRedeemedSecret, error)
 }
 
 type StateSink interface {
@@ -65,6 +117,15 @@ type Config struct {
 	BackendFailures         BackendFailureConfig
 	BackendFailuresExplicit bool
 	RelayTimeouts           RelayTimeoutConfig
+	CapabilityAudit         CapabilityAuditConfig
+}
+
+func DefaultCapabilityAuditConfig() CapabilityAuditConfig {
+	return model.DefaultCapabilityAuditConfig()
+}
+
+func NormalizeCapabilityAuditConfig(cfg CapabilityAuditConfig) CapabilityAuditConfig {
+	return model.NormalizeCapabilityAuditConfig(cfg)
 }
 
 type HTTPTransportConfig struct {
@@ -74,6 +135,7 @@ type HTTPTransportConfig struct {
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
 	MaxConnsPerHost       int
+	DisableHTTP2          bool
 }
 
 type HTTPResilienceConfig struct {
@@ -95,11 +157,12 @@ type RelayTimeoutConfig struct {
 }
 
 type Runtime struct {
-	app      embeddedAppRunner
-	ready    <-chan struct{}
-	closeMu  sync.Mutex
-	closed   bool
-	closeErr error
+	app         embeddedAppRunner
+	ready       <-chan struct{}
+	credentials *CredentialStore
+	closeMu     sync.Mutex
+	closed      bool
+	closeErr    error
 }
 
 const stateRootDir = "embedded-agent-state"
@@ -134,6 +197,10 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	credentialStore, err := modulepki.NewStore(filepath.Join(cfg.DataDir, stateRootDir))
+	if err != nil {
+		return nil, err
+	}
 
 	ready := make(chan struct{})
 	var readyOnce sync.Once
@@ -146,6 +213,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			IPProbeInterval: cfg.DDNSIPProbeInterval,
 		},
 		CurrentVersion:       cfg.CurrentVersion,
+		CapabilityAudit:      model.NormalizeCapabilityAuditConfig(cfg.CapabilityAudit),
 		HTTP3Enabled:         cfg.HTTP3Enabled,
 		TrafficStatsEnabled:  cfg.TrafficStatsEnabled,
 		TrafficStatsExplicit: cfg.TrafficStatsExplicit,
@@ -156,6 +224,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
 			KeepAlive:             cfg.HTTPTransport.KeepAlive,
 			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
+			DisableHTTP2:          cfg.HTTPTransport.DisableHTTP2,
 		},
 		HTTPResilience: model.HTTPResilienceConfig{
 			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
@@ -174,7 +243,8 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
 		},
 	}, persistentStore, syncClientAdapter{
-		source: source,
+		source:   source,
+		pkiStore: credentialStore,
 		onSync: func() {
 			readyOnce.Do(func() { close(ready) })
 		},
@@ -183,7 +253,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		return nil, err
 	}
 
-	return &Runtime{app: runtimeApp, ready: ready}, nil
+	return &Runtime{app: runtimeApp, ready: ready, credentials: &CredentialStore{delegate: credentialStore}}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -192,6 +262,19 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
+}
+
+func (r *Runtime) CapabilityAuditStatus() CapabilityAuditStatus {
+	if r == nil || r.app == nil {
+		return CapabilityAuditStatus{}
+	}
+	owner, ok := r.app.(interface {
+		CapabilityAuditStatus() observability.CapabilityAuditStatus
+	})
+	if !ok {
+		return CapabilityAuditStatus{}
+	}
+	return owner.CapabilityAuditStatus()
 }
 
 func (r *Runtime) GenerationDrainSnapshot() GenerationDrainSnapshot {
@@ -233,6 +316,32 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	return r.app.SyncNow(applyCtx)
 }
 
+func (r *Runtime) RevokePluginGeneration(ctx context.Context, request PluginGenerationRevokeRequest) error {
+	if r == nil || r.app == nil {
+		return errors.New("embedded runtime unavailable")
+	}
+	owner, ok := r.app.(interface{ PluginRPCHost() *pluginrpc.Host })
+	if !ok || owner.PluginRPCHost() == nil {
+		return errors.New("embedded generation revoker unavailable")
+	}
+	return owner.PluginRPCHost().RevokeGeneration(ctx, request)
+}
+
+func (r *Runtime) Call(ctx context.Context, pluginID, name string, payload json.RawMessage) (json.RawMessage, error) {
+	if r == nil || r.app == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	hostOwner, ok := r.app.(interface{ PluginRPCHost() *pluginrpc.Host })
+	if !ok {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	host := hostOwner.PluginRPCHost()
+	if host == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	return host.Call(ctx, pluginID, name, payload)
+}
+
 func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req DiagnosticRequest) (map[string]any, error) {
 	if r == nil || r.app == nil {
 		return nil, errors.New("embedded runtime is not initialized")
@@ -244,6 +353,22 @@ func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req D
 		return nil, errors.New("embedded runtime diagnostics are not available")
 	}
 	return diagnoser.DiagnoseSnapshot(ctx, sanitizeSnapshot(snapshot), req.TaskType, req.RuleID)
+}
+
+// HandleChannelTask executes one reverse channel session task against the
+// embedded agent's channel data plane. It backs the in-process task bridge the
+// co-located control plane uses for the local agent.
+func (r *Runtime) HandleChannelTask(ctx context.Context, taskType string, payload map[string]any) (map[string]any, error) {
+	if r == nil || r.app == nil {
+		return nil, errors.New("embedded runtime is not initialized")
+	}
+	handler, ok := r.app.(interface {
+		HandleChannelTask(context.Context, string, map[string]any) (map[string]any, error)
+	})
+	if !ok {
+		return nil, errors.New("embedded channel session handling is unavailable")
+	}
+	return handler.HandleChannelTask(ctx, taskType, payload)
 }
 
 func (r *Runtime) Close() error {
@@ -262,8 +387,13 @@ func (r *Runtime) Close() error {
 }
 
 type syncClientAdapter struct {
-	source SyncSource
-	onSync func()
+	source   SyncSource
+	onSync   func()
+	pkiStore *modulepki.Store
+}
+
+func (a syncClientAdapter) EmbeddedTunnelPKIStore() *modulepki.Store {
+	return a.pkiStore
 }
 
 func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncRequest) (agentapp.Snapshot, error) {
@@ -280,11 +410,110 @@ func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncReques
 	return Snapshot{Revision: int64(request.CurrentRevision)}, nil
 }
 
+func (a syncClientAdapter) RedeemPluginSecrets(ctx context.Context, request model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	source, ok := a.source.(PluginSecretSource)
+	if !ok {
+		return nil, errors.New("embedded plugin secret redemption is unavailable")
+	}
+	return source.RedeemPluginSecrets(ctx, request)
+}
+
+func (a syncClientAdapter) RedeemScopedPluginSecret(ctx context.Context, request model.PluginSecretRedemptionRequest) (json.RawMessage, error) {
+	source, ok := a.source.(PluginScopedSecretSource)
+	if !ok {
+		return nil, errors.New("embedded scoped secret redemption unavailable")
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	return source.RedeemScopedPluginSecret(ctx, request)
+}
+
 type approvedRevisionContextKey struct{}
 
 type persistentBridgeStore struct {
 	delegate agentcore.Store
 	sink     StateSink
+}
+
+func (s *persistentBridgeStore) EnqueuePluginLogReports(batchID string, reports []model.PluginRuntimeLogReport) ([]model.PluginRuntimeLogReport, error) {
+	outbox, ok := s.delegate.(agentcore.PluginLogOutboxStore)
+	if !ok {
+		return nil, errors.New("embedded plugin log outbox is unavailable")
+	}
+	return outbox.EnqueuePluginLogReports(batchID, reports)
+}
+
+func (s *persistentBridgeStore) PendingPluginLogReports() ([]model.PluginRuntimeLogReport, error) {
+	outbox, ok := s.delegate.(agentcore.PluginLogOutboxStore)
+	if !ok {
+		return nil, errors.New("embedded plugin log outbox is unavailable")
+	}
+	return outbox.PendingPluginLogReports()
+}
+
+func (s *persistentBridgeStore) AcknowledgePluginLogReports(reports []model.PluginRuntimeLogReport) error {
+	outbox, ok := s.delegate.(agentcore.PluginLogOutboxStore)
+	if !ok {
+		return errors.New("embedded plugin log outbox is unavailable")
+	}
+	return outbox.AcknowledgePluginLogReports(reports)
+}
+
+func (s *persistentBridgeStore) WaitForPluginLogCapacity(ctx context.Context) error {
+	outbox, ok := s.delegate.(agentcore.PluginLogBackpressureStore)
+	if !ok {
+		return errors.New("embedded plugin log outbox backpressure is unavailable")
+	}
+	return outbox.WaitForPluginLogCapacity(ctx)
+}
+
+func (s *persistentBridgeStore) RetirePluginRuntimeLogFence(identity pluginprocess.RuntimeLogIdentity) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogFenceRetirementStore)
+	if !ok {
+		return errors.New("embedded plugin log fence retirement is unavailable")
+	}
+	return retirement.RetirePluginRuntimeLogFence(identity)
+}
+
+func (s *persistentBridgeStore) StagePluginRuntimeLogRetirementIntent(id string, revision int64, identities []pluginprocess.RuntimeLogIdentity) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.StagePluginRuntimeLogRetirementIntent(id, revision, identities)
+}
+
+func (s *persistentBridgeStore) CompletePluginRuntimeLogRetirementIntent(id string) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.CompletePluginRuntimeLogRetirementIntent(id)
+}
+
+func (s *persistentBridgeStore) MarkPluginRuntimeLogRetirementIntentDrained(id string) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.MarkPluginRuntimeLogRetirementIntentDrained(id)
+}
+
+func (s *persistentBridgeStore) AuthorizePluginRuntimeLogRetirementIntents(applied Snapshot) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementCutoverStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement cutover store is unavailable")
+	}
+	return retirement.AuthorizePluginRuntimeLogRetirementIntents(sanitizeSnapshot(applied))
+}
+
+func (s *persistentBridgeStore) AbortPluginRuntimeLogRetirementIntent(id string) error {
+	retirement, ok := s.delegate.(agentcore.PluginLogRetirementIntentStore)
+	if !ok {
+		return errors.New("embedded plugin log retirement intent store is unavailable")
+	}
+	return retirement.AbortPluginRuntimeLogRetirementIntent(id)
 }
 
 func (s *persistentBridgeStore) SaveDesiredSnapshot(snapshot Snapshot) error {
@@ -337,6 +566,11 @@ func sanitizeSnapshot(snapshot Snapshot) Snapshot {
 func copyRuntimeState(state RuntimeState) RuntimeState {
 	copyValue := state
 	copyValue.Metadata = cloneRuntimeMetadata(state.Metadata)
+	copyValue.PluginStatuses = append([]model.PluginRuntimeStatus(nil), state.PluginStatuses...)
+	for index := range copyValue.PluginStatuses {
+		copyValue.PluginStatuses[index].Details = append([]byte(nil), state.PluginStatuses[index].Details...)
+		copyValue.PluginStatuses[index].Budget = append([]byte(nil), state.PluginStatuses[index].Budget...)
+	}
 	return copyValue
 }
 

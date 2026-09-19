@@ -1,0 +1,177 @@
+//go:build !integration
+
+package config
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func requiredTokens(t *testing.T) {
+	t.Helper()
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+}
+
+func TestLoadFromEnvDefaultsAndRejectsUnsafeCombinations(t *testing.T) {
+	requiredTokens(t)
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenAddr == "" || cfg.DatabaseDriver != "sqlite" || !cfg.EnableLocalAgent {
+		t.Fatalf("defaults = %+v", cfg)
+	}
+
+	t.Setenv("NRE_PANEL_TOKEN", "change-this-token")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "placeholder") {
+		t.Fatalf("placeholder token err=%v", err)
+	}
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_DATABASE_DRIVER", "oracle")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "NRE_DATABASE_DRIVER") {
+		t.Fatalf("invalid driver err=%v", err)
+	}
+	t.Setenv("NRE_DATABASE_DRIVER", "")
+	t.Setenv("NRE_PUBLIC_URL", "not-a-url")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("invalid public URL accepted")
+	}
+	t.Setenv("NRE_PUBLIC_URL", "")
+	t.Setenv("NRE_PANEL_PUBLIC_PATH", "no-leading-slash")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("invalid public path accepted")
+	}
+	t.Setenv("NRE_PANEL_PUBLIC_PATH", "")
+	t.Setenv("NRE_DDNS_IP_PROBE_INTERVAL", "30s")
+	cfg, err = LoadFromEnv()
+	if err != nil || cfg.LocalAgentDDNSIPProbeInterval != 30*time.Second {
+		t.Fatalf("ddns interval = %+v err=%v", cfg.LocalAgentDDNSIPProbeInterval, err)
+	}
+}
+
+func TestHTTPTransportConfigSupportsUpstreamHTTP2DisableAndConnectionCap(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("NRE_HTTP2_ENABLED", "false")
+	t.Setenv("NRE_HTTP_MAX_CONNS_PER_HOST", "8")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LocalAgentHTTPTransport.DisableHTTP2 || cfg.LocalAgentHTTPTransport.MaxConnsPerHost != 8 {
+		t.Fatalf("local HTTP transport = %+v", cfg.LocalAgentHTTPTransport)
+	}
+
+	t.Setenv("NRE_HTTP2_ENABLED", "invalid")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "NRE_HTTP2_ENABLED") {
+		t.Fatalf("invalid NRE_HTTP2_ENABLED error = %v", err)
+	}
+}
+
+func TestLocalAgentCapabilityAuditConfigIsStrictAndDefaultsOff(t *testing.T) {
+	requiredTokens(t)
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LocalAgentPluginCapabilityAudit.Enabled || cfg.LocalAgentPluginCapabilityAudit.Retention != 24*time.Hour || cfg.LocalAgentPluginCapabilityAudit.MaxBytes != 16<<20 || cfg.LocalAgentPluginCapabilityAudit.MinFreeBytes != 64<<20 {
+		t.Fatalf("default local capability audit = %+v", cfg.LocalAgentPluginCapabilityAudit)
+	}
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_ENABLED", "true")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_QUEUE_SIZE", "32")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_BATCH_SIZE", "4")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_FLUSH_INTERVAL", "50ms")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_RETENTION", "6h")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_MAX_BYTES", "1048576")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_MIN_FREE_BYTES", "2097152")
+	t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_CLOSE_TIMEOUT", "1s")
+	cfg, err = LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LocalAgentPluginCapabilityAudit.Enabled || cfg.LocalAgentPluginCapabilityAudit.QueueSize != 32 || cfg.LocalAgentPluginCapabilityAudit.BatchSize != 4 || cfg.LocalAgentPluginCapabilityAudit.FlushInterval != 50*time.Millisecond {
+		t.Fatalf("configured local capability audit = %+v", cfg.LocalAgentPluginCapabilityAudit)
+	}
+	for _, invalid := range []struct{ name, value string }{{"ENABLED", "yes"}, {"QUEUE_SIZE", "0"}, {"BATCH_SIZE", "65537"}, {"MAX_BYTES", "-1"}, {"MIN_FREE_BYTES", "0"}} {
+		t.Run(invalid.name, func(t *testing.T) {
+			requiredTokens(t)
+			t.Setenv("NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_"+invalid.name, invalid.value)
+			if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "capability audit") && !strings.Contains(err.Error(), "CAPABILITY_AUDIT") {
+				t.Fatalf("invalid %s=%q error=%v", invalid.name, invalid.value, err)
+			}
+		})
+	}
+}
+
+func TestLoadFromEnvTimezoneUsesNRETimezone(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("NRE_TIMEZONE", "")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Timezone != "UTC" {
+		t.Fatalf("default timezone = %q", cfg.Timezone)
+	}
+
+	t.Setenv("NRE_TIMEZONE", "Asia/Shanghai")
+	cfg, err = LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Timezone != "Asia/Shanghai" {
+		t.Fatalf("NRE_TIMEZONE timezone = %q", cfg.Timezone)
+	}
+
+	t.Setenv("NRE_TIMEZONE", "Not/AZone")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "NRE_TIMEZONE") {
+		t.Fatalf("invalid timezone err=%v", err)
+	}
+}
+
+func TestLoadFromEnvSupportsLegacyAliases(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "")
+	t.Setenv("NRE_REGISTER_TOKEN", "")
+	t.Setenv("API_TOKEN", "legacy-secret")
+	t.Setenv("MASTER_REGISTER_TOKEN", "legacy-register")
+	t.Setenv("PANEL_BACKEND_HOST", "127.0.0.1")
+	t.Setenv("PANEL_BACKEND_PORT", "18080")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PanelToken != "legacy-secret" || cfg.RegisterToken != "legacy-register" || cfg.ListenAddr != "127.0.0.1:18080" {
+		t.Fatalf("legacy aliases = %+v", cfg)
+	}
+}
+
+func TestCloudflareReadinessRequiresConfiguredToken(t *testing.T) {
+	cfg := Config{ACMEDNSProvider: "cf"}
+	if cfg.ManagedCloudflareDNSReady() || cfg.DDNSReady() {
+		t.Fatal("ready flags true without configured credentials")
+	}
+	cfg.DDNS.Token = "configured-token"
+	if !cfg.ManagedCloudflareDNSReady() || !cfg.DDNSReady() {
+		t.Fatal("ready flags false with configured credentials")
+	}
+}
+
+func TestCloudflareProviderSelectionEnablesPluginBackedLifecycleWithoutEnvToken(t *testing.T) {
+	requiredTokens(t)
+	t.Setenv("ACME_DNS_PROVIDER", "cf")
+	t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "")
+	t.Setenv("CF_DNS_API_TOKEN", "")
+	t.Setenv("CF_TOKEN", "")
+	t.Setenv("CF_Token", "")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ManagedDNSCertificatesEnabled {
+		t.Fatal("selected Cloudflare provider did not enable the managed certificate lifecycle")
+	}
+	if cfg.ManagedCloudflareDNSReady() {
+		t.Fatal("environment readiness must remain false without an environment token")
+	}
+}

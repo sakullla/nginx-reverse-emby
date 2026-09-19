@@ -24,9 +24,17 @@ type ModuleDescriptor struct {
 type SnapshotView = model.Snapshot
 
 type ApplyRequest struct {
-	Previous  model.Snapshot
-	Next      model.Snapshot
-	Providers ProviderResolver
+	Previous   model.Snapshot
+	Next       model.Snapshot
+	Providers  ProviderResolver
+	Generation GenerationContext
+}
+
+func (r ApplyRequest) ResolvedGenerationContext() (GenerationContext, error) {
+	if r.Generation.ID() != "" {
+		return r.Generation, nil
+	}
+	return NewGenerationContext(r.Previous, r.Next)
 }
 
 type ProviderRegistry interface {

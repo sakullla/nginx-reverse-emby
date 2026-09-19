@@ -18,9 +18,8 @@ import (
 const relayQUICALPN = "nre-relay-quic/1"
 
 var (
-	quicDialAddr     = quic.DialAddr
-	quicListenAddr   = quic.ListenAddr
-	relaySessionPool = newSessionPool()
+	quicDialAddr   = quic.DialAddr
+	quicListenAddr = quic.ListenAddr
 )
 
 type relayApplicationError struct {
@@ -329,7 +328,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return nil, DialResult{}, err
 	}
 
-	pool := relaySessionPool
+	pool := globalRelayPoolScope().quic
 	if options.poolScope != nil {
 		pool = options.poolScope.quic
 	}
@@ -377,7 +376,7 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 		return nil, err
 	}
 
-	pool := relaySessionPool
+	pool := globalRelayPoolScope().quic
 	if len(opts) > 0 && opts[0].poolScope != nil {
 		pool = opts[0].poolScope.quic
 	}
@@ -407,7 +406,7 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 }
 
 func openQUICStream(ctx context.Context, sessionKey string, dial func(context.Context) (*quic.Conn, error)) (*quic.Conn, *quic.Stream, error) {
-	return openQUICStreamFromPool(ctx, relaySessionPool, sessionKey, dial)
+	return openQUICStreamFromPool(ctx, globalRelayPoolScope().quic, sessionKey, dial)
 }
 
 func openQUICStreamFromPool(ctx context.Context, pool *sessionPool, sessionKey string, dial func(context.Context) (*quic.Conn, error)) (*quic.Conn, *quic.Stream, error) {

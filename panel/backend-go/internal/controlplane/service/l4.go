@@ -31,8 +31,9 @@ type L4LoadBalancing struct {
 }
 
 type L4ProxyProtocolTuning struct {
-	Decode bool `json:"decode"`
-	Send   bool `json:"send"`
+	Decode       bool     `json:"decode"`
+	Send         bool     `json:"send"`
+	TrustedPeers []string `json:"trusted_peers,omitempty"`
 }
 
 type L4ProxyEntryAuth struct {
@@ -65,10 +66,11 @@ type L4Rule struct {
 
 	EgressProfileID *int `json:"egress_profile_id,omitempty"`
 
-	ProxyEntryAuth L4ProxyEntryAuth `json:"proxy_entry_auth"`
-	Enabled        bool             `json:"enabled"`
-	Tags           []string         `json:"tags"`
-	Revision       int              `json:"revision"`
+	ProxyEntryAuth L4ProxyEntryAuth   `json:"proxy_entry_auth"`
+	PolicyRef      *storage.PolicyRef `json:"policy_ref,omitempty"`
+	Enabled        bool               `json:"enabled"`
+	Tags           []string           `json:"tags"`
+	Revision       int                `json:"revision"`
 }
 
 type L4RuleInput struct {
@@ -89,9 +91,10 @@ type L4RuleInput struct {
 
 	EgressProfileID *int `json:"egress_profile_id,omitempty"`
 
-	ProxyEntryAuth *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	Enabled        *bool             `json:"enabled,omitempty"`
-	Tags           *[]string         `json:"tags,omitempty"`
+	ProxyEntryAuth *L4ProxyEntryAuth  `json:"proxy_entry_auth,omitempty"`
+	PolicyRef      *storage.PolicyRef `json:"policy_ref,omitempty"`
+	Enabled        *bool              `json:"enabled,omitempty"`
+	Tags           *[]string          `json:"tags,omitempty"`
 }
 
 type l4Service struct {
@@ -257,6 +260,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	targetAgentIDs, err := s.l4MutationAgentIDs(ctx, resolvedID, nil, &input)
 	if err != nil {
 		return L4Rule{}, err
@@ -287,6 +293,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return L4Rule{}, err
 	}
 
@@ -321,6 +330,9 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionL4); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
 		return L4Rule{}, err
 	}
@@ -349,6 +361,9 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows = append(rows, l4RuleToRow(rule))
+	if err := consumeResourceQuota(ctx, s.store, "l4_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "public_port_count", 1); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		return L4Rule{}, err
 	}
@@ -376,6 +391,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	}
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
 	current, err := s.Get(ctx, resolvedID, id)
@@ -423,6 +441,9 @@ func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, in
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
+		return L4Rule{}, err
+	}
 
 	rows, err := s.store.ListL4Rules(ctx, resolvedID)
 	if err != nil {
@@ -460,6 +481,9 @@ func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, in
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionL4); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
 		return L4Rule{}, err
 	}
@@ -524,6 +548,9 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	current, err := s.Get(ctx, resolvedID, id)
 	if err != nil {
 		return L4Rule{}, err
@@ -565,6 +592,9 @@ func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L
 	if err != nil {
 		return L4Rule{}, err
 	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
+		return L4Rule{}, err
+	}
 
 	rows, err := s.store.ListL4Rules(ctx, resolvedID)
 	if err != nil {
@@ -604,6 +634,9 @@ func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L
 	}
 	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append([]string{resolvedID}, egressExecutorAgentIDs...)))
 	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := consumeResourceQuota(ctx, s.store, "l4_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "public_port_count", -1); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
@@ -711,7 +744,7 @@ func (s *l4Service) l4MutationAgentIDs(
 		}
 	}
 	if input == nil {
-		return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+		return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 	}
 
 	nextLayers := currentLayers
@@ -738,7 +771,7 @@ func (s *l4Service) l4MutationAgentIDs(
 			return nil, err
 		}
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 }
 
 func l4RuleMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config) (any, error) {
@@ -836,11 +869,19 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	var backends []L4Backend
 	var upstreamHost string
 	var upstreamPort int
+	var err error
 
 	loadBalancing := normalizeL4LoadBalancingInput(input.LoadBalancing, fallback.LoadBalancing)
 	tuning := normalizeL4TuningInput(protocol, input.Tuning, fallback.Tuning)
+	tuning.ProxyProtocol.TrustedPeers, err = normalizeTrustedPeerRanges(tuning.ProxyProtocol.TrustedPeers)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	policyRef, err := normalizeRulePolicyRef(input.PolicyRef, fallback.PolicyRef)
+	if err != nil {
+		return L4Rule{}, err
+	}
 
-	var err error
 	relayChain := []int{}
 	relayLayers := cloneIntLayers(fallback.RelayLayers)
 	if input.RelayLayers != nil {
@@ -929,6 +970,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		ListenMode:      listenMode,
 		EgressProfileID: egressProfileID,
 		ProxyEntryAuth:  proxyEntryAuth,
+		PolicyRef:       policyRef,
 		Enabled:         enabled,
 		Tags:            tags,
 		Revision:        fallback.Revision,
@@ -957,6 +999,9 @@ type l4EgressProfileValidationStore interface {
 func validateL4EgressProfileReferenceForStore(ctx context.Context, cfg config.Config, store l4EgressProfileValidationStore, rule L4Rule) error {
 	if rule.EgressProfileID == nil {
 		return nil
+	}
+	if err := authorizeReferencedResource(ctx, store, "egress_profile", strconv.Itoa(*rule.EgressProfileID)); err != nil {
+		return err
 	}
 	profile, err := getEnabledEgressProfile(ctx, store, *rule.EgressProfileID)
 	if err != nil {
@@ -1270,6 +1315,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		EgressProfileID: normalizeOptionalPositiveInt(row.EgressProfileID),
 
 		ProxyEntryAuth: proxyEntryAuth,
+		PolicyRef:      parseRulePolicyRef(row.PolicyRefJSON),
 		Enabled:        row.Enabled,
 		Tags:           parseStringArray(row.TagsJSON),
 		Revision:       row.Revision,
@@ -1282,9 +1328,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 	if lb := parseL4LoadBalancing(row.LoadBalancingJSON); lb.Strategy != "" {
 		rule.LoadBalancing = lb
 	}
-	if tuning := parseL4Tuning(row.TuningJSON); tuning != (L4Tuning{}) {
-		rule.Tuning = tuning
-	}
+	rule.Tuning = parseL4Tuning(row.TuningJSON)
 	rule.RelayChain = []int{}
 	rule.RelayLayers = parseIntLayers(row.RelayLayersJSON)
 	return rule
@@ -1331,6 +1375,7 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		EgressProfileID: normalizeOptionalPositiveInt(rule.EgressProfileID),
 
 		ProxyEntryAuthJSON: marshalJSON(rule.ProxyEntryAuth, "{}"),
+		PolicyRefJSON:      marshalJSON(rule.PolicyRef, ""),
 		Enabled:            rule.Enabled,
 		TagsJSON:           marshalJSON(rule.Tags, "[]"),
 		Revision:           rule.Revision,

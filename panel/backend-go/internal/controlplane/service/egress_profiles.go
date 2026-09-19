@@ -135,7 +135,7 @@ func (s *egressProfileService) Create(ctx context.Context, input EgressProfileIn
 	if err != nil {
 		return EgressProfile{}, err
 	}
-	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, targetAgentIDs)
 	if err != nil {
 		return EgressProfile{}, err
 	}
@@ -202,7 +202,7 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 			return EgressProfile{}, err
 		}
 	}
-	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, targetAgentIDs)
 	if err != nil {
 		return EgressProfile{}, err
 	}
@@ -339,7 +339,7 @@ func (s *egressProfileService) Delete(ctx context.Context, id int) (EgressProfil
 	if err != nil {
 		return EgressProfile{}, err
 	}
-	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, targetAgentIDs)
 	if err != nil {
 		return EgressProfile{}, err
 	}

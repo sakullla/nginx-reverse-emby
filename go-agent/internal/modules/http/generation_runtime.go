@@ -329,6 +329,40 @@ func (l *httpIngressLease) release() error {
 	return l.releaseErr
 }
 
+func (m *httpIngressManager) retireExcept(activeBindings []*httpIngressBinding) error {
+	if m == nil {
+		return nil
+	}
+	active := make(map[*httpIngressBinding]struct{}, len(activeBindings))
+	for _, binding := range activeBindings {
+		if binding != nil {
+			active[binding] = struct{}{}
+		}
+	}
+
+	m.mu.Lock()
+	retired := make([]*httpIngressBinding, 0)
+	for key, binding := range m.bindings {
+		if _, keep := active[binding]; keep {
+			continue
+		}
+		delete(m.bindings, key)
+		retired = append(retired, binding)
+	}
+	m.mu.Unlock()
+
+	var closeErr error
+	for _, binding := range retired {
+		if binding.packet != nil {
+			closeErr = errors.Join(closeErr, binding.packet.Close())
+		}
+		if binding.stream != nil {
+			closeErr = errors.Join(closeErr, binding.stream.Close())
+		}
+	}
+	return closeErr
+}
+
 func (m *httpIngressManager) close() error {
 	if m == nil {
 		return nil
@@ -739,6 +773,7 @@ func prepareGenerationRuntime(
 		ingress:  ingressManager,
 		handlers: make(map[string]*generationHTTPHandler, len(specs)),
 	}
+	providers.providerTracker = runtime.tracker
 	for _, spec := range specs {
 		proxy, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
 		if err != nil {
@@ -909,6 +944,21 @@ func (r *Runtime) packetEndpoint(bindingKey string) *ingress.PacketEndpoint {
 	return nil
 }
 
+func (r *Runtime) ingressBindings() []*httpIngressBinding {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bindings := make([]*httpIngressBinding, 0, len(r.ingressLeases))
+	for _, lease := range r.ingressLeases {
+		if lease != nil && lease.binding != nil {
+			bindings = append(bindings, lease.binding)
+		}
+	}
+	return bindings
+}
+
 func (r *Runtime) BeginDrain() {
 	if r == nil {
 		return
@@ -966,17 +1016,83 @@ type httpSessionTracker struct {
 
 type httpRequestSession struct {
 	tracker   *httpSessionTracker
+	module    string
 	entity    string
 	cancel    context.CancelFunc
 	external  *generation.SessionHandle
 	sessionID string
 
-	mu              sync.Mutex
-	hijacked        bool
-	connection      net.Conn
-	registrationErr error
-	finished        bool
-	once            sync.Once
+	mu               sync.Mutex
+	hijacked         bool
+	connection       net.Conn
+	registrationErr  error
+	finished         bool
+	once             sync.Once
+	registrationOnce sync.Once
+	progressiveRefs  int
+	forceCommitted   bool
+}
+
+type httpRequestSessionContextKey struct{}
+
+func withHTTPRequestSession(ctx context.Context, session *httpRequestSession) context.Context {
+	if ctx == nil || session == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, httpRequestSessionContextKey{}, session)
+}
+
+func httpRequestSessionFromContext(ctx context.Context) *httpRequestSession {
+	if ctx == nil {
+		return nil
+	}
+	session, _ := ctx.Value(httpRequestSessionContextKey{}).(*httpRequestSession)
+	return session
+}
+
+func (s *httpRequestSession) tryRetainProgressiveDrain() (func(), bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	if s.finished || s.forceCommitted {
+		s.mu.Unlock()
+		return nil, false
+	}
+	s.progressiveRefs++
+	s.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.progressiveRefs > 0 {
+				s.progressiveRefs--
+			}
+			s.mu.Unlock()
+		})
+	}, true
+}
+
+func (s *httpRequestSession) ProgressiveDrainActive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.finished && s.progressiveRefs > 0
+}
+
+func (s *httpRequestSession) TryCommitSelectiveForce() bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished || s.forceCommitted || s.progressiveRefs > 0 {
+		return false
+	}
+	s.forceCommitted = true
+	return true
 }
 
 type trackedHijackedConn struct {
@@ -999,10 +1115,17 @@ func newHTTPSessionTracker(generationID string, registrar HTTPSessionRegistrar, 
 }
 
 func (t *httpSessionTracker) start(entity string, cancel context.CancelFunc) *httpRequestSession {
+	return t.startModule("http", entity, cancel)
+}
+
+func (t *httpSessionTracker) startModule(moduleName, entity string, cancel context.CancelFunc) *httpRequestSession {
 	if t == nil {
 		return nil
 	}
-	session := &httpRequestSession{tracker: t, entity: entity, cancel: cancel}
+	if cancel == nil {
+		cancel = func() {}
+	}
+	session := &httpRequestSession{tracker: t, module: moduleName, entity: entity, cancel: cancel}
 	t.mu.Lock()
 	if t.active == 0 {
 		t.idle = make(chan struct{})
@@ -1050,24 +1173,26 @@ func (t *httpSessionTracker) register(session *httpRequestSession) {
 	if t == nil || t.registrar == nil || session == nil {
 		return
 	}
-	handle, err := t.registrar.RegisterSession(
-		t.generation,
-		generation.EntityKey{Module: "http", ID: session.entity},
-		session.sessionID,
-		session,
-	)
-	session.mu.Lock()
-	session.registrationErr = err
-	finished := session.finished
-	if err == nil && !finished {
-		session.external = handle
-	}
-	session.mu.Unlock()
-	if err != nil {
-		log.Printf("[proxy] register HTTP session %s/%s: %v", t.generation, session.sessionID, err)
-	} else if finished && handle != nil {
-		handle.Finish()
-	}
+	session.registrationOnce.Do(func() {
+		handle, err := t.registrar.RegisterSession(
+			t.generation,
+			generation.EntityKey{Module: session.module, ID: session.entity},
+			session.sessionID,
+			session,
+		)
+		session.mu.Lock()
+		session.registrationErr = err
+		finished := session.finished
+		if err == nil && !finished {
+			session.external = handle
+		}
+		session.mu.Unlock()
+		if err != nil {
+			log.Printf("[proxy] register HTTP session %s/%s: %v", t.generation, session.sessionID, err)
+		} else if finished && handle != nil {
+			handle.Finish()
+		}
+	})
 }
 
 func (t *httpSessionTracker) requestDone(session *httpRequestSession) {
@@ -1080,6 +1205,15 @@ func (t *httpSessionTracker) requestDone(session *httpRequestSession) {
 	if !hijacked {
 		t.finish(session)
 	}
+}
+
+func (s *httpRequestSession) registrationError() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.registrationErr
 }
 
 func (t *httpSessionTracker) finish(session *httpRequestSession) {
@@ -1172,10 +1306,11 @@ func (s *httpRequestSession) forceClose() {
 	if s == nil {
 		return
 	}
-	s.cancel()
 	s.mu.Lock()
+	s.forceCommitted = true
 	connection := s.connection
 	s.mu.Unlock()
+	s.cancel()
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -1256,6 +1391,14 @@ func (h *generationHTTPHandler) serveActive(w stdhttp.ResponseWriter, req *stdht
 	entity := httpRuleEntityID(entry.rule)
 	session := h.tracker.start(entity, cancel)
 	defer h.tracker.requestDone(session)
+	if session != nil {
+		if err := session.registrationError(); err != nil {
+			stdhttp.Error(w, "HTTP generation no longer accepts requests", stdhttp.StatusServiceUnavailable)
+			return
+		}
+		ctx = withHTTPPolicyRequestID(ctx, session.sessionID)
+		ctx = withHTTPRequestSession(ctx, session)
+	}
 	h.server.ServeHTTP(&generationResponseWriter{ResponseWriter: w, session: session}, req.WithContext(ctx))
 }
 
@@ -1425,9 +1568,26 @@ func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.finalizedSuccess = true
+	t.retireInactiveIngressBindings()
 	if t.previousRuntime != nil {
 		t.previousRuntime.revokeRules(t.revokedEntities)
 		t.previousRuntime.BeginDrain()
+	}
+}
+
+func (t *httpGenerationTransaction) FinalizeGenerationPublication() {
+	if t == nil {
+		return
+	}
+	t.retireInactiveIngressBindings()
+}
+
+func (t *httpGenerationTransaction) retireInactiveIngressBindings() {
+	if t == nil || t.module == nil || t.module.ingress == nil || t.runtime == nil {
+		return
+	}
+	if err := t.module.ingress.retireExcept(t.runtime.ingressBindings()); err != nil {
+		log.Printf("[proxy] retire inactive generation ingress: %v", err)
 	}
 }
 

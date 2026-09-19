@@ -23,6 +23,7 @@ export {
   updateEgressProfile,
   deleteEgressProfile,
   fetchRules,
+  fetchHTTPBackendProviders,
   fetchHttpRulesPage,
   createRule,
   updateRule,
@@ -69,3 +70,5 @@ export {
   fetchTrafficAggregate,
   fetchDashboardAttention
 } from './devMocks/index.js'
+
+export { fetchPluginUIRoutes, fetchPluginResourceGroups } from './runtime.js'

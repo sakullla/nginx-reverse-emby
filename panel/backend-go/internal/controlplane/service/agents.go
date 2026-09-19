@@ -20,14 +20,23 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", managedCertificateReportsCapability, "l4", "relay_quic", "egress_profiles", packageManifestCapability}
+type agentRegistrationError string
+
+func (e agentRegistrationError) Error() string { return string(e) }
+func (e agentRegistrationError) Is(target error) bool {
+	return target == ErrInvalidArgument
+}
+
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", managedCertificateReportsCapability, "l4", "relay_quic", "egress_profiles", packageManifestCapability, storage.PluginGenerationCapability}
 
 const (
 	packageManifestCapability           = "package_manifest_v1"
@@ -60,10 +69,30 @@ type agentHeartbeatStore interface {
 	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
 }
 
+type agentPluginRuntimeReportStore interface {
+	RecordPluginAgentRuntimeReport(context.Context, storage.PluginGenerationReport) (storage.PluginAgentRuntimeStatusRow, bool, error)
+}
+
+type agentCoherentHeartbeatSnapshotStore interface {
+	LoadAgentHeartbeatSnapshot(context.Context, string, storage.AgentHeartbeatSnapshotOverlay) (storage.AgentHeartbeatSnapshot, error)
+}
+
+type agentTrafficStateStore interface {
+	SaveAgentTrafficState(context.Context, string, bool, string) error
+}
+
 type agentRevisionActionStore interface {
 	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 	RetryCoordinatorRevision(context.Context, string, int64, time.Time) (storage.AgentRevisionRow, error)
+}
+
+type agentHeartbeatRevisionIssuer interface {
+	EnsureAgentHeartbeatRevision(context.Context, string, storage.Snapshot, []byte, string, time.Time) (storage.AgentRevisionRow, error)
+}
+
+type agentDurableRevisionSnapshotStore interface {
+	LoadCoordinatorRuntimeSnapshot(context.Context, string, int64) (storage.CoordinatorRuntimeSnapshot, bool, error)
 }
 
 type agentRevisionRepository interface {
@@ -71,46 +100,65 @@ type agentRevisionRepository interface {
 	coordinator.Repository
 }
 
-type AgentSummary struct {
-	ID                     string              `json:"id"`
-	Name                   string              `json:"name"`
-	AgentURL               string              `json:"agent_url"`
-	Version                string              `json:"version"`
-	Platform               string              `json:"platform"`
-	RuntimePackageVersion  string              `json:"runtime_package_version"`
-	RuntimePackagePlatform string              `json:"runtime_package_platform"`
-	RuntimePackageArch     string              `json:"runtime_package_arch"`
-	RuntimePackageSHA256   string              `json:"runtime_package_sha256"`
-	DesiredPackageSHA256   string              `json:"desired_package_sha256"`
-	PackageSyncStatus      string              `json:"package_sync_status"`
-	DesiredVersion         string              `json:"desired_version"`
-	Tags                   []string            `json:"tags"`
-	OutboundProxyURL       string              `json:"outbound_proxy_url"`
-	TrafficStatsInterval   string              `json:"traffic_stats_interval"`
-	Mode                   string              `json:"mode"`
-	DesiredRevision        int                 `json:"desired_revision"`
-	CurrentRevision        int                 `json:"current_revision"`
-	LastApplyRevision      int                 `json:"last_apply_revision"`
-	LastApplyStatus        string              `json:"last_apply_status"`
-	LastApplyMessage       string              `json:"last_apply_message"`
-	LastSeenAt             string              `json:"last_seen_at"`
-	Status                 string              `json:"status"`
-	Error                  string              `json:"error"`
-	IsLocal                bool                `json:"is_local"`
-	LastSeenIP             string              `json:"last_seen_ip"`
-	LastSeenIPv4           string              `json:"last_seen_ipv4"`
-	LastSeenIPv6           string              `json:"last_seen_ipv6"`
-	DdnsDomain             string              `json:"ddns_domain"`
-	DdnsStatus             storage.DdnsStatus  `json:"ddns_status,omitempty"`
-	DdnsConfig             *storage.DDNSConfig `json:"ddns_config,omitempty"`
-	Capabilities           []string            `json:"capabilities"`
-	HTTPRulesCount         int                 `json:"http_rules_count"`
-	L4RulesCount           int                 `json:"l4_rules_count"`
+// AgentPKIController extends the existing token-authenticated control paths
+// with tunnel PKI payloads. It never owns a listener or transport of its own.
+type AgentPKIController interface {
+	RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error)
+	ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error)
+	PrepareRelayListeners(context.Context, string, []storage.RelayListener) ([]storage.RelayListener, error)
+	ControlSyncAndPrepare(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest, []storage.RelayListener) (storage.PKISecuritySnapshot, []PKIControlCredential, []storage.RelayListener, error)
 }
 
-type HTTPRuleBackend struct {
-	URL string `json:"url"`
+type AgentSummary struct {
+	ID                       string                `json:"id"`
+	Name                     string                `json:"name"`
+	AgentURL                 string                `json:"agent_url"`
+	Version                  string                `json:"version"`
+	Platform                 string                `json:"platform"`
+	RuntimePackageVersion    string                `json:"runtime_package_version"`
+	RuntimePackagePlatform   string                `json:"runtime_package_platform"`
+	RuntimePackageArch       string                `json:"runtime_package_arch"`
+	RuntimePackageSHA256     string                `json:"runtime_package_sha256"`
+	DesiredPackageSHA256     string                `json:"desired_package_sha256"`
+	PackageSyncStatus        string                `json:"package_sync_status"`
+	DesiredVersion           string                `json:"desired_version"`
+	Tags                     []string              `json:"tags"`
+	OutboundProxyURL         string                `json:"outbound_proxy_url"`
+	TrafficStatsInterval     string                `json:"traffic_stats_interval"`
+	Mode                     string                `json:"mode"`
+	DesiredRevision          int                   `json:"desired_revision"`
+	CurrentRevision          int                   `json:"current_revision"`
+	LastApplyRevision        int                   `json:"last_apply_revision"`
+	LastApplyStatus          string                `json:"last_apply_status"`
+	LastApplyMessage         string                `json:"last_apply_message"`
+	LastSeenAt               string                `json:"last_seen_at"`
+	Status                   string                `json:"status"`
+	Error                    string                `json:"error"`
+	IsLocal                  bool                  `json:"is_local"`
+	LastSeenIP               string                `json:"last_seen_ip"`
+	LastSeenIPv4             string                `json:"last_seen_ipv4"`
+	LastSeenIPv6             string                `json:"last_seen_ipv6"`
+	DdnsDomain               string                `json:"ddns_domain"`
+	DdnsStatus               storage.DdnsStatus    `json:"ddns_status,omitempty"`
+	DdnsConfig               *storage.DDNSConfig   `json:"ddns_config,omitempty"`
+	Capabilities             []string              `json:"capabilities"`
+	HTTPRulesCount           int                   `json:"http_rules_count"`
+	L4RulesCount             int                   `json:"l4_rules_count"`
+	RegistrationControlToken string                `json:"-"`
+	PKIRegistration          *PKIRegistrationReply `json:"-"`
 }
+
+// PKIRegistrationReply is returned only by the existing agent registration
+// route. It contains public certificate/trust material and the existing
+// per-agent control token, never an endpoint private key.
+type PKIRegistrationReply struct {
+	AgentID          string                      `json:"agent_id"`
+	AgentToken       string                      `json:"agent_token"`
+	TunnelCredential storage.PKITunnelCredential `json:"tunnel_credential"`
+	SecuritySnapshot storage.PKISecuritySnapshot `json:"security_snapshot"`
+}
+
+type HTTPRuleBackend = pluginsdk.HTTPBackend
 
 type HTTPLoadBalancing struct {
 	Strategy string `json:"strategy"`
@@ -122,24 +170,26 @@ type HTTPCustomHeader struct {
 }
 
 type HTTPRule struct {
-	ID               int                `json:"id"`
-	AgentID          string             `json:"agent_id"`
-	AgentName        string             `json:"agent_name,omitempty"`
-	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"-"`
-	Backends         []HTTPRuleBackend  `json:"backends"`
-	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
-	Enabled          bool               `json:"enabled"`
-	Tags             []string           `json:"tags"`
-	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"-"`
-	RelayLayers      [][]int            `json:"relay_layers"`
-	RelayObfs        bool               `json:"relay_obfs"`
-	PassProxyHeaders bool               `json:"pass_proxy_headers"`
-	UserAgent        string             `json:"user_agent"`
-	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
-	EgressProfileID  *int               `json:"egress_profile_id,omitempty"`
-	Revision         int                `json:"revision"`
+	ID                 int                `json:"id"`
+	AgentID            string             `json:"agent_id"`
+	AgentName          string             `json:"agent_name,omitempty"`
+	FrontendURL        string             `json:"frontend_url"`
+	BackendURL         string             `json:"-"`
+	Backends           []HTTPRuleBackend  `json:"backends"`
+	LoadBalancing      HTTPLoadBalancing  `json:"load_balancing"`
+	Enabled            bool               `json:"enabled"`
+	Tags               []string           `json:"tags"`
+	ProxyRedirect      bool               `json:"proxy_redirect"`
+	RelayChain         []int              `json:"-"`
+	RelayLayers        [][]int            `json:"relay_layers"`
+	RelayObfs          bool               `json:"relay_obfs"`
+	PassProxyHeaders   bool               `json:"pass_proxy_headers"`
+	UserAgent          string             `json:"user_agent"`
+	CustomHeaders      []HTTPCustomHeader `json:"custom_headers"`
+	EgressProfileID    *int               `json:"egress_profile_id,omitempty"`
+	TrustedProxyRanges []string           `json:"trusted_proxy_ranges,omitempty"`
+	PolicyRef          *storage.PolicyRef `json:"policy_ref,omitempty"`
+	Revision           int                `json:"revision"`
 }
 
 type HeartbeatRequest struct {
@@ -160,6 +210,10 @@ type HeartbeatRequest struct {
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
+	PKISecurityAck            *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+	PKIEnrollmentRequests     []PKIControlEnrollmentRequest       `json:"pki_enrollment_requests,omitempty"`
+	PluginStatuses            []storage.PluginRuntimeStatus       `json:"plugin_statuses,omitempty"`
+	PluginLogs                []storage.PluginRuntimeLogReport    `json:"plugin_logs,omitempty"`
 	HasAgentURL               bool                                `json:"-"`
 	HasTags                   bool                                `json:"-"`
 	HasCapabilities           bool                                `json:"-"`
@@ -169,22 +223,36 @@ type HeartbeatReply struct {
 	HasUpdate            bool                               `json:"has_update"`
 	DesiredVersion       string                             `json:"desired_version"`
 	DesiredRevision      int64                              `json:"desired_revision"`
+	SnapshotDigest       string                             `json:"snapshot_digest,omitempty"`
 	CurrentRevision      int64                              `json:"current_revision"`
 	VersionPackage       string                             `json:"version_package,omitempty"`
 	VersionPackageMeta   *storage.VersionPackage            `json:"version_package_meta,omitempty"`
 	VersionSHA256        string                             `json:"version_sha256,omitempty"`
 	Rules                []storage.HTTPRule                 `json:"rules"`
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
+	PluginGenerations    []storage.PluginGeneration         `json:"plugin_generations"`
+	PluginDependencies   []storage.PluginDependencyEdge     `json:"plugin_dependencies"`
+	PluginPolicies       []storage.PluginPolicy             `json:"plugin_policies"`
+	Datasets             []storage.DatasetSnapshot          `json:"datasets"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	PKISecurity          *storage.PKISecuritySnapshot       `json:"pki_security,omitempty"`
+	PKICredentials       []PKIControlCredential             `json:"pki_credentials,omitempty"`
+	PKIStatus            *PKIControlStatus                  `json:"pki_status,omitempty"`
 	DDNSConfig           *storage.DDNSConfig                `json:"ddns_config,omitempty"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
 	TrafficStatsEnabled  *bool                              `json:"-"`
 	TrafficBlocked       bool                               `json:"-"`
 	TrafficBlockReason   string                             `json:"-"`
+}
+
+type PKIControlStatus struct {
+	Status       string `json:"status"`
+	Code         string `json:"code,omitempty"`
+	RecoveryHint string `json:"recovery_hint,omitempty"`
 }
 
 type AgentRuntimeConfig struct {
@@ -200,19 +268,48 @@ type RuntimePackageInfo struct {
 	Platform string `json:"platform"`
 	Arch     string `json:"arch"`
 	SHA256   string `json:"sha256"`
+	Staging  bool   `json:"staging,omitempty"`
 }
 
 type RegisterRequest struct {
-	Name            string   `json:"name"`
-	AgentURL        string   `json:"agent_url"`
-	AgentToken      string   `json:"agent_token"`
-	Version         string   `json:"version"`
-	Platform        string   `json:"platform"`
-	Tags            []string `json:"tags"`
-	Capabilities    []string `json:"capabilities"`
-	Mode            string   `json:"mode"`
-	RegisterToken   string   `json:"register_token"`
-	HasCapabilities bool     `json:"-"`
+	AgentID                string                              `json:"agent_id,omitempty"`
+	Name                   string                              `json:"name"`
+	AgentURL               string                              `json:"agent_url"`
+	AgentToken             string                              `json:"agent_token"`
+	Version                string                              `json:"version"`
+	Platform               string                              `json:"platform"`
+	Tags                   []string                            `json:"tags"`
+	Capabilities           []string                            `json:"capabilities"`
+	Mode                   string                              `json:"mode"`
+	RegisterToken          string                              `json:"register_token"`
+	PKIEnrollmentRequestID string                              `json:"pki_enrollment_request_id,omitempty"`
+	TunnelCSRPEM           string                              `json:"tunnel_csr_pem,omitempty"`
+	PKISecurityAck         *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+	HasCapabilities        bool                                `json:"-"`
+	// RegisterTokenAuthorized is set only by the HTTP boundary after it has
+	// validated the configured static registration token. It preserves the
+	// legacy registration path when canonical tunnel PKI exists without
+	// weakening CSR enrollment, which continues to use a one-time PKI token.
+	RegisterTokenAuthorized bool `json:"-"`
+}
+
+// PKIControlEnrollmentRequest is carried by the existing authenticated
+// heartbeat flow for tunnel-client renewal and listener CSR enrollment.
+type PKIControlEnrollmentRequest struct {
+	RequestID    string   `json:"request_id"`
+	Kind         string   `json:"kind"`
+	ListenerID   string   `json:"listener_id,omitempty"`
+	Purpose      string   `json:"purpose"`
+	CSRPEM       string   `json:"csr_pem"`
+	DNSNames     []string `json:"dns_names,omitempty"`
+	IPAddresses  []string `json:"ip_addresses,omitempty"`
+	controlToken string
+}
+
+type PKIControlCredential struct {
+	RequestID  string                      `json:"request_id"`
+	Credential storage.PKITunnelCredential `json:"credential,omitempty"`
+	Error      string                      `json:"error,omitempty"`
 }
 
 type UpdateAgentRequest struct {
@@ -243,6 +340,8 @@ type agentService struct {
 	settingsMutation           *revision.Executor
 	revisionActions            agentRevisionActionStore
 	revisionAPI                *RevisionAPI
+	pki                        AgentPKIController
+	pkiAgentRevoker            func(context.Context, *storage.GormStore, string) (func(), error)
 	now                        func() time.Time
 	localMonitorRefreshTrigger func(context.Context) error
 	ddnsReconciler             DDNSReconciler
@@ -332,6 +431,14 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 	s.trafficService = trafficService
 }
 
+func (s *agentService) SetPKIController(controller AgentPKIController) {
+	s.pki = controller
+}
+
+func (s *agentService) SetPKIAgentRevoker(revoker func(context.Context, *storage.GormStore, string) (func(), error)) {
+	s.pkiAgentRevoker = revoker
+}
+
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
 	_ = trigger
 }
@@ -415,24 +522,65 @@ func (s *agentService) GetByToken(ctx context.Context, agentToken string) (Agent
 func (s *agentService) Register(ctx context.Context, request RegisterRequest, headerAgentToken string) (AgentSummary, error) {
 	name := strings.TrimSpace(request.Name)
 	if name == "" {
-		return AgentSummary{}, errors.New("name is required")
+		return AgentSummary{}, agentRegistrationError("name is required")
 	}
 	agentURL := trimTrailingSlash(request.AgentURL)
 	if agentURL != "" && !validateAgentURL(agentURL) {
-		return AgentSummary{}, errors.New("agent_url must be a valid http/https URL")
+		return AgentSummary{}, agentRegistrationError("agent_url must be a valid http/https URL")
 	}
 
 	agentToken := strings.TrimSpace(request.AgentToken)
 	if agentToken == "" {
 		agentToken = strings.TrimSpace(headerAgentToken)
 	}
+	if agentToken == "" && strings.TrimSpace(request.TunnelCSRPEM) != "" {
+		generatedToken, tokenErr := randomAgentControlToken()
+		if tokenErr != nil {
+			return AgentSummary{}, fmt.Errorf("generate agent control token: %w", tokenErr)
+		}
+		agentToken = generatedToken
+	}
 	if agentToken == "" {
-		return AgentSummary{}, errors.New("agent_token is required")
+		return AgentSummary{}, agentRegistrationError("agent_token is required")
 	}
 
 	rows, err := s.store.ListAgents(ctx)
 	if err != nil {
 		return AgentSummary{}, err
+	}
+	pkiSettingsPresent := false
+	if source, ok := s.store.(interface {
+		LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
+	}); ok && strings.TrimSpace(request.TunnelCSRPEM) == "" {
+		state, stateErr := source.LoadPKICanonicalState(ctx)
+		if stateErr != nil {
+			return AgentSummary{}, stateErr
+		}
+		pkiSettingsPresent = state.Settings != nil
+	}
+	var authenticatedRow *storage.AgentRow
+	if pkiSettingsPresent && !request.RegisterTokenAuthorized {
+		presentedToken := strings.TrimSpace(headerAgentToken)
+		if presentedToken == "" {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		for index := range rows {
+			existing := &rows[index]
+			if !existing.IsLocal && existing.ID != s.cfg.LocalAgentID && existing.AgentToken == presentedToken {
+				authenticatedRow = existing
+				break
+			}
+		}
+		if authenticatedRow == nil || strings.TrimSpace(authenticatedRow.AgentToken) == "" {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		if requestedID := strings.TrimSpace(request.AgentID); requestedID != "" && requestedID != authenticatedRow.ID {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		if bodyToken := strings.TrimSpace(request.AgentToken); bodyToken != "" && bodyToken != authenticatedRow.AgentToken {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		agentToken = authenticatedRow.AgentToken
 	}
 
 	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
@@ -449,15 +597,22 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		Mode:             resolveRemoteAgentMode(agentURL),
 		LastApplyStatus:  "success",
 	}
+	if authenticatedRow != nil {
+		row = *authenticatedRow
+	}
 	reusedPullByName := false
 	for _, existing := range rows {
+		if authenticatedRow != nil {
+			break
+		}
 		// The embedded local agent has no public credential. Never let the
 		// registration endpoint reuse or convert its persisted settings row.
 		if existing.IsLocal || existing.ID == s.cfg.LocalAgentID {
 			continue
 		}
 		existingAgentURL := trimTrailingSlash(existing.AgentURL)
-		if existing.AgentToken == agentToken ||
+		if (strings.TrimSpace(request.AgentID) != "" && existing.ID == strings.TrimSpace(request.AgentID)) ||
+			existing.AgentToken == agentToken ||
 			(existingAgentURL != "" && existingAgentURL == agentURL) {
 			row = existing
 			break
@@ -493,7 +648,41 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		row.LastSeenIP = ""
 	}
 
-	if err := s.store.SaveAgent(ctx, row); err != nil {
+	if strings.TrimSpace(request.TunnelCSRPEM) != "" {
+		if s.pki == nil {
+			return AgentSummary{}, fmt.Errorf("%w: internal PKI service is unavailable", ErrPKIEnrollmentAuthorityUnavailable)
+		}
+		registration, err := s.pki.RegisterAgent(ctx, request, row)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		persisted, err := s.findAgentByID(ctx, registration.AgentID)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		summary, err := s.summaryForRow(ctx, persisted)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		summary.RegistrationControlToken = registration.AgentToken
+		summary.PKIRegistration = &registration
+		return summary, nil
+	}
+
+	if authenticatedRow != nil {
+		if authenticatedStore, ok := s.store.(interface {
+			SaveAuthenticatedAgentRegistration(context.Context, string, storage.AgentRow) error
+		}); ok {
+			if err := authenticatedStore.SaveAuthenticatedAgentRegistration(ctx, agentToken, row); err != nil {
+				if errors.Is(err, storage.ErrAgentControlTokenChanged) {
+					return AgentSummary{}, ErrAgentUnauthorized
+				}
+				return AgentSummary{}, err
+			}
+		} else if err := s.store.SaveAgent(ctx, row); err != nil {
+			return AgentSummary{}, err
+		}
+	} else if err := s.store.SaveAgent(ctx, row); err != nil {
 		return AgentSummary{}, err
 	}
 
@@ -758,6 +947,22 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 
 	row, err := s.findAgentByID(ctx, agentID)
 	if errors.Is(err, ErrAgentNotFound) {
+		if _, ok := s.store.(interface {
+			DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
+		}); ok {
+			originalCertificates, nextCertificates, cleanupErr := s.deleteAgentWithAssociations(ctx, agentID)
+			if cleanupErr != nil {
+				if errors.Is(cleanupErr, storage.ErrPKIAgentIdentityNotRevoked) {
+					return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+				}
+				if errors.Is(cleanupErr, storage.ErrAgentRelayListenerReferenced) {
+					return AgentSummary{}, fmt.Errorf("%w: %v", ErrInvalidArgument, cleanupErr)
+				}
+				return AgentSummary{}, cleanupErr
+			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertificates, nextCertificates)
+			return AgentSummary{ID: agentID}, nil
+		}
 		if cleanupErr := s.store.DeleteAgent(ctx, agentID); cleanupErr != nil {
 			return AgentSummary{}, cleanupErr
 		}
@@ -765,6 +970,18 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 	}
 	if err != nil {
 		return AgentSummary{}, err
+	}
+	if s.pkiAgentRevoker == nil {
+		if guard, ok := s.store.(interface {
+			RequireAgentPKIRevokedForDeletion(context.Context, string) error
+		}); ok {
+			if err := guard.RequireAgentPKIRevokedForDeletion(ctx, agentID); err != nil {
+				if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+					return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+				}
+				return AgentSummary{}, err
+			}
+		}
 	}
 	deleted, err := s.summaryForRow(ctx, row)
 	if err != nil {
@@ -781,6 +998,22 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 		} else if ref != nil {
 			return AgentSummary{}, fmt.Errorf("%w: cannot delete agent %s: relay listener %d is referenced by %s rule #%d on agent %s", ErrInvalidArgument, agentID, listener.ID, ref.RuleType, ref.RuleID, ref.AgentID)
 		}
+	}
+	if _, ok := s.store.(interface {
+		DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
+	}); ok {
+		originalCertificates, nextCertificates, err := s.deleteAgentWithAssociations(ctx, agentID)
+		if err != nil {
+			if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+				return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+			}
+			if errors.Is(err, storage.ErrAgentRelayListenerReferenced) {
+				return AgentSummary{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+			}
+			return AgentSummary{}, err
+		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertificates, nextCertificates)
+		return deleted, nil
 	}
 
 	if err := s.store.SaveHTTPRules(ctx, agentID, nil); err != nil {
@@ -822,9 +1055,43 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 	}
 
 	if err := s.store.DeleteAgent(ctx, agentID); err != nil {
+		if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+			return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+		}
 		return AgentSummary{}, err
 	}
 	return deleted, nil
+}
+
+func (s *agentService) deleteAgentWithAssociations(ctx context.Context, agentID string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error) {
+	atomicStore, ok := s.store.(interface {
+		DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
+	})
+	if !ok {
+		return nil, nil, fmt.Errorf("agent association cleanup is unavailable")
+	}
+	gormStore, ok := s.store.(*storage.GormStore)
+	if !ok || s.pkiAgentRevoker == nil {
+		return atomicStore.DeleteAgentWithAssociations(ctx, agentID)
+	}
+	var originalCertificates, nextCertificates []storage.ManagedCertificateRow
+	var postCommit func()
+	err := gormStore.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
+		var err error
+		postCommit, err = s.pkiAgentRevoker(ctx, tx, agentID)
+		if err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		originalCertificates, nextCertificates, err = tx.DeleteAgentWithAssociations(ctx, agentID)
+		return storage.RevisionMutationDecision{}, err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if postCommit != nil {
+		postCommit()
+	}
+	return originalCertificates, nextCertificates, nil
 }
 
 func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, error) {
@@ -1013,13 +1280,37 @@ func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, 
 }
 
 func localAgentSettingsRow(cfg config.Config, state storage.LocalAgentStateRow) storage.AgentRow {
+	version, _ := plugins.NormalizeBuildVersion(cfg.AppVersion)
+	if strings.TrimSpace(state.Version) != "" {
+		version = state.Version
+	}
 	return storage.AgentRow{
 		ID: cfg.LocalAgentID, Name: cfg.LocalAgentName,
+		Version:        version,
 		DesiredVersion: state.DesiredVersion, DesiredRevision: state.DesiredRevision,
 		CurrentRevision: state.CurrentRevision, LastApplyRevision: state.LastApplyRevision,
 		LastApplyStatus: state.LastApplyStatus, LastApplyMessage: state.LastApplyMessage,
 		Mode: "local", IsLocal: true, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
 	}
+}
+
+// EnsureLocalAgentBuild persists the embedded Agent's concrete build identity
+// so plugin compatibility checks observe production state after a restart.
+func (s *agentService) EnsureLocalAgentBuild(ctx context.Context) error {
+	store, ok := s.store.(interface {
+		SetLocalAgentBuild(context.Context, string, bool) error
+	})
+	if !ok {
+		return errors.New("local agent build persistence is unavailable")
+	}
+	if !s.cfg.EnableLocalAgent {
+		return store.SetLocalAgentBuild(ctx, "", false)
+	}
+	version, err := plugins.NormalizeBuildVersion(s.cfg.AppVersion)
+	if err != nil {
+		return err
+	}
+	return store.SetLocalAgentBuild(ctx, version, true)
 }
 
 func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {
@@ -1035,10 +1326,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	previousRow := row
 	row.Version = defaultString(request.Version, row.Version)
 	row.Platform = defaultString(request.Platform, row.Platform)
-	row.RuntimePackageVersion = defaultString(request.RuntimePackage.Version, row.RuntimePackageVersion)
-	row.RuntimePackagePlatform = defaultString(request.RuntimePackage.Platform, row.RuntimePackagePlatform)
-	row.RuntimePackageArch = defaultString(request.RuntimePackage.Arch, row.RuntimePackageArch)
-	row.RuntimePackageSHA256 = defaultString(request.RuntimePackage.SHA256, row.RuntimePackageSHA256)
+	applyHeartbeatRuntimePackage(&row, previousRow, request)
 	hasAgentURL := request.HasAgentURL || strings.TrimSpace(request.AgentURL) != ""
 	if hasAgentURL {
 		agentURL := trimTrailingSlash(request.AgentURL)
@@ -1068,7 +1356,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 			row.LastReportedStatsJSON = marshalAgentStats(persistedStats)
 		}
 		if trafficStatsEnabled && s.trafficService != nil {
-			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
+			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil && !errors.Is(err, storage.ErrQuotaExceeded) {
 				return HeartbeatReply{}, err
 			}
 		}
@@ -1103,6 +1391,53 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 			return HeartbeatReply{}, err
 		}
 	}
+	if reportStore, ok := s.store.(agentPluginRuntimeReportStore); ok {
+		for _, status := range request.PluginStatuses {
+			report := storage.PluginGenerationReport{
+				OperationID: status.OperationID, AgentID: row.ID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+				Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest,
+				ArtifactDigest: status.ArtifactDigest, State: status.State, Sequence: status.Sequence,
+				ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail, Details: append(json.RawMessage(nil), status.Details...),
+				Budget: append(json.RawMessage(nil), status.Budget...), ReportedAt: s.now().UTC(),
+			}
+			var err error
+			complete := false
+			if s.revisionAPI != nil && s.revisionAPI.pluginLifecycle != nil && s.revisionAPI.repository != nil {
+				revisionRow, found, revisionErr := s.revisionAPI.repository.GetCoordinatorRevision(ctx, row.ID, report.Revision)
+				if revisionErr != nil {
+					return HeartbeatReply{}, revisionErr
+				}
+				complete = found && revisionRow.State == storage.AgentRevisionStateApplied
+			}
+			if complete {
+				_, err = s.revisionAPI.pluginLifecycle.Reconcile(
+					WithSystemMutationPrincipal(ctx, "system:agent-plugin-report:"+row.ID), report, row.ID,
+				)
+			} else {
+				_, _, err = reportStore.RecordPluginAgentRuntimeReport(ctx, report)
+			}
+			if err != nil {
+				if discardPluginHeartbeatTelemetryError(err) {
+					continue
+				}
+				return HeartbeatReply{}, err
+			}
+		}
+	}
+	if logStore, ok := s.store.(interface {
+		RecordPluginRuntimeLogReport(context.Context, string, storage.PluginRuntimeLogReport) (bool, error)
+	}); ok {
+		for _, report := range request.PluginLogs {
+			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, row.ID, report); err != nil {
+				if discardPluginHeartbeatTelemetryError(err) {
+					continue
+				}
+				return HeartbeatReply{}, err
+			}
+		}
+	} else if len(request.PluginLogs) > 0 {
+		return HeartbeatReply{}, errors.New("plugin runtime log ingestion is unavailable")
+	}
 	// Fire-and-forget: fresh reported IPs may warrant a master-side A/AAAA
 	// refresh. This MUST NOT affect the heartbeat return — triggerDDNSReconcile
 	// swallows panics and the reconciler handles its own errors (R-主链路阻塞).
@@ -1111,36 +1446,95 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		return HeartbeatReply{}, err
 	}
 
-	snapshot, err := s.loadHeartbeatSnapshot(ctx, row)
+	heartbeatSnapshot, err := s.loadCoherentHeartbeatSnapshot(ctx, row)
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
+	snapshot := heartbeatSnapshot.Snapshot
+	snapshotMetadata := heartbeatSnapshot.Metadata
+	pkiDegraded := false
+	wireRelayListeners := append([]storage.RelayListener(nil), snapshot.RelayListeners...)
+	var wirePKISecurity *storage.PKISecuritySnapshot
+	var pkiCredentials []PKIControlCredential
+	var pkiStatus *PKIControlStatus
+	if s.pki != nil {
+		for index := range request.PKIEnrollmentRequests {
+			request.PKIEnrollmentRequests[index].controlToken = agentToken
+		}
+		var pkiSnapshot storage.PKISecuritySnapshot
+		var credentials []PKIControlCredential
+		var controlErr error
+		pkiSnapshot, credentials, wireRelayListeners, controlErr = s.pki.ControlSyncAndPrepare(
+			ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests, wireRelayListeners,
+		)
+		if controlErr != nil {
+			if isPKIControlClientError(controlErr) {
+				return HeartbeatReply{}, controlErr
+			}
+			pkiDegraded = true
+			wireRelayListeners = []storage.RelayListener{}
+			wirePKISecurity = nil
+		} else {
+			if pkiSnapshot.PKIDomainID != "" {
+				wirePKISecurity = &pkiSnapshot
+			}
+			pkiCredentials = credentials
+			// Fresh heartbeat revisions are pulled from their immutable artifact.
+			// Persist the canonical listener identities there as well as in the
+			// heartbeat so generation preparation receives the same PKI bindings.
+			snapshot.RelayListeners = slices.Clone(wireRelayListeners)
+		}
+		if pkiDegraded {
+			pkiStatus = &PKIControlStatus{Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync; relay credentials remain disabled"}
+		} else {
+			pkiStatus = &PKIControlStatus{Status: "ready"}
+		}
+	}
 
-	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(ctx, row.ID, trafficStatsEnabled)
+	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(
+		ctx, row.ID, trafficStatsEnabled, snapshotMetadata.TrafficBlocked, snapshotMetadata.TrafficBlockReason,
+	)
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
-	s.broadcastMonitorUpdate(ctx, row)
+	// VersionPackage is a live overlay outside the immutable revision. Bind
+	// configuration to the durable snapshot when rematerialization drifted so
+	// the overlay still ships instead of failing the entire heartbeat.
+	versionPackage := snapshot.VersionPackage
+	snapshotDigest, snapshot, err := s.ensureHeartbeatRevision(ctx, row.ID, snapshot)
+	if err != nil {
+		return HeartbeatReply{}, err
+	}
+	snapshot.VersionPackage = versionPackage
+	s.broadcastMonitorUpdate(ctx, row, versionPackage)
 	reply := HeartbeatReply{
-		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
+		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(snapshotMetadata.LastApplyStatus, "success"),
 		DesiredVersion:       snapshot.DesiredVersion,
 		DesiredRevision:      snapshot.Revision,
-		CurrentRevision:      int64(row.CurrentRevision),
+		SnapshotDigest:       snapshotDigest,
+		CurrentRevision:      int64(snapshotMetadata.CurrentRevision),
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
-		RelayListeners:       snapshot.RelayListeners,
+		PluginGenerations:    snapshot.PluginGenerations,
+		PluginDependencies:   snapshot.PluginDependencies,
+		PluginPolicies:       snapshot.PluginPolicies,
+		Datasets:             snapshot.Datasets,
+		RelayListeners:       wireRelayListeners,
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
+		PKISecurity:          wirePKISecurity,
+		PKICredentials:       pkiCredentials,
+		PKIStatus:            pkiStatus,
 		DDNSConfig:           snapshot.DDNSConfig,
-		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
-		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
+		OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
+		TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
 		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
 		TrafficBlocked:       trafficBlocked,
-		TrafficBlockReason:   trafficBlockReason,
+		TrafficBlockReason:   strings.TrimSpace(trafficBlockReason),
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -1159,20 +1553,157 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	return reply, nil
 }
 
+func (s *agentService) ensureHeartbeatRevision(ctx context.Context, agentID string, snapshot storage.Snapshot) (string, storage.Snapshot, error) {
+	if snapshot.Revision <= 0 {
+		return "", heartbeatRevisionSnapshot(snapshot), nil
+	}
+	// The bundled runtime package is a live heartbeat delivery overlay. It is
+	// sent outside the immutable configuration snapshot and may change when the
+	// control-plane image changes without allocating a configuration revision.
+	// Exclude it from revision identity comparisons and heartbeat-issued
+	// artifacts while continuing to return it in HeartbeatReply below.
+	revisionSnapshot := heartbeatRevisionSnapshot(snapshot)
+	payload, digest, err := revision.CanonicalSnapshotPayload(revisionSnapshot)
+	if err != nil {
+		return "", storage.Snapshot{}, err
+	}
+	foundRevision := false
+	if s.revisionActions != nil {
+		row, found, err := s.revisionActions.GetCoordinatorRevision(ctx, agentID, snapshot.Revision)
+		if err != nil {
+			return "", storage.Snapshot{}, err
+		}
+		if found {
+			if durableStore, ok := s.store.(agentDurableRevisionSnapshotStore); ok {
+				durable, durableFound, loadErr := durableStore.LoadCoordinatorRuntimeSnapshot(ctx, agentID, snapshot.Revision)
+				if loadErr != nil {
+					return "", storage.Snapshot{}, loadErr
+				}
+				if !durableFound {
+					return "", storage.Snapshot{}, errors.New("heartbeat durable revision snapshot is missing")
+				}
+				boundDigest, boundSnapshot, drifted, bindErr := bindHeartbeatRevision(revisionSnapshot, durable.Snapshot, durable.Revision.SnapshotDigest)
+				if bindErr != nil {
+					return "", storage.Snapshot{}, bindErr
+				}
+				if drifted {
+					// Keep the durable identity and body. A rematerialized live
+					// snapshot must not fail-close the heartbeat channel that
+					// delivers VersionPackage.
+					return boundDigest, boundSnapshot, nil
+				}
+				if issuer, ok := s.store.(agentHeartbeatRevisionIssuer); ok {
+					issued, issueErr := issuer.EnsureAgentHeartbeatRevision(
+						ctx, agentID, durable.Snapshot, durable.Artifact.Payload,
+						durable.Revision.SnapshotDigest, s.now().UTC(),
+					)
+					if issueErr != nil {
+						return "", storage.Snapshot{}, issueErr
+					}
+					if issued.Revision != durable.Revision.Revision ||
+						!strings.EqualFold(issued.SnapshotDigest, durable.Revision.SnapshotDigest) {
+						return "", storage.Snapshot{}, errors.New("heartbeat revision issuer returned a conflicting durable identity")
+					}
+				}
+				return boundDigest, boundSnapshot, nil
+			}
+			if !strings.EqualFold(strings.TrimSpace(row.SnapshotDigest), digest) {
+				return "", storage.Snapshot{}, errors.New("heartbeat snapshot differs from its durable revision")
+			}
+			foundRevision = true
+		}
+	}
+	issuer, ok := s.store.(agentHeartbeatRevisionIssuer)
+	if !ok {
+		if len(snapshot.PluginPolicies) > 0 || len(snapshot.PluginGenerations) > 0 || len(snapshot.PluginDependencies) > 0 || len(snapshot.Datasets) > 0 || !foundRevision {
+			return "", storage.Snapshot{}, errors.New("heartbeat snapshot has no durable revision issuer")
+		}
+		return strings.ToLower(digest), revisionSnapshot, nil
+	}
+	issued, err := issuer.EnsureAgentHeartbeatRevision(ctx, agentID, revisionSnapshot, payload, digest, s.now().UTC())
+	if err != nil {
+		return "", storage.Snapshot{}, err
+	}
+	if issued.Revision != snapshot.Revision || !strings.EqualFold(issued.SnapshotDigest, digest) {
+		return "", storage.Snapshot{}, errors.New("heartbeat revision issuer returned a conflicting identity")
+	}
+	return strings.ToLower(digest), revisionSnapshot, nil
+}
+
+func bindHeartbeatRevision(live, durable storage.Snapshot, durableDigest string) (string, storage.Snapshot, bool, error) {
+	if strings.TrimSpace(durableDigest) == "" {
+		return "", storage.Snapshot{}, false, errors.New("heartbeat durable revision has no snapshot digest")
+	}
+	// Older immutable artifacts may contain a PKI security projection.
+	// Version packages are likewise delivered outside the immutable
+	// configuration contract. Compare those live overlays out while
+	// preserving and returning the original artifact digest used by its
+	// lease and pull response.
+	durable.PKISecurity = nil
+	durable = heartbeatRevisionSnapshot(durable)
+	live = heartbeatRevisionSnapshot(live)
+	_, durableComparableDigest, err := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(durable))
+	if err != nil {
+		return "", storage.Snapshot{}, false, err
+	}
+	_, liveComparableDigest, err := revision.CanonicalSnapshotPayload(heartbeatComparableSnapshot(live))
+	if err != nil {
+		return "", storage.Snapshot{}, false, err
+	}
+	if !strings.EqualFold(durableComparableDigest, liveComparableDigest) {
+		return strings.ToLower(durableDigest), durable, true, nil
+	}
+	return strings.ToLower(durableDigest), live, false, nil
+}
+
+func heartbeatRevisionSnapshot(snapshot storage.Snapshot) storage.Snapshot {
+	snapshot.VersionPackage = nil
+	return snapshot
+}
+
+func heartbeatComparableSnapshot(snapshot storage.Snapshot) storage.Snapshot {
+	snapshot = heartbeatRevisionSnapshot(snapshot)
+	// Comparison must not erase the live identity subsequently returned to the
+	// Agent or persisted as a fresh immutable heartbeat revision.
+	snapshot.RelayListeners = slices.Clone(snapshot.RelayListeners)
+	for index := range snapshot.RelayListeners {
+		snapshot.RelayListeners[index].PKIIdentityID = ""
+		snapshot.RelayListeners[index].PKIIdentityState = ""
+		snapshot.RelayListeners[index].PKICertificateID = ""
+	}
+	return snapshot
+}
+
+func isPKIControlClientError(err error) bool {
+	return errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrPKIEpochStale) ||
+		errors.Is(err, errPKIEnrollmentClientRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
+		errors.Is(err, ErrPKIEnrollmentOwnerMismatch) || errors.Is(err, ErrPKIEnrollmentTokenRejected) ||
+		errors.Is(err, ErrPKIEnrollmentPublicKeyReuse)
+}
+
 func (s *agentService) persistHeartbeatTrafficBlockState(ctx context.Context, row *storage.AgentRow, blocked bool, reason string) error {
 	if row == nil {
 		return nil
 	}
 	reason = strings.TrimSpace(reason)
 	if row.TrafficBlocked == blocked && row.TrafficBlockReason == reason {
+		if stateStore, ok := s.store.(agentTrafficStateStore); ok {
+			return stateStore.SaveAgentTrafficState(ctx, row.ID, blocked, reason)
+		}
 		return nil
 	}
 	previousBlocked := row.TrafficBlocked
 	previousReason := row.TrafficBlockReason
 	row.TrafficBlocked = blocked
 	row.TrafficBlockReason = reason
-	if err := s.store.SaveAgent(ctx, *row); err != nil {
-		return err
+	if stateStore, ok := s.store.(agentTrafficStateStore); ok {
+		if err := stateStore.SaveAgentTrafficState(ctx, row.ID, blocked, reason); err != nil {
+			return err
+		}
+	} else {
+		if err := s.store.SaveAgent(ctx, *row); err != nil {
+			return err
+		}
 	}
 	if previousBlocked != blocked || previousReason != reason {
 		if err := s.recordTrafficEvent(ctx, row.ID, "traffic_block_state_changed", "traffic block state changed", map[string]any{
@@ -1202,16 +1733,13 @@ func (s *agentService) recordTrafficEvent(ctx context.Context, agentID, eventTyp
 	})
 }
 
-func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID string, enabled bool) (bool, string, error) {
+func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID string, enabled bool, fallbackBlocked bool, fallbackReason string) (bool, string, error) {
 	if !enabled || s.trafficService == nil {
 		return false, "", nil
 	}
 	blocked, reason, err := s.trafficService.BlockState(ctx, agentID)
 	if err != nil {
-		if errors.Is(err, ErrTrafficStatsDisabled) {
-			return false, "", nil
-		}
-		return false, "", nil
+		return fallbackBlocked, strings.TrimSpace(fallbackReason), nil
 	}
 	if !blocked {
 		return false, "", nil
@@ -1271,7 +1799,18 @@ func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Con
 	return err
 }
 
-func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
+func (s *agentService) loadCoherentHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.AgentHeartbeatSnapshot, error) {
+	if coherentStore, ok := s.store.(agentCoherentHeartbeatSnapshotStore); ok {
+		result, err := coherentStore.LoadAgentHeartbeatSnapshot(ctx, row.ID, func(ctx context.Context, tx *storage.GormStore, agentID string, snapshot storage.Snapshot) (storage.Snapshot, error) {
+			return overlayPendingManagedCertificateGenerationsForConfig(ctx, s.cfg, tx, agentID, snapshot)
+		})
+		if err != nil {
+			return storage.AgentHeartbeatSnapshot{}, err
+		}
+		result.Snapshot.PKISecurity = nil
+		result.Snapshot.VersionPackage = s.resolveDesiredPackage(result.Snapshot.VersionPackage, result.Metadata.Platform)
+		return result, nil
+	}
 	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
 		DesiredVersion:  row.DesiredVersion,
 		DesiredRevision: row.DesiredRevision,
@@ -1279,14 +1818,29 @@ func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.Ag
 		Platform:        row.Platform,
 	})
 	if err != nil {
-		return storage.Snapshot{}, err
+		return storage.AgentHeartbeatSnapshot{}, err
 	}
 	snapshot, err = overlayPendingManagedCertificateGenerationsForConfig(ctx, s.cfg, s.store, row.ID, snapshot)
 	if err != nil {
-		return storage.Snapshot{}, err
+		return storage.AgentHeartbeatSnapshot{}, err
 	}
+	snapshot.PKISecurity = nil
 	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
-	return snapshot, nil
+	return storage.AgentHeartbeatSnapshot{
+		Snapshot: snapshot,
+		Metadata: storage.AgentSnapshotMetadata{
+			Platform: strings.TrimSpace(row.Platform), DesiredVersion: strings.TrimSpace(row.DesiredVersion),
+			DesiredRevision: row.DesiredRevision, CurrentRevision: row.CurrentRevision,
+			LastApplyStatus:  strings.TrimSpace(row.LastApplyStatus),
+			OutboundProxyURL: strings.TrimSpace(row.OutboundProxyURL), TrafficInterval: strings.TrimSpace(row.TrafficStatsInterval),
+			TrafficBlocked: row.TrafficBlocked, TrafficBlockReason: strings.TrimSpace(row.TrafficBlockReason),
+		},
+	}, nil
+}
+
+func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
+	result, err := s.loadCoherentHeartbeatSnapshot(ctx, row)
+	return result.Snapshot, err
 }
 
 func (s *agentService) ensureAgentExists(ctx context.Context, agentID string) error {
@@ -1372,6 +1926,10 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 			desiredRevision = settings.DesiredRevision
 		}
 	}
+	version := settings.Version
+	if version == "" {
+		version = localState.Version
+	}
 	ddnsConfig := parseDDNSConfig(settings.DdnsConfigJSON)
 	ddnsDomain := ""
 	if ddnsConfig != nil {
@@ -1380,7 +1938,7 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 	return AgentSummary{
 		ID:                   s.cfg.LocalAgentID,
 		Name:                 s.cfg.LocalAgentName,
-		Version:              settings.Version,
+		Version:              version,
 		Platform:             settings.Platform,
 		DesiredVersion:       desiredVersion,
 		OutboundProxyURL:     strings.TrimSpace(settings.OutboundProxyURL),
@@ -1483,6 +2041,8 @@ func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentSt
 }
 
 func RedactAgentSummary(agent AgentSummary) AgentSummary {
+	agent.RegistrationControlToken = ""
+	agent.PKIRegistration = nil
 	parsed, err := url.Parse(agent.OutboundProxyURL)
 	if err != nil || parsed.User == nil {
 		return agent
@@ -1509,6 +2069,22 @@ func parseDdnsStatus(raw string) storage.DdnsStatus {
 		return storage.DdnsStatus{}
 	}
 	return status
+}
+
+func applyHeartbeatRuntimePackage(row *storage.AgentRow, previous storage.AgentRow, request HeartbeatRequest) {
+	incomingSHA := strings.TrimSpace(request.RuntimePackage.SHA256)
+	storedSHA := strings.TrimSpace(previous.RuntimePackageSHA256)
+	if request.RuntimePackage.Staging && storedSHA != "" && incomingSHA != "" && !strings.EqualFold(incomingSHA, storedSHA) {
+		row.RuntimePackageVersion = previous.RuntimePackageVersion
+		row.RuntimePackagePlatform = previous.RuntimePackagePlatform
+		row.RuntimePackageArch = previous.RuntimePackageArch
+		row.RuntimePackageSHA256 = storedSHA
+		return
+	}
+	row.RuntimePackageVersion = defaultString(request.RuntimePackage.Version, previous.RuntimePackageVersion)
+	row.RuntimePackagePlatform = defaultString(request.RuntimePackage.Platform, previous.RuntimePackagePlatform)
+	row.RuntimePackageArch = defaultString(request.RuntimePackage.Arch, previous.RuntimePackageArch)
+	row.RuntimePackageSHA256 = defaultString(incomingSHA, storedSHA)
 }
 
 func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) string {
@@ -1698,6 +2274,10 @@ func defaultString(value string, fallback string) string {
 	return trimmed
 }
 
+func discardPluginHeartbeatTelemetryError(err error) bool {
+	return errors.Is(err, storage.ErrPluginGenerationStale) || errors.Is(err, storage.ErrPluginGenerationConflict)
+}
+
 func parseStringArray(raw string) []string {
 	var values []string
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
@@ -1732,22 +2312,23 @@ func parseIntLayers(raw string) [][]int {
 }
 
 func parseBackends(raw string) []HTTPRuleBackend {
-	type backend struct {
-		URL string `json:"url"`
-	}
-
-	var values []backend
+	var values []HTTPRuleBackend
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []HTTPRuleBackend{}
 	}
-
 	normalized := make([]HTTPRuleBackend, 0, len(values))
-	for _, item := range values {
-		url := strings.TrimSpace(item.URL)
-		if url == "" {
-			continue
+	for _, value := range values {
+		if (value.Kind == "" || value.Kind == pluginsdk.HTTPBackendKindURL) && value.PluginProvider == nil {
+			value.URL = strings.TrimSpace(value.URL)
+			if value.URL == "" {
+				continue
+			}
+			value.Kind = ""
 		}
-		normalized = append(normalized, HTTPRuleBackend{URL: url})
+		normalized = append(normalized, value)
+	}
+	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
+		return []HTTPRuleBackend{}
 	}
 	return normalized
 }
@@ -1829,6 +2410,7 @@ func normalizeCapabilities(values []string) []string {
 		"egress_profiles":                   {},
 		"http3_ingress":                     {},
 		packageManifestCapability:           {},
+		storage.PluginGenerationCapability:  {},
 	}
 	seen := map[string]struct{}{}
 	normalized := make([]string, 0, len(values))
@@ -1926,4 +2508,14 @@ func randomAgentID() string {
 		return "agent-" + time.Now().UTC().Format("20060102150405")
 	}
 	return hex.EncodeToString(buffer[:])
+}
+
+var agentControlTokenRandom io.Reader = rand.Reader
+
+func randomAgentControlToken() (string, error) {
+	var buffer [32]byte
+	if _, err := io.ReadFull(agentControlTokenRandom, buffer[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buffer[:]), nil
 }

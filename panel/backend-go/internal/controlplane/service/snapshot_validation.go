@@ -2,14 +2,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 type FullSnapshotValidator struct{}
@@ -26,6 +29,9 @@ func (FullSnapshotValidator) Validate(_ context.Context, input revision.Snapshot
 		return err
 	}
 	if err := validateSnapshotDDNS(snapshot.DDNSConfig); err != nil {
+		return err
+	}
+	if err := validateSnapshotDatasets(snapshot); err != nil {
 		return err
 	}
 	if err := validateSnapshotResources(snapshot); err != nil {
@@ -69,6 +75,64 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the egress_profiles capability", nil)
 		}
 	}
+	if len(snapshot.PluginGenerations) > 0 {
+		if _, ok := capabilities[storage.PluginGenerationCapability]; !ok {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the plugin_generation_v1 capability", nil)
+		}
+		for _, generation := range snapshot.PluginGenerations {
+			if strings.TrimSpace(generation.Target.ID) != strings.TrimSpace(target.AgentID) {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q belongs to Agent %q, not snapshot target %q", generation.InstanceID, generation.Target.ID, target.AgentID), nil)
+			}
+		}
+	}
+	return nil
+}
+
+func validatePluginDependencies(snapshot storage.Snapshot, httpIDs, l4IDs map[int]struct{}) error {
+	providers := make(map[string]storage.PluginGeneration, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		providers[generation.InstanceID] = generation
+	}
+	seen := make(map[string]struct{}, len(snapshot.PluginDependencies))
+	for _, edge := range snapshot.PluginDependencies {
+		if edge.Consumer.Kind != strings.TrimSpace(edge.Consumer.Kind) || edge.Consumer.ID != strings.TrimSpace(edge.Consumer.ID) || edge.Consumer.ResourceGroupID == "" || edge.Consumer.ResourceGroupID != strings.TrimSpace(edge.Consumer.ResourceGroupID) || !storage.ValidPluginDependencyConsumerVersion(edge.Consumer.Version) || edge.ProviderInstanceID != strings.TrimSpace(edge.ProviderInstanceID) || edge.Target.AgentID != strings.TrimSpace(edge.Target.AgentID) || edge.Target.ResourceGroupID != strings.TrimSpace(edge.Target.ResourceGroupID) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin dependency contains non-canonical text", nil)
+		}
+		consumerID, err := strconv.Atoi(edge.Consumer.ID)
+		if err != nil || consumerID <= 0 || strconv.Itoa(consumerID) != edge.Consumer.ID {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin dependency consumer id is invalid", err)
+		}
+		switch edge.Consumer.Kind {
+		case storage.PluginDependencyConsumerHTTPRule:
+			if _, ok := httpIDs[consumerID]; !ok {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency HTTP consumer %d is missing", consumerID), nil)
+			}
+		case storage.PluginDependencyConsumerL4Rule:
+			if _, ok := l4IDs[consumerID]; !ok {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency L4 consumer %d is missing", consumerID), nil)
+			}
+		default:
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency consumer kind %q is unsupported", edge.Consumer.Kind), nil)
+		}
+		provider, ok := providers[edge.ProviderInstanceID]
+		if !ok {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q is missing", edge.ProviderInstanceID), nil)
+		}
+		if provider.Runtime.Kind != "rpc-service" || provider.Runtime.HostScope != "agent" || !storage.PluginDependencyConsumerSupportsExtensions(edge.Consumer.Kind, provider.ExtensionPoints) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q is incompatible with consumer kind %q", edge.ProviderInstanceID, edge.Consumer.Kind), nil)
+		}
+		if edge.Target.AgentID != provider.Target.ID || edge.Target.ResourceGroupID != provider.Target.ResourceGroupID || edge.Target.Version != provider.Target.Version || provider.Target.Kind != "agent" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency provider %q target is mismatched", edge.ProviderInstanceID), nil)
+		}
+		if edge.Consumer.ResourceGroupID != provider.Target.ResourceGroupID {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin dependency consumer %s %s belongs to another resource group", edge.Consumer.Kind, edge.Consumer.ID), nil)
+		}
+		key := edge.Consumer.Kind + "\x00" + edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
+		if _, duplicate := seen[key]; duplicate {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("plugin dependency for %s %s and provider %s is duplicated", edge.Consumer.Kind, edge.Consumer.ID, edge.ProviderInstanceID), nil)
+		}
+		seen[key] = struct{}{}
+	}
 	return nil
 }
 
@@ -110,6 +174,9 @@ func snapshotResourceBelongsToTarget(targetAgentID, resourceAgentID string) bool
 }
 
 func validateSnapshotResources(snapshot storage.Snapshot) error {
+	if err := validatePluginGenerations(snapshot); err != nil {
+		return err
+	}
 	httpIDs := map[int]struct{}{}
 	frontends := map[string]int{}
 	for _, rule := range snapshot.Rules {
@@ -135,11 +202,8 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 		if len(rule.Backends) == 0 {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has no backend", rule.ID), nil)
 		}
-		for _, backend := range rule.Backends {
-			parsed, err := url.Parse(strings.TrimSpace(backend.URL))
-			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid backend", rule.ID), err)
-			}
+		if err := pluginsdk.ValidateHTTPBackends(rule.Backends); err != nil {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid canonical backend", rule.ID), err)
 		}
 	}
 
@@ -164,6 +228,12 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has an invalid backend", rule.ID), nil)
 			}
 		}
+	}
+	if err := validatePluginDependencies(snapshot, httpIDs, l4IDs); err != nil {
+		return err
+	}
+	if err := validateHTTPProviderDependencyOwnership(snapshot); err != nil {
+		return err
 	}
 
 	if err := validateUniqueSnapshotIDs("relay listener", relaySnapshotIDs(snapshot.RelayListeners)); err != nil {
@@ -190,6 +260,115 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 	}
 	if err := validateUniqueSnapshotIDs("certificate policy", policyIDs); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validatePluginGenerations(snapshot storage.Snapshot) error {
+	instanceIDs := make(map[string]struct{}, len(snapshot.PluginGenerations))
+	generationIDs := make(map[string]struct{}, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		if strings.TrimSpace(generation.InstanceID) == "" || strings.TrimSpace(generation.PluginID) == "" || strings.TrimSpace(generation.PluginVersion) == "" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "plugin generation identity is incomplete", nil)
+		}
+		if _, exists := instanceIDs[generation.InstanceID]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("plugin instance %q has duplicate generations", generation.InstanceID), nil)
+		}
+		instanceIDs[generation.InstanceID] = struct{}{}
+		if !storage.ValidPluginGenerationDigest(generation.ID) || !storage.ValidPluginGenerationDigest(generation.PackageDigest) || !storage.ValidPluginGenerationDigest(generation.Artifact.SHA256) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an invalid digest", generation.InstanceID), nil)
+		}
+		if _, exists := generationIDs[generation.ID]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("plugin generation %q is duplicated", generation.ID), nil)
+		}
+		generationIDs[generation.ID] = struct{}{}
+		expectedID, err := storage.PluginGenerationIdentity(generation)
+		if err != nil || !strings.EqualFold(expectedID, generation.ID) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q identity is invalid", generation.InstanceID), err)
+		}
+		if generation.Revision != snapshot.Revision {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q revision differs from its snapshot", generation.InstanceID), nil)
+		}
+		if generation.Runtime.HostScope != "agent" || (generation.Runtime.Kind != "wasm-policy" && generation.Runtime.Kind != "rpc-service") || strings.TrimSpace(generation.Runtime.ABI) == "" || strings.TrimSpace(generation.Runtime.Entry) == "" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q runtime is invalid", generation.InstanceID), nil)
+		}
+		if generation.OperationID == "" || generation.Artifact.ArtifactID == "" || generation.Artifact.PackageIdentity == "" || generation.Artifact.RelativePath != generation.Runtime.Entry || generation.Artifact.SizeBytes <= 0 || generation.Artifact.LocalPath != "" || !generation.Artifact.SignatureVerified || generation.Artifact.SignerKeyID == "" || !storage.ValidPluginGenerationDigest(generation.Artifact.SignerFingerprint) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q artifact is invalid", generation.InstanceID), nil)
+		}
+		if generation.Runtime.Kind == "rpc-service" && (generation.Artifact.GOOS == "" || generation.Artifact.GOARCH == "") {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q RPC artifact platform is missing", generation.InstanceID), nil)
+		}
+		var config map[string]json.RawMessage
+		if err := json.Unmarshal(generation.Config, &config); err != nil || config == nil {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q config must be an object", generation.InstanceID), err)
+		}
+		if generation.Target.Kind != "agent" || strings.TrimSpace(generation.Target.ID) == "" || strings.TrimSpace(generation.Target.ResourceGroupID) == "" || generation.Target.Version != generation.ConfigVersion {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q target binding is invalid", generation.InstanceID), nil)
+		}
+		if generation.ConfigVersion == 0 || generation.ResourceBudget.TimeoutMS <= 0 || generation.ResourceBudget.MemoryBytes <= 0 || generation.ResourceBudget.Concurrency <= 0 || generation.ResourceBudget.InputBytes <= 0 || generation.ResourceBudget.OutputBytes <= 0 || generation.ResourceBudget.CPUMillis < 0 || generation.ResourceBudget.Restarts < 0 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q resource budget is invalid", generation.InstanceID), nil)
+		}
+		if strings.TrimSpace(generation.FailurePolicy.OnError) == "" || strings.TrimSpace(generation.FailurePolicy.OnBudget) == "" || strings.TrimSpace(generation.FailurePolicy.Restart) == "" || strings.TrimSpace(generation.FailurePolicy.CoreFallback) == "" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q failure policy is incomplete", generation.InstanceID), nil)
+		}
+		for _, grant := range generation.Grants {
+			if strings.TrimSpace(grant.Name) == "" {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an empty grant", generation.InstanceID), nil)
+			}
+		}
+		hasProviderExtension := slices.Contains(generation.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider)
+		if hasProviderExtension != (len(generation.HTTPBackendProviders) > 0) {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q provider descriptors are inconsistent", generation.InstanceID), nil)
+		}
+		if hasProviderExtension {
+			if !slices.Contains(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q lacks the HTTP backend provider RPC feature", generation.InstanceID), nil)
+			}
+			if err := pluginsdk.ValidateHTTPBackendProviderDescriptors(generation.HTTPBackendProviders); err != nil {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q provider descriptors are invalid", generation.InstanceID), err)
+			}
+		}
+		for _, handle := range generation.SecretHandles {
+			if strings.TrimSpace(handle.ID) == "" || handle.Version == 0 || !storage.ValidPluginGenerationDigest(handle.Digest) {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("plugin generation %q has an invalid secret handle", generation.InstanceID), nil)
+			}
+		}
+	}
+	return nil
+}
+
+func validateHTTPProviderDependencyOwnership(snapshot storage.Snapshot) error {
+	providers := make(map[string]storage.PluginGeneration, len(snapshot.PluginGenerations))
+	for _, generation := range snapshot.PluginGenerations {
+		providers[generation.InstanceID] = generation
+	}
+	expected := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider && backend.PluginProvider != nil {
+				expected[strconv.Itoa(rule.ID)+"\x00"+backend.PluginProvider.InstanceID] = struct{}{}
+			}
+		}
+	}
+	actual := make(map[string]struct{})
+	for _, edge := range snapshot.PluginDependencies {
+		provider, found := providers[edge.ProviderInstanceID]
+		if edge.Consumer.Kind != storage.PluginDependencyConsumerHTTPRule || !found || !slices.Contains(provider.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) {
+			continue
+		}
+		key := edge.Consumer.ID + "\x00" + edge.ProviderInstanceID
+		if _, derived := expected[key]; derived {
+			actual[key] = struct{}{}
+			continue
+		}
+		if !slices.Contains(provider.ExtensionPoints, "http.request") && !slices.Contains(provider.ExtensionPoints, "http.response") {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP backend provider dependency has no owning relationship", nil)
+		}
+	}
+	for key := range expected {
+		if _, found := actual[key]; !found {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP backend provider relationship is missing its derived dependency", nil)
+		}
 	}
 	return nil
 }

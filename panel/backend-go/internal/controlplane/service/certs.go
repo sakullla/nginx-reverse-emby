@@ -18,6 +18,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 var ErrCertificateNotFound = errors.New("certificate not found")
@@ -38,25 +39,31 @@ type ManagedCertificateACMEInfo struct {
 }
 
 type ManagedCertificateAgentReport struct {
-	Status       string                     `json:"status"`
-	LastIssueAt  string                     `json:"last_issue_at"`
-	LastError    string                     `json:"last_error"`
-	MaterialHash string                     `json:"material_hash"`
-	NotAfter     string                     `json:"not_after,omitempty"`
-	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
-	UpdatedAt    string                     `json:"updated_at"`
+	Status          string                     `json:"status"`
+	LastIssueAt     string                     `json:"last_issue_at"`
+	LastError       string                     `json:"last_error"`
+	MaterialHash    string                     `json:"material_hash"`
+	NotAfter        string                     `json:"not_after,omitempty"`
+	NextRetryAtUnix int64                      `json:"next_retry_at_unix,omitempty"`
+	RetryCount      int                        `json:"retry_count,omitempty"`
+	BackoffClass    string                     `json:"backoff_class,omitempty"`
+	ACMEInfo        ManagedCertificateACMEInfo `json:"acme_info"`
+	UpdatedAt       string                     `json:"updated_at"`
 }
 
 type ManagedCertificateHeartbeatReport struct {
-	ID           int                        `json:"id"`
-	Domain       string                     `json:"domain"`
-	Status       string                     `json:"status"`
-	LastIssueAt  string                     `json:"last_issue_at"`
-	LastError    string                     `json:"last_error"`
-	MaterialHash string                     `json:"material_hash"`
-	NotAfter     string                     `json:"not_after,omitempty"`
-	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
-	UpdatedAt    string                     `json:"updated_at"`
+	ID              int                        `json:"id"`
+	Domain          string                     `json:"domain"`
+	Status          string                     `json:"status"`
+	LastIssueAt     string                     `json:"last_issue_at"`
+	LastError       string                     `json:"last_error"`
+	MaterialHash    string                     `json:"material_hash"`
+	NotAfter        string                     `json:"not_after,omitempty"`
+	NextRetryAtUnix int64                      `json:"next_retry_at_unix,omitempty"`
+	RetryCount      int                        `json:"retry_count,omitempty"`
+	BackoffClass    string                     `json:"backoff_class,omitempty"`
+	ACMEInfo        ManagedCertificateACMEInfo `json:"acme_info"`
+	UpdatedAt       string                     `json:"updated_at"`
 }
 
 type ManagedCertificate struct {
@@ -196,8 +203,53 @@ type localManagedCertificateSyncStore interface {
 	SaveLocalRuntimeState(context.Context, string, storage.RuntimeState) error
 }
 
+type certificateResourceBindingStore interface {
+	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
+	BindResource(context.Context, storage.ResourceBindingRow) error
+}
+
+func (s *certificateService) bindManagedCertificateResource(ctx context.Context, cert ManagedCertificate) error {
+	bindingStore, ok := s.store.(certificateResourceBindingStore)
+	if !ok {
+		if allowsTestUngovernedMutation(s.store) {
+			return nil
+		}
+		return ErrMutationPrincipalRequired
+	}
+	groupID := ""
+	for _, agentID := range cert.TargetAgentIDs {
+		binding, err := bindingStore.GetResourceBinding(ctx, "agent", agentID)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		targetGroupID := "default"
+		if err == nil {
+			targetGroupID = binding.ResourceGroupID
+		}
+		if groupID == "" {
+			groupID = targetGroupID
+		} else if groupID != targetGroupID {
+			return fmt.Errorf("%w: certificate targets must belong to one resource group", ErrInvalidArgument)
+		}
+	}
+	if groupID == "" {
+		groupID = "default"
+	}
+	return bindingStore.BindResource(ctx, storage.ResourceBindingRow{
+		ID: fmt.Sprintf("cert-binding-%d", cert.ID), ResourceKind: "certificate", ResourceID: strconv.Itoa(cert.ID),
+		ResourceGroupID: groupID, UpdatedAt: s.now().UTC(),
+	})
+}
+
 func NewCertificateService(cfg config.Config, store storage.Store) *certificateService {
 	return newCertificateServiceWithRenewal(cfg, store, nil)
+}
+
+func NewCertificateServiceWithDNSTokenResolver(cfg config.Config, store storage.Store, resolve func(context.Context, string) (string, error)) *certificateService {
+	if !cfg.ManagedDNSCertificatesEnabled {
+		return newCertificateServiceWithRenewal(cfg, store, nil)
+	}
+	return newCertificateServiceWithRenewal(cfg, store, newMasterCFDNSManagedCertificateIssuerWithResolver(resolve))
 }
 
 func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
@@ -697,6 +749,9 @@ func (s *certificateService) createLegacy(ctx context.Context, agentID string, i
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, cert); err != nil {
+		return ManagedCertificate{}, err
+	}
 	if err := assertManagedCertificateMutationAllowed(nil, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -728,6 +783,9 @@ func (s *certificateService) createLegacy(ctx context.Context, agentID string, i
 	}
 	rows = append(rows, managedCertificateToRow(cert))
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.bindManagedCertificateResource(ctx, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
 	if hasUploadMaterial {
@@ -850,6 +908,9 @@ func (s *certificateService) updateLegacy(ctx context.Context, agentID string, i
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, next); err != nil {
+		return ManagedCertificate{}, err
+	}
 	if err := assertManagedCertificateMutationAllowed(&current, next); err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -882,6 +943,9 @@ func (s *certificateService) updateLegacy(ctx context.Context, agentID string, i
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	originalRows[targetIndex] = managedCertificateToRow(current)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.bindManagedCertificateResource(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	if hasUploadMaterial {
@@ -1114,6 +1178,12 @@ func (s *certificateService) issueLegacy(ctx context.Context, agentID string, id
 	current, targetIndex, ok := findManagedCertificateByID(rows, id)
 	if !ok {
 		return ManagedCertificate{}, ErrCertificateNotFound
+	}
+	// Re-check canonical ownership inside the final revision transaction. A
+	// preflight check alone would race tunnel_mtls_only activation and could
+	// resurrect legacy relay credentials after the atomic cutover.
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, current); err != nil {
+		return ManagedCertificate{}, err
 	}
 	requestedAgentID := strings.TrimSpace(agentID)
 	if current.IssuerMode == "local_http01" && current.CertificateType == "acme" {
@@ -1363,8 +1433,7 @@ func managedCertificateMutationNeedsManagedDNSIssue(previous *ManagedCertificate
 	return previous.Domain != current.Domain ||
 		previous.Scope != current.Scope ||
 		previous.IssuerMode != current.IssuerMode ||
-		previous.CertificateType != current.CertificateType ||
-		!reflect.DeepEqual(previous.TargetAgentIDs, current.TargetAgentIDs)
+		previous.CertificateType != current.CertificateType
 }
 
 func (s *certificateService) issueManagedCertificateInBackground(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {
@@ -1379,7 +1448,7 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 	}
 
 	issuer := s.renewalIssuer
-	if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
+	if issuer == nil && s.cfg.ManagedCloudflareDNSReady() {
 		issuer = newMasterCFDNSManagedCertificateIssuer()
 	}
 	if issuer == nil {
@@ -1550,6 +1619,13 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 				return nil
 			}
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			// The ACME order can outlive tunnel_mtls_only activation. Re-check
+			// canonical ownership in the completion transaction before staging or
+			// publishing any material so an in-flight legacy relay order cannot
+			// resurrect credentials after the cutover.
+			if loadErr = txService.rejectCanonicalPKICertificateMutation(ctx, fresh); loadErr != nil {
+				return loadErr
+			}
 			persisted = true
 			next, loadErr = txService.persistManagedCertificateIssueSuccessLegacy(
 				ctx, freshRows, freshIndex, fresh, issueResult, issuedMaterial,
@@ -2050,13 +2126,14 @@ func (s *certificateService) scheduleManagedCertificateIssue(ctx context.Context
 }
 
 // managedCertificateIssuerAvailable reports whether a master_cf_dns issuer can be constructed
-// for this service: an injected renewal issuer, or the env-configured Cloudflare DNS issuer when
-// ManagedDNSCertificatesEnabled. Used to fail-fast at submit time instead of after dispatch.
+// for this service: an injected renewal issuer, or the Cloudflare DNS issuer when
+// ACME DNS-01 is ready (environment Token or an installed plugin). Used to fail-fast
+// at submit time instead of after dispatch.
 func (s *certificateService) managedCertificateIssuerAvailable() bool {
 	if s.renewalIssuer != nil {
 		return true
 	}
-	return s.cfg.ManagedDNSCertificatesEnabled && newMasterCFDNSManagedCertificateIssuer() != nil
+	return s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil
 }
 
 // ManagedCertificateBackgroundSigner returns the background issuance function injected into the
@@ -2069,10 +2146,19 @@ func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (sto
 	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, nil, localApplyTrigger)
 }
 
+func ManagedCertificateBackgroundSignerWithDNSTokenResolver(cfg config.Config, openStore func() (storage.Store, error), localApplyTrigger func(context.Context) error, resolve func(context.Context, string) (string, error)) managedCertificateSignFunc {
+	var issuer managedCertificateRenewalIssuer
+	if cfg.ManagedDNSCertificatesEnabled {
+		issuer = newMasterCFDNSManagedCertificateIssuerWithResolver(resolve)
+	}
+	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, issuer, localApplyTrigger)
+}
+
 // managedCertificateBackgroundSignerWithIssuer is the testable core: tests inject a fake issuer
 // while production passes nil so the Cloudflare DNS issuer is built from cfg on demand.
 func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore func() (storage.Store, error), issuer managedCertificateRenewalIssuer, localApplyTrigger func(context.Context) error) managedCertificateSignFunc {
 	return func(ctx context.Context, certID int) error {
+		ctx = WithSystemMutationPrincipal(ctx, "system:managed-certificate-issuer")
 		store, err := openStore()
 		if err != nil {
 			return err
@@ -2370,7 +2456,16 @@ func (s *certificateService) certificateMutationTargetAgentIDs(ctx context.Conte
 	if len(targetAgentIDs) == 0 {
 		return nil, ErrAgentNotFound
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, targetAgentIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, targetAgentID := range targetAgentIDs {
+		if err := authorizeReferencedResource(ctx, s.store, "agent", targetAgentID); err != nil {
+			return nil, err
+		}
+	}
+	return targetAgentIDs, nil
 }
 
 func managedCertificateMutationResourceState(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
@@ -2406,7 +2501,11 @@ func (s *certificateService) ensureAgentExists(ctx context.Context, agentID stri
 }
 
 func (s *certificateService) assertCertificateDistributionTargetsAllowed(ctx context.Context, cert ManagedCertificate) error {
-	if !cert.Enabled || cert.IssuerMode != "local_http01" || cert.CertificateType != "uploaded" {
+	if !cert.Enabled {
+		return nil
+	}
+	requiresInstall := cert.IssuerMode == "master_cf_dns" || cert.IssuerMode == "local_http01" && cert.CertificateType == "uploaded"
+	if !requiresInstall {
 		return nil
 	}
 	for _, targetAgentID := range cert.TargetAgentIDs {
@@ -2663,6 +2762,12 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 	if input.SelfSigned != nil {
 		selfSigned = *input.SelfSigned
 	}
+	// ACME certificates are issued by the configured public CA and therefore
+	// cannot be self-signed. Canonicalize legacy/conflicting API input so the
+	// persisted metadata and panel badges describe the actual certificate.
+	if certificateType == "acme" {
+		selfSigned = false
+	}
 
 	notAfter := strings.TrimSpace(pointerString(input.NotAfter))
 	if notAfter == "" {
@@ -2768,6 +2873,11 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 	cert.LastError = report.LastError
 	cert.MaterialHash = report.MaterialHash
 	cert.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
+	if cert.IssuerMode == "local_http01" {
+		cert.NextRetryAtUnix = report.NextRetryAtUnix
+		cert.RetryCount = report.RetryCount
+		cert.BackoffClass = report.BackoffClass
+	}
 	cert.ACMEInfo = report.ACMEInfo
 	return cert
 }
@@ -2776,14 +2886,17 @@ func normalizeManagedCertificateHeartbeatReports(reports []ManagedCertificateHea
 	normalized := make([]ManagedCertificateHeartbeatReport, 0, len(reports))
 	for _, report := range reports {
 		next := ManagedCertificateHeartbeatReport{
-			Domain:       normalizeCertificateReportHost(report.Domain),
-			Status:       normalizeManagedCertificateReportStatus(report.Status),
-			LastIssueAt:  normalizeOptionalTimestamp(report.LastIssueAt),
-			LastError:    report.LastError,
-			MaterialHash: strings.TrimSpace(report.MaterialHash),
-			NotAfter:     normalizeOptionalTimestamp(report.NotAfter),
-			ACMEInfo:     report.ACMEInfo,
-			UpdatedAt:    normalizeOptionalTimestamp(report.UpdatedAt),
+			Domain:          normalizeCertificateReportHost(report.Domain),
+			Status:          normalizeManagedCertificateReportStatus(report.Status),
+			LastIssueAt:     normalizeOptionalTimestamp(report.LastIssueAt),
+			LastError:       report.LastError,
+			MaterialHash:    strings.TrimSpace(report.MaterialHash),
+			NotAfter:        normalizeOptionalTimestamp(report.NotAfter),
+			NextRetryAtUnix: max(report.NextRetryAtUnix, 0),
+			RetryCount:      max(report.RetryCount, 0),
+			BackoffClass:    normalizeManagedCertificateBackoffClass(report.BackoffClass),
+			ACMEInfo:        report.ACMEInfo,
+			UpdatedAt:       normalizeOptionalTimestamp(report.UpdatedAt),
 		}
 		if report.ID > 0 {
 			next.ID = report.ID
@@ -2834,6 +2947,9 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 			next.LastError = report.LastError
 			next.MaterialHash = report.MaterialHash
 			next.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
+			next.NextRetryAtUnix = report.NextRetryAtUnix
+			next.RetryCount = report.RetryCount
+			next.BackoffClass = report.BackoffClass
 			next.ACMEInfo = report.ACMEInfo
 		}
 		if !managedCertificateEqual(cert, next) {
@@ -2935,15 +3051,31 @@ func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string
 	}
 	existingReport := reports[strings.TrimSpace(agentID)]
 	cert.AgentReports[strings.TrimSpace(agentID)] = ManagedCertificateAgentReport{
-		Status:       report.Status,
-		LastIssueAt:  coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
-		LastError:    report.LastError,
-		MaterialHash: report.MaterialHash,
-		NotAfter:     coalesceString(report.NotAfter, existingReport.NotAfter),
-		ACMEInfo:     report.ACMEInfo,
-		UpdatedAt:    updatedAt,
+		Status:          report.Status,
+		LastIssueAt:     coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
+		LastError:       report.LastError,
+		MaterialHash:    report.MaterialHash,
+		NotAfter:        coalesceString(report.NotAfter, existingReport.NotAfter),
+		NextRetryAtUnix: report.NextRetryAtUnix,
+		RetryCount:      report.RetryCount,
+		BackoffClass:    report.BackoffClass,
+		ACMEInfo:        report.ACMEInfo,
+		UpdatedAt:       updatedAt,
 	}
 	return cert
+}
+
+func normalizeManagedCertificateBackoffClass(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case managedCertificateBackoffClassTransient:
+		return managedCertificateBackoffClassTransient
+	case managedCertificateBackoffClassPersistent:
+		return managedCertificateBackoffClassPersistent
+	case managedCertificateBackoffClassRateLimited:
+		return managedCertificateBackoffClassRateLimited
+	default:
+		return ""
+	}
 }
 
 func hasMatchingHTTPSRuleForCertificateInRows(rows []storage.HTTPRuleRow, cert ManagedCertificate) bool {
@@ -3020,19 +3152,12 @@ func assertManagedCertificateMutationAllowed(previous *ManagedCertificate, next 
 	return nil
 }
 
-func assertManagedCertificateTargetingAllowed(cfg config.Config, cert ManagedCertificate) error {
+func assertManagedCertificateTargetingAllowed(_ config.Config, cert ManagedCertificate) error {
 	if cert.IssuerMode != "master_cf_dns" {
 		return nil
 	}
 	if cert.CertificateType != "acme" {
 		return fmt.Errorf("%w: master_cf_dns certificates must use certificate_type=acme", ErrInvalidArgument)
-	}
-	localAgentID := strings.TrimSpace(cfg.LocalAgentID)
-	if localAgentID == "" {
-		return nil
-	}
-	if len(cert.TargetAgentIDs) != 1 || strings.TrimSpace(cert.TargetAgentIDs[0]) != localAgentID {
-		return fmt.Errorf("%w: master_cf_dns certificates must target only the local master agent", ErrInvalidArgument)
 	}
 	return nil
 }

@@ -246,3 +246,42 @@ describe('paginated list fetchers', () => {
     expect(relay.items[0].agent_id).toBe('edge')
   })
 })
+
+describe('runtime plugin resource group catalog', () => {
+  beforeEach(() => {
+    requests.get.mockReset()
+  })
+
+  it('maps plugin-declared resource groups and drops incomplete rows', async () => {
+    requests.get.mockResolvedValueOnce({
+      data: {
+        groups: [
+          {
+            id: 'cloudflare-dns',
+            plugin_id: 'cloudflare-dns',
+            ref: 'resource-group/cloudflare-dns',
+            label: 'Cloudflare DNS',
+            description: '按域名后缀隔离 Token 映射',
+            status: 'registered',
+            ui_route_id: 'cloudflare-dns',
+            ui_href: '/panel-api/cloudflare-dns/'
+          },
+          { id: 'broken', label: 'missing ref' }
+        ]
+      }
+    })
+
+    const groups = await runtime.fetchPluginResourceGroups()
+    expect(requests.get).toHaveBeenCalledWith('/plugin-resource-groups')
+    expect(groups).toEqual([{
+      id: 'cloudflare-dns',
+      plugin_id: 'cloudflare-dns',
+      ref: 'resource-group/cloudflare-dns',
+      label: 'Cloudflare DNS',
+      description: '按域名后缀隔离 Token 映射',
+      status: 'registered',
+      ui_route_id: 'cloudflare-dns',
+      ui_href: '/panel-api/cloudflare-dns/'
+    }])
+  })
+})

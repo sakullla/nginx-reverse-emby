@@ -4,13 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	marketplacepkg "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -66,6 +76,7 @@ type TaskService interface {
 	CreateAndDispatch(service.TaskCreateRequest) (service.TaskRecord, error)
 	Get(context.Context, string, string) (service.TaskRecord, error)
 	RegisterSession(service.TaskSessionRegistration) error
+	UnregisterSession(string, service.TaskSession)
 	ApplyUpdate(context.Context, service.TaskUpdateInput) error
 }
 
@@ -109,6 +120,10 @@ type BackupService interface {
 	Preview(context.Context, []byte) (service.BackupImportResult, error)
 }
 
+type PKIService interface {
+	service.PKIAPIService
+}
+
 type RevisionService interface {
 	GetOperationStatus(context.Context, string) (service.OperationStatus, error)
 	DismissOperation(context.Context, string) (service.OperationStatus, error)
@@ -124,6 +139,61 @@ type RevisionService interface {
 	LoadMutationResponseByKey(context.Context, string, string) (map[string]any, bool, error)
 }
 
+type MarketplaceAPI interface {
+	ListSources(context.Context) ([]marketplacepkg.Source, error)
+	Source(context.Context, string) (marketplacepkg.Source, error)
+	CurrentCatalog(context.Context, string) (service.MarketplaceCatalog, error)
+	AddCustomSource(context.Context, string, string, string, string, string, time.Duration, marketplacepkg.SourceSigner) (marketplacepkg.Source, error)
+	AddGitRepositorySource(context.Context, string, string, string, string, string, string, string, time.Duration, marketplacepkg.SourceSigner) (marketplacepkg.Source, error)
+	UpdateGitRepositorySource(context.Context, marketplacepkg.Source, uint64) (marketplacepkg.Source, error)
+	DeleteSource(context.Context, string) error
+	Refresh(context.Context, string) (marketplacepkg.Snapshot, error)
+	ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error)
+	AuditSourceFailure(context.Context, string, string, string) error
+}
+
+type PluginAPI interface {
+	List(context.Context) ([]service.PluginSummary, error)
+	Detail(context.Context, string) (service.PluginDetail, error)
+	PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error)
+	InstallMutation(context.Context, service.PluginInstallRequest) (service.PluginSummary, error)
+	EnableMutation(context.Context, string, string) (service.PluginSummary, error)
+	DisableMutation(context.Context, string, string) (service.PluginSummary, error)
+	ConfigureMutation(context.Context, service.PluginConfigureRequest) (service.PluginInstanceDetail, error)
+	DeleteInstanceMutation(context.Context, service.PluginDeleteInstanceRequest) error
+	UpgradeMutation(context.Context, service.PluginUpgradeRequest) (service.PluginSummary, error)
+	RollbackMutation(context.Context, service.PluginRollbackRequest) (service.PluginSummary, error)
+	Uninstall(context.Context, service.PluginUninstallRequest) error
+	Operations(context.Context, string) ([]service.PluginOperationDetail, error)
+}
+
+type PluginPublishAPI interface {
+	PublishMutation(context.Context, service.PluginConfigureRequest, string, int) (service.PluginInstanceDetail, service.HTTPRule, error)
+	UnpublishMutation(context.Context, service.PluginUnpublishRequest) (service.PluginInstanceDetail, service.HTTPRule, error)
+}
+
+type PluginUICatalogAPI interface {
+	DeclaredUIRoutes(context.Context) ([]pluginhost.UIRoute, error)
+	OpenUIAsset(context.Context, string, string) (string, []byte, error)
+}
+
+type AgentPluginArtifactService interface {
+	ResolveAgentPluginArtifact(context.Context, string, int64, string, string) (service.AgentPluginArtifact, error)
+}
+
+type AgentPluginSecretService interface {
+	RedeemAgentPluginSecrets(context.Context, string, service.PluginSecretRedemptionRequest) (service.PluginSecretRedemptionResponse, error)
+}
+
+type PluginCapabilityAPI interface {
+	InvokeDynamicAction(context.Context, service.PluginDynamicActionRequest) (service.PluginDynamicActionResult, error)
+}
+
+type HTTPBackendProviderAPI interface {
+	ListHTTPBackendProvidersForActor(context.Context, string, authz.Actor) ([]service.HTTPBackendProvider, error)
+	HTTPBackendProviderForActor(context.Context, string, string, string, authz.Actor) (service.HTTPBackendProvider, error)
+}
+
 type Dependencies struct {
 	Config                       config.Config
 	SystemService                SystemService
@@ -136,8 +206,19 @@ type Dependencies struct {
 	CertificateService           CertificateService
 	TaskService                  TaskService
 	BackupService                BackupService
+	PKIService                   PKIService
 	TrafficService               TrafficService
 	RevisionService              RevisionService
+	MarketplaceService           MarketplaceAPI
+	PluginService                PluginAPI
+	PluginArtifactService        AgentPluginArtifactService
+	DatasetService               *service.DatasetService
+	PluginSecretService          AgentPluginSecretService
+	BindPluginSecretService      func(AgentPluginSecretService) error
+	PluginCapabilityService      PluginCapabilityAPI
+	PluginRuntimeHost            *service.PluginRuntimeHost
+	AccessManager                *authz.Manager
+	SecretVault                  *secrets.Vault
 	MonitorStreamRefreshInterval time.Duration
 	MonitorStreamMaxAge          time.Duration
 	cleanup                      func() error
@@ -289,11 +370,39 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resolved.BindPluginSecretService != nil {
+		if err := resolved.BindPluginSecretService(resolved.PluginSecretService); err != nil {
+			if resolved.cleanup != nil {
+				_ = resolved.cleanup()
+			}
+			return nil, fmt.Errorf("bind embedded plugin secret service: %w", err)
+		}
+	}
 
 	mux := http.NewServeMux()
 	for _, prefix := range []string{"/panel-api", "/api"} {
 		mux.Handle(prefix+"/health", http.HandlerFunc(resolved.handleHealth))
+		mux.Handle(prefix+"/auth/login", http.HandlerFunc(resolved.handleLogin))
 		mux.Handle(prefix+"/auth/verify", http.HandlerFunc(resolved.handleVerify))
+		mux.Handle(prefix+"/auth/me", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMe)))
+		mux.Handle(prefix+"/auth/logout", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLogout)))
+		mux.Handle(prefix+"/access/users", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUsers)))
+		mux.Handle(prefix+"/access/users/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUser)))
+		mux.Handle(prefix+"/access/users/{id}/password", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUserPassword)))
+		mux.Handle(prefix+"/access/me/password", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessMePassword)))
+		mux.Handle(prefix+"/access/permissions", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessPermissions)))
+		mux.Handle(prefix+"/access/roles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRoles)))
+		mux.Handle(prefix+"/access/roles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRole)))
+		mux.Handle(prefix+"/access/resource-groups", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroups)))
+		mux.Handle(prefix+"/access/resource-groups/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroup)))
+		mux.Handle(prefix+"/access/resources", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResources)))
+		mux.Handle(prefix+"/access/resource-group-grants", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroupGrants)))
+		mux.Handle(prefix+"/access/resource-bindings", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceBindings)))
+		mux.Handle(prefix+"/access/quota-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleQuotaPolicies)))
+		mux.Handle(prefix+"/access/audit-events", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAuditEvents)))
+		mux.Handle(prefix+"/access/secrets", resolved.requirePanelToken(http.HandlerFunc(resolved.handleSecrets)))
+		mux.Handle(prefix+"/access/secrets/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleSecret)))
+		mux.Handle(prefix+"/access/secrets/{id}/rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handleSecretRotate)))
 		mux.Handle(prefix+"/info", resolved.requirePanelToken(http.HandlerFunc(resolved.handleInfo)))
 		mux.Handle(prefix+"/public/join-agent.sh", http.HandlerFunc(resolved.handleJoinAgentScript))
 		mux.Handle(prefix+"/public/agent-assets/", http.HandlerFunc(resolved.handlePublicAgentAsset))
@@ -302,6 +411,16 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agent-revisions/pull", http.HandlerFunc(resolved.handleRemoteRevisionPull))
 		mux.Handle(prefix+"/agent-revisions/{revision}/start", http.HandlerFunc(resolved.handleRemoteRevisionStart))
 		mux.Handle(prefix+"/agent-revisions/{revision}/report", http.HandlerFunc(resolved.handleRemoteRevisionReport))
+		mux.Handle(prefix+"/agent-plugin-artifacts/{artifactID}", http.HandlerFunc(resolved.handleAgentPluginArtifact))
+		mux.Handle(prefix+"/agent-dataset-artifacts/{artifactID}", http.HandlerFunc(resolved.handleAgentDatasetArtifact))
+		mux.Handle(prefix+"/datasets", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasets)))
+		mux.Handle(prefix+"/datasets/control", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetControl)))
+		mux.Handle(prefix+"/datasets/{sourceID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetSource)))
+		mux.Handle(prefix+"/datasets/{sourceID}/catalog", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetCatalog)))
+		mux.Handle(prefix+"/datasets/{sourceID}/status", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetStatus)))
+		mux.Handle(prefix+"/datasets/{sourceID}/bindings", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetBinding)))
+		mux.Handle(prefix+"/datasets/{sourceID}/uploads", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDatasetUpload)))
+		mux.Handle(prefix+"/agent-plugin-secrets/redeem", http.HandlerFunc(resolved.handleAgentPluginSecretRedemption))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
 		mux.Handle(prefix+"/agents/task-stream", http.HandlerFunc(resolved.handleAgentTaskStream))
 		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
@@ -311,6 +430,22 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/system/backup/import/preview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupImportPreview)))
 			mux.Handle(prefix+"/system/backup/counts", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupResourceCounts)))
 		}
+		mux.Handle(prefix+"/pki/overview", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIOverview)))
+		mux.Handle(prefix+"/pki/authorities", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIAuthorities)))
+		mux.Handle(prefix+"/pki/identities", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIIdentities)))
+		mux.Handle(prefix+"/pki/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKICertificates)))
+		mux.Handle(prefix+"/pki/events", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEvents)))
+		mux.Handle(prefix+"/pki/alerts", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIAlerts)))
+		mux.Handle(prefix+"/pki/enrollment-tokens", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEnrollmentTokens)))
+		mux.Handle(prefix+"/pki/confirmations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIConfirmations)))
+		mux.Handle(prefix+"/pki/identities/{identityID}/revoke", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIRevoke)))
+		mux.Handle(prefix+"/pki/identities/{identityID}/force-rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIForceRotate)))
+		mux.Handle(prefix+"/pki/authorities/rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIRotateCA)))
+		mux.Handle(prefix+"/pki/authorities/emergency-rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEmergencyRotateCA)))
+		mux.Handle(prefix+"/pki/backups/export", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIProtectedExport)))
+		mux.Handle(prefix+"/pki/backups/import", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIProtectedImport)))
+		mux.Handle(prefix+"/pki/activation", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIActivation)))
+		mux.Handle(prefix+"/pki/operations/{operationID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIOperation)))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/monitor-stream", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentMonitorStream)))
 		mux.Handle(prefix+"/metrics", resolved.requirePanelToken(http.HandlerFunc(resolved.handleObservabilityMetrics)))
@@ -335,6 +470,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/egress-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleEgressProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
+		mux.Handle(prefix+"/agents/{agentID}/http-backend-providers", resolved.requirePanelToken(http.HandlerFunc(resolved.handleHTTPBackendProviders)))
+		mux.Handle(prefix+"/agents/{agentID}/http-backend-providers/{instanceID}/{providerID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleHTTPBackendProvider)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rules)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rule)))
@@ -357,6 +494,30 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLocalApply)))
 		mux.Handle(prefix+"/version-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicies)))
 		mux.Handle(prefix+"/version-policies/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicy)))
+		mux.Handle(prefix+"/plugin-ui-routes", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUIRoutes)))
+		mux.Handle(prefix+"/plugin-resource-groups", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginResourceGroups)))
+		mux.Handle(prefix+"/plugins/", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUI)))
+		if resolved.MarketplaceService != nil {
+			mux.Handle(prefix+"/marketplace/sources", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceSources)))
+			mux.Handle(prefix+"/marketplace/sources/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceSource)))
+			mux.Handle(prefix+"/marketplace/sources/{id}/entries", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceEntries)))
+			mux.Handle(prefix+"/marketplace/sources/{id}/refresh", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceRefresh)))
+		}
+		if resolved.PluginService != nil && resolved.MarketplaceService != nil {
+			mux.Handle(prefix+"/plugins", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugins)))
+			mux.Handle(prefix+"/plugins/package-detail", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginPackageDetail)))
+			mux.Handle(prefix+"/plugins/install", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstall)))
+			mux.Handle(prefix+"/plugins/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugin)))
+			mux.Handle(prefix+"/plugins/{id}/operations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginOperations)))
+			mux.Handle(prefix+"/plugins/{id}/instances/{instance}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstance)))
+			mux.Handle(prefix+"/plugins/{id}/instances/{instance}/logs", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginLogs)))
+			if resolved.PluginCapabilityService != nil {
+				mux.Handle(prefix+"/plugins/{id}/instances/{instance}/actions/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginDynamicAction)))
+			}
+			mux.Handle(prefix+"/plugins/{id}/publish", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginPublish)))
+			mux.Handle(prefix+"/plugins/{id}/unpublish", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginUnpublish)))
+			mux.Handle(prefix+"/plugins/{id}/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginAction)))
+		}
 	}
 	mux.Handle("/", resolved.staticHandler())
 	handler := resolved.withMutationContext(mux)
@@ -394,7 +555,28 @@ func joinCleanup(prev, next func() error) func() error {
 	}
 }
 
+// joinDependentCleanup runs next only after prev confirms that its dependent
+// background work has quiesced. A failed prev can be retried without closing
+// resources that the still-running work may access.
+func joinDependentCleanup(prev, next func() error) func() error {
+	if prev == nil {
+		return next
+	}
+	if next == nil {
+		return prev
+	}
+	return func() error {
+		if err := prev(); err != nil {
+			return err
+		}
+		return next()
+	}
+}
+
 func (d Dependencies) withDefaults() (Dependencies, error) {
+	if (d.PluginService == nil) != (d.MarketplaceService == nil) {
+		return Dependencies{}, errors.New("plugin and marketplace services must be provided together")
+	}
 	if d.RuleService == nil {
 		if legacy, ok := any(d.AgentService).(legacyRuleListService); ok {
 			d.RuleService = agentRuleServiceAdapter{agent: legacy}
@@ -425,11 +607,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && d.EgressProfileService == nil)
-	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil {
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && (d.EgressProfileService == nil || d.PluginService == nil || d.MarketplaceService == nil))
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && (!canOpenOwnedStore || (d.PluginService != nil && d.MarketplaceService != nil)) {
 		return d, nil
 	}
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled && (!canOpenOwnedStore || (d.PluginService != nil && d.MarketplaceService != nil)) {
 		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
@@ -439,9 +621,39 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		return Dependencies{}, err
 	}
 	d.cleanup = joinCleanup(d.cleanup, store.Close)
+	initializing := true
+	defer func() {
+		if initializing && d.cleanup != nil {
+			_ = d.cleanup()
+		}
+	}()
+	if d.AccessManager == nil && store.SecurityStoreAvailable() {
+		d.AccessManager = authz.NewManager(store, authz.Options{})
+		if err := d.AccessManager.EnsureDefaults(context.Background()); err != nil {
+			return Dependencies{}, fmt.Errorf("bootstrap access control: %w", err)
+		}
+	}
+	if d.SecretVault == nil && store.SecurityStoreAvailable() {
+		if keyring, keyErr := secrets.KeyringFromEnvironment(); keyErr == nil {
+			vault, vaultErr := secrets.NewVault(store, keyring)
+			if vaultErr != nil {
+				return Dependencies{}, fmt.Errorf("initialize secret vault: %w", vaultErr)
+			}
+			if _, migrateErr := vault.MigrateToCurrentKey(context.Background()); migrateErr != nil {
+				return Dependencies{}, fmt.Errorf("migrate secret vault key: %w", migrateErr)
+			}
+			d.SecretVault = vault
+		} else if !errors.Is(keyErr, secrets.ErrKeyNotConfigured) {
+			return Dependencies{}, fmt.Errorf("load secret vault key: %w", keyErr)
+		}
+	}
 
 	if d.SystemService == nil {
 		d.SystemService = service.NewSystemService(d.Config)
+	}
+	if d.DatasetService == nil {
+		d.DatasetService = service.NewDatasetService(d.Config, store)
+		d.cleanup = joinCleanup(d.cleanup, d.DatasetService.Close)
 	}
 	if d.AgentService == nil {
 		d.AgentService = service.NewAgentService(d.Config, store)
@@ -486,8 +698,169 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			d.RevisionService = provider.RevisionAPI()
 		}
 	}
+	runtimeVersion, versionErr := plugins.NormalizeBuildVersion(d.Config.AppVersion)
+	if versionErr != nil {
+		return Dependencies{}, fmt.Errorf("initialize plugin compatibility: %w", versionErr)
+	}
+	if localBuild, ok := d.AgentService.(interface{ EnsureLocalAgentBuild(context.Context) error }); ok {
+		if err := localBuild.EnsureLocalAgentBuild(context.Background()); err != nil {
+			return Dependencies{}, fmt.Errorf("persist local agent build identity: %w", err)
+		}
+	}
+	// Package validation enforces host compatibility here. Concrete Agent
+	// compatibility is checked per target from durable Agent reports.
+	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: runtimeVersion})
+	sourceValidators := marketplacepkg.NewSourceValidatorFactory(plugins.ValidatorOptions{HostVersion: runtimeVersion})
+	cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
+	if d.PluginService == nil {
+		pluginService := service.NewPluginServiceWithValidator(store, validator, cacheRoot)
+		pluginService.SetSecretVault(d.SecretVault)
+		if err := pluginService.MigrateLegacyWriteOnlySecrets(context.Background()); err != nil {
+			return Dependencies{}, fmt.Errorf("migrate legacy plugin writeOnly secrets: %w", err)
+		}
+		pluginService.ConfigureRevisionMutations(d.Config, store)
+		if revisionAPI, ok := d.RevisionService.(*service.RevisionAPI); ok {
+			reconciler, reconcileErr := service.NewPluginLifecycleReconciler(store, pluginService)
+			if reconcileErr != nil {
+				return Dependencies{}, fmt.Errorf("initialize plugin lifecycle reconciler: %w", reconcileErr)
+			}
+			if d.PluginRuntimeHost != nil {
+				reconciler.SetControlPlaneRuntime(d.PluginRuntimeHost)
+			}
+			revisionAPI.SetPluginLifecycleReconciler(reconciler)
+		}
+		d.PluginService = pluginService
+		d.PluginArtifactService = pluginService
+		d.PluginSecretService = pluginService
+	} else if d.PluginArtifactService == nil {
+		if artifactService, ok := d.PluginService.(AgentPluginArtifactService); ok {
+			d.PluginArtifactService = artifactService
+		}
+	}
+	if d.PluginSecretService == nil {
+		if secretService, ok := d.PluginService.(AgentPluginSecretService); ok {
+			d.PluginSecretService = secretService
+		}
+	}
+	if d.PluginCapabilityService == nil && d.PluginRuntimeHost != nil && d.AccessManager != nil {
+		pluginService, ok := d.PluginService.(*service.PluginService)
+		if !ok {
+			return Dependencies{}, errors.New("plugin capability manager requires the production plugin service")
+		}
+		if err := store.EnsurePluginCapabilityDockerSocketBinding(context.Background(), authz.DefaultResourceGroup, storage.PluginCapabilityDockerSocketPath); err != nil {
+			return Dependencies{}, fmt.Errorf("register local Docker capability endpoint: %w", err)
+		}
+		manager, managerErr := service.NewPluginCapabilityManager(store, d.AccessManager, d.PluginRuntimeHost, pluginService)
+		if managerErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize plugin capability manager: %w", managerErr)
+		}
+		d.PluginCapabilityService = manager
+		if tasks, ok := d.TaskService.(*service.TaskService); ok {
+			manager.SetTaskService(tasks)
+		}
+		if d.RuleService != nil {
+			manager.SetRuleService(d.RuleService)
+		}
+		if d.L4RuleService != nil {
+			manager.SetL4RuleService(d.L4RuleService)
+		}
+		if sessions, ok := d.TaskService.(service.PluginHostChannelTaskDispatcher); ok {
+			manager.SetChannelTaskDispatcher(sessions)
+		}
+		if pki, ok := d.PKIService.(service.AgentPKIController); ok {
+			manager.SetChannelListenerProjector(pki.PrepareRelayListeners)
+		}
+		manager.SetTrafficSummaryProvider(d.TrafficService)
+		manager.SetDatasetService(d.DatasetService)
+		d.PluginRuntimeHost.SetCapabilityRevoker(manager)
+		d.PluginRuntimeHost.SetHostResourceDispatcher(manager)
+		if d.SecretVault != nil {
+			manager.SetCoreResourceVault(d.SecretVault)
+			d.SecretVault.SetPluginCapabilityTargetRevoker(manager)
+		}
+		if err := pluginService.RecoverControlPlaneRuntimes(context.Background(), d.PluginRuntimeHost); err != nil {
+			log.Printf("[plugin-runtime] startup recovery failed: %v", err)
+		}
+	}
+	if d.MarketplaceService == nil {
+		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)
+		if cacheErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize plugin package cache: %w", cacheErr)
+		}
+		fetcher := marketplacepkg.GoGitFetcher{}
+		if d.SecretVault != nil {
+			fetcher.ResolveCredential = trustedMarketplaceCredentialResolver(d.SecretVault)
+		}
+		officialLockPath, lockPathErr := marketplacepkg.ResolveOfficialMarketLockPath(os.Getenv(marketplacepkg.OfficialMarketLockPathEnv))
+		if lockPathErr != nil {
+			return Dependencies{}, fmt.Errorf("resolve official marketplace lock: %w", lockPathErr)
+		}
+		manager, managerErr := marketplacepkg.NewManagerWithOfficialLock(filepath.Join(d.Config.DataDir, "marketplace"), fetcher, validator, cache, store, sourceValidators, officialLockPath)
+		if managerErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize marketplace manager: %w", managerErr)
+		}
+		marketplaceService := service.NewMarketplaceServiceWithSourceValidators(store, manager, validator, cacheRoot, sourceValidators)
+		d.MarketplaceService = marketplaceService
+		scheduler, schedulerErr := service.NewMarketplaceSchedulerWithSourceTimeout(marketplaceService, trustedMarketplaceSchedulerContext(d.SecretVault), 30*time.Second, d.Config.MarketplaceRefreshTimeout)
+		if schedulerErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize marketplace scheduler: %w", schedulerErr)
+		}
+		scheduler.Start(context.Background())
+		// Stop the scheduler before closing the store it uses, and retain the
+		// owned store when scheduler shutdown must be retried.
+		d.cleanup = joinDependentCleanup(scheduler.Close, d.cleanup)
+	}
 
+	initializing = false
 	return d, nil
+}
+
+func trustedMarketplaceSchedulerContext(vault *secrets.Vault) func(context.Context, marketplacepkg.Source) (context.Context, error) {
+	return func(ctx context.Context, source marketplacepkg.Source) (context.Context, error) {
+		correlationID := fmt.Sprintf("marketplace-scheduler:%s:%d", source.ID, time.Now().UTC().UnixNano())
+		actor := marketplacepkg.OperationActor{ActorID: "system.marketplace.scheduler", SessionID: "service", CorrelationID: correlationID}
+		ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ActorID, SessionID: actor.SessionID, CorrelationID: actor.CorrelationID, Bootstrap: true})
+		if source.CredentialRef == "" {
+			return ctx, nil
+		}
+		if vault == nil {
+			return ctx, errors.New("marketplace scheduler credential vault is unavailable")
+		}
+		metadata, err := vault.Get(ctx, source.CredentialRef)
+		if err != nil {
+			return ctx, err
+		}
+		if metadata.Purpose != marketplacepkg.CredentialPurpose {
+			return ctx, errors.New("marketplace scheduler credential has an invalid purpose")
+		}
+		return marketplacepkg.WithCredentialAuthorization(ctx, marketplacepkg.CredentialAuthorization{SecretID: source.CredentialRef, ResourceGroupID: metadata.ResourceGroupID, Actor: actor}), nil
+	}
+}
+
+func trustedMarketplaceCredentialResolver(vault *secrets.Vault) marketplacepkg.CredentialResolver {
+	return func(ctx context.Context, secretID string) (transport.AuthMethod, error) {
+		metadata, err := vault.Get(ctx, secretID)
+		if err != nil {
+			return nil, err
+		}
+		if metadata.Purpose != marketplacepkg.CredentialPurpose {
+			return nil, errors.New("marketplace credential has an invalid purpose")
+		}
+		authorization, ok := marketplacepkg.CredentialAuthorizationFromContext(ctx, secretID)
+		if !ok || authorization.ResourceGroupID != metadata.ResourceGroupID {
+			return nil, errors.New("marketplace credential authorization is missing or stale")
+		}
+		plaintext, err := vault.Resolve(ctx, secrets.OperationContext{ActorID: authorization.Actor.ActorID, SessionID: authorization.Actor.SessionID, CorrelationID: authorization.Actor.CorrelationID, ResourceGroupID: authorization.ResourceGroupID}, secretID)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			for index := range plaintext {
+				plaintext[index] = 0
+			}
+		}()
+		return &githttp.BasicAuth{Username: "git", Password: string(plaintext)}, nil
+	}
 }
 
 func (d Dependencies) hasCoreServices() bool {
@@ -517,12 +890,27 @@ func mapServiceError(err error) (int, map[string]any) {
 		return status, errorPayload(err.Error())
 	}
 	switch {
+	case errors.Is(err, authz.ErrAuditUnavailable), errors.Is(err, secrets.ErrAuditUnavailable):
+		return http.StatusServiceUnavailable, errorPayloadCode("audit_unavailable", "security audit persistence is unavailable")
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return http.StatusTooManyRequests, quotaErrorPayload(err)
 	case errors.As(err, &trafficErr) && trafficErr.Code == service.ErrCodeTrafficStatsDisabled:
 		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrTrafficStatsDisabled):
 		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrAgentUnauthorized):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
+	case errors.Is(err, service.ErrPKIEnrollmentTokenRejected):
+		return http.StatusUnauthorized, errorPayload("Unauthorized: invalid or expired enrollment token")
+	case errors.Is(err, service.ErrPKILeaseNotHeld), errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable),
+		errors.Is(err, service.ErrPKIRuntimeUnavailable):
+		return http.StatusServiceUnavailable, errorPayload("internal PKI signing is temporarily unavailable")
+	case errors.Is(err, service.ErrPKIEpochStale):
+		return http.StatusConflict, revisionErrorPayload(err.Error(), "pki_security_version_conflict")
+	case errors.Is(err, service.ErrPKIEnrollmentTokenRequest), errors.Is(err, service.ErrPKIEnrollmentRequest),
+		errors.Is(err, service.ErrPKIEnrollmentCSR), errors.Is(err, service.ErrPKIEnrollmentOwnerMismatch),
+		errors.Is(err, service.ErrPKIEnrollmentPublicKeyReuse):
+		return http.StatusBadRequest, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionForbidden):
 		return http.StatusForbidden, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionNotFound), errors.Is(err, coordinator.ErrNotFound):
@@ -530,6 +918,12 @@ func mapServiceError(err error) (int, map[string]any) {
 	case errors.Is(err, coordinator.ErrLeaseConflict):
 		return http.StatusConflict, revisionErrorPayload(err.Error(), "revision_lease_conflict")
 	case errors.Is(err, coordinator.ErrStateConflict):
+		return http.StatusConflict, errorPayload(err.Error())
+	case errors.Is(err, storage.ErrPluginGenerationStale), errors.Is(err, storage.ErrPluginGenerationConflict):
+		return http.StatusConflict, revisionErrorPayload(err.Error(), "plugin_generation_conflict")
+	case errors.Is(err, service.ErrPKIOperationNotFound):
+		return http.StatusNotFound, errorPayload("PKI operation not found")
+	case errors.Is(err, service.ErrPKILifecycleConflict):
 		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrConflict):
 		return http.StatusConflict, errorPayload(err.Error())

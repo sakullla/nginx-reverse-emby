@@ -2,12 +2,15 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -22,10 +25,13 @@ type GormStore struct {
 	writeDSN             string
 	dataRoot             string
 	localAgentID         string
+	localAgentPresent    atomic.Bool
 	driver               string
 	transactionScoped    bool
 	certificateGCDomains map[string]struct{}
 	sqliteWrite          sync.Mutex
+	databaseLifecycle    *databaseLifecycle
+	storeConfig          StoreConfig
 }
 
 type StoreConfig struct {
@@ -33,16 +39,19 @@ type StoreConfig struct {
 	DSN                 string
 	DataRoot            string
 	LocalAgentID        string
+	LocalAgentPresent   *bool
 	SkipBootstrapSchema bool
 	TrafficStatsEnabled bool
 }
 
 func StoreConfigFromConfig(cfg config.Config) StoreConfig {
+	localAgentPresent := cfg.EnableLocalAgent
 	return StoreConfig{
 		Driver:              cfg.DatabaseDriver,
 		DSN:                 cfg.DatabaseDSN,
 		DataRoot:            cfg.DataDir,
 		LocalAgentID:        cfg.LocalAgentID,
+		LocalAgentPresent:   &localAgentPresent,
 		TrafficStatsEnabled: cfg.TrafficStatsEnabled,
 	}
 }
@@ -52,8 +61,20 @@ func NewConfiguredStore(cfg config.Config) (*GormStore, error) {
 }
 
 func (s *GormStore) writeTransaction(ctx context.Context, fn func(*gorm.DB) error) error {
+	return s.writeTransactionWithOptions(ctx, nil, fn)
+}
+
+func (s *GormStore) writeTransactionWithOptions(ctx context.Context, options *sql.TxOptions, fn func(*gorm.DB) error) error {
+	if s != nil && s.transactionScoped {
+		return fn(s.db.WithContext(ctx))
+	}
 	db := s.db
 	if s.driver == "sqlite" {
+		if s.databaseLifecycle == nil || s.databaseLifecycle.group == nil {
+			return gorm.ErrInvalidDB
+		}
+		s.databaseLifecycle.group.write.Lock()
+		defer s.databaseLifecycle.group.write.Unlock()
 		s.sqliteWrite.Lock()
 		defer s.sqliteWrite.Unlock()
 		if err := s.ensureSQLiteWriteDB(); err != nil {
@@ -63,14 +84,46 @@ func (s *GormStore) writeTransaction(ctx context.Context, fn func(*gorm.DB) erro
 			db = s.writeDB
 		}
 	}
-	return db.WithContext(ctx).Transaction(fn)
+	return db.WithContext(ctx).Transaction(fn, options)
+}
+
+// transactionView creates a transaction-scoped store without copying mutexes
+// or atomic values from the owning store. Configuration used by storage
+// helpers remains available, while every database operation is bound to tx.
+func (s *GormStore) transactionView(tx *gorm.DB) *GormStore {
+	view := &GormStore{
+		db: tx, writeDB: tx, writeDSN: s.writeDSN,
+		dataRoot: s.dataRoot, localAgentID: s.localAgentID, driver: s.driver,
+		transactionScoped: true, certificateGCDomains: s.certificateGCDomains,
+		databaseLifecycle: s.databaseLifecycle, storeConfig: s.storeConfig,
+	}
+	view.localAgentPresent.Store(s.localAgentPresent.Load())
+	return view
+}
+
+func (s *GormStore) readSnapshotTransaction(ctx context.Context, read func(*GormStore) error) error {
+	if s == nil || s.db == nil || read == nil {
+		return gorm.ErrInvalidDB
+	}
+	if s.transactionScoped {
+		return read(s)
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return read(s.transactionView(tx))
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+}
+
+// PluginReadTransaction exposes a stable read-only snapshot to the plugin
+// admin service without leaking the underlying gorm transaction.
+func (s *GormStore) PluginReadTransaction(ctx context.Context, read func(*GormStore) error) error {
+	return s.readSnapshotTransaction(ctx, read)
 }
 
 func (s *GormStore) ensureSQLiteWriteDB() error {
 	if s.writeDB != nil || strings.TrimSpace(s.writeDSN) == "" {
 		return nil
 	}
-	writeDB, err := gorm.Open(sqlite.Open(s.writeDSN), &gorm.Config{})
+	writeDB, err := gorm.Open(sqlite.Open(s.writeDSN), &gorm.Config{TranslateError: true})
 	if err != nil {
 		return err
 	}
@@ -95,13 +148,64 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 			return nil, err
 		}
 	}
+	var lifecycleGroup *databaseLifecycleGroup
+	var lifecycleGroupLocked bool
+	var lifecycleGroupWriteLocked bool
+	var storeRegistered bool
+	if driver == "sqlite" {
+		sqliteDSN, err := resolveSQLiteDSN(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if !isSQLiteInMemoryDSN(sqliteDSN) {
+			activeDatabasePath, err := sqliteDatabasePathFromDSN(sqliteDSN)
+			if err != nil {
+				return nil, err
+			}
+			lifecycleGroup = sharedDatabaseLifecycleGroup(activeDatabasePath)
+		} else {
+			lifecycleGroup = newDatabaseLifecycleGroup("")
+		}
+		lifecycleGroup.write.Lock()
+		lifecycleGroupWriteLocked = true
+		lifecycleGroup.mu.Lock()
+		lifecycleGroupLocked = true
+		defer func() {
+			if lifecycleGroupLocked {
+				if !storeRegistered && len(lifecycleGroup.members) == 0 && lifecycleGroup.processLock != nil {
+					_ = lifecycleGroup.processLock.Close()
+					lifecycleGroup.processLock = nil
+				}
+				lifecycleGroup.mu.Unlock()
+				lifecycleGroupLocked = false
+			}
+			if lifecycleGroupWriteLocked {
+				lifecycleGroup.write.Unlock()
+				lifecycleGroupWriteLocked = false
+			}
+		}()
+		if lifecycleGroup.databasePath != "" && len(lifecycleGroup.members) == 0 {
+			if err := preparePKIRestoreLifecycleGroup(context.Background(), lifecycleGroup); err != nil {
+				return nil, fmt.Errorf("recover protected SQLite restore: %w", err)
+			}
+		}
+	} else {
+		lifecycleGroup = newDatabaseLifecycleGroup("")
+	}
 
 	dialector, err := resolveDialector(driver, cfg)
 	if err != nil {
 		return nil, err
 	}
-	db, err := gorm.Open(dialector, &gorm.Config{})
+	db, err := gorm.Open(dialector, &gorm.Config{TranslateError: true})
 	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := installDatabaseLifecycle(db, lifecycleGroup)
+	if err != nil {
+		if sqlDB, dbErr := db.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
 		return nil, err
 	}
 	var writeDSN string
@@ -118,21 +222,70 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		writeDSN = withSQLiteWriterOptions(sqliteDSN)
 	}
 	store := &GormStore{
-		db:           db,
-		writeDSN:     writeDSN,
-		dataRoot:     cfg.DataRoot,
-		localAgentID: cfg.LocalAgentID,
-		driver:       driver,
+		db:                db,
+		writeDSN:          writeDSN,
+		dataRoot:          cfg.DataRoot,
+		localAgentID:      cfg.LocalAgentID,
+		driver:            driver,
+		databaseLifecycle: lifecycle,
+		storeConfig:       cfg,
+	}
+	localAgentPresent := strings.TrimSpace(cfg.LocalAgentID) != ""
+	if cfg.LocalAgentPresent != nil {
+		localAgentPresent = *cfg.LocalAgentPresent
+	}
+	store.localAgentPresent.Store(localAgentPresent)
+	store.storeConfig.Driver = driver
+	if lifecycleGroupLocked {
+		lifecycleGroup.members[store] = struct{}{}
+		storeRegistered = true
+		lifecycleGroup.mu.Unlock()
+		lifecycleGroupLocked = false
+	} else {
+		lifecycleGroup.mu.Lock()
+		lifecycleGroup.members[store] = struct{}{}
+		lifecycleGroup.mu.Unlock()
+		storeRegistered = true
 	}
 	if !cfg.SkipBootstrapSchema {
-		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
+		schemaOptions := SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)
+		schemaOptions.LocalAgentID = store.LocalAgentID()
+		bootstrapErr := BootstrapSchema(context.Background(), db, schemaOptions)
+		if lifecycleGroupWriteLocked {
+			lifecycleGroup.write.Unlock()
+			lifecycleGroupWriteLocked = false
+		}
+		if bootstrapErr != nil {
 			_ = store.Close()
-			return nil, err
+			return nil, bootstrapErr
 		}
 		if err := store.BootstrapRevisionLedger(context.Background()); err != nil {
 			_ = store.Close()
 			return nil, err
 		}
+		if _, err := store.ExternalizeRuntimeArtifacts(context.Background()); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		compact, err := store.runtimeArtifactCompactionPending(context.Background())
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		if compact {
+			if err := store.compactExternalizedSQLite(context.Background()); err != nil {
+				_ = store.Close()
+				return nil, err
+			}
+			if err := store.markRuntimeArtifactCompactionComplete(context.Background()); err != nil {
+				_ = store.Close()
+				return nil, err
+			}
+		}
+	}
+	if lifecycleGroupWriteLocked {
+		lifecycleGroup.write.Unlock()
+		lifecycleGroupWriteLocked = false
 	}
 	return store, nil
 }
@@ -287,22 +440,24 @@ func isSQLiteReadOnlyDSN(dsn string) bool {
 }
 
 func (s *GormStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.transactionScoped {
 		return nil
 	}
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return err
+	if s.databaseLifecycle == nil || s.databaseLifecycle.group == nil {
+		return gorm.ErrInvalidDB
 	}
-	if err := sqlDB.Close(); err != nil {
-		return err
+	group := s.databaseLifecycle.group
+	group.write.Lock()
+	defer group.write.Unlock()
+	s.sqliteWrite.Lock()
+	defer s.sqliteWrite.Unlock()
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	result := s.closeDatabaseHandlesLocked()
+	delete(group.members, s)
+	if len(group.members) == 0 && group.processLock != nil {
+		result = errors.Join(result, group.processLock.Close())
+		group.processLock = nil
 	}
-	if s.writeDB == nil {
-		return nil
-	}
-	writeSQLDB, err := s.writeDB.DB()
-	if err != nil {
-		return err
-	}
-	return writeSQLDB.Close()
+	return result
 }

@@ -11,6 +11,7 @@ const (
 	tlsModeCAOnly   = "ca_only"
 	tlsModePinOrCA  = "pin_or_ca"
 	tlsModePinAndCA = "pin_and_ca"
+	tlsModePKIMTLS  = TLSModePKIMTLS
 )
 
 func ValidateListener(listener Listener) error {
@@ -56,6 +57,20 @@ func ValidateListener(listener Listener) error {
 		}
 	}
 	switch mode {
+	case tlsModePKIMTLS:
+		if normalized.CertificateID != nil || len(normalized.PinSet) != 0 || len(normalized.TrustedCACertificateIDs) != 0 || normalized.AllowSelfSigned {
+			return fmt.Errorf("pki_mtls does not accept managed certificates, pins, public CA references, or self-signed bypass")
+		}
+		if strings.TrimSpace(normalized.PKIIdentityID) == "" {
+			return fmt.Errorf("pki_mtls requires pki_identity_id")
+		}
+		switch strings.ToLower(strings.TrimSpace(normalized.PKIIdentityState)) {
+		case "", PKIIdentityStateActive, PKIIdentityStateEnrollmentReady:
+		case PKIIdentityStateRevoked:
+			return fmt.Errorf("pki_mtls identity is revoked")
+		default:
+			return fmt.Errorf("pki_mtls identity state is invalid")
+		}
 	case tlsModePinOnly:
 		if len(normalized.PinSet) == 0 {
 			return fmt.Errorf("pin_only requires pin_set")
@@ -159,6 +174,8 @@ func normalizeListenerObfsMode(mode string) (string, error) {
 
 func normalizeTLSMode(mode string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case tlsModePKIMTLS:
+		return tlsModePKIMTLS, nil
 	case tlsModePinOnly:
 		return tlsModePinOnly, nil
 	case tlsModeCAOnly:

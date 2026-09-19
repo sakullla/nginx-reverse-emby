@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
@@ -180,6 +181,31 @@ func (d Dependencies) handleTrafficOverview(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list agents"))
 		return
 	}
+	agents, err = d.filterAgents(r.Context(), agents)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		agentIDs := make([]string, 0, len(agents))
+		for _, agent := range agents {
+			agentIDs = append(agentIDs, agent.ID)
+		}
+		r = r.WithContext(service.WithVisibleTrafficAgents(r.Context(), agentIDs))
+	}
+	if agentFilter != "" {
+		visible := false
+		for _, agent := range agents {
+			if agent.ID == agentFilter {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			writeAccessError(w, authz.ErrForbidden)
+			return
+		}
+	}
 	agentNames := make(map[string]string, len(agents))
 	for _, a := range agents {
 		agentNames[a.ID] = a.Name
@@ -219,6 +245,31 @@ func (d Dependencies) handleTrafficAggregate(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list agents"))
 		return
+	}
+	agents, err = d.filterAgents(r.Context(), agents)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		agentIDs := make([]string, 0, len(agents))
+		for _, agent := range agents {
+			agentIDs = append(agentIDs, agent.ID)
+		}
+		r = r.WithContext(service.WithVisibleTrafficAgents(r.Context(), agentIDs))
+	}
+	if agentFilter != "" {
+		visible := false
+		for _, agent := range agents {
+			if agent.ID == agentFilter {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			writeAccessError(w, authz.ErrForbidden)
+			return
+		}
 	}
 	agentNames := make(map[string]string, len(agents))
 	for _, a := range agents {

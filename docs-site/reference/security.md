@@ -16,13 +16,17 @@
 - 不要上传到公共网盘
 - 备份文件加密后再存储到远程
 
+通用 secret vault 的 `PANEL_VAULT_MASTER_KEY`（或用于派生它的 panel token）必须与数据库作为同一个恢复点保存。已有 ciphertext 后不要单独更换 token、key 或 key ID；按[环境变量速查](./environment-variables.md#通用-secret-vault)提供 previous key 输入完成事务性轮换。
+
+内部 PKI 使用独立的 32-byte binary master key。默认 key 位于 `data/pki/master.key`；若设置 `NRE_PKI_MASTER_KEY_FILE`，还要把其私有父目录纳入同一备份。目录保持 `0700`、文件保持 `0600`，并允许控制面在受保护恢复时原子替换文件；只读单文件或不可变 secret projection 不受支持。
+
 ## 面板访问控制
 
 - 默认 `docker-compose.yaml` 只监听 `127.0.0.1:8080`。首次登录建议通过 SSH 隧道访问 `http://127.0.0.1:8080`。
 - 面板可以给自己提供 HTTPS：登录后创建 `https://panel.example.com -> http://127.0.0.1:8080` 的 HTTP 规则，使用 `local` Agent 自动申请证书并代理回控制面。
 - 面板自身 HTTPS 可用后，设置 `NRE_PUBLIC_URL=https://你的面板域名`，让 join script 和 Agent 更新 URL 使用固定可信地址。
 - 不要把面板 8080 端口直接暴露到公网 HTTP。如果需要公网监听，必须配合防火墙限制来源 IP。
-- 只有在额外使用上游反代，且上游会清洗并重写 `X-Forwarded-*` 头时，才设置 `NRE_TRUST_FORWARDED_HEADERS=true`。
+- 一键部署创建的 bundled local-Agent 自代理会清洗并重写 `X-Forwarded-*`，脚本会为它启用 `NRE_TRUST_FORWARDED_HEADERS`。其它上游代理只有具备相同行为时才能开启，直连保持关闭。
 
 ## 防火墙
 

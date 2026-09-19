@@ -17,7 +17,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 var errTLSTCPInteractiveAdmissionRejected = errors.New("tls_tcp relay interactive admission rejected: all tunnels are congested")
 var tlsTCPWriteRequestPool = sync.Pool{
 	New: func() any {
@@ -50,6 +49,7 @@ type tlsTCPSessionPoolStats struct {
 type tlsTCPSessionPool struct {
 	mu       sync.Mutex
 	sessions map[string][]*tlsTCPTunnel
+	closed   bool
 }
 
 func (p *tlsTCPSessionPool) close() error {
@@ -59,6 +59,7 @@ func (p *tlsTCPSessionPool) close() error {
 	p.mu.Lock()
 	sessions := p.sessions
 	p.sessions = make(map[string][]*tlsTCPTunnel)
+	p.closed = true
 	p.mu.Unlock()
 	var closeErr error
 	for _, group := range sessions {
@@ -165,11 +166,12 @@ func newTLSTCPSessionPool() *tlsTCPSessionPool {
 }
 
 func currentTLSTCPSessionPoolStats() tlsTCPSessionPoolStats {
-	relayTLSTCPSessionPool.mu.Lock()
-	defer relayTLSTCPSessionPool.mu.Unlock()
+	pool := globalRelayPoolScope().tls
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
 
 	stats := tlsTCPSessionPoolStats{}
-	for _, sessions := range relayTLSTCPSessionPool.sessions {
+	for _, sessions := range pool.sessions {
 		stats.ActiveSessions += len(sessions)
 		for _, session := range sessions {
 			stats.LogicalStreams += session.logicalStreamCount()
@@ -179,16 +181,7 @@ func currentTLSTCPSessionPoolStats() tlsTCPSessionPoolStats {
 }
 
 func resetTLSTCPSessionPoolForTest() {
-	relayTLSTCPSessionPool.mu.Lock()
-	sessions := relayTLSTCPSessionPool.sessions
-	relayTLSTCPSessionPool.sessions = make(map[string][]*tlsTCPTunnel)
-	relayTLSTCPSessionPool.mu.Unlock()
-
-	for _, sessionGroup := range sessions {
-		for _, session := range sessionGroup {
-			_ = session.close()
-		}
-	}
+	_ = fenceGlobalRelayPoolScope()
 }
 
 func (p *tlsTCPSessionPool) allTunnelsForTest() []*tlsTCPTunnel {
@@ -203,6 +196,9 @@ func (p *tlsTCPSessionPool) allTunnelsForTest() []*tlsTCPTunnel {
 }
 
 func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class model.TrafficClass, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, func(), error) {
+	if p.isClosed() {
+		return nil, nil, net.ErrClosed
+	}
 	if existing, release := p.reserveExisting(key, class); existing != nil {
 		return existing, release, nil
 	}
@@ -214,6 +210,9 @@ func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class mod
 	stored, release := p.storeOrReserve(key, class, tunnel)
 	if stored == nil {
 		_ = tunnel.close()
+		if p.isClosed() {
+			return nil, nil, net.ErrClosed
+		}
 		return nil, nil, errTLSTCPInteractiveAdmissionRejected
 	}
 	if stored != tunnel {
@@ -225,6 +224,9 @@ func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class mod
 func (p *tlsTCPSessionPool) reserveExisting(key string, class model.TrafficClass) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil, nil
+	}
 
 	sessions := p.activeSessionsLocked(key)
 	if len(sessions) == 0 {
@@ -247,6 +249,9 @@ func (p *tlsTCPSessionPool) reserveExisting(key string, class model.TrafficClass
 func (p *tlsTCPSessionPool) storeOrReserve(key string, class model.TrafficClass, tunnel *tlsTCPTunnel) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil, nil
+	}
 
 	sessions := p.activeSessionsLocked(key)
 	if len(sessions) >= tlsTCPMuxSessionsPerKey {
@@ -266,6 +271,16 @@ func (p *tlsTCPSessionPool) storeOrReserve(key string, class model.TrafficClass,
 	}()
 
 	return tunnel, release
+}
+
+func (p *tlsTCPSessionPool) isClosed() bool {
+	if p == nil {
+		return true
+	}
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	return closed
 }
 
 func (p *tlsTCPSessionPool) activeSessionsLocked(key string) []*tlsTCPTunnel {
@@ -347,7 +362,7 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 		return nil, DialResult{}, err
 	}
 	trafficClass := relayDialTrafficClass(network, options)
-	pool := relayTLSTCPSessionPool
+	pool := globalRelayPoolScope().tls
 	if options.poolScope != nil {
 		pool = options.poolScope.tls
 	}
@@ -415,7 +430,7 @@ func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop,
 		return nil, err
 	}
 
-	pool := relayTLSTCPSessionPool
+	pool := globalRelayPoolScope().tls
 	if options.poolScope != nil {
 		pool = options.poolScope.tls
 	}
@@ -502,7 +517,7 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s",
+		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
@@ -514,6 +529,7 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 		string(pinSetJSON),
 		string(trustedCAJSON),
 		strings.TrimSpace(outboundProxyURL),
+		strings.TrimSpace(hop.securityBinding),
 	), nil
 }
 

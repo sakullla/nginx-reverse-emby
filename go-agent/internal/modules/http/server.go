@@ -10,15 +10,20 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Server struct {
 	routes            map[string][]*routeEntry
+	policyEvaluator   policy.Evaluator
 	trafficBlockState trafficBlockStateValue
 }
 
@@ -31,11 +36,17 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS            TLSMaterialProvider
-	Relay          RelayMaterialProvider
-	EgressProfiles []model.EgressProfile
-	EgressResolver module.EgressResolver
-	FinalHopDialer relay.FinalHopDialer
+	TLS                  TLSMaterialProvider
+	Relay                RelayMaterialProvider
+	EgressProfiles       []model.EgressProfile
+	EgressResolver       module.EgressResolver
+	FinalHopDialer       relay.FinalHopDialer
+	PolicyEvaluator      policy.Evaluator
+	HTTPBackendProviders HTTPBackendProviderResolver
+	providerSessions     HTTPSessionRegistrar
+	providerGeneration   string
+	providerTracker      *httpSessionTracker
+	providerIdleTimeout  time.Duration
 }
 
 type routeEntry struct {
@@ -51,11 +62,108 @@ type routeEntry struct {
 	modifyResp                 func(*http.Response) error
 	selectionScope             string
 	frontendPath               string
+	providerSessions           HTTPSessionRegistrar
+	providerGeneration         string
+	providerTracker            *httpSessionTracker
+	providerIdleTimeout        time.Duration
+}
+
+type HTTPBackendProviderResolver interface {
+	Resolve(instanceID, providerID string) (HTTPBackendProvider, bool)
+}
+
+type HTTPBackendProvider interface {
+	InstanceID() string
+	ProviderID() string
+	Generation() string
+	Acquire() (io.Closer, error)
+	RoundTrip(*http.Request, rpc.HTTPBackendProviderAuthority) (*http.Response, error)
+}
+
+type providerRequestLease struct {
+	once               sync.Once
+	local              io.Closer
+	tracker            *httpSessionTracker
+	session            *httpRequestSession
+	releaseProgressive func()
+}
+
+func (lease *providerRequestLease) Close() error {
+	if lease == nil {
+		return nil
+	}
+	var err error
+	lease.once.Do(func() {
+		if lease.releaseProgressive != nil {
+			lease.releaseProgressive()
+		}
+		if lease.tracker != nil {
+			lease.tracker.finish(lease.session)
+		}
+		if lease.local != nil {
+			err = lease.local.Close()
+		}
+	})
+	return err
+}
+
+func (e *routeEntry) acquireProviderRequest(writer http.ResponseWriter, request *http.Request, candidate httpCandidate) (*http.Request, *providerRequestLease, *providerRequestScope, error) {
+	if candidate.provider == nil {
+		return request, nil, nil, nil
+	}
+	local, err := candidate.provider.Acquire()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if e.providerSessions == nil || e.providerGeneration == "" {
+		_ = local.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider session registrar is unavailable")
+	}
+	ctx, cancel := context.WithCancel(request.Context())
+	tracker := e.providerTracker
+	if tracker == nil {
+		cancel()
+		_ = local.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider session tracker is unavailable")
+	}
+	outer := httpRequestSessionFromContext(request.Context())
+	if outer == nil {
+		cancel()
+		_ = local.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider outer session is unavailable")
+	}
+	scope, retained := newProviderRequestScope(outer, writer, e.providerIdleTimeout)
+	if !retained {
+		cancel()
+		_ = local.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider outer session is already forced")
+	}
+	entity := httpRuleEntityID(e.rule)
+	lease := &providerRequestLease{local: local, tracker: tracker}
+	lease.session = tracker.startModule("http", entity, cancel)
+	lease.releaseProgressive, retained = lease.session.tryRetainProgressiveDrain()
+	if !retained {
+		scope.Close()
+		_ = lease.Close()
+		return nil, nil, nil, errors.New("HTTP backend provider session is already forced")
+	}
+	tracker.register(lease.session)
+	lease.session.mu.Lock()
+	registrationErr := lease.session.registrationErr
+	lease.session.mu.Unlock()
+	if registrationErr != nil {
+		scope.Close()
+		_ = lease.Close()
+		return nil, nil, nil, fmt.Errorf("register HTTP backend provider session: %w", registrationErr)
+	}
+	return scope.wrapRequest(request.WithContext(ctx)), lease, scope, nil
 }
 
 type httpBackend struct {
 	target      *url.URL
 	backendHost string
+	provider    HTTPBackendProvider
+	providerKey string
 }
 
 func NewServer(listener model.HTTPListener) *Server {
@@ -81,7 +189,7 @@ func newServerWithResilience(
 	sharedTransport *http.Transport,
 	resilience StreamResilienceOptions,
 ) (*Server, error) {
-	s := &Server{routes: make(map[string][]*routeEntry)}
+	s := &Server{routes: make(map[string][]*routeEntry), policyEvaluator: providers.PolicyEvaluator}
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
@@ -94,8 +202,18 @@ func newServerWithResilience(
 		if hostKey == "" {
 			continue
 		}
-		targets, err := parseHTTPBackends(rule)
-		if err != nil || len(targets) == 0 {
+		targets, err := parseHTTPBackends(rule, providers.HTTPBackendProviders, providers.providerGeneration)
+		if err != nil {
+			var providerErr *httpBackendProviderResolutionError
+			if errors.As(err, &providerErr) {
+				// A plugin-backed route fails closed when its provider generation is
+				// unavailable. Do not reject the whole HTTP generation: unrelated
+				// routes must remain deployable and available.
+				continue
+			}
+			continue
+		}
+		if len(targets) == 0 {
 			continue
 		}
 		transport := sharedTransport
@@ -144,6 +262,10 @@ func newServerWithResilience(
 			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path), nil),
 			selectionScope:             strings.ToLower(strings.TrimSpace(rule.FrontendURL)),
 			frontendPath:               FrontendPathFromRule(rule),
+			providerSessions:           providers.providerSessions,
+			providerGeneration:         providers.providerGeneration,
+			providerTracker:            providers.providerTracker,
+			providerIdleTimeout:        providers.providerIdleTimeout,
 		})
 	}
 
@@ -176,6 +298,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, body, http.StatusTooManyRequests)
 			return
 		}
+		if decision, allowed := s.allowPolicyRequest(req, entry.rule); !allowed {
+			writeHTTPPolicyDecision(w, decision)
+			return
+		}
 		if err := entry.serveHTTP(w, req); err != nil {
 			log.Printf("[proxy] bad gateway for %s %s (host=%s frontend=%s): %v", req.Method, req.URL.Path, host, entry.rule.FrontendURL, err)
 			var startedErr *startedResponseError
@@ -206,6 +332,14 @@ func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
 func (s *Server) routeFor(host string, requestPath string) *routeEntry {
 	entries := s.routes[host]
 	if len(entries) == 0 {
+		for routeHost, routeEntries := range s.routes {
+			if bindingHostsEquivalent(host, routeHost) {
+				entries = routeEntries
+				break
+			}
+		}
+	}
+	if len(entries) == 0 {
 		return nil
 	}
 
@@ -226,6 +360,11 @@ func (s *Server) routeFor(host string, requestPath string) *routeEntry {
 }
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
+	if req.Body != nil && req.Body != http.NoBody {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("enable full-duplex proxy request: %w", err)
+		}
+	}
 	recorder := traffic.NewHTTPRuleRecorder(e.rule.ID)
 	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req), recorder)
 	if err != nil {
@@ -260,8 +399,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		if ruleUsesRelay(e.rule) {
 			backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
 		}
-		if e.backendCache.IsInBackoff(backoffAddr) {
+		if e.backendCache.IsInBackoff(backoffAddr) && !candidate.probeBackoff {
 			continue
+		}
+		if candidate.probeBackoff {
+			maxSameBackendAttempts = 1
 		}
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
 			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath, recorder)
@@ -272,12 +414,32 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			// Re-check backoff between same-backend retries: a failed attempt
 			// marks the address failed and may flip it into backoff, in which
 			// case the remaining attempts should bail out rather than redial.
-			if e.backendCache.IsInBackoff(backoffAddr) {
+			if e.backendCache.IsInBackoff(backoffAddr) && !candidate.probeBackoff {
 				break
 			}
-			start := time.Now()
-			resp, err := e.transportForRequest(attemptReq).RoundTrip(attemptReq)
+			attemptReq, providerLease, providerScope, err := e.acquireProviderRequest(w, attemptReq, candidate)
 			if err != nil {
+				return err
+			}
+			if providerScope != nil {
+				defer providerScope.Close()
+			}
+			start := time.Now()
+			var resp *http.Response
+			if candidate.provider != nil {
+				resp, err = candidate.provider.RoundTrip(attemptReq, rpc.HTTPBackendProviderAuthority{
+					Scheme: requestScheme(req), Host: req.Host, ClientAddress: req.RemoteAddr,
+				})
+			} else {
+				resp, err = e.transportForRequest(attemptReq).RoundTrip(attemptReq)
+			}
+			if err != nil {
+				if providerScope != nil {
+					providerScope.Close()
+				}
+				if providerLease != nil {
+					_ = providerLease.Close()
+				}
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				if !isBackendRetryable(attemptReq, err) {
 					return backendRetryError(attemptReq, err)
@@ -291,8 +453,19 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 				break
 			}
+			if providerScope != nil {
+				providerScope.wrapResponse(resp)
+			}
+			if providerLease != nil {
+				rpc.WrapHTTPBackendProviderResponseLease(attemptReq.Context(), resp, providerLease)
+			}
 			headerLatency := time.Since(start)
-			if e.modifyResp != nil {
+			if isLongLivedStreamingResponse(resp) {
+				// A valid streaming response proves reachability. Clear any stale
+				// session-local failure before the long-lived transfer completes.
+				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, headerLatency, 0)
+			}
+			if e.modifyResp != nil && candidate.provider == nil {
 				var relativeLocationBase *url.URL
 				if _, ok := parseInternalRedirectTarget(req.URL.Path, e.frontendPath); ok {
 					relativeLocationBase = attemptReq.URL
@@ -309,7 +482,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				}
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
-				if err := handleUpgradeResponse(w, attemptReq, resp, recorder); err != nil {
+				responseWriter := w
+				if providerScope != nil {
+					responseWriter = providerScope.responseWriter(w)
+				}
+				if err := handleUpgradeResponse(responseWriter, attemptReq, resp, recorder); err != nil {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
@@ -319,22 +496,31 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), 0)
 				return nil
 			}
-			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
-				written, err := e.copyResumableResponse(w, attemptReq, resp, state, recorder)
-				if err != nil {
-					if attemptReq.Context().Err() == nil {
-						if candidate.backendObservationKey != "" {
-							e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+			if candidate.provider == nil {
+				if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
+					written, err := e.copyResumableResponse(w, attemptReq, resp, state, recorder)
+					if err != nil {
+						if attemptReq.Context().Err() == nil {
+							if candidate.backendObservationKey != "" {
+								e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+							}
+							e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 						}
-						e.markCandidateFailure(candidate, attemptReq, backoffAddr)
+						return err
 					}
-					return err
+					e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
+					return nil
 				}
-				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
-				return nil
 			}
-			written, err := copyResponse(w, resp, recorder)
+			responseWriter := w
+			if providerScope != nil {
+				responseWriter = providerScope.responseWriter(w)
+			}
+			written, err := copyResponse(responseWriter, resp, recorder)
 			if err != nil {
+				if isBenignStreamingResponseTermination(resp, err) {
+					return nil
+				}
 				if attemptReq.Context().Err() == nil {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)

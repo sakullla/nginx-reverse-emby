@@ -25,7 +25,13 @@
     <div class="agent-monitor-card__meta">
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">地址</span>
-        <span class="agent-monitor-card__meta-value" data-testid="monitor-card-endpoint" :title="endpointLabel">{{ endpointLabel }}</span>
+        <span class="agent-monitor-card__meta-value" data-testid="monitor-card-endpoint" :title="endpoint.full">{{ endpoint.primary }}</span>
+        <span
+          v-if="endpoint.extraCount > 0"
+          class="agent-monitor-card__meta-more"
+          data-testid="monitor-card-endpoint-more"
+          :title="endpoint.full"
+        >+{{ endpoint.extraCount }}</span>
       </div>
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">最后活跃</span>
@@ -87,7 +93,7 @@ import AgentStatusBadge from './AgentStatusBadge.vue'
 import BaseBadge from './base/BaseBadge.vue'
 import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
-import { getAgentStatus, getAgentEndpointLabel, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getAgentEndpointDisplay, timeAgo } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
 
 const props = defineProps({
@@ -105,7 +111,7 @@ const STATUS_TONE = {
 
 const displayName = computed(() => props.agent.name || props.agent.id || '未命名节点')
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'neutral')
-const endpointLabel = computed(() => getAgentEndpointLabel(props.agent))
+const endpoint = computed(() => getAgentEndpointDisplay(props.agent))
 const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metrics || {})
 const network = computed(() => metrics.value.network || null)
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)
@@ -150,9 +156,10 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 .agent-monitor-card__meta {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  /* Never wrap to a second row — a wrapped meta line makes the card taller
+     than its grid siblings; the address value truncates with ellipsis instead. */
+  flex-wrap: nowrap;
   column-gap: var(--space-3);
-  row-gap: 0.15rem;
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
@@ -163,6 +170,11 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   align-items: baseline;
   gap: var(--space-1-5);
   min-width: 0;
+}
+
+/* The address item yields overflow space; 最后活跃 keeps its content width. */
+.agent-monitor-card__meta-item:last-child {
+  flex-shrink: 0;
 }
 
 .agent-monitor-card__meta-label {
@@ -176,6 +188,18 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* "+N" overflow marker for multi-domain DDNS configs — never shrinks so the
+   domain text is what truncates, keeping the meta row on a single line. */
+.agent-monitor-card__meta-more {
+  flex-shrink: 0;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-full, 999px);
+  background: color-mix(in srgb, var(--color-primary, #3b82f6) 10%, transparent);
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
 }
 
 .agent-monitor-card__metrics {

@@ -48,6 +48,7 @@ describe('useAgentMonitorStream', () => {
 
   afterEach(() => {
     clearAuthToken()
+    vi.clearAllTimers()
     vi.useRealTimers()
   })
 
@@ -102,26 +103,31 @@ describe('useAgentMonitorStream', () => {
     const enabled = ref(true)
     const queryClient = createQueryClient()
     const signals = []
-    api.consumeAgentMonitorStream.mockImplementation(({ signal }) => {
+    api.consumeAgentMonitorStream.mockImplementation(({ signal, onMessage }) => {
       signals.push(signal)
+      onMessage({ type: 'snapshot', payload: { agents: [{ id: 'edge-1', status: 'online' }] } })
       return new Promise(() => {})
     })
 
-    const { wrapper } = mountHarness(queryClient, { enabled, reconnectDelay: -1 })
+    const { wrapper, exposed } = mountHarness(queryClient, { enabled, reconnectDelay: -1 })
     await nextTick()
     expect(signals).toHaveLength(1)
     expect(signals[0].aborted).toBe(false)
+    expect(exposed.active.value).toBe(true)
 
     enabled.value = false
     await nextTick()
     await Promise.resolve()
     expect(signals[0].aborted).toBe(true)
+    expect(exposed.status.value).toBe('idle')
+    expect(exposed.active.value).toBe(false)
 
     enabled.value = true
     await nextTick()
     await Promise.resolve()
     expect(signals).toHaveLength(2)
     expect(signals[1].aborted).toBe(false)
+    expect(exposed.active.value).toBe(true)
 
     wrapper.unmount()
   })
@@ -164,6 +170,7 @@ describe('useAgentMonitorStream', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(exposed.status.value).toBe('disconnected')
+    expect(exposed.active.value).toBe(false)
     expect(exposed.data.value).toEqual([{ id: 'edge-1', status: 'online' }])
 
     await vi.advanceTimersByTimeAsync(25)
@@ -200,6 +207,91 @@ describe('useAgentMonitorStream', () => {
       last_seen_ipv6: '2001:db8::10',
       ddns_domain: 'edge.example.com',
       ddns_status: { status: 'ok' }
+    })
+    wrapper.unmount()
+  })
+
+  it('keeps the running package identity while an upgrade heartbeat reports the target digest', async () => {
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['agents'], [{
+      id: 'edge-1',
+      runtime_package_version: '1.0.0',
+      runtime_package_platform: 'linux',
+      runtime_package_arch: 'amd64',
+      runtime_package_sha256: 'a'.repeat(64),
+      desired_package_sha256: 'b'.repeat(64),
+      package_sync_status: 'pending'
+    }])
+    api.consumeAgentMonitorStream.mockImplementation(async ({ onMessage }) => {
+      onMessage({
+        type: 'update',
+        payload: {
+          agent: {
+            id: 'edge-1',
+            runtime_package_version: '2.0.0',
+            runtime_package_platform: 'linux',
+            runtime_package_arch: 'amd64',
+            runtime_package_sha256: 'b'.repeat(64),
+            desired_package_sha256: 'b'.repeat(64),
+            package_sync_status: 'aligned'
+          }
+        }
+      })
+    })
+
+    const { wrapper } = mountHarness(queryClient, { reconnectDelay: -1 })
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    expect(queryClient.getQueryData(['agents'])[0]).toMatchObject({
+      runtime_package_version: '1.0.0',
+      runtime_package_platform: 'linux',
+      runtime_package_arch: 'amd64',
+      runtime_package_sha256: 'a'.repeat(64),
+      desired_package_sha256: 'b'.repeat(64),
+      package_sync_status: 'pending'
+    })
+    wrapper.unmount()
+  })
+
+  it('accepts a completed upgrade once the cached running digest already matches the target', async () => {
+    const digest = 'b'.repeat(64)
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['agents'], [{
+      id: 'edge-1',
+      runtime_package_version: '2.0.0',
+      runtime_package_platform: 'linux',
+      runtime_package_arch: 'amd64',
+      runtime_package_sha256: digest,
+      desired_package_sha256: digest,
+      package_sync_status: 'aligned'
+    }])
+    api.consumeAgentMonitorStream.mockImplementation(async ({ onMessage }) => {
+      onMessage({
+        type: 'update',
+        payload: {
+          agent: {
+            id: 'edge-1',
+            runtime_package_version: '2.0.0',
+            runtime_package_platform: 'linux',
+            runtime_package_arch: 'amd64',
+            runtime_package_sha256: digest,
+            desired_package_sha256: digest,
+            package_sync_status: 'aligned'
+          }
+        }
+      })
+    })
+
+    const { wrapper } = mountHarness(queryClient, { reconnectDelay: -1 })
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    expect(queryClient.getQueryData(['agents'])[0]).toMatchObject({
+      runtime_package_version: '2.0.0',
+      runtime_package_sha256: digest,
+      desired_package_sha256: digest,
+      package_sync_status: 'aligned'
     })
     wrapper.unmount()
   })

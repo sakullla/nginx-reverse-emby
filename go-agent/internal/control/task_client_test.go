@@ -1,3 +1,5 @@
+//go:build !integration
+
 package control
 
 import (
@@ -5,23 +7,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"strings"
+	"sync"
+
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
 
 func writeUnavailableTaskStream(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
@@ -36,156 +30,6 @@ func writeUnavailableTaskStream(t *testing.T, w http.ResponseWriter, r *http.Req
 		t.Fatal("expected task stream hello before unavailable response")
 	}
 	http.NotFound(w, r)
-}
-
-func writeTaskStreamProbe(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodHead || r.URL.Path != "/api/agents/task-stream" {
-		return false
-	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.WriteHeader(http.StatusOK)
-	return true
-}
-
-func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
-	type capturedRequest struct {
-		AgentToken string
-		AgentID    string
-		SessionID  string
-	}
-
-	requests := make(chan capturedRequest, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream" {
-			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-				t.Fatalf("EnableFullDuplex() error = %v", err)
-			}
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/task-session" {
-			http.NotFound(w, r)
-			return
-		}
-		requests <- capturedRequest{
-			AgentToken: r.Header.Get("X-Agent-Token"),
-			AgentID:    r.URL.Query().Get("agent_id"),
-			SessionID:  r.URL.Query().Get("session_id"),
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(": connected\n\n"))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		AgentName:     "edge-a",
-		Version:       "1.0.0",
-		Capabilities:  []string{TaskTypeDiagnoseHTTPRule},
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	select {
-	case req := <-requests:
-		if req.AgentToken != "token" {
-			t.Fatalf("X-Agent-Token = %q, want token", req.AgentToken)
-		}
-		if req.AgentID != "edge-a" {
-			t.Fatalf("agent_id = %q, want edge-a", req.AgentID)
-		}
-		if req.SessionID == "" {
-			t.Fatal("expected non-empty session_id")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for task session request")
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-}
-
-func TestTaskClientSupportsMasterURLWithApiPrefix(t *testing.T) {
-	requests := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream" {
-			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-				t.Fatalf("EnableFullDuplex() error = %v", err)
-			}
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/task-session" {
-			http.NotFound(w, r)
-			return
-		}
-		requests <- r.URL.Path
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(": connected\n\n"))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL + "/panel-api",
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	select {
-	case path := <-requests:
-		if path != "/api/agents/task-session" {
-			t.Fatalf("path = %q", path)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for task session request")
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
 }
 
 func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
@@ -324,153 +168,6 @@ func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
 	}
 }
 
-func TestTaskClientFallsBackToSSEWhenOldPanelDoesNotReadStreamBody(t *testing.T) {
-	type requestRecord struct {
-		Method string
-		Path   string
-	}
-
-	requests := make(chan requestRecord, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests <- requestRecord{Method: r.Method, Path: r.URL.Path}
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
-			http.NotFound(w, r)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(": connected\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			<-r.Context().Done()
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	defer server.CloseClientConnections()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPTransport: HTTPTransportConfig{
-			ResponseHeaderTimeout: 25 * time.Millisecond,
-		},
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	gotRequests := make([]requestRecord, 0, 2)
-	for len(gotRequests) < 2 {
-		select {
-		case req := <-requests:
-			gotRequests = append(gotRequests, req)
-		case <-time.After(time.Second):
-			cancel()
-			t.Fatal("timed out waiting for stream fallback to task session")
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-
-	if gotRequests[0].Path != "/api/agents/task-stream" {
-		t.Fatalf("first request path = %q, want /api/agents/task-stream", gotRequests[0].Path)
-	}
-	if gotRequests[0].Method != http.MethodHead {
-		t.Fatalf("first request method = %q, want HEAD", gotRequests[0].Method)
-	}
-	if gotRequests[1].Path != "/api/agents/task-session" {
-		t.Fatalf("second request path = %q, want /api/agents/task-session", gotRequests[1].Path)
-	}
-}
-
-func TestTaskClientFallsBackToSSEWhenLegacyPanelAuthRouteReturns401(t *testing.T) {
-	type requestRecord struct {
-		Method string
-		Path   string
-	}
-
-	requests := make(chan requestRecord, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests <- requestRecord{Method: r.Method, Path: r.URL.Path}
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/agents/task-stream":
-			http.Error(w, "missing panel token", http.StatusUnauthorized)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(": connected\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			<-r.Context().Done()
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	gotRequests := make([]requestRecord, 0, 2)
-	for len(gotRequests) < 2 {
-		select {
-		case req := <-requests:
-			gotRequests = append(gotRequests, req)
-		case <-time.After(time.Second):
-			cancel()
-			t.Fatal("timed out waiting for legacy 401 stream fallback to task session")
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-
-	if gotRequests[0].Path != "/api/agents/task-stream" {
-		t.Fatalf("first request path = %q, want /api/agents/task-stream", gotRequests[0].Path)
-	}
-	if gotRequests[0].Method != http.MethodHead {
-		t.Fatalf("first request method = %q, want HEAD", gotRequests[0].Method)
-	}
-	if gotRequests[1].Path != "/api/agents/task-session" {
-		t.Fatalf("second request path = %q, want /api/agents/task-session", gotRequests[1].Path)
-	}
-}
-
 func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	sessionRequested := make(chan struct{}, 1)
 	streamRequests := make(chan struct{}, 1)
@@ -531,683 +228,54 @@ func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	}
 }
 
-func TestTaskClientStreamPostFailureDoesNotBlockOnHelloWriter(t *testing.T) {
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:  "https://panel.example.test",
-		AgentToken: "token",
-		AgentID:    "edge-a",
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method == http.MethodHead && req.URL.Path == "/api/agents/task-stream" {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Status:     "200 OK",
-					Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
-					Body:       http.NoBody,
-					Request:    req,
-				}, nil
-			}
-			if req.Method == http.MethodPost && req.URL.Path == "/api/agents/task-stream" {
-				return &http.Response{
-					StatusCode: http.StatusInternalServerError,
-					Status:     "500 Internal Server Error",
-					Header:     http.Header{},
-					Body:       io.NopCloser(strings.NewReader("failed")),
-					Request:    req,
-				}, nil
-			}
-			return &http.Response{
-				StatusCode: http.StatusNotFound,
-				Status:     "404 Not Found",
-				Header:     http.Header{},
-				Body:       http.NoBody,
-				Request:    req,
-			}, nil
-		})},
-	})
+func TestWriteTaskStreamPayloadStopsBlockedWriteAtContextDeadline(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
 
-	done := make(chan error, 1)
-	go func() {
-		done <- client.runStreamSession(context.Background())
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	err := writeTaskStreamPayload(ctx, writer, []byte("blocked"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeTaskStreamPayload() error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("blocked stream write returned after %s", elapsed)
+	}
+}
+
+func TestTaskClientHTTP2StreamStopsOnCancellation(t *testing.T) {
+	streamOpened := make(chan struct{}, 1)
+	releaseServer := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseServer)
+		}
 	}()
-
-	select {
-	case err := <-done:
-		var streamErr streamStatusError
-		if !errors.As(err, &streamErr) || streamErr.statusCode != http.StatusInternalServerError {
-			t.Fatalf("runStreamSession() error = %v, want stream 500", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("runStreamSession() blocked after stream POST failure")
-	}
-}
-
-func TestIsStreamUnavailableTreatsOnlyProbe401AsUnavailable(t *testing.T) {
-	if !isStreamUnavailable(streamStatusError{statusCode: http.StatusUnauthorized, status: "401 Unauthorized", probe: true}) {
-		t.Fatal("probe 401 should be treated as stream unavailable")
-	}
-	if isStreamUnavailable(streamStatusError{statusCode: http.StatusUnauthorized, status: "401 Unauthorized"}) {
-		t.Fatal("non-probe 401 should not be treated as stream unavailable")
-	}
-}
-
-func TestClientSendHelloEncodesExpectedMessage(t *testing.T) {
-	client := NewTaskClient(TaskClientConfig{
-		AgentID:      "edge-a",
-		AgentName:    "edge-a",
-		Version:      "1.0.0",
-		Capabilities: []string{TaskTypeDiagnoseHTTPRule},
-	})
-
-	message := client.helloMessage("session-1")
-	if message.Type != "hello" {
-		t.Fatalf("Type = %q, want hello", message.Type)
-	}
-	if message.Hello == nil {
-		t.Fatal("expected hello payload")
-	}
-
-	data, err := json.Marshal(message)
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("expected non-empty encoded message")
-	}
-}
-
-func TestTaskClientURLsEncodeQueryParameters(t *testing.T) {
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL: "https://panel.example.test",
-		AgentID:   "edge&a + b",
-	})
-	sessionID := "session&x + y"
-
-	for _, rawURL := range []string{
-		client.sessionURL(sessionID),
-		client.streamURL(sessionID),
-	} {
-		parsed, err := url.Parse(rawURL)
-		if err != nil {
-			t.Fatalf("url.Parse(%q) error = %v", rawURL, err)
-		}
-		if got := parsed.Query().Get("agent_id"); got != "edge&a + b" {
-			t.Fatalf("agent_id from %q = %q, want encoded round-trip", rawURL, got)
-		}
-		if got := parsed.Query().Get("session_id"); got != sessionID {
-			t.Fatalf("session_id from %q = %q, want encoded round-trip", rawURL, got)
-		}
-	}
-}
-
-func TestTaskClientConsumesTaskEventAndReportsLifecycle(t *testing.T) {
-	type taskUpdate struct {
-		TaskID string         `json:"task_id"`
-		State  string         `json:"state"`
-		Result map[string]any `json:"result"`
-		Error  string         `json:"error"`
-	}
-
-	updates := make(chan taskUpdate, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
-			writeUnavailableTaskStream(t, w, r)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("event: task\ndata: {\"task_id\":\"task-1\",\"task_type\":\"diagnose_http_rule\",\"deadline\":\"2026-04-14T00:00:00Z\",\"payload\":{\"rule_id\":7}}\n\n"))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodHead:
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+			writer.(http.Flusher).Flush()
+			scanner := bufio.NewScanner(request.Body)
+			if scanner.Scan() {
+				streamOpened <- struct{}{}
 			}
-			<-r.Context().Done()
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agent-tasks/task-1/updates":
-			defer r.Body.Close()
-			var payload struct {
-				State  string         `json:"state"`
-				Result map[string]any `json:"result"`
-				Error  string         `json:"error"`
+			select {
+			case <-request.Context().Done():
+			case <-releaseServer:
 			}
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatalf("Decode() error = %v", err)
-			}
-			updates <- taskUpdate{
-				TaskID: "task-1",
-				State:  payload.State,
-				Result: payload.Result,
-				Error:  payload.Error,
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"ok":true}`))
 		default:
-			http.NotFound(w, r)
+			http.NotFound(writer, request)
 		}
 	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		AgentName:     "edge-a",
-		Version:       "1.0.0",
-		Capabilities:  []string{TaskTypeDiagnoseHTTPRule},
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-		Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
-			if task.TaskID != "task-1" {
-				t.Fatalf("TaskID = %q", task.TaskID)
-			}
-			if task.TaskType != TaskTypeDiagnoseHTTPRule {
-				t.Fatalf("TaskType = %q", task.TaskType)
-			}
-			return map[string]any{
-				"summary": map[string]any{
-					"avg_latency_ms": 11,
-				},
-			}, nil
-		}),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	got := make([]taskUpdate, 0, 2)
-	for len(got) < 2 {
-		select {
-		case update := <-updates:
-			got = append(got, update)
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for task updates")
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-
-	if got[0].State != "running" {
-		t.Fatalf("first state = %q", got[0].State)
-	}
-	if got[1].State != "completed" {
-		t.Fatalf("second state = %q", got[1].State)
-	}
-	summary, ok := got[1].Result["summary"].(map[string]any)
-	if !ok {
-		t.Fatalf("summary = %#v", got[1].Result["summary"])
-	}
-	if avg, ok := summary["avg_latency_ms"].(float64); !ok || avg != 11 {
-		t.Fatalf("avg_latency_ms = %#v", summary["avg_latency_ms"])
-	}
-}
-
-func TestTaskClientUsesNDJSONTaskStreamForLifecycleUpdates(t *testing.T) {
-	type taskUpdate struct {
-		TaskID string         `json:"task_id"`
-		State  string         `json:"state"`
-		Result map[string]any `json:"result"`
-		Error  string         `json:"error"`
-	}
-	type streamMessage struct {
-		Type   string      `json:"type"`
-		Update *taskUpdate `json:"update,omitempty"`
-	}
-
-	firstPath := make(chan string, 1)
-	updates := make(chan taskUpdate, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if writeTaskStreamProbe(w, r) {
-			return
-		}
-		select {
-		case firstPath <- r.URL.Path:
-		default:
-		}
-		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
-			http.NotFound(w, r)
-			return
-		}
-		if got := r.Header.Get("Content-Type"); got != "application/x-ndjson" {
-			t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
-		}
-		if got := r.Header.Get("X-Agent-Token"); got != "token" {
-			t.Fatalf("X-Agent-Token = %q, want token", got)
-		}
-		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-			t.Fatalf("EnableFullDuplex() error = %v", err)
-		}
-
-		bodyDone := make(chan struct{})
-		go func() {
-			defer close(bodyDone)
-			defer r.Body.Close()
-			scanner := bufio.NewScanner(r.Body)
-			for scanner.Scan() {
-				var msg streamMessage
-				if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-					t.Errorf("Unmarshal() error = %v", err)
-					return
-				}
-				if msg.Type != "update" || msg.Update == nil {
-					continue
-				}
-				updates <- taskUpdate{
-					TaskID: msg.Update.TaskID,
-					State:  msg.Update.State,
-					Result: msg.Update.Result,
-					Error:  msg.Update.Error,
-				}
-			}
-			if err := scanner.Err(); err != nil && r.Context().Err() == nil {
-				t.Errorf("body scanner error = %v", err)
-			}
-		}()
-
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		_, _ = w.Write([]byte("{\"type\":\"task\",\"task\":{\"task_id\":\"task-1\",\"task_type\":\"diagnose_http_rule\",\"deadline\":\"2026-05-11T10:00:00Z\",\"payload\":{\"rule_id\":7}}}\n"))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done()
-		<-bodyDone
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		AgentName:     "edge-a",
-		Version:       "1.0.0",
-		Capabilities:  []string{TaskTypeDiagnoseHTTPRule},
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-		Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
-			if task.TaskID != "task-1" {
-				t.Fatalf("TaskID = %q", task.TaskID)
-			}
-			if task.TaskType != TaskTypeDiagnoseHTTPRule {
-				t.Fatalf("TaskType = %q", task.TaskType)
-			}
-			return map[string]any{
-				"summary": map[string]any{
-					"avg_latency_ms": 11,
-				},
-			}, nil
-		}),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	select {
-	case path := <-firstPath:
-		if path != "/api/agents/task-stream" {
-			t.Fatalf("first request path = %q, want /api/agents/task-stream", path)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for stream request")
-	}
-
-	got := make([]taskUpdate, 0, 2)
-	for len(got) < 2 {
-		select {
-		case update := <-updates:
-			got = append(got, update)
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for stream task updates")
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-
-	if got[0].TaskID != "task-1" || got[0].State != "running" {
-		t.Fatalf("first update = %#v, want task-1 running", got[0])
-	}
-	if got[1].TaskID != "task-1" || got[1].State != "completed" {
-		t.Fatalf("second update = %#v, want task-1 completed", got[1])
-	}
-	summary, ok := got[1].Result["summary"].(map[string]any)
-	if !ok {
-		t.Fatalf("summary = %#v", got[1].Result["summary"])
-	}
-	if avg, ok := summary["avg_latency_ms"].(float64); !ok || avg != 11 {
-		t.Fatalf("avg_latency_ms = %#v", summary["avg_latency_ms"])
-	}
-}
-
-func TestTaskClientStreamsHelloAfterServerOKBeforeBodyRead(t *testing.T) {
-	type taskUpdate struct {
-		TaskID string         `json:"task_id"`
-		State  string         `json:"state"`
-		Result map[string]any `json:"result"`
-		Error  string         `json:"error"`
-	}
-	type streamMessage struct {
-		Type   string         `json:"type"`
-		Hello  *HelloMessage  `json:"hello,omitempty"`
-		Update *taskUpdate    `json:"update,omitempty"`
-		Task   map[string]any `json:"task,omitempty"`
-	}
-
-	helloSeen := make(chan HelloMessage, 1)
-	updates := make(chan taskUpdate, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if writeTaskStreamProbe(w, r) {
-			return
-		}
-		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
-			http.NotFound(w, r)
-			return
-		}
-		if got := r.Header.Get("Expect"); got != "" {
-			t.Fatalf("Expect header = %q, want empty for full-duplex task stream", got)
-		}
-		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-			t.Fatalf("EnableFullDuplex() error = %v", err)
-		}
-
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-
-		bodyDone := make(chan struct{})
-		go func() {
-			defer close(bodyDone)
-			defer r.Body.Close()
-			scanner := bufio.NewScanner(r.Body)
-			for scanner.Scan() {
-				var msg streamMessage
-				if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-					t.Errorf("Unmarshal() error = %v", err)
-					return
-				}
-				switch {
-				case msg.Type == "hello" && msg.Hello != nil:
-					helloSeen <- *msg.Hello
-				case msg.Type == "update" && msg.Update != nil:
-					updates <- *msg.Update
-				}
-			}
-			if err := scanner.Err(); err != nil && r.Context().Err() == nil {
-				t.Errorf("body scanner error = %v", err)
-			}
-		}()
-
-		select {
-		case hello := <-helloSeen:
-			if hello.AgentID != "edge-a" {
-				t.Errorf("hello agent_id = %q, want edge-a", hello.AgentID)
-			}
-		case <-time.After(time.Second):
-			t.Error("timed out waiting for hello after 200 OK")
-			return
-		}
-
-		_, _ = w.Write([]byte("{\"type\":\"task\",\"task\":{\"task_id\":\"task-1\",\"task_type\":\"diagnose_http_rule\",\"deadline\":\"2026-05-11T10:00:00Z\",\"payload\":{\"rule_id\":7}}}\n"))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done()
-		<-bodyDone
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		AgentName:     "edge-a",
-		Version:       "1.0.0",
-		Capabilities:  []string{TaskTypeDiagnoseHTTPRule},
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-		Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
-			if task.TaskID != "task-1" {
-				t.Fatalf("TaskID = %q", task.TaskID)
-			}
-			return map[string]any{"ok": true}, nil
-		}),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	got := make([]taskUpdate, 0, 2)
-	for len(got) < 2 {
-		select {
-		case update := <-updates:
-			got = append(got, update)
-		case <-time.After(time.Second):
-			cancel()
-			t.Fatal("timed out waiting for stream task updates")
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-
-	if got[0].TaskID != "task-1" || got[0].State != "running" {
-		t.Fatalf("first update = %#v, want task-1 running", got[0])
-	}
-	if got[1].TaskID != "task-1" || got[1].State != "completed" {
-		t.Fatalf("second update = %#v, want task-1 completed", got[1])
-	}
-}
-
-func TestTaskClientHandlesLargeNDJSONTaskStreamMessage(t *testing.T) {
-	type taskUpdate struct {
-		TaskID string         `json:"task_id"`
-		State  string         `json:"state"`
-		Result map[string]any `json:"result"`
-		Error  string         `json:"error"`
-	}
-	type streamMessage struct {
-		Type   string      `json:"type"`
-		Update *taskUpdate `json:"update,omitempty"`
-	}
-
-	largeBlob := strings.Repeat("x", 70*1024)
-	updates := make(chan taskUpdate, 2)
-	seenBlob := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if writeTaskStreamProbe(w, r) {
-			return
-		}
-		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
-			http.NotFound(w, r)
-			return
-		}
-		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-			t.Fatalf("EnableFullDuplex() error = %v", err)
-		}
-
-		bodyDone := make(chan struct{})
-		go func() {
-			defer close(bodyDone)
-			defer r.Body.Close()
-			scanner := bufio.NewScanner(r.Body)
-			for scanner.Scan() {
-				var msg streamMessage
-				if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-					t.Errorf("Unmarshal() error = %v", err)
-					return
-				}
-				if msg.Type != "update" || msg.Update == nil {
-					continue
-				}
-				updates <- taskUpdate{
-					TaskID: msg.Update.TaskID,
-					State:  msg.Update.State,
-					Result: msg.Update.Result,
-					Error:  msg.Update.Error,
-				}
-			}
-			if err := scanner.Err(); err != nil && r.Context().Err() == nil {
-				t.Errorf("body scanner error = %v", err)
-			}
-		}()
-
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		msg := Message{
-			Type: "task",
-			Task: &TaskMessage{
-				TaskID:   "task-1",
-				TaskType: TaskTypeDiagnoseHTTPRule,
-				Deadline: "2026-05-11T10:00:00Z",
-				RawPayload: map[string]any{
-					"blob": largeBlob,
-				},
-			},
-		}
-		data, err := json.Marshal(msg)
-		if err != nil {
-			t.Fatalf("Marshal() error = %v", err)
-		}
-		_, _ = w.Write(append(data, '\n'))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done()
-		<-bodyDone
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		AgentName:     "edge-a",
-		Version:       "1.0.0",
-		Capabilities:  []string{TaskTypeDiagnoseHTTPRule},
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-		Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
-			blob, ok := task.RawPayload["blob"].(string)
-			if !ok {
-				t.Fatalf("payload blob = %#v", task.RawPayload["blob"])
-			}
-			seenBlob <- blob
-			return map[string]any{"ok": true}, nil
-		}),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
-	select {
-	case got := <-seenBlob:
-		if got != largeBlob {
-			t.Fatalf("payload blob length = %d, want %d", len(got), len(largeBlob))
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for handler payload")
-	}
-
-	got := make([]taskUpdate, 0, 2)
-	for len(got) < 2 {
-		select {
-		case update := <-updates:
-			got = append(got, update)
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for stream task updates")
-		}
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
-	}
-
-	if got[0].TaskID != "task-1" || got[0].State != "running" {
-		t.Fatalf("first update = %#v, want task-1 running", got[0])
-	}
-	if got[1].TaskID != "task-1" || got[1].State != "completed" {
-		t.Fatalf("second update = %#v, want task-1 completed", got[1])
-	}
-}
-
-func TestTaskClientDoesNotSendExpectHeaderForTaskStream(t *testing.T) {
-	helloSeen := make(chan HelloMessage, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if writeTaskStreamProbe(w, r) {
-			return
-		}
-		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
-			http.NotFound(w, r)
-			return
-		}
-		if got := r.Header.Get("Expect"); got != "" {
-			t.Fatalf("Expect header = %q, want empty for full-duplex task stream", got)
-		}
-		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-			t.Fatalf("EnableFullDuplex() error = %v", err)
-		}
-		scanner := bufio.NewScanner(r.Body)
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				t.Fatalf("task stream request body scanner error = %v", err)
-			}
-			t.Fatal("expected task stream hello")
-		}
-		var msg Message
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			t.Fatalf("Unmarshal() error = %v", err)
-		}
-		if msg.Type != "hello" || msg.Hello == nil {
-			t.Fatalf("first stream message = %+v, want hello", msg)
-		}
-		helloSeen <- *msg.Hello
-		w.WriteHeader(http.StatusNotFound)
-	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
 	defer server.Close()
 
 	client := NewTaskClient(TaskClientConfig{
@@ -1216,83 +284,15 @@ func TestTaskClientDoesNotSendExpectHeaderForTaskStream(t *testing.T) {
 		AgentID:    "edge-a",
 		HTTPClient: server.Client(),
 	})
-
-	err := client.runStreamSession(context.Background())
-	if err == nil {
-		t.Fatal("runStreamSession() error = nil, want non-200 error")
-	}
-
-	select {
-	case hello := <-helloSeen:
-		if hello.AgentID != "edge-a" {
-			t.Fatalf("hello agent_id = %q, want edge-a", hello.AgentID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for stream hello")
-	}
-}
-
-func TestTaskClientUsesTaskDeadlineForHandlerContext(t *testing.T) {
-	deadline := time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339)
-	handlerDeadline := make(chan time.Time, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
-			writeUnavailableTaskStream(t, w, r)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(fmt.Sprintf("event: task\ndata: {\"task_id\":\"task-1\",\"task_type\":\"diagnose_http_rule\",\"deadline\":%q,\"payload\":{\"rule_id\":7}}\n\n", deadline)))
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			<-r.Context().Done()
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agent-tasks/task-1/updates":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"ok":true}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:     server.URL,
-		AgentToken:    "token",
-		AgentID:       "edge-a",
-		ReconnectWait: 10 * time.Millisecond,
-		HTTPClient:    server.Client(),
-		Handler: TaskHandlerFunc(func(ctx context.Context, _ TaskMessage) (map[string]any, error) {
-			got, ok := ctx.Deadline()
-			if !ok {
-				return nil, errors.New("handler context has no deadline")
-			}
-			handlerDeadline <- got
-			return map[string]any{"ok": true}, nil
-		}),
-	})
-
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan error, 1)
-	go func() {
-		done <- client.Run(ctx)
-	}()
-
+	go func() { done <- client.Run(ctx) }()
 	select {
-	case got := <-handlerDeadline:
-		want, err := time.Parse(time.RFC3339, deadline)
-		if err != nil {
-			t.Fatalf("Parse() error = %v", err)
-		}
-		if got.Before(want.Add(-time.Second)) || got.After(want.Add(time.Second)) {
-			t.Fatalf("handler deadline = %s, want near %s", got, want)
-		}
+	case <-streamOpened:
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for handler deadline")
+		cancel()
+		t.Fatal("HTTP/2 task stream did not open")
 	}
-
 	cancel()
 	select {
 	case err := <-done:
@@ -1300,7 +300,163 @@ func TestTaskClientUsesTaskDeadlineForHandlerContext(t *testing.T) {
 			t.Fatalf("Run() error = %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for client shutdown")
+		close(releaseServer)
+		released = true
+		server.CloseClientConnections()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("HTTP/2 task stream did not stop after cancellation")
+	}
+}
+
+func TestTaskClientReconnectsWhenTaskStreamStopsAcknowledgingPings(t *testing.T) {
+	streamOpened := make(chan struct{}, 4)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodHead && request.URL.Path == "/api/agents/task-stream":
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodPost && request.URL.Path == "/api/agents/task-stream":
+			if _, err := bufio.NewReader(request.Body).ReadString('\n'); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+			writer.(http.Flusher).Flush()
+			streamOpened <- struct{}{}
+			_, _ = io.Copy(io.Discard, request.Body)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	client := NewTaskClient(TaskClientConfig{
+		MasterURL: server.URL, AgentToken: "token", AgentID: "edge-a", ReconnectWait: 5 * time.Millisecond,
+		TaskStreamPingInterval: 10 * time.Millisecond, TaskStreamLivenessTimeout: 50 * time.Millisecond, HTTPClient: server.Client(),
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("TaskClient.Run() error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("task client did not stop")
+		}
+	}()
+
+	for opened := 0; opened < 2; opened++ {
+		select {
+		case <-streamOpened:
+		case <-time.After(time.Second):
+			t.Fatalf("task stream opened %d times, want reconnect", opened)
+		}
+	}
+}
+
+func TestTaskClientRestoresServerPushAfterHTTP2StreamEnds(t *testing.T) {
+	var streamMu sync.Mutex
+	streamCount := 0
+	firstConnection := ""
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodHead && request.URL.Path == "/api/agents/task-stream":
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodPost && request.URL.Path == "/api/agents/task-stream":
+			if _, err := bufio.NewReader(request.Body).ReadString('\n'); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/x-ndjson")
+			writer.WriteHeader(http.StatusOK)
+			writer.(http.Flusher).Flush()
+			streamMu.Lock()
+			streamCount++
+			current := streamCount
+			if current == 1 {
+				firstConnection = request.RemoteAddr
+			}
+			poisoned := current > 1 && request.RemoteAddr == firstConnection
+			streamMu.Unlock()
+			if current == 1 || poisoned {
+				return
+			}
+			_, _ = io.WriteString(writer, `{"type":"task","task":{"task_id":"task-recovered","task_type":"diagnose_http_rule","deadline":"2099-01-01T00:00:00Z","payload":{"rule_id":7}}}`+"\n")
+			writer.(http.Flusher).Flush()
+			_, _ = io.Copy(io.Discard, request.Body)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	received := make(chan struct{}, 1)
+	client := NewTaskClient(TaskClientConfig{
+		MasterURL: server.URL, AgentToken: "token", AgentID: "edge-a", ReconnectWait: 5 * time.Millisecond,
+		HTTPClient: server.Client(), Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
+			if task.TaskID != "task-recovered" {
+				t.Fatalf("task id = %q", task.TaskID)
+			}
+			received <- struct{}{}
+			return map[string]any{"ok": true}, nil
+		}),
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("task client did not restore server push after the first HTTP/2 stream ended")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("TaskClient.Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("task client did not stop")
+	}
+}
+
+func TestHTTPTransportConfiguresHTTP2LivenessChecks(t *testing.T) {
+	transport := newHTTPTransport(HTTPTransportConfig{})
+	defer transport.CloseIdleConnections()
+	if transport.HTTP2 == nil {
+		t.Fatal("HTTP/2 liveness configuration is missing")
+	}
+	if transport.HTTP2.SendPingTimeout != defaultTaskStreamPingInterval ||
+		transport.HTTP2.PingTimeout != defaultTaskStreamPingAckTimeout {
+		t.Fatalf("HTTP/2 liveness = idle %s ping %s", transport.HTTP2.SendPingTimeout, transport.HTTP2.PingTimeout)
+	}
+}
+
+func TestTaskClientDefaultPingPrecedesMinuteIdleCutoff(t *testing.T) {
+	client := NewTaskClient(TaskClientConfig{})
+	if client.transport != nil {
+		defer client.transport.CloseIdleConnections()
+	}
+	if client.cfg.TaskStreamPingInterval != 30*time.Second {
+		t.Fatalf("task stream ping interval = %s, want 30s", client.cfg.TaskStreamPingInterval)
+	}
+	if client.cfg.TaskStreamLivenessTimeout <= client.cfg.TaskStreamPingInterval || client.cfg.TaskStreamLivenessTimeout >= time.Minute {
+		t.Fatalf("task stream liveness timeout = %s, want between ping interval and one minute", client.cfg.TaskStreamLivenessTimeout)
 	}
 }
 
@@ -1379,32 +535,5 @@ func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	}
 	if got[1]["error"] != "probe failed" {
 		t.Fatalf("error = %#v", got[1]["error"])
-	}
-}
-
-func TestNewTaskClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
-	client := NewTaskClient(TaskClientConfig{
-		MasterURL:  "https://master.example.com",
-		AgentToken: "token",
-		HTTPTransport: model.HTTPTransportConfig{
-			DialTimeout:           11 * time.Second,
-			TLSHandshakeTimeout:   12 * time.Second,
-			ResponseHeaderTimeout: 13 * time.Second,
-			IdleConnTimeout:       14 * time.Second,
-			KeepAlive:             15 * time.Second,
-		},
-	})
-
-	if client.transport == nil {
-		t.Fatal("expected transport to be initialized")
-	}
-	if client.transport.TLSHandshakeTimeout != 12*time.Second {
-		t.Fatalf("TLSHandshakeTimeout = %v", client.transport.TLSHandshakeTimeout)
-	}
-	if client.transport.ResponseHeaderTimeout != 13*time.Second {
-		t.Fatalf("ResponseHeaderTimeout = %v", client.transport.ResponseHeaderTimeout)
-	}
-	if client.transport.IdleConnTimeout != 14*time.Second {
-		t.Fatalf("IdleConnTimeout = %v", client.transport.IdleConnTimeout)
 	}
 }

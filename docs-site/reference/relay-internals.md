@@ -14,27 +14,27 @@ Relay 隧道在 Agent 之间传输流量。配合 HTTP 或 L4 规则使用：规
 | 字段 | 说明 |
 |------|------|
 | 名称 | 面板显示名称 |
-| 证书来源 | 默认自动签发（Relay CA）。也可绑定已有证书 |
+| 证书来源 | 激活后由内部 PKI 为 listener identity 自动签发；旧 Relay CA/手动证书只在维护升级前保留 |
 | 绑定地址 | Agent 本地监听地址，每行一个 |
 | 监听端口 | Agent 本地监听端口 |
 | 公网入口 | 其他节点连接此中继的地址，格式 `host` 或 `host:port` |
 | 传输方式 | TLS/TCP 或 QUIC |
-| 信任策略 | 默认自动 Relay CA + Pin。可在高级设置中自定义 |
+| 信任策略 | 激活后的内部 Relay 固定为当前 PKI domain 的双向验证（`pki_mtls`） |
 
 ## TLS 与信任策略
 
-默认使用自动签发的 Relay CA 证书加证书固定（Pin），安全且无需手动配置。
+内部 PKI 激活后，TLS/TCP 和 QUIC 都要求双向证书认证。服务端和客户端会校验当前 PKI domain/epoch、CA generation、Agent/listener identity、EKU/purpose、有效期与撤销状态；任一不匹配都拒绝连接。registration、heartbeat、revision 和 task 不走这条 mTLS 数据面，仍使用现有 panel/control listener 与 token。
 
-手动控制时的 TLS 模式：
+旧版本和维护升级前可能仍显示以下兼容模式：
 
 | 模式 | 含义 |
 |------|------|
-| Pin + CA | 同时验证固定值和 CA 链（默认） |
+| Pin + CA | 同时验证固定值和 CA 链 |
 | 仅 Pin | 只验证固定值 |
 | 仅 CA | 只验证 CA 链 |
 | Pin 或 CA | 任一通过即接受 |
 
-高级设置中可提供「固定集」（每行一个，格式 `type:value`）和「受信任的 CA 证书」。TLS/TCP 模式还可选 TLS 混淆策略（仅首跳有效）。
+这些模式不是内部 PKI 的恢复或降级方案。激活 `tunnel_mtls_only` 后，旧 Pin Set、单向 TLS、`pin_or_ca` 与自签名放行必须删除；PKI degraded 时应修复 canonical 状态或恢复受保护 PKI 备份，不能重新启用旧信任。维护升级前的高级设置仍可提供「固定集」和「受信任的 CA 证书」；TLS/TCP 模式还可选 TLS 混淆策略（仅首跳有效）。
 
 ## Relay 层
 

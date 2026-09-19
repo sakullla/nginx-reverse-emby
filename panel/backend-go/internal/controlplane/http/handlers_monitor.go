@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -62,6 +63,11 @@ func (d Dependencies) handleAgentMonitorStream(w http.ResponseWriter, r *http.Re
 		writeMonitorStreamMessage(w, flusher, "error", map[string]any{"message": "monitor snapshot unavailable"})
 		return
 	}
+	snapshot, err = d.filterMonitorSnapshot(r.Context(), snapshot)
+	if err != nil {
+		writeMonitorStreamMessage(w, flusher, "error", map[string]any{"message": "monitor authorization unavailable"})
+		return
+	}
 	if !writeMonitorStreamMessage(w, flusher, "snapshot", snapshot) {
 		return
 	}
@@ -86,6 +92,11 @@ func (d Dependencies) handleAgentMonitorStream(w http.ResponseWriter, r *http.Re
 				writeMonitorStreamMessage(w, flusher, "error", map[string]any{"message": "monitor snapshot unavailable"})
 				return
 			}
+			snapshot, err = d.filterMonitorSnapshot(r.Context(), snapshot)
+			if err != nil {
+				writeMonitorStreamMessage(w, flusher, "error", map[string]any{"message": "monitor authorization unavailable"})
+				return
+			}
 			snapshot = snapshotWithMonitorRates(snapshot, previousSnapshot)
 			if !writeMonitorStreamMessage(w, flusher, "snapshot", snapshot) {
 				return
@@ -95,11 +106,34 @@ func (d Dependencies) handleAgentMonitorStream(w http.ResponseWriter, r *http.Re
 			if !ok {
 				return
 			}
+			visible, err := d.visibleResource(r.Context(), "agent", update.Agent.ID)
+			if err != nil {
+				writeMonitorStreamMessage(w, flusher, "error", map[string]any{"message": "monitor authorization unavailable"})
+				return
+			}
+			if !visible {
+				continue
+			}
 			if !writeMonitorStreamMessage(w, flusher, "update", update) {
 				return
 			}
 		}
 	}
+}
+
+func (d Dependencies) filterMonitorSnapshot(ctx context.Context, snapshot service.AgentMonitorSnapshot) (service.AgentMonitorSnapshot, error) {
+	visibleAgents := make([]service.AgentMonitorAgent, 0, len(snapshot.Agents))
+	for _, agent := range snapshot.Agents {
+		visible, err := d.visibleResource(ctx, "agent", agent.ID)
+		if err != nil {
+			return service.AgentMonitorSnapshot{}, err
+		}
+		if visible {
+			visibleAgents = append(visibleAgents, agent)
+		}
+	}
+	snapshot.Agents = visibleAgents
+	return snapshot, nil
 }
 
 func (d Dependencies) monitorStreamRefreshInterval() time.Duration {

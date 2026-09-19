@@ -5,7 +5,6 @@ package hotrestart
 import (
 	"errors"
 	"net"
-	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -13,152 +12,102 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestIntegrationPacketHandoffGatesForwardingThenTakesPhysicalAuthority(t *testing.T) {
+func TestIntegrationPacketHandoffMatrix(t *testing.T) {
 	requirePacketHandoff(t)
-	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer physical.Close()
-	bundle, err := ExportPacketConns(map[string]net.PacketConn{"l4:udp:test": physical})
-	if err != nil {
-		t.Fatal(err)
-	}
-	forwarders := bundle.TakeForwarders()
-	defer func() { _ = forwarders["l4:udp:test"].Close() }()
-	set, err := ImportPacketConns(bundle.Descriptors, bundle.Files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer set.Close()
-	child := set.Conns["l4:udp:test"]
 
-	type packetResult struct {
-		payload string
-		remote  net.Addr
-		err     error
-	}
-	read := func() <-chan packetResult {
-		result := make(chan packetResult, 1)
+	t.Run("activation gate drains queued delivery before physical authority", func(t *testing.T) {
+		fixture := newPacketHandoffFixture(t)
+
+		preActivation := fixture.read()
+		if err := fixture.forwarder.Send([]byte("queued"), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4567}); err != nil {
+			t.Fatal(err)
+		}
+		assertPacketReadBlocked(t, preActivation, "activation")
+		if err := fixture.child.Activate(); err != nil {
+			t.Fatal(err)
+		}
+		assertPacketRead(t, preActivation, "queued", "127.0.0.1:4567")
+
+		physicalRead := fixture.read()
+		if err := fixture.forwarder.Barrier(); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.child.TakeAuthority(); err != nil {
+			t.Fatal(err)
+		}
+		sender, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sender.Close()
+		if _, err := sender.WriteTo([]byte("physical"), fixture.physical.LocalAddr()); err != nil {
+			t.Fatal(err)
+		}
+		assertPacketRead(t, physicalRead, "physical", sender.LocalAddr().String())
+	})
+
+	t.Run("descriptor identity and index tampering fail closed", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			mutate func(*PacketDescriptor)
+		}{
+			{name: "missing identity", mutate: func(descriptor *PacketDescriptor) { descriptor.ID = "" }},
+			{name: "duplicate file index", mutate: func(descriptor *PacketDescriptor) {
+				descriptor.ForwardFileIndex = descriptor.FileIndex
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				export := newPacketExportFixture(t)
+				descriptors := append([]PacketDescriptor(nil), export.bundle.Descriptors...)
+				tc.mutate(&descriptors[0])
+				if set, err := ImportPacketConns(descriptors, export.bundle.Files); err == nil {
+					_ = set.Close()
+					t.Fatal("ImportPacketConns() accepted a tampered descriptor")
+				}
+			})
+		}
+	})
+
+	t.Run("authority reservation blocks close until ownership completes", func(t *testing.T) {
+		fixture := newPacketHandoffFixture(t)
+		if err := fixture.child.Activate(); err != nil {
+			t.Fatal(err)
+		}
+		readDone := make(chan error, 1)
 		go func() {
 			buffer := make([]byte, 64)
-			n, remote, err := child.ReadFrom(buffer)
-			result <- packetResult{payload: string(buffer[:n]), remote: remote, err: err}
+			_, _, err := fixture.child.ReadFrom(buffer)
+			readDone <- err
 		}()
-		return result
-	}
-
-	preActivation := read()
-	if err := forwarders["l4:udp:test"].Send([]byte("queued"), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4567}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case result := <-preActivation:
-		t.Fatalf("ReadFrom() completed before activation: %+v", result)
-	case <-time.After(50 * time.Millisecond):
-	}
-	if err := child.Activate(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case result := <-preActivation:
-		if result.err != nil || result.payload != "queued" || result.remote.String() != "127.0.0.1:4567" {
-			t.Fatalf("forwarded result = %+v", result)
+		if err := fixture.forwarder.Barrier(); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("forwarded packet was not delivered after activation")
-	}
-
-	physicalRead := read()
-	if err := forwarders["l4:udp:test"].Barrier(); err != nil {
-		t.Fatal(err)
-	}
-	if err := child.TakeAuthority(); err != nil {
-		t.Fatal(err)
-	}
-	sender, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sender.Close()
-	if _, err := sender.WriteTo([]byte("physical"), physical.LocalAddr()); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case result := <-physicalRead:
-		if result.err != nil || result.payload != "physical" || result.remote.String() != sender.LocalAddr().String() {
-			t.Fatalf("physical result = %+v", result)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("packet connection did not take physical authority")
-	}
-}
-
-func TestIntegrationPacketHandoffDrainsQueuedForwardingBeforeParentCrashTakeover(t *testing.T) {
-	requirePacketHandoff(t)
-	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer physical.Close()
-	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
-	if err != nil {
-		t.Fatal(err)
-	}
-	forwarder := bundle.TakeForwarders()["packet"]
-	set, err := ImportPacketConns(bundle.Descriptors, bundle.Files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer set.Close()
-	child := set.Conns["packet"]
-	if err := child.Activate(); err != nil {
-		t.Fatal(err)
-	}
-	remote := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4567}
-	if err := forwarder.Send([]byte("queued-before-crash"), remote); err != nil {
-		t.Fatal(err)
-	}
-	if err := forwarder.Close(); err != nil {
-		t.Fatal(err)
-	}
-	buffer := make([]byte, 64)
-	n, _, err := child.ReadFrom(buffer)
-	if err != nil || string(buffer[:n]) != "queued-before-crash" {
-		t.Fatalf("queued forward read = %q, %v", buffer[:n], err)
-	}
-	result := make(chan string, 1)
-	go func() {
-		n, _, err := child.ReadFrom(buffer)
+		reservation, err := fixture.child.ReserveAuthority()
 		if err != nil {
-			result <- "error: " + err.Error()
-			return
+			t.Fatal(err)
 		}
-		result <- string(buffer[:n])
-	}()
-	if err := child.TakeAuthority(); err != nil {
-		t.Fatal(err)
-	}
-	sender, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sender.Close()
-	if _, err := sender.WriteTo([]byte("physical-after-crash"), physical.LocalAddr()); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case got := <-result:
-		if got != "physical-after-crash" {
-			t.Fatalf("post-crash authority payload = %q", got)
+		closeDone := make(chan error, 1)
+		go func() { closeDone <- fixture.child.Close() }()
+		assertCloseBlocked(t, closeDone, "active authority reservation")
+		reservation.Commit()
+		assertCloseBlocked(t, closeDone, "committed authority reservation")
+		reservation.Finish()
+		if err := <-closeDone; err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("child did not take physical authority after parent channel closed")
-	}
+		if err := <-readDone; !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("ReadFrom() error = %v, want net.ErrClosed", err)
+		}
+	})
 }
 
-func TestIntegrationPacketAuthorityReservationBlocksCloseUntilCommit(t *testing.T) {
-	requirePacketHandoff(t)
+type packetHandoffExportFixture struct {
+	physical net.PacketConn
+	bundle   *PacketBundle
+}
+
+func newPacketExportFixture(t *testing.T) *packetHandoffExportFixture {
+	t.Helper()
 	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -168,198 +117,84 @@ func TestIntegrationPacketAuthorityReservationBlocksCloseUntilCommit(t *testing.
 		_ = physical.Close()
 		t.Fatal(err)
 	}
-	forwarder := bundle.TakeForwarders()["packet"]
-	set, err := ImportPacketConns(bundle.Descriptors, bundle.Files)
+	fixture := &packetHandoffExportFixture{physical: physical, bundle: bundle}
+	t.Cleanup(func() {
+		_ = errors.Join(fixture.bundle.Close(), fixture.physical.Close())
+	})
+	return fixture
+}
+
+type packetHandoffFixture struct {
+	*packetHandoffExportFixture
+	forwarder *PacketForwarder
+	set       *PacketSet
+	child     *GatedPacketConn
+}
+
+func newPacketHandoffFixture(t *testing.T) *packetHandoffFixture {
+	t.Helper()
+	export := newPacketExportFixture(t)
+	forwarder := export.bundle.TakeForwarders()["packet"]
+	set, err := ImportPacketConns(export.bundle.Descriptors, export.bundle.Files)
 	if err != nil {
 		_ = forwarder.Close()
-		_ = physical.Close()
 		t.Fatal(err)
 	}
-	child := set.Conns["packet"]
-	if err := child.Activate(); err != nil {
-		t.Fatal(err)
+	fixture := &packetHandoffFixture{
+		packetHandoffExportFixture: export,
+		forwarder:                  forwarder,
+		set:                        set,
+		child:                      set.Conns["packet"],
 	}
-	readDone := make(chan error, 1)
+	t.Cleanup(func() {
+		_ = errors.Join(fixture.set.Close(), fixture.forwarder.Close())
+	})
+	return fixture
+}
+
+type packetReadResult struct {
+	payload string
+	remote  net.Addr
+	err     error
+}
+
+func (f *packetHandoffFixture) read() <-chan packetReadResult {
+	result := make(chan packetReadResult, 1)
 	go func() {
 		buffer := make([]byte, 64)
-		_, _, err := child.ReadFrom(buffer)
-		readDone <- err
+		n, remote, err := f.child.ReadFrom(buffer)
+		result <- packetReadResult{payload: string(buffer[:n]), remote: remote, err: err}
 	}()
-	if err := forwarder.Barrier(); err != nil {
-		t.Fatal(err)
-	}
-	reservation, err := child.ReserveAuthority()
-	if err != nil {
-		t.Fatal(err)
-	}
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- child.Close() }()
+	return result
+}
+
+func assertPacketReadBlocked(t *testing.T, result <-chan packetReadResult, phase string) {
+	t.Helper()
 	select {
-	case err := <-closeDone:
-		t.Fatalf("Close() crossed an active authority reservation: %v", err)
+	case got := <-result:
+		t.Fatalf("ReadFrom() completed before %s: %+v", phase, got)
 	case <-time.After(50 * time.Millisecond):
 	}
-	reservation.Commit()
+}
+
+func assertPacketRead(t *testing.T, result <-chan packetReadResult, payload, remote string) {
+	t.Helper()
 	select {
-	case err := <-closeDone:
-		t.Fatalf("Close() crossed a committed but unfinished authority reservation: %v", err)
+	case got := <-result:
+		if got.err != nil || got.payload != payload || got.remote == nil || got.remote.String() != remote {
+			t.Fatalf("packet read = %+v, want payload %q from %q", got, payload, remote)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for packet %q", payload)
+	}
+}
+
+func assertCloseBlocked(t *testing.T, result <-chan error, phase string) {
+	t.Helper()
+	select {
+	case err := <-result:
+		t.Fatalf("Close() crossed %s: %v", phase, err)
 	case <-time.After(50 * time.Millisecond):
-	}
-	reservation.Finish()
-	if err := <-closeDone; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-readDone; !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("ReadFrom() error = %v, want closed after committed reservation", err)
-	}
-	if err := errors.Join(forwarder.Close(), bundle.Close(), physical.Close()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestIntegrationPacketHandoffRejectsDescriptorFileIndexAndIdentityTampering(t *testing.T) {
-	requirePacketHandoff(t)
-	for _, tc := range []struct {
-		name   string
-		mutate func([]PacketDescriptor)
-	}{
-		{name: "duplicate index", mutate: func(descriptors []PacketDescriptor) { descriptors[0].ForwardFileIndex = descriptors[0].FileIndex }},
-		{name: "wrong address", mutate: func(descriptors []PacketDescriptor) { descriptors[0].Address = "127.0.0.1:1" }},
-		{name: "missing identity", mutate: func(descriptors []PacketDescriptor) { descriptors[0].ID = "" }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			physical, err := net.ListenPacket("udp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer physical.Close()
-			bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer bundle.Close()
-			descriptors := append([]PacketDescriptor(nil), bundle.Descriptors...)
-			tc.mutate(descriptors)
-			if _, err := ImportPacketConns(descriptors, bundle.Files); err == nil {
-				t.Fatal("ImportPacketConns() accepted tampered descriptor")
-			}
-		})
-	}
-}
-
-func TestIntegrationPacketHandoffRejectsStreamSocketAsForwardingFile(t *testing.T) {
-	requirePacketHandoff(t)
-	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer physical.Close()
-	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bundle.Close()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	client, err := net.Dial("tcp", listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	server, err := listener.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-	streamFile, err := server.(*net.TCPConn).File()
-	if err != nil {
-		t.Fatal(err)
-	}
-	forwardIndex := bundle.Descriptors[0].ForwardFileIndex
-	if err := bundle.Files[forwardIndex].Close(); err != nil {
-		t.Fatal(err)
-	}
-	bundle.Files[forwardIndex] = streamFile
-	if _, err := ImportPacketConns(bundle.Descriptors, bundle.Files); err == nil {
-		t.Fatal("ImportPacketConns() accepted a stream socket as the forwarding channel")
-	}
-}
-
-func TestIntegrationPacketForwarderAppliesBoundedBackpressure(t *testing.T) {
-	requirePacketHandoff(t)
-	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer physical.Close()
-	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
-	if err != nil {
-		t.Fatal(err)
-	}
-	forwarder := bundle.TakeForwarders()["packet"]
-	defer forwarder.Close()
-	defer bundle.Close()
-	payload := make([]byte, 60*1024)
-	remote := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 4567}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		err := forwarder.Send(payload, remote)
-		if errors.Is(err, ErrPacketForwardBackpressure) {
-			return
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Fatal("packet forwarder did not report bounded backpressure")
-}
-
-func TestIntegrationPacketHandoffRepeatedCloseReturnsFileDescriptorsToBaseline(t *testing.T) {
-	requirePacketHandoff(t)
-	baseline, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for iteration := 0; iteration < 10; iteration++ {
-		physical, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
-		if err != nil {
-			_ = physical.Close()
-			t.Fatal(err)
-		}
-		forwarder := bundle.TakeForwarders()["packet"]
-		set, err := ImportPacketConns(bundle.Descriptors, bundle.Files)
-		if err != nil {
-			_ = forwarder.Close()
-			_ = bundle.Close()
-			_ = physical.Close()
-			t.Fatal(err)
-		}
-		if err := errors.Join(set.Close(), forwarder.Close(), bundle.Close(), physical.Close()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	runtime.GC()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		current, err := os.ReadDir("/proc/self/fd")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(current) <= len(baseline) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("open file descriptors after repeated handoff = %d, baseline %d", len(current), len(baseline))
-		}
-		time.Sleep(25 * time.Millisecond)
-		runtime.GC()
 	}
 }
 

@@ -13,6 +13,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	pluginrpc "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
@@ -122,6 +125,9 @@ type httpCandidate struct {
 	backendHost           string
 	backendObservationKey string
 	relayChain            []int
+	provider              HTTPBackendProvider
+	providerKey           string
+	probeBackoff          bool
 }
 
 func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
@@ -132,7 +138,10 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	placeholders := make([]model.Candidate, 0, len(e.backends))
 	indexesByID := make(map[string][]int, len(e.backends))
 	for i := range e.backends {
-		backendID := model.StableBackendID(e.backends[i].target.String())
+		backendID := e.backends[i].providerKey
+		if backendID == "" {
+			backendID = model.StableBackendID(e.backends[i].target.String())
+		}
 		placeholders = append(placeholders, model.Candidate{Address: backendID})
 		indexesByID[backendID] = append(indexesByID[backendID], i)
 	}
@@ -140,6 +149,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	strategy := e.rule.LoadBalancing.Strategy
 	orderedBackends := e.backendCache.Order(e.selectionScope, strategy, placeholders)
 	out := make([]httpCandidate, 0, len(e.backends))
+	backedOff := make([]httpCandidate, 0, len(e.backends))
 	for _, ordered := range orderedBackends {
 		indexes := indexesByID[ordered.Address]
 		if len(indexes) == 0 {
@@ -148,19 +158,26 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		backendIndex := indexes[0]
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := e.backends[backendIndex]
+		if backend.provider != nil {
+			out = append(out, httpCandidate{target: cloneURL(backend.target), backendHost: backend.backendHost,
+				backendObservationKey: backend.providerKey, provider: backend.provider, providerKey: backend.providerKey})
+			continue
+		}
 		backendObservationKey := model.BackendObservationKey(e.selectionScope, model.StableBackendID(backend.target.String()))
 		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			if e.backendCache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
-				continue
-			}
-			out = append(out, httpCandidate{
+			resolvedCandidate := httpCandidate{
 				target:                cloneURL(backend.target),
 				dialAddress:           dialAddress,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
-			})
+			}
+			if e.backendCache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
+				backedOff = append(backedOff, resolvedCandidate)
+				continue
+			}
+			out = append(out, resolvedCandidate)
 			continue
 		}
 		endpoint := model.Endpoint{
@@ -178,16 +195,26 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		}
 		resolved = e.backendCache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
-			if e.backendCache.IsInBackoff(candidate.Address) {
-				continue
-			}
-			out = append(out, httpCandidate{
+			resolvedCandidate := httpCandidate{
 				target:                cloneURL(backend.target),
 				dialAddress:           candidate.Address,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
-			})
+			}
+			if e.backendCache.IsInBackoff(candidate.Address) {
+				backedOff = append(backedOff, resolvedCandidate)
+				continue
+			}
+			out = append(out, resolvedCandidate)
 		}
+	}
+	if len(out) == 0 && len(backedOff) > 0 {
+		// Backoff ranks unhealthy candidates but must not turn a transient or
+		// stale observation into a hard outage. Probe the best-ranked candidate;
+		// success clears its backoff immediately, while failure reapplies it.
+		probe := backedOff[0]
+		probe.probeBackoff = true
+		return []httpCandidate{probe}, nil
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no healthy backend candidates for %s", e.rule.FrontendURL)
@@ -281,10 +308,35 @@ func httpRuleEgressProfile(rule model.HTTPRule, dialer moduleegress.Dialer) (mod
 	return profile, nil
 }
 
-func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
+type httpBackendProviderResolutionError struct{ reason string }
+
+func (err *httpBackendProviderResolutionError) Error() string {
+	return "HTTP backend provider " + err.reason
+}
+
+func parseHTTPBackends(rule model.HTTPRule, providers HTTPBackendProviderResolver, expectedGeneration string) ([]httpBackend, error) {
 	rawBackends := rule.Backends
 	backendsOut := make([]httpBackend, 0, len(rawBackends))
 	for _, entry := range rawBackends {
+		if entry.Kind == pluginsdk.HTTPBackendKindPluginProvider {
+			if entry.PluginProvider == nil || providers == nil {
+				return nil, &httpBackendProviderResolutionError{reason: "generation is unavailable"}
+			}
+			handle, found := providers.Resolve(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			if !found || handle == nil {
+				return nil, &httpBackendProviderResolutionError{reason: "handle is unavailable"}
+			}
+			if handle.InstanceID() != entry.PluginProvider.InstanceID || handle.ProviderID() != entry.PluginProvider.ProviderID {
+				return nil, &httpBackendProviderResolutionError{reason: "handle identity mismatch"}
+			}
+			if expectedGeneration == "" || handle.Generation() != expectedGeneration {
+				return nil, &httpBackendProviderResolutionError{reason: "handle generation mismatch"}
+			}
+			key := pluginrpc.ProviderObservationKey(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID)
+			backendsOut = append(backendsOut, httpBackend{target: pluginrpc.ProviderSyntheticURL(entry.PluginProvider.InstanceID, entry.PluginProvider.ProviderID),
+				backendHost: "", provider: handle, providerKey: key})
+			continue
+		}
 		rawURL := strings.TrimSpace(entry.URL)
 		if rawURL == "" {
 			continue

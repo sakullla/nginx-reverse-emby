@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
+
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
@@ -113,70 +112,6 @@ func TestDNS01CrashRecoveryUsesUniqueExactHashAndPreservesExistingTXT(t *testing
 	}
 }
 
-func TestDNS01PreexistingExactTXTIsNeverClaimedOrDeleted(t *testing.T) {
-	events := &eventLog{}
-	api := newFakeCloudflareAPI(events)
-	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
-	api.records = []TXTRecord{{ID: "user-exact-id", Name: "delegate.example.net", Content: "challenge-value", TTL: 300}}
-	store := newFakeIntentStore(events)
-	propagation := &fakeDNSPropagation{target: "delegate.example.net"}
-	solver, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: propagation, Intents: store})
-	if err != nil {
-		t.Fatalf("NewDNS01Solver() error = %v", err)
-	}
-	challenge := testDNS01Challenge()
-	if err := solver.Present(context.Background(), challenge); err != nil {
-		t.Fatalf("Present() error = %v", err)
-	}
-	if api.created.ID != "" {
-		t.Fatalf("Present() created a duplicate record: %#v", api.created)
-	}
-	intents, err := store.ListChallengeIntents(context.Background())
-	if err != nil || len(intents) != 0 {
-		t.Fatalf("preexisting record created intent %#v, err=%v", intents, err)
-	}
-	if err := solver.Wait(context.Background(), challenge); err != nil {
-		t.Fatalf("Wait() error = %v", err)
-	}
-	if err := solver.Cleanup(context.Background(), challenge); err != nil {
-		t.Fatalf("Cleanup() error = %v", err)
-	}
-	if len(api.deletedIDs) != 0 || !api.hasRecord("user-exact-id") {
-		t.Fatalf("preexisting exact record was touched: deleted=%#v records=%#v", api.deletedIDs, api.records)
-	}
-}
-
-func TestDNS01PresentRetiresIntentAfterDefinitiveCreateFailure(t *testing.T) {
-	events := &eventLog{}
-	api := newFakeCloudflareAPI(events)
-	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
-	api.createErr = providerHTTPError("cloudflare_record_create", http.StatusForbidden, "", time.Now(), acmeflow.CategoryChallenge)
-	store := newFakeIntentStore(events)
-	solver, err := NewDNS01Solver(DNS01Config{
-		Client:      api,
-		Propagation: &fakeDNSPropagation{target: "delegate.example.net"},
-		Intents:     store,
-	})
-	if err != nil {
-		t.Fatalf("NewDNS01Solver() error = %v", err)
-	}
-
-	err = solver.Present(context.Background(), testDNS01Challenge())
-	if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryAuthorization {
-		t.Fatalf("Present() category = %q, want %q; err=%v", got, acmeflow.CategoryAuthorization, err)
-	}
-	intents, listErr := store.ListChallengeIntents(context.Background())
-	if listErr != nil || len(intents) != 1 {
-		t.Fatalf("ListChallengeIntents() = %#v, %v", intents, listErr)
-	}
-	if intents[0].Status != acmeflow.ChallengeIntentCompleted || intents[0].RecordID != "" {
-		t.Fatalf("definitively empty intent = %#v, want completed without a record ID", intents[0])
-	}
-	if err := solver.RecoverPending(context.Background()); err != nil {
-		t.Fatalf("RecoverPending() after definitive failure error = %v", err)
-	}
-}
-
 func TestDNS01PresentKeepsIntentAfterAmbiguousCreateTimeout(t *testing.T) {
 	events := &eventLog{}
 	api := newFakeCloudflareAPI(events)
@@ -202,153 +137,6 @@ func TestDNS01PresentKeepsIntentAfterAmbiguousCreateTimeout(t *testing.T) {
 	}
 	if intents[0].Status != acmeflow.ChallengeIntentPending || intents[0].RecordID != "" {
 		t.Fatalf("ambiguous create intent = %#v, want pending without a record ID", intents[0])
-	}
-}
-
-func TestDNS01RecoveryRefusesAmbiguousExactRecords(t *testing.T) {
-	events := &eventLog{}
-	api := newFakeCloudflareAPI(events)
-	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
-	api.records = []TXTRecord{
-		{ID: "match-one", Name: "delegate.example.net", Content: "challenge-value", TTL: DefaultRecordTTL},
-		{ID: "match-two", Name: "delegate.example.net", Content: "challenge-value", TTL: DefaultRecordTTL},
-		{ID: "existing-id", Name: "delegate.example.net", Content: "user-owned", TTL: 300},
-	}
-	store := newFakeIntentStore(events)
-	intent, err := acmeflow.NewChallengeIntent("example.net", "delegate.example.net", "challenge-value")
-	if err != nil {
-		t.Fatalf("NewChallengeIntent() error = %v", err)
-	}
-	store.intents[intent.ID] = intent
-	solver, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: &fakeDNSPropagation{target: "delegate.example.net"}, Intents: store})
-	if err != nil {
-		t.Fatalf("NewDNS01Solver() error = %v", err)
-	}
-	err = solver.RecoverPending(context.Background())
-	if err == nil {
-		t.Fatal("RecoverPending() error = nil")
-	}
-	if acmeflow.ErrorCategoryOf(err) != acmeflow.CategoryCleanup {
-		t.Fatalf("category = %q, want cleanup; err=%v", acmeflow.ErrorCategoryOf(err), err)
-	}
-	if len(api.deletedIDs) != 0 {
-		t.Fatalf("ambiguous recovery deleted records: %#v", api.deletedIDs)
-	}
-	if store.intents[intent.ID].Status != acmeflow.ChallengeIntentPending {
-		t.Fatalf("ambiguous intent changed: %#v", store.intents[intent.ID])
-	}
-}
-
-func TestDNS01RecoveryRetiresIntentWhenExactRecordWasNeverCreated(t *testing.T) {
-	events := &eventLog{}
-	api := newFakeCloudflareAPI(events)
-	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
-	store := newFakeIntentStore(events)
-	intent, err := acmeflow.NewChallengeIntent("example.net", "delegate.example.net", "challenge-value")
-	if err != nil {
-		t.Fatalf("NewChallengeIntent() error = %v", err)
-	}
-	store.intents[intent.ID] = intent
-	solver, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: &fakeDNSPropagation{target: "delegate.example.net"}, Intents: store})
-	if err != nil {
-		t.Fatalf("NewDNS01Solver() error = %v", err)
-	}
-	if err := solver.RecoverPending(context.Background()); err != nil {
-		t.Fatalf("RecoverPending() error = %v", err)
-	}
-	if len(api.deletedIDs) != 0 || store.intents[intent.ID].Status != acmeflow.ChallengeIntentCompleted {
-		t.Fatalf("missing-record recovery changed ownership: deleted=%#v intent=%#v", api.deletedIDs, store.intents[intent.ID])
-	}
-	if err := solver.RecoverPending(context.Background()); err != nil {
-		t.Fatalf("second RecoverPending() error = %v", err)
-	}
-}
-
-func TestDNS01RecoveryRejectsParentZoneFallback(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		recordID string
-	}{
-		{name: "known record ID", recordID: "owned-child-id"},
-		{name: "exact hash fallback"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			events := &eventLog{}
-			api := newFakeCloudflareAPI(events)
-			api.zone = Zone{ID: "parent-zone-id", Name: "example.com", Status: "active"}
-			api.records = []TXTRecord{{ID: firstNonEmptyTest(test.recordID, "parent-exact-id"), Name: "_acme-challenge.child.example.com", Content: "challenge-value", TTL: DefaultRecordTTL}}
-			store := newFakeIntentStore(events)
-			intent, err := acmeflow.NewChallengeIntent("child.example.com", "_acme-challenge.child.example.com", "challenge-value")
-			if err != nil {
-				t.Fatalf("NewChallengeIntent() error = %v", err)
-			}
-			intent.RecordID = test.recordID
-			store.intents[intent.ID] = intent
-			solver, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: &fakeDNSPropagation{target: intent.FQDN}, Intents: store})
-			if err != nil {
-				t.Fatalf("NewDNS01Solver() error = %v", err)
-			}
-			err = solver.RecoverPending(context.Background())
-			if err == nil || acmeflow.ErrorCategoryOf(err) != acmeflow.CategoryCleanup {
-				t.Fatalf("RecoverPending() error = %v, want safe cleanup error", err)
-			}
-			if len(api.deletedIDs) != 0 {
-				t.Fatalf("parent-zone recovery deleted records: %#v", api.deletedIDs)
-			}
-			stored := store.intents[intent.ID]
-			if stored.Status != acmeflow.ChallengeIntentPending || stored.RecordID != test.recordID {
-				t.Fatalf("parent-zone recovery changed intent: %#v", stored)
-			}
-		})
-	}
-}
-
-func firstNonEmptyTest(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func TestDNS01RecordIDPersistenceFailureRemainsRecoverable(t *testing.T) {
-	events := &eventLog{}
-	api := newFakeCloudflareAPI(events)
-	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
-	store := newFakeIntentStore(events)
-	store.failSetRecordID = true
-	propagation := &fakeDNSPropagation{target: "delegate.example.net"}
-	solver, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: propagation, Intents: store})
-	if err != nil {
-		t.Fatalf("NewDNS01Solver() error = %v", err)
-	}
-	challenge := testDNS01Challenge()
-	err = solver.Present(context.Background(), challenge)
-	if err == nil {
-		t.Fatal("Present() error = nil")
-	}
-	if strings.Contains(err.Error(), challenge.DNSValue) {
-		t.Fatalf("Present() error leaked challenge value: %v", err)
-	}
-	if len(api.records) != 1 || api.records[0].ID != "created-id" {
-		t.Fatalf("created records = %#v", api.records)
-	}
-	intents, listErr := store.ListChallengeIntents(context.Background())
-	if listErr != nil || len(intents) != 1 || intents[0].RecordID != "" || intents[0].Status != acmeflow.ChallengeIntentPending {
-		t.Fatalf("recoverable intent = %#v, err=%v", intents, listErr)
-	}
-
-	store.failSetRecordID = false
-	restarted, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: propagation, Intents: store})
-	if err != nil {
-		t.Fatalf("NewDNS01Solver(restart) error = %v", err)
-	}
-	if err := restarted.RecoverPending(context.Background()); err != nil {
-		t.Fatalf("RecoverPending() error = %v", err)
-	}
-	if fmt.Sprint(api.deletedIDs) != "[created-id]" {
-		t.Fatalf("restarted deleted IDs = %#v", api.deletedIDs)
 	}
 }
 

@@ -1,3 +1,5 @@
+//go:build integration
+
 package cloudflare
 
 import (
@@ -12,7 +14,7 @@ import (
 	"time"
 )
 
-func TestDNSWireCodecCNAMESOANSTXTAndCompressionBounds(t *testing.T) {
+func TestIntegrationDNSWireCodecCNAMESOANSTXTAndCompressionBounds(t *testing.T) {
 	packet := buildDNSFixtureResponse(t, 0x1234, "_acme-challenge.example.com", []wireFixtureRecord{
 		{recordType: TypeCNAME, name: "_acme-challenge.example.com", value: "delegate.example.net"},
 		{recordType: TypeSOA, name: "example.net", value: "ns1.example.net", secondary: "hostmaster.example.net"},
@@ -66,7 +68,7 @@ func TestDNSWireCodecCNAMESOANSTXTAndCompressionBounds(t *testing.T) {
 	}
 }
 
-func TestDNSWireUsesSystemResolversBeforeFallback(t *testing.T) {
+func TestIntegrationDNSWireUsesSystemResolversBeforeFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf")
 	data := []byte("# generated\nnameserver 192.0.2.53\nnameserver 2001:db8::53 # local\nsearch example.test\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -81,7 +83,7 @@ func TestDNSWireUsesSystemResolversBeforeFallback(t *testing.T) {
 	}
 }
 
-func TestDNSWireRejectsMismatchedQuestion(t *testing.T) {
+func TestIntegrationDNSWireRejectsMismatchedQuestion(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen UDP: %v", err)
@@ -115,7 +117,7 @@ func TestDNSWireRejectsMismatchedQuestion(t *testing.T) {
 	}
 }
 
-func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
+func TestIntegrationDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 	var tcpListener net.Listener
 	var udpConn *net.UDPConn
 	var err error
@@ -171,7 +173,7 @@ func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 		}
 		response := make([]byte, 12)
 		copy(response[:2], buffer[:2])
-		binary.BigEndian.PutUint16(response[2:4], 0x8380) // response + RD + truncated + RA
+		binary.BigEndian.PutUint16(response[2:4], 0x8380)
 		binary.BigEndian.PutUint16(response[4:6], 1)
 		binary.BigEndian.PutUint16(response[6:8], 1)
 		response = append(response, buffer[12:count]...)
@@ -180,7 +182,7 @@ func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 		response = binary.BigEndian.AppendUint16(response, dnsClassIN)
 		response = binary.BigEndian.AppendUint32(response, 120)
 		response = binary.BigEndian.AppendUint16(response, 10)
-		response = append(response, 3, 'c') // deliberately truncated TXT RDATA
+		response = append(response, 3, 'c')
 		_, writeErr := udpConn.WriteToUDP(response, remote)
 		udpSeen <- writeErr
 	}()
@@ -237,7 +239,7 @@ func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 	}
 }
 
-func TestDNSWireCancellationIsBounded(t *testing.T) {
+func TestIntegrationDNSWireCancellationIsBounded(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen UDP: %v", err)

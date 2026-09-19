@@ -1,7 +1,10 @@
 package localagent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -12,7 +15,14 @@ import (
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
+
+type localPluginCaller interface {
+	Call(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+}
+
+var _ localPluginCaller = (*Runtime)(nil)
 
 type TaskServiceRegistrar interface {
 	RegisterSession(service.TaskSessionRegistration) error
@@ -36,11 +46,24 @@ type runtimeDiagnosticRunner interface {
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
+type runtimeChannelTaskRunner interface {
+	HandleChannelTask(context.Context, string, map[string]any) (map[string]any, error)
+}
+
+type runtimePKITaskRunner interface {
+	ReconcileTunnelPKI(context.Context) error
+	ForceRotateTunnelPKI(context.Context, string) error
+}
+
 type LocalTaskSession struct {
 	agentID     string
 	reporter    TaskServiceRegistrar
 	store       diagnosticRuleStore
 	diagnostics runtimeDiagnosticRunner
+	pki         runtimePKITaskRunner
+	channels    runtimeChannelTaskRunner
+	lifecycle   context.Context
+	cancel      context.CancelFunc
 
 	mu     sync.Mutex
 	closed bool
@@ -59,15 +82,32 @@ func NewLocalTaskSession(agentID string, reporter TaskServiceRegistrar, store di
 }
 
 func NewLocalTaskSessionWithDiagnostics(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore, diagnostics runtimeDiagnosticRunner) *LocalTaskSession {
+	lifecycle, cancel := context.WithCancel(context.Background())
+	pki, _ := diagnostics.(runtimePKITaskRunner)
+	channels, _ := diagnostics.(runtimeChannelTaskRunner)
 	return &LocalTaskSession{
 		agentID:     agentID,
 		reporter:    reporter,
 		store:       store,
 		diagnostics: diagnostics,
+		pki:         pki,
+		channels:    channels,
+		lifecycle:   lifecycle,
+		cancel:      cancel,
 	}
 }
 
 func (s *LocalTaskSession) SendTask(envelope service.TaskEnvelope) error {
+	return s.SendTaskContext(context.Background(), envelope)
+}
+
+func (s *LocalTaskSession) SendTaskContext(ctx context.Context, envelope service.TaskEnvelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -78,7 +118,13 @@ func (s *LocalTaskSession) SendTask(envelope service.TaskEnvelope) error {
 
 	go func() {
 		defer s.wg.Done()
-		s.handleTask(envelope)
+		taskCtx, cancel := contextWithTaskDeadline(s.lifecycle, envelope.Deadline)
+		defer cancel()
+		// The caller context bounds delivery into this in-process session. Once
+		// accepted, task execution follows the durable envelope deadline and the
+		// session lifecycle, matching a remote task stream after its response is
+		// written.
+		s.handleTask(taskCtx, envelope)
 	}()
 	return nil
 }
@@ -87,11 +133,25 @@ func (s *LocalTaskSession) Close() error {
 	s.mu.Lock()
 	closed := s.closed
 	s.closed = true
+	cancel := s.cancel
 	s.mu.Unlock()
-	if !closed {
-		s.wg.Wait()
+	if closed {
+		return nil
 	}
-	return nil
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("local task session shutdown timed out")
+	}
 }
 
 func (s *LocalTaskSession) Register() error {
@@ -103,10 +163,7 @@ func (s *LocalTaskSession) Register() error {
 	})
 }
 
-func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
-	ctx, cancel := contextWithTaskDeadline(context.Background(), envelope.Deadline)
-	defer cancel()
-
+func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.TaskEnvelope) {
 	var result map[string]any
 	var taskErr error
 
@@ -115,6 +172,16 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 		result, taskErr = s.diagnoseHTTPRule(ctx, envelope)
 	case service.TaskTypeDiagnoseL4TCPRule:
 		result, taskErr = s.diagnoseL4TCPRule(ctx, envelope)
+	case service.TaskTypePKISecurityUpdate:
+		result, taskErr = s.reconcilePKISecurity(ctx)
+	case service.TaskTypePKIForceRotation:
+		result, taskErr = s.forceRotatePKI(ctx, envelope)
+	case service.TaskTypePluginCall:
+		result, taskErr = s.handlePluginCall(ctx, envelope)
+	case service.TaskTypePluginGenerationRevoke:
+		result, taskErr = s.handlePluginGenerationRevoke(ctx, envelope)
+	case service.TaskTypeChannelEnsure, service.TaskTypeChannelTeardown, service.TaskTypeChannelStatus:
+		result, taskErr = s.handleChannelTask(ctx, envelope)
 	default:
 		taskErr = fmt.Errorf("unsupported task type %q", envelope.Type)
 	}
@@ -124,6 +191,9 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 	if taskErr != nil {
 		state = "failed"
 		errMsg = taskErr.Error()
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	if reportErr := s.reporter.ApplyUpdate(ctx, service.TaskUpdateInput{
@@ -135,6 +205,97 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 	}); reportErr != nil {
 		log.Printf("[local-agent] failed to report task result: %v", reportErr)
 	}
+}
+
+func (s *LocalTaskSession) handlePluginGenerationRevoke(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	runner, ok := s.diagnostics.(interface {
+		RevokePluginGeneration(context.Context, goagentembedded.PluginGenerationRevokeRequest) error
+	})
+	if !ok {
+		return nil, errors.New("embedded plugin revocation runner is unavailable")
+	}
+	data, err := json.Marshal(envelope.Payload)
+	if err != nil {
+		return nil, errors.New("embedded plugin revocation request is invalid")
+	}
+	var request goagentembedded.PluginGenerationRevokeRequest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || request.Validate() != nil {
+		return nil, errors.New("embedded plugin revocation identity is invalid")
+	}
+	if err := runner.RevokePluginGeneration(ctx, request); err != nil {
+		return nil, errors.New("embedded plugin revocation is pending")
+	}
+	return map[string]any{"generation_id": request.GenerationID, "fence_id": request.FenceID, "revoked": true}, nil
+}
+
+func (s *LocalTaskSession) handlePluginCall(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	caller, _ := s.diagnostics.(localPluginCaller)
+	if caller == nil {
+		return nil, errors.New("plugin execution instance is unavailable")
+	}
+	pluginID, _ := envelope.Payload["plugin_id"].(string)
+	name, _ := envelope.Payload["name"].(string)
+	pluginID = strings.TrimSpace(pluginID)
+	name = strings.TrimSpace(name)
+	if pluginsdk.ValidatePolicyIdentity(pluginID) != nil || pluginsdk.ValidatePolicyIdentity(name) != nil {
+		return nil, errors.New("plugin.call payload is invalid")
+	}
+	var payload json.RawMessage
+	if raw, ok := envelope.Payload["payload"]; ok && raw != nil {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) > pluginsdk.PluginHostPayloadMaxBytes {
+			return nil, errors.New("plugin.call payload exceeds the canonical bound")
+		}
+		payload = encoded
+	}
+	response, err := caller.Call(ctx, pluginID, name, payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(response) > pluginsdk.PluginHostPayloadMaxBytes || (len(response) > 0 && !json.Valid(response)) {
+		return nil, errors.New("plugin.call response is invalid or exceeds the canonical bound")
+	}
+	if len(response) == 0 {
+		response = json.RawMessage("null")
+	}
+	return map[string]any{"payload": json.RawMessage(response)}, nil
+}
+
+func (s *LocalTaskSession) handleChannelTask(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	if s.channels == nil {
+		return nil, errors.New("embedded channel task runner is unavailable")
+	}
+	return s.channels.HandleChannelTask(ctx, envelope.Type, envelope.Payload)
+}
+
+func (s *LocalTaskSession) reconcilePKISecurity(ctx context.Context) (map[string]any, error) {
+	if s.pki == nil {
+		return nil, errors.New("embedded PKI task runner is unavailable")
+	}
+	if err := s.pki.ReconcileTunnelPKI(ctx); err != nil {
+		return nil, err
+	}
+	return map[string]any{"reconciled": true}, nil
+}
+
+func (s *LocalTaskSession) forceRotatePKI(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	if s.pki == nil {
+		return nil, errors.New("embedded PKI task runner is unavailable")
+	}
+	identityID, _ := envelope.Payload["identity_id"].(string)
+	identityID = strings.TrimSpace(identityID)
+	if identityID == "" {
+		return nil, errors.New("identity_id is required")
+	}
+	if err := s.pki.ForceRotateTunnelPKI(ctx, identityID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"identity_id": identityID}, nil
 }
 
 func contextWithTaskDeadline(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {

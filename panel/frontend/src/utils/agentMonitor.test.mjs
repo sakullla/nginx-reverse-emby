@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from 'vitest'
-import { createNDJSONParser, mergeAgentsWithMonitor, mergeMonitorAgents, monitorSnapshotAgents, quantizeLastSeenAt } from './agentMonitor.js'
+import { createNDJSONParser, mergeAgentsWithMonitor, mergeFetchedAgents, mergeMonitorAgents, monitorSnapshotAgents, quantizeLastSeenAt } from './agentMonitor.js'
 
 describe('agent monitor utils', () => {
   it('parses split NDJSON chunks', () => {
@@ -17,6 +17,29 @@ describe('agent monitor utils', () => {
       { type: 'snapshot', payload: { agents: [] } },
       { type: 'update', payload: { agent: { id: 'edge-1' } } }
     ])
+  })
+
+  it('accepts the authoritative running package after a durable list refetch', () => {
+    const running = 'a'.repeat(64)
+    const target = 'b'.repeat(64)
+    const previous = [{
+      id: 'edge-1',
+      runtime_package_sha256: running,
+      desired_package_sha256: target,
+      package_sync_status: 'pending'
+    }]
+    const next = [{
+      id: 'edge-1',
+      runtime_package_sha256: target,
+      desired_package_sha256: target,
+      package_sync_status: 'aligned'
+    }]
+    expect(mergeFetchedAgents(previous, next)).toEqual([{
+      id: 'edge-1',
+      runtime_package_sha256: target,
+      desired_package_sha256: target,
+      package_sync_status: 'aligned'
+    }])
   })
 
   it('merges monitor updates by agent id', () => {
@@ -65,6 +88,32 @@ describe('agent monitor utils', () => {
   })
 
   describe('mergeAgentsWithMonitor', () => {
+    it('keeps a durable completed package when only an inactive stale monitor snapshot is cached', () => {
+      const running = 'b'.repeat(64)
+      const durableAgents = [{
+        id: 'edge-1',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: running,
+        desired_package_sha256: running,
+        package_sync_status: 'aligned'
+      }]
+      const staleMonitor = [{
+        id: 'edge-1',
+        runtime_package_version: '1.0.0',
+        runtime_package_sha256: 'a'.repeat(64),
+        desired_package_sha256: running,
+        package_sync_status: 'pending'
+      }]
+
+      const merged = mergeAgentsWithMonitor(durableAgents, staleMonitor, { active: false })
+      expect(merged).toBe(durableAgents)
+      expect(merged[0]).toMatchObject({
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: running,
+        package_sync_status: 'aligned'
+      })
+    })
+
     it('returns the same array when no monitor data applies', () => {
       const agents = [{ id: 'a' }, { id: 'b' }]
       expect(mergeAgentsWithMonitor(agents, [])).toBe(agents)
@@ -86,6 +135,62 @@ describe('agent monitor utils', () => {
       const merged = mergeAgentsWithMonitor([a], [{ id: 'a', status: 'online' }])
       expect(merged[0]).toEqual({ id: 'a', name: 'A', status: 'online', monitor: { id: 'a', status: 'online' } })
       expect(merged[0]).not.toBe(a)
+    })
+
+    it('keeps the running package while staging heartbeats report the target digest', () => {
+      const running = 'a'.repeat(64)
+      const target = 'b'.repeat(64)
+      const a = {
+        id: 'edge-1',
+        version: '1.0.0',
+        runtime_package_version: '1.0.0',
+        runtime_package_sha256: running,
+        desired_package_sha256: target,
+        package_sync_status: 'pending'
+      }
+      const monitor = {
+        id: 'edge-1',
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        desired_package_sha256: target,
+        package_sync_status: 'aligned'
+      }
+      const merged = mergeAgentsWithMonitor([a], [monitor])
+      expect(merged[0]).toMatchObject({
+        version: '1.0.0',
+        runtime_package_version: '1.0.0',
+        runtime_package_sha256: running,
+        desired_package_sha256: target,
+        package_sync_status: 'pending'
+      })
+      expect(merged[0].monitor).toEqual(monitor)
+    })
+
+    it('accepts the new running package after the durable agent record has switched', () => {
+      const target = 'b'.repeat(64)
+      const a = {
+        id: 'edge-1',
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        desired_package_sha256: target,
+        package_sync_status: 'aligned'
+      }
+      const merged = mergeAgentsWithMonitor([a], [{
+        id: 'edge-1',
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        desired_package_sha256: target,
+        package_sync_status: 'aligned'
+      }])
+      expect(merged[0]).toMatchObject({
+        version: '2.0.0',
+        runtime_package_version: '2.0.0',
+        runtime_package_sha256: target,
+        package_sync_status: 'aligned'
+      })
     })
 
     it('falls back to inline agent.monitor when no monitor entry matches', () => {

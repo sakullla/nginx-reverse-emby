@@ -5,7 +5,7 @@
       <div class='section-heading'>
         <h3>用途模板</h3>
         <p v-if='isProtectedSystemRelayCA'>系统 Relay CA 由控制面维护，创建入口与用途切换已锁定。</p>
-        <p v-else>先选最接近的场景，再补充域名与证书材料。</p>
+        <p v-else>这里只创建公网 HTTPS 或手动上传证书；内部 relay 身份由独立 PKI 页面管理。</p>
       </div>
       <div v-if='!isProtectedSystemRelayCA' class='template-grid'>
         <button
@@ -165,12 +165,11 @@
             <select v-model='form.certificate_type' class='input' :disabled='isProtectedSystemRelayCA'>
               <option value='acme'>自动签发</option>
               <option value='uploaded'>手动上传</option>
-              <option value='internal_ca'>内部自签</option>
             </select>
           </div>
         </div>
 
-        <label class='toggle-row'>
+        <label v-if="form.certificate_type !== 'acme'" class='toggle-row'>
           <input v-model='form.self_signed' type='checkbox' class='toggle__input' :disabled='isProtectedSystemRelayCA'>
           <span class='toggle__slider'></span>
           <span class='toggle__label'>标记为自签名证书</span>
@@ -266,6 +265,12 @@ function handleScopeChange() {
   }
 }
 
+function normalizeCertificateSource() {
+  if (form.value.certificate_type === 'acme') {
+    form.value.self_signed = false
+  }
+}
+
 function addTag() {
   const tag = tagInput.value.trim()
   if (tag && !form.value.tags.includes(tag)) {
@@ -321,6 +326,8 @@ async function handleSubmit() {
     return
   }
 
+  normalizeCertificateSource()
+
   const payload = {
     ...form.value,
     domain: form.value.domain.trim(),
@@ -336,8 +343,8 @@ async function handleSubmit() {
       await createCertificate.mutateAsync(payload)
     }
     emit('success')
-  } catch (err) {
-    errors.submit = err?.message || '操作失败'
+  } catch {
+    // API failures are toasted by useCertificates.
   }
 }
 </script>

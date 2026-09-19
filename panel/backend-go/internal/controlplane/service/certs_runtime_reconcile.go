@@ -78,13 +78,16 @@ func managedCertificateHeartbeatReportsFromRuntimeState(reports []storage.Manage
 	converted := make([]ManagedCertificateHeartbeatReport, 0, len(reports))
 	for _, report := range reports {
 		converted = append(converted, ManagedCertificateHeartbeatReport{
-			ID:           report.ID,
-			Domain:       report.Domain,
-			Status:       report.Status,
-			LastIssueAt:  report.LastIssueAt,
-			LastError:    report.LastError,
-			MaterialHash: report.MaterialHash,
-			NotAfter:     report.NotAfter,
+			ID:              report.ID,
+			Domain:          report.Domain,
+			Status:          report.Status,
+			LastIssueAt:     report.LastIssueAt,
+			LastError:       report.LastError,
+			MaterialHash:    report.MaterialHash,
+			NotAfter:        report.NotAfter,
+			NextRetryAtUnix: report.NextRetryAtUnix,
+			RetryCount:      report.RetryCount,
+			BackoffClass:    report.BackoffClass,
 			ACMEInfo: ManagedCertificateACMEInfo{
 				MainDomain: report.ACMEInfo.MainDomain,
 				KeyLength:  report.ACMEInfo.KeyLength,

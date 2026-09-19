@@ -14,16 +14,13 @@ export default defineConfig({
     exclude: [
       'src/components/l4/proxyEntryAuth.test.js',
       'src/components/traffic/trafficTrendHelpers.test.js',
-      'src/context/agentHelpers.test.mjs',
       'src/context/agentSelection.test.mjs',
       'src/hooks/__tests__/useIdSearch.test.js',
       'src/pages/outboundProxyURL.test.js',
       'src/utils/agentFilter.test.js',
       'src/utils/agentMetrics.test.js',
-      'src/utils/agentMonitor.test.mjs',
       'src/utils/resolveResourceAgent.test.js',
       'src/utils/resourceCardStatus.test.js',
-      'src/utils/trafficStats.test.mjs',
       'src/components/egress/EgressProfileForm.test.js',
       'src/components/traffic/TrafficHistoryManager.test.js',
       'src/components/traffic/TrafficPolicyForm.test.js',
@@ -52,14 +49,18 @@ export default defineConfig({
         manualChunks(id) {
           const normalizedId = id.replace(/\\/g, '/')
           if (!normalizedId.includes('node_modules')) return undefined
+          // Only isolate large, leaf-ish deps. Do not force axios or a catch-all
+          // "vendor" chunk: Rollup may place shared helpers into src/api/client.js
+          // while axios lives elsewhere, producing a circular graph that breaks
+          // init with "e is not a function" / "Cannot read properties of
+          // undefined (reading 'create')" before login.
           if (normalizedId.includes('node_modules/apexcharts/')) return 'apexcharts'
           if (normalizedId.includes('node_modules/vue3-apexcharts/')) return 'vue3-apexcharts'
           if (normalizedId.includes('node_modules/@tanstack/')) return 'query'
-          if (normalizedId.includes('node_modules/axios/')) return 'http'
           if (normalizedId.includes('node_modules/vue-router/') || normalizedId.includes('node_modules/pinia/')) {
             return 'routing-state'
           }
-          return 'vendor'
+          return undefined
         }
       }
     }

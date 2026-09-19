@@ -35,11 +35,18 @@ type SyncClientConfig struct {
 	CurrentVersion string
 	Platform       string
 	RuntimePackage model.RuntimePackage
+	// PluginCacheDir is the Agent-owned immutable policy artifact cache. Remote
+	// snapshots are not returned to the runtime until every referenced artifact
+	// has been downloaded and verified into this directory.
+	PluginCacheDir string
 	HTTPTransport  HTTPTransportConfig
 	// DDNSReporter supplies the agent's last-extracted IPv4/IPv6 for the
 	// heartbeat. Nil when DDNS extraction is unavailable; the heartbeat then
 	// omits the fields and the master retains any previously stored value.
 	DDNSReporter DDNSReporter
+	// PKIHeartbeatHandler consumes tunnel PKI control data on every heartbeat,
+	// independently of ordinary runtime revision changes.
+	PKIHeartbeatHandler PKIHeartbeatHandler
 }
 
 type SyncClient struct {
@@ -58,6 +65,11 @@ type SyncRequest struct {
 	ManagedCertificateReports []model.ManagedCertificateReport
 	LastSeenIPv4              string
 	LastSeenIPv6              string
+	PluginStatuses            []model.PluginRuntimeStatus
+	PluginLogs                []model.PluginRuntimeLogReport
+	PluginLogsAcknowledged    func() error
+	RuntimePackageSHA256      string
+	PackageStaging            bool
 }
 
 func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
@@ -84,28 +96,44 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		request.LastSeenIPv4 = ipv4
 		request.LastSeenIPv6 = ipv6
 	}
+	var pkiState PKIHeartbeatState
+	if c.cfg.PKIHeartbeatHandler != nil {
+		var err error
+		pkiState, err = c.cfg.PKIHeartbeatHandler.PrepareHeartbeat(ctx)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("prepare PKI heartbeat: %w", err)
+		}
+	}
 	payload := struct {
-		Name                      string                           `json:"name"`
-		AgentID                   string                           `json:"agent_id"`
-		Capabilities              []string                         `json:"capabilities"`
-		CurrentRevision           int                              `json:"current_revision"`
-		LastApplyRevision         int                              `json:"last_apply_revision"`
-		LastApplyStatus           string                           `json:"last_apply_status"`
-		LastApplyMessage          string                           `json:"last_apply_message"`
-		Stats                     *map[string]any                  `json:"stats,omitempty"`
-		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
-		LastSeenIPv4              string                           `json:"last_seen_ipv4,omitempty"`
-		LastSeenIPv6              string                           `json:"last_seen_ipv6,omitempty"`
-		Version                   string                           `json:"version"`
-		Platform                  string                           `json:"platform"`
-		RuntimePackage            model.RuntimePackage             `json:"runtime_package"`
+		Name                      string                            `json:"name"`
+		AgentID                   string                            `json:"agent_id"`
+		Capabilities              []string                          `json:"capabilities"`
+		CurrentRevision           int                               `json:"current_revision"`
+		LastApplyRevision         int                               `json:"last_apply_revision"`
+		LastApplyStatus           string                            `json:"last_apply_status"`
+		LastApplyMessage          string                            `json:"last_apply_message"`
+		Stats                     *map[string]any                   `json:"stats,omitempty"`
+		ManagedCertificateReports []model.ManagedCertificateReport  `json:"managed_certificate_reports"`
+		LastSeenIPv4              string                            `json:"last_seen_ipv4,omitempty"`
+		LastSeenIPv6              string                            `json:"last_seen_ipv6,omitempty"`
+		Version                   string                            `json:"version"`
+		Platform                  string                            `json:"platform"`
+		RuntimePackage            model.RuntimePackage              `json:"runtime_package"`
+		PKISecurityAck            *model.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+		PKIEnrollmentRequests     []model.PKIEnrollmentRequest      `json:"pki_enrollment_requests,omitempty"`
+		PluginStatuses            []model.PluginRuntimeStatus       `json:"plugin_statuses,omitempty"`
+		PluginLogs                []model.PluginRuntimeLogReport    `json:"plugin_logs,omitempty"`
 	}{
 		Name:           c.cfg.AgentName,
 		AgentID:        c.cfg.AgentID,
 		Capabilities:   append([]string(nil), c.cfg.Capabilities...),
 		Version:        c.cfg.CurrentVersion,
 		Platform:       c.cfg.Platform,
-		RuntimePackage: c.cfg.RuntimePackage,
+		RuntimePackage: overlayRuntimePackage(c.cfg.RuntimePackage, request),
+		PKISecurityAck: pkiState.SecurityAcknowledgement,
+		PKIEnrollmentRequests: append(
+			[]model.PKIEnrollmentRequest(nil), pkiState.EnrollmentRequests...,
+		),
 	}
 	payload.CurrentRevision = request.CurrentRevision
 	payload.LastApplyRevision = request.LastApplyRevision
@@ -118,6 +146,8 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	payload.ManagedCertificateReports = request.ManagedCertificateReports
 	payload.LastSeenIPv4 = request.LastSeenIPv4
 	payload.LastSeenIPv6 = request.LastSeenIPv6
+	payload.PluginStatuses = append([]model.PluginRuntimeStatus(nil), request.PluginStatuses...)
+	payload.PluginLogs = model.ClonePluginRuntimeLogReports(request.PluginLogs)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -151,6 +181,9 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		return Snapshot{}, err
 	}
 	if len(reply.Sync) == 0 {
+		if err := acknowledgePluginLogs(request); err != nil {
+			return Snapshot{}, err
+		}
 		return Snapshot{}, nil
 	}
 
@@ -159,8 +192,33 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	if err := json.Unmarshal(reply.Sync, &syncFields); err != nil {
 		return Snapshot{}, err
 	}
-	if _, ok := syncFields["version_package"]; ok {
-		delete(syncFields, "version_package")
+	hasPKIReply := false
+	for _, key := range []string{"pki_security", "pki_credentials", "pki_status"} {
+		if _, ok := syncFields[key]; ok {
+			hasPKIReply = true
+			break
+		}
+	}
+	if hasPKIReply {
+		if c.cfg.PKIHeartbeatHandler == nil {
+			return Snapshot{}, errors.New("heartbeat returned PKI state without an execution-plane handler")
+		}
+		var pkiReply PKIHeartbeatReply
+		if err := json.Unmarshal(reply.Sync, &pkiReply); err != nil {
+			return Snapshot{}, fmt.Errorf("decode PKI heartbeat: %w", err)
+		}
+		if err := c.cfg.PKIHeartbeatHandler.ApplyHeartbeat(ctx, pkiReply); err != nil {
+			return Snapshot{}, fmt.Errorf("apply PKI heartbeat: %w", err)
+		}
+	}
+	sanitized := false
+	for _, key := range []string{"version_package", "pki_security", "pki_credentials", "pki_status"} {
+		if _, ok := syncFields[key]; ok {
+			delete(syncFields, key)
+			sanitized = true
+		}
+	}
+	if sanitized {
 		var err error
 		snapshotPayload, err = json.Marshal(syncFields)
 		if err != nil {
@@ -176,6 +234,7 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		VersionPackageURL  string                `json:"version_package"`
 		VersionPackageMeta *model.VersionPackage `json:"version_package_meta"`
 		VersionSHA256      string                `json:"version_sha256"`
+		SnapshotDigest     string                `json:"snapshot_digest"`
 	}
 	if err := json.Unmarshal(reply.Sync, &syncMeta); err != nil {
 		return Snapshot{}, err
@@ -185,8 +244,34 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		syncMeta.VersionPackageURL,
 		syncMeta.VersionSHA256,
 	)
+	if err := c.preparePluginArtifacts(ctx, &snapshot, snapshot.Revision, syncMeta.SnapshotDigest); err != nil {
+		return Snapshot{}, err
+	}
+	// Dataset preparation belongs to the revision lease path, where a failed
+	// candidate can be reported without confusing it with an applied revision.
+	for i := range snapshot.Datasets {
+		snapshot.Datasets[i].Artifact.LocalPath = ""
+	}
+	if err := acknowledgePluginLogs(request); err != nil {
+		return Snapshot{}, err
+	}
 
 	return snapshot, nil
+}
+
+func overlayRuntimePackage(base model.RuntimePackage, request SyncRequest) model.RuntimePackage {
+	if sha := strings.TrimSpace(request.RuntimePackageSHA256); sha != "" {
+		base.SHA256 = sha
+	}
+	base.Staging = request.PackageStaging
+	return base
+}
+
+func acknowledgePluginLogs(request SyncRequest) error {
+	if len(request.PluginLogs) == 0 || request.PluginLogsAcknowledged == nil {
+		return nil
+	}
+	return request.PluginLogsAcknowledged()
 }
 
 func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, error) {
@@ -236,6 +321,12 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	// requires an absolute URL, while the verified digest must remain the digest
 	// issued by the control plane for the root-relative snapshot value.
 	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
+	if err := c.preparePluginArtifacts(ctx, &snapshot, pull.Lease.Revision, pull.Lease.SnapshotDigest); err != nil {
+		return model.RevisionPull{}, err
+	}
+	if err := c.prepareDatasetArtifacts(ctx, &snapshot, pull.Lease.Revision, pull.Lease.SnapshotDigest); err != nil {
+		return model.RevisionPull{}, errors.Join(err, c.reportDatasetPreparationFailure(ctx, *pull.Lease))
+	}
 	pull.Snapshot = &snapshot
 	pull.VerifiedSnapshotDigest = digest
 	return pull, nil
@@ -278,6 +369,52 @@ func (c *SyncClient) StartRevision(ctx context.Context, input model.RevisionStar
 
 func (c *SyncClient) ReportRevision(ctx context.Context, input model.RevisionReport) error {
 	return c.doRevisionRequest(ctx, "/api/agent-revisions/"+strconv.FormatInt(input.Revision, 10)+"/report", input, nil)
+}
+
+// RedeemPluginSecrets exchanges an authenticated, generation-fenced handle
+// set for transient values. Response bodies and values are deliberately never
+// copied into returned errors.
+func (c *SyncClient) RedeemPluginSecrets(ctx context.Context, input model.PluginSecretRedemptionRequest) ([]model.PluginRedeemedSecret, error) {
+	if c == nil || c.client == nil || ctx == nil {
+		return nil, errors.New("plugin secret redemption client is unavailable")
+	}
+	if err := input.Validate(); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return nil, errors.New("encode plugin secret redemption request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.MasterURL+"/api/agent-plugin-secrets/redeem", bytes.NewReader(data))
+	if err != nil {
+		return nil, errors.New("create plugin secret redemption request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agent-token", c.cfg.AgentToken)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.discardConnections()
+		return nil, errors.New("plugin secret redemption transport failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
+		return nil, fmt.Errorf("plugin secret redemption failed with status %d", resp.StatusCode)
+	}
+	var output model.PluginSecretRedemptionResponse
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&output); err != nil {
+		return nil, errors.New("decode plugin secret redemption response")
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, errors.New("decode plugin secret redemption response")
+	}
+	if output.Secrets == nil {
+		return nil, errors.New("plugin secret redemption response is incomplete")
+	}
+	return output.Secrets, nil
 }
 
 func (c *SyncClient) doRevisionRequest(ctx context.Context, path string, input any, output any) error {

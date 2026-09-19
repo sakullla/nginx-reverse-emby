@@ -1,8 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { verifyToken } from '../api'
-import { useAuthState } from '../context/useAuthState'
-
-const { clearToken } = useAuthState()
+import { clearCredentials, clearSessionToken, getStoredAuthToken } from '../api/authState'
 
 const AppShell = () => import('../components/layout/AppShell.vue')
 
@@ -51,7 +49,13 @@ const routes = [
         path: 'certs',
         name: 'certs',
         component: () => import('../pages/CertsPage.vue'),
-        meta: { title: '证书管理' }
+        meta: { title: '证书中心 · 公网证书' }
+      },
+      {
+        path: 'pki',
+        name: 'pki',
+        component: () => import('../pages/PkiPage.vue'),
+        meta: { title: '证书中心 · 内部 PKI' }
       },
       {
         path: 'relay-listeners',
@@ -66,10 +70,56 @@ const routes = [
         meta: { title: '版本策略' }
       },
       {
+        path: 'plugins',
+        name: 'plugins',
+        component: () => import('../pages/plugins/PluginsPage.vue'),
+        meta: { title: '已安装插件' }
+      },
+      {
+        path: 'plugins/marketplace',
+        name: 'plugin-marketplace',
+        component: () => import('../pages/plugins/PluginMarketplacePage.vue'),
+        meta: { title: '插件市场' }
+      },
+      {
+        path: 'plugins/marketplace/:pluginId',
+        name: 'plugin-marketplace-detail',
+        component: () => import('../pages/plugins/PluginMarketplaceDetailPage.vue'),
+        meta: { title: '插件市场详情' }
+      },
+      {
+        path: 'plugins/repositories',
+        name: 'plugin-repositories',
+        component: () => import('../pages/plugins/PluginRepositoriesPage.vue'),
+        meta: { title: '插件仓库' }
+      },
+      {
+        path: 'plugins/:id',
+        name: 'plugin-detail',
+        component: () => import('../pages/plugins/PluginDetailPage.vue'),
+        meta: { title: '插件详情' }
+      },
+      {
+        path: 'resource-groups',
+        redirect: { name: 'plugins' }
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('../pages/SettingsPage.vue'),
         meta: { title: '设置' }
+      },
+      {
+        path: 'access',
+        redirect: { name: 'dashboard' }
+      },
+      {
+        path: 'access/users',
+        redirect: { name: 'dashboard' }
+      },
+      {
+        path: 'access/resource-groups',
+        redirect: { name: 'dashboard' }
       }
     ]
   }
@@ -80,37 +130,38 @@ const router = createRouter({
   routes
 })
 
-// Auth guard - redirect to /login if token is missing or invalid
-router.beforeEach(async (to) => {
+export async function authGuard(to) {
   // Allow login route through
   if (to.name === 'login') return true
 
-  const token = localStorage.getItem('panel_token')
+  const token = getStoredAuthToken()
   if (!token) {
     return { name: 'login' }
   }
 
-  // Token exists — verify it; on failure clear token and redirect to login
   try {
+    // Drop leftover panel_session so the API client cannot attach Authorization
+    // Bearer and let the backend authenticate the session before X-Panel-Token.
+    clearSessionToken()
     const valid = await verifyToken(token)
     if (!valid) {
-      localStorage.removeItem('panel_token')
-      clearToken()
+      clearCredentials()
       return { name: 'login' }
     }
     return true
   } catch (err) {
     // Only 401 from /auth/verify means the token is invalid/expired — clear it.
-    // Transport errors (network) and 5xx should not destroy a valid session.
+    // Transport errors (network) and 5xx should not destroy a valid panel token.
     if (err?.response?.status === 401) {
-      localStorage.removeItem('panel_token')
-      clearToken()
+      clearCredentials()
       return { name: 'login' }
     }
     // For any other error (5xx, network), allow navigation to proceed so the
     // page can surface the outage to the user rather than blocking the app entirely.
     return true
   }
-})
+}
+
+router.beforeEach(authGuard)
 
 export default router

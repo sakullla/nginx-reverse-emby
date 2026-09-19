@@ -62,6 +62,11 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	if err := process.TransferAuthority(activationCtx); err != nil {
 		return abort(fmt.Errorf("transfer hot restart authority: %w", err))
 	}
+	// Authority transfer makes the child the only control-plane owner. Stop
+	// this process's TaskClient before waiting for data-plane drain; otherwise
+	// old and new workers replace each other's authenticated task session for
+	// the entire drain window.
+	a.stopTaskClient()
 	ctx := a.hotRestartContext()
 	if a.hotRestartDrain != nil {
 		if err := a.hotRestartDrain(ctx, identity); err != nil && !errors.Is(err, context.Canceled) {
@@ -78,7 +83,6 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	// stable supervisor while every authoritative hot-restart child remains a
 	// replaceable worker. Intermediate children exit after their own handoff,
 	// preventing parent/child/grandchild chains from accumulating.
-	a.stopTaskClient()
 	a.closeLocalRuntimes()
 	journalPath := filepath.Join(a.cfg.DataDir, "hot-restart", "authority.json")
 	supervise := a.hotRestartSupervise
@@ -109,13 +113,13 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 	if err != nil {
 		return hotrestart.Identity{}, 0, err
 	}
-	runtimeDigest, err := hotRestartSnapshotDigest(desired)
-	if err != nil {
-		return hotrestart.Identity{}, 0, err
-	}
 	record := matchingHotRestartRecord(journal, desired.Revision)
 	if record == nil {
 		if desired.Revision == 0 {
+			runtimeDigest, err := hotRestartSnapshotDigest(desired)
+			if err != nil {
+				return hotrestart.Identity{}, 0, err
+			}
 			return a.bootstrapHotRestartLaunchState(runtimeDigest)
 		}
 		if legacyGenerationJournalIsEmpty(journal) {
@@ -123,9 +127,8 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 		}
 		return hotrestart.Identity{}, 0, errors.New("durable generation is not ready for hot restart")
 	}
-	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" ||
-		!strings.EqualFold(strings.TrimSpace(record.RuntimeSnapshotHash), runtimeDigest) {
-		return hotrestart.Identity{}, 0, errors.New("durable generation does not match the desired runtime snapshot")
+	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" {
+		return hotrestart.Identity{}, 0, errors.New("durable generation identity is incomplete for hot restart")
 	}
 	generationID := strings.TrimSpace(record.RuntimeGenerationID)
 	if generationID == "" {

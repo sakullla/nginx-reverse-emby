@@ -40,6 +40,45 @@ describe('AgentMonitorCard', () => {
     expect(wrapper.get('[data-testid="monitor-card-endpoint"]').text()).toBe('nosla-sjc.example.com')
   })
 
+  it('collapses multi-domain ddns configs to the first domain plus an overflow badge', () => {
+    const wrapper = mount(AgentMonitorCard, {
+      props: {
+        agent: {
+          id: 'dmit-us',
+          name: 'dmit-us',
+          status: 'online',
+          ddns_domain: '*.dmit.sakullla.cyou, sub.sakullla.cyou',
+          last_seen_at: '2026-07-22T00:00:00Z'
+        }
+      }
+    })
+
+    const endpoint = wrapper.get('[data-testid="monitor-card-endpoint"]')
+    expect(endpoint.text()).toBe('*.dmit.sakullla.cyou')
+
+    const more = wrapper.get('[data-testid="monitor-card-endpoint-more"]')
+    expect(more.text()).toBe('+1')
+    // Full list stays reachable via tooltip on both the value and the badge.
+    expect(more.attributes('title')).toBe('*.dmit.sakullla.cyou, sub.sakullla.cyou')
+    expect(endpoint.attributes('title')).toBe('*.dmit.sakullla.cyou, sub.sakullla.cyou')
+  })
+
+  it('hides the overflow badge for single-domain or IP endpoints', () => {
+    const wrapper = mount(AgentMonitorCard, {
+      props: {
+        agent: {
+          id: 'edge-1',
+          name: 'edge-1',
+          status: 'online',
+          ddns_domain: 'edge.example.com',
+          last_seen_at: '2026-07-22T00:00:00Z'
+        }
+      }
+    })
+
+    expect(wrapper.find('[data-testid="monitor-card-endpoint-more"]').exists()).toBe(false)
+  })
+
   it('shows full network rates without truncating KiB/s values', () => {
     const wrapper = mount(AgentMonitorCard, {
       props: {

@@ -29,16 +29,34 @@
           </button>
           <Transition name="nav-group">
             <div v-show="isGroupOpen(item.label)" class="nav-group__children">
-              <RouterLink
-                v-for="child in item.children"
-                :key="child.to"
-                :to="child.to"
-                class="sidebar__nav-item sidebar__nav-item--child"
-                :class="{ 'sidebar__nav-item--child-active': isChildActive(child) }"
-              >
-                <component :is="child.icon" />
-                <span>{{ child.label }}</span>
-              </RouterLink>
+              <template v-for="child in item.children" :key="child.href || child.to">
+                <a
+                  v-if="child.href"
+                  :href="child.href"
+                  class="sidebar__nav-item sidebar__nav-item--child"
+                  :title="child.title || child.label"
+                  :aria-label="navItemAriaLabel(child)"
+                >
+                  <component :is="child.icon" />
+                  <span>{{ child.label }}</span>
+                </a>
+                <RouterLink
+                  v-else
+                  :to="child.to"
+                  class="sidebar__nav-item sidebar__nav-item--child"
+                  :class="{
+                    'sidebar__nav-item--child-active': isChildActive(child),
+                    'sidebar__nav-item--advanced': child.advanced,
+                  }"
+                  :title="child.title || child.label"
+                  :aria-label="navItemAriaLabel(child)"
+                  :aria-current="isChildActive(child) ? 'page' : undefined"
+                >
+                  <component :is="child.icon" />
+                  <span>{{ child.label }}</span>
+                  <span v-if="child.advanced" class="sidebar__nav-badge">高级</span>
+                </RouterLink>
+              </template>
             </div>
           </Transition>
         </div>
@@ -59,20 +77,38 @@
         </RouterLink>
 
         <div v-else class="sidebar__nav-icon-wrap">
-          <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }">
+          <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }" :title="item.label">
             <component :is="item.icon" />
           </div>
           <div class="sidebar__hover-popup">
-            <RouterLink
-              v-for="child in item.children"
-              :key="child.to"
-              :to="child.to"
-              class="sidebar__hover-popup__item"
-              :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
-            >
-              <component :is="child.icon" />
-              <span>{{ child.label }}</span>
-            </RouterLink>
+            <template v-for="child in item.children" :key="child.href || child.to">
+              <a
+                v-if="child.href"
+                :href="child.href"
+                class="sidebar__hover-popup__item"
+                :title="child.title || child.label"
+                :aria-label="navItemAriaLabel(child)"
+              >
+                <component :is="child.icon" />
+                <span>{{ child.label }}</span>
+              </a>
+              <RouterLink
+                v-else
+                :to="child.to"
+                class="sidebar__hover-popup__item"
+                :class="{
+                  'sidebar__hover-popup__item--active': isChildActive(child),
+                  'sidebar__hover-popup__item--advanced': child.advanced,
+                }"
+                :title="child.title || child.label"
+                :aria-label="navItemAriaLabel(child)"
+                :aria-current="isChildActive(child) ? 'page' : undefined"
+              >
+                <component :is="child.icon" />
+                <span>{{ child.label }}</span>
+                <span v-if="child.advanced" class="sidebar__nav-badge">高级</span>
+              </RouterLink>
+            </template>
           </div>
         </div>
       </template>
@@ -83,6 +119,8 @@
 <script setup>
 import { ref, computed, h, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { useAccessControl } from '../../context/useAccessControl'
+import { pluginChildrenForGroup, usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 
 // --- Icon components ---
 const makeIcon = (paths) => () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, paths.map(d => h('path', { d })))
@@ -100,41 +138,80 @@ const icons = {
   home: makeIconMixed([{ tag: 'path', attrs: { d: 'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' } }, { tag: 'polyline', attrs: { points: '9 22 9 12 15 12 15 22' } }]),
   traffic: makeIcon(['M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71', 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71']),
   lock: makeIcon(['M3 11h18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z', 'M7 11V7a5 5 0 0 1 10 0v4']),
+  key: makeIcon(['M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4']),
   relay: makeIcon(['M8 12h8', 'M6 8h12', 'M10 16h4']),
   monitor: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('rect', { x: '2', y: '3', width: '20', height: '14', rx: '2' }), h('line', { x1: '8', y1: '21', x2: '16', y2: '21' }), h('line', { x1: '12', y1: '17', x2: '12', y2: '21' })]),
   settings: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
   infra: makeIconMixed([{ tag: 'rect', attrs: { x: '2', y: '2', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'rect', attrs: { x: '2', y: '14', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'line', attrs: { x1: '6', y1: '6', x2: '6.01', y2: '6' } }, { tag: 'line', attrs: { x1: '6', y1: '18', x2: '6.01', y2: '18' } }]),
+  plugin: makeIcon(['M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z']),
+}
+
+const { refreshActor } = useAccessControl()
+const route = useRoute()
+
+function isPathActive(to) {
+  return Boolean(to) && (route.path === to || route.path.startsWith(`${to}/`))
 }
 
 // --- Nav config ---
-const navItems = [
-  { type: 'item', label: '首页', to: '/', icon: icons.home, activeMatch: (name) => name === 'dashboard' },
-  {
-    type: 'group', label: '流量管理', icon: icons.traffic,
-    children: [
-      { label: 'HTTP 规则', to: '/rules', icon: icons.traffic },
-      { label: 'L4 规则', to: '/l4', icon: icons.infra },
-    ],
-  },
-  {
-    type: 'group', label: '基础设施', icon: icons.infra,
-    children: [
-      { label: '证书管理', to: '/certs', icon: icons.lock },
-      { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
-      { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
-    ],
-  },
-  { type: 'item', label: '设置', to: '/settings', icon: icons.settings },
-]
+const { routes: pluginUIRoutes } = usePluginUIRoutes()
 
-const route = useRoute()
+const navItems = computed(() => {
+  const items = [
+    { type: 'item', label: '首页', to: '/', icon: icons.home, activeMatch: (name) => name === 'dashboard' },
+    {
+      type: 'group', label: '流量管理', icon: icons.traffic,
+      children: [
+        { label: 'HTTP 规则', to: '/rules', icon: icons.traffic },
+        { label: 'L4 规则', to: '/l4', icon: icons.infra },
+      ],
+    },
+    {
+      type: 'group', label: '基础设施', icon: icons.infra,
+      children: [
+        { label: '证书中心', to: '/certs', icon: icons.lock, activeMatch: (name) => name === 'certs' || name === 'pki' },
+        ...pluginChildrenForGroup(pluginUIRoutes.value, '基础设施').map((child) => ({ ...child, icon: icons.key })),
+        { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
+        { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
+      ],
+    },
+    {
+      type: 'group', label: '插件', icon: icons.plugin,
+      children: [
+        {
+          label: '插件市场',
+          title: '浏览并安装插件，安装后继续部署或发布',
+          to: '/plugins/marketplace',
+          icon: icons.plugin,
+          activeMatch: (name) => name === 'plugin-marketplace',
+        },
+        {
+          label: '已安装插件',
+          title: '查看尚未部署、待发布、已可用或异常',
+          to: '/plugins',
+          icon: icons.plugin,
+          activeMatch: (name) => name === 'plugins' || name === 'plugin-detail',
+        },
+      ],
+    },
+  ]
+  items.push({ type: 'item', label: '设置', to: '/settings', icon: icons.settings })
+  return items
+})
+
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 const openGroups = ref(new Set(JSON.parse(localStorage.getItem('sidebar_open_groups') || '[]')))
 
-function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : route.path === item.to }
-function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : route.path === child.to }
+function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : isPathActive(item.to) }
+function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : isPathActive(child.to) }
+function navItemAriaLabel(item) {
+  return item.title && item.title !== item.label ? `${item.label}，${item.title}` : item.label
+}
 function isGroupOpen(label) { return openGroups.value.has(label) }
-function isGroupActive(group) { return group.children.some(c => isChildActive(c)) }
+function isGroupActive(group) {
+  if (group.children.some((child) => isChildActive(child))) return true
+  return Boolean(group.activePathPrefix && route.path.startsWith(group.activePathPrefix))
+}
 
 function toggleGroup(label) {
   if (openGroups.value.has(label)) { openGroups.value.delete(label) } else { openGroups.value.add(label) }
@@ -153,15 +230,19 @@ function toggleCollapse() {
 }
 
 function openActiveGroups() {
-  for (const item of navItems) {
+  for (const item of navItems.value) {
     if (item.type === 'group' && isGroupActive(item) && !isGroupOpen(item.label)) {
       openGroups.value.add(item.label)
     }
   }
 }
 
-onMounted(openActiveGroups)
+onMounted(() => {
+  refreshActor().catch(() => undefined)
+  openActiveGroups()
+})
 watch(() => route.path, openActiveGroups)
+watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 </script>
 
 <style scoped>
@@ -311,6 +392,22 @@ watch(() => route.path, openActiveGroups)
   border-radius: 0 2px 2px 0;
 }
 
+.sidebar__nav-item--advanced:not(.sidebar__nav-item--child-active) {
+  color: var(--color-text-tertiary);
+}
+
+.sidebar__nav-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-md);
+  padding: 0.125rem 0.375rem;
+}
+
 /* Nav group */
 .nav-group {
   display: flex;
@@ -377,7 +474,7 @@ watch(() => route.path, openActiveGroups)
 .nav-group-enter-to,
 .nav-group-leave-from {
   opacity: 1;
-  max-height: 200px;
+  max-height: 280px;
 }
 
 /* Collapsed nav icons */
@@ -482,5 +579,9 @@ watch(() => route.path, openActiveGroups)
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   font-weight: 600;
+}
+
+.sidebar__hover-popup__item--advanced:not(.sidebar__hover-popup__item--active) {
+  color: var(--color-text-tertiary);
 }
 </style>

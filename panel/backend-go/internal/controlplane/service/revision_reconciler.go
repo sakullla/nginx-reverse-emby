@@ -26,10 +26,7 @@ type RevisionReconciler struct {
 func NewRevisionReconciler(api *RevisionAPI, logger *log.Logger) *RevisionReconciler {
 	var reconcile func(context.Context) error
 	if api != nil && api.coordinator != nil {
-		reconcile = func(ctx context.Context) error {
-			_, err := api.coordinator.ReconcileStartup(ctx)
-			return err
-		}
+		reconcile = api.reconcileStartup
 	}
 	return newRevisionReconciler(defaultRevisionReconcileInterval, logger, reconcile)
 }

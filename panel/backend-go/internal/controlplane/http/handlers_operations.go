@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,9 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -74,7 +77,7 @@ func (d Dependencies) writeMutationResource(
 		cached := cachedMutationPayload(payload, result)
 		if encoded, err := json.Marshal(cached); err == nil {
 			_ = d.RevisionService.SaveMutationResponse(
-				r.Context(), service.PanelIdempotencyScope, idempotencyKey, result.Operation.ID, encoded,
+				r.Context(), panelMutationIdempotencyScope(r.Context()), idempotencyKey, result.Operation.ID, encoded,
 			)
 		}
 	}
@@ -194,7 +197,7 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 		return false
 	}
 	payload, found, err := d.RevisionService.LoadMutationResponseByKey(
-		r.Context(), service.PanelIdempotencyScope, key,
+		r.Context(), panelMutationIdempotencyScope(r.Context()), key,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to load idempotency response"))
@@ -240,7 +243,7 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 		response, statusURL := buildAcceptedMutationPayload(r, result, field, resource, extra)
 		if cached, err := json.Marshal(cachedMutationPayload(response, result)); err == nil {
 			_ = d.RevisionService.SaveMutationResponse(
-				r.Context(), service.PanelIdempotencyScope, key, result.Operation.ID, cached,
+				r.Context(), panelMutationIdempotencyScope(r.Context()), key, result.Operation.ID, cached,
 			)
 		}
 		w.Header().Set("Idempotency-Replayed", "true")
@@ -380,8 +383,16 @@ func (d Dependencies) persistActionResponse(r *http.Request, operationID, finger
 		return
 	}
 	_ = d.RevisionService.SaveMutationResponse(
-		r.Context(), service.PanelIdempotencyScope, key, operationID, encoded,
+		r.Context(), panelMutationIdempotencyScope(r.Context()), key, operationID, encoded,
 	)
+}
+
+func panelMutationIdempotencyScope(ctx context.Context) string {
+	scope, _, _ := revision.MutationIdempotencyFromContext(ctx)
+	if scope == "" {
+		return service.PanelIdempotencyScope
+	}
+	return scope
 }
 
 func clonePayload(input map[string]any) map[string]any {
@@ -412,6 +423,10 @@ func (d Dependencies) handleOperationStatus(w http.ResponseWriter, r *http.Reque
 		d.writeRevisionError(w, err)
 		return
 	}
+	if err := d.authorizeOperationStatus(r, status, authz.PermissionResourceRead); err != nil {
+		writeAccessError(w, err)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": status})
 }
@@ -424,6 +439,15 @@ func (d Dependencies) handleOperationDismiss(w http.ResponseWriter, r *http.Requ
 	if !d.requireRevisionService(w) {
 		return
 	}
+	current, err := d.RevisionService.GetOperationStatus(r.Context(), r.PathValue("operationID"))
+	if err != nil {
+		d.writeRevisionError(w, err)
+		return
+	}
+	if err := d.authorizeOperationStatus(r, current, authz.PermissionResourceWrite); err != nil {
+		writeAccessError(w, err)
+		return
+	}
 	status, err := d.RevisionService.DismissOperation(r.Context(), r.PathValue("operationID"))
 	if err != nil {
 		d.writeRevisionError(w, err)
@@ -431,6 +455,31 @@ func (d Dependencies) handleOperationDismiss(w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": status})
+}
+
+func (d Dependencies) authorizeOperationStatus(r *http.Request, status service.OperationStatus, permission string) error {
+	actor, found := actorFromRequest(r)
+	if !found || actor.Bootstrap || d.AccessManager == nil {
+		return nil
+	}
+	agentIDs := make(map[string]struct{}, len(status.Agents)+1)
+	if status.PrimaryAgent != "" {
+		agentIDs[status.PrimaryAgent] = struct{}{}
+	}
+	for _, agent := range status.Agents {
+		if agent.AgentID != "" {
+			agentIDs[agent.AgentID] = struct{}{}
+		}
+	}
+	if len(agentIDs) == 0 {
+		return d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSystemAdmin, "operation", status.OperationID, "")
+	}
+	for agentID := range agentIDs {
+		if err := d.AccessManager.AuthorizeResource(r.Context(), actor, permission, "agent", agentID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d Dependencies) handleAgentRevisionStatus(w http.ResponseWriter, r *http.Request) {
@@ -508,10 +557,36 @@ func (d Dependencies) handleRevisionEvents(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 		return
 	}
-	page, err := d.RevisionService.ListEvents(r.Context(), service.RevisionEventQuery{
-		AfterID: after, Limit: limit, OperationID: r.URL.Query().Get("operation_id"),
-		AgentID: r.URL.Query().Get("agent_id"),
-	})
+	operationID := strings.TrimSpace(r.URL.Query().Get("operation_id"))
+	agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	actor, hasActor := actorFromRequest(r)
+	if d.AccessManager != nil && hasActor && !actor.Bootstrap {
+		if agentID != "" {
+			if err := d.AccessManager.AuthorizeResource(r.Context(), actor, authz.PermissionResourceRead, "agent", agentID); err != nil {
+				writeAccessError(w, err)
+				return
+			}
+		}
+		if operationID != "" {
+			status, err := d.RevisionService.GetOperationStatus(r.Context(), operationID)
+			if err != nil {
+				d.writeRevisionError(w, err)
+				return
+			}
+			if err := d.authorizeOperationStatus(r, status, authz.PermissionResourceRead); err != nil {
+				writeAccessError(w, err)
+				return
+			}
+		}
+	}
+	var page service.RevisionEventPage
+	if d.AccessManager != nil && hasActor && !actor.Bootstrap && !actor.Has(authz.PermissionAll) && operationID == "" && agentID == "" {
+		page, err = d.listVisibleRevisionEvents(r, after, limit)
+	} else {
+		page, err = d.RevisionService.ListEvents(r.Context(), service.RevisionEventQuery{
+			AfterID: after, Limit: limit, OperationID: operationID, AgentID: agentID,
+		})
+	}
 	if err != nil {
 		d.writeRevisionError(w, err)
 		return
@@ -520,6 +595,44 @@ func (d Dependencies) handleRevisionEvents(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "events": page.Events, "next_cursor": page.NextCursor, "has_more": page.HasMore,
 	})
+}
+
+func (d Dependencies) listVisibleRevisionEvents(r *http.Request, after uint64, limit int) (service.RevisionEventPage, error) {
+	agents, err := d.AgentService.List(r.Context())
+	if err != nil {
+		return service.RevisionEventPage{}, err
+	}
+	agents, err = d.filterAgents(r.Context(), agents)
+	if err != nil {
+		return service.RevisionEventPage{}, err
+	}
+	effectiveLimit := limit
+	if effectiveLimit <= 0 {
+		effectiveLimit = 100
+	}
+	if effectiveLimit > 500 {
+		effectiveLimit = 500
+	}
+	events := make([]service.RevisionEvent, 0, effectiveLimit)
+	hasMore := false
+	for _, agent := range agents {
+		agentPage, err := d.RevisionService.ListEvents(r.Context(), service.RevisionEventQuery{AfterID: after, Limit: effectiveLimit, AgentID: agent.ID})
+		if err != nil {
+			return service.RevisionEventPage{}, err
+		}
+		events = append(events, agentPage.Events...)
+		hasMore = hasMore || agentPage.HasMore
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].ID < events[j].ID })
+	if len(events) > effectiveLimit {
+		events = events[:effectiveLimit]
+		hasMore = true
+	}
+	nextCursor := after
+	if len(events) > 0 {
+		nextCursor = events[len(events)-1].ID
+	}
+	return service.RevisionEventPage{Events: events, NextCursor: nextCursor, HasMore: hasMore}, nil
 }
 
 func (d Dependencies) handleRemoteRevisionPull(w http.ResponseWriter, r *http.Request) {

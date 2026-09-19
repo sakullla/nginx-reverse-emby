@@ -33,7 +33,13 @@
       <slot />
     </div>
 
-    <footer v-if="$slots.footer" class="base-list-card__footer">
+    <footer
+      v-if="$slots.footer"
+      class="base-list-card__footer"
+      @click.stop
+      @keydown.enter.stop
+      @keydown.space.stop
+    >
       <slot name="footer" />
     </footer>
   </component>
@@ -112,6 +118,7 @@ function onKey(e) {
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
+  min-width: 0;
   min-height: 26px;
 }
 
@@ -156,6 +163,8 @@ function onKey(e) {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
+  min-width: 0;
+  margin-top: auto;
   padding-top: 0.05rem;
 }
 </style>

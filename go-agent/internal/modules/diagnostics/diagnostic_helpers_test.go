@@ -11,7 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
-	"io"
+
 	"math/big"
 	"net"
 	"sync"
@@ -228,10 +228,4 @@ func waitForDiagnosticTarget(t *testing.T, targets <-chan string) string {
 		t.Fatal("expected probe to reach target")
 		return ""
 	}
-}
-
-func copyDiagnosticTraffic(dst net.Conn, src net.Conn) {
-	defer dst.Close()
-	defer src.Close()
-	_, _ = io.Copy(dst, src)
 }

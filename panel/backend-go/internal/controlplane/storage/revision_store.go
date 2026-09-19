@@ -8,17 +8,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 const (
-	revisionLedgerBaselineMarkerKey = "migration.agent_revision_ledger_baseline.v1"
-	revisionSnapshotArtifactRole    = "snapshot"
+	revisionLedgerBaselineMarkerKey   = "migration.agent_revision_ledger_baseline.v1"
+	revisionSnapshotArtifactRole      = "snapshot"
+	revisionPolicyArtifactRolePrefix  = "plugin_policy_artifact:"
+	revisionPolicyArtifactKind        = "plugin_policy_wasm"
+	revisionRuntimeArtifactRolePrefix = "plugin_runtime_artifact:"
+	revisionRuntimeArtifactKind       = "plugin_runtime_artifact"
 
 	OperationStatusPending = "pending"
 	OperationStatusApplied = "applied"
@@ -42,18 +50,633 @@ type RevisionLedgerWrite struct {
 	IdempotencyRecords []IdempotencyRecordRow
 }
 
+type revisionPolicyArtifactIdentity struct {
+	Source            PolicyArtifactSource
+	ArtifactDigest    string
+	PackageDigest     string
+	SignerFingerprint string
+}
+
+type revisionRuntimeArtifactIdentity struct {
+	ArtifactID        string
+	PackageIdentity   string
+	PackageDigest     string
+	RelativePath      string
+	ArtifactDigest    string
+	SizeBytes         int64
+	SignerKeyID       string
+	SignerFingerprint string
+}
+
+// BuildAgentRevisionPolicyArtifacts copies every policy WASM referenced by an
+// issued snapshot into the immutable revision ledger. The copy makes retries
+// independent of later package lifecycle and cache cleanup.
+func (s *GormStore) BuildAgentRevisionPolicyArtifacts(ctx context.Context, agentID string, revision int64, snapshot Snapshot, now time.Time) ([]GenerationArtifactRow, []AgentRevisionArtifactRow, error) {
+	return buildAgentRevisionPolicyArtifacts(ctx, s.db, s.dataRoot, agentID, revision, snapshot, now)
+}
+
+func buildAgentRevisionPolicyArtifacts(ctx context.Context, db *gorm.DB, dataRoot, agentID string, revision int64, snapshot Snapshot, now time.Time) ([]GenerationArtifactRow, []AgentRevisionArtifactRow, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || revision <= 0 || snapshot.Revision != revision {
+		return nil, nil, fmt.Errorf("agent revision policy artifact identity is invalid")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	identities := make(map[string]revisionPolicyArtifactIdentity)
+	stages := make(map[string]PolicyStage)
+	blobs := make(map[string]GenerationArtifactRow)
+	refs := make([]AgentRevisionArtifactRow, 0)
+	for _, policy := range snapshot.PluginPolicies {
+		for _, stage := range policy.Stages {
+			source := stage.ArtifactSource
+			artifactID := strings.TrimSpace(source.ArtifactID)
+			identity := revisionPolicyArtifactIdentity{
+				Source: source, ArtifactDigest: strings.ToLower(strings.TrimSpace(stage.ArtifactDigest)),
+				PackageDigest:     strings.ToLower(strings.TrimSpace(stage.PackageDigest)),
+				SignerFingerprint: strings.ToLower(strings.TrimSpace(stage.SignerFingerprint)),
+			}
+			if artifactID == "" || source.SizeBytes <= 0 || identity.ArtifactDigest == "" ||
+				!strings.EqualFold(source.SHA256, identity.ArtifactDigest) ||
+				!strings.EqualFold(source.PackageDigest, identity.PackageDigest) {
+				return nil, nil, fmt.Errorf("policy artifact %q has incomplete snapshot identity", artifactID)
+			}
+			if previous, found := identities[artifactID]; found {
+				if previous != identity {
+					return nil, nil, fmt.Errorf("policy artifact %q has conflicting snapshot identities", artifactID)
+				}
+				continue
+			}
+			identities[artifactID] = identity
+			stages[artifactID] = stage
+		}
+	}
+	artifactIDs := make([]string, 0, len(stages))
+	for artifactID := range stages {
+		artifactIDs = append(artifactIDs, artifactID)
+	}
+	sort.Strings(artifactIDs)
+	for _, artifactID := range artifactIDs {
+		stage, identity := stages[artifactID], identities[artifactID]
+		payload, err := loadIssuedPolicyArtifact(ctx, db, stage)
+		if err != nil {
+			return nil, nil, err
+		}
+		blobID := revisionPolicyArtifactBlobID(identity.ArtifactDigest)
+		blob := GenerationArtifactRow{ID: blobID, Kind: revisionPolicyArtifactKind, SHA256: identity.ArtifactDigest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}
+		if existing, found := blobs[blobID]; found {
+			if existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || !bytes.Equal(existing.Payload, blob.Payload) {
+				return nil, nil, fmt.Errorf("policy artifact blob %q has conflicting content", blobID)
+			}
+		} else {
+			blobs[blobID] = blob
+		}
+		refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionPolicyArtifactRole(artifactID), CreatedAt: now})
+	}
+	runtimeIdentities := make(map[string]revisionRuntimeArtifactIdentity)
+	runtimeGenerations := make(map[string]PluginGeneration)
+	for _, generation := range snapshot.PluginGenerations {
+		artifactID := strings.TrimSpace(generation.Artifact.ArtifactID)
+		identity := revisionRuntimeArtifactIdentity{
+			ArtifactID: artifactID, PackageIdentity: strings.TrimSpace(generation.Artifact.PackageIdentity),
+			PackageDigest: strings.ToLower(strings.TrimSpace(generation.PackageDigest)), RelativePath: generation.Artifact.RelativePath,
+			ArtifactDigest: strings.ToLower(strings.TrimSpace(generation.Artifact.SHA256)), SizeBytes: generation.Artifact.SizeBytes,
+			SignerKeyID: generation.Artifact.SignerKeyID, SignerFingerprint: strings.ToLower(strings.TrimSpace(generation.Artifact.SignerFingerprint)),
+		}
+		if artifactID == "" || identity.PackageIdentity == "" || identity.RelativePath == "" || identity.SizeBytes <= 0 ||
+			!validSHA256(identity.PackageDigest) || !validSHA256(identity.ArtifactDigest) || !validSHA256(identity.SignerFingerprint) {
+			return nil, nil, fmt.Errorf("plugin runtime artifact %q has incomplete snapshot identity", artifactID)
+		}
+		if previous, found := runtimeIdentities[artifactID]; found {
+			if previous != identity {
+				return nil, nil, fmt.Errorf("plugin runtime artifact %q has conflicting snapshot identities", artifactID)
+			}
+			continue
+		}
+		runtimeIdentities[artifactID], runtimeGenerations[artifactID] = identity, generation
+	}
+	runtimeArtifactIDs := make([]string, 0, len(runtimeGenerations))
+	for artifactID := range runtimeGenerations {
+		runtimeArtifactIDs = append(runtimeArtifactIDs, artifactID)
+	}
+	sort.Strings(runtimeArtifactIDs)
+	for _, artifactID := range runtimeArtifactIDs {
+		generation, identity := runtimeGenerations[artifactID], runtimeIdentities[artifactID]
+		payload, err := loadIssuedRuntimeArtifact(ctx, db, generation)
+		if err != nil {
+			return nil, nil, err
+		}
+		externalPath, err := writeGenerationArtifactFile(dataRoot, identity.ArtifactDigest, payload)
+		if err != nil {
+			return nil, nil, fmt.Errorf("persist plugin runtime artifact %q: %w", artifactID, err)
+		}
+		blobID := revisionRuntimeArtifactBlobID(identity.ArtifactDigest)
+		blob := GenerationArtifactRow{ID: blobID, Kind: revisionRuntimeArtifactKind, SHA256: identity.ArtifactDigest, Payload: []byte{}, ExternalPath: externalPath, SizeBytes: int64(len(payload)), CreatedAt: now}
+		if existing, found := blobs[blobID]; found {
+			if existing.Kind != blob.Kind || existing.SHA256 != blob.SHA256 || existing.SizeBytes != blob.SizeBytes || existing.ExternalPath != blob.ExternalPath {
+				return nil, nil, fmt.Errorf("plugin runtime artifact blob %q has conflicting content", blobID)
+			}
+		} else {
+			blobs[blobID] = blob
+		}
+		refs = append(refs, AgentRevisionArtifactRow{AgentID: agentID, Revision: revision, ArtifactID: blobID, Role: revisionRuntimeArtifactRole(artifactID), CreatedAt: now})
+	}
+	artifacts := make([]GenerationArtifactRow, 0, len(blobs))
+	datasetArtifacts, datasetRefs, err := buildAgentRevisionDatasetArtifacts(ctx, db, agentID, revision, snapshot, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	artifacts = append(artifacts, datasetArtifacts...)
+	refs = append(refs, datasetRefs...)
+	for _, blob := range blobs {
+		artifacts = append(artifacts, blob)
+	}
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ID < artifacts[j].ID })
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Role < refs[j].Role })
+	return artifacts, refs, nil
+}
+
+func loadIssuedPolicyArtifact(ctx context.Context, db *gorm.DB, stage PolicyStage) ([]byte, error) {
+	source := stage.ArtifactSource
+	var packageRow PluginPackageRow
+	if err := db.WithContext(ctx).Where("identity = ?", source.PackageIdentity).First(&packageRow).Error; err != nil {
+		return nil, fmt.Errorf("policy artifact %q package identity: %w", source.ArtifactID, err)
+	}
+	if !strings.EqualFold(packageRow.Digest, source.PackageDigest) ||
+		!strings.EqualFold(packageRow.SignatureFingerprint, stage.SignerFingerprint) {
+		return nil, fmt.Errorf("policy artifact %q package evidence differs from snapshot", source.ArtifactID)
+	}
+	var artifact PluginArtifactRow
+	if err := db.WithContext(ctx).Where("id = ? AND package_identity = ?", source.ArtifactID, source.PackageIdentity).First(&artifact).Error; err != nil {
+		return nil, fmt.Errorf("policy artifact %q durable identity: %w", source.ArtifactID, err)
+	}
+	if artifact.Path != source.RelativePath || !strings.EqualFold(artifact.PackageDigest, source.PackageDigest) ||
+		!strings.EqualFold(artifact.SHA256, source.SHA256) || artifact.SizeBytes != source.SizeBytes {
+		return nil, fmt.Errorf("policy artifact %q durable evidence differs from snapshot", source.ArtifactID)
+	}
+	path := filepath.Join(packageRow.CachePath, filepath.FromSlash(artifact.Path))
+	relative, err := filepath.Rel(packageRow.CachePath, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("policy artifact %q path escapes verified package cache", source.ArtifactID)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open policy artifact %q: %w", source.ArtifactID, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != source.SizeBytes {
+		return nil, fmt.Errorf("policy artifact %q size differs from snapshot", source.ArtifactID)
+	}
+	hash := sha256.New()
+	var payload bytes.Buffer
+	written, err := io.Copy(io.MultiWriter(hash, &payload), io.LimitReader(file, source.SizeBytes+1))
+	if err != nil || written != source.SizeBytes || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), source.SHA256) {
+		return nil, fmt.Errorf("policy artifact %q digest differs from snapshot", source.ArtifactID)
+	}
+	return payload.Bytes(), nil
+}
+
+func loadIssuedRuntimeArtifact(ctx context.Context, db *gorm.DB, generation PluginGeneration) ([]byte, error) {
+	descriptor := generation.Artifact
+	var packageRow PluginPackageRow
+	if err := db.WithContext(ctx).Where("identity = ?", descriptor.PackageIdentity).First(&packageRow).Error; err != nil {
+		return nil, fmt.Errorf("plugin runtime artifact %q package identity: %w", descriptor.ArtifactID, err)
+	}
+	if !strings.EqualFold(packageRow.Digest, generation.PackageDigest) || packageRow.SignatureVerdict != "verified" ||
+		packageRow.SignatureKeyID != descriptor.SignerKeyID || !strings.EqualFold(packageRow.SignatureFingerprint, descriptor.SignerFingerprint) {
+		return nil, fmt.Errorf("plugin runtime artifact %q package evidence differs from snapshot", descriptor.ArtifactID)
+	}
+	var artifact PluginArtifactRow
+	if err := db.WithContext(ctx).Where("id = ? AND package_identity = ?", descriptor.ArtifactID, descriptor.PackageIdentity).First(&artifact).Error; err != nil {
+		return nil, fmt.Errorf("plugin runtime artifact %q durable identity: %w", descriptor.ArtifactID, err)
+	}
+	if artifact.Path != descriptor.RelativePath || artifact.RuntimeKind != generation.Runtime.Kind || artifact.RuntimeABI != generation.Runtime.ABI ||
+		!strings.EqualFold(artifact.PackageDigest, generation.PackageDigest) ||
+		!strings.EqualFold(artifact.SHA256, descriptor.SHA256) || artifact.SizeBytes != descriptor.SizeBytes {
+		return nil, fmt.Errorf("plugin runtime artifact %q durable evidence differs from snapshot", descriptor.ArtifactID)
+	}
+	var manifest pluginsdk.Manifest
+	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+		return nil, fmt.Errorf("plugin runtime artifact %q package manifest: %w", descriptor.ArtifactID, err)
+	}
+	if !pluginsdk.RuntimeDurableArtifactHostScopeMatches(manifest.Runtime, generation.Runtime.HostScope, artifact.HostScope) {
+		return nil, fmt.Errorf("plugin runtime artifact %q durable evidence differs from snapshot", descriptor.ArtifactID)
+	}
+	artifactPath := filepath.Join(packageRow.CachePath, filepath.FromSlash(artifact.Path))
+	relative, err := filepath.Rel(packageRow.CachePath, artifactPath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("plugin runtime artifact %q path escapes verified package cache", descriptor.ArtifactID)
+	}
+	file, err := os.Open(artifactPath)
+	if err != nil {
+		return nil, fmt.Errorf("open plugin runtime artifact %q: %w", descriptor.ArtifactID, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != descriptor.SizeBytes {
+		return nil, fmt.Errorf("plugin runtime artifact %q size differs from snapshot", descriptor.ArtifactID)
+	}
+	hash := sha256.New()
+	var payload bytes.Buffer
+	written, err := io.Copy(io.MultiWriter(hash, &payload), io.LimitReader(file, descriptor.SizeBytes+1))
+	if err != nil || written != descriptor.SizeBytes || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), descriptor.SHA256) {
+		return nil, fmt.Errorf("plugin runtime artifact %q digest differs from snapshot", descriptor.ArtifactID)
+	}
+	return payload.Bytes(), nil
+}
+
+// ResolveLocalPluginGenerationArtifact returns the already-verified immutable
+// package path used by the embedded Agent. Remote Agents still receive the
+// same bytes through the revision artifact endpoint.
+func (s *GormStore) ResolveLocalPluginGenerationArtifact(ctx context.Context, generation PluginGeneration) (string, error) {
+	resolve := func(scoped *GormStore) (string, error) {
+		if _, err := loadIssuedRuntimeArtifact(ctx, scoped.db, generation); err != nil {
+			return "", err
+		}
+		var packageRow PluginPackageRow
+		if err := scoped.db.WithContext(ctx).Where("identity = ?", generation.Artifact.PackageIdentity).First(&packageRow).Error; err != nil {
+			return "", err
+		}
+		artifactPath := filepath.Join(packageRow.CachePath, filepath.FromSlash(generation.Artifact.RelativePath))
+		relative, err := filepath.Rel(packageRow.CachePath, artifactPath)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("plugin runtime artifact %q path escapes verified package cache", generation.Artifact.ArtifactID)
+		}
+		return artifactPath, nil
+	}
+	if s.transactionScoped {
+		return resolve(s)
+	}
+	var artifactPath string
+	err := s.readSnapshotTransaction(ctx, func(scoped *GormStore) error {
+		var err error
+		artifactPath, err = resolve(scoped)
+		return err
+	})
+	return artifactPath, err
+}
+
+// EnsureAgentHeartbeatRevision atomically issues the exact positive snapshot
+// used by legacy heartbeat sync when an earlier mutation did not pass through
+// revision.Executor. Concurrent identical heartbeats converge on one immutable
+// row; the same agent/revision with different content is rejected.
+func (s *GormStore) EnsureAgentHeartbeatRevision(ctx context.Context, agentID string, snapshot Snapshot, snapshotPayload []byte, snapshotDigest string, now time.Time) (AgentRevisionRow, error) {
+	agentID = strings.TrimSpace(agentID)
+	snapshotDigest = strings.ToLower(strings.TrimSpace(snapshotDigest))
+	if agentID == "" || snapshot.Revision <= 0 || len(snapshotDigest) != sha256.Size*2 {
+		return AgentRevisionRow{}, fmt.Errorf("heartbeat revision identity is invalid")
+	}
+	digest := sha256.Sum256(snapshotPayload)
+	if !strings.EqualFold(snapshotDigest, hex.EncodeToString(digest[:])) {
+		return AgentRevisionRow{}, fmt.Errorf("heartbeat snapshot digest does not match payload")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var issued AgentRevisionRow
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var existing AgentRevisionRow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ? AND revision = ?", agentID, snapshot.Revision).First(&existing).Error
+		if err == nil {
+			if !strings.EqualFold(existing.SnapshotDigest, snapshotDigest) {
+				return fmt.Errorf("agent revision %q/%d already has a different snapshot digest", agentID, snapshot.Revision)
+			}
+			if err := verifyRevisionSnapshotArtifact(tx, existing); err != nil {
+				return err
+			}
+			complete, err := s.verifyRevisionPolicyArtifactRefs(tx, existing, snapshot)
+			if err != nil {
+				return err
+			}
+			if !complete {
+				policyArtifacts, policyRefs, err := buildAgentRevisionPolicyArtifacts(ctx, tx, s.dataRoot, agentID, snapshot.Revision, snapshot, now)
+				if err != nil {
+					return err
+				}
+				for _, artifact := range policyArtifacts {
+					if err := createImmutableArtifact(tx, artifact); err != nil {
+						return err
+					}
+				}
+				if err := createRevisionArtifactRefs(tx, policyRefs); err != nil {
+					return err
+				}
+			}
+			if err := rebaseInheritedPluginAgentRuntimeStatusesTx(ctx, tx, agentID, snapshot.Revision, snapshot.PluginGenerations, now); err != nil {
+				return err
+			}
+			if err := ensureHeartbeatRevisionPointer(tx, agentID, snapshot.Revision, now); err != nil {
+				return err
+			}
+			issued = existing
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		policyArtifacts, policyRefs, err := buildAgentRevisionPolicyArtifacts(ctx, tx, s.dataRoot, agentID, snapshot.Revision, snapshot, now)
+		if err != nil {
+			return err
+		}
+		snapshotArtifact := GenerationArtifactRow{ID: "snapshot-" + snapshotDigest, Kind: "agent_snapshot", SHA256: snapshotDigest, Payload: append([]byte(nil), snapshotPayload...), SizeBytes: int64(len(snapshotPayload)), CreatedAt: now}
+		if err := createImmutableArtifact(tx, snapshotArtifact); err != nil {
+			return err
+		}
+		for _, artifact := range policyArtifacts {
+			if err := createImmutableArtifact(tx, artifact); err != nil {
+				return err
+			}
+		}
+		operationHash := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s", agentID, snapshot.Revision, snapshotDigest)))
+		operationID := "heartbeat-revision-" + hex.EncodeToString(operationHash[:])
+		operation := OperationRow{ID: operationID, Kind: "agent_snapshot.heartbeat_issue", Status: OperationStatusPending, PrimaryAgentID: agentID, CreatedAt: now, UpdatedAt: now}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&operation).Error; err != nil {
+			return err
+		}
+		issued = AgentRevisionRow{AgentID: agentID, Revision: snapshot.Revision, OperationID: operationID, State: AgentRevisionStatePending, SnapshotArtifactID: snapshotArtifact.ID, SnapshotDigest: snapshotDigest, DesiredVersion: snapshot.DesiredVersion, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now}
+		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&issued)
+		if inserted.Error != nil {
+			return inserted.Error
+		}
+		if inserted.RowsAffected == 0 {
+			if err := tx.Where("agent_id = ? AND revision = ?", agentID, snapshot.Revision).First(&existing).Error; err != nil {
+				return err
+			}
+			if !strings.EqualFold(existing.SnapshotDigest, snapshotDigest) {
+				return fmt.Errorf("agent revision %q/%d concurrently received a different snapshot digest", agentID, snapshot.Revision)
+			}
+			issued = existing
+		}
+		if err := ensureRevisionSnapshotArtifacts(tx, []AgentRevisionRow{issued}); err != nil {
+			return err
+		}
+		if err := createRevisionArtifactRefs(tx, policyRefs); err != nil {
+			return err
+		}
+		if err := rebaseInheritedPluginAgentRuntimeStatusesTx(ctx, tx, agentID, snapshot.Revision, snapshot.PluginGenerations, now); err != nil {
+			return err
+		}
+		return ensureHeartbeatRevisionPointer(tx, agentID, snapshot.Revision, now)
+	})
+	return issued, err
+}
+
+func ensureHeartbeatRevisionPointer(tx *gorm.DB, agentID string, revision int64, now time.Time) error {
+	var pointer AgentRevisionPointerRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("agent_id = ?", agentID).First(&pointer).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if pointer.DesiredRevision > revision {
+		return fmt.Errorf("heartbeat snapshot revision %d is behind durable desired revision %d", revision, pointer.DesiredRevision)
+	}
+	pointer.AgentID, pointer.DesiredRevision, pointer.UpdatedAt = agentID, revision, now
+	return upsertMonotonicRevisionPointer(tx, pointer)
+}
+
+func verifyRevisionSnapshotArtifact(tx *gorm.DB, revision AgentRevisionRow) error {
+	if strings.TrimSpace(revision.SnapshotArtifactID) == "" || strings.TrimSpace(revision.SnapshotDigest) == "" {
+		return fmt.Errorf("agent revision %q/%d has no immutable snapshot", revision.AgentID, revision.Revision)
+	}
+	var artifact GenerationArtifactRow
+	if err := tx.Where("id = ?", revision.SnapshotArtifactID).First(&artifact).Error; err != nil {
+		return err
+	}
+	if err := validateGenerationArtifact(artifact); err != nil {
+		return err
+	}
+	if !strings.EqualFold(artifact.SHA256, revision.SnapshotDigest) {
+		return fmt.Errorf("agent revision %q/%d snapshot artifact digest differs", revision.AgentID, revision.Revision)
+	}
+	return nil
+}
+
+func (s *GormStore) verifyRevisionPolicyArtifactRefs(tx *gorm.DB, revision AgentRevisionRow, snapshot Snapshot) (bool, error) {
+	identities := make(map[string]revisionPolicyArtifactIdentity)
+	for _, policy := range snapshot.PluginPolicies {
+		for _, stage := range policy.Stages {
+			artifactID := strings.TrimSpace(stage.ArtifactSource.ArtifactID)
+			identity := revisionPolicyArtifactIdentity{Source: stage.ArtifactSource, ArtifactDigest: strings.ToLower(strings.TrimSpace(stage.ArtifactDigest)), PackageDigest: strings.ToLower(strings.TrimSpace(stage.PackageDigest)), SignerFingerprint: strings.ToLower(strings.TrimSpace(stage.SignerFingerprint))}
+			if previous, found := identities[artifactID]; found {
+				if previous != identity {
+					return false, fmt.Errorf("policy artifact %q has conflicting revision identities", artifactID)
+				}
+				continue
+			}
+			identities[artifactID] = identity
+			var ref AgentRevisionArtifactRow
+			if err := tx.Where("agent_id = ? AND revision = ? AND role = ?", revision.AgentID, revision.Revision, revisionPolicyArtifactRole(artifactID)).First(&ref).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return false, nil
+				}
+				return false, err
+			}
+			var blob GenerationArtifactRow
+			if err := tx.Where("id = ?", ref.ArtifactID).First(&blob).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return false, nil
+				}
+				return false, err
+			}
+			if blob.Kind != revisionPolicyArtifactKind || !strings.EqualFold(blob.SHA256, identity.ArtifactDigest) || blob.SizeBytes != identity.Source.SizeBytes {
+				return false, fmt.Errorf("revision policy artifact %q identity is inconsistent", artifactID)
+			}
+			if err := validateGenerationArtifact(blob); err != nil {
+				return false, err
+			}
+		}
+	}
+	for _, generation := range snapshot.PluginGenerations {
+		identity := runtimeArtifactIdentity(generation)
+		var ref AgentRevisionArtifactRow
+		if err := tx.Where("agent_id = ? AND revision = ? AND role = ?", revision.AgentID, revision.Revision, revisionRuntimeArtifactRole(identity.ArtifactID)).First(&ref).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		var blob GenerationArtifactRow
+		if err := tx.Where("id = ?", ref.ArtifactID).First(&blob).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		if blob.Kind != revisionRuntimeArtifactKind || !strings.EqualFold(blob.SHA256, identity.ArtifactDigest) || blob.SizeBytes != identity.SizeBytes {
+			return false, fmt.Errorf("revision plugin runtime artifact %q identity is inconsistent", identity.ArtifactID)
+		}
+		if err := validateGenerationArtifact(blob); err != nil {
+			return false, err
+		}
+		if _, err := s.materializeGenerationArtifact(blob); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// ResolveAgentRevisionPolicyArtifact authorizes an artifact solely from an
+// immutable issued revision and its snapshot digest, never from the live
+// plugin catalog.
+func (s *GormStore) ResolveAgentRevisionPolicyArtifact(ctx context.Context, agentID string, revision int64, snapshotDigest, artifactID string) (GenerationArtifactRow, bool, error) {
+	agentID, snapshotDigest, artifactID = strings.TrimSpace(agentID), strings.ToLower(strings.TrimSpace(snapshotDigest)), strings.TrimSpace(artifactID)
+	if agentID == "" || revision <= 0 || len(snapshotDigest) != sha256.Size*2 || artifactID == "" {
+		return GenerationArtifactRow{}, false, nil
+	}
+	var revisionRow AgentRevisionRow
+	if err := s.db.WithContext(ctx).Where("agent_id = ? AND revision = ?", agentID, revision).First(&revisionRow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return GenerationArtifactRow{}, false, nil
+		}
+		return GenerationArtifactRow{}, false, err
+	}
+	if !strings.EqualFold(revisionRow.SnapshotDigest, snapshotDigest) {
+		return GenerationArtifactRow{}, false, nil
+	}
+	var snapshotArtifact GenerationArtifactRow
+	if err := s.db.WithContext(ctx).Where("id = ?", revisionRow.SnapshotArtifactID).First(&snapshotArtifact).Error; err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	if err := validateGenerationArtifact(snapshotArtifact); err != nil || !strings.EqualFold(snapshotArtifact.SHA256, snapshotDigest) {
+		if err != nil {
+			return GenerationArtifactRow{}, false, err
+		}
+		return GenerationArtifactRow{}, false, fmt.Errorf("agent revision snapshot digest is inconsistent")
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(snapshotArtifact.Payload, &snapshot); err != nil {
+		return GenerationArtifactRow{}, false, fmt.Errorf("decode agent revision snapshot: %w", err)
+	}
+	policyIdentity, policyFound, err := policyArtifactIdentityFromSnapshot(snapshot, artifactID)
+	if err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	runtimeIdentity, runtimeFound, err := runtimeArtifactIdentityFromSnapshot(snapshot, artifactID)
+	if err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	if policyFound == runtimeFound {
+		if policyFound {
+			return GenerationArtifactRow{}, false, fmt.Errorf("plugin artifact %q has ambiguous revision identity", artifactID)
+		}
+		return GenerationArtifactRow{}, false, nil
+	}
+	role, kind, digest, sizeBytes := "", "", "", int64(0)
+	if policyFound {
+		role, kind, digest, sizeBytes = revisionPolicyArtifactRole(artifactID), revisionPolicyArtifactKind, policyIdentity.ArtifactDigest, policyIdentity.Source.SizeBytes
+	} else {
+		role, kind, digest, sizeBytes = revisionRuntimeArtifactRole(artifactID), revisionRuntimeArtifactKind, runtimeIdentity.ArtifactDigest, runtimeIdentity.SizeBytes
+	}
+	var ref AgentRevisionArtifactRow
+	if err := s.db.WithContext(ctx).Where("agent_id = ? AND revision = ? AND role = ?", agentID, revision, role).First(&ref).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return GenerationArtifactRow{}, false, nil
+		}
+		return GenerationArtifactRow{}, false, err
+	}
+	var blob GenerationArtifactRow
+	if err := s.db.WithContext(ctx).Where("id = ?", ref.ArtifactID).First(&blob).Error; err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	if blob.Kind != kind || !strings.EqualFold(blob.SHA256, digest) || blob.SizeBytes != sizeBytes {
+		return GenerationArtifactRow{}, false, fmt.Errorf("revision plugin artifact identity is inconsistent")
+	}
+	if err := validateGenerationArtifact(blob); err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	materialized, err := s.materializeGenerationArtifact(blob)
+	if err != nil {
+		return GenerationArtifactRow{}, false, err
+	}
+	return materialized, true, nil
+}
+
+func policyArtifactIdentityFromSnapshot(snapshot Snapshot, artifactID string) (revisionPolicyArtifactIdentity, bool, error) {
+	var matched revisionPolicyArtifactIdentity
+	found := false
+	for _, policy := range snapshot.PluginPolicies {
+		for _, stage := range policy.Stages {
+			if stage.ArtifactSource.ArtifactID != artifactID {
+				continue
+			}
+			identity := revisionPolicyArtifactIdentity{Source: stage.ArtifactSource, ArtifactDigest: strings.ToLower(strings.TrimSpace(stage.ArtifactDigest)), PackageDigest: strings.ToLower(strings.TrimSpace(stage.PackageDigest)), SignerFingerprint: strings.ToLower(strings.TrimSpace(stage.SignerFingerprint))}
+			if found && matched != identity {
+				return revisionPolicyArtifactIdentity{}, false, fmt.Errorf("policy artifact %q has conflicting revision identities", artifactID)
+			}
+			matched, found = identity, true
+		}
+	}
+	return matched, found, nil
+}
+
+func runtimeArtifactIdentity(generation PluginGeneration) revisionRuntimeArtifactIdentity {
+	return revisionRuntimeArtifactIdentity{
+		ArtifactID: strings.TrimSpace(generation.Artifact.ArtifactID), PackageIdentity: strings.TrimSpace(generation.Artifact.PackageIdentity),
+		PackageDigest: strings.ToLower(strings.TrimSpace(generation.PackageDigest)), RelativePath: generation.Artifact.RelativePath,
+		ArtifactDigest: strings.ToLower(strings.TrimSpace(generation.Artifact.SHA256)), SizeBytes: generation.Artifact.SizeBytes,
+		SignerKeyID: generation.Artifact.SignerKeyID, SignerFingerprint: strings.ToLower(strings.TrimSpace(generation.Artifact.SignerFingerprint)),
+	}
+}
+
+func runtimeArtifactIdentityFromSnapshot(snapshot Snapshot, artifactID string) (revisionRuntimeArtifactIdentity, bool, error) {
+	var matched revisionRuntimeArtifactIdentity
+	found := false
+	for _, generation := range snapshot.PluginGenerations {
+		if generation.Artifact.ArtifactID != artifactID {
+			continue
+		}
+		identity := runtimeArtifactIdentity(generation)
+		if found && matched != identity {
+			return revisionRuntimeArtifactIdentity{}, false, fmt.Errorf("plugin runtime artifact %q has conflicting revision identities", artifactID)
+		}
+		matched, found = identity, true
+	}
+	return matched, found, nil
+}
+
+func revisionPolicyArtifactBlobID(digest string) string {
+	return "plugin-policy-wasm-" + strings.ToLower(strings.TrimSpace(digest))
+}
+func revisionPolicyArtifactRole(artifactID string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(artifactID)))
+	return revisionPolicyArtifactRolePrefix + hex.EncodeToString(digest[:])
+}
+
+func revisionRuntimeArtifactBlobID(digest string) string {
+	return "plugin-runtime-" + strings.ToLower(strings.TrimSpace(digest))
+}
+
+func revisionRuntimeArtifactRole(artifactID string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(artifactID)))
+	return revisionRuntimeArtifactRolePrefix + hex.EncodeToString(digest[:])
+}
+
 type RevisionRetentionPolicy struct {
-	Now             time.Time
-	MaxAge          time.Duration
-	OperationMaxAge time.Duration
-	MaxPerAgent     int
+	Now                   time.Time
+	MaxAge                time.Duration
+	OperationMaxAge       time.Duration
+	AuditMaxAge           time.Duration
+	AuditDiagnosticMaxAge time.Duration
+	MaxPerAgent           int
 }
 
 type RevisionPruneResult struct {
-	RevisionsDeleted          int64
-	OperationsDeleted         int64
-	ArtifactsDeleted          int64
-	IdempotencyRecordsDeleted int64
+	RevisionsDeleted               int64
+	OperationsDeleted              int64
+	ArtifactsDeleted               int64
+	IdempotencyRecordsDeleted      int64
+	SessionsDeleted                int64
+	MarketplaceOperationsDeleted   int64
+	PluginOperationsDeleted        int64
+	PluginRuntimeStatusesDeleted   int64
+	PluginRuntimeLogsDeleted       int64
+	PluginRuntimeLogReportsDeleted int64
+	PluginLogOutboxDeleted         int64
+	SecretVersionsDeleted          int64
+	SecretsDeleted                 int64
+	PluginDigestFencesDeleted      int64
+	AuditEventsDeleted             int64
 }
 
 type RevisionEventQuery struct {
@@ -287,7 +910,8 @@ func (s *GormStore) GetGenerationArtifact(ctx context.Context, artifactID string
 	var row GenerationArtifactRow
 	err := s.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(artifactID)).First(&row).Error
 	if err == nil {
-		return row, true, nil
+		materialized, materializeErr := s.materializeGenerationArtifact(row)
+		return materialized, materializeErr == nil, materializeErr
 	}
 	if err == gorm.ErrRecordNotFound {
 		return GenerationArtifactRow{}, false, nil
@@ -580,21 +1204,34 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 	}
 	maxAge := policy.MaxAge
 	if maxAge <= 0 {
-		maxAge = 30 * 24 * time.Hour
+		maxAge = 7 * 24 * time.Hour
 	}
 	maxPerAgent := policy.MaxPerAgent
 	if maxPerAgent <= 0 {
-		maxPerAgent = 500
+		maxPerAgent = 5
 	}
 	operationMaxAge := policy.OperationMaxAge
 	if operationMaxAge <= 0 {
-		operationMaxAge = 3 * maxAge
+		operationMaxAge = 30 * 24 * time.Hour
 	}
 	if operationMaxAge < maxAge {
 		operationMaxAge = maxAge
 	}
+	auditMaxAge := policy.AuditMaxAge
+	if auditMaxAge <= 0 {
+		auditMaxAge = 30 * 24 * time.Hour
+	}
+	auditDiagnosticMaxAge := policy.AuditDiagnosticMaxAge
+	if auditDiagnosticMaxAge <= 0 {
+		auditDiagnosticMaxAge = 7 * 24 * time.Hour
+	}
+	if auditDiagnosticMaxAge > auditMaxAge {
+		auditDiagnosticMaxAge = auditMaxAge
+	}
 	cutoff := now.Add(-maxAge)
 	operationCutoff := now.Add(-operationMaxAge)
+	auditCutoff := now.Add(-auditMaxAge)
+	auditDiagnosticCutoff := now.Add(-auditDiagnosticMaxAge)
 	result := RevisionPruneResult{}
 
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
@@ -648,6 +1285,133 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		}
 		result.IdempotencyRecordsDeleted = expired.RowsAffected
 
+		deletedSessions := tx.Where("expires_at <= ? OR (revoked_at IS NOT NULL AND revoked_at <= ?)", now, cutoff).Delete(&SessionRow{})
+		if deletedSessions.Error != nil {
+			return deletedSessions.Error
+		}
+		result.SessionsDeleted = deletedSessions.RowsAffected
+
+		deletedDiagnosticAuditEvents := tx.
+			Where("created_at <= ?", auditDiagnosticCutoff).
+			Where("result IN ?", []string{"accepted", "allowed", "success"}).
+			Where("action IN ? OR action LIKE ? OR action LIKE ? OR action LIKE ?", []string{"authorization.check", "quota.consume", "plugin.host_capability"}, "plugin.audit.%", "plugin.event.%", "plugin.ui.%").
+			Delete(&AuditEventRow{})
+		if deletedDiagnosticAuditEvents.Error != nil {
+			return deletedDiagnosticAuditEvents.Error
+		}
+		deletedAuditEvents := tx.Where("created_at <= ?", auditCutoff).Delete(&AuditEventRow{})
+		if deletedAuditEvents.Error != nil {
+			return deletedAuditEvents.Error
+		}
+		result.AuditEventsDeleted = deletedDiagnosticAuditEvents.RowsAffected + deletedAuditEvents.RowsAffected
+
+		var expiredRefreshOperationIDs []string
+		if err := tx.Model(&MarketplaceRefreshOperationRow{}).
+			Where("finished_at IS NOT NULL AND finished_at <= ?", operationCutoff).
+			Pluck("id", &expiredRefreshOperationIDs).Error; err != nil {
+			return err
+		}
+		if len(expiredRefreshOperationIDs) > 0 {
+			if err := tx.Where("operation_id IN ?", expiredRefreshOperationIDs).Delete(&PluginPackageStagingRow{}).Error; err != nil {
+				return err
+			}
+			deleted := tx.Where("id IN ?", expiredRefreshOperationIDs).Delete(&MarketplaceRefreshOperationRow{})
+			if deleted.Error != nil {
+				return deleted.Error
+			}
+			result.MarketplaceOperationsDeleted = deleted.RowsAffected
+		}
+
+		deletedRuntimeStatuses := tx.
+			Where("updated_at <= ? AND (authority_slot = ? OR (authority_slot = ? AND state = ?))", operationCutoff, "retired", "pending", "draining").
+			Delete(&PluginAgentRuntimeStatusRow{})
+		if deletedRuntimeStatuses.Error != nil {
+			return deletedRuntimeStatuses.Error
+		}
+		result.PluginRuntimeStatusesDeleted = deletedRuntimeStatuses.RowsAffected
+
+		deletedLogReports := tx.Where("updated_at <= ?", operationCutoff).
+			Where("NOT EXISTS (SELECT 1 FROM plugin_agent_runtime_statuses WHERE plugin_agent_runtime_statuses.agent_id = plugin_runtime_log_reports.agent_id AND plugin_agent_runtime_statuses.instance_id = plugin_runtime_log_reports.instance_id AND plugin_agent_runtime_statuses.generation_id = plugin_runtime_log_reports.generation_id AND plugin_agent_runtime_statuses.authority_slot IN ?)", []string{"pending", "active"}).
+			Delete(&PluginRuntimeLogReportRow{})
+		if deletedLogReports.Error != nil {
+			return deletedLogReports.Error
+		}
+		result.PluginRuntimeLogReportsDeleted = deletedLogReports.RowsAffected
+
+		deletedRuntimeLogs := tx.Where("created_at <= ?", operationCutoff).Delete(&PluginRuntimeLogRow{})
+		if deletedRuntimeLogs.Error != nil {
+			return deletedRuntimeLogs.Error
+		}
+		result.PluginRuntimeLogsDeleted = deletedRuntimeLogs.RowsAffected
+
+		deletedOutbox := tx.Where("created_at <= ?", operationCutoff).Delete(&PluginControlPlaneLogOutboxRow{})
+		if deletedOutbox.Error != nil {
+			return deletedOutbox.Error
+		}
+		result.PluginLogOutboxDeleted = deletedOutbox.RowsAffected
+
+		protectedPluginOperationIDs := make([]string, 0)
+		for _, query := range []struct {
+			db     *gorm.DB
+			column string
+		}{
+			{tx.Model(&InstalledPluginRow{}).Where("last_operation_id <> ?", ""), "last_operation_id"},
+			{tx.Model(&InstalledPluginRow{}).Where("pending_operation_id <> ?", ""), "pending_operation_id"},
+			{tx.Model(&PluginInstanceRow{}).Where("pending_operation_id <> ?", ""), "pending_operation_id"},
+			{tx.Model(&PluginAgentRuntimeStatusRow{}).Where("authority_slot IN ?", []string{"pending", "active"}), "operation_id"},
+		} {
+			var ids []string
+			if err := query.db.Pluck(query.column, &ids).Error; err != nil {
+				return err
+			}
+			protectedPluginOperationIDs = append(protectedPluginOperationIDs, ids...)
+		}
+		protectedPluginOperationIDs = uniqueNonEmptyStrings(protectedPluginOperationIDs)
+		pluginOperations := tx.Model(&PluginOperationRow{}).
+			Where("completed_at IS NOT NULL AND completed_at <= ?", operationCutoff)
+		if len(protectedPluginOperationIDs) > 0 {
+			pluginOperations = pluginOperations.Where("id NOT IN ?", protectedPluginOperationIDs)
+		}
+		var expiredPluginOperationIDs []string
+		if err := pluginOperations.Pluck("id", &expiredPluginOperationIDs).Error; err != nil {
+			return err
+		}
+		if len(expiredPluginOperationIDs) > 0 {
+			for _, model := range []any{&PluginOperationScopeRow{}, &PluginOperationSecretRow{}} {
+				if err := tx.Where("operation_id IN ?", expiredPluginOperationIDs).Delete(model).Error; err != nil {
+					return err
+				}
+			}
+			deleted := tx.Where("id IN ?", expiredPluginOperationIDs).Delete(&PluginOperationRow{})
+			if deleted.Error != nil {
+				return deleted.Error
+			}
+			result.PluginOperationsDeleted = deleted.RowsAffected
+		}
+
+		deletedSecretVersions := tx.Where("destroyed_at IS NOT NULL AND destroyed_at <= ?", operationCutoff).Delete(&SecretVersionRow{})
+		if deletedSecretVersions.Error != nil {
+			return deletedSecretVersions.Error
+		}
+		result.SecretVersionsDeleted = deletedSecretVersions.RowsAffected
+		deletedSecrets := tx.Where("retired_at IS NOT NULL AND retired_at <= ?", operationCutoff).
+			Where("id NOT IN (?)", tx.Model(&SecretVersionRow{}).Select("secret_id")).Delete(&SecretRow{})
+		if deletedSecrets.Error != nil {
+			return deletedSecrets.Error
+		}
+		result.SecretsDeleted = deletedSecrets.RowsAffected
+
+		deletedDigestFences := tx.Where("claim_token = ? AND updated_at <= ?", "", operationCutoff).
+			Where("digest NOT IN (?)", tx.Model(&PluginPackageRow{}).Select("digest")).
+			Where("digest NOT IN (?)", tx.Model(&PluginPackageAcquisitionRow{}).Select("digest")).
+			Where("digest NOT IN (?)", tx.Model(&PluginPackageStagingRow{}).Select("digest")).
+			Where("digest NOT IN (?)", tx.Model(&PluginCacheGCIntentRow{}).Select("digest")).
+			Delete(&PluginDigestFenceRow{})
+		if deletedDigestFences.Error != nil {
+			return deletedDigestFences.Error
+		}
+		result.PluginDigestFencesDeleted = deletedDigestFences.RowsAffected
+
 		deletedOperations := tx.
 			Where("completed_at IS NOT NULL AND completed_at <= ?", operationCutoff).
 			Where("NOT EXISTS (SELECT 1 FROM agent_revisions WHERE agent_revisions.operation_id = operations.id)").
@@ -677,6 +1441,12 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		} else {
 			artifacts = artifacts.Where("1 = 1")
 		}
+		if tx.Migrator().HasTable(&DatasetVersionRow{}) {
+			artifacts = artifacts.Where("id NOT IN (SELECT artifact_id FROM dataset_versions)")
+		}
+		if tx.Migrator().HasTable(&DatasetUploadRow{}) {
+			artifacts = artifacts.Where("id NOT IN (SELECT artifact_id FROM dataset_uploads)")
+		}
 		deletedArtifacts := artifacts.Delete(&GenerationArtifactRow{})
 		if deletedArtifacts.Error != nil {
 			return deletedArtifacts.Error
@@ -684,12 +1454,26 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		result.ArtifactsDeleted = deletedArtifacts.RowsAffected
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	_, fileErr := s.PruneGenerationArtifactFiles(ctx, now.Add(-24*time.Hour))
+	return result, fileErr
 }
 
 func validateGenerationArtifact(row GenerationArtifactRow) error {
 	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.SHA256) == "" {
 		return fmt.Errorf("generation artifact identity is required")
+	}
+	if strings.TrimSpace(row.ExternalPath) != "" {
+		if (row.Kind != revisionRuntimeArtifactKind && row.Kind != DatasetArtifactKind && row.Kind != "dataset-source-v1") || len(row.Payload) != 0 || row.SizeBytes <= 0 || !validSHA256(row.SHA256) {
+			return fmt.Errorf("generation artifact %q external identity is invalid", row.ID)
+		}
+		expected, err := generationArtifactRelativePath(row.SHA256)
+		if err != nil || filepath.ToSlash(filepath.Clean(filepath.FromSlash(row.ExternalPath))) != expected {
+			return fmt.Errorf("generation artifact %q external path is invalid", row.ID)
+		}
+		return nil
 	}
 	digest := sha256.Sum256(row.Payload)
 	if !strings.EqualFold(row.SHA256, hex.EncodeToString(digest[:])) {
@@ -715,6 +1499,17 @@ func createImmutableArtifact(tx *gorm.DB, row GenerationArtifactRow) error {
 	}
 	if existing.SHA256 != row.SHA256 || existing.SizeBytes != row.SizeBytes {
 		return fmt.Errorf("generation artifact %q is immutable", row.ID)
+	}
+	if existing.Kind != row.Kind {
+		return fmt.Errorf("generation artifact %q is immutable", row.ID)
+	}
+	if existing.ExternalPath == "" && row.ExternalPath != "" {
+		result := tx.Model(&GenerationArtifactRow{}).
+			Where("id = ? AND external_path = ?", row.ID, "").
+			Updates(map[string]any{"payload": []byte{}, "external_path": row.ExternalPath})
+		if result.Error != nil {
+			return result.Error
+		}
 	}
 	return nil
 }

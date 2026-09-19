@@ -59,13 +59,20 @@ func (store *StateStore) Reconcile(ctx context.Context) (ReconcileResult, error)
 	if reference, exists, err := store.loadPendingGenerationReferenceLocked(); err != nil {
 		return result, WrapError(CategoryMaterial, "state_reconcile", err)
 	} else if exists {
-		if _, err := store.loadPendingGenerationLocked(ctx); errors.Is(err, os.ErrNotExist) {
+		_, pendingErr := store.loadPendingGenerationLocked(ctx)
+		removePending := errors.Is(pendingErr, os.ErrNotExist)
+		// A failed promotion can leave pending pointed at an unreadable newer
+		// generation after current has already fallen back to a healthy slot.
+		if pendingErr != nil && result.Current != nil && reference.GenerationID != result.Current.Manifest.ID {
+			removePending = true
+		}
+		if removePending {
 			if err := store.fs.removeFile(statePath(pendingDirectory, pendingReferenceFile), "reconcile.pending"); err != nil {
 				return result, WrapError(CategoryMaterial, "state_reconcile", err)
 			}
 			result.RemovedPendingGeneration = reference.GenerationID
-		} else if err != nil {
-			return result, WrapError(CategoryMaterial, "state_reconcile", err)
+		} else if pendingErr != nil {
+			return result, WrapError(CategoryMaterial, "state_reconcile", pendingErr)
 		}
 	}
 

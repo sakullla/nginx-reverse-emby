@@ -13,3 +13,4 @@ test-results/
 .claude/settings.local.json
 scripts/relay-perf/docker-stats.csv
 /.codegraph/
+.env

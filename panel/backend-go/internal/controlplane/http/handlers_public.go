@@ -1,20 +1,122 @@
 package http
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const maxAgentHeartbeatBodyBytes int64 = 8 << 20
+
+func (d Dependencies) handleAgentPluginArtifact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	agent, ok := d.authenticateRevisionAgent(w, r)
+	if !ok {
+		return
+	}
+	if d.PluginArtifactService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin artifact service unavailable"))
+		return
+	}
+	revision, parseErr := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("revision")), 10, 64)
+	snapshotDigest := strings.TrimSpace(r.URL.Query().Get("snapshot_digest"))
+	if parseErr != nil || revision <= 0 || len(snapshotDigest) != sha256.Size*2 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("revision-bound artifact identity is required"))
+		return
+	}
+	artifact, err := d.PluginArtifactService.ResolveAgentPluginArtifact(r.Context(), agent.ID, revision, snapshotDigest, r.PathValue("artifactID"))
+	if err != nil {
+		if errors.Is(err, service.ErrPluginArtifactUnavailable) {
+			writeJSON(w, http.StatusNotFound, errorPayload("plugin artifact not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
+		return
+	}
+	verified := append([]byte(nil), artifact.Payload...)
+	digest := sha256.Sum256(verified)
+	if int64(len(verified)) != artifact.SizeBytes || !strings.EqualFold(hex.EncodeToString(digest[:]), artifact.SHA256) {
+		writeJSON(w, http.StatusInternalServerError, errorPayload("plugin artifact integrity check failed"))
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Content-Type", "application/wasm")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// ServeContent gives slow agents byte-range resume while preserving the
+	// revision-bound integrity check above. This prevents a transient transfer
+	// failure from forcing a multi-MiB plugin artifact back to byte zero.
+	http.ServeContent(w, r, artifact.SHA256, time.Time{}, bytes.NewReader(verified))
+}
+
+func (d Dependencies) handleAgentPluginSecretRedemption(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	agent, ok := d.authenticateRevisionAgent(w, r)
+	if !ok {
+		return
+	}
+	if d.PluginSecretService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("plugin secret redemption unavailable"))
+		return
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	var request service.PluginSecretRedemptionRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
+		return
+	}
+	response, err := d.PluginSecretService.RedeemAgentPluginSecrets(r.Context(), agent.ID, request)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidArgument):
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid plugin secret redemption request"))
+		case errors.Is(err, storage.ErrPluginGenerationStale), errors.Is(err, storage.ErrPluginGenerationConflict):
+			writeJSON(w, http.StatusConflict, errorPayload("plugin secret generation is no longer authoritative"))
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorPayload("plugin secret redemption failed"))
+		}
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentHeartbeatBodyBytes)
+	decoder := json.NewDecoder(r.Body)
 	var body map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+	if err := decoder.Decode(&body); err != nil {
+		writeHeartbeatDecodeError(w, err)
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeHeartbeatDecodeError(w, err)
 		return
 	}
 	var payload service.HeartbeatRequest
@@ -29,6 +131,7 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	reply, err := d.AgentService.Heartbeat(r.Context(), payload, r.Header.Get("X-Agent-Token"))
 	if err != nil {
+		log.Printf("[agents] heartbeat failed for agent %q: %v", strings.TrimSpace(payload.AgentID), err)
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
 		return
@@ -38,6 +141,15 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		"ok":   true,
 		"sync": heartbeatSyncPayload(reply, d.requestBaseURL(r)),
 	})
+}
+
+func writeHeartbeatDecodeError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("heartbeat request body too large"))
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 }
 
 func remoteIPFromRequest(r *http.Request, trustForwardedHeaders bool) string {
@@ -63,6 +175,7 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		"has_update":       reply.HasUpdate,
 		"desired_version":  reply.DesiredVersion,
 		"desired_revision": reply.DesiredRevision,
+		"snapshot_digest":  reply.SnapshotDigest,
 		"current_revision": reply.CurrentRevision,
 		"relay_listeners":  reply.RelayListeners,
 		"egress_profiles":  reply.EgressProfiles,
@@ -71,6 +184,15 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		// carrying only domain + per-family source/interface — never a Cloudflare
 		// credential (R7); CF tokens live only in the master process environment.
 		"ddns_config": reply.DDNSConfig,
+	}
+	if reply.PKISecurity != nil {
+		payload["pki_security"] = reply.PKISecurity
+	}
+	if len(reply.PKICredentials) != 0 {
+		payload["pki_credentials"] = reply.PKICredentials
+	}
+	if reply.PKIStatus != nil {
+		payload["pki_status"] = reply.PKIStatus
 	}
 	payload["agent_config"] = service.AgentRuntimeConfig{
 		OutboundProxyURL:     reply.OutboundProxyURL,
@@ -93,6 +215,9 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 	if reply.HasUpdate {
 		payload["rules"] = reply.Rules
 		payload["l4_rules"] = reply.L4Rules
+		payload["plugin_generations"] = reply.PluginGenerations
+		payload["plugin_dependencies"] = reply.PluginDependencies
+		payload["plugin_policies"] = remotePluginPolicies(reply.PluginPolicies)
 		payload["certificates"] = reply.Certificates
 		payload["certificate_policies"] = reply.CertificatePolicies
 	} else if len(reply.RelayListeners) > 0 {
@@ -100,6 +225,25 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		payload["certificate_policies"] = reply.CertificatePolicies
 	}
 	return payload
+}
+
+func remotePluginPolicies(policies []storage.PluginPolicy) []storage.PluginPolicy {
+	if policies == nil {
+		return nil
+	}
+	cloned := make([]storage.PluginPolicy, len(policies))
+	for policyIndex, policy := range policies {
+		cloned[policyIndex] = policy
+		cloned[policyIndex].Stages = make([]storage.PolicyStage, len(policy.Stages))
+		for stageIndex, stage := range policy.Stages {
+			stage.ArtifactPath = ""
+			stage.ExtensionPoints = append([]string(nil), stage.ExtensionPoints...)
+			stage.GrantedScopes = append([]string(nil), stage.GrantedScopes...)
+			stage.Config = append(json.RawMessage(nil), stage.Config...)
+			cloned[policyIndex].Stages[stageIndex] = stage
+		}
+	}
+	return cloned
 }
 
 func absolutePublicURL(baseURL string, raw string) string {

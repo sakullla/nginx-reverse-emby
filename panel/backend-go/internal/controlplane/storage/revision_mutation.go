@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ type RevisionMutationDecision struct {
 	Ledger                   *RevisionLedgerWrite
 	RollbackResources        bool
 	DeleteIdempotencyRecords []IdempotencyRecordMatch
+	BeforeCommit             func(*GormStore) error
 }
 
 type IdempotencyRecordMatch struct {
@@ -31,21 +33,16 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		return fmt.Errorf("revision mutation callback is required")
 	}
 	certificateGCDomains := make(map[string]struct{})
-	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+	err := s.writeTransactionWithOptions(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(tx *gorm.DB) error {
 		const resourceSavepoint = "revision_mutation_resources"
 		if err := tx.SavePoint(resourceSavepoint).Error; err != nil {
 			return err
 		}
 
-		scoped := GormStore{
-			db:                   tx,
-			dataRoot:             s.dataRoot,
-			localAgentID:         s.localAgentID,
-			transactionScoped:    true,
-			certificateGCDomains: certificateGCDomains,
-		}
+		scoped := s.transactionView(tx)
+		scoped.certificateGCDomains = certificateGCDomains
 
-		decision, err := mutate(&scoped)
+		decision, err := mutate(scoped)
 		if err != nil {
 			return err
 		}
@@ -68,6 +65,9 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 			}
 		}
 		if decision.Ledger == nil {
+			if decision.BeforeCommit != nil {
+				return decision.BeforeCommit(scoped)
+			}
 			return nil
 		}
 		if strings.TrimSpace(decision.Ledger.Operation.ID) == "" {
@@ -93,6 +93,11 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		}
 		if len(decision.Ledger.IdempotencyRecords) > 0 {
 			if err := tx.Create(&decision.Ledger.IdempotencyRecords).Error; err != nil {
+				return err
+			}
+		}
+		if decision.BeforeCommit != nil {
+			if err := decision.BeforeCommit(scoped); err != nil {
 				return err
 			}
 		}

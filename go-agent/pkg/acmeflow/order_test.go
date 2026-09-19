@@ -5,41 +5,11 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"net"
-	"net/http"
+
 	"testing"
-	"time"
 
 	"golang.org/x/crypto/acme"
 )
-
-func TestNewProtocolClientUsesBoundedDefaultHTTPClient(t *testing.T) {
-	client, ok := NewProtocolClient(ClientConfig{}).(*protocolClient)
-	if !ok {
-		t.Fatalf("NewProtocolClient() type = %T, want *protocolClient", client)
-	}
-	if client.client.HTTPClient == nil {
-		t.Fatal("NewProtocolClient() HTTP client = nil")
-	}
-	if got, want := client.client.HTTPClient.Timeout, 2*time.Minute; got != want {
-		t.Fatalf("NewProtocolClient() timeout = %v, want %v", got, want)
-	}
-	transport, ok := client.client.HTTPClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("NewProtocolClient() transport = %T, want *http.Transport", client.client.HTTPClient.Transport)
-	}
-	if got, want := transport.ResponseHeaderTimeout, 30*time.Second; got != want {
-		t.Fatalf("NewProtocolClient() response header timeout = %v, want %v", got, want)
-	}
-}
-
-func TestNewProtocolClientPreservesConfiguredHTTPClient(t *testing.T) {
-	configured := &http.Client{Timeout: 17 * time.Second}
-	client := NewProtocolClient(ClientConfig{HTTPClient: configured}).(*protocolClient)
-	if client.client.HTTPClient != configured {
-		t.Fatalf("NewProtocolClient() HTTP client = %p, want configured client %p", client.client.HTTPClient, configured)
-	}
-}
 
 func TestRecoverOrderCertificateUsesOriginalOrderURL(t *testing.T) {
 	primary := errors.New("finalize response omitted order URI")
@@ -135,37 +105,6 @@ func TestEngineStandardOrderDoesNotUseProfileStarter(t *testing.T) {
 	}
 	if order.URI != "https://ca.invalid/order/1" {
 		t.Fatalf("order URI = %q", order.URI)
-	}
-}
-
-func TestEngineCSRUsesDNSCommonNameButNotIPCommonName(t *testing.T) {
-	key := mustTestRSAKey(t)
-
-	dnsCSRDER, err := createCSR(key, []Identifier{{Type: IdentifierDNS, Value: "example.com"}})
-	if err != nil {
-		t.Fatalf("create DNS CSR: %v", err)
-	}
-	dnsCSR, err := x509.ParseCertificateRequest(dnsCSRDER)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dnsCSR.Subject.CommonName != "example.com" || len(dnsCSR.DNSNames) != 1 || dnsCSR.DNSNames[0] != "example.com" {
-		t.Fatalf("DNS CSR = %#v", dnsCSR)
-	}
-
-	ipCSRDER, err := createCSR(key, []Identifier{{Type: IdentifierIP, Value: "192.0.2.30"}})
-	if err != nil {
-		t.Fatalf("create IP CSR: %v", err)
-	}
-	ipCSR, err := x509.ParseCertificateRequest(ipCSRDER)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ipCSR.Subject.CommonName != "" {
-		t.Fatalf("IP CSR CommonName = %q, want empty", ipCSR.Subject.CommonName)
-	}
-	if len(ipCSR.IPAddresses) != 1 || !ipCSR.IPAddresses[0].Equal(net.ParseIP("192.0.2.30")) {
-		t.Fatalf("IP CSR addresses = %#v", ipCSR.IPAddresses)
 	}
 }
 

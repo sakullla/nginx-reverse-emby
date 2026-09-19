@@ -1,28 +1,119 @@
 # Test Policy
 
+For an explicit read-only Docker metadata diagnostic on an Agent, compile the
+`go-agent/internal/plugins/dockerproxy` tests for that host and run
+`TestLiveDockerProxyReadOnlyMetadata` with `NRE_DOCKER_APP_LIVE_IMAGES` containing
+space-separated, already installed image references. It exercises the command
+handler and real Docker daemon without pulling images or changing containers.
+This is a test-only input; ordinary runs skip the diagnostic when it is unset.
+
 Run tests by module. The fast commands are:
 
 ```sh
-cd go-agent && go test -short -count=1 -timeout=90s ./...
-cd panel/backend-go && go test -short -count=1 -timeout=90s ./...
+cd plugin-sdk && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./...
+cd go-agent && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -tags=fast -short -count=1 -timeout=30s ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/service ./internal/controlplane/storage
 cd panel/frontend && npm test
 ```
 
 Run the affected Go module's complete untagged tier before release:
 
 ```sh
-cd go-agent && go test -count=1 -timeout=90s ./...
-cd panel/backend-go && go test -count=1 -timeout=90s ./...
+cd go-agent && go test -p=16 -count=1 -timeout=30s ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4 ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -count=1 -timeout=30s ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/authz ./internal/controlplane/config ./internal/controlplane/coordinator ./internal/controlplane/dependency ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
 ```
 
 Run the integration packages when changing persistence, certificate lifecycle, or process handoff:
 
 ```sh
-cd go-agent && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/platform ./pkg/acmeflow
-cd panel/backend-go && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./cmd/nre-control-plane ./internal/controlplane/coordinator ./internal/controlplane/cutover ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
+cd go-agent && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/modules/traffic ./internal/plugins/process ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+cd panel/backend-go && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./internal/controlplane/coordinator ./internal/controlplane/revision ./internal/controlplane/storage
 ```
 
-The frontend has one behavior suite rather than separate fast and full commands. The Go full tier includes tests that opt out under `testing.Short`. The integration tier selects only packages that own `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages. The cutover soak is Linux-only and runs in the scheduled CI integration tier.
+The backend integration command requires a disposable PostgreSQL database in
+addition to the ACME fixture documented below. Set `NRE_TEST_POSTGRES_DSN` to
+that database before running the command. A missing DSN is a gate failure, not
+a skipped success. Scheduled CI provisions the database automatically.
+
+The frontend has one behavior suite rather than separate fast and full commands. The Go fast and full tiers use an explicit package manifest so packages with no canonical tests do not pay a test-binary link and startup cost. The `fast` tag also prevents full-tier SQLite and filesystem fixtures from being compiled into the fast binaries. The integration tier selects only packages that own canonical `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages.
+
+Large compatibility matrices removed from the time-bounded tiers remain available for focused investigations with the `exhaustive` tag. They are not release gates and have no runtime SLA:
+
+```sh
+cd go-agent && go test -tags=exhaustive -count=1 ./...
+cd panel/backend-go && go test -tags=exhaustive -count=1 ./...
+cd panel/backend-go && go test -tags='exhaustive integration' -count=1 -run '^TestIntegration' ./internal/controlplane/storage
+```
+
+The canonical Go commands use 16 package workers so package compilation and execution overlap on developer and CI machines. Tests that own isolated temporary stores use `t.Parallel`; process environment, fixed-port, and shared router-state tests remain serial. On constrained machines, reduce `-p` to the logical CPU count; the package manifest, not oversubscription, is the primary speedup.
+
+Go's `-timeout=30s` bounds each package's test binary. CI gives each fast, full, and integration test step 10 minutes overall so dependency downloads and compilation on a cold cache do not consume a 30-second shell timeout. The per-binary test timeout remains active on both cold and warm caches.
+
+On Linux, the full and integration tiers include real sandboxed RPC children. Run these commands with `CGO_ENABLED=0` and add `-exec 'sudo -n -E --'` to `go test`, as CI does. Static test binaries can execute inside the isolated filesystem without a host dynamic loader; running the test parent as root lets the sandbox allocate a separate UID for each child and enforce process and signal isolation without relying on delegated cgroups or Landlock ABI 6. Compilation still runs as the invoking user, and `-E` preserves the integration fixture environment. The fast tier needs neither sudo nor a sandbox. The SQLite-backed local revision and scoped-secret lifecycle fixtures belong to the full tier and are excluded from fast builds and short runs.
+
+Both `.github/workflows/tests.yml` and the `Run Go release tests` step in `.github/workflows/docker-build.yml` run the full Go tier. Keep their static compilation and privileged test execution settings aligned when changing sandbox test requirements.
+
+## Official Plugin Market
+
+The official-market unit suite is offline. It creates nine canonical packages
+under `t.TempDir()`, signs the raw 32-byte package and provenance payload
+digests with an ephemeral Ed25519 fixture key, and verifies the market,
+complete package digests, file manifests, signed SDK provenance, and tamper
+rejection without cloning or contacting GitHub:
+
+```sh
+cd panel/backend-go
+go test ./internal/controlplane/plugins/... -run 'OfficialMarketV1' -count=1
+go test ./internal/controlplane/marketplace/... -count=1
+```
+
+The release acceptance command is intentionally separate and requires network
+access. It resolves the current `official-market` branch through the repository
+root policy file, validates the isolated checkout, and reports the exact Git OID
+and package count that were consumed:
+
+```sh
+cd panel/backend-go
+go run ./cmd/nre-plugin-validator --official-lock ../../official-market.lock
+```
+
+Run that command only as an explicit release/integration gate. Ordinary unit and
+short test tiers never fetch the official repository.
+
+The complete official-market release gate has one network-enabled entry point:
+
+```powershell
+pwsh -File scripts/official-market-release/run.ps1
+```
+
+The script validates all nine signed packages and every declared artifact,
+performs all published RPC handshakes in networkless containers, and aggregates
+all package and runtime failures before returning. The Go tests themselves
+never fetch a repository.
+
+## Internal PKI Multi-Process E2E
+
+The internal PKI harness is a third, standalone Go module. Its canonical entry point is identical on Windows and Linux and does not require a shell, WSL, Docker, or the local ACME fixture:
+
+```sh
+cd tests/internal-pki
+go test -tags=integration -count=1 ./...
+```
+
+The harness builds the control-plane and agent integration-tag binaries, starts them below `t.TempDir()` on dynamically allocated loopback ports, and observes only public CLI, HTTP, listener, exit-status, and persisted-file boundaries. It owns the multi-process assertions for enrollment replay, remote/embedded identity separation, relay mTLS attacks and convergence, crash-safe generations, protected backup and migration, epoch fencing, cooperative single-active behavior, and the token-authenticated control-protocol boundary. Product binaries do not expose the harness clock or fault barriers in release builds.
+
+The product binaries are built once in parallel per harness process and shared read-only by all scenarios; per-test data and processes remain isolated. This standalone multi-process acceptance suite is not part of the 10-second package-integration SLA because product compilation and real process convergence are intentional parts of its contract.
+
+On POSIX systems, `scripts/test-internal-pki-e2e.sh` is only a convenience adapter: it resolves the repository root, changes to the standalone module, and `exec`s the canonical Go command. Windows runs the Go command directly. The scheduled and manually dispatched CI integration tier uses a separate Ubuntu job for this module; it is not added to the two-product-module matrix and does not share the Pebble Docker fixture.
+
+Integration test names use the `TestInternalPKI` prefix. Before using a focused `-run` expression, confirm the intended name is present so a successful `no tests to run` result cannot be mistaken for coverage:
+
+```sh
+cd tests/internal-pki
+go test -tags=integration -list '^TestInternalPKI' ./...
+```
+
+The production regression for a degraded PKI heartbeat with no revision update remains in `go-agent/internal/app/pki_sync_lifecycle_test.go`: it exercises App to SyncController to Runtime, closes the active relay listener and session, and preserves ordinary token-authenticated heartbeat and revision pull. The standalone E2E module treats that product-level regression as a dependency rather than importing or copying either product module's `internal` packages.
 
 ## Local ACME Fixture
 

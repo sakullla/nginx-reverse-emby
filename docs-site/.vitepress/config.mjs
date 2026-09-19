@@ -96,6 +96,7 @@ export default defineConfig({
       {
         text: '运维',
         items: [
+          { text: '内部 PKI 升级',     link: '/operations/internal-pki' },
           { text: '备份与恢复',       link: '/operations/backup-restore' },
           { text: '数据迁移',         link: '/operations/migration' },
           { text: 'Agent generation', link: '/operations/agent-generation' },

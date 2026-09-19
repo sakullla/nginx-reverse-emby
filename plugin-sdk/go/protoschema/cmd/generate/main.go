@@ -1,0 +1,33 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/internal/protogen"
+)
+
+func main() {
+	sdkRoot := flag.String("sdk-root", ".", "path to the canonical plugin-sdk Go module")
+	output := flag.String("output", "./go/protoschema/descriptors_gen.go", "generated Go descriptor output")
+	flag.Parse()
+
+	descriptorSet, err := protogen.CompileDescriptorSet(context.Background(), *sdkRoot)
+	if err != nil {
+		fatal(err)
+	}
+	generated, err := protogen.RenderGo(descriptorSet)
+	if err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(*output, generated, 0o644); err != nil {
+		fatal(fmt.Errorf("write %s: %w", *output, err))
+	}
+}
+
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}

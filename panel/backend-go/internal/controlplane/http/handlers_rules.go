@@ -8,6 +8,46 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
+func (d Dependencies) handleHTTPBackendProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	providers, ok := d.PluginService.(HTTPBackendProviderAPI)
+	actor, hasActor := actorFromRequest(r)
+	if !ok || !hasActor {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("HTTP backend provider catalog unavailable"))
+		return
+	}
+	result, err := providers.ListHTTPBackendProvidersForActor(r.Context(), r.PathValue("agentID"), actor)
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "providers": result})
+}
+
+func (d Dependencies) handleHTTPBackendProvider(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	providers, ok := d.PluginService.(HTTPBackendProviderAPI)
+	actor, hasActor := actorFromRequest(r)
+	if !ok || !hasActor {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayload("HTTP backend provider catalog unavailable"))
+		return
+	}
+	result, err := providers.HTTPBackendProviderForActor(r.Context(), r.PathValue("agentID"), r.PathValue("instanceID"), r.PathValue("providerID"), actor)
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "provider": result})
+}
+
 func (d Dependencies) handleAgentRules(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agentID")
 
@@ -17,6 +57,11 @@ func (d Dependencies) handleAgentRules(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			status, payload := mapServiceError(err)
 			writeJSON(w, status, payload)
+			return
+		}
+		rules, err = d.filterHTTPRules(r.Context(), rules)
+		if err != nil {
+			writeAccessError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -31,6 +76,7 @@ func (d Dependencies) handleAgentRules(w http.ResponseWriter, r *http.Request) {
 		}
 		rule, err := d.RuleService.Create(r.Context(), agentID, payload)
 		if err != nil {
+			err = d.auditQuotaDenial(r, err, "agent", agentID)
 			status, body := mapServiceError(err)
 			writeJSON(w, status, body)
 			return
@@ -93,7 +139,19 @@ func (d Dependencies) handleHTTPRulesList(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	rules, meta, err := d.RuleService.ListPage(r.Context(), parseListQuery(r))
+	query := parseListQuery(r)
+	var rules []service.HTTPRule
+	var meta service.PageMeta
+	var err error
+	if d.accessFilteringActive(r.Context()) {
+		rules, meta, err = authorizedListPage(query, func(q service.ListQuery) ([]service.HTTPRule, service.PageMeta, error) {
+			return d.RuleService.ListPage(r.Context(), q)
+		}, func(items []service.HTTPRule) ([]service.HTTPRule, error) {
+			return d.filterHTTPRules(r.Context(), items)
+		})
+	} else {
+		rules, meta, err = d.RuleService.ListPage(r.Context(), query)
+	}
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)

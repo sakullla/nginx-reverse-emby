@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
+import RulesPage from './RulesPage.vue'
 
 let routeQuery
 let selectedAgentId
@@ -149,20 +150,13 @@ beforeEach(() => {
 })
 
 describe('rule list traffic usage', () => {
-  it('renders HTTP rule accounted usage from traffic summary', async () => {
-    const { default: RulesPage } = await import('./RulesPage.vue')
-
+  it('renders HTTP usage and passes the returned diagnosis task to the modal', async () => {
     const wrapper = await mountPage(RulesPage)
 
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
     expect(wrapper.text()).toContain('用量 3.00 KiB')
     expect(wrapper.text()).toContain('入 1.00 KiB')
     expect(wrapper.text()).toContain('出 2.00 KiB')
-  })
-
-  it('passes the returned HTTP diagnosis task to the modal immediately', async () => {
-    const { default: RulesPage } = await import('./RulesPage.vue')
-    const wrapper = await mountPage(RulesPage)
 
     await openRuleDiagnostic(wrapper)
 
@@ -172,8 +166,6 @@ describe('rule list traffic usage', () => {
   })
 
   it('hides traffic and skips summary requests when traffic stats are disabled', async () => {
-    const { default: RulesPage } = await import('./RulesPage.vue')
-
     await expectTrafficUsageDisabled(RulesPage)
   })
 
@@ -217,7 +209,6 @@ describe('rule list traffic usage', () => {
       return { http_rules: [] }
     })
 
-    const { default: RulesPage } = await import('./RulesPage.vue')
     const wrapper = await mountPage(RulesPage)
 
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')

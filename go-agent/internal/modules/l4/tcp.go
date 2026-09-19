@@ -89,6 +89,9 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	if err != nil {
 		return
 	}
+	if !s.allowTCPPolicy(rule, client, downstreamSource, downstreamProxyInfo) {
+		return
+	}
 
 	var initialPayload []byte
 	if ruleUsesRelay(rule) && !rule.Tuning.ProxyProtocol.Send {
@@ -145,6 +148,10 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 	}
 	req, err := model.ReadClientRequest(s.ctx, client, auth)
 	if err != nil {
+		return
+	}
+	if !s.allowProxyEntryTCPPolicy(rule, client, req.Target, req.InitialPayload) {
+		_ = model.WriteClientRequestFailure(client, req, http.StatusForbidden)
 		return
 	}
 	if req.Protocol == "socks5-udp" {

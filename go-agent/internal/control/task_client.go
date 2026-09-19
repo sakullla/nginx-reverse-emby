@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -17,19 +18,31 @@ import (
 	"time"
 )
 
-const maxTaskMessageLineBytes = 4 * 1024 * 1024
+const (
+	maxTaskMessageLineBytes       = 4 * 1024 * 1024
+	maxConcurrentTaskExecutions   = 4
+	taskStreamMessageWriteTimeout = 5 * time.Second
+	// Keep the application-level stream active before common 60-second proxy
+	// and NAT idle cutoffs. Sending the first ping at the cutoff races teardown
+	// and creates a recurring window where plugin.call has no Agent session.
+	defaultTaskStreamPingInterval   = 30 * time.Second
+	defaultTaskStreamPingAckTimeout = 20 * time.Second
+)
 
 type TaskClientConfig struct {
-	MasterURL     string
-	AgentToken    string
-	AgentID       string
-	AgentName     string
-	Version       string
-	Capabilities  []string
-	ReconnectWait time.Duration
-	HTTPTransport HTTPTransportConfig
-	HTTPClient    *http.Client
-	Handler       TaskHandler
+	MasterURL                 string
+	AgentToken                string
+	AgentID                   string
+	AgentName                 string
+	Version                   string
+	Capabilities              []string
+	ReconnectWait             time.Duration
+	TaskStreamPingInterval    time.Duration
+	TaskStreamLivenessTimeout time.Duration
+	HTTPTransport             HTTPTransportConfig
+	HTTPClient                *http.Client
+	Handler                   TaskHandler
+	PluginCaller              PluginCaller
 }
 
 type TaskHandler interface {
@@ -62,6 +75,12 @@ func NewTaskClient(cfg TaskClientConfig) *TaskClient {
 	if cfg.ReconnectWait <= 0 {
 		cfg.ReconnectWait = time.Second
 	}
+	if cfg.TaskStreamPingInterval <= 0 {
+		cfg.TaskStreamPingInterval = defaultTaskStreamPingInterval
+	}
+	if cfg.TaskStreamLivenessTimeout <= cfg.TaskStreamPingInterval {
+		cfg.TaskStreamLivenessTimeout = cfg.TaskStreamPingInterval + defaultTaskStreamPingAckTimeout
+	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
 	cfg.MasterURL = normalizeMasterBaseURL(cfg.MasterURL)
 	if cfg.HTTPClient != nil {
@@ -72,12 +91,37 @@ func NewTaskClient(cfg TaskClientConfig) *TaskClient {
 	return &TaskClient{cfg: cfg, transport: transport}
 }
 
+func (c *TaskClient) SetPluginCaller(caller PluginCaller) {
+	if c == nil {
+		return
+	}
+	c.cfg.PluginCaller = caller
+}
+
+func (c *TaskClient) PluginCaller() PluginCaller {
+	if c == nil {
+		return nil
+	}
+	return c.cfg.PluginCaller
+}
+
 func (c *TaskClient) Run(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 		err := c.runStreamSession(ctx)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[agent] task stream session ended: %v", err)
+		}
+		if ctx.Err() == nil {
+			// A completed stream is no proof that its underlying HTTP/2
+			// connection is reusable. In particular, a half-open connection can
+			// keep accepting new stream headers while every server push fails.
+			// Rotate the transport before opening the next task session; merely
+			// closing idle connections is racy while HTTP/2 retires the stream.
+			c.rotateTransport()
+		}
 		if err != nil && ctx.Err() == nil && isStreamUnavailable(err) {
 			err = c.runSSESession(ctx)
 		}
@@ -100,26 +144,31 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		return err
 	}
 
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
 	pr, pw := io.Pipe()
 	defer pw.Close()
+	stopRequestBodyClose := context.AfterFunc(sessionCtx, func() {
+		_ = pw.CloseWithError(sessionCtx.Err())
+	})
+	defer stopRequestBodyClose()
 	var writeMu sync.Mutex
-	writeMessage := func(msg Message) error {
+	writeMessage := func(ctx context.Context, msg Message) error {
 		data, err := encodeMessage(msg)
 		if err != nil {
 			return err
 		}
+		writeCtx, cancelWrite := context.WithTimeout(ctx, taskStreamMessageWriteTimeout)
+		defer cancelWrite()
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		if _, err := pw.Write(append(data, '\n')); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
+		if err := writeTaskStreamPayload(writeCtx, pw, append(data, '\n')); err != nil {
 			return err
 		}
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.streamURL(sessionID), pr)
+	req, err := http.NewRequestWithContext(sessionCtx, http.MethodPost, c.streamURL(sessionID), pr)
 	if err != nil {
 		return err
 	}
@@ -128,11 +177,11 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 
 	helloWritten := make(chan error, 1)
 	go func() {
-		if ctx.Err() != nil {
+		if sessionCtx.Err() != nil {
 			helloWritten <- nil
 			return
 		}
-		helloWritten <- writeMessage(c.helloMessage(sessionID))
+		helloWritten <- writeMessage(sessionCtx, c.helloMessage(sessionID))
 	}()
 
 	resp, err := c.cfg.HTTPClient.Do(req)
@@ -142,6 +191,10 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	stopResponseBodyClose := context.AfterFunc(sessionCtx, func() {
+		_ = resp.Body.Close()
+	})
+	defer stopResponseBodyClose()
 
 	if resp.StatusCode != http.StatusOK {
 		_ = pw.Close()
@@ -163,6 +216,10 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 	if err := <-helloWritten; err != nil {
 		return err
 	}
+	lastReceived := atomic.Int64{}
+	lastReceived.Store(time.Now().UnixNano())
+	healthErrs := make(chan error, 1)
+	go c.monitorTaskStream(sessionCtx, cancelSession, writeMessage, &lastReceived, healthErrs)
 
 	update := func(ctx context.Context, taskID string, payload map[string]any) error {
 		msg := Message{
@@ -183,18 +240,26 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return writeMessage(msg)
+		if err := writeMessage(ctx, msg); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return c.postUpdate(ctx, taskID, payload)
+		}
+		return nil
 	}
 
+	executions := newTaskExecutionGroup(ctx, cancelSession)
 	scanner := newTaskMessageScanner(resp.Body)
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil
+		if sessionCtx.Err() != nil {
+			break
 		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
+		lastReceived.Store(time.Now().UnixNano())
 		var msg Message
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			return err
@@ -202,14 +267,74 @@ func (c *TaskClient) runStreamSession(ctx context.Context) error {
 		if msg.Type != "task" || msg.Task == nil {
 			continue
 		}
-		if err := c.handleTaskMessage(ctx, *msg.Task, update); err != nil {
-			return err
-		}
+		task := *msg.Task
+		executions.Start(func(taskCtx context.Context) error {
+			return c.handleTaskMessage(taskCtx, task, update)
+		})
 	}
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		return err
+	scanErr := scanner.Err()
+	cancelSession()
+	taskErr := executions.Wait()
+	var healthErr error
+	select {
+	case healthErr = <-healthErrs:
+	default:
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	if taskErr != nil {
+		return taskErr
+	}
+	if healthErr != nil {
+		return healthErr
+	}
+	if scanErr != nil {
+		return scanErr
 	}
 	return nil
+}
+
+func (c *TaskClient) monitorTaskStream(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	writeMessage func(context.Context, Message) error,
+	lastReceived *atomic.Int64,
+	errs chan<- error,
+) {
+	pingTicker := time.NewTicker(c.cfg.TaskStreamPingInterval)
+	defer pingTicker.Stop()
+	checkInterval := c.cfg.TaskStreamPingInterval
+	if third := c.cfg.TaskStreamLivenessTimeout / 3; third > 0 && third < checkInterval {
+		checkInterval = third
+	}
+	livenessTicker := time.NewTicker(checkInterval)
+	defer livenessTicker.Stop()
+	report := func(err error) {
+		select {
+		case errs <- err:
+		default:
+		}
+		cancel()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-pingTicker.C:
+			err := writeMessage(ctx, Message{Type: "ping", Ping: &PingMessage{SentAt: now.UTC().Format(time.RFC3339Nano)}})
+			if err != nil {
+				report(fmt.Errorf("task stream ping failed: %w", err))
+				return
+			}
+		case now := <-livenessTicker.C:
+			last := time.Unix(0, lastReceived.Load())
+			if now.Sub(last) >= c.cfg.TaskStreamLivenessTimeout {
+				report(errors.New("task stream liveness timeout"))
+				return
+			}
+		}
+	}
 }
 
 func (c *TaskClient) probeStreamSession(ctx context.Context, sessionID string) error {
@@ -246,7 +371,9 @@ func (c *TaskClient) probeStreamSession(ctx context.Context, sessionID string) e
 
 func (c *TaskClient) runSSESession(ctx context.Context) error {
 	sessionID := c.nextSessionID()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sessionURL(sessionID), nil)
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+	req, err := http.NewRequestWithContext(sessionCtx, http.MethodGet, c.sessionURL(sessionID), nil)
 	if err != nil {
 		return err
 	}
@@ -264,18 +391,21 @@ func (c *TaskClient) runSSESession(ctx context.Context) error {
 		return fmt.Errorf("task session failed: %s", resp.Status)
 	}
 
+	executions := newTaskExecutionGroup(ctx, cancelSession)
 	scanner := newTaskMessageScanner(resp.Body)
 	eventName := ""
 	dataLines := make([]string, 0, 1)
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil
+		if sessionCtx.Err() != nil {
+			break
 		}
 		line := scanner.Text()
 		if line == "" {
-			if err := c.handleSSEEvent(ctx, eventName, strings.Join(dataLines, "\n")); err != nil {
-				return err
-			}
+			currentEvent := eventName
+			currentData := strings.Join(dataLines, "\n")
+			executions.Start(func(taskCtx context.Context) error {
+				return c.handleSSEEvent(taskCtx, currentEvent, currentData)
+			})
 			eventName = ""
 			dataLines = dataLines[:0]
 			continue
@@ -291,10 +421,87 @@ func (c *TaskClient) runSSESession(ctx context.Context) error {
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		return err
+	scanErr := scanner.Err()
+	cancelSession()
+	taskErr := executions.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if taskErr != nil {
+		return taskErr
+	}
+	if scanErr != nil {
+		return scanErr
 	}
 	return nil
+}
+
+type taskExecutionGroup struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	slots  chan struct{}
+
+	wg       sync.WaitGroup
+	errMu    sync.Mutex
+	firstErr error
+}
+
+func newTaskExecutionGroup(ctx context.Context, cancel context.CancelFunc) *taskExecutionGroup {
+	return &taskExecutionGroup{
+		ctx:    ctx,
+		cancel: cancel,
+		slots:  make(chan struct{}, maxConcurrentTaskExecutions),
+	}
+}
+
+func (g *taskExecutionGroup) Start(run func(context.Context) error) {
+	if g == nil || run == nil {
+		return
+	}
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		select {
+		case g.slots <- struct{}{}:
+			defer func() { <-g.slots }()
+		case <-g.ctx.Done():
+			return
+		}
+		if err := run(g.ctx); err != nil && g.ctx.Err() == nil {
+			g.errMu.Lock()
+			if g.firstErr == nil {
+				g.firstErr = err
+				g.cancel()
+			}
+			g.errMu.Unlock()
+		}
+	}()
+}
+
+func (g *taskExecutionGroup) Wait() error {
+	if g == nil {
+		return nil
+	}
+	g.wg.Wait()
+	g.errMu.Lock()
+	defer g.errMu.Unlock()
+	return g.firstErr
+}
+
+func writeTaskStreamPayload(ctx context.Context, writer *io.PipeWriter, payload []byte) error {
+	written := make(chan error, 1)
+	go func() {
+		_, err := writer.Write(payload)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		return err
+	case <-ctx.Done():
+		_ = writer.CloseWithError(ctx.Err())
+		<-written
+		return ctx.Err()
+	}
 }
 
 func (c *TaskClient) sessionURL(sessionID string) string {
@@ -365,17 +572,27 @@ func (c *TaskClient) handleTaskMessage(ctx context.Context, task TaskMessage, up
 	if err := update(ctx, task.TaskID, map[string]any{"state": "running"}); err != nil {
 		return err
 	}
-	if c.cfg.Handler == nil {
-		return update(ctx, task.TaskID, map[string]any{
-			"state": "failed",
-			"error": "no task handler configured",
-		})
-	}
 
 	taskCtx, cancel := contextWithTaskDeadline(ctx, task.Deadline)
 	defer cancel()
 
-	result, err := c.cfg.Handler.HandleTask(taskCtx, task)
+	var (
+		result map[string]any
+		err    error
+	)
+	if strings.TrimSpace(task.TaskType) == TaskTypePluginGenerationRevoke {
+		revoker, _ := c.cfg.PluginCaller.(PluginGenerationRevoker)
+		result, err = HandlePluginGenerationRevokeTask(taskCtx, revoker, task)
+	} else if strings.TrimSpace(task.TaskType) == TaskTypePluginCall {
+		result, err = HandlePluginCallTask(taskCtx, c.cfg.PluginCaller, task)
+	} else if c.cfg.Handler == nil {
+		return update(ctx, task.TaskID, map[string]any{
+			"state": "failed",
+			"error": "no task handler configured",
+		})
+	} else {
+		result, err = c.cfg.Handler.HandleTask(taskCtx, task)
+	}
 	if err != nil {
 		return update(ctx, task.TaskID, map[string]any{
 			"state": "failed",
@@ -426,7 +643,37 @@ func (c *TaskClient) postUpdate(ctx context.Context, taskID string, payload map[
 func (c *TaskClient) discardConnections() {
 	if c.transport != nil {
 		c.transport.CloseIdleConnections()
+		return
 	}
+	if c.cfg.HTTPClient != nil {
+		if transport, ok := c.cfg.HTTPClient.Transport.(interface{ CloseIdleConnections() }); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+}
+
+func (c *TaskClient) rotateTransport() {
+	if c == nil || c.cfg.HTTPClient == nil {
+		return
+	}
+	currentClient := c.cfg.HTTPClient
+	currentTransport, ok := currentClient.Transport.(*http.Transport)
+	if !ok || currentTransport == nil {
+		c.discardConnections()
+		return
+	}
+
+	var nextTransport *http.Transport
+	if c.transport != nil {
+		nextTransport = newHTTPTransport(c.cfg.HTTPTransport)
+		c.transport = nextTransport
+	} else {
+		nextTransport = currentTransport.Clone()
+	}
+	nextClient := *currentClient
+	nextClient.Transport = nextTransport
+	c.cfg.HTTPClient = &nextClient
+	currentTransport.CloseIdleConnections()
 }
 
 func (c *TaskClient) updateURL(taskID string) string {

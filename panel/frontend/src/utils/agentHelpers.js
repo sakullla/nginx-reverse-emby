@@ -1,3 +1,20 @@
+export function isRevisionReportAckFailure(message) {
+  const text = String(message || '').toLowerCase()
+  return text.includes('/api/agent-revisions/') && text.includes('/report failed')
+}
+
+export function agentApplyFailed(agent) {
+  if (!agent) return false
+  const applyStatus = agent.last_apply_status
+  if (applyStatus == null || applyStatus === '' || applyStatus === 'success') return false
+  if (isRevisionReportAckFailure(agent.last_apply_message)) {
+    const current = normalizeRevision(agent.current_revision)
+    const lastApply = normalizeRevision(agent.last_apply_revision, current)
+    if (lastApply <= current) return false
+  }
+  return true
+}
+
 export function getAgentStatus(agent) {
   if (!agent) return 'offline'
   if (agent.status === 'offline') return 'offline'
@@ -5,8 +22,7 @@ export function getAgentStatus(agent) {
   const desired = normalizeRevision(agent.desired_revision)
   const current = normalizeRevision(agent.current_revision)
   const lastApplyRevision = normalizeRevision(agent.last_apply_revision, current)
-  const applyStatus = agent.last_apply_status
-  const applyFailed = applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success'
+  const applyFailed = agentApplyFailed(agent)
 
   if (desired > current) {
     if (applyFailed && lastApplyRevision >= desired) return 'failed'
@@ -51,6 +67,35 @@ export function getAgentEndpointLabel(agent) {
   const ip = typeof agent.last_seen_ip === 'string' ? agent.last_seen_ip.trim() : ''
   if (ip) return ip
   return '—'
+}
+
+/**
+ * Split the ddns_domain text field into individual domains.
+ * Accepts comma / Chinese comma / newline separators, mirroring the backend.
+ */
+export function splitDdnsDomains(value) {
+  if (typeof value !== 'string') return []
+  const seen = new Set()
+  const domains = []
+  for (const part of value.split(/[,，\n\r]/)) {
+    const domain = part.trim()
+    if (!domain || seen.has(domain)) continue
+    seen.add(domain)
+    domains.push(domain)
+  }
+  return domains
+}
+
+/**
+ * Compact endpoint display for dense tiles: the first domain plus the count
+ * of additional ones, so multi-domain DDNS configs stay on a single line.
+ * `full` keeps the complete label for tooltips.
+ */
+export function getAgentEndpointDisplay(agent) {
+  const full = getAgentEndpointLabel(agent)
+  const domains = splitDdnsDomains(agent && agent.ddns_domain)
+  if (domains.length <= 1) return { primary: full, extraCount: 0, full }
+  return { primary: domains[0], extraCount: domains.length - 1, full }
 }
 
 export function timeAgo(date) {

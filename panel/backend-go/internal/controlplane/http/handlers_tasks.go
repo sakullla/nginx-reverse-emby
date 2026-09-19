@@ -2,8 +2,12 @@ package http
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -236,26 +240,35 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	session := newSSETaskSession(w, flusher)
+	sessionCtx, cancelSession := context.WithCancel(r.Context())
+	defer cancelSession()
+	session := newSSETaskSession(w, flusher, cancelSession)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
 		AgentID:    agent.ID,
-		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
+		SessionID:  sessionID,
 		Session:    session,
 		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
+		log.Printf("[tasks] register SSE session failed agent=%q session=%q: %v", agent.ID, sessionID, err)
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
 		return
 	}
-	defer session.Close()
+	log.Printf("[tasks] registered SSE session agent=%q session=%q", agent.ID, sessionID)
+	defer func() {
+		d.TaskService.UnregisterSession(agent.ID, session)
+		_ = session.Close()
+		log.Printf("[tasks] unregistered SSE session agent=%q session=%q", agent.ID, sessionID)
+	}()
 
 	fmt.Fprintf(w, ": task-session-open %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	flusher.Flush()
 
-	<-r.Context().Done()
+	<-sessionCtx.Done()
 }
 
 func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Request) {
@@ -281,34 +294,80 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, errorPayload("streaming unsupported"))
 		return
 	}
-	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorPayload("streaming unsupported"))
-		return
+	// HTTP/2 is full duplex by definition. ResponseController's opt-in is for
+	// HTTP/1 and may be unsupported by an otherwise valid HTTP/2 writer.
+	if r.ProtoMajor < 2 {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			writeJSON(w, http.StatusNotImplemented, errorPayload("streaming unsupported"))
+			return
+		}
 	}
 
-	session := newNDJSONTaskSession(w, flusher)
+	sessionCtx, cancelSession := context.WithCancel(r.Context())
+	defer cancelSession()
+	r = r.WithContext(sessionCtx)
+	session := newNDJSONTaskSession(w, flusher, cancelSession, r.Body)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	scanner := newTaskStreamScanner(r.Body)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			log.Printf("[tasks] read stream hello failed agent=%q session=%q: %v", agent.ID, sessionID, err)
+		}
+		writeJSON(w, http.StatusBadRequest, errorPayload("task stream hello is required"))
+		return
+	}
+	var hello taskStreamMessage
+	if err := json.Unmarshal([]byte(strings.TrimSpace(scanner.Text())), &hello); err != nil || hello.Type != "hello" {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid task stream hello"))
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Publish the session only after the response stream is established. A
+	// replacement may spend time closing its predecessor; exposing its writer
+	// before this flush lets concurrent task dispatch race a half-initialized
+	// HTTP response and poison every reconnect that follows.
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
 		AgentID:    agent.ID,
-		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
+		SessionID:  sessionID,
 		Session:    session,
 		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
+		log.Printf("[tasks] register stream failed agent=%q session=%q: %v", agent.ID, sessionID, err)
 		_ = session.Close()
 		return
 	}
-	defer session.Close()
+	log.Printf("[tasks] registered stream session agent=%q session=%q", agent.ID, sessionID)
+	defer func() {
+		d.TaskService.UnregisterSession(agent.ID, session)
+		log.Printf("[tasks] unregistering stream session agent=%q session=%q", agent.ID, sessionID)
+		_ = session.Close()
+		log.Printf("[tasks] unregistered stream session agent=%q session=%q", agent.ID, sessionID)
+	}()
 
-	_ = d.readTaskStreamUpdates(r, agent.ID)
+	if err := d.readTaskStreamUpdatesFromScanner(r, scanner, agent.ID, session); sessionCtx.Err() == nil {
+		if err == nil {
+			log.Printf("[tasks] stream request body reached EOF for agent %q", agent.ID)
+		} else {
+			log.Printf("[tasks] stream ended for agent %q: %v", agent.ID, err)
+		}
+	}
 }
 
-func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string) error {
-	scanner := bufio.NewScanner(r.Body)
+func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string, session *ndjsonTaskSession) error {
+	return d.readTaskStreamUpdatesFromScanner(r, newTaskStreamScanner(r.Body), agentID, session)
+}
+
+func newTaskStreamScanner(body io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxTaskStreamLineBytes)
+	return scanner
+}
+
+func (d Dependencies) readTaskStreamUpdatesFromScanner(r *http.Request, scanner *bufio.Scanner, agentID string, session *ndjsonTaskSession) error {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -317,6 +376,15 @@ func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string) err
 		var message taskStreamMessage
 		if err := json.Unmarshal([]byte(line), &message); err != nil {
 			return err
+		}
+		if message.Type == "ping" {
+			if session == nil {
+				return errors.New("task stream session is unavailable")
+			}
+			if err := session.SendPingContext(r.Context(), time.Now().UTC()); err != nil {
+				return err
+			}
+			continue
 		}
 		if message.Type != "update" || message.Update == nil {
 			continue
@@ -363,21 +431,35 @@ func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Re
 }
 
 type sseTaskSession struct {
-	writer  http.ResponseWriter
-	flusher http.Flusher
-	closed  bool
+	writer       http.ResponseWriter
+	flusher      http.Flusher
+	stateMu      sync.Mutex
+	writeMu      sync.Mutex
+	activeWrites sync.WaitGroup
+	cancel       context.CancelFunc
+	closed       bool
 }
 
-func newSSETaskSession(writer http.ResponseWriter, flusher http.Flusher) *sseTaskSession {
+const taskSessionWriteTimeout = 5 * time.Second
+
+func newSSETaskSession(writer http.ResponseWriter, flusher http.Flusher, cancel context.CancelFunc) *sseTaskSession {
 	return &sseTaskSession{
 		writer:  writer,
 		flusher: flusher,
+		cancel:  cancel,
 	}
 }
 
 func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
-	if s.closed {
-		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	return s.SendTaskContext(context.Background(), task)
+}
+
+func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskEnvelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	payload, err := json.Marshal(map[string]any{
 		"task_id":    task.ID,
@@ -389,6 +471,26 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 	if err != nil {
 		return err
 	}
+
+	controller := http.NewResponseController(s.writer)
+	deadline := time.Now().Add(taskSessionWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	}
+	// Admission and the initial deadline are one state transition relative to
+	// CloseContext. Once closed, no later sender can restore a future deadline.
+	_ = controller.SetWriteDeadline(deadline)
+	s.activeWrites.Add(1)
+	s.stateMu.Unlock()
+	defer s.activeWrites.Done()
+	defer s.clearWriteDeadline(controller)
 	_, err = fmt.Fprintf(s.writer, "event: task\ndata: %s\n\n", payload)
 	if err != nil {
 		return err
@@ -398,30 +500,75 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 }
 
 func (s *sseTaskSession) Close() error {
-	s.closed = true
-	return nil
+	return s.CloseContext(context.Background())
+}
+
+func (s *sseTaskSession) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.stateMu.Lock()
+	if !s.closed {
+		s.closed = true
+	}
+	cancel := s.cancel
+	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
+	s.stateMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	drained := make(chan struct{})
+	go func() {
+		s.activeWrites.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *sseTaskSession) clearWriteDeadline(controller *http.ResponseController) {
+	s.stateMu.Lock()
+	closed := s.closed
+	s.stateMu.Unlock()
+	if !closed {
+		_ = controller.SetWriteDeadline(time.Time{})
+	}
 }
 
 type ndjsonTaskSession struct {
-	writer  http.ResponseWriter
-	flusher http.Flusher
-	mu      sync.Mutex
-	closed  bool
+	writer       http.ResponseWriter
+	flusher      http.Flusher
+	stateMu      sync.Mutex
+	writeMu      sync.Mutex
+	activeWrites sync.WaitGroup
+	cancel       context.CancelFunc
+	body         io.Closer
+	closed       bool
 }
 
-func newNDJSONTaskSession(writer http.ResponseWriter, flusher http.Flusher) *ndjsonTaskSession {
+func newNDJSONTaskSession(writer http.ResponseWriter, flusher http.Flusher, cancel context.CancelFunc, body io.Closer) *ndjsonTaskSession {
 	return &ndjsonTaskSession{
 		writer:  writer,
 		flusher: flusher,
+		cancel:  cancel,
+		body:    body,
 	}
 }
 
 func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.SendTaskContext(context.Background(), task)
+}
 
-	if s.closed {
-		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.TaskEnvelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	payload, err := json.Marshal(map[string]any{
 		"type": "task",
@@ -435,6 +582,44 @@ func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
 	if err != nil {
 		return err
 	}
+	return s.sendPayloadContext(ctx, payload)
+}
+
+func (s *ndjsonTaskSession) SendPingContext(ctx context.Context, sentAt time.Time) error {
+	payload, err := json.Marshal(map[string]any{
+		"type": "ping",
+		"ping": map[string]any{"sent_at": sentAt.UTC().Format(time.RFC3339Nano)},
+	})
+	if err != nil {
+		return err
+	}
+	return s.sendPayloadContext(ctx, payload)
+}
+
+func (s *ndjsonTaskSession) sendPayloadContext(ctx context.Context, payload []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	controller := http.NewResponseController(s.writer)
+	deadline := time.Now().Add(taskSessionWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	}
+	_ = controller.SetWriteDeadline(deadline)
+	s.activeWrites.Add(1)
+	s.stateMu.Unlock()
+	defer s.activeWrites.Done()
+	defer s.clearWriteDeadline(controller)
 	if _, err := s.writer.Write(append(payload, '\n')); err != nil {
 		return err
 	}
@@ -443,9 +628,46 @@ func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
 }
 
 func (s *ndjsonTaskSession) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.CloseContext(context.Background())
+}
 
-	s.closed = true
-	return nil
+func (s *ndjsonTaskSession) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.stateMu.Lock()
+	if !s.closed {
+		s.closed = true
+	}
+	cancel := s.cancel
+	body := s.body
+	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
+	s.stateMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	drained := make(chan error, 1)
+	go func() {
+		var bodyErr error
+		if body != nil {
+			bodyErr = body.Close()
+		}
+		s.activeWrites.Wait()
+		drained <- bodyErr
+	}()
+	select {
+	case err := <-drained:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *ndjsonTaskSession) clearWriteDeadline(controller *http.ResponseController) {
+	s.stateMu.Lock()
+	closed := s.closed
+	s.stateMu.Unlock()
+	if !closed {
+		_ = controller.SetWriteDeadline(time.Time{})
+	}
 }

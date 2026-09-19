@@ -28,9 +28,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - go-agent
-          - panel/backend-go
+        include:
+          - module: plugin-sdk
+            fast_packages: ./...
+          - module: go-agent
+            fast_packages: >-
+              ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
+              ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
+              ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
+              ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy ./internal/plugins/hostapi
+              ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc ./internal/plugins/wasm
+              ./pkg/acmeflow ./pkg/acmeflow/cloudflare
+          - module: panel/backend-go
+            fast_packages: >-
+              ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/config ./internal/controlplane/dependency
+              ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace
+              ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins
+              ./internal/controlplane/service ./internal/controlplane/storage
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -40,8 +54,9 @@ jobs:
           go-version-file: ${{ matrix.module }}/go.mod
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - name: Run fast tests
+        timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: timeout 2m go test -short -count=1 -timeout=90s ./...
+        run: go test -p=16 -tags=fast -short -count=1 -timeout=30s ${{ matrix.fast_packages }}
 
   frontend-fast:
     if: github.event_name != 'schedule'
@@ -68,6 +83,8 @@ jobs:
     name: Full Go (${{ matrix.module }})
     runs-on: ubuntu-latest
     env:
+      # Sandboxed test children must be self-contained, like release binaries.
+      CGO_ENABLED: "0"
       NRE_ACME_TEST_CHALLTESTSRV_URL: http://127.0.0.1:8055
       NRE_ACME_TEST_DIRECTORY_URL: https://127.0.0.1:14000/dir
       NRE_ACME_TEST_MANAGEMENT_URL: https://127.0.0.1:15000
@@ -76,6 +93,13 @@ jobs:
       matrix:
         include:
           - module: go-agent
+            full_packages: >-
+              ./internal/app ./internal/control ./internal/core ./internal/generation ./internal/model ./internal/module
+              ./internal/modules/certs ./internal/modules/channel ./internal/modules/ddns ./internal/modules/diagnostics
+              ./internal/modules/egress ./internal/modules/hostmetrics ./internal/modules/http ./internal/modules/l4
+              ./internal/modules/pki ./internal/modules/relay ./internal/observability ./internal/plugins/dockerproxy
+              ./internal/plugins/hostapi ./internal/plugins/policy ./internal/plugins/process ./internal/plugins/rpc
+              ./internal/plugins/wasm ./pkg/acmeflow ./pkg/acmeflow/cloudflare
             integration_packages: >-
               ./embedded
               ./internal/app
@@ -85,16 +109,20 @@ jobs:
               ./internal/modules/diagnostics
               ./internal/modules/http
               ./internal/modules/l4
-              ./internal/modules/relay
-              ./internal/platform
+              ./internal/modules/traffic
+              ./internal/plugins/process
               ./pkg/acmeflow
+              ./pkg/acmeflow/cloudflare
           - module: panel/backend-go
+            full_packages: >-
+              ./cmd/nre-control-plane ./cmd/nre-plugin-validator ./internal/controlplane/authz
+              ./internal/controlplane/config ./internal/controlplane/coordinator ./internal/controlplane/dependency
+              ./internal/controlplane/http ./internal/controlplane/localagent ./internal/controlplane/marketplace
+              ./internal/controlplane/observability ./internal/controlplane/pluginhost ./internal/controlplane/plugins
+              ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
             integration_packages: >-
-              ./cmd/nre-control-plane
               ./internal/controlplane/coordinator
-              ./internal/controlplane/cutover
               ./internal/controlplane/revision
-              ./internal/controlplane/service
               ./internal/controlplane/storage
     steps:
       - name: Checkout repository
@@ -105,19 +133,90 @@ jobs:
           go-version-file: ${{ matrix.module }}/go.mod
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - name: Run full tests
+        timeout-minutes: 10
         working-directory: ${{ matrix.module }}
-        run: timeout 2m go test -count=1 -timeout=90s ./...
+        # Compile as the runner user; only test binaries need isolated-UID privileges.
+        run: go test -exec 'sudo -n -E --' -p=16 -count=1 -timeout=30s ${{ matrix.full_packages }}
       - name: Start local ACME fixture
         run: |
           docker compose -f scripts/acme-integration/docker-compose.yaml up -d --wait --wait-timeout 60
           docker compose -f scripts/acme-integration/docker-compose.yaml cp pebble:/test/certs/pebble.minica.pem "${RUNNER_TEMP}/pebble.minica.pem"
           echo "SSL_CERT_FILE=${RUNNER_TEMP}/pebble.minica.pem" >> "${GITHUB_ENV}"
-      - name: Run integration tests
+      - name: Start PostgreSQL fixture
+        if: matrix.module == 'panel/backend-go'
+        shell: bash
+        run: |
+          docker run --detach --name nre-test-postgres \
+            --env POSTGRES_DB=nre_test \
+            --env POSTGRES_PASSWORD=nre-test-password \
+            --publish 127.0.0.1:5432:5432 \
+            postgres:16-alpine
+          for attempt in $(seq 1 30); do
+            if docker exec nre-test-postgres pg_isready --username postgres --dbname nre_test; then
+              echo 'NRE_TEST_POSTGRES_DSN=postgres://postgres:nre-test-password@127.0.0.1:5432/nre_test?sslmode=disable' >> "${GITHUB_ENV}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs nre-test-postgres
+          exit 1
+      - name: Verify integration tests are discoverable
         working-directory: ${{ matrix.module }}
-        run: timeout 10m go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ${{ matrix.integration_packages }}
+        shell: bash
+        run: |
+          status=0
+          for package in ${{ matrix.integration_packages }}; do
+            if ! discovered="$(go test -tags=integration -list '^TestIntegration' "${package}")"; then
+              printf '%s\n' "${discovered}"
+              status=1
+              continue
+            fi
+            printf '%s\n' "${discovered}"
+            if ! printf '%s\n' "${discovered}" | grep -Eq '^TestIntegration'; then
+              echo "::error::${package} has no TestIntegration tests"
+              status=1
+            fi
+          done
+          exit "${status}"
+      - name: Run integration tests
+        timeout-minutes: 10
+        working-directory: ${{ matrix.module }}
+        run: go test -exec 'sudo -n -E --' -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ${{ matrix.integration_packages }}
+      - name: Stop PostgreSQL fixture
+        if: always() && matrix.module == 'panel/backend-go'
+        run: |
+          if docker inspect nre-test-postgres >/dev/null 2>&1; then
+            docker rm --force nre-test-postgres
+          fi
       - name: Stop local ACME fixture
         if: always()
         run: docker compose -f scripts/acme-integration/docker-compose.yaml down --volumes --remove-orphans
+
+  internal-pki-e2e:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Internal PKI E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: tests/internal-pki/go.mod
+          cache-dependency-path: tests/internal-pki/go.mod
+      - name: Verify integration tests are discoverable
+        working-directory: tests/internal-pki
+        shell: bash
+        run: |
+          discovered="$(go test -tags=integration -list '^TestInternalPKI' ./...)"
+          printf '%s\n' "$discovered"
+          printf '%s\n' "$discovered" | grep -Eq '^TestInternalPKI'
+      - name: Run canonical internal PKI E2E command
+        working-directory: tests/internal-pki
+        run: go test -tags=integration -count=1 ./...
+      - name: Verify POSIX thin wrapper
+        run: sh scripts/test-internal-pki-e2e.sh
 
   frontend-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

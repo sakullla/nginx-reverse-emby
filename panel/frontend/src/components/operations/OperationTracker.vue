@@ -3,12 +3,7 @@
 </template>
 
 <script setup>
-import { toRef } from 'vue'
-import { useOperationStatus } from '../../hooks/useOperationStatus'
+import { useOperationsStatus } from '../../hooks/useOperationsStatus'
 
-const props = defineProps({
-  operationId: { type: String, required: true }
-})
-
-useOperationStatus(toRef(props, 'operationId'))
+useOperationsStatus()
 </script>

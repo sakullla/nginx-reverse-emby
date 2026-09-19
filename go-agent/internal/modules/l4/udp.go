@@ -365,7 +365,7 @@ func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload
 		s.proxySOCKS5UDPPacket(listener, rule, payload, peer)
 		return
 	}
-	session, err := s.sessionForUDPFlow(rule, listener, peer, "")
+	session, err := s.policyCheckedUDPSession(rule, listener, peer, "", payload)
 	if err != nil || session == nil {
 		return
 	}
@@ -392,7 +392,7 @@ func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, p
 	if peer == nil || peer.IP == nil || !s.hasProxyUDPAssociation(peer, listener.LocalAddr()) {
 		return
 	}
-	session, err := s.sessionForUDPFlow(rule, listener, peer, packet.Target)
+	session, err := s.policyCheckedUDPSession(rule, listener, peer, packet.Target, packet.Payload)
 	if err != nil || session == nil {
 		return
 	}
@@ -866,6 +866,12 @@ func (s *Server) shouldExpireUDPSession(key string) bool {
 func (s *Server) closeUDPSession(key string) {
 	s.udpMu.Lock()
 	session := s.udpSessions[key]
+	if session != nil {
+		// Retire the routing association before exposing an absent session.
+		// Closing an upstream may block; a packet arriving during that close
+		// must already select the currently active generation.
+		releaseUDPAssociation(session.listener, session.peer, session.associationTarget)
+	}
 	delete(s.udpSessions, key)
 	if session != nil && session.ready != nil {
 		failUDPSessionInitializationLocked(session, net.ErrClosed)
@@ -876,7 +882,6 @@ func (s *Server) closeUDPSession(key string) {
 		_ = session.upstream.Close()
 	}
 	if session != nil {
-		releaseUDPAssociation(session.listener, session.peer, session.associationTarget)
 		if session.sessionHandle != nil {
 			session.sessionHandle.Finish()
 		}
@@ -886,12 +891,15 @@ func (s *Server) closeUDPSession(key string) {
 func (s *Server) closeUDPSessions() {
 	s.udpMu.Lock()
 	sessions := s.udpSessions
-	s.udpSessions = make(map[string]*udpSession)
 	for _, session := range sessions {
+		if session != nil {
+			releaseUDPAssociation(session.listener, session.peer, session.associationTarget)
+		}
 		if session != nil && session.ready != nil {
 			failUDPSessionInitializationLocked(session, net.ErrClosed)
 		}
 	}
+	s.udpSessions = make(map[string]*udpSession)
 	s.udpMu.Unlock()
 
 	for _, session := range sessions {
@@ -899,7 +907,6 @@ func (s *Server) closeUDPSessions() {
 			_ = session.upstream.Close()
 		}
 		if session != nil {
-			releaseUDPAssociation(session.listener, session.peer, session.associationTarget)
 			if session.sessionHandle != nil {
 				session.sessionHandle.Finish()
 			}

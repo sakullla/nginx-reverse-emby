@@ -11,15 +11,18 @@ type ManagedCertificateBundle struct {
 }
 
 type ManagedCertificateReport struct {
-	ID           int                        `json:"id,omitempty"`
-	Domain       string                     `json:"domain,omitempty"`
-	Status       string                     `json:"status,omitempty"`
-	LastIssueAt  string                     `json:"last_issue_at,omitempty"`
-	LastError    string                     `json:"last_error,omitempty"`
-	MaterialHash string                     `json:"material_hash,omitempty"`
-	NotAfter     string                     `json:"not_after,omitempty"`
-	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
-	UpdatedAt    string                     `json:"updated_at,omitempty"`
+	ID              int                        `json:"id,omitempty"`
+	Domain          string                     `json:"domain,omitempty"`
+	Status          string                     `json:"status,omitempty"`
+	LastIssueAt     string                     `json:"last_issue_at,omitempty"`
+	LastError       string                     `json:"last_error,omitempty"`
+	MaterialHash    string                     `json:"material_hash,omitempty"`
+	NotAfter        string                     `json:"not_after,omitempty"`
+	NextRetryAtUnix int64                      `json:"next_retry_at_unix,omitempty"`
+	RetryCount      int                        `json:"retry_count,omitempty"`
+	BackoffClass    string                     `json:"backoff_class,omitempty"`
+	ACMEInfo        ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
+	UpdatedAt       string                     `json:"updated_at,omitempty"`
 }
 
 type ManagedCertificateACMEInfo struct {

@@ -15,18 +15,6 @@ export const CERTIFICATE_TEMPLATES = [
     }
   },
   {
-    id: 'relay_tunnel',
-    label: 'Relay 监听证书',
-    description: '默认由系统 Relay CA 自动签发并分发',
-    defaults: {
-      scope: 'domain',
-      issuer_mode: 'local_http01',
-      usage: 'relay_tunnel',
-      certificate_type: 'internal_ca',
-      self_signed: false
-    }
-  },
-  {
     id: 'uploaded',
     label: '手动上传证书',
     description: '直接粘贴 PEM 证书、私钥与可选 CA 链',
@@ -36,18 +24,6 @@ export const CERTIFICATE_TEMPLATES = [
       usage: 'https',
       certificate_type: 'uploaded',
       self_signed: false
-    }
-  },
-  {
-    id: 'internal_self_signed',
-    label: '内部自签证书',
-    description: '用于内网服务或测试环境的自签证书',
-    defaults: {
-      scope: 'domain',
-      issuer_mode: 'local_http01',
-      usage: 'https',
-      certificate_type: 'internal_ca',
-      self_signed: true
     }
   }
 ]
@@ -74,13 +50,13 @@ export function inferCertificateTemplate(certificate) {
     return ''
   }
   if (certificate.certificate_type === 'internal_ca' && certificate.usage === 'relay_tunnel') {
-    return 'relay_tunnel'
+    return ''
   }
   if (certificate.certificate_type === 'uploaded') {
     return 'uploaded'
   }
   if (certificate.certificate_type === 'internal_ca' && certificate.self_signed) {
-    return 'internal_self_signed'
+    return ''
   }
   return 'https'
 }

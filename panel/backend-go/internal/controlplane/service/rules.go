@@ -1,13 +1,18 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
+	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +21,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func newConfigMutationExecutor(cfg config.Config, store any) *revision.Executor {
@@ -114,12 +120,13 @@ func maxConfigMutationRevision(revisions map[string]int64, fallback int) int {
 }
 
 type configDependencyStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 }
 
-func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyStore, seeds []string) ([]string, error) {
+func expandConfigDependencyAgentIDs(ctx context.Context, cfg config.Config, store configDependencyStore, seeds []string) ([]string, error) {
 	listeners, err := store.ListRelayListeners(ctx, "")
 	if err != nil {
 		return nil, err
@@ -128,6 +135,52 @@ func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyS
 	for _, listener := range listeners {
 		if listener.ID > 0 {
 			listenerAgentIDs[listener.ID] = strings.TrimSpace(listener.AgentID)
+		}
+	}
+
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, store)
+	if err != nil {
+		return nil, err
+	}
+	dependencies := make(map[string]map[string]struct{})
+	connect := func(left, right string) {
+		left = strings.TrimSpace(left)
+		right = strings.TrimSpace(right)
+		if left == "" || right == "" || left == right {
+			return
+		}
+		if dependencies[left] == nil {
+			dependencies[left] = make(map[string]struct{})
+		}
+		if dependencies[right] == nil {
+			dependencies[right] = make(map[string]struct{})
+		}
+		dependencies[left][right] = struct{}{}
+		dependencies[right][left] = struct{}{}
+	}
+	addLayers := func(agentID, layersJSON string) {
+		for _, listenerID := range flattenRelayLayers(parseIntLayers(layersJSON)) {
+			connect(agentID, listenerAgentIDs[listenerID])
+		}
+	}
+	for _, agentID := range agentIDs {
+		httpRules, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range httpRules {
+			if row.Enabled {
+				addLayers(agentID, row.RelayLayersJSON)
+			}
+		}
+		l4Rules, err := store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range l4Rules {
+			if row.Enabled {
+				addLayers(agentID, row.RelayLayersJSON)
+			}
 		}
 	}
 
@@ -140,33 +193,9 @@ func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyS
 			continue
 		}
 		seen[agentID] = struct{}{}
-		addLayers := func(layersJSON string) {
-			for _, listenerID := range flattenRelayLayers(parseIntLayers(layersJSON)) {
-				dependencyAgentID := listenerAgentIDs[listenerID]
-				if dependencyAgentID == "" {
-					continue
-				}
-				if _, ok := seen[dependencyAgentID]; !ok {
-					queue = append(queue, dependencyAgentID)
-				}
-			}
-		}
-		httpRules, err := store.ListHTTPRules(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range httpRules {
-			if row.Enabled {
-				addLayers(row.RelayLayersJSON)
-			}
-		}
-		l4Rules, err := store.ListL4Rules(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range l4Rules {
-			if row.Enabled {
-				addLayers(row.RelayLayersJSON)
+		for dependencyAgentID := range dependencies[agentID] {
+			if _, ok := seen[dependencyAgentID]; !ok {
+				queue = append(queue, dependencyAgentID)
 			}
 		}
 	}
@@ -186,21 +215,23 @@ func runConfigPostCommitActions(actions []func()) {
 }
 
 type HTTPRuleInput struct {
-	ID               *int                `json:"id,omitempty"`
-	FrontendURL      *string             `json:"frontend_url,omitempty"`
-	BackendURL       *string             `json:"backend_url,omitempty"`
-	Backends         *[]HTTPRuleBackend  `json:"backends,omitempty"`
-	LoadBalancing    *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
-	Enabled          *bool               `json:"enabled,omitempty"`
-	Tags             *[]string           `json:"tags,omitempty"`
-	ProxyRedirect    *bool               `json:"proxy_redirect,omitempty"`
-	RelayChain       *[]int              `json:"relay_chain,omitempty"`
-	RelayLayers      *[][]int            `json:"relay_layers,omitempty"`
-	RelayObfs        *bool               `json:"relay_obfs,omitempty"`
-	PassProxyHeaders *bool               `json:"pass_proxy_headers,omitempty"`
-	UserAgent        *string             `json:"user_agent,omitempty"`
-	CustomHeaders    *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
-	EgressProfileID  *int                `json:"egress_profile_id,omitempty"`
+	ID                 *int                `json:"id,omitempty"`
+	FrontendURL        *string             `json:"frontend_url,omitempty"`
+	BackendURL         *string             `json:"backend_url,omitempty"`
+	Backends           *[]HTTPRuleBackend  `json:"backends,omitempty"`
+	LoadBalancing      *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
+	Enabled            *bool               `json:"enabled,omitempty"`
+	Tags               *[]string           `json:"tags,omitempty"`
+	ProxyRedirect      *bool               `json:"proxy_redirect,omitempty"`
+	RelayChain         *[]int              `json:"relay_chain,omitempty"`
+	RelayLayers        *[][]int            `json:"relay_layers,omitempty"`
+	RelayObfs          *bool               `json:"relay_obfs,omitempty"`
+	PassProxyHeaders   *bool               `json:"pass_proxy_headers,omitempty"`
+	UserAgent          *string             `json:"user_agent,omitempty"`
+	CustomHeaders      *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	EgressProfileID    *int                `json:"egress_profile_id,omitempty"`
+	TrustedProxyRanges *[]string           `json:"trusted_proxy_ranges,omitempty"`
+	PolicyRef          *storage.PolicyRef  `json:"policy_ref,omitempty"`
 }
 
 type ruleStore interface {
@@ -218,14 +249,35 @@ type ruleStore interface {
 	CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error
 }
 
+type resourceQuotaStore interface {
+	ConsumeQuotaForResource(context.Context, string, string, string, string, string, int64) (storage.QuotaDecision, error)
+}
+
+func consumeResourceQuota(ctx context.Context, store any, resourceKind, resourceID, ownerKind, ownerID, metric string, delta int64) error {
+	quotaStore, ok := store.(resourceQuotaStore)
+	if !ok {
+		if allowsTestUngovernedMutation(store) {
+			return nil
+		}
+		return ErrMutationPrincipalRequired
+	}
+	if _, found := storage.QuotaActorFromContext(ctx); !found || !hasResourceAuthorizer(ctx) {
+		return ErrMutationPrincipalRequired
+	}
+	_, err := quotaStore.ConsumeQuotaForResource(ctx, resourceKind, resourceID, ownerKind, ownerID, metric, delta)
+	return err
+}
+
 type ruleService struct {
-	cfg               config.Config
-	store             ruleStore
-	localApplyTrigger func(context.Context) error
-	mutationExecutor  *revision.Executor
-	revisionMutation  bool
-	revisionNumbers   map[string]int64
-	postCommitActions *[]func()
+	cfg                    config.Config
+	store                  ruleStore
+	localApplyTrigger      func(context.Context) error
+	mutationExecutor       *revision.Executor
+	revisionMutation       bool
+	revisionNumbers        map[string]int64
+	postCommitActions      *[]func()
+	pluginPublishAdmission bool
+	dnsTokenProviderReady  func() bool
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
@@ -234,6 +286,10 @@ func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
 
 func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {
 	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+func (s *ruleService) SetDNSTokenProviderReady(ready func() bool) {
+	s.dnsTokenProviderReady = ready
 }
 
 func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {
@@ -377,6 +433,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	targetAgentIDs, err := s.ruleMutationAgentIDs(ctx, resolvedID, nil, &input)
 	if err != nil {
 		return HTTPRule{}, err
@@ -415,6 +474,9 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
+		return HTTPRule{}, err
+	}
 
 	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
 	if err != nil {
@@ -446,6 +508,16 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := s.validateHTTPBackendProviders(ctx, resolvedID, rule.Backends); err != nil {
+		return HTTPRule{}, err
+	}
+	rule.PolicyRef, err = applyDefaultOfficialWAFPolicyRef(ctx, s.store, resolvedID, rule.PolicyRef)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
+		return HTTPRule{}, err
+	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
 		return HTTPRule{}, err
@@ -484,6 +556,12 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 				return HTTPRule{}, err
 			}
 		}
+	}
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "rule_count", 1); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "application_count", 1); err != nil {
+		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
@@ -540,6 +618,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	current, err := s.Get(ctx, resolvedID, id)
 	if err != nil {
 		return HTTPRule{}, err
@@ -588,6 +669,9 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
+		return HTTPRule{}, err
+	}
 
 	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
 	if err != nil {
@@ -629,6 +713,16 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := s.validateHTTPBackendProviders(ctx, resolvedID, rule.Backends); err != nil {
+		return HTTPRule{}, err
+	}
+	rule.PolicyRef, err = applyDefaultOfficialWAFPolicyRef(ctx, s.store, resolvedID, rule.PolicyRef)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef, policyExtensionHTTP); err != nil {
+		return HTTPRule{}, err
+	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
@@ -725,6 +819,19 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 		certID := certID
 		s.runAfterRevisionCommit(func() { ManagedCertificateDispatcher().Submit(certID) })
 	}
+	dropped := make([]string, 0)
+	nextIDs := make(map[string]struct{})
+	for _, instanceID := range pluginProviderInstanceIDs(rule) {
+		nextIDs[instanceID] = struct{}{}
+	}
+	for _, instanceID := range pluginProviderInstanceIDs(current) {
+		if _, keep := nextIDs[instanceID]; !keep {
+			dropped = append(dropped, instanceID)
+		}
+	}
+	if err := s.dropHTTPRulePluginBindings(ctx, resolvedID, rule.ID, dropped); err != nil {
+		return rollbackPostSave(err)
+	}
 	return rule, nil
 }
 
@@ -737,6 +844,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := ensureRulePolicyCatalogFence(ctx, s.store, resolvedID); err != nil {
 		return HTTPRule{}, err
 	}
 	current, err := s.Get(ctx, resolvedID, id)
@@ -779,6 +889,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := lockRulePolicyCatalogFence(ctx, s.store, resolvedID, s.revisionMutation); err != nil {
 		return HTTPRule{}, err
 	}
 
@@ -826,6 +939,12 @@ func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) 
 			return HTTPRule{}, err
 		}
 	}
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "rule_count", -1); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "application_count", -1); err != nil {
+		return HTTPRule{}, err
+	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
@@ -866,6 +985,9 @@ func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) 
 		})
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID)
+	if err := s.dropHTTPRulePluginBindings(ctx, resolvedID, deleted.ID, pluginProviderInstanceIDs(deleted)); err != nil {
+		return rollbackPostSave(err)
+	}
 	return deleted, nil
 }
 
@@ -990,7 +1112,7 @@ func (s *ruleService) ruleMutationAgentIDs(
 		}
 	}
 	if input == nil {
-		return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+		return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 	}
 
 	nextLayers := currentLayers
@@ -1017,7 +1139,7 @@ func (s *ruleService) ruleMutationAgentIDs(
 			return nil, err
 		}
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 }
 
 func httpRuleMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config) (any, error) {
@@ -1201,7 +1323,7 @@ func (s *ruleService) prepareAutoManagedDNSCertificateIssues(originalRows []stor
 }
 
 func (s *ruleService) autoManagedDNSIssuerAvailable() bool {
-	return s.cfg.ManagedDNSCertificatesEnabled && newMasterCFDNSManagedCertificateIssuer() != nil
+	return (s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || (s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil)
 }
 
 func (s *ruleService) cleanupUnusedManagedCertificatesForAgent(
@@ -1257,7 +1379,7 @@ func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
 		}
 		return "local_http01", nil
 	}
-	if s.cfg.ManagedDNSCertificatesEnabled {
+	if (s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || s.cfg.ManagedCloudflareDNSReady() {
 		return "master_cf_dns", nil
 	}
 	if agentHasCapability(capabilities, "local_acme") {
@@ -1726,12 +1848,26 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	if input.CustomHeaders != nil {
 		customHeaders = normalizeHTTPCustomHeaders(*input.CustomHeaders)
 	}
+	trustedProxyRanges := append([]string(nil), fallback.TrustedProxyRanges...)
+	if input.TrustedProxyRanges != nil {
+		trustedProxyRanges, err = normalizeTrustedPeerRanges(*input.TrustedProxyRanges)
+		if err != nil {
+			return HTTPRule{}, err
+		}
+	}
+	policyRef, err := normalizeRulePolicyRef(input.PolicyRef, fallback.PolicyRef)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 
 	egressProfileID, err := normalizeEgressProfileIDInput(input.EgressProfileID, fallback.EgressProfileID)
 	if err != nil {
 		return HTTPRule{}, err
 	}
 	if egressProfileID != nil {
+		if err := authorizeReferencedResource(ctx, s.store, "egress_profile", strconv.Itoa(*egressProfileID)); err != nil {
+			return HTTPRule{}, err
+		}
 		profile, err := s.getEnabledEgressProfile(ctx, *egressProfileID)
 		if err != nil {
 			return HTTPRule{}, err
@@ -1745,23 +1881,25 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	}
 
 	return HTTPRule{
-		ID:               id,
-		AgentID:          fallback.AgentID,
-		FrontendURL:      frontendURL,
-		BackendURL:       backendURL,
-		Backends:         backends,
-		LoadBalancing:    loadBalancing,
-		Enabled:          enabled,
-		Tags:             tags,
-		ProxyRedirect:    proxyRedirect,
-		RelayChain:       relayChain,
-		RelayLayers:      relayLayers,
-		RelayObfs:        relayObfs,
-		PassProxyHeaders: passProxyHeaders,
-		UserAgent:        userAgent,
-		CustomHeaders:    customHeaders,
-		EgressProfileID:  egressProfileID,
-		Revision:         fallback.Revision,
+		ID:                 id,
+		AgentID:            fallback.AgentID,
+		FrontendURL:        frontendURL,
+		BackendURL:         backendURL,
+		Backends:           backends,
+		LoadBalancing:      loadBalancing,
+		Enabled:            enabled,
+		Tags:               tags,
+		ProxyRedirect:      proxyRedirect,
+		RelayChain:         relayChain,
+		RelayLayers:        relayLayers,
+		RelayObfs:          relayObfs,
+		PassProxyHeaders:   passProxyHeaders,
+		UserAgent:          userAgent,
+		CustomHeaders:      customHeaders,
+		EgressProfileID:    egressProfileID,
+		TrustedProxyRanges: trustedProxyRanges,
+		PolicyRef:          policyRef,
+		Revision:           fallback.Revision,
 	}, nil
 }
 
@@ -1781,34 +1919,349 @@ func (s *ruleService) validateRelayChain(ctx context.Context, agentID string, re
 
 func normalizeHTTPBackendsInput(input HTTPRuleInput, fallback HTTPRule) ([]HTTPRuleBackend, error) {
 	if input.Backends != nil {
-		backends := normalizeHTTPBackends(*input.Backends)
-		if len(backends) > 0 {
-			return backends, nil
-		}
-		return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL", ErrInvalidArgument)
+		return normalizeHTTPBackends(*input.Backends)
 	}
 
 	if input.BackendURL != nil {
 		return nil, fmt.Errorf("%w: backend_url is legacy; use backends[].url", ErrInvalidArgument)
 	}
 
-	backends := normalizeHTTPBackends(fallback.Backends)
-	if len(backends) > 0 {
-		return backends, nil
-	}
-	return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL", ErrInvalidArgument)
+	return normalizeHTTPBackends(fallback.Backends)
 }
 
-func normalizeHTTPBackends(backends []HTTPRuleBackend) []HTTPRuleBackend {
+func normalizeHTTPBackends(backends []HTTPRuleBackend) ([]HTTPRuleBackend, error) {
 	normalized := make([]HTTPRuleBackend, 0, len(backends))
 	for _, backend := range backends {
-		urlValue := strings.TrimSpace(backend.URL)
-		if !isValidHTTPURL(urlValue) {
+		backend.Kind = strings.TrimSpace(backend.Kind)
+		backend.URL = strings.TrimSpace(backend.URL)
+		if (backend.Kind == "" || backend.Kind == pluginsdk.HTTPBackendKindURL) && backend.PluginProvider == nil {
+			if !isValidHTTPURL(backend.URL) {
+				continue
+			}
+			normalized = append(normalized, HTTPRuleBackend{URL: backend.URL})
 			continue
 		}
-		normalized = append(normalized, HTTPRuleBackend{URL: urlValue})
+		if backend.PluginProvider != nil {
+			provider := *backend.PluginProvider
+			provider.InstanceID = strings.TrimSpace(provider.InstanceID)
+			provider.ProviderID = strings.TrimSpace(provider.ProviderID)
+			backend.PluginProvider = &provider
+		}
+		normalized = append(normalized, backend)
 	}
-	return normalized
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL or plugin provider", ErrInvalidArgument)
+	}
+	if err := pluginsdk.ValidateHTTPBackends(normalized); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	return normalized, nil
+}
+
+type httpBackendProviderAdmissionStore interface {
+	LoadAgentPluginGenerations(context.Context, string, string) ([]storage.PluginGeneration, error)
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	GetPluginAgentRuntimeStatusFence(context.Context, string, string, string) (storage.PluginAgentRuntimeStatusRow, bool, error)
+}
+
+func pluginPublishHTTPRuleInput(frontendURL, instanceID, providerID, pluginID string) HTTPRuleInput {
+	enabled := true
+	frontend := strings.TrimSpace(frontendURL)
+	tags := pluginPublishRuleTags(pluginID)
+	return HTTPRuleInput{
+		FrontendURL: &frontend,
+		Enabled:     &enabled,
+		Tags:        &tags,
+		Backends: &[]HTTPRuleBackend{{
+			Kind: pluginsdk.HTTPBackendKindPluginProvider,
+			PluginProvider: &pluginsdk.HTTPPluginProviderRef{
+				InstanceID: strings.TrimSpace(instanceID),
+				ProviderID: strings.TrimSpace(providerID),
+			},
+		}},
+	}
+}
+
+func pluginPublishFrontendURLInput(frontendURL, pluginID string, currentTags []string) HTTPRuleInput {
+	frontend := strings.TrimSpace(frontendURL)
+	tags := normalizeTagUnion(currentTags, pluginPublishRuleTags(pluginID))
+	return HTTPRuleInput{FrontendURL: &frontend, Tags: &tags}
+}
+
+func pluginPublishRuleTags(pluginID string) []string {
+	tags := []string{"plugin"}
+	if pluginID = strings.TrimSpace(pluginID); pluginID != "" {
+		tags = append(tags, "plugin:"+pluginID)
+	}
+	return tags
+}
+
+func (s *ruleService) validateHTTPBackendProviders(ctx context.Context, agentID string, backends []HTTPRuleBackend) error {
+	hasProvider := false
+	for _, backend := range backends {
+		if backend.Kind == pluginsdk.HTTPBackendKindPluginProvider {
+			hasProvider = true
+			break
+		}
+	}
+	if !hasProvider {
+		return nil
+	}
+	if s != nil && s.pluginPublishAdmission {
+		return s.validateHTTPBackendProvidersForPluginPublish(ctx, agentID, backends)
+	}
+	providerStore, ok := s.store.(httpBackendProviderAdmissionStore)
+	if !ok {
+		return fmt.Errorf("%w: HTTP backend provider admission is unavailable", ErrInvalidArgument)
+	}
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, agent := range agents {
+		if strings.TrimSpace(agent.ID) == agentID && strings.TrimSpace(agent.Platform) != "" {
+			platform = strings.TrimSpace(agent.Platform)
+			break
+		}
+	}
+	generations, err := providerStore.LoadAgentPluginGenerations(ctx, agentID, platform)
+	if err != nil {
+		return fmt.Errorf("%w: load HTTP backend providers: %v", ErrInvalidArgument, err)
+	}
+	byInstance := make(map[string]storage.PluginGeneration, len(generations))
+	for _, generation := range generations {
+		byInstance[generation.InstanceID] = generation
+	}
+	for _, backend := range backends {
+		if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+			continue
+		}
+		ref := backend.PluginProvider
+		if err := authorizeReferencedResource(ctx, s.store, "plugin_instance", ref.InstanceID); err != nil {
+			return err
+		}
+		instance, found, err := providerStore.GetPluginInstance(ctx, ref.InstanceID)
+		if err != nil {
+			return err
+		}
+		if !found || !instance.DesiredEnabled || instance.CurrentState != "active" {
+			return fmt.Errorf("%w: plugin provider instance %q is not active", ErrInvalidArgument, ref.InstanceID)
+		}
+		generation, found := byInstance[ref.InstanceID]
+		if !found || generation.Runtime.Kind != pluginsdk.RuntimeRPCService || generation.Runtime.HostScope != pluginsdk.HostScopeAgent || generation.Target.ID != agentID {
+			return fmt.Errorf("%w: plugin provider instance %q is unavailable on Agent %q", ErrInvalidArgument, ref.InstanceID, agentID)
+		}
+		if !slices.Contains(generation.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) || !slices.Contains(generation.RequiredFeatures, pluginsdk.RPCFeatureHTTPBackendProviderV1) {
+			return fmt.Errorf("%w: plugin provider instance %q lacks the canonical HTTP provider contract", ErrInvalidArgument, ref.InstanceID)
+		}
+		declared := false
+		for _, descriptor := range generation.HTTPBackendProviders {
+			if descriptor.ID == ref.ProviderID {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return fmt.Errorf("%w: plugin provider %q is not declared by instance %q", ErrInvalidArgument, ref.ProviderID, ref.InstanceID)
+		}
+		status, found, err := providerStore.GetPluginAgentRuntimeStatusFence(ctx, generation.OperationID, agentID, generation.InstanceID)
+		if err != nil {
+			return err
+		}
+		if !found || status.State != "active" || status.GenerationID != generation.ID {
+			return fmt.Errorf("%w: plugin provider instance %q has no ready generation", ErrInvalidArgument, ref.InstanceID)
+		}
+	}
+	return nil
+}
+
+type pluginPublishAdmissionStore interface {
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error)
+	GetPluginPackage(context.Context, string) (storage.PluginPackageRow, bool, error)
+	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
+}
+
+func (s *ruleService) validateHTTPBackendProvidersForPluginPublish(ctx context.Context, agentID string, backends []HTTPRuleBackend) error {
+	providerStore, ok := s.store.(pluginPublishAdmissionStore)
+	if !ok {
+		return fmt.Errorf("%w: plugin publish admission is unavailable", ErrInvalidArgument)
+	}
+	defaultTargetID := ""
+	if s != nil {
+		defaultTargetID = strings.TrimSpace(s.cfg.LocalAgentID)
+	}
+	for _, backend := range backends {
+		if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+			continue
+		}
+		ref := backend.PluginProvider
+		if err := authorizeReferencedResource(ctx, s.store, "plugin_instance", ref.InstanceID); err != nil {
+			return err
+		}
+		instance, found, err := providerStore.GetPluginInstance(ctx, ref.InstanceID)
+		if err != nil {
+			return err
+		}
+		if !found || !instance.DesiredEnabled {
+			return fmt.Errorf("%w: plugin provider instance %q is not desired-enabled", ErrInvalidArgument, ref.InstanceID)
+		}
+		targets, err := pluginPublishInstanceTargets(instance, defaultTargetID)
+		if err != nil {
+			return fmt.Errorf("%w: plugin provider instance %q targets are invalid", ErrInvalidArgument, ref.InstanceID)
+		}
+		if !slices.Contains(targets, strings.TrimSpace(agentID)) {
+			return fmt.Errorf("%w: plugin provider instance %q does not target Agent %q", ErrInvalidArgument, ref.InstanceID, agentID)
+		}
+		installed, found, err := providerStore.GetInstalledPlugin(ctx, instance.PluginID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: plugin provider instance %q is not installed", ErrInvalidArgument, ref.InstanceID)
+		}
+		var packageRow storage.PluginPackageRow
+		if strings.TrimSpace(installed.ActivePackageIdentity) != "" {
+			packageRow, found, err = providerStore.GetPluginPackageByIdentity(ctx, installed.ActivePackageIdentity)
+		} else {
+			packageRow, found, err = providerStore.GetPluginPackage(ctx, installed.ActivePackageDigest)
+		}
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: plugin provider package is unavailable", ErrInvalidArgument)
+		}
+		var manifest pluginsdk.Manifest
+		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+			return fmt.Errorf("%w: plugin provider manifest is invalid", ErrInvalidArgument)
+		}
+		if !pluginManifestDeclaresHTTPProvider(manifest, ref.ProviderID) {
+			return fmt.Errorf("%w: plugin provider %q is not declared by instance %q", ErrInvalidArgument, ref.ProviderID, ref.InstanceID)
+		}
+	}
+	return nil
+}
+
+func pluginPublishInstanceTargets(instance storage.PluginInstanceRow, defaultTargetID string) ([]string, error) {
+	raw := json.RawMessage(instance.TargetJSON)
+	if strings.TrimSpace(instance.PendingTargetJSON) != "" {
+		raw = json.RawMessage(instance.PendingTargetJSON)
+	}
+	return pluginTargetIDs(raw, defaultTargetID)
+}
+
+func pluginManifestDeclaresHTTPProvider(manifest pluginsdk.Manifest, providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" || len(manifest.HTTPBackendProviders) == 0 {
+		return false
+	}
+	if !slices.Contains(manifest.ExtensionPoints, pluginsdk.ExtensionHTTPBackendProvider) {
+		return false
+	}
+	for _, descriptor := range manifest.HTTPBackendProviders {
+		if strings.TrimSpace(descriptor.ID) == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginProviderInstanceIDs(rule HTTPRule) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, backend := range rule.Backends {
+		if backend.Kind != pluginsdk.HTTPBackendKindPluginProvider || backend.PluginProvider == nil {
+			continue
+		}
+		instanceID := strings.TrimSpace(backend.PluginProvider.InstanceID)
+		if instanceID == "" {
+			continue
+		}
+		if _, exists := seen[instanceID]; exists {
+			continue
+		}
+		seen[instanceID] = struct{}{}
+		ids = append(ids, instanceID)
+	}
+	return ids
+}
+
+type pluginBindingSyncStore interface {
+	GetPluginInstance(context.Context, string) (storage.PluginInstanceRow, bool, error)
+	GetInstalledPlugin(context.Context, string) (storage.InstalledPluginRow, bool, error)
+	ApplyPluginMutation(context.Context, storage.PluginMutation) error
+}
+
+func (s *ruleService) dropHTTPRulePluginBindings(ctx context.Context, agentID string, ruleID int, instanceIDs []string) error {
+	if ruleID <= 0 || len(instanceIDs) == 0 {
+		return nil
+	}
+	store, ok := s.store.(pluginBindingSyncStore)
+	if !ok {
+		return nil
+	}
+	consumerID := strconv.Itoa(ruleID)
+	agentID = strings.TrimSpace(agentID)
+	for _, instanceID := range instanceIDs {
+		instance, found, err := store.GetPluginInstance(ctx, instanceID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		changed := false
+		for _, field := range []*string{&instance.BindingsJSON, &instance.PendingBindingsJSON, &instance.RollbackBindingsJSON} {
+			bindings, err := storage.CanonicalPluginInstanceBindings(*field)
+			if err != nil {
+				return err
+			}
+			filtered := bindings[:0]
+			for _, binding := range bindings {
+				if binding.Consumer.Kind == storage.PluginDependencyConsumerHTTPRule && binding.Consumer.ID == consumerID && binding.TargetAgentID == agentID {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, binding)
+			}
+			encoded, err := storage.EncodePluginInstanceBindings(filtered)
+			if err != nil {
+				return err
+			}
+			*field = encoded
+		}
+		if !changed {
+			continue
+		}
+		installed, found, err := store.GetInstalledPlugin(ctx, instance.PluginID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		now := time.Now().UTC()
+		instance.UpdatedAt = now
+		installed.UpdatedAt = now
+		operation := storage.PluginOperationRow{
+			ID: lifecycleID("pluginop"), PluginID: instance.PluginID, InstanceID: instance.ID,
+			Kind: "publish", Status: "succeeded", TargetPackageDigest: installed.ActivePackageDigest,
+			AgentResultsJSON: "{}", ActorID: "system", CompletedAt: &now, CreatedAt: now,
+		}
+		if err := bindInstalledActiveOperation(&operation, installed); err != nil {
+			return err
+		}
+		if err := store.ApplyPluginMutation(ctx, storage.PluginMutation{
+			PluginID: instance.PluginID, ExpectedActive: installed.ActivePackageDigest,
+			ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance,
+			Operation: operation, Audit: pluginLifecycleAudit(operation, operation.ActorID, "accepted", "", now),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeHTTPCustomHeaders(values []HTTPCustomHeader) []HTTPCustomHeader {
@@ -1868,6 +2321,33 @@ func isValidHTTPURL(raw string) bool {
 	}
 }
 
+func pluginHostRuleFrontendURL(domain string) (string, error) {
+	frontend, err := pluginsdk.NormalizeHTTPRuleFrontend(domain)
+	if err != nil {
+		return "", fmt.Errorf("%w: domain is not a valid HTTP frontend", ErrInvalidArgument)
+	}
+	return frontend, nil
+}
+
+func pluginHostRuleBackendURL(port int) (string, error) {
+	if port <= 0 || port > 65535 {
+		return "", fmt.Errorf("%w: port is invalid", ErrInvalidArgument)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port), nil
+}
+
+func parsePluginHostRuleRef(ruleRef string) (int, error) {
+	ruleRef = strings.TrimSpace(ruleRef)
+	if ruleRef == "" {
+		return 0, fmt.Errorf("%w: rule_ref is required", ErrInvalidArgument)
+	}
+	id, err := strconv.Atoi(ruleRef)
+	if err != nil || id <= 0 || strconv.Itoa(id) != ruleRef {
+		return 0, fmt.Errorf("%w: rule_ref is invalid", ErrInvalidArgument)
+	}
+	return id, nil
+}
+
 func httpRuleFrontendListenPort(raw string) (int, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil {
@@ -1894,46 +2374,245 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 	backends := parseBackends(row.BackendsJSON)
 
 	return HTTPRule{
-		ID:               row.ID,
-		AgentID:          row.AgentID,
-		FrontendURL:      row.FrontendURL,
-		BackendURL:       "",
-		Backends:         backends,
-		LoadBalancing:    parseLoadBalancing(row.LoadBalancingJSON),
-		Enabled:          row.Enabled,
-		Tags:             parseStringArray(row.TagsJSON),
-		ProxyRedirect:    row.ProxyRedirect,
-		RelayChain:       []int{},
-		RelayLayers:      parseIntLayers(row.RelayLayersJSON),
-		RelayObfs:        row.RelayObfs,
-		PassProxyHeaders: row.PassProxyHeaders,
-		UserAgent:        row.UserAgent,
-		CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
-		EgressProfileID:  normalizeOptionalPositiveInt(row.EgressProfileID),
-		Revision:         row.Revision,
+		ID:                 row.ID,
+		AgentID:            row.AgentID,
+		FrontendURL:        row.FrontendURL,
+		BackendURL:         "",
+		Backends:           backends,
+		LoadBalancing:      parseLoadBalancing(row.LoadBalancingJSON),
+		Enabled:            row.Enabled,
+		Tags:               parseStringArray(row.TagsJSON),
+		ProxyRedirect:      row.ProxyRedirect,
+		RelayChain:         []int{},
+		RelayLayers:        parseIntLayers(row.RelayLayersJSON),
+		RelayObfs:          row.RelayObfs,
+		PassProxyHeaders:   row.PassProxyHeaders,
+		UserAgent:          row.UserAgent,
+		CustomHeaders:      parseCustomHeaders(row.CustomHeadersJSON),
+		EgressProfileID:    normalizeOptionalPositiveInt(row.EgressProfileID),
+		TrustedProxyRanges: parseStringArray(row.TrustedProxyRangesJSON),
+		PolicyRef:          parseRulePolicyRef(row.PolicyRefJSON),
+		Revision:           row.Revision,
 	}
 }
 
 func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 	return storage.HTTPRuleRow{
-		ID:                rule.ID,
-		AgentID:           rule.AgentID,
-		FrontendURL:       rule.FrontendURL,
-		BackendURL:        "",
-		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
-		Enabled:           rule.Enabled,
-		TagsJSON:          marshalJSON(rule.Tags, "[]"),
-		ProxyRedirect:     rule.ProxyRedirect,
-		RelayChainJSON:    "[]",
-		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
-		RelayObfs:         rule.RelayObfs,
-		PassProxyHeaders:  rule.PassProxyHeaders,
-		UserAgent:         rule.UserAgent,
-		CustomHeadersJSON: marshalJSON(rule.CustomHeaders, "[]"),
-		EgressProfileID:   normalizeOptionalPositiveInt(rule.EgressProfileID),
-		Revision:          rule.Revision,
+		ID:                     rule.ID,
+		AgentID:                rule.AgentID,
+		FrontendURL:            rule.FrontendURL,
+		BackendURL:             "",
+		BackendsJSON:           marshalJSON(rule.Backends, "[]"),
+		LoadBalancingJSON:      marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
+		Enabled:                rule.Enabled,
+		TagsJSON:               marshalJSON(rule.Tags, "[]"),
+		ProxyRedirect:          rule.ProxyRedirect,
+		RelayChainJSON:         "[]",
+		RelayLayersJSON:        marshalJSON(rule.RelayLayers, "[]"),
+		RelayObfs:              rule.RelayObfs,
+		PassProxyHeaders:       rule.PassProxyHeaders,
+		UserAgent:              rule.UserAgent,
+		CustomHeadersJSON:      marshalJSON(rule.CustomHeaders, "[]"),
+		EgressProfileID:        normalizeOptionalPositiveInt(rule.EgressProfileID),
+		TrustedProxyRangesJSON: marshalJSON(rule.TrustedProxyRanges, "[]"),
+		PolicyRefJSON:          marshalJSON(rule.PolicyRef, ""),
+		Revision:               rule.Revision,
 	}
+}
+
+func normalizeTrustedPeerRanges(values []string) ([]string, error) {
+	if values == nil {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return nil, fmt.Errorf("%w: trusted peer range is empty", ErrInvalidArgument)
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return nil, fmt.Errorf("%w: trusted peer range %q is invalid", ErrInvalidArgument, raw)
+			}
+			address = address.Unmap()
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		canonical := prefix.Masked().String()
+		if _, duplicate := seen[canonical]; duplicate {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		normalized = append(normalized, canonical)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
+}
+
+func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.PolicyRef, error) {
+	if input == nil {
+		return cloneRulePolicyRef(fallback), nil
+	}
+	if len(input.StageModes) > 0 {
+		return nil, fmt.Errorf("%w: policy stage modes are Host-owned", ErrInvalidArgument)
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" {
+		if len(input.Overlay) != 0 && string(input.Overlay) != "null" {
+			return nil, fmt.Errorf("%w: policy_ref id is required with an overlay", ErrInvalidArgument)
+		}
+		return nil, nil
+	}
+	if err := pluginsdk.ValidatePolicyIdentity(input.ID); err != nil {
+		return nil, fmt.Errorf("%w: policy_ref id is not canonical", ErrInvalidArgument)
+	}
+	overlay := append(json.RawMessage(nil), input.Overlay...)
+	if len(overlay) != 0 && (len(overlay) > 128<<10 || !json.Valid(overlay)) {
+		return nil, fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
+	}
+	if input.OverlayFormat != "" || input.LegacyPolicyID != "" {
+		return nil, fmt.Errorf("%w: policy overlay metadata is Host-owned", ErrInvalidArgument)
+	}
+	return &storage.PolicyRef{ID: id, Overlay: overlay}, nil
+}
+
+type rulePolicyCatalogStore interface {
+	LoadAgentPluginPolicies(context.Context, string) ([]storage.PluginPolicy, error)
+}
+
+type rulePolicyCatalogFenceStore interface {
+	EnsureAgentPluginPolicyCatalog(context.Context, string) error
+	LockAgentPluginPolicyCatalog(context.Context, string) error
+}
+
+const (
+	policyExtensionHTTP = "http.request"
+	policyExtensionL4   = "l4.accept"
+)
+
+func ensureRulePolicyCatalogFence(ctx context.Context, store any, agentID string) error {
+	fenceStore, ok := store.(rulePolicyCatalogFenceStore)
+	if !ok {
+		return fmt.Errorf("%w: policy catalog fence is unavailable", errRevisionMutationStoreRequired)
+	}
+	return fenceStore.EnsureAgentPluginPolicyCatalog(ctx, agentID)
+}
+
+func lockRulePolicyCatalogFence(ctx context.Context, store any, agentID string, required bool) error {
+	if !required {
+		return nil
+	}
+	fenceStore, ok := store.(rulePolicyCatalogFenceStore)
+	if !ok {
+		return fmt.Errorf("%w: policy catalog fence is unavailable", errRevisionMutationStoreRequired)
+	}
+	return fenceStore.LockAgentPluginPolicyCatalog(ctx, agentID)
+}
+
+func validateRulePolicyReference(ctx context.Context, store any, agentID string, ref *storage.PolicyRef, extensionPoint string) error {
+	if ref == nil {
+		return nil
+	}
+	catalogStore, ok := store.(rulePolicyCatalogStore)
+	if !ok {
+		return fmt.Errorf("%w: policy catalog is unavailable", ErrInvalidArgument)
+	}
+	policies, err := catalogStore.LoadAgentPluginPolicies(ctx, agentID)
+	if err != nil {
+		return fmt.Errorf("resolve policy_ref %q: %w", ref.ID, err)
+	}
+	for _, policy := range policies {
+		if policy.ID == ref.ID {
+			if err := validateRulePolicyOverlay(policy, ref); err != nil {
+				return err
+			}
+			frameBytes, frameErr := pluginsdk.PolicyV1EvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", pluginsdk.PolicyRequestIDMaxBytes), ref.Overlay)
+			if frameErr != nil {
+				return fmt.Errorf("%w: policy_ref %q frame is invalid: %v", ErrInvalidArgument, ref.ID, frameErr)
+			}
+			for index, stage := range policy.Stages {
+				if !slices.Contains(stage.ExtensionPoints, extensionPoint) {
+					return fmt.Errorf("%w: policy_ref %q stage %d does not support %q", ErrInvalidArgument, ref.ID, index, extensionPoint)
+				}
+				if int64(frameBytes) > stage.ResourceBudget.InputBytes {
+					return fmt.Errorf("%w: policy_ref %q overlay exceeds stage %d input frame budget", ErrInvalidArgument, ref.ID, index)
+				}
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: policy_ref %q is not active for agent %q", ErrInvalidArgument, ref.ID, agentID)
+}
+
+func validateRulePolicyOverlay(policy storage.PluginPolicy, ref *storage.PolicyRef) error {
+	overlay := bytes.TrimSpace(ref.Overlay)
+	if len(overlay) == 0 || string(overlay) == "null" {
+		return nil
+	}
+	format, owner := ref.OverlayFormat, ref.LegacyPolicyID
+	if format == "" {
+		if len(policy.Stages) != 1 {
+			return fmt.Errorf("%w: policy_ref overlay owner is ambiguous", ErrInvalidArgument)
+		}
+		stage := policy.Stages[0]
+		owner = stage.PolicyID
+		switch stage.Kind {
+		case "ip":
+			format = pluginsdk.PolicyOverlayFormatLegacyIP
+		case "rate":
+			format = pluginsdk.PolicyOverlayFormatLegacyRate
+		case "waf":
+			format = pluginsdk.PolicyOverlayFormatLegacyWAF
+		default:
+			return fmt.Errorf("%w: policy_ref overlay owner is unsupported", ErrInvalidArgument)
+		}
+		ref.OverlayFormat, ref.LegacyPolicyID = format, owner
+	}
+	envelope, err := pluginsdk.DecodePolicyOverlay(overlay, pluginsdk.PolicyOverlayDecodeContext{Format: format, LegacyPolicyID: owner})
+	if err != nil {
+		return fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
+	}
+	known := make(map[pluginsdk.PolicyStageIdentity]struct{}, len(policy.Stages))
+	for _, stage := range policy.Stages {
+		known[pluginsdk.PolicyStageIdentity{Kind: stage.Kind, PolicyID: stage.PolicyID}] = struct{}{}
+	}
+	var officialWAFPayload json.RawMessage
+	for _, selected := range envelope.Stages {
+		identity := pluginsdk.PolicyStageIdentity{Kind: selected.Kind, PolicyID: selected.PolicyID}
+		if _, ok := known[identity]; !ok {
+			return fmt.Errorf("%w: policy_ref overlay belongs to an unrelated stage", ErrInvalidArgument)
+		}
+		if pluginPolicyIsOfficialWAF(policy) && selected.Kind == "waf" {
+			officialWAFPayload = selected.Payload
+		}
+	}
+	if pluginPolicyIsOfficialWAF(policy) {
+		if len(officialWAFPayload) == 0 {
+			return fmt.Errorf("%w: policy_ref overlay does not select the official WAF stage", ErrInvalidArgument)
+		}
+		if err := validateWAFPolicyOverlay(officialWAFPayload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneRulePolicyRef(ref *storage.PolicyRef) *storage.PolicyRef {
+	return storage.ClonePolicyRef(ref)
+}
+
+func parseRulePolicyRef(raw string) *storage.PolicyRef {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var ref storage.PolicyRef
+	if err := json.Unmarshal([]byte(raw), &ref); err != nil {
+		return &storage.PolicyRef{ID: "\x00invalid-policy-ref"}
+	}
+	return cloneRulePolicyRef(&ref)
 }
 
 func maxInt(values ...int) int {

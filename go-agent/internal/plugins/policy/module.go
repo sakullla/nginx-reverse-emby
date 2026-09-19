@@ -1,0 +1,489 @@
+package policy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+)
+
+const ProviderEvaluator = module.ProviderPolicyEvaluator
+
+type GenerationSpec struct {
+	ID                string
+	Revision          int64
+	Policies          []model.PluginPolicy
+	RequiredPolicyIDs []string
+	Datasets          *DatasetGeneration
+}
+
+// GenerationFactory is the narrow process-to-generation bridge. A factory may
+// reuse one process-scoped compiler/runtime, but every returned runtime owns
+// only this generation's compiled modules, pools and state. Optional policy
+// failures may be isolated inside the returned runtime; a required policy
+// failure must return an error so the candidate generation is not published.
+type GenerationFactory interface {
+	PrepareGeneration(context.Context, GenerationSpec) (GenerationRuntime, error)
+}
+
+type GenerationRuntime interface {
+	ModuleEvaluator
+	Ready(context.Context) error
+	Close(context.Context) error
+}
+
+type Module struct {
+	factory     GenerationFactory
+	observer    observability.Observer
+	datasetPool datasetIndexPool
+
+	mu         sync.Mutex
+	standalone *transaction
+}
+
+func NewModule(factory GenerationFactory, observer observability.Observer) *Module {
+	if observer == nil {
+		observer = observability.Default()
+	}
+	return &Module{factory: factory, observer: observer}
+}
+
+// NewValidationModule keeps policy references in the atomic generation
+// prepare graph when execution is unavailable. Optional catalog entries remain
+// publishable, while candidates that reference a policy fail before cutover.
+func NewValidationModule(observer observability.Observer) *Module {
+	return NewModule(nil, observer)
+}
+
+func (*Module) Name() string { return "plugin-policy" }
+
+func (m *Module) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.Name(), Provides: []module.ProviderRef{ProviderEvaluator, ProviderDatasets}}
+}
+
+func (*Module) RegisterProviders(reg module.ProviderRegistry) error {
+	if err := reg.Provide(ProviderEvaluator, Evaluator(disabledEvaluator{})); err != nil {
+		return err
+	}
+	return reg.Provide(ProviderDatasets, &DatasetGeneration{closed: true})
+}
+
+func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
+	if m == nil || m.factory == nil {
+		return nil
+	}
+	return []module.Capability{
+		{Name: ExtensionHTTP, Enabled: true, Metadata: map[string]string{"abi": model.PolicyABIV1}},
+		{Name: ExtensionL4, Enabled: true, Metadata: map[string]string{"abi": model.PolicyABIV1}},
+	}
+}
+
+func (m *Module) Prepare(ctx context.Context, request module.ApplyRequest) (module.ModuleTransaction, error) {
+	if m == nil {
+		return nil, errors.New("policy module is nil")
+	}
+	generationContext, err := request.ResolvedGenerationContext()
+	if err != nil {
+		return nil, err
+	}
+	definitions, required, err := m.prepareSnapshotPolicies(ctx, request.Next)
+	if err != nil {
+		return nil, err
+	}
+	datasetGeneration, err := prepareDatasetGeneration(ctx, generationContext.ID(), request.Next, &m.datasetPool)
+	if err != nil {
+		return nil, fmt.Errorf("prepare dataset generation: %w", err)
+	}
+	datasetOwned := false
+	defer func() {
+		if !datasetOwned {
+			datasetGeneration.Close()
+		}
+	}()
+	if len(required) > 0 && m.factory == nil {
+		return nil, errors.New("policy execution runtime is unavailable")
+	}
+	if _, err := NewGenerationEvaluator(generationContext.ID(), definitions, nil, m.observer); err != nil {
+		return nil, fmt.Errorf("validate policy generation: %w", err)
+	}
+	var runtime GenerationRuntime
+	if len(definitions) > 0 && m.factory != nil {
+		runtime, err = m.factory.PrepareGeneration(ctx, GenerationSpec{
+			ID: generationContext.ID(), Revision: generationContext.Revision(), Policies: definitions, Datasets: datasetGeneration,
+			RequiredPolicyIDs: append([]string(nil), required...),
+		})
+		if err != nil {
+			if runtime != nil {
+				_ = runtime.Close(context.WithoutCancel(ctx))
+				runtime = nil
+			}
+			if len(required) == 0 {
+				observeEvent(ctx, m.observer, observability.Event{
+					Name: observability.PolicyDegraded, Outcome: "degraded", Reason: "optional-runtime-prepare-failed",
+				})
+				err = nil
+			} else {
+				return nil, fmt.Errorf("prepare policy generation runtime: %w", err)
+			}
+		}
+	}
+	if len(required) > 0 && runtime == nil {
+		return nil, errors.New("required policy generation runtime is unavailable")
+	}
+	evaluator, err := NewGenerationEvaluator(generationContext.ID(), definitions, runtime, m.observer)
+	if err != nil {
+		if runtime != nil {
+			_ = runtime.Close(context.WithoutCancel(ctx))
+		}
+		return nil, err
+	}
+	evaluator.datasets = datasetGeneration
+	datasetOwned = true
+	return &transaction{module: m, runtime: runtime, evaluator: evaluator, datasets: datasetGeneration}, nil
+}
+
+func (m *Module) Apply(ctx context.Context, request module.ApplyRequest) error {
+	prepared, err := m.Prepare(ctx, request)
+	if err != nil {
+		return err
+	}
+	transaction, ok := prepared.(*transaction)
+	if !ok {
+		return errors.New("policy module prepared an incompatible transaction")
+	}
+	if err := transaction.Ready(ctx); err != nil {
+		_ = transaction.Destroy(context.WithoutCancel(ctx))
+		return err
+	}
+	return transaction.Commit()
+}
+
+func (m *Module) Stop(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	active := m.standalone
+	m.standalone = nil
+	m.mu.Unlock()
+	if active == nil {
+		return nil
+	}
+	return active.Destroy(ctx)
+}
+
+type transaction struct {
+	module    *Module
+	runtime   GenerationRuntime
+	evaluator *GenerationEvaluator
+	datasets  *DatasetGeneration
+	previous  *transaction
+
+	mu        sync.Mutex
+	committed bool
+	closed    bool
+}
+
+func (transaction *transaction) RegisterProviders(reg module.ProviderRegistry) error {
+	if transaction == nil || transaction.evaluator == nil {
+		return errors.New("policy evaluator is unavailable")
+	}
+	if err := reg.Provide(ProviderEvaluator, Evaluator(transaction.evaluator)); err != nil {
+		return err
+	}
+	return reg.Provide(ProviderDatasets, transaction.datasets)
+}
+
+func (transaction *transaction) Ready(ctx context.Context) error {
+	if transaction == nil || transaction.evaluator == nil {
+		return errors.New("policy generation transaction is incomplete")
+	}
+	if transaction.runtime != nil {
+		return transaction.runtime.Ready(ctx)
+	}
+	return nil
+}
+
+func (transaction *transaction) Commit() error {
+	if transaction == nil || transaction.module == nil {
+		return errors.New("policy generation transaction is incomplete")
+	}
+	transaction.mu.Lock()
+	if transaction.closed {
+		transaction.mu.Unlock()
+		return errors.New("policy generation transaction is closed")
+	}
+	if transaction.committed {
+		transaction.mu.Unlock()
+		return nil
+	}
+	transaction.module.mu.Lock()
+	transaction.previous = transaction.module.standalone
+	transaction.module.standalone = transaction
+	transaction.committed = true
+	transaction.module.mu.Unlock()
+	transaction.mu.Unlock()
+	return nil
+}
+
+func (transaction *transaction) Rollback() error {
+	if transaction == nil {
+		return nil
+	}
+	transaction.mu.Lock()
+	if transaction.committed && transaction.module != nil {
+		transaction.module.mu.Lock()
+		if transaction.module.standalone == transaction {
+			transaction.module.standalone = transaction.previous
+		}
+		transaction.module.mu.Unlock()
+		transaction.committed = false
+	}
+	transaction.mu.Unlock()
+	return transaction.Destroy(context.Background())
+}
+
+func (transaction *transaction) FinalizeCommitSuccess() {
+	if transaction == nil {
+		return
+	}
+	transaction.mu.Lock()
+	previous := transaction.previous
+	transaction.previous = nil
+	transaction.mu.Unlock()
+	if previous != nil {
+		_ = previous.Destroy(context.Background())
+	}
+}
+
+func (transaction *transaction) Destroy(ctx context.Context) error {
+	if transaction == nil {
+		return nil
+	}
+	transaction.mu.Lock()
+	if transaction.closed {
+		transaction.mu.Unlock()
+		return nil
+	}
+	transaction.closed = true
+	runtime := transaction.runtime
+	transaction.runtime = nil
+	transaction.evaluator = nil
+	datasets := transaction.datasets
+	transaction.mu.Unlock()
+	datasets.Close()
+	if runtime != nil {
+		return runtime.Close(ctx)
+	}
+	return nil
+}
+
+func (m *Module) prepareSnapshotPolicies(ctx context.Context, snapshot model.Snapshot) ([]model.PluginPolicy, []string, error) {
+	for _, rule := range snapshot.Rules {
+		if !rule.Enabled || rule.PolicyRef == nil {
+			continue
+		}
+		if _, err := NewTrustedPeerAllowlist(rule.TrustedProxyRanges); err != nil {
+			return nil, nil, fmt.Errorf("http rule %d trusted proxy ranges: %w", rule.ID, err)
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if !rule.Enabled || rule.PolicyRef == nil || !rule.Tuning.ProxyProtocol.Decode {
+			continue
+		}
+		if _, err := NewTrustedPeerAllowlist(rule.Tuning.ProxyProtocol.TrustedPeers); err != nil {
+			return nil, nil, fmt.Errorf("l4 rule %d trusted PROXY peers: %w", rule.ID, err)
+		}
+	}
+	rawDefinitions := make(map[string]model.PluginPolicy, len(snapshot.PluginPolicies))
+	for _, definition := range snapshot.PluginPolicies {
+		id := strings.TrimSpace(definition.ID)
+		if !canonicalIdentity(definition.ID) {
+			return nil, nil, fmt.Errorf("policy %q has a missing or non-canonical id", definition.ID)
+		}
+		if _, duplicate := rawDefinitions[id]; duplicate {
+			return nil, nil, fmt.Errorf("duplicate policy id %q", id)
+		}
+		rawDefinitions[id] = definition
+	}
+	requiredIDs := RequiredPolicyIDs(snapshot)
+	required := make(map[string]struct{}, len(requiredIDs))
+	for _, id := range requiredIDs {
+		required[id] = struct{}{}
+	}
+	l4Required := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		if !rule.Enabled || rule.PolicyRef == nil {
+			continue
+		}
+		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions, ExtensionHTTP); err != nil {
+			return nil, nil, fmt.Errorf("http rule %d: %w", rule.ID, err)
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if !rule.Enabled || rule.PolicyRef == nil {
+			continue
+		}
+		if err := validatePolicyRef(rule.PolicyRef, rawDefinitions, ExtensionL4); err != nil {
+			return nil, nil, fmt.Errorf("l4 rule %d: %w", rule.ID, err)
+		}
+		id := strings.TrimSpace(rule.PolicyRef.ID)
+		l4Required[id] = struct{}{}
+	}
+	for _, instance := range snapshot.PluginGenerations {
+		for protocol, ref := range instance.ManagedNetworkPolicies {
+			if protocol != "tcp" && protocol != "udp" {
+				return nil, nil, errors.New("invalid managed entry protocol")
+			}
+			if err := validatePolicyRef(ref, rawDefinitions, ExtensionL4); err != nil {
+				return nil, nil, err
+			}
+			l4Required[ref.ID] = struct{}{}
+		}
+		if instance.ManagedNetworkPolicy == nil {
+			continue
+		}
+		if err := validatePolicyRef(instance.ManagedNetworkPolicy, rawDefinitions, ExtensionL4); err != nil {
+			return nil, nil, fmt.Errorf("managed entry %s: %w", instance.InstanceID, err)
+		}
+		l4Required[instance.ManagedNetworkPolicy.ID] = struct{}{}
+	}
+	definitions := make([]model.PluginPolicy, 0, len(rawDefinitions))
+	for _, definition := range snapshot.PluginPolicies {
+		cloned, err := validateAndClonePolicy(definition)
+		if err != nil {
+			if _, directlyRequired := required[definition.ID]; directlyRequired {
+				return nil, nil, fmt.Errorf("required policy %q: %w", definition.ID, err)
+			}
+			if m != nil && m.observer != nil {
+				observeEvent(ctx, m.observer, observability.Event{
+					Name: observability.PolicyDegraded, Outcome: "degraded", PolicyID: definition.ID, Reason: "invalid-optional-definition",
+				})
+			}
+			continue
+		}
+		if _, usedByL4 := l4Required[cloned.ID]; usedByL4 && containsStage(cloned.Stages, model.PolicyKindWAF) {
+			return nil, nil, fmt.Errorf("l4 policy %q cannot contain a waf stage", cloned.ID)
+		}
+		definitions = append(definitions, cloned)
+	}
+	return definitions, requiredIDs, nil
+}
+
+// RequiredPolicyIDs returns the canonical, stable set of policy definitions
+// directly referenced by enabled HTTP and L4 rules. Artifact admission and
+// generation validation share this helper so optional catalog entries cannot
+// become implicit publication dependencies.
+func RequiredPolicyIDs(snapshot model.Snapshot) []string {
+	required := make(map[string]struct{})
+	for _, rule := range snapshot.Rules {
+		if rule.Enabled && rule.PolicyRef != nil {
+			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if rule.Enabled && rule.PolicyRef != nil {
+			if id := strings.TrimSpace(rule.PolicyRef.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
+	for _, instance := range snapshot.PluginGenerations {
+		for _, ref := range instance.ManagedNetworkPolicies {
+			if ref != nil && strings.TrimSpace(ref.ID) != "" {
+				required[ref.ID] = struct{}{}
+			}
+		}
+		if instance.ManagedNetworkPolicy != nil {
+			if id := strings.TrimSpace(instance.ManagedNetworkPolicy.ID); id != "" {
+				required[id] = struct{}{}
+			}
+		}
+	}
+	ids := make([]string, 0, len(required))
+	for id := range required {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func validatePolicyRef(ref *model.PolicyRef, definitions map[string]model.PluginPolicy, extensionPoint string) error {
+	if ref == nil || !canonicalIdentity(ref.ID) {
+		return errors.New("policy ref is missing or non-canonical")
+	}
+	if len(ref.Overlay) > int(MaxPolicyInputBytes) {
+		return errors.New("policy overlay exceeds host input ceiling")
+	}
+	definition, ok := definitions[ref.ID]
+	if !ok {
+		return fmt.Errorf("policy %q is unavailable", ref.ID)
+	}
+	if err := validateEntryModeBindings(ref, definition); err != nil {
+		return err
+	}
+	envelope, err := resolveEntryOverlays(ref, definition)
+	if err != nil {
+		return err
+	}
+	for index, stage := range definition.Stages {
+		if !slices.Contains(stage.ExtensionPoints, extensionPoint) {
+			return fmt.Errorf("policy stage %d does not support %s", index, extensionPoint)
+		}
+		projection, err := stageModeProjection(stage, ref)
+		if err != nil {
+			return err
+		}
+		payload, err := selectedStageOverlay(envelope, projection)
+		if err != nil {
+			return err
+		}
+		frameBytes, err := PolicyEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		if stage.Kind == model.PolicyKindWAF && extensionPoint == ExtensionHTTP {
+			frameBytes, err = PolicyWAFEvaluateRequestFrameBytes(extensionPoint, strings.Repeat("r", MaxPolicyRequestIDBytes), payload)
+		}
+		if err != nil {
+			return err
+		}
+		if err := AdmitPolicyInputFrame(stage.ResourceBudget, frameBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func clonePolicies(policies []model.PluginPolicy) []model.PluginPolicy {
+	cloned := make([]model.PluginPolicy, len(policies))
+	for index, policy := range policies {
+		cloned[index] = policy
+		cloned[index].Stages = make([]model.PolicyStage, len(policy.Stages))
+		for stageIndex, stage := range policy.Stages {
+			cloned[index].Stages[stageIndex] = cloneStage(stage)
+		}
+	}
+	return cloned
+}
+
+type disabledEvaluator struct{}
+
+func (disabledEvaluator) Evaluate(_ context.Context, ref *model.PolicyRef, _ Input) Decision {
+	if ref == nil || strings.TrimSpace(ref.ID) == "" {
+		return Decision{Action: ActionAllow}
+	}
+	return unavailableDecision(strings.TrimSpace(ref.ID), "generation-policy-provider-unavailable")
+}
+
+var (
+	_ module.Module                = (*Module)(nil)
+	_ module.TransactionalModule   = (*Module)(nil)
+	_ module.GenerationTransaction = (*transaction)(nil)
+)

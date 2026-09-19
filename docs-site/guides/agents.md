@@ -34,6 +34,8 @@ curl -fsSL http://<面板地址>:8080/panel-api/public/join-agent.sh | sh -s -- 
 
 脚本支持 `amd64` 和 `arm64` 架构。
 
+Linux 安装会随 systemd 服务自动准备插件进程所需的 cgroup v2 子树。插件由 Agent 自身的内建启动器运行，不需要另外安装 bubblewrap、prlimit、Docker、虚拟机或 sidecar。
+
 ### 内网 / NAT 环境
 
 Agent 主动连接控制面，所以即使在内网或 NAT 后面，只要 Agent 能访问控制面就能工作。给 NAT 节点起个名字方便管理：

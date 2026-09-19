@@ -13,6 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/rpc"
 )
 
 type Config struct {
@@ -24,6 +25,7 @@ type Config struct {
 	SessionRegistrar       HTTPSessionRegistrar
 	DrainController        *generation.DrainController
 	DrainTimeout           time.Duration
+	ProviderIdleTimeout    time.Duration
 	ExternalDrainLifecycle bool
 	GenerationSelector     HTTPGenerationSelector
 }
@@ -31,18 +33,19 @@ type Config struct {
 type Module struct {
 	mu sync.Mutex
 
-	runtime      *Runtime
-	cache        *model.Cache
-	transport    *stdhttp.Transport
-	options      StreamResilienceOptions
-	http3Enabled bool
-	blockState   trafficBlockStateValue
-	localAgentID string
-	ingress      *httpIngressManager
-	sessions     HTTPSessionRegistrar
-	drain        *generation.DrainController
-	drainTimeout time.Duration
-	manageDrain  bool
+	runtime             *Runtime
+	cache               *model.Cache
+	transport           *stdhttp.Transport
+	options             StreamResilienceOptions
+	http3Enabled        bool
+	blockState          trafficBlockStateValue
+	localAgentID        string
+	ingress             *httpIngressManager
+	sessions            HTTPSessionRegistrar
+	drain               *generation.DrainController
+	drainTimeout        time.Duration
+	providerIdleTimeout time.Duration
+	manageDrain         bool
 
 	lastRules          []model.HTTPRule
 	lastRelayListeners []model.RelayListener
@@ -68,19 +71,24 @@ func NewModule(cfg Config) *Module {
 	if drainTimeout <= 0 {
 		drainTimeout = 10 * time.Minute
 	}
+	providerIdleTimeout := cfg.ProviderIdleTimeout
+	if providerIdleTimeout <= 0 {
+		providerIdleTimeout = rpc.DefaultHTTPBackendProviderIdleTimeout
+	}
 	ingress := newHTTPIngressManager()
 	ingress.selector = cfg.GenerationSelector
 	return &Module{
-		cache:        model.NewCache(cfg.BackendFailures),
-		transport:    transport,
-		options:      cfg.Resilience,
-		http3Enabled: cfg.HTTP3Enabled,
-		localAgentID: strings.TrimSpace(cfg.AgentID),
-		ingress:      ingress,
-		sessions:     sessions,
-		drain:        drain,
-		drainTimeout: drainTimeout,
-		manageDrain:  manageDrain,
+		cache:               model.NewCache(cfg.BackendFailures),
+		transport:           transport,
+		options:             cfg.Resilience,
+		http3Enabled:        cfg.HTTP3Enabled,
+		localAgentID:        strings.TrimSpace(cfg.AgentID),
+		ingress:             ingress,
+		sessions:            sessions,
+		drain:               drain,
+		drainTimeout:        drainTimeout,
+		providerIdleTimeout: providerIdleTimeout,
+		manageDrain:         manageDrain,
 	}
 }
 
@@ -103,7 +111,9 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Optional: []module.ProviderRef{
 			module.ProviderFinalHopDialer,
 			module.ProviderEgressResolver,
+			module.ProviderPolicyEvaluator,
 			module.ProviderTrafficSink,
+			rpc.ProviderHTTPBackendProviders,
 		},
 	}
 }
@@ -146,10 +156,13 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if err != nil {
 		return nil, err
 	}
-	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
+	generationContext, err := req.ResolvedGenerationContext()
 	if err != nil {
 		return nil, err
 	}
+	providers.providerGeneration = generationContext.ID()
+	providers.providerSessions = m.sessions
+	providers.providerIdleTimeout = m.providerIdleTimeout
 
 	m.mu.Lock()
 	previousRuntime := m.runtime

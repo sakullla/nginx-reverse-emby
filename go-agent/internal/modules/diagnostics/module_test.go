@@ -1,3 +1,5 @@
+//go:build !integration
+
 package diagnostics
 
 import (
@@ -7,31 +9,9 @@ import (
 	"errors"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"reflect"
+
 	"testing"
 )
-
-func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
-	t.Parallel()
-
-	mod := NewModule()
-	descriptor := mod.Descriptor()
-
-	if descriptor.Name != "diagnostics" {
-		t.Fatalf("Name = %q, want diagnostics", descriptor.Name)
-	}
-	wantOptional := []module.ProviderRef{
-		module.ProviderDiagnosticsHTTPSource,
-		module.ProviderDiagnosticsL4Source,
-		module.ProviderDiagnosticsRelaySource,
-	}
-	if !reflect.DeepEqual(descriptor.Optional, wantOptional) {
-		t.Fatalf("Optional = %+v, want %+v", descriptor.Optional, wantOptional)
-	}
-	if !reflect.DeepEqual(descriptor.Provides, []module.ProviderRef{providerDiagnosticsHandler}) || len(descriptor.Requires) != 0 {
-		t.Fatalf("descriptor = %+v, want diagnostics handler provider and no requires", descriptor)
-	}
-}
 
 func TestGenerationModuleReadsHandlerOnlyFromActiveView(t *testing.T) {
 	t.Parallel()

@@ -23,7 +23,7 @@
           >
         </div>
         <p v-if="error" class="login-error">{{ error }}</p>
-        <button type="submit" class="btn btn--primary btn--full" :disabled="loading || !tokenInput.trim()">
+        <button type="submit" class="btn btn--primary btn--full" :disabled="loading">
           <span v-if="loading" class="spinner spinner--sm"></span>
           <span v-else>连接</span>
         </button>
@@ -34,34 +34,52 @@
 
 <script setup>
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { verifyToken } from '../api'
 import { useAuthState } from '../context/useAuthState'
 
 const router = useRouter()
-const { setToken } = useAuthState()
+const route = useRoute()
+const { clearCredentials, setToken } = useAuthState()
 const tokenInput = ref('')
 const loading = ref(false)
 const error = ref('')
 
+function safeReturnPath(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    return null
+  }
+  return value
+}
+
 async function handleLogin() {
+  if (loading.value) return
+
   const token = tokenInput.value.trim()
-  if (!token) return
+  error.value = ''
+  if (!token) {
+    error.value = '令牌无效'
+    return
+  }
 
   loading.value = true
-  error.value = ''
 
   try {
+    clearCredentials()
     const valid = await verifyToken(token)
-    if (valid) {
-      localStorage.setItem('panel_token', token)
-      setToken(token)
-      router.push({ name: 'dashboard' })
-    } else {
+    if (!valid) {
       error.value = '令牌无效'
+      return
     }
+    setToken(token)
+    const next = safeReturnPath(typeof route.query.return === 'string' ? route.query.return : '')
+    if (next && next.startsWith('/panel-api/')) {
+      window.location.assign(next)
+      return
+    }
+    await router.push(next || { name: 'dashboard' })
   } catch (e) {
-    error.value = e.message || '验证失败'
+    error.value = e?.response?.data?.message || e.message || '登录失败'
   } finally {
     loading.value = false
   }

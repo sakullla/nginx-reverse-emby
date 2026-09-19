@@ -10,28 +10,33 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
+
+	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 )
 
 const (
-	defaultListenAddr        = "0.0.0.0:8080"
-	defaultDataDir           = "/opt/nginx-reverse-emby/panel/data"
-	defaultFrontendDistDir   = "/opt/nginx-reverse-emby/panel/frontend/dist"
-	defaultPublicAssetsDir   = "/opt/nginx-reverse-emby/panel/public/agent-assets"
-	defaultEnableLocalAgent  = true
-	defaultLocalAgentID      = "local"
-	defaultLocalAgentName    = "local"
-	defaultDatabaseDriver    = "sqlite"
-	defaultHeartbeatInterval = 30 * time.Second
-	defaultDDNSIPProbe       = 5 * time.Minute
-	defaultManagedCertRenew  = 24 * time.Hour
-	defaultTrafficCleanup    = 24 * time.Hour
-	defaultRevisionApply     = 60 * time.Second
-	defaultRevisionDrain     = 10 * time.Minute
+	defaultListenAddr         = "0.0.0.0:8080"
+	defaultDataDir            = "/opt/nginx-reverse-emby/panel/data"
+	defaultFrontendDistDir    = "/opt/nginx-reverse-emby/panel/frontend/dist"
+	defaultPublicAssetsDir    = "/opt/nginx-reverse-emby/panel/public/agent-assets"
+	defaultEnableLocalAgent   = true
+	defaultLocalAgentID       = "local"
+	defaultLocalAgentName     = "local"
+	defaultDatabaseDriver     = "sqlite"
+	defaultHeartbeatInterval  = 30 * time.Second
+	defaultDDNSIPProbe        = 5 * time.Minute
+	defaultManagedCertRenew   = 24 * time.Hour
+	defaultTrafficCleanup     = 24 * time.Hour
+	defaultMarketplaceRefresh = 30 * time.Minute
+	defaultRevisionApply      = 60 * time.Second
+	defaultRevisionDrain      = 10 * time.Minute
 )
 
 type Config struct {
 	ListenAddr                        string
 	DataDir                           string
+	PKIMasterKeyFile                  string
 	PanelToken                        string
 	RegisterToken                     string
 	PublicURL                         string
@@ -56,8 +61,11 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	LocalAgentTrafficStatsEnabled     bool
 	LocalAgentTrafficStatsExplicit    bool
+	LocalAgentPluginCapabilityAudit   goagentembedded.CapabilityAuditConfig
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
+	MarketplaceRefreshTimeout         time.Duration
+	ACMEDNSProvider                   string
 	ManagedDNSCertificatesEnabled     bool
 	RevisionCoordinator               RevisionCoordinatorConfig
 	DDNS                              DDNSRuntimeConfig
@@ -71,11 +79,10 @@ type Config struct {
 // upserts Cloudflare A/AAAA records from the IPv4/IPv6 addresses agents report
 // in their heartbeats.
 //
-// SECURITY (R7): Token is read exclusively from the master process environment
-// (CLOUDFLARE_DNS_API_TOKEN & aliases, shared with managed certificate issuance).
-// It is never persisted to the database, never included in backups, never
-// exposed via AgentSummary/API responses, and never dispatched to agents. When
-// the token is absent, DDNS is disabled and the reconciler becomes a no-op.
+// SECURITY (R7): Token is sourced only from environment variables
+// (CLOUDFLARE_DNS_API_TOKEN & aliases). It is never persisted to the database, never
+// included in backups, never exposed via AgentSummary/API responses, and never
+// dispatched to agents.
 type DDNSRuntimeConfig struct {
 	Enabled  bool
 	Token    string
@@ -85,12 +92,25 @@ type DDNSRuntimeConfig struct {
 	TTL      int
 }
 
+// ManagedCloudflareDNSReady is true when ACME DNS-01 may be attempted with
+// explicitly configured Cloudflare credentials.
+func (c Config) ManagedCloudflareDNSReady() bool {
+	return strings.EqualFold(strings.TrimSpace(c.ACMEDNSProvider), "cf") && strings.TrimSpace(c.DDNS.Token) != ""
+}
+
+// DDNSReady is true when DDNS may attempt Cloudflare upserts.
+func (c Config) DDNSReady() bool {
+	return c.DDNS.Enabled || strings.TrimSpace(c.DDNS.Token) != ""
+}
+
 type HTTPTransportConfig struct {
 	DialTimeout           time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
+	MaxConnsPerHost       int
+	DisableHTTP2          bool
 }
 
 type HTTPResilienceConfig struct {
@@ -142,6 +162,7 @@ func Default() Config {
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			KeepAlive:             30 * time.Second,
+			MaxConnsPerHost:       64,
 		},
 		LocalAgentHTTPResilience: HTTPResilienceConfig{
 			ResumeEnabled:            true,
@@ -159,8 +180,10 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		LocalAgentTrafficStatsEnabled:   true,
+		LocalAgentPluginCapabilityAudit: goagentembedded.DefaultCapabilityAuditConfig(),
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
+		MarketplaceRefreshTimeout:       defaultMarketplaceRefresh,
 		RevisionCoordinator: RevisionCoordinatorConfig{
 			ApplyTimeout:          defaultRevisionApply,
 			DrainTimeout:          defaultRevisionDrain,
@@ -189,6 +212,9 @@ func LoadFromEnv() (Config, error) {
 	}
 	if val := strings.TrimSpace(firstEnv("NRE_CONTROL_PLANE_DATA_DIR", "PANEL_DATA_ROOT")); val != "" {
 		cfg.DataDir = val
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_PKI_MASTER_KEY_FILE")); val != "" {
+		cfg.PKIMasterKeyFile = val
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_DATABASE_DRIVER")); val != "" {
 		driver := strings.ToLower(val)
@@ -266,6 +292,10 @@ func LoadFromEnv() (Config, error) {
 	if val := strings.TrimSpace(firstEnv("NRE_LOCAL_AGENT_NAME", "MASTER_LOCAL_AGENT_NAME")); val != "" {
 		cfg.LocalAgentName = val
 	}
+	var auditErr error
+	if cfg.LocalAgentPluginCapabilityAudit, auditErr = loadLocalCapabilityAuditConfig(cfg.LocalAgentPluginCapabilityAudit); auditErr != nil {
+		return Config{}, auditErr
+	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HEARTBEAT_INTERVAL")); val != "" {
 		dur, err := time.ParseDuration(val)
 		if err != nil {
@@ -304,12 +334,26 @@ func LoadFromEnv() (Config, error) {
 		}
 		cfg.RevisionCoordinator.AgentTimeoutOverrides = overrides
 	}
+	if val := strings.TrimSpace(os.Getenv("NRE_MARKETPLACE_REFRESH_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_MARKETPLACE_REFRESH_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.MarketplaceRefreshTimeout = dur
+	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP3_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid NRE_HTTP3_ENABLED: %w", err)
 		}
 		cfg.LocalAgentHTTP3Enabled = enabled
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP2_ENABLED")); val != "" {
+		enabled, err := parseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_HTTP2_ENABLED: %w", err)
+		}
+		cfg.LocalAgentHTTPTransport.DisableHTTP2 = !enabled
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_STATS_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
@@ -367,6 +411,13 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, err
 		}
 		cfg.LocalAgentHTTPTransport.KeepAlive = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_MAX_CONNS_PER_HOST")); val != "" {
+		maxConns, err := parsePositiveIntEnv("NRE_HTTP_MAX_CONNS_PER_HOST", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.MaxConnsPerHost = maxConns
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_STREAM_RESUME_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
@@ -458,10 +509,13 @@ func LoadFromEnv() (Config, error) {
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
 	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
-	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
+	cfg.ACMEDNSProvider = acmeDNSProvider
+	// Selecting the provider enables the background lifecycle. Credential
+	// readiness is evaluated dynamically because a dns.provider plugin may be
+	// activated after process startup without an environment fallback token.
+	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf")
 
-	// DDNS reconciler reuses the Cloudflare token from the environment (R7: env
-	// only). Absent token => disabled (reconciler becomes a safe no-op).
+	// DDNS.Token is an environment-only snapshot.
 	cfg.DDNS.Token = cfToken
 	cfg.DDNS.Enabled = cfToken != ""
 	cfg.DDNS.APIBase = strings.TrimSpace(firstEnv("NRE_DDNS_API_BASE", "DDNS_API_BASE"))
@@ -505,6 +559,79 @@ func LoadFromEnv() (Config, error) {
 		cfg.GoVersion = "dev"
 	}
 
+	return cfg, nil
+}
+
+func loadLocalCapabilityAuditConfig(cfg goagentembedded.CapabilityAuditConfig) (goagentembedded.CapabilityAuditConfig, error) {
+	const prefix = "NRE_LOCAL_AGENT_PLUGIN_CAPABILITY_AUDIT_"
+	parseDuration := func(suffix string, target *time.Duration) error {
+		name := prefix + suffix
+		value, present := os.LookupEnv(name)
+		if !present {
+			return nil
+		}
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		*target = parsed
+		return nil
+	}
+	parseInt := func(suffix string, target *int) error {
+		name := prefix + suffix
+		value, present := os.LookupEnv(name)
+		if !present {
+			return nil
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		*target = parsed
+		return nil
+	}
+	if value, present := os.LookupEnv(prefix + "ENABLED"); present {
+		switch value {
+		case "true":
+			cfg.Enabled = true
+		case "false":
+			cfg.Enabled = false
+		default:
+			return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid %sENABLED: expected true or false", prefix)
+		}
+	}
+	if err := parseInt("QUEUE_SIZE", &cfg.QueueSize); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseInt("BATCH_SIZE", &cfg.BatchSize); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseDuration("FLUSH_INTERVAL", &cfg.FlushInterval); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseDuration("RETENTION", &cfg.Retention); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if err := parseDuration("CLOSE_TIMEOUT", &cfg.CloseTimeout); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, err
+	}
+	if value, present := os.LookupEnv(prefix + "MAX_BYTES"); present {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid %sMAX_BYTES: %w", prefix, err)
+		}
+		cfg.MaxBytes = parsed
+	}
+	if value, present := os.LookupEnv(prefix + "MIN_FREE_BYTES"); present {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid %sMIN_FREE_BYTES: %w", prefix, err)
+		}
+		cfg.MinFreeBytes = parsed
+	}
+	if err := cfg.Validate(); err != nil {
+		return goagentembedded.CapabilityAuditConfig{}, fmt.Errorf("invalid local Agent capability audit config: %w", err)
+	}
 	return cfg, nil
 }
 

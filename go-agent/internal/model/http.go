@@ -1,15 +1,17 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+)
 
 type HTTPHeader struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
-type HTTPBackend struct {
-	URL string `json:"url"`
-}
+type HTTPBackend = pluginsdk.HTTPBackend
 
 type LoadBalancing struct {
 	Strategy string `json:"strategy,omitempty"`
@@ -28,13 +30,17 @@ type HTTPRule struct {
 	UserAgent        string        `json:"user_agent,omitempty"`
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
 	EgressProfileID  *int          `json:"egress_profile_id,omitempty"`
+	// TrustedProxyRanges is the explicit physical-peer allowlist allowed to
+	// contribute X-Forwarded-For source metadata to policy evaluation.
+	TrustedProxyRanges []string `json:"trusted_proxy_ranges,omitempty"`
 	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
-	RelayChain  []int    `json:"relay_chain,omitempty"`
-	RelayLayers [][]int  `json:"relay_layers,omitempty"`
-	RelayObfs   bool     `json:"relay_obfs,omitempty"`
-	Enabled     bool     `json:"enabled"`
-	Tags        []string `json:"tags,omitempty"`
-	Revision    int64    `json:"revision,omitempty"`
+	RelayChain  []int      `json:"relay_chain,omitempty"`
+	RelayLayers [][]int    `json:"relay_layers,omitempty"`
+	RelayObfs   bool       `json:"relay_obfs,omitempty"`
+	PolicyRef   *PolicyRef `json:"policy_ref,omitempty"`
+	Enabled     bool       `json:"enabled"`
+	Tags        []string   `json:"tags,omitempty"`
+	Revision    int64      `json:"revision,omitempty"`
 }
 
 func (r *HTTPRule) UnmarshalJSON(data []byte) error {

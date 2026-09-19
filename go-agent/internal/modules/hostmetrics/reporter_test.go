@@ -1,147 +1,125 @@
+//go:build !integration
+
 package hostmetrics
 
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 )
 
-func TestReporterBuildsHostMetricsPayload(t *testing.T) {
-	reporter := NewReporter(ReporterConfig{
-		CPUPercent: func(context.Context) (float64, error) {
-			return 12.5, nil
-		},
-		CPUCounts: func(context.Context) (int, error) {
-			return 8, nil
-		},
-		Memory: func(context.Context) (*memorySnapshot, error) {
-			return &memorySnapshot{Total: 16 * 1024 * 1024 * 1024, Used: 10 * 1024 * 1024 * 1024, UsedPercent: 64.25}, nil
-		},
-		DiskUsage: func(context.Context, string) (*diskSnapshot, error) {
-			return &diskSnapshot{Total: 512 * 1024 * 1024 * 1024, Used: 398 * 1024 * 1024 * 1024, UsedPercent: 77.75}, nil
-		},
-		NetIO: func(context.Context) ([]networkCounter, error) {
-			return []networkCounter{{BytesRecv: 100, BytesSent: 200}, {BytesRecv: 3, BytesSent: 4}}, nil
-		},
-		Logf: func(string, ...any) {},
-	})
+type reporterFixture struct {
+	cpu        float64
+	cores      int
+	cpuErr     error
+	coresErr   error
+	memory     *memorySnapshot
+	memoryErr  error
+	disk       *diskSnapshot
+	diskErr    error
+	network    []networkCounter
+	networkErr error
+}
 
-	report, err := reporter.HostMetricsReport(context.Background())
-	if err != nil {
-		t.Fatalf("HostMetricsReport() error = %v", err)
-	}
-	if !report.StatsPresent {
-		t.Fatal("StatsPresent = false, want true")
-	}
-	host := report.Stats["host"].(map[string]any)
-	if got := host["cpu"].(map[string]any)["usage_percent"]; got != 12.5 {
-		t.Fatalf("cpu usage = %v, want 12.5", got)
-	}
-	if got := host["cpu"].(map[string]any)["total_cores"]; got != 8 {
-		t.Fatalf("cpu total_cores = %v, want 8", got)
-	}
-	if got := host["cpu"].(map[string]any)["used_cores"]; got != 1.0 {
-		t.Fatalf("cpu used_cores = %v, want 1", got)
-	}
-	if got := host["memory"].(map[string]any)["usage_percent"]; got != 64.25 {
-		t.Fatalf("memory usage = %v, want 64.25", got)
-	}
-	if got := host["memory"].(map[string]any)["used_bytes"]; got != uint64(10*1024*1024*1024) {
-		t.Fatalf("memory used_bytes = %v, want 10 GiB", got)
-	}
-	if got := host["memory"].(map[string]any)["total_bytes"]; got != uint64(16*1024*1024*1024) {
-		t.Fatalf("memory total_bytes = %v, want 16 GiB", got)
-	}
-	if got := host["disk"].(map[string]any)["usage_percent"]; got != 77.75 {
-		t.Fatalf("disk usage = %v, want 77.75", got)
-	}
-	if got := host["disk"].(map[string]any)["used_bytes"]; got != uint64(398*1024*1024*1024) {
-		t.Fatalf("disk used_bytes = %v, want 398 GiB", got)
-	}
-	if got := host["disk"].(map[string]any)["total_bytes"]; got != uint64(512*1024*1024*1024) {
-		t.Fatalf("disk total_bytes = %v, want 512 GiB", got)
-	}
-	total := host["network"].(map[string]any)["total"].(map[string]uint64)
-	if total["rx_bytes"] != 103 || total["tx_bytes"] != 204 {
-		t.Fatalf("network total = %+v, want rx=103 tx=204", total)
+func (fixture reporterFixture) config() ReporterConfig {
+	return ReporterConfig{
+		CPUPercent: func(context.Context) (float64, error) { return fixture.cpu, fixture.cpuErr },
+		CPUCounts:  func(context.Context) (int, error) { return fixture.cores, fixture.coresErr },
+		Memory:     func(context.Context) (*memorySnapshot, error) { return fixture.memory, fixture.memoryErr },
+		DiskUsage:  func(context.Context, string) (*diskSnapshot, error) { return fixture.disk, fixture.diskErr },
+		NetIO:      func(context.Context) ([]networkCounter, error) { return fixture.network, fixture.networkErr },
+		Logf:       func(string, ...any) {},
 	}
 }
 
-func TestReporterOmitsUnavailableMetrics(t *testing.T) {
-	reporter := NewReporter(ReporterConfig{
-		CPUPercent: func(context.Context) (float64, error) {
-			return 0, errors.New("cpu unavailable")
+func TestReporterPayloadAvailabilityAndBounds(t *testing.T) {
+	unavailable := errors.New("collector unavailable")
+	tests := []struct {
+		name    string
+		fixture reporterFixture
+		check   func(*testing.T, map[string]any)
+	}{
+		{
+			name: "full payload",
+			fixture: reporterFixture{
+				cpu: 12.5, cores: 8,
+				memory:  &memorySnapshot{Total: 16 << 30, Used: 10 << 30, UsedPercent: 64.25},
+				disk:    &diskSnapshot{Total: 512 << 30, Used: 398 << 30, UsedPercent: 77.75},
+				network: []networkCounter{{BytesRecv: 100, BytesSent: 200}, {BytesRecv: 3, BytesSent: 4}},
+			},
+			check: func(t *testing.T, host map[string]any) {
+				cpu := host["cpu"].(map[string]any)
+				if cpu["usage_percent"] != 12.5 || cpu["total_cores"] != 8 || cpu["used_cores"] != 1.0 {
+					t.Fatalf("cpu payload = %#v", cpu)
+				}
+				if memory := host["memory"].(map[string]any); memory["usage_percent"] != 64.25 || memory["used_bytes"] != uint64(10<<30) {
+					t.Fatalf("memory payload = %#v", memory)
+				}
+				if disk := host["disk"].(map[string]any); disk["usage_percent"] != 77.75 || disk["total_bytes"] != uint64(512<<30) {
+					t.Fatalf("disk payload = %#v", disk)
+				}
+				total := host["network"].(map[string]any)["total"].(map[string]uint64)
+				if total["rx_bytes"] != 103 || total["tx_bytes"] != 204 {
+					t.Fatalf("network payload = %#v", total)
+				}
+			},
 		},
-		CPUCounts: func(context.Context) (int, error) {
-			return 0, errors.New("cpu count unavailable")
+		{
+			name: "partial unavailable",
+			fixture: reporterFixture{
+				cpuErr: unavailable, coresErr: unavailable,
+				memory: &memorySnapshot{UsedPercent: 33}, diskErr: unavailable,
+			},
+			check: func(t *testing.T, host map[string]any) {
+				if _, ok := host["cpu"]; ok {
+					t.Fatalf("unavailable cpu present: %#v", host)
+				}
+				if _, ok := host["disk"]; ok {
+					t.Fatalf("unavailable disk present: %#v", host)
+				}
+				if _, ok := host["network"]; ok {
+					t.Fatalf("empty network present: %#v", host)
+				}
+				if host["memory"].(map[string]any)["usage_percent"] != float64(33) {
+					t.Fatalf("memory payload = %#v", host["memory"])
+				}
+			},
 		},
-		Memory: func(context.Context) (*memorySnapshot, error) {
-			return &memorySnapshot{UsedPercent: 33}, nil
+		{
+			name: "available zero and invalid percent",
+			fixture: reporterFixture{
+				cpu: math.NaN(), cores: 4,
+				memory:  &memorySnapshot{UsedPercent: -1},
+				disk:    &diskSnapshot{UsedPercent: 101},
+				network: []networkCounter{{Name: "eth0"}},
+			},
+			check: func(t *testing.T, host map[string]any) {
+				cpu := host["cpu"].(map[string]any)
+				if _, ok := cpu["usage_percent"]; ok || cpu["total_cores"] != 4 {
+					t.Fatalf("bounded cpu payload = %#v", cpu)
+				}
+				if host["memory"].(map[string]any)["usage_percent"] != float64(0) {
+					t.Fatalf("memory bounds = %#v", host["memory"])
+				}
+				if host["disk"].(map[string]any)["usage_percent"] != float64(100) {
+					t.Fatalf("disk bounds = %#v", host["disk"])
+				}
+				total := host["network"].(map[string]any)["total"].(map[string]uint64)
+				if total["rx_bytes"] != 0 || total["tx_bytes"] != 0 {
+					t.Fatalf("zero network = %#v", total)
+				}
+			},
 		},
-		DiskUsage: func(context.Context, string) (*diskSnapshot, error) {
-			return nil, errors.New("disk unavailable")
-		},
-		NetIO: func(context.Context) ([]networkCounter, error) {
-			return nil, nil
-		},
-		Logf: func(string, ...any) {},
-	})
+	}
 
-	report, err := reporter.HostMetricsReport(context.Background())
-	if err != nil {
-		t.Fatalf("HostMetricsReport() error = %v", err)
-	}
-	host := report.Stats["host"].(map[string]any)
-	if _, ok := host["cpu"]; ok {
-		t.Fatalf("cpu metric present for unavailable cpu: %+v", host)
-	}
-	if _, ok := host["disk"]; ok {
-		t.Fatalf("disk metric present for unavailable disk: %+v", host)
-	}
-	if _, ok := host["network"]; ok {
-		t.Fatalf("network metric present for empty counters: %+v", host)
-	}
-	if got := host["memory"].(map[string]any)["usage_percent"]; got != float64(33) {
-		t.Fatalf("memory usage = %v, want 33", got)
-	}
-}
-
-func TestReporterKeepsAvailableZeroNetworkCounters(t *testing.T) {
-	reporter := NewReporter(ReporterConfig{
-		CPUPercent: func(context.Context) (float64, error) {
-			return 0, errors.New("cpu unavailable")
-		},
-		Memory: func(context.Context) (*memorySnapshot, error) {
-			return nil, nil
-		},
-		DiskUsage: func(context.Context, string) (*diskSnapshot, error) {
-			return nil, nil
-		},
-		NetIO: func(context.Context) ([]networkCounter, error) {
-			return []networkCounter{{Name: "eth0"}}, nil
-		},
-		Logf: func(string, ...any) {},
-	})
-
-	report, err := reporter.HostMetricsReport(context.Background())
-	if err != nil {
-		t.Fatalf("HostMetricsReport() error = %v", err)
-	}
-	if !report.StatsPresent {
-		t.Fatal("StatsPresent = false, want true")
-	}
-	host := report.Stats["host"].(map[string]any)
-	total := host["network"].(map[string]any)["total"].(map[string]uint64)
-	if total["rx_bytes"] != 0 || total["tx_bytes"] != 0 {
-		t.Fatalf("network total = %+v, want rx=0 tx=0", total)
-	}
-}
-
-func TestNormalizePercentClampsInvalidValues(t *testing.T) {
-	if got, ok := normalizePercent(-1); !ok || got != 0 {
-		t.Fatalf("normalizePercent(-1) = %v %v, want 0 true", got, ok)
-	}
-	if got, ok := normalizePercent(101); !ok || got != 100 {
-		t.Fatalf("normalizePercent(101) = %v %v, want 100 true", got, ok)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report, err := NewReporter(test.fixture.config()).HostMetricsReport(t.Context())
+			if err != nil || !report.StatsPresent {
+				t.Fatalf("HostMetricsReport() = %#v, %v", report, err)
+			}
+			test.check(t, report.Stats["host"].(map[string]any))
+		})
 	}
 }

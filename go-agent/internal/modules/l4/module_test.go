@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4_test
 
 import (
@@ -19,7 +21,7 @@ import (
 	l4module "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 )
 
-func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
+func TestIntegrationModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("via-final-hop"))
@@ -74,7 +76,7 @@ func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
 	}
 }
 
-func TestModuleRollbackAfterLaterCommitFailurePreservesCustomFinalHopProvider(t *testing.T) {
+func TestIntegrationModuleRollbackAfterLaterCommitFailurePreservesCustomFinalHopProvider(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("previous-final-hop"))
@@ -307,18 +309,6 @@ func (m *commitFailingModule) Prepare(context.Context, module.ApplyRequest) (mod
 	return module.TransactionFuncs{
 		CommitFunc: func() error { return m.commitErr },
 	}, nil
-}
-
-func stringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {

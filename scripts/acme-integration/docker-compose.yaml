@@ -1,6 +1,6 @@
 services:
   pebble:
-    image: ghcr.io/letsencrypt/pebble:2.10.1
+    image: ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
     command:
       - -config
       - /test/config/nre-pebble-config.json
@@ -24,7 +24,7 @@ services:
         ipv4_address: 10.30.50.2
 
   challtestsrv:
-    image: ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1@sha256:12ce21884def456bcf9786542113949e1f19dc7738d2c70e156c2d0c38a1405b
     command:
       - -defaultIPv6
       - ""
@@ -40,7 +40,7 @@ services:
         ipv4_address: 10.30.50.3
 
   fixture-health:
-    image: curlimages/curl:8.12.1
+    image: curlimages/curl:8.12.1@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
     entrypoint:
       - /bin/sh
       - -c

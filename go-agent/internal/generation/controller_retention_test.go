@@ -22,6 +22,9 @@ func TestReleasedGenerationsDropResourcesAndStayBounded(t *testing.T) {
 		}, nil, time.Minute); err != nil {
 			t.Fatalf("Activate(%d) error = %v", index+1, err)
 		}
+		if index > 0 {
+			waitGenerationCleanup(t, controller, fmt.Sprintf("generation-%02d", index), model.GenerationDrainStateDrained)
+		}
 	}
 
 	controller.mu.Lock()
@@ -80,9 +83,7 @@ func TestCleanupFailureRetriesWithoutAnotherRollout(t *testing.T) {
 	if err := controller.Activate(t.Context(), Generation{ID: "generation-2", Revision: 2, Resource: &retentionResource{}}, nil, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if state := cleanupState(t, controller, "generation-1"); state != model.GenerationDrainStateCleanupFailed {
-		t.Fatalf("cleanup state = %q", state)
-	}
+	waitGenerationCleanup(t, controller, "generation-1", model.GenerationDrainStateCleanupFailed)
 
 	clock.Advance(cleanupRetryBase)
 	if state := cleanupState(t, controller, "generation-1"); state != model.GenerationDrainStateDrained {
@@ -130,6 +131,122 @@ func TestRetiredActiveGenerationIsForcedAfterDrainTimeout(t *testing.T) {
 	}
 }
 
+func TestConcurrentGenerationForceHonorsCallerDeadline(t *testing.T) {
+	for name, force := range map[string]func(context.Context, *SessionRegistry) error{
+		"terminal": func(ctx context.Context, registry *SessionRegistry) error {
+			_, err := registry.ForceGeneration(ctx, "generation-1", model.GenerationForceReasonShutdown)
+			return err
+		},
+		"progressive timeout": func(ctx context.Context, registry *SessionRegistry) error {
+			_, err := registry.ForceGenerationExceptProgressive(ctx, "generation-1", model.GenerationForceReasonTimeout)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry := NewSessionRegistry(nil)
+			session := &blockingRetentionSession{started: make(chan struct{}), release: make(chan struct{})}
+			entity := EntityKey{Module: "http", ID: "1"}
+			if _, err := registry.Register("generation-1", entity, "session-1", session); err != nil {
+				t.Fatal(err)
+			}
+
+			firstDone := make(chan error, 1)
+			go func() {
+				_, err := registry.ForceEntities(context.Background(), "generation-1", map[EntityKey]string{entity: "retired"})
+				firstDone <- err
+			}()
+			select {
+			case <-session.started:
+			case <-time.After(time.Second):
+				t.Fatal("first force did not start")
+			}
+
+			forceCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			secondDone := make(chan error, 1)
+			go func() { secondDone <- force(forceCtx, registry) }()
+
+			select {
+			case err := <-secondDone:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("concurrent force error = %v, want deadline exceeded", err)
+				}
+			case <-time.After(time.Second):
+				close(session.release)
+				<-firstDone
+				t.Fatal("concurrent force ignored its caller deadline")
+			}
+			close(session.release)
+			if err := <-firstDone; err != nil {
+				t.Fatalf("first force error = %v", err)
+			}
+		})
+	}
+}
+
+func TestTerminalForceDeadlineAutomaticallyCleansUpAfterOwnerFinishes(t *testing.T) {
+	controller := NewDrainController(nil)
+	resource := &retentionResource{}
+	if err := controller.Activate(t.Context(), Generation{
+		ID: "generation-1", Revision: 1, Resource: resource,
+	}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	entity := EntityKey{Module: "http", ID: "1"}
+	session := &blockingRetentionSession{started: make(chan struct{}), release: make(chan struct{})}
+	if _, err := controller.RegisterSession("generation-1", entity, "session-1", session); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(t.Context(), Generation{
+		ID: "generation-2", Revision: 2, Resource: &retentionResource{},
+	}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Registry().ForceEntities(
+			context.Background(),
+			"generation-1",
+			map[EntityKey]string{entity: model.GenerationForceReasonEntityDeleted},
+		)
+		ownerDone <- err
+	}()
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("existing force owner did not start")
+	}
+
+	forceCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	err := controller.force(forceCtx, "generation-1", model.GenerationForceReasonGenerationLimit)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("terminal force error = %v, want deadline exceeded", err)
+	}
+	if state := cleanupState(t, controller, "generation-1"); state != model.GenerationDrainStateCleanupFailed {
+		t.Fatalf("state after terminal force deadline = %q, want cleanup_failed", state)
+	}
+
+	close(session.release)
+	if err := <-ownerDone; err != nil {
+		t.Fatalf("existing force owner error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, status := range controller.Snapshot().Generations {
+			if status.GenerationID == "generation-1" && status.State == model.GenerationDrainStateForced && !status.CompletedAt.IsZero() {
+				if resource.destroyed != 1 {
+					t.Fatalf("resource destroy count = %d, want 1", resource.destroyed)
+				}
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("generation did not automatically retire after owner completion: %+v", controller.Snapshot())
+}
+
 type retentionResource struct {
 	destroyed int
 }
@@ -138,6 +255,17 @@ type retentionSession struct {
 	forceCalls int
 	reason     string
 	contextErr error
+}
+
+type blockingRetentionSession struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingRetentionSession) ForceClose(context.Context, string) error {
+	close(s.started)
+	<-s.release
+	return nil
 }
 
 func (s *retentionSession) ForceClose(ctx context.Context, reason string) error {
@@ -173,6 +301,7 @@ type cleanupRetryClock struct {
 }
 
 type cleanupRetryTimer struct {
+	clock   *cleanupRetryClock
 	due     time.Time
 	fn      func()
 	stopped bool
@@ -189,7 +318,7 @@ func (c *cleanupRetryClock) Now() time.Time {
 func (c *cleanupRetryClock) AfterFunc(delay time.Duration, fn func()) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timer := &cleanupRetryTimer{due: c.now.Add(delay), fn: fn}
+	timer := &cleanupRetryTimer{clock: c, due: c.now.Add(delay), fn: fn}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -211,6 +340,8 @@ func (c *cleanupRetryClock) Advance(delay time.Duration) {
 }
 
 func (t *cleanupRetryTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
 	if t.stopped {
 		return false
 	}

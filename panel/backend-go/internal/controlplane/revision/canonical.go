@@ -1,9 +1,12 @@
 package revision
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"sort"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -53,6 +56,83 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 	if stripRevision {
 		result.Revision = 0
 	}
+	result.PluginGenerations = nonNil(result.PluginGenerations)
+	for i := range result.PluginGenerations {
+		generation := &result.PluginGenerations[i]
+		storage.CanonicalizePluginGeneration(generation, stripRevision)
+		generation.Config, err = canonicalJSON(generation.Config)
+		if err != nil {
+			return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin generation config cannot be canonicalized", err)
+		}
+	}
+	sort.SliceStable(result.PluginGenerations, func(i, j int) bool {
+		left, right := result.PluginGenerations[i], result.PluginGenerations[j]
+		if left.InstanceID != right.InstanceID {
+			return left.InstanceID < right.InstanceID
+		}
+		return left.ID < right.ID
+	})
+	result.PluginDependencies = nonNil(result.PluginDependencies)
+	sort.SliceStable(result.PluginDependencies, func(i, j int) bool {
+		left, right := result.PluginDependencies[i], result.PluginDependencies[j]
+		if left.Consumer.Kind != right.Consumer.Kind {
+			return left.Consumer.Kind < right.Consumer.Kind
+		}
+		if left.Consumer.ID != right.Consumer.ID {
+			return left.Consumer.ID < right.Consumer.ID
+		}
+		if left.Consumer.ResourceGroupID != right.Consumer.ResourceGroupID {
+			return left.Consumer.ResourceGroupID < right.Consumer.ResourceGroupID
+		}
+		if left.Consumer.Version != right.Consumer.Version {
+			return left.Consumer.Version < right.Consumer.Version
+		}
+		if left.ProviderInstanceID != right.ProviderInstanceID {
+			return left.ProviderInstanceID < right.ProviderInstanceID
+		}
+		if left.Target.AgentID != right.Target.AgentID {
+			return left.Target.AgentID < right.Target.AgentID
+		}
+		if left.Target.ResourceGroupID != right.Target.ResourceGroupID {
+			return left.Target.ResourceGroupID < right.Target.ResourceGroupID
+		}
+		return left.Target.Version < right.Target.Version
+	})
+	result.PluginPolicies = nonNil(result.PluginPolicies)
+	for i := range result.PluginPolicies {
+		if err := storage.ValidatePluginPolicyIdentity(result.PluginPolicies[i].ID); err != nil {
+			return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy identity is invalid", err)
+		}
+		if stripRevision {
+			result.PluginPolicies[i].Revision = 0
+		}
+		result.PluginPolicies[i].Stages = nonNil(result.PluginPolicies[i].Stages)
+		for j := range result.PluginPolicies[i].Stages {
+			stage := &result.PluginPolicies[i].Stages[j]
+			if err := storage.ValidatePluginPolicyIdentity(stage.PolicyID); err != nil {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage identity is invalid", err)
+			}
+			if err := storage.ValidatePluginPolicyIdentity(stage.InstanceID); err != nil {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy instance identity is invalid", err)
+			}
+			if stage.PolicyID != stage.InstanceID {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy stage authority differs from its instance", nil)
+			}
+			stage.ExtensionPoints = canonicalStringSet(stage.ExtensionPoints)
+			stage.GrantedScopes = canonicalStringSet(stage.GrantedScopes)
+			stage.Config, err = canonicalJSON(stage.Config)
+			if err != nil {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy config cannot be canonicalized", err)
+			}
+		}
+	}
+	sort.SliceStable(result.PluginPolicies, func(i, j int) bool {
+		left, right := result.PluginPolicies[i], result.PluginPolicies[j]
+		if left.ID != right.ID {
+			return left.ID < right.ID
+		}
+		return left.Revision < right.Revision
+	})
 
 	result.Rules = nonNil(result.Rules)
 	for i := range result.Rules {
@@ -175,6 +255,40 @@ func canonicalRelayLayers(layers [][]int) [][]int {
 		layers[i] = nonNil(layers[i])
 	}
 	return layers
+}
+
+func canonicalStringSet(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	values = append([]string(nil), values...)
+	sort.Strings(values)
+	result := values[:0]
+	for _, value := range values {
+		if len(result) == 0 || result[len(result)-1] != value {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing JSON value")
+		}
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 func payloadDigest(payload []byte) string {

@@ -1,0 +1,973 @@
+package http
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
+)
+
+func (d Dependencies) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, errorPayloadCode("authentication_required", "password login is disabled"))
+}
+
+func (d Dependencies) handleMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	actor, _ := actorFromRequest(r)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "actor": actor})
+}
+
+func (d Dependencies) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	actor, _ := actorFromRequest(r)
+	if d.AccessManager != nil {
+		if err := d.AccessManager.Logout(r.Context(), actor); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (d Dependencies) handleAccessUsers(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		users, err := d.AccessManager.ListUsers(r.Context())
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "users": filterAccessUsers(users, r.URL.Query().Get("q"))})
+	case http.MethodPost:
+		var input struct {
+			Username    string   `json:"username"`
+			DisplayName string   `json:"display_name"`
+			Password    string   `json:"password"`
+			RoleIDs     []string `json:"role_ids"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var user authz.User
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.create", "user", input.Username, "", nil, func(tx *authz.Manager) (string, error) {
+			if err := ensureDelegableRoles(r.Context(), tx, actor, input.RoleIDs); err != nil {
+				return input.Username, err
+			}
+			var err error
+			user, err = tx.CreateUser(r.Context(), input.Username, input.DisplayName, input.Password, input.RoleIDs)
+			return user.ID, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "user": user})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	switch r.Method {
+	case http.MethodGet:
+		user, err := d.AccessManager.GetUser(r.Context(), id)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": user})
+	case http.MethodPut:
+		var input struct {
+			DisplayName *string   `json:"display_name"`
+			RoleIDs     *[]string `json:"role_ids"`
+			Disabled    *bool     `json:"disabled"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		if input.DisplayName == nil && input.RoleIDs == nil && input.Disabled == nil {
+			writeAccessError(w, authz.ErrInvalidInput)
+			return
+		}
+		var user authz.User
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.update", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
+			current, err := tx.GetUser(r.Context(), id)
+			if err != nil {
+				return id, err
+			}
+			if (input.RoleIDs != nil || input.Disabled != nil) && !actor.Has(authz.PermissionSystemAdmin) {
+				if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
+					return id, err
+				}
+			}
+			if input.RoleIDs != nil {
+				if err := ensureDelegableRoles(r.Context(), tx, actor, *input.RoleIDs); err != nil {
+					return id, err
+				}
+			}
+			user = current
+			if input.DisplayName != nil {
+				user, err = tx.SetUserDisplayName(r.Context(), id, *input.DisplayName)
+			}
+			if err == nil && input.RoleIDs != nil {
+				user, err = tx.SetUserRoles(r.Context(), id, *input.RoleIDs)
+			}
+			if err == nil && input.Disabled != nil {
+				user, err = tx.DisableUser(r.Context(), id, *input.Disabled)
+			}
+			return id, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": user})
+	case http.MethodDelete:
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.delete", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
+			current, err := tx.GetUser(r.Context(), id)
+			if err != nil {
+				return id, err
+			}
+			if !actor.Has(authz.PermissionSystemAdmin) {
+				if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
+					return id, err
+				}
+			}
+			return id, tx.DeleteUser(r.Context(), id)
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleAccessMePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	if actor.Bootstrap {
+		writeAccessError(w, authz.ErrForbidden)
+		return
+	}
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.password.change", "user", actor.ID, "", nil, func(tx *authz.Manager) (string, error) {
+		return actor.ID, tx.ChangePassword(r.Context(), actor.ID, input.CurrentPassword, input.NewPassword)
+	})
+	if err != nil {
+		if errors.Is(err, authz.ErrInvalidCredentials) {
+			payload := errorPayloadCode("invalid_credentials", "current password is incorrect")
+			payload["fields"] = map[string]string{"current_password": "current password is incorrect"}
+			writeJSON(w, http.StatusBadRequest, payload)
+			return
+		}
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (d Dependencies) handleAccessUserPassword(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	id := r.PathValue("id")
+	var input struct {
+		NewPassword string `json:"new_password"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.password.reset", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
+		current, err := tx.GetUser(r.Context(), id)
+		if err != nil {
+			return id, err
+		}
+		if !actor.Has(authz.PermissionSystemAdmin) {
+			if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
+				return id, err
+			}
+		}
+		return id, tx.ResetPassword(r.Context(), id, input.NewPassword)
+	})
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (d Dependencies) handleAccessPermissions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	permissions, err := d.AccessManager.ListPermissions(r.Context())
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "permissions": permissions})
+}
+
+func (d Dependencies) handleAccessRoles(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		roles, err := d.AccessManager.ListRoles(r.Context())
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "roles": roles})
+	case http.MethodPost:
+		var input struct {
+			Name        string   `json:"name"`
+			Description string   `json:"description"`
+			Permissions []string `json:"permissions"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var role authz.Role
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.create", "role", input.Name, "", nil, func(tx *authz.Manager) (string, error) {
+			if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
+				return input.Name, err
+			}
+			var err error
+			role, err = tx.CreateRole(r.Context(), input.Name, input.Description, input.Permissions)
+			return role.ID, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "role": role})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleAccessRole(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	switch r.Method {
+	case http.MethodGet:
+		role, err := d.AccessManager.GetRole(r.Context(), id)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": role})
+	case http.MethodPut:
+		var input struct {
+			Permissions []string `json:"permissions"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var role authz.Role
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.permissions.update", "role", id, "", map[string]any{"permission_count": len(input.Permissions)}, func(tx *authz.Manager) (string, error) {
+			current, err := tx.GetRole(r.Context(), id)
+			if err != nil {
+				return id, err
+			}
+			if id == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
+				return id, authz.ErrForbidden
+			}
+			if !actor.Has(authz.PermissionSystemAdmin) {
+				if err := ensureDelegablePermissions(actor, current.Permissions); err != nil {
+					return id, err
+				}
+			}
+			if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
+				return id, err
+			}
+			err = nil
+			role, err = tx.SetRolePermissions(r.Context(), id, input.Permissions)
+			return id, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": role})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleResourceGroups(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "resource_group", "list", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		groups, err := d.AccessManager.ListResourceGroups(r.Context(), actor, r.URL.Query().Get("q"))
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_groups": groups})
+	case http.MethodPost:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionAccessManage, "resource_group", "create", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var input struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var group authz.ResourceGroup
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.create", "resource_group", input.Name, "", nil, func(tx *authz.Manager) (string, error) {
+			var err error
+			group, err = tx.CreateResourceGroup(r.Context(), input.Name, input.Description)
+			return group.ID, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "resource_group": group})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleResourceGroup(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	id := r.PathValue("id")
+	switch r.Method {
+	case http.MethodGet:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "resource_group", id, id); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		group, err := d.AccessManager.GetResourceGroup(r.Context(), actor, id)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_group": group})
+	case http.MethodPut:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionAccessManage, "resource_group", id, id); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var input struct {
+			Name        *string `json:"name"`
+			Description *string `json:"description"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		if input.Name == nil && input.Description == nil {
+			writeAccessError(w, authz.ErrInvalidInput)
+			return
+		}
+		var group authz.ResourceGroup
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.update", "resource_group", id, id, nil, func(tx *authz.Manager) (string, error) {
+			name, description, err := resourceGroupUpdateFields(r.Context(), tx, actor, id, input.Name, input.Description)
+			if err != nil {
+				return id, err
+			}
+			group, err = tx.UpdateResourceGroup(r.Context(), actor, id, name, description)
+			return id, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_group": group})
+	case http.MethodDelete:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSystemAdmin, "resource_group", id, id); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.delete", "resource_group", id, id, nil, func(tx *authz.Manager) (string, error) {
+			return id, tx.DeleteResourceGroup(r.Context(), actor, id)
+		})
+		if err != nil {
+			if errors.Is(err, storage.ErrBuiltinResourceGroup) {
+				payload := errorPayloadCode("resource_group_protected", "builtin resource group cannot be deleted")
+				payload["details"] = map[string]any{"reason": "builtin", "id": id}
+				writeJSON(w, http.StatusConflict, payload)
+				return
+			}
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleResources(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "resource", "list", ""); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	items, err := d.AccessManager.ListResources(r.Context(), actor, r.URL.Query().Get("kind"), r.URL.Query().Get("q"))
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resources": items})
+}
+
+func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSystemAdmin)
+	if !ok {
+		return
+	}
+	if r.Method == http.MethodGet {
+		grants, err := d.AccessManager.ListResourceGroupGrants(r.Context(), actor)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_group_grants": grants})
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	var input struct {
+		SubjectKind     string `json:"subject_kind"`
+		SubjectID       string `json:"subject_id"`
+		ResourceGroupID string `json:"resource_group_id"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	action := "access.resource_group.grant"
+	if r.Method == http.MethodDelete {
+		action = "access.resource_group.revoke"
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, action, input.SubjectKind, input.SubjectID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
+		if r.Method == http.MethodDelete {
+			return input.SubjectID, tx.RevokeResourceGroupGrant(r.Context(), actor, input.SubjectKind, input.SubjectID, input.ResourceGroupID)
+		}
+		return input.SubjectID, tx.GrantResourceGroup(r.Context(), actor, input.SubjectKind, input.SubjectID, input.ResourceGroupID)
+	})
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if r.Method == http.MethodDelete {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"ok": true})
+}
+
+func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSystemAdmin)
+	if !ok {
+		return
+	}
+	if r.Method == http.MethodDelete {
+		var input struct {
+			ResourceKind string `json:"resource_kind"`
+			ResourceID   string `json:"resource_id"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.unbind", input.ResourceKind, input.ResourceID, "", nil, func(tx *authz.Manager) (string, error) {
+			return input.ResourceID, tx.UnbindResource(r.Context(), actor, input.ResourceKind, input.ResourceID)
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	var input struct {
+		ResourceKind    string `json:"resource_kind"`
+		ResourceID      string `json:"resource_id"`
+		ResourceGroupID string `json:"resource_group_id"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.move", input.ResourceKind, input.ResourceID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
+		return input.ResourceID, tx.BindResource(r.Context(), actor, input.ResourceKind, input.ResourceID, input.ResourceGroupID)
+	})
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true})
+}
+
+func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request) {
+	actor, found := actorFromRequest(r)
+	if !found || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		permission := authz.PermissionResourceRead
+		if actor.Has(authz.PermissionQuotaManage) {
+			permission = authz.PermissionQuotaManage
+		} else if actor.Has(authz.PermissionSystemAdmin) {
+			permission = authz.PermissionSystemAdmin
+		}
+		if err := d.AccessManager.Authorize(r.Context(), actor, permission, "quota_policy", "list", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		usage, err := d.AccessManager.ListQuotaStatus(r.Context(), actor)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota_policies": usage, "quota_usage": usage})
+	case http.MethodPost, http.MethodPut:
+		permission := authz.PermissionQuotaManage
+		if actor.Has(authz.PermissionSystemAdmin) {
+			permission = authz.PermissionSystemAdmin
+		}
+		if err := d.AccessManager.Authorize(r.Context(), actor, permission, "quota_policy", "upsert", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var input storage.QuotaPolicyRow
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var policy storage.QuotaPolicyRow
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "quota.policy.upsert", "quota_policy", input.ID, input.ResourceGroupID, map[string]any{"metric": input.Metric, "limit": input.Limit}, func(tx *authz.Manager) (string, error) {
+			var err error
+			policy, err = tx.UpsertQuotaPolicy(r.Context(), actor, input)
+			return policy.ID, err
+		})
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		status := http.StatusCreated
+		if r.Method == http.MethodPut {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, map[string]any{"ok": true, "quota_policy": policy})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleAuditEvents(w http.ResponseWriter, r *http.Request) {
+	if _, ok := d.requireAccessPermission(w, r, authz.PermissionAuditRead); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := d.AccessManager.ListAuditEvents(r.Context(), limit)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "audit_events": events})
+}
+
+func (d Dependencies) handleSecrets(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return
+	}
+	if d.SecretVault == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayloadCode("vault_key_unavailable", "secret vault master key is unavailable"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretMetadataRead, "secret", "list", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		groupIDs := actor.VisibleResourceGroups
+		if actor.Has(authz.PermissionAll) {
+			groupIDs = nil
+		}
+		items, err := d.SecretVault.List(r.Context(), groupIDs)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "secrets": items})
+	case http.MethodPost:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretManage, "secret", "create", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		var input struct {
+			Name            string `json:"name"`
+			Purpose         string `json:"purpose"`
+			ResourceGroupID string `json:"resource_group_id"`
+			Value           string `json:"value"`
+			Generate        bool   `json:"generate"`
+			GeneratedBytes  int    `json:"generated_bytes"`
+		}
+		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		if !actor.CanAccessGroup(input.ResourceGroupID) {
+			writeAccessError(w, authz.ErrForbidden)
+			return
+		}
+		op := secretOperation(r, actor, input.ResourceGroupID)
+		if input.Generate {
+			metadata, _, err := d.SecretVault.Generate(r.Context(), op, input.Name, input.Purpose, input.GeneratedBytes)
+			if err != nil {
+				writeAccessError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "secret": metadata})
+			return
+		}
+		metadata, err := d.SecretVault.Create(r.Context(), op, input.Name, input.Purpose, input.Value)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "secret": metadata})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+	}
+}
+
+func (d Dependencies) handleSecret(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSecretMetadataRead)
+	if !ok {
+		return
+	}
+	if d.SecretVault == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayloadCode("vault_key_unavailable", "secret vault master key is unavailable"))
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	metadata, err := d.SecretVault.Get(r.Context(), r.PathValue("id"))
+	if err == nil && !actor.CanAccessGroup(metadata.ResourceGroupID) {
+		err = authz.ErrForbidden
+	}
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "secret": metadata})
+}
+
+func (d Dependencies) handleSecretRotate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSecretManage)
+	if !ok {
+		return
+	}
+	if d.SecretVault == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorPayloadCode("vault_key_unavailable", "secret vault master key is unavailable"))
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
+		return
+	}
+	id := r.PathValue("id")
+	metadata, err := d.SecretVault.Get(r.Context(), id)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if !actor.CanAccessGroup(metadata.ResourceGroupID) {
+		writeAccessError(w, authz.ErrForbidden)
+		return
+	}
+	var input struct {
+		Value string `json:"value"`
+	}
+	if err := decodeAccessJSON(r, &input); err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	metadata, err = d.SecretVault.Rotate(r.Context(), secretOperation(r, actor, metadata.ResourceGroupID), id, input.Value)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "secret": metadata})
+}
+
+func (d Dependencies) requireAccessPermission(w http.ResponseWriter, r *http.Request, permission string) (authz.Actor, bool) {
+	actor, ok := actorFromRequest(r)
+	if !ok || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
+		return authz.Actor{}, false
+	}
+	if err := d.AccessManager.Authorize(r.Context(), actor, permission, "api", r.URL.Path, ""); err != nil {
+		writeAccessError(w, err)
+		return authz.Actor{}, false
+	}
+	return actor, true
+}
+
+func ensureDelegablePermissions(actor authz.Actor, permissions []string) error {
+	for _, permission := range permissions {
+		permission = strings.TrimSpace(permission)
+		if permission == "" {
+			return authz.ErrForbidden
+		}
+		if permission == authz.PermissionAll || permission == authz.PermissionSystemAdmin {
+			if !actor.Has(authz.PermissionSystemAdmin) {
+				return authz.ErrForbidden
+			}
+			continue
+		}
+		if !actor.Has(permission) {
+			return authz.ErrForbidden
+		}
+	}
+	return nil
+}
+
+func ensureDelegableRoles(ctx context.Context, manager *authz.Manager, actor authz.Actor, roleIDs []string) error {
+	for _, roleID := range roleIDs {
+		roleID = strings.TrimSpace(roleID)
+		if roleID == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
+			return authz.ErrForbidden
+		}
+		role, err := manager.GetRole(ctx, roleID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := ensureDelegablePermissions(actor, role.Permissions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func secretOperation(r *http.Request, actor authz.Actor, groupID string) secrets.OperationContext {
+	return secrets.OperationContext{ActorID: actor.ID, SessionID: actor.SessionID, CorrelationID: strings.TrimSpace(r.Header.Get("X-Request-ID")), ResourceGroupID: groupID}
+}
+
+func decodeAccessJSON(r *http.Request, target any) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmtAccessInput(err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return authz.ErrInvalidInput
+	}
+	return nil
+}
+
+func fmtAccessInput(err error) error {
+	return errors.Join(authz.ErrInvalidInput, err)
+}
+
+func writeAccessError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	code := "internal_error"
+	message := "access-control operation failed"
+	switch {
+	case errors.Is(err, authz.ErrAuditUnavailable), errors.Is(err, secrets.ErrAuditUnavailable):
+		status, code, message = http.StatusServiceUnavailable, "audit_unavailable", "security audit persistence is unavailable"
+	case errors.Is(err, authz.ErrInvalidCredentials):
+		status, code, message = http.StatusUnauthorized, "invalid_credentials", "invalid username or password"
+	case errors.Is(err, authz.ErrUnauthorized):
+		status, code, message = http.StatusUnauthorized, "authentication_required", "authentication required"
+	case errors.Is(err, authz.ErrForbidden):
+		status, code, message = http.StatusForbidden, "permission_denied", "permission denied"
+	case errors.Is(err, authz.ErrLastAdministrator):
+		status, code, message = http.StatusConflict, "last_admin_protected", "cannot disable, delete or demote the last sign-in capable full administrator"
+	case errors.Is(err, storage.ErrResourceGroupHasDependencies):
+		status, code, message = http.StatusConflict, "resource_group_in_use", "resource group still has grants or bindings"
+	case errors.Is(err, storage.ErrBuiltinResourceGroup):
+		status, code, message = http.StatusConflict, "resource_group_protected", "builtin resource group cannot be changed"
+	case errors.Is(err, authz.ErrInvalidInput), errors.Is(err, secrets.ErrInvalidSecret):
+		status, code, message = http.StatusBadRequest, "invalid_input", "invalid request"
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		status, code, message = http.StatusTooManyRequests, "quota_exceeded", "quota exceeded"
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		status, code, message = http.StatusNotFound, "not_found", "resource not found"
+	}
+	if errors.Is(err, storage.ErrQuotaExceeded) {
+		writeJSON(w, status, quotaErrorPayload(err))
+		return
+	}
+	payload := errorPayloadCode(code, message)
+	if errors.Is(err, authz.ErrLastAdministrator) {
+		payload["details"] = map[string]any{"reason": "last_admin"}
+	}
+	if errors.Is(err, storage.ErrBuiltinResourceGroup) {
+		payload["details"] = map[string]any{"reason": "builtin"}
+	}
+	var deps *storage.ResourceGroupHasDependenciesError
+	if errors.As(err, &deps) {
+		payload["details"] = resourceGroupDependencyDetails(deps)
+	}
+	var fieldErr *authz.FieldError
+	if errors.As(err, &fieldErr) && len(fieldErr.Fields) > 0 {
+		payload["fields"] = fieldErr.Fields
+	}
+	writeJSON(w, status, payload)
+}
+
+func resourceGroupUpdateFields(ctx context.Context, manager *authz.Manager, actor authz.Actor, id string, name, description *string) (string, string, error) {
+	current, err := manager.GetResourceGroup(ctx, actor, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		current, err = manager.GetResourceGroup(ctx, authz.BootstrapActor(), id)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	nextName, nextDescription := current.Name, current.Description
+	if name != nil {
+		nextName = *name
+	}
+	if description != nil {
+		nextDescription = *description
+	}
+	return nextName, nextDescription, nil
+}
+
+func resourceGroupDependencyDetails(deps *storage.ResourceGroupHasDependenciesError) map[string]any {
+	if deps == nil {
+		return map[string]any{"grants": []map[string]string{}, "bindings": []map[string]string{}}
+	}
+	details := deps.Details()
+	if grants, ok := details["grants"].([]map[string]string); ok {
+		for _, grant := range grants {
+			grant["resource_group_id"] = deps.ResourceGroupID
+		}
+	}
+	if bindings, ok := details["bindings"].([]map[string]string); ok {
+		for _, binding := range bindings {
+			binding["resource_group_id"] = deps.ResourceGroupID
+		}
+	}
+	return details
+}
+
+func filterAccessUsers(users []authz.User, raw string) []authz.User {
+	q := strings.ToLower(strings.TrimSpace(raw))
+	if q == "" {
+		return users
+	}
+	filtered := make([]authz.User, 0, len(users))
+	for _, user := range users {
+		if strings.Contains(strings.ToLower(user.Username), q) || strings.Contains(strings.ToLower(user.DisplayName), q) {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
+}

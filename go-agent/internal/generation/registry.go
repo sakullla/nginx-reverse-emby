@@ -14,6 +14,10 @@ type Session interface {
 	ForceClose(context.Context, string) error
 }
 
+type selectiveProgressiveForceSession interface {
+	TryCommitSelectiveForce() bool
+}
+
 type SessionHandle struct {
 	mu            sync.Mutex
 	state         sessionHandleState
@@ -177,21 +181,25 @@ func (r *SessionRegistry) GenerationCount(generation string) int {
 }
 
 func (r *SessionRegistry) ForceEntities(ctx context.Context, generation string, entities map[EntityKey]string) (int, error) {
-	return r.force(ctx, generation, false, func(k EntityKey) (string, bool) { reason, ok := entities[k]; return reason, ok })
+	return r.force(ctx, generation, false, func(record *sessionRecord) (string, bool) {
+		reason, ok := entities[record.entity]
+		return reason, ok
+	})
 }
 func (r *SessionRegistry) ForceGeneration(ctx context.Context, generation, reason string) (int, error) {
-	return r.force(ctx, generation, true, func(EntityKey) (string, bool) { return reason, true })
+	return r.force(ctx, generation, true, func(*sessionRecord) (string, bool) { return reason, true })
 }
-func (r *SessionRegistry) force(ctx context.Context, generation string, terminal bool, selectReason func(EntityKey) (string, bool)) (int, error) {
+
+func (r *SessionRegistry) ForceGenerationExceptProgressive(ctx context.Context, generation, reason string) (int, error) {
 	if r == nil {
 		return 0, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var records []*sessionRecord
 	r.mu.Lock()
-	for entity, sessions := range r.generations[generation] {
-		if _, ok := selectReason(entity); !ok {
-			continue
-		}
+	for _, sessions := range r.generations[generation] {
 		for _, rec := range sessions {
 			records = append(records, rec)
 		}
@@ -201,6 +209,60 @@ func (r *SessionRegistry) force(ctx context.Context, generation string, terminal
 	forced := 0
 	var waits []<-chan struct{}
 	for _, rec := range records {
+		if session, ok := rec.session.(selectiveProgressiveForceSession); ok && !session.TryCommitSelectiveForce() {
+			continue
+		}
+		owned, wait, finished := rec.handle.claimForce(true)
+		if finished {
+			r.finish(rec)
+			continue
+		}
+		if !owned {
+			if wait != nil {
+				waits = append(waits, wait)
+				forced++
+			}
+			continue
+		}
+		err := rec.session.ForceClose(ctx, reason)
+		closeErr = errors.Join(closeErr, err)
+		rec.handle.completeForce(err == nil)
+		forced++
+	}
+	for _, wait := range waits {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return forced, errors.Join(closeErr, ctx.Err())
+		}
+	}
+	return forced, closeErr
+}
+func (r *SessionRegistry) force(ctx context.Context, generation string, terminal bool, selectReason func(*sessionRecord) (string, bool)) (int, error) {
+	if r == nil {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var records []*sessionRecord
+	r.mu.Lock()
+	for _, sessions := range r.generations[generation] {
+		for _, rec := range sessions {
+			if _, ok := selectReason(rec); ok {
+				records = append(records, rec)
+			}
+		}
+	}
+	r.mu.Unlock()
+	var closeErr error
+	forced := 0
+	var waits []<-chan struct{}
+	for _, rec := range records {
+		reason, selected := selectReason(rec)
+		if !selected {
+			continue
+		}
 		owned, wait, finished := rec.handle.claimForce(terminal)
 		if finished && terminal {
 			r.finish(rec)
@@ -213,7 +275,6 @@ func (r *SessionRegistry) force(ctx context.Context, generation string, terminal
 			}
 			continue
 		}
-		reason, _ := selectReason(rec.entity)
 		err := rec.session.ForceClose(ctx, reason)
 		closeErr = errors.Join(closeErr, err)
 		_, terminallyRemoved := rec.handle.completeForce(err == nil)
@@ -222,7 +283,11 @@ func (r *SessionRegistry) force(ctx context.Context, generation string, terminal
 		}
 	}
 	for _, wait := range waits {
-		<-wait
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return forced, errors.Join(closeErr, ctx.Err())
+		}
 	}
 	return forced, closeErr
 }

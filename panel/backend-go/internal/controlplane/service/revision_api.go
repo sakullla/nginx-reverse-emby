@@ -62,6 +62,7 @@ type RevisionAPI struct {
 	repository          RevisionRepository
 	coordinator         *coordinator.Coordinator
 	snapshotRepairStore supportedSnapshotRepairStore
+	pluginLifecycle     *PluginLifecycleReconciler
 	now                 func() time.Time
 }
 
@@ -199,26 +200,50 @@ type RemoteRevisionPull struct {
 }
 
 type RemoteRevisionStart struct {
-	AgentID      string `json:"agent_id"`
-	Revision     int64  `json:"revision"`
-	RetryCycle   int    `json:"retry_cycle"`
-	Attempt      int    `json:"attempt"`
-	LeaseID      string `json:"lease_id"`
-	GenerationID string `json:"generation_id"`
+	AgentID             string `json:"agent_id"`
+	Revision            int64  `json:"revision"`
+	RetryCycle          int    `json:"retry_cycle"`
+	Attempt             int    `json:"attempt"`
+	LeaseID             string `json:"lease_id"`
+	GenerationID        string `json:"generation_id"`
+	RuntimeGenerationID string `json:"runtime_generation_id,omitempty"`
+	RuntimeSnapshotHash string `json:"runtime_snapshot_hash,omitempty"`
 }
 
 type RemoteRevisionReport struct {
-	AgentID      string `json:"agent_id"`
-	Revision     int64  `json:"revision"`
-	RetryCycle   int    `json:"retry_cycle"`
-	Attempt      int    `json:"attempt"`
-	LeaseID      string `json:"lease_id"`
-	GenerationID string `json:"generation_id"`
-	Status       string `json:"status"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	Forced       bool   `json:"forced,omitempty"`
-	ForceReason  string `json:"force_reason,omitempty"`
+	AgentID        string                           `json:"agent_id"`
+	Revision       int64                            `json:"revision"`
+	RetryCycle     int                              `json:"retry_cycle"`
+	Attempt        int                              `json:"attempt"`
+	LeaseID        string                           `json:"lease_id"`
+	GenerationID   string                           `json:"generation_id"`
+	Status         string                           `json:"status"`
+	ErrorCode      string                           `json:"error_code,omitempty"`
+	ErrorMessage   string                           `json:"error_message,omitempty"`
+	Forced         bool                             `json:"forced,omitempty"`
+	ForceReason    string                           `json:"force_reason,omitempty"`
+	PluginStatuses []storage.PluginRuntimeStatus    `json:"plugin_statuses,omitempty"`
+	PluginLogs     []storage.PluginRuntimeLogReport `json:"plugin_logs,omitempty"`
+}
+
+func (s *RevisionAPI) SetPluginLifecycleReconciler(reconciler *PluginLifecycleReconciler) {
+	if s != nil {
+		s.pluginLifecycle = reconciler
+	}
+}
+
+func (s *RevisionAPI) reconcileStartup(ctx context.Context) error {
+	if s == nil || s.coordinator == nil {
+		return nil
+	}
+	_, coordinatorErr := s.coordinator.ReconcileStartup(ctx)
+	var pluginErr error
+	if s.pluginLifecycle != nil {
+		pluginErr = s.pluginLifecycle.RecoverSupersededOperations(
+			WithSystemMutationPrincipal(ctx, "system:revision-reconciler"),
+		)
+	}
+	return errors.Join(coordinatorErr, pluginErr)
 }
 
 func (s *RevisionAPI) GetOperationStatus(ctx context.Context, operationID string) (OperationStatus, error) {
@@ -727,6 +752,9 @@ func (s *RevisionAPI) StartRemoteRevision(ctx context.Context, agentID string, i
 		return AgentRevisionStatus{}, err
 	}
 	lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseLeased)
+	if err != nil && input.RuntimeGenerationID != "" {
+		lease, err = s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseStarted)
+	}
 	if err != nil {
 		return AgentRevisionStatus{}, err
 	}
@@ -734,7 +762,7 @@ func (s *RevisionAPI) StartRemoteRevision(ctx context.Context, agentID string, i
 	if generationID == "" {
 		return AgentRevisionStatus{}, fmt.Errorf("%w: generation id is required", ErrInvalidArgument)
 	}
-	if _, err := s.coordinator.Start(ctx, coordinator.StartRequest{Lease: lease, GenerationID: generationID}); err != nil {
+	if _, err := s.coordinator.Start(ctx, coordinator.StartRequest{Lease: lease, GenerationID: generationID, RuntimeGenerationID: input.RuntimeGenerationID, RuntimeSnapshotHash: input.RuntimeSnapshotHash}); err != nil {
 		return AgentRevisionStatus{}, err
 	}
 	return s.GetAgentRevisionStatus(ctx, agentID, input.Revision)
@@ -760,12 +788,18 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 		}); err != nil {
 			return AgentRevisionStatus{}, err
 		}
+		if err := s.reconcilePluginRevisionReport(ctx, agentID, input, storage.AgentRevisionStateFailed); err != nil {
+			return AgentRevisionStatus{}, err
+		}
 	case storage.AgentRevisionStateApplied, storage.AgentRevisionDrainStateDraining:
 		lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseApply)
 		if err != nil {
 			return AgentRevisionStatus{}, err
 		}
 		if _, err := s.coordinator.Applied(ctx, coordinator.AppliedReport{Lease: lease, GenerationID: generationID}); err != nil {
+			return AgentRevisionStatus{}, err
+		}
+		if err := s.reconcilePluginRevisionReport(ctx, agentID, input, storage.AgentRevisionStateApplied); err != nil {
 			return AgentRevisionStatus{}, err
 		}
 	case storage.AgentRevisionDrainStateDrained, storage.AgentRevisionDrainStateForced:
@@ -781,11 +815,162 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 		if err != nil {
 			return AgentRevisionStatus{}, err
 		}
+		if err := s.reconcilePluginRevisionReport(ctx, agentID, input, "drained"); err != nil {
+			return AgentRevisionStatus{}, err
+		}
 		return s.GetAgentRevisionStatus(ctx, agentID, row.Revision)
 	default:
 		return AgentRevisionStatus{}, fmt.Errorf("%w: unsupported revision report status %q", ErrInvalidArgument, input.Status)
 	}
 	return s.GetAgentRevisionStatus(ctx, agentID, input.Revision)
+}
+
+func (s *RevisionAPI) reconcilePluginRevisionReport(ctx context.Context, agentID string, input RemoteRevisionReport, terminalState string) error {
+	if s == nil || s.pluginLifecycle == nil {
+		return nil
+	}
+	if logStore, ok := s.pluginLifecycle.store.(interface {
+		RecordPluginRuntimeLogReport(context.Context, string, storage.PluginRuntimeLogReport) (bool, error)
+	}); ok {
+		for _, report := range input.PluginLogs {
+			if _, err := logStore.RecordPluginRuntimeLogReport(ctx, agentID, report); err != nil {
+				if pluginGenerationReportIgnorable(err) {
+					continue
+				}
+				return err
+			}
+		}
+	} else if len(input.PluginLogs) > 0 {
+		return errors.New("plugin runtime log ingestion is unavailable")
+	}
+	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, input.Revision)
+	if err != nil || !found {
+		return err
+	}
+	for _, status := range input.PluginStatuses {
+		report := storage.PluginGenerationReport{
+			OperationID: status.OperationID, AgentID: agentID, InstanceID: status.InstanceID, PluginID: status.PluginID,
+			Revision: status.Revision, GenerationID: status.GenerationID, PackageDigest: status.PackageDigest,
+			ArtifactDigest: status.ArtifactDigest, State: status.State, Sequence: status.Sequence,
+			ErrorCode: status.ErrorCode, SafeDetail: status.SafeDetail,
+			Details: append(json.RawMessage(nil), status.Details...), Budget: append(json.RawMessage(nil), status.Budget...),
+		}
+		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !pluginGenerationReportIgnorable(err) {
+			return err
+		}
+	}
+	rows, err := s.pluginLifecycle.store.ListPluginAgentRuntimeStatuses(ctx, revisionRow.OperationID)
+	if err != nil {
+		return err
+	}
+	expected := make(map[string]storage.PluginAgentRuntimeStatusRow)
+	for _, row := range rows {
+		if row.AgentID == agentID && row.Revision == input.Revision {
+			expected[row.InstanceID] = row
+		}
+	}
+	if len(expected) == 0 {
+		return s.reconcilePluginRevisionWithoutRuntimeStatuses(ctx, revisionRow.OperationID)
+	}
+	reported := make(map[string]storage.PluginRuntimeStatus, len(input.PluginStatuses))
+	for _, status := range input.PluginStatuses {
+		if _, duplicate := reported[status.InstanceID]; duplicate {
+			return storage.ErrPluginGenerationConflict
+		}
+		reported[status.InstanceID] = status
+	}
+	for instanceID, row := range expected {
+		if (row.State == "active" || row.State == "drained" || row.State == "failed" || row.State == "degraded") && row.ReportSequence > 0 {
+			report := storage.PluginGenerationReport{
+				OperationID: row.OperationID, AgentID: row.AgentID, InstanceID: row.InstanceID, PluginID: row.PluginID,
+				Revision: row.Revision, GenerationID: row.GenerationID, PackageDigest: row.PackageDigest,
+				ArtifactDigest: row.ArtifactDigest, State: row.State, Sequence: row.ReportSequence,
+				ErrorCode: row.ErrorCode, Details: json.RawMessage(row.DetailsJSON), Budget: json.RawMessage(row.BudgetJSON),
+			}
+			if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !pluginGenerationReportIgnorable(err) {
+				return err
+			}
+			continue
+		}
+		report := storage.PluginGenerationReport{
+			OperationID: row.OperationID, AgentID: agentID, InstanceID: row.InstanceID, PluginID: row.PluginID,
+			Revision: row.Revision, GenerationID: row.GenerationID, PackageDigest: row.PackageDigest,
+			ArtifactDigest: row.ArtifactDigest, Sequence: row.ReportSequence + 1,
+		}
+		switch terminalState {
+		case storage.AgentRevisionStateApplied:
+			if row.State == "draining" {
+				continue
+			}
+			status, ok := reported[instanceID]
+			if !ok || status.OperationID != row.OperationID || status.PluginID != row.PluginID ||
+				status.Revision != row.Revision || status.GenerationID != row.GenerationID ||
+				!strings.EqualFold(status.PackageDigest, row.PackageDigest) || !strings.EqualFold(status.ArtifactDigest, row.ArtifactDigest) ||
+				status.ConfigVersion != row.ConfigVersion || status.Sequence == 0 {
+				return storage.ErrPluginGenerationStale
+			}
+			report.State, report.Sequence, report.ErrorCode = status.State, status.Sequence, status.ErrorCode
+			report.SafeDetail = status.SafeDetail
+			report.Details, report.Budget = append(json.RawMessage(nil), status.Details...), append(json.RawMessage(nil), status.Budget...)
+		case storage.AgentRevisionStateFailed:
+			report.State, report.ErrorCode = "failed", strings.TrimSpace(input.ErrorCode)
+			report.Details = json.RawMessage(`{"safe_detail":"revision apply failed"}`)
+		case "drained":
+			if row.State != "draining" {
+				continue
+			}
+			report.State = "drained"
+		default:
+			return storage.ErrPluginGenerationConflict
+		}
+		if _, err := s.pluginLifecycle.Reconcile(ctx, report, agentID); err != nil && !pluginGenerationReportIgnorable(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func pluginGenerationReportIgnorable(err error) bool {
+	return errors.Is(err, storage.ErrPluginGenerationStale) || errors.Is(err, storage.ErrPluginGenerationConflict)
+}
+
+func (s *RevisionAPI) reconcilePluginRevisionWithoutRuntimeStatuses(ctx context.Context, operationID string) error {
+	operation, found, err := s.pluginLifecycle.store.GetPluginOperation(ctx, operationID)
+	if err != nil || !found {
+		return err
+	}
+	if operation.Status == "succeeded" || operation.Status == "failed" {
+		return nil
+	}
+	if operation.Status != "applying" && operation.Status != "staged" {
+		return storage.ErrPluginGenerationConflict
+	}
+	revisions, err := s.repository.ListOperationRevisions(ctx, operationID)
+	if err != nil {
+		return err
+	}
+	if len(revisions) == 0 {
+		return storage.ErrPluginGenerationStale
+	}
+	applied := true
+	agentResults := make(map[string]any, len(revisions))
+	for _, revision := range revisions {
+		state := revision.State
+		switch state {
+		case storage.AgentRevisionStateApplied:
+			if operation.Kind == "disable" && revision.DrainState != storage.AgentRevisionDrainStateDrained && revision.DrainState != storage.AgentRevisionDrainStateForced {
+				return nil
+			}
+		case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
+			applied = false
+		default:
+			return nil
+		}
+		agentResults[revision.AgentID] = map[string]any{
+			"state": state, "revision": revision.Revision, "drain_state": revision.DrainState,
+		}
+	}
+	return s.pluginLifecycle.completeTrustedRevisionOperation(ctx, operation, applied, agentResults)
 }
 
 func (s *RevisionAPI) SaveMutationResponse(ctx context.Context, scope, key, operationID string, response []byte) error {

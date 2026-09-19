@@ -27,7 +27,7 @@
             分析
           </button>
         </div>
-        <span class="traffic-summary-card__value" data-testid="traffic-summary-used">{{ formatBytes(summary.used_bytes) }}</span>
+        <span class="traffic-summary-card__value" data-testid="traffic-summary-used">{{ formatBytes(displayedUsedBytes) }}</span>
         <span v-if="usedSub" class="traffic-summary-card__sub" data-testid="traffic-summary-used-sub">{{ usedSub }}</span>
       </div>
       <div class="traffic-summary-card__metric traffic-summary-card__metric--primary">
@@ -97,7 +97,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { formatBytes, formatQuota, usagePercent } from '../../utils/trafficStats.js'
+import { agentTrafficBytes, formatBytes, formatQuota, usagePercent } from '../../utils/trafficStats.js'
 import { rate } from '../../utils/agentMetrics.js'
 
 const props = defineProps({
@@ -112,7 +112,9 @@ defineEmits(['open-analysis', 'open-management'])
 
 const showLoading = computed(() => props.loading === true)
 
-const percent = computed(() => usagePercent(props.summary.used_bytes, props.summary.monthly_quota_bytes))
+const displayedUsedBytes = computed(() => agentTrafficBytes(props.summary))
+
+const percent = computed(() => usagePercent(displayedUsedBytes.value, props.summary.monthly_quota_bytes))
 
 const hasQuota = computed(() => props.summary.monthly_quota_bytes != null && props.summary.monthly_quota_bytes !== '')
 
@@ -129,7 +131,7 @@ const remainingDisplay = computed(() => {
   if (props.summary.remaining_bytes != null && props.summary.remaining_bytes !== '') {
     return formatBytes(props.summary.remaining_bytes)
   }
-  const used = Number(props.summary.used_bytes) || 0
+  const used = displayedUsedBytes.value
   const quota = Number(props.summary.monthly_quota_bytes) || 0
   return formatBytes(Math.max(0, quota - used))
 })
@@ -161,6 +163,8 @@ const rateRows = computed(() => {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   padding: 0.875rem 1rem;
+  height: auto;
+  min-height: 0;
 }
 .traffic-summary-cards__loading {
   min-height: 4.5rem;
@@ -179,10 +183,16 @@ const rateRows = computed(() => {
   /* 与详情页信息网格一致的 4 等分列:总流量/剩余/上行下行/当前速率 */
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.375rem 0.625rem;
-  align-items: stretch;
+  align-items: start;
+  align-content: start;
+  grid-auto-rows: min-content;
+  min-height: 0;
+  height: auto;
 }
 .traffic-summary-card__metric {
   min-width: 0;
+  min-height: 0;
+  height: auto;
   text-align: left;
   padding: 0.375rem 0.5rem;
   border-radius: var(--radius-md);

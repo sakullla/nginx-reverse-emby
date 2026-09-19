@@ -23,6 +23,7 @@ type SystemInfo struct {
 	OnlineAgents                 int
 	TotalAgents                  int
 	TrafficStatsEnabled          bool
+	Timezone                     string
 }
 
 type systemStore interface {
@@ -65,6 +66,7 @@ func (s systemService) Info(ctx context.Context) SystemInfo {
 		DataDir:                      s.cfg.DataDir,
 		StartedAt:                    s.startedAt,
 		TrafficStatsEnabled:          s.cfg.TrafficStatsEnabled,
+		Timezone:                     s.cfg.Timezone,
 	}
 
 	if s.store != nil {

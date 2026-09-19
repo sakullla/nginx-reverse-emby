@@ -1,3 +1,5 @@
+//go:build !fast
+
 package storage
 
 import (
@@ -57,7 +59,11 @@ func newStorageTestSQLiteStore(t *testing.T, dataRoot, localAgentID string, traf
 	if testing.Short() {
 		t.Skip("SQLite-backed storage scenarios run in the full test tier")
 	}
+	return newStorageTestSQLiteStoreForAllTiers(t, dataRoot, localAgentID, trafficStatsEnabled)
+}
 
+func newStorageTestSQLiteStoreForAllTiers(t *testing.T, dataRoot, localAgentID string, trafficStatsEnabled bool) (*SQLiteStore, error) {
+	t.Helper()
 	template, err := storageSQLiteTemplateData(storageSQLiteTemplateKey{
 		trafficStatsEnabled: trafficStatsEnabled,
 	})
@@ -95,6 +101,20 @@ func newStorageMigrationTestStore(t *testing.T, localAgentID string) *SQLiteStor
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
 			t.Errorf("close cloned SQLite migration fixture: %v", err)
+		}
+	})
+	return store
+}
+
+func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
+	t.Helper()
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", trafficStatsEnabled)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close() error = %v", err)
 		}
 	})
 	return store

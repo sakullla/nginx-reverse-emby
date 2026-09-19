@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 const trafficAggregateTopRulesLimit = 10
@@ -93,6 +95,24 @@ type trafficCursorBatchDeltaEventStore interface {
 	IngestTrafficCursorDeltasWithEvents(context.Context, []storage.TrafficCursorIngestRow, time.Time) ([]storage.TrafficCursorDeltaResult, error)
 }
 
+type trafficQuotaStore interface {
+	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
+	ConsumeQuota(context.Context, string, string, string, int64, time.Time) (storage.QuotaDecision, error)
+	ReconcileResourceGroupQuota(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error)
+	ReconcileAgentBandwidth(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error)
+	RefreshResourceGroupBandwidth(context.Context, string, time.Time) (storage.QuotaDecision, error)
+	ResourceGroupQuotaStatus(context.Context, string, string) (storage.QuotaDecision, error)
+}
+
+type observedTrafficQuotaStore interface {
+	trafficQuotaStore
+	ObserveQuota(context.Context, string, string, string, int64, time.Time) (storage.QuotaDecision, error)
+}
+
+type trafficSecurityTransactionStore interface {
+	SecurityTransaction(context.Context, func(*storage.GormStore) error) error
+}
+
 type trafficService struct {
 	enabled bool
 	store   trafficStore
@@ -140,10 +160,16 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 	if len(samples) == 0 {
 		return nil
 	}
+	if _, governed := s.store.(trafficQuotaStore); governed {
+		if _, atomic := s.store.(trafficSecurityTransactionStore); !atomic {
+			return ErrMutationPrincipalRequired
+		}
+	}
 	bucketAt := s.now().In(s.tz)
 	observedAt := bucketAt.UTC()
 	var scopeCache *trafficScopeLookupCache
 	batchRows := make([]storage.TrafficCursorIngestRow, 0, len(samples))
+	batchSamples := make([]trafficSample, 0, len(samples))
 	for _, sample := range samples {
 		allow, err := s.allowTrafficSample(ctx, agentID, sample, &scopeCache)
 		if err != nil {
@@ -171,15 +197,20 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 					CreatedAt: observedAt.Format(time.RFC3339),
 				},
 			})
+			batchSamples = append(batchSamples, sample)
 			continue
 		}
 		if ingestStore, ok := s.store.(trafficCursorDeltaEventStore); ok {
-			if _, err := ingestStore.IngestTrafficCursorDeltaWithEvent(ctx, cursor, bucketAt, &storage.AgentTrafficEventRow{
+			result, err := ingestStore.IngestTrafficCursorDeltaWithEvent(ctx, cursor, bucketAt, &storage.AgentTrafficEventRow{
 				AgentID:   agentID,
 				EventType: "counter_reset",
 				Message:   "traffic counter reset",
 				CreatedAt: observedAt.Format(time.RFC3339),
-			}); err != nil {
+			})
+			if err != nil {
+				return err
+			}
+			if err := s.consumeHeartbeatQuota(ctx, agentID, sample, result, observedAt); err != nil {
 				return err
 			}
 			continue
@@ -193,6 +224,9 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 				if err := s.recordCounterReset(ctx, agentID, sample, result.Previous, observedAt); err != nil {
 					return err
 				}
+			}
+			if err := s.consumeHeartbeatQuota(ctx, agentID, sample, result, observedAt); err != nil {
+				return err
 			}
 			continue
 		}
@@ -253,13 +287,132 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 				return err
 			}
 		}
+		if !firstHostSample {
+			if err := s.consumeHeartbeatQuota(ctx, agentID, sample, storage.TrafficCursorDeltaResult{Previous: cursor, FoundPrevious: found, DeltaRXBytes: deltaRX, DeltaTXBytes: deltaTX, CounterReset: reset}, observedAt); err != nil {
+				return err
+			}
+		}
 	}
 	if len(batchRows) > 0 {
+		if transactionStore, ok := s.store.(trafficSecurityTransactionStore); ok {
+			systemCtx := WithSystemMutationPrincipal(ctx, "system:traffic-heartbeat:"+agentID)
+			var quotaErr error
+			err := transactionStore.SecurityTransaction(systemCtx, func(tx *storage.GormStore) error {
+				results, err := tx.IngestTrafficCursorDeltasWithEvents(systemCtx, batchRows, bucketAt)
+				if err != nil {
+					return err
+				}
+				for i, result := range results {
+					err := s.consumeHeartbeatQuotaWithStore(systemCtx, tx, agentID, batchSamples[i], result, observedAt, true)
+					if err == nil {
+						continue
+					}
+					if errors.Is(err, storage.ErrQuotaExceeded) {
+						quotaErr = errors.Join(quotaErr, err)
+						continue
+					}
+					return err
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			return quotaErr
+		}
 		ingestStore := s.store.(trafficCursorBatchDeltaEventStore)
-		_, err := ingestStore.IngestTrafficCursorDeltasWithEvents(ctx, batchRows, bucketAt)
-		return err
+		results, err := ingestStore.IngestTrafficCursorDeltasWithEvents(ctx, batchRows, bucketAt)
+		if err != nil {
+			return err
+		}
+		for i, result := range results {
+			sample := batchSamples[i]
+			if err := s.consumeHeartbeatQuota(ctx, agentID, sample, result, observedAt); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func (s *trafficService) consumeHeartbeatQuota(ctx context.Context, agentID string, sample trafficSample, result storage.TrafficCursorDeltaResult, observedAt time.Time) error {
+	if sample.scopeType != "host_total" {
+		return nil
+	}
+	quotaStore, ok := s.store.(trafficQuotaStore)
+	if !ok {
+		if allowsTestUngovernedMutation(s.store) {
+			return nil
+		}
+		return ErrMutationPrincipalRequired
+	}
+	return s.consumeHeartbeatQuotaWithStore(ctx, quotaStore, agentID, sample, result, observedAt, false)
+}
+
+func (s *trafficService) consumeHeartbeatQuotaWithStore(ctx context.Context, quotaStore trafficQuotaStore, agentID string, sample trafficSample, result storage.TrafficCursorDeltaResult, observedAt time.Time, observed bool) error {
+	if sample.scopeType != "host_total" {
+		return nil
+	}
+	groupID := "default"
+	binding, err := quotaStore.GetResourceBinding(ctx, "agent", agentID)
+	if err == nil {
+		groupID = binding.ResourceGroupID
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	systemCtx := WithSystemMutationPrincipal(ctx, "system:traffic-heartbeat:"+agentID)
+	deltaBytes := result.DeltaRXBytes
+	if ^uint64(0)-deltaBytes < result.DeltaTXBytes {
+		deltaBytes = ^uint64(0)
+	} else {
+		deltaBytes += result.DeltaTXBytes
+	}
+	delta := minUint64ToInt64(deltaBytes)
+	var decision storage.QuotaDecision
+	if observed {
+		observedStore, ok := quotaStore.(observedTrafficQuotaStore)
+		if !ok {
+			return ErrMutationPrincipalRequired
+		}
+		decision, err = observedStore.ObserveQuota(systemCtx, "", groupID, "traffic_bytes", delta, observedAt)
+	} else {
+		decision, err = quotaStore.ConsumeQuota(systemCtx, "", groupID, "traffic_bytes", delta, observedAt)
+	}
+	var quotaErr error
+	if err != nil {
+		s.persistUnifiedQuotaBlock(systemCtx, quotaStore, agentID, decision)
+		if !errors.Is(err, storage.ErrQuotaExceeded) {
+			return err
+		}
+		quotaErr = errors.Join(quotaErr, err)
+	}
+	seconds := int64(1)
+	if result.FoundPrevious {
+		if previousAt, parseErr := time.Parse(time.RFC3339, result.Previous.ObservedAt); parseErr == nil {
+			if elapsed := int64(observedAt.Sub(previousAt).Seconds()); elapsed > 0 {
+				seconds = elapsed
+			}
+		}
+	}
+	bandwidth := delta / seconds
+	decision, err = quotaStore.ReconcileAgentBandwidth(systemCtx, agentID, groupID, bandwidth, observedAt)
+	if err != nil {
+		s.persistUnifiedQuotaBlock(systemCtx, quotaStore, agentID, decision)
+		if !errors.Is(err, storage.ErrQuotaExceeded) {
+			return err
+		}
+		quotaErr = errors.Join(quotaErr, err)
+	}
+	return quotaErr
+}
+
+func (s *trafficService) persistUnifiedQuotaBlock(ctx context.Context, store any, agentID string, decision storage.QuotaDecision) {
+	if decision.ExceedAction != "disable" {
+		return
+	}
+	if blockStore, ok := store.(trafficBlockStateStore); ok {
+		_ = blockStore.SaveAgentTrafficState(ctx, agentID, true, unifiedQuotaBlockReason(decision))
+	}
 }
 
 type trafficScopeLookupCache struct {
@@ -365,6 +518,24 @@ func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, 
 	if err := s.requireEnabled(); err != nil {
 		return false, "", err
 	}
+	if blocked, reason, err := s.unifiedResourceGroupQuotaBlockState(ctx, agentID); err != nil {
+		return false, "", err
+	} else if blocked {
+		return true, reason, nil
+	}
+	if blockStore, ok := s.store.(trafficBlockStateStore); ok {
+		blocked, reason, found, err := blockStore.GetAgentTrafficState(ctx, agentID)
+		if err != nil {
+			return false, "", err
+		}
+		if found && blocked && isUnifiedQuotaBlockReason(reason) {
+			if err := blockStore.SaveAgentTrafficState(ctx, agentID, false, ""); err != nil {
+				return false, "", err
+			}
+		} else if found && blocked {
+			return true, reason, nil
+		}
+	}
 	policyRow, err := s.store.GetTrafficPolicy(ctx, agentID)
 	if err != nil {
 		return false, "", err
@@ -381,6 +552,44 @@ func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, 
 		return false, "", nil
 	}
 	return true, summary.BlockReason, nil
+}
+
+func (s *trafficService) unifiedResourceGroupQuotaBlockState(ctx context.Context, agentID string) (bool, string, error) {
+	quotaStore, ok := s.store.(trafficQuotaStore)
+	if !ok {
+		return false, "", nil
+	}
+	groupID := "default"
+	binding, err := quotaStore.GetResourceBinding(ctx, "agent", agentID)
+	if err == nil {
+		groupID = binding.ResourceGroupID
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, "", err
+	}
+	for _, metric := range []string{"traffic_bytes", "bandwidth_bytes_per_second"} {
+		var decision storage.QuotaDecision
+		if metric == "bandwidth_bytes_per_second" {
+			decision, err = quotaStore.RefreshResourceGroupBandwidth(ctx, groupID, s.now().UTC())
+		} else {
+			decision, err = quotaStore.ResourceGroupQuotaStatus(ctx, groupID, metric)
+		}
+		if err != nil {
+			return false, "", err
+		}
+		if !decision.Allowed && decision.ExceedAction == "disable" {
+			return true, unifiedQuotaBlockReason(decision), nil
+		}
+	}
+	return false, "", nil
+}
+
+func unifiedQuotaBlockReason(decision storage.QuotaDecision) string {
+	return fmt.Sprintf("resource group %s quota exceeded: %s current=%d limit=%d", decision.ResourceGroupID, decision.Metric, decision.Current, decision.Limit)
+}
+
+func isUnifiedQuotaBlockReason(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return strings.HasPrefix(reason, storage.ErrQuotaExceeded.Error()) || strings.HasPrefix(reason, "resource group ") && strings.Contains(reason, " quota exceeded:")
 }
 
 func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, policyRow storage.AgentTrafficPolicyRow) (TrafficSummary, error) {
@@ -412,6 +621,40 @@ func (s *trafficService) summaryWithPolicyOptions(ctx context.Context, agentID s
 	}
 	used := uint64(usedSigned)
 	blocked, reason := quotaBlocked(used, policy)
+	if quotaStore, ok := s.store.(trafficQuotaStore); ok {
+		groupID := "default"
+		binding, bindingErr := quotaStore.GetResourceBinding(ctx, "agent", agentID)
+		if bindingErr == nil {
+			groupID = binding.ResourceGroupID
+		} else if !errors.Is(bindingErr, gorm.ErrRecordNotFound) {
+			return TrafficSummary{}, bindingErr
+		}
+		unified, quotaErr := quotaStore.ResourceGroupQuotaStatus(ctx, groupID, "traffic_bytes")
+		if quotaErr != nil {
+			return TrafficSummary{}, quotaErr
+		}
+		var unifiedBlocked bool
+		var unifiedReason string
+		used, policy, unifiedBlocked, unifiedReason = applyUnifiedTrafficQuota(used, policy, unifiedTrafficQuota{
+			Limit:             unified.Limit,
+			Allowed:           unified.Allowed,
+			ExceedAction:      unified.ExceedAction,
+			RecoveryCondition: unified.RecoveryCondition,
+		})
+		if unifiedBlocked {
+			blocked = true
+			reason = unifiedReason
+		}
+		bandwidth, quotaErr := quotaStore.RefreshResourceGroupBandwidth(ctx, groupID, s.now().UTC())
+		if quotaErr != nil {
+			return TrafficSummary{}, quotaErr
+		}
+		if !bandwidth.Allowed && bandwidth.ExceedAction == "disable" {
+			blocked = true
+			reason = unifiedQuotaBlockReason(bandwidth)
+		}
+	}
+	blocked = blocked || quotaOverLimit(used, policy.MonthlyQuotaBytes) && policy.BlockWhenExceeded
 	breakdowns := trafficSummaryBreakdowns{
 		aggregates:     []TrafficSummaryBreakdown{},
 		httpRules:      []TrafficSummaryBreakdown{},
@@ -929,6 +1172,15 @@ func (s *trafficService) overview(ctx context.Context, agentFilter string, granu
 	agentIDs, err := agentIDStore.ListTrafficAgentIDs(ctx)
 	if err != nil {
 		return TrafficOverviewResult{}, err
+	}
+	if visibleAgentIDs, restricted := visibleTrafficAgentIDs(ctx); restricted {
+		visibleIDs := make([]string, 0, len(agentIDs))
+		for _, id := range agentIDs {
+			if _, visible := visibleAgentIDs[id]; visible {
+				visibleIDs = append(visibleIDs, id)
+			}
+		}
+		agentIDs = visibleIDs
 	}
 	if granularity == "" {
 		granularity = "day"

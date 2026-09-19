@@ -55,6 +55,14 @@ function missingAgentError() {
   return new Error('缺少节点归属，无法执行该操作')
 }
 
+export function formatRuleMutationError(error) {
+  const message = error?.response?.data?.message || error?.message || ''
+  if (message.includes('master_cf_dns certificates') && message.includes('local master agent')) {
+    return new Error('远程节点不能使用主控 DNS 证书，请改用“节点 HTTP-01”证书，或将规则绑定到本地主控节点。')
+  }
+  return error
+}
+
 export function useCreateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
@@ -69,7 +77,7 @@ export function useCreateRule(agentId) {
       messageStore.success('HTTP 规则创建成功')
     },
     onError: (error) => {
-      messageStore.error(error, '创建规则失败')
+      messageStore.error(formatRuleMutationError(error), '创建规则失败')
     }
   })
 }
@@ -87,7 +95,7 @@ export function useUpdateRule(agentId) {
       messageStore.success('HTTP 规则更新成功')
     },
     onError: (error) => {
-      messageStore.error(error, '更新规则失败')
+      messageStore.error(formatRuleMutationError(error), '更新规则失败')
     }
   })
 }

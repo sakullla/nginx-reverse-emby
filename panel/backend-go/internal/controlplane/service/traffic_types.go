@@ -1,9 +1,27 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
+
+type visibleTrafficAgentsContextKey struct{}
+
+func WithVisibleTrafficAgents(ctx context.Context, agentIDs []string) context.Context {
+	visible := make(map[string]struct{}, len(agentIDs))
+	for _, agentID := range agentIDs {
+		if agentID != "" {
+			visible[agentID] = struct{}{}
+		}
+	}
+	return context.WithValue(ctx, visibleTrafficAgentsContextKey{}, visible)
+}
+
+func visibleTrafficAgentIDs(ctx context.Context) (map[string]struct{}, bool) {
+	visible, ok := ctx.Value(visibleTrafficAgentsContextKey{}).(map[string]struct{})
+	return visible, ok
+}
 
 const ErrCodeTrafficStatsDisabled = "TRAFFIC_STATS_DISABLED"
 

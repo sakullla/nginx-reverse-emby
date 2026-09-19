@@ -878,8 +878,8 @@ async function handleSubmit() {
       await createL4Rule.mutateAsync(payload)
     }
     emit('success')
-  } catch (e) {
-    error.value = e.message || '提交失败'
+  } catch {
+    // API failures are toasted by useL4Rules.
   }
 }
 </script>

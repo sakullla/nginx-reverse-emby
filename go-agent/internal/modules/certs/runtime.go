@@ -1569,6 +1569,9 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 				return nil, err
 			}
 			if ok && state.ACME != nil {
+				report.NextRetryAtUnix = state.ACME.Renewal.BackoffRetryNext
+				report.RetryCount = state.ACME.Renewal.BackoffRetryNum
+				report.BackoffClass = state.ACME.Renewal.BackoffClass
 				if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
 					report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
 				}
