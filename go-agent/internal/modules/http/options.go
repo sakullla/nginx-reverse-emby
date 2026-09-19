@@ -77,17 +77,29 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 	}
 }
 
+const (
+	interactiveClassMaxConnsPerHost = 16
+	bulkClassMaxConnsPerHost        = 64
+)
+
 func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Transport) {
 	interactive := cloneTransport(base)
 	bulk := cloneTransport(base)
 
-	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, 16)})
-	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, 64)})
+	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, interactiveClassMaxConnsPerHost)})
+	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: classedMaxConnsPerHost(base, bulkClassMaxConnsPerHost)})
 	return interactive, bulk
 }
 
+// classedMaxConnsPerHost keeps a class's default ceiling unless the shared
+// transport was configured with a tighter cap. A configured value above every
+// class default is an explicit capacity raise and applies to both classes:
+// keeping the class ceilings would silently make the raise a no-op.
 func classedMaxConnsPerHost(base *http.Transport, classDefault int) int {
-	if base != nil && base.MaxConnsPerHost > 0 && base.MaxConnsPerHost < classDefault {
+	if base == nil || base.MaxConnsPerHost <= 0 {
+		return classDefault
+	}
+	if base.MaxConnsPerHost > bulkClassMaxConnsPerHost || base.MaxConnsPerHost < classDefault {
 		return base.MaxConnsPerHost
 	}
 	return classDefault

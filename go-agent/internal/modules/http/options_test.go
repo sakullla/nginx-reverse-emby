@@ -59,3 +59,13 @@ func TestClassedTransportsKeepDefaultConnectionCaps(t *testing.T) {
 		t.Fatalf("default classed connection caps = interactive:%d bulk:%d, want 16:64", interactive.MaxConnsPerHost, bulk.MaxConnsPerHost)
 	}
 }
+
+func TestClassedTransportsHonorRaisedConnectionCap(t *testing.T) {
+	base := NewSharedTransport()
+	base.MaxConnsPerHost = 128
+
+	interactive, bulk := NewClassedDirectTransports(base)
+	if interactive.MaxConnsPerHost != 128 || bulk.MaxConnsPerHost != 128 {
+		t.Fatalf("raised classed connection caps = interactive:%d bulk:%d, want 128:128", interactive.MaxConnsPerHost, bulk.MaxConnsPerHost)
+	}
+}
