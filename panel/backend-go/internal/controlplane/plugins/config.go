@@ -72,7 +72,11 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 	if branches, ok := schema["oneOf"].([]any); ok {
 		matches := 0
 		for _, raw := range branches {
-			if validateSchemaValue(raw.(map[string]any), value, location) == nil {
+			branch, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s oneOf schema entry is not an object", location)
+			}
+			if validateSchemaValue(branch, value, location) == nil {
 				matches++
 			}
 		}

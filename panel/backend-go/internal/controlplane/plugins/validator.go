@@ -1798,7 +1798,11 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 	}
 	if branches, ok := schema["oneOf"].([]any); ok {
 		for _, branch := range branches {
-			if err := validateSchemaNode(branch.(map[string]any), false, false); err != nil {
+			branchSchema, valid := branch.(map[string]any)
+			if !valid {
+				return errors.New("oneOf entries must be object schemas")
+			}
+			if err := validateSchemaNode(branchSchema, false, false); err != nil {
 				return fmt.Errorf("oneOf: %w", err)
 			}
 		}
