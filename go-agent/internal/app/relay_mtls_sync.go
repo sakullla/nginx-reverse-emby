@@ -12,6 +12,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -116,6 +117,11 @@ func contextErr(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// relaySecurityPrefetchInterval bounds the immediate post-enrollment Sync
+// while agent or listener PKI credentials stay unavailable, so a persistently
+// broken panel-side enrollment cannot double every heartbeat round trip.
+const relaySecurityPrefetchInterval = time.Minute
+
 type relaySecuritySyncClient struct {
 	delegate SyncClient
 	runtime  *core.Runtime
@@ -127,6 +133,8 @@ type relaySecuritySyncClient struct {
 	hasRequest                  bool
 	lastHeartbeatRelayListeners []model.RelayListener
 	hasHeartbeat                bool
+	lastPrefetchSync            time.Time
+	now                         func() time.Time
 }
 
 func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
@@ -152,6 +160,16 @@ func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest)
 		return Snapshot{}, err
 	}
 	if agentReady && ready {
+		c.markSecuritySyncRecovered()
+		return snapshot, nil
+	}
+	if !c.claimPrefetchSync() {
+		// The completing round trip stays skipped until the interval elapses
+		// or a healthy heartbeat re-arms it. Report the verdict that round
+		// trip would have produced without repeating its control traffic.
+		if !ready {
+			return Snapshot{}, errors.New("relay listener PKI credential is not ready")
+		}
 		return snapshot, nil
 	}
 
@@ -159,7 +177,9 @@ func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest)
 	// snapshot that makes authenticated agent enrollment possible. Complete that
 	// enrollment immediately instead of leaving Relay fenced until the next
 	// scheduled heartbeat. The same round trip prefetches a listener that first
-	// appears while its revision lease is already available.
+	// appears while its revision lease is already available. claimPrefetchSync
+	// admits this extra round trip at most once per interval while the
+	// degraded state lasts.
 	snapshot, err = c.delegate.Sync(ctx, request)
 	if err != nil {
 		return Snapshot{}, err
@@ -172,6 +192,12 @@ func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest)
 	}
 	if !ready {
 		return Snapshot{}, errors.New("relay listener PKI credential is not ready")
+	}
+	if agentReady, err = c.pki.agentTunnelCredentialReady(); err != nil {
+		return Snapshot{}, err
+	}
+	if agentReady {
+		c.markSecuritySyncRecovered()
 	}
 	return snapshot, nil
 }
@@ -193,6 +219,40 @@ func (c *relaySecuritySyncClient) rememberedRequest() (SyncRequest, bool) {
 	c.requestMu.Lock()
 	defer c.requestMu.Unlock()
 	return c.lastRequest, c.hasRequest
+}
+
+// claimPrefetchSync admits the extra enrollment-completing Sync at most once
+// per relaySecurityPrefetchInterval. markSecuritySyncRecovered re-arms it as
+// soon as a heartbeat observes both credential faces ready again, so the
+// immediate completion still fires for every fresh degradation episode.
+func (c *relaySecuritySyncClient) claimPrefetchSync() bool {
+	if c == nil {
+		return false
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	now := c.clock()
+	if !c.lastPrefetchSync.IsZero() && now.Sub(c.lastPrefetchSync) < relaySecurityPrefetchInterval {
+		return false
+	}
+	c.lastPrefetchSync = now
+	return true
+}
+
+func (c *relaySecuritySyncClient) clock() time.Time {
+	if c != nil && c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *relaySecuritySyncClient) markSecuritySyncRecovered() {
+	if c == nil {
+		return
+	}
+	c.requestMu.Lock()
+	c.lastPrefetchSync = time.Time{}
+	c.requestMu.Unlock()
 }
 
 func (c *relaySecuritySyncClient) rememberHeartbeatRelayListeners(listeners []model.RelayListener) {
