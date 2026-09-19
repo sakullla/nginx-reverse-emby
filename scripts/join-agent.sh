@@ -197,6 +197,12 @@ extract_registered_agent_id() {
     printf '%s' "$1" | tr -d '\r\n' | sed -n 's/.*"agent"[[:space:]]*:[[:space:]]*{[^}]*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
+# A candidate "key" token only counts where the raw JSON grammar allows a
+# member name: its closing quote must be followed by optional whitespace and
+# a colon. The same bytes can appear inside an earlier string value (via an
+# escaped opening quote and the value's real closing quote), but the grammar
+# then never permits a colon there, so a value that merely mentions a future
+# key cannot win the match.
 extract_json_string() {
     printf '%s\n' "$1" | awk -v wanted="\"$2\"" '
         function hex_value(ch) {
@@ -218,13 +224,19 @@ extract_json_string() {
             if (value < 32 || value > 126) exit 1
             return sprintf("%c", value)
         }
+        function value_start(text, wanted,    i, j) {
+            for (i = 1; i <= length(text); i++) {
+                if (substr(text, i, length(wanted)) != wanted) continue
+                j = i + length(wanted)
+                while (j <= length(text) && substr(text, j, 1) ~ /[[:space:]]/) j++
+                if (substr(text, j, 1) == ":") return j + 1
+            }
+            return 0
+        }
         {
             text = $0
-            start = index(text, wanted)
+            start = value_start(text, wanted)
             if (start == 0) exit 1
-            start += length(wanted)
-            while (start <= length(text) && substr(text, start, 1) != ":") start++
-            start++
             while (start <= length(text) && substr(text, start, 1) ~ /[[:space:]]/) start++
             if (substr(text, start, 1) != "\"") exit 1
             result = ""
@@ -254,14 +266,19 @@ extract_json_string() {
 
 extract_json_boolean() {
     printf '%s\n' "$1" | awk -v wanted="\"$2\"" '
+        function value_start(text, wanted,    i, j) {
+            for (i = 1; i <= length(text); i++) {
+                if (substr(text, i, length(wanted)) != wanted) continue
+                j = i + length(wanted)
+                while (j <= length(text) && substr(text, j, 1) ~ /[[:space:]]/) j++
+                if (substr(text, j, 1) == ":") return j + 1
+            }
+            return 0
+        }
         {
             text = $0
-            start = index(text, wanted)
+            start = value_start(text, wanted)
             if (start == 0) exit 1
-            start += length(wanted)
-            while (start <= length(text) && substr(text, start, 1) != ":") start++
-            if (start > length(text)) exit 1
-            start++
             while (start <= length(text) && substr(text, start, 1) ~ /[[:space:]]/) start++
             value = substr(text, start)
             if (value ~ /^true([^[:alpha:][:digit:]_]|$)/) {
@@ -281,14 +298,21 @@ extract_json_boolean() {
 # strings (including certificate PEM escapes) do not affect the depth counter.
 extract_json_object() {
     printf '%s\n' "$1" | awk -v wanted="\"$2\"" '
+        function value_start(text, wanted,    i, j) {
+            for (i = 1; i <= length(text); i++) {
+                if (substr(text, i, length(wanted)) != wanted) continue
+                j = i + length(wanted)
+                while (j <= length(text) && substr(text, j, 1) ~ /[[:space:]]/) j++
+                if (substr(text, j, 1) == ":") return j + 1
+            }
+            return 0
+        }
         {
             text = $0
-            start = index(text, wanted)
+            start = value_start(text, wanted)
             if (start == 0) exit 1
-            start += length(wanted)
-            while (start <= length(text) && substr(text, start, 1) != ":") start++
-            while (start <= length(text) && substr(text, start, 1) != "{") start++
-            if (start > length(text)) exit 1
+            while (start <= length(text) && substr(text, start, 1) ~ /[[:space:]]/) start++
+            if (substr(text, start, 1) != "{") exit 1
             depth = 0
             quoted = 0
             escaped = 0

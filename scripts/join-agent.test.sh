@@ -89,6 +89,18 @@ run_go_pki_store_contract() {
 assert_eq "escaped JSON string" \
     "$(extract_json_string '{"agent_token":"quote\"slash\\tail"}' agent_token)" \
     'quote"slash\tail'
+assert_eq "string extractor ignores a key-shaped mention inside an earlier value" \
+    "$(extract_json_string '{"note":"echo \"request_id","other":"decoy","request_id":"real-id"}' request_id)" \
+    'real-id'
+assert_eq "string extractor still prefers the first qualifying member" \
+    "$(extract_json_string '{"request":{"request_id":"nested"},"pki_domain_id":"domain"}' request_id)" \
+    'nested'
+assert_eq "boolean extractor ignores a key-shaped mention inside an earlier value" \
+    "$(extract_json_boolean '{"note":"skip \"reenrollment_required","flag":false,"reenrollment_required":true}' reenrollment_required)" \
+    'true'
+assert_eq "object extractor ignores a key-shaped mention inside an earlier value" \
+    "$(extract_json_object '{"note":"blob \"credential","flag":{},"credential":{"certificate_id":"c1"}}' credential)" \
+    '{"certificate_id":"c1"}'
 
 assert_eq "plain companion URL" \
     "$(companion_manifest_url 'https://downloads.example/nre-agent')" \
