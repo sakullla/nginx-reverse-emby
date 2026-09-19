@@ -46,9 +46,10 @@ func (m *UpdateManager) cleanupPackagesLocked(ctx context.Context, targetSHA str
 			if name == currentPointerFile {
 				return nil
 			}
-			if _, statErr := os.Lstat(filepath.Join(m.stateRoot(), name)); os.IsNotExist(statErr) {
-				continue
-			}
+			// A previous pointer whose package already disappeared protects
+			// nothing: the next promote or rollback rewrites it. Skipping it
+			// must not block reclamation of unrelated obsolete packages.
+			continue
 		}
 		if err != nil {
 			return fmt.Errorf("read retained package %s: %w", name, err)
@@ -126,7 +127,12 @@ func isPackageDigestDirectory(name string) bool {
 
 func (m *UpdateManager) livePackageDigests() ([]string, error) {
 	if runtime.GOOS != "linux" {
-		return nil, errors.New("running package retention requires Linux procfs")
+		// Without procfs the running images of sibling processes cannot be
+		// enumerated. Retain at least this process's own executables: Windows
+		// refuses to delete a running image anyway, and the grace period
+		// bounds the exposure of any other hot-restart process on platforms
+		// that allow the unlink.
+		return m.selfPackageDigests(), nil
 	}
 	processes, err := os.ReadDir("/proc")
 	if err != nil {
@@ -158,4 +164,20 @@ func (m *UpdateManager) livePackageDigests() ([]string, error) {
 		}
 	}
 	return digests, nil
+}
+
+func (m *UpdateManager) selfPackageDigests() []string {
+	var digests []string
+	for _, path := range []string{m.executablePath, m.runningExecutablePath} {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		digest, err := fileDigest(path)
+		if err != nil {
+			continue
+		}
+		digests = append(digests, digest)
+	}
+	return digests
 }

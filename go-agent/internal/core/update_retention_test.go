@@ -192,6 +192,32 @@ func TestIntegrationPackageRetentionInspectsActualRunningImage(t *testing.T) {
 	}
 }
 
+func TestIntegrationPackageRetentionKeepsSelfDigestWithoutProcfs(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("procfs covers sibling processes on Linux")
+	}
+	m := retentionManager(t)
+	// Production never injects a probe: without procfs the fallback must keep
+	// this process's own executable instead of failing every cleanup.
+	m.runningPackageDigests = nil
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.runningExecutablePath = path
+	want, err := fileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests, err := m.livePackageDigests()
+	if err != nil {
+		t.Fatalf("non-procfs running package inspection failed: %v", err)
+	}
+	if !strings.Contains(strings.Join(digests, ","), want) {
+		t.Fatalf("self digest %s missing from %v", want, digests)
+	}
+}
+
 func TestIntegrationPackageRetentionDoesNotFollowSymlinks(t *testing.T) {
 	t.Parallel()
 	m := retentionManager(t)
