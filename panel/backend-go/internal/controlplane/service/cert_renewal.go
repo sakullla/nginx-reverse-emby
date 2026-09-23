@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -13,6 +16,8 @@ type managedCertificateRenewalIssuer interface {
 	Issue(context.Context, ManagedCertificate) (managedCertificateRenewalResult, error)
 	Renew(context.Context, ManagedCertificate) (managedCertificateRenewalResult, error)
 }
+
+const defaultManagedCertificateIssuanceLockWait = 5 * time.Second
 
 type managedCertificateRenewalResult struct {
 	Changed      bool
@@ -40,15 +45,21 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 	}
 
 	maxRevision := highestManagedCertificateRevisionForService(rows)
+	var renewalErrors []error
 	for index, row := range rows {
 		cert := managedCertificateFromRow(row)
 		if !s.isManagedCertificateRenewalCandidate(cert, s.now().UTC()) {
 			continue
 		}
 
-		_, err := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
-		if err != nil {
-			return err
+		_, renewErr := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
+		if renewErr != nil {
+			if ctx.Err() != nil {
+				return errors.Join(append(renewalErrors, renewErr)...)
+			}
+			// One broken ACME order must not prevent the remaining due
+			// certificates from being scheduled in this pass.
+			renewalErrors = append(renewalErrors, renewErr)
 		}
 
 		// Always reload rows after each renewal attempt, even when this
@@ -57,11 +68,11 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 		// continuing with our stale snapshot would overwrite those changes.
 		rows, err = s.store.ListManagedCertificates(ctx)
 		if err != nil {
-			return err
+			return errors.Join(append(renewalErrors, err)...)
 		}
 		maxRevision = highestManagedCertificateRevisionForService(rows)
 	}
-	return nil
+	return errors.Join(renewalErrors...)
 }
 
 func (s *certificateService) renewSingleCertificate(
@@ -72,7 +83,19 @@ func (s *certificateService) renewSingleCertificate(
 	index int,
 	maxRevision *int,
 ) (bool, error) {
-	unlock := issuanceLock(cert.ID)
+	lockTimeout := s.managedCertificateIssuanceLockWaitTimeout()
+	lockCtx, cancelLock := context.WithTimeout(ctx, lockTimeout)
+	unlock, lockErr := issuanceLockContext(lockCtx, cert.ID)
+	cancelLock()
+	if lockErr != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		// Another issue/renew operation owns this certificate. It has its own
+		// ACME deadline; skip this pass instead of recording a false failure
+		// against an operation that is still in flight.
+		return false, nil
+	}
 	defer unlock()
 
 	// Re-read candidate state from storage after acquiring the
@@ -101,7 +124,9 @@ func (s *certificateService) renewSingleCertificate(
 		*maxRevision = currentMax
 	}
 
-	result, err := issuer.Renew(ctx, cert)
+	result, err := s.runManagedCertificateACMEOperation(ctx, cert.Domain, func(operationCtx context.Context) (managedCertificateRenewalResult, error) {
+		return issuer.Renew(operationCtx, cert)
+	})
 	if err != nil {
 		if _, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index); saveErr != nil {
 			return false, saveErr
@@ -314,13 +339,8 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 }
 
 func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCertificate, now time.Time) bool {
-	if !cert.Enabled || cert.Scope != "domain" || cert.IssuerMode != "master_cf_dns" || cert.CertificateType != "acme" {
+	if !s.isManagedCertificateRenewalTarget(cert) {
 		return false
-	}
-	if localAgentID := s.cfg.LocalAgentID; localAgentID != "" {
-		if len(cert.TargetAgentIDs) != 1 || cert.TargetAgentIDs[0] != localAgentID {
-			return false
-		}
 	}
 	// Honor failure backoff recorded by the issue/renew failure paths: a cert whose next retry is
 	// still in the future is skipped until NextRetryAtUnix elapses. This replaces the old behavior
@@ -337,6 +357,87 @@ func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCe
 		return true
 	}
 	return !renewAt.After(now)
+}
+
+func (s *certificateService) isManagedCertificateRenewalTarget(cert ManagedCertificate) bool {
+	if !cert.Enabled || cert.Scope != "domain" || cert.IssuerMode != "master_cf_dns" || cert.CertificateType != "acme" {
+		return false
+	}
+	if localAgentID := strings.TrimSpace(s.cfg.LocalAgentID); localAgentID != "" {
+		return containsString(cert.TargetAgentIDs, localAgentID)
+	}
+	return true
+}
+
+// NextManagedCertificateRenewalRetryAt returns the earliest persisted failure
+// retry time. A zero time means that the periodic renewal interval is enough;
+// a time at or before now means the retry is due immediately.
+func (s *certificateService) NextManagedCertificateRenewalRetryAt(ctx context.Context, now time.Time) (time.Time, error) {
+	if now.IsZero() {
+		now = s.now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	rows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var next time.Time
+	for _, row := range rows {
+		cert := managedCertificateFromRow(row)
+		if !s.isManagedCertificateRenewalTarget(cert) || cert.NextRetryAtUnix <= 0 {
+			continue
+		}
+		retryAt := time.Unix(cert.NextRetryAtUnix, 0).UTC()
+		if !retryAt.After(now) {
+			return now, nil
+		}
+		if next.IsZero() || retryAt.Before(next) {
+			next = retryAt
+		}
+	}
+	return next, nil
+}
+
+func (s *certificateService) managedCertificateACMETimeout() time.Duration {
+	if s.cfg.ManagedCertificateACMETimeout > 0 {
+		return s.cfg.ManagedCertificateACMETimeout
+	}
+	return config.Default().ManagedCertificateACMETimeout
+}
+
+func (s *certificateService) managedCertificateIssuanceLockWaitTimeout() time.Duration {
+	lockTimeout := defaultManagedCertificateIssuanceLockWait
+	if acmeTimeout := s.managedCertificateACMETimeout(); acmeTimeout < lockTimeout {
+		lockTimeout = acmeTimeout
+	}
+	return lockTimeout
+}
+
+// runManagedCertificateACMEOperation gives every ACME order a finite lifetime.
+// The parent context remains available to persist the failure after a timeout,
+// so a timed-out order is recorded as an error and the scheduler can continue.
+func (s *certificateService) runManagedCertificateACMEOperation(
+	ctx context.Context,
+	domain string,
+	operation func(context.Context) (managedCertificateRenewalResult, error),
+) (managedCertificateRenewalResult, error) {
+	timeout := s.managedCertificateACMETimeout()
+	operationCtx, cancel := context.WithTimeout(ctx, timeout)
+	result, err := operation(operationCtx)
+	operationErr := operationCtx.Err()
+	parentErr := ctx.Err()
+	cancel()
+	if parentErr != nil {
+		if err == nil {
+			err = parentErr
+		}
+		return result, err
+	}
+	if operationErr == context.DeadlineExceeded {
+		return result, fmt.Errorf("managed certificate ACME operation for %s timed out after %s: %w", domain, timeout, context.DeadlineExceeded)
+	}
+	return result, err
 }
 
 // applyManagedCertificateRenewalFailureBackoff records the failure backoff fields on a renewal

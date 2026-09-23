@@ -112,6 +112,8 @@ environment:
 
 也可以把配置写在 `.env` 里，参考 [`.env.example`](.env.example)。**不要把真实 token、证书或私钥提交到仓库。** `./data` 目录是运行数据，同样不要上传到 Git 或网盘。
 
+托管证书默认每 24 小时扫描一次；单张 ACME 签发或续签默认最多运行 60 分钟，超时会记录失败并继续处理其他证书。可通过 `NRE_MANAGED_CERT_RENEW_INTERVAL` 和 `NRE_MANAGED_CERT_ACME_TIMEOUT` 调整。
+
 启动：
 
 ```bash

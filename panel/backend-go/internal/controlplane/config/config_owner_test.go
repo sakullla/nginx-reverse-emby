@@ -16,12 +16,21 @@ func requiredTokens(t *testing.T) {
 
 func TestLoadFromEnvDefaultsAndRejectsUnsafeCombinations(t *testing.T) {
 	requiredTokens(t)
+	t.Setenv("NRE_MANAGED_CERT_ACME_TIMEOUT", "")
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ListenAddr == "" || cfg.DatabaseDriver != "sqlite" || !cfg.EnableLocalAgent {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+	if cfg.ManagedCertificateACMETimeout != 60*time.Minute {
+		t.Fatalf("managed certificate ACME timeout = %s, want 60m", cfg.ManagedCertificateACMETimeout)
+	}
+	t.Setenv("NRE_MANAGED_CERT_ACME_TIMEOUT", "90m")
+	cfg, err = LoadFromEnv()
+	if err != nil || cfg.ManagedCertificateACMETimeout != 90*time.Minute {
+		t.Fatalf("configured managed certificate ACME timeout = %s, err=%v", cfg.ManagedCertificateACMETimeout, err)
 	}
 
 	t.Setenv("NRE_PANEL_TOKEN", "change-this-token")

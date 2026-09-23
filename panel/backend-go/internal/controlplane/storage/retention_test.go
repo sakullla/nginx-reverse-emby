@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -110,5 +111,60 @@ func TestPruneRevisionHistoryBoundsRecentRevisionCount(t *testing.T) {
 	}
 	if count != 5 {
 		t.Fatalf("remaining revisions = %d, want 5", count)
+	}
+}
+
+func TestPruneRevisionHistoryRemovesOrphanedArtifactReferencesAndFiles(t *testing.T) {
+	store, err := newStorageTestSQLiteStoreForAllTiers(t, t.TempDir(), "local", true)
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	payload := []byte("orphaned generation artifact")
+	digest := generationArtifactTestDigest(payload)
+	relative, err := writeGenerationArtifactFile(store.dataRoot, digest, payload)
+	if err != nil {
+		t.Fatalf("write generation artifact file: %v", err)
+	}
+	path, err := generationArtifactFilePath(store.dataRoot, relative, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("age generation artifact file: %v", err)
+	}
+	if err := store.db.Create(&GenerationArtifactRow{
+		ID: "orphan-artifact", Kind: revisionRuntimeArtifactKind, SHA256: digest,
+		ExternalPath: relative, SizeBytes: int64(len(payload)), CreatedAt: old,
+	}).Error; err != nil {
+		t.Fatalf("seed generation artifact: %v", err)
+	}
+	if err := store.db.Create(&AgentRevisionArtifactRow{
+		AgentID: "deleted-agent", Revision: 99, ArtifactID: "orphan-artifact", Role: "snapshot", CreatedAt: old,
+	}).Error; err != nil {
+		t.Fatalf("seed orphan artifact reference: %v", err)
+	}
+
+	result, err := store.PruneRevisionHistory(context.Background(), RevisionRetentionPolicy{Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("prune retention: %v", err)
+	}
+	if result.ArtifactsDeleted != 1 {
+		t.Fatalf("deleted artifacts = %d, want 1", result.ArtifactsDeleted)
+	}
+	var artifactCount, referenceCount int64
+	if err := store.db.Model(&GenerationArtifactRow{}).Where("id = ?", "orphan-artifact").Count(&artifactCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&AgentRevisionArtifactRow{}).Where("artifact_id = ?", "orphan-artifact").Count(&referenceCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if artifactCount != 0 || referenceCount != 0 {
+		t.Fatalf("orphan artifact rows = %d, references = %d, want both zero", artifactCount, referenceCount)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("orphan generation artifact file still exists: %v", err)
 	}
 }

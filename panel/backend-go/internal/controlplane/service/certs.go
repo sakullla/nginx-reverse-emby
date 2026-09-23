@@ -1455,7 +1455,19 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
 	}
 
-	unlock := issuanceLock(current.ID)
+	lockTimeout := s.managedCertificateIssuanceLockWaitTimeout()
+	lockCtx, cancelLock := context.WithTimeout(ctx, lockTimeout)
+	unlock, lockErr := issuanceLockContext(lockCtx, current.ID)
+	cancelLock()
+	if lockErr != nil {
+		if ctx.Err() != nil {
+			return ManagedCertificate{}, ctx.Err()
+		}
+		// The active issuer owns the certificate slot. Its own ACME timeout
+		// will release the slot and persist the outcome; do not overwrite that
+		// in-flight state from this duplicate dispatch.
+		return ManagedCertificate{}, fmt.Errorf("acquire issuance slot for certificate %d: %w", current.ID, lockErr)
+	}
 	defer unlock()
 
 	// Retry once when a concurrent edit changes the domain/targets while the
@@ -1482,7 +1494,9 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		}
 		generation := managedCertificateGenerationFor(current)
 
-		issueResult, err := issuer.Issue(ctx, current)
+		issueResult, err := s.runManagedCertificateACMEOperation(ctx, current.Domain, func(operationCtx context.Context) (managedCertificateRenewalResult, error) {
+			return issuer.Issue(operationCtx, current)
+		})
 		if err != nil {
 			// Re-read before recording failure — the ACME order may have taken long
 			// enough that the certificate was concurrently deleted or edited. Using the

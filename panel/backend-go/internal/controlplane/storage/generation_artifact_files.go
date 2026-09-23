@@ -215,16 +215,17 @@ func (s *GormStore) ExternalizeRuntimeArtifacts(ctx context.Context) (int64, err
 	}
 	var externalized int64
 	for {
-		var row GenerationArtifactRow
+		var rows []GenerationArtifactRow
 		err := s.db.WithContext(ctx).
 			Where("kind = ? AND external_path = ?", revisionRuntimeArtifactKind, "").
-			Order("id").First(&row).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return externalized, nil
-		}
+			Order("id").Limit(1).Find(&rows).Error
 		if err != nil {
 			return externalized, err
 		}
+		if len(rows) == 0 {
+			return externalized, nil
+		}
+		row := rows[0]
 		if err := validateGenerationArtifact(row); err != nil {
 			return externalized, err
 		}
@@ -310,6 +311,40 @@ func (s *GormStore) compactExternalizedSQLite(ctx context.Context) error {
 		return fmt.Errorf("compact externalized SQLite artifacts: %w", result.Error)
 	}
 	return nil
+}
+
+func (s *GormStore) sqliteCompactionNeeded(ctx context.Context) (bool, error) {
+	if s == nil || s.driver != "sqlite" {
+		return false, nil
+	}
+	readPragma := func(query string) (int64, error) {
+		row := s.db.WithContext(ctx).Raw(query).Row()
+		var value int64
+		if err := row.Scan(&value); err != nil {
+			return 0, err
+		}
+		return value, nil
+	}
+	pageCount, err := readPragma("PRAGMA page_count")
+	if err != nil {
+		return false, err
+	}
+	freePages, err := readPragma("PRAGMA freelist_count")
+	if err != nil {
+		return false, err
+	}
+	pageSize, err := readPragma("PRAGMA page_size")
+	if err != nil {
+		return false, err
+	}
+	if pageCount <= 0 || freePages <= 0 || pageSize <= 0 {
+		return false, nil
+	}
+	freeBytes := freePages * pageSize
+	// Avoid a daily full VACUUM for small, normal churn. Compact when the
+	// reclaimable space is material and either a quarter of the database or a
+	// large absolute amount, which also handles a large DB with a low ratio.
+	return (freeBytes >= 16<<20 && freePages*4 >= pageCount) || freeBytes >= 128<<20, nil
 }
 
 func (s *GormStore) runtimeArtifactCompactionPending(ctx context.Context) (bool, error) {

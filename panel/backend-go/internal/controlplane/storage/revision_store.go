@@ -1423,8 +1423,23 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		}
 		result.OperationsDeleted = deletedOperations.RowsAffected
 
+		// A ref without its parent revision is stale state and must not pin an
+		// artifact forever. Remove it before calculating the live reachability
+		// set so both the database row and its external file can be reclaimed.
+		orphanedArtifactRefs := tx.Where(`NOT EXISTS (
+			SELECT 1 FROM agent_revisions
+			WHERE agent_revisions.agent_id = agent_revision_artifacts.agent_id
+			  AND agent_revisions.revision = agent_revision_artifacts.revision
+		)`).Delete(&AgentRevisionArtifactRow{})
+		if orphanedArtifactRefs.Error != nil {
+			return orphanedArtifactRefs.Error
+		}
+
 		var explicitArtifactIDs []string
-		if err := tx.Model(&AgentRevisionArtifactRow{}).Distinct("artifact_id").Pluck("artifact_id", &explicitArtifactIDs).Error; err != nil {
+		if err := tx.Table("agent_revision_artifacts AS refs").
+			Joins("JOIN agent_revisions AS revisions ON revisions.agent_id = refs.agent_id AND revisions.revision = refs.revision").
+			Distinct("refs.artifact_id").
+			Pluck("refs.artifact_id", &explicitArtifactIDs).Error; err != nil {
 			return err
 		}
 		var snapshotArtifactIDs []string
@@ -1454,11 +1469,22 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		result.ArtifactsDeleted = deletedArtifacts.RowsAffected
 		return nil
 	})
-	if err != nil {
-		return result, err
+	var compactErr error
+	if err == nil {
+		shouldCompact := result.ArtifactsDeleted > 0
+		if !shouldCompact {
+			shouldCompact, compactErr = s.sqliteCompactionNeeded(ctx)
+		}
+		if compactErr == nil && shouldCompact {
+			// Deleting inline legacy artifacts or other durable rows frees SQLite
+			// pages but does not return them to the filesystem until VACUUM. The
+			// free-page threshold prevents the daily pass from repeatedly taking a
+			// long write lock for insignificant churn.
+			compactErr = s.compactExternalizedSQLite(ctx)
+		}
 	}
 	_, fileErr := s.PruneGenerationArtifactFiles(ctx, now.Add(-24*time.Hour))
-	return result, fileErr
+	return result, errors.Join(err, compactErr, fileErr)
 }
 
 func validateGenerationArtifact(row GenerationArtifactRow) error {

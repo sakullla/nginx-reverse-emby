@@ -341,8 +341,21 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 	return service.NewCertificateServiceWithDNSTokenResolver(cfg, store, resolver.Resolve).RunRenewalPass(ctx)
 }
 
+var nextManagedCertificateRenewalRetryAt = func(ctx context.Context, cfg config.Config, resolver *service.PluginDNSTokenResolver) (time.Time, error) {
+	ctx = service.WithSystemMutationPrincipal(ctx, "system:managed-certificate-renewal")
+	store, err := openConfiguredStore(cfg)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+	return service.NewCertificateServiceWithDNSTokenResolver(cfg, store, resolver.Resolve).NextManagedCertificateRenewalRetryAt(ctx, time.Now().UTC())
+}
+
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
 var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
+var managedCertificateRetryPollInterval = time.Minute
 var trafficCleanupInitialDelay = 30 * time.Second
 var revisionRetentionInterval = 24 * time.Hour
 var revisionRetentionStartupRetryInterval = 5 * time.Second
@@ -370,13 +383,32 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 			}
 		}
 
-		ticker := time.NewTicker(cfg.ManagedCertificateRenewInterval)
-		defer ticker.Stop()
 		for {
+			nextWake := time.Now().Add(cfg.ManagedCertificateRenewInterval)
+			retryAt, retryErr := nextManagedCertificateRenewalRetryAt(ctx, cfg, resolver)
+			if retryErr != nil {
+				logger.Printf("[cert] schedule next retry lookup failed: %v", retryErr)
+			} else if !retryAt.IsZero() {
+				if !retryAt.After(time.Now()) {
+					pollInterval := managedCertificateRetryPollInterval
+					if pollInterval <= 0 {
+						pollInterval = time.Minute
+					}
+					nextWake = time.Now().Add(pollInterval)
+				} else if retryAt.Before(nextWake) {
+					nextWake = retryAt
+				}
+			}
+			wait := time.Until(nextWake)
+			if wait <= 0 {
+				wait = time.Millisecond
+			}
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
+			case <-timer.C:
 				if err := runManagedCertificateRenewalPass(ctx, cfg, resolver); err != nil {
 					logger.Printf("[cert] managed certificate auto renew cycle failed: %v", err)
 				}

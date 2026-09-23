@@ -16,21 +16,22 @@ import (
 )
 
 const (
-	defaultListenAddr         = "0.0.0.0:8080"
-	defaultDataDir            = "/opt/nginx-reverse-emby/panel/data"
-	defaultFrontendDistDir    = "/opt/nginx-reverse-emby/panel/frontend/dist"
-	defaultPublicAssetsDir    = "/opt/nginx-reverse-emby/panel/public/agent-assets"
-	defaultEnableLocalAgent   = true
-	defaultLocalAgentID       = "local"
-	defaultLocalAgentName     = "local"
-	defaultDatabaseDriver     = "sqlite"
-	defaultHeartbeatInterval  = 30 * time.Second
-	defaultDDNSIPProbe        = 5 * time.Minute
-	defaultManagedCertRenew   = 24 * time.Hour
-	defaultTrafficCleanup     = 24 * time.Hour
-	defaultMarketplaceRefresh = 30 * time.Minute
-	defaultRevisionApply      = 60 * time.Second
-	defaultRevisionDrain      = 10 * time.Minute
+	defaultListenAddr             = "0.0.0.0:8080"
+	defaultDataDir                = "/opt/nginx-reverse-emby/panel/data"
+	defaultFrontendDistDir        = "/opt/nginx-reverse-emby/panel/frontend/dist"
+	defaultPublicAssetsDir        = "/opt/nginx-reverse-emby/panel/public/agent-assets"
+	defaultEnableLocalAgent       = true
+	defaultLocalAgentID           = "local"
+	defaultLocalAgentName         = "local"
+	defaultDatabaseDriver         = "sqlite"
+	defaultHeartbeatInterval      = 30 * time.Second
+	defaultDDNSIPProbe            = 5 * time.Minute
+	defaultManagedCertRenew       = 24 * time.Hour
+	defaultManagedCertACMETimeout = 60 * time.Minute
+	defaultTrafficCleanup         = 24 * time.Hour
+	defaultMarketplaceRefresh     = 30 * time.Minute
+	defaultRevisionApply          = 60 * time.Second
+	defaultRevisionDrain          = 10 * time.Minute
 )
 
 type Config struct {
@@ -64,6 +65,7 @@ type Config struct {
 	LocalAgentPluginCapabilityAudit   goagentembedded.CapabilityAuditConfig
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
+	ManagedCertificateACMETimeout     time.Duration
 	MarketplaceRefreshTimeout         time.Duration
 	ACMEDNSProvider                   string
 	ManagedDNSCertificatesEnabled     bool
@@ -183,6 +185,7 @@ func Default() Config {
 		LocalAgentPluginCapabilityAudit: goagentembedded.DefaultCapabilityAuditConfig(),
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
+		ManagedCertificateACMETimeout:   defaultManagedCertACMETimeout,
 		MarketplaceRefreshTimeout:       defaultMarketplaceRefresh,
 		RevisionCoordinator: RevisionCoordinatorConfig{
 			ApplyTimeout:          defaultRevisionApply,
@@ -505,6 +508,13 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("PANEL_MANAGED_CERT_RENEW_INTERVAL_MS must be positive")
 		}
 		cfg.ManagedCertificateRenewInterval = time.Duration(ms) * time.Millisecond
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_MANAGED_CERT_ACME_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_MANAGED_CERT_ACME_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.ManagedCertificateACMETimeout = dur
 	}
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
