@@ -18,6 +18,9 @@ type managedCertificateRenewalIssuer interface {
 }
 
 const defaultManagedCertificateIssuanceLockWait = 5 * time.Second
+const managedCertificateRenewalBusyRetryDelay = time.Minute
+
+var errManagedCertificateRenewalBusy = errors.New("managed certificate renewal is already in progress")
 
 type managedCertificateRenewalResult struct {
 	Changed      bool
@@ -92,9 +95,17 @@ func (s *certificateService) renewSingleCertificate(
 			return false, ctx.Err()
 		}
 		// Another issue/renew operation owns this certificate. It has its own
-		// ACME deadline; skip this pass instead of recording a false failure
-		// against an operation that is still in flight.
-		return false, nil
+		// ACME deadline; skip this attempt instead of recording a false failure
+		// against an operation that is still in flight. Persist a short retry
+		// window so a lock collision cannot silently defer renewal to the next
+		// daily interval.
+		if retryErr := s.scheduleManagedCertificateRenewalRetry(ctx, cert); retryErr != nil {
+			return false, errors.Join(
+				fmt.Errorf("renew certificate %d skipped: %w", cert.ID, errManagedCertificateRenewalBusy),
+				retryErr,
+			)
+		}
+		return false, fmt.Errorf("renew certificate %d skipped: %w", cert.ID, errManagedCertificateRenewalBusy)
 	}
 	defer unlock()
 
@@ -397,6 +408,41 @@ func (s *certificateService) NextManagedCertificateRenewalRetryAt(ctx context.Co
 		}
 	}
 	return next, nil
+}
+
+// scheduleManagedCertificateRenewalRetry records a short-lived retry for a
+// transient issuance-lock collision. It deliberately preserves the
+// certificate's status and error fields: the other operation still owns the
+// real outcome, while the scheduler needs a durable wake-up if that outcome
+// does not update the row as expected.
+func (s *certificateService) scheduleManagedCertificateRenewalRetry(ctx context.Context, cert ManagedCertificate) error {
+	retryAt := s.now().UTC().Add(managedCertificateRenewalBusyRetryDelay).Unix()
+	expectedGeneration := managedCertificateGenerationFor(cert)
+	update := func(rows []storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error) {
+		current, index, found := findManagedCertificateByID(rows, cert.ID)
+		if !found || !expectedGeneration.Matches(current) {
+			return rows, false, nil
+		}
+		if current.NextRetryAtUnix >= retryAt {
+			return rows, false, nil
+		}
+		current.NextRetryAtUnix = retryAt
+		rows[index] = managedCertificateToRow(current)
+		return rows, true, nil
+	}
+
+	if atomicStore, ok := s.store.(storage.ManagedCertificateUpdateStore); ok {
+		return atomicStore.UpdateManagedCertificates(ctx, update)
+	}
+	rows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+	nextRows, changed, err := update(rows)
+	if err != nil || !changed {
+		return err
+	}
+	return s.store.SaveManagedCertificates(ctx, nextRows)
 }
 
 func (s *certificateService) managedCertificateACMETimeout() time.Duration {

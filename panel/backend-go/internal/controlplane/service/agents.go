@@ -1802,7 +1802,8 @@ func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Con
 func (s *agentService) loadCoherentHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.AgentHeartbeatSnapshot, error) {
 	if coherentStore, ok := s.store.(agentCoherentHeartbeatSnapshotStore); ok {
 		result, err := coherentStore.LoadAgentHeartbeatSnapshot(ctx, row.ID, func(ctx context.Context, tx *storage.GormStore, agentID string, snapshot storage.Snapshot) (storage.Snapshot, error) {
-			return overlayPendingManagedCertificateGenerationsForConfig(ctx, s.cfg, tx, agentID, snapshot)
+			certificateCtx := WithSystemMutationPrincipal(ctx, "system:agent-heartbeat-certificates:"+agentID)
+			return overlayPendingManagedCertificateGenerationsForConfig(certificateCtx, s.cfg, tx, agentID, snapshot)
 		})
 		if err != nil {
 			return storage.AgentHeartbeatSnapshot{}, err
@@ -1820,7 +1821,8 @@ func (s *agentService) loadCoherentHeartbeatSnapshot(ctx context.Context, row st
 	if err != nil {
 		return storage.AgentHeartbeatSnapshot{}, err
 	}
-	snapshot, err = overlayPendingManagedCertificateGenerationsForConfig(ctx, s.cfg, s.store, row.ID, snapshot)
+	certificateCtx := WithSystemMutationPrincipal(ctx, "system:agent-heartbeat-certificates:"+row.ID)
+	snapshot, err = overlayPendingManagedCertificateGenerationsForConfig(certificateCtx, s.cfg, s.store, row.ID, snapshot)
 	if err != nil {
 		return storage.AgentHeartbeatSnapshot{}, err
 	}

@@ -385,15 +385,24 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 
 		for {
 			nextWake := time.Now().Add(cfg.ManagedCertificateRenewInterval)
+			// A renewal pass can legitimately skip a certificate because its
+			// target state is changing (for example, an issue request is being
+			// committed) or because another goroutine briefly owns its issuance
+			// lock. Do not turn that transient state into a full renewal interval;
+			// polling keeps overdue certificates schedulable even when no failure
+			// row was persisted.
+			pollInterval := managedCertificateRetryPollInterval
+			if pollInterval <= 0 {
+				pollInterval = time.Minute
+			}
+			if pollWake := time.Now().Add(pollInterval); pollWake.Before(nextWake) {
+				nextWake = pollWake
+			}
 			retryAt, retryErr := nextManagedCertificateRenewalRetryAt(ctx, cfg, resolver)
 			if retryErr != nil {
 				logger.Printf("[cert] schedule next retry lookup failed: %v", retryErr)
 			} else if !retryAt.IsZero() {
 				if !retryAt.After(time.Now()) {
-					pollInterval := managedCertificateRetryPollInterval
-					if pollInterval <= 0 {
-						pollInterval = time.Minute
-					}
 					nextWake = time.Now().Add(pollInterval)
 				} else if retryAt.Before(nextWake) {
 					nextWake = retryAt

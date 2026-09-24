@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +83,74 @@ func TestRunRenewalPassContinuesAfterACMETimeoutAndSchedulesRetry(t *testing.T) 
 	}
 	if !next.After(now) || next.Unix() != failed.NextRetryAtUnix {
 		t.Fatalf("next renewal retry = %s, failed retry = %d", next, failed.NextRetryAtUnix)
+	}
+}
+
+func TestRunRenewalPassSchedulesRetryAfterIssuanceLockCollision(t *testing.T) {
+	store := newServiceOwnerStore(t)
+	now := time.Date(2026, time.September, 23, 14, 0, 0, 0, time.UTC)
+	cert := ManagedCertificate{
+		ID: 3, Domain: "busy.example.com", Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		CertificateType: "acme", TargetAgentIDs: []string{"local"}, Status: "active", Revision: 1,
+		ACMEInfo: ManagedCertificateACMEInfo{Renew: now.Add(-time.Hour).Format(time.RFC3339)},
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{managedCertificateToRow(cert)}); err != nil {
+		t.Fatalf("seed managed certificates: %v", err)
+	}
+
+	service := newCertificateServiceWithRenewal(config.Config{
+		LocalAgentID:                  "local",
+		ManagedCertificateACMETimeout: 10 * time.Millisecond,
+	}, store, &renewalTimeoutTestIssuer{})
+	service.now = func() time.Time { return now }
+	unlock := issuanceLock(cert.ID)
+	defer unlock()
+
+	err := service.RunRenewalPass(context.Background())
+	if !errors.Is(err, errManagedCertificateRenewalBusy) {
+		t.Fatalf("renewal pass error = %v, want issuance-lock collision", err)
+	}
+	persisted, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("reload managed certificates: %v", err)
+	}
+	got := managedCertificateFromRow(persisted[0])
+	wantRetryAt := now.Add(managedCertificateRenewalBusyRetryDelay).Unix()
+	if got.NextRetryAtUnix != wantRetryAt {
+		t.Fatalf("busy certificate retry_at = %d, want %d", got.NextRetryAtUnix, wantRetryAt)
+	}
+	if got.Status != "active" || got.LastError != "" {
+		t.Fatalf("busy certificate state = %+v, want active without failure", got)
+	}
+}
+
+func TestHeartbeatSnapshotOverlaysPendingGenerationWithSystemPrincipal(t *testing.T) {
+	store := newServiceOwnerStore(t)
+	const (
+		agentID = "edge-pending-cert"
+		domain  = "pending.example.com"
+	)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: agentID, Name: agentID, AgentToken: "test-token"}); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{managedCertificateToRow(ManagedCertificate{
+		ID: 4, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		CertificateType: "acme", TargetAgentIDs: []string{agentID}, Status: "active", Revision: 1,
+	})}); err != nil {
+		t.Fatalf("seed managed certificate: %v", err)
+	}
+	if _, err := store.StageManagedCertificateGeneration(t.Context(), domain, storage.ManagedCertificateBundle{
+		Domain: domain, CertPEM: "certificate-pending", KeyPEM: "private-key-pending",
+	}); err != nil {
+		t.Fatalf("stage pending generation: %v", err)
+	}
+
+	service := NewAgentService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	result, err := service.loadCoherentHeartbeatSnapshot(t.Context(), storage.AgentRow{ID: agentID})
+	if err != nil {
+		t.Fatalf("load coherent heartbeat snapshot: %v", err)
+	}
+	if len(result.Snapshot.Certificates) != 1 || result.Snapshot.Certificates[0].Domain != domain || result.Snapshot.Certificates[0].CertPEM != "certificate-pending" {
+		t.Fatalf("heartbeat certificate overlay = %+v, want pending generation", result.Snapshot.Certificates)
 	}
 }

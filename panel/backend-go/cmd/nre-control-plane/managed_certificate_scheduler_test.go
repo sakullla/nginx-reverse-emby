@@ -63,3 +63,56 @@ func TestManagedCertificateAutoRenewLoopWakesForPersistedRetry(t *testing.T) {
 		t.Fatal("renewal loop did not run initial pass")
 	}
 }
+
+func TestManagedCertificateAutoRenewLoopPollsWhenNoRetryWasPersisted(t *testing.T) {
+	originalPass := runManagedCertificateRenewalPass
+	originalRetryAt := nextManagedCertificateRenewalRetryAt
+	originalInitialDelay := managedCertificateAutoRenewInitialDelay
+	originalPollInterval := managedCertificateRetryPollInterval
+	t.Cleanup(func() {
+		runManagedCertificateRenewalPass = originalPass
+		nextManagedCertificateRenewalRetryAt = originalRetryAt
+		managedCertificateAutoRenewInitialDelay = originalInitialDelay
+		managedCertificateRetryPollInterval = originalPollInterval
+	})
+
+	managedCertificateAutoRenewInitialDelay = 0
+	managedCertificateRetryPollInterval = 10 * time.Millisecond
+	firstRun := make(chan time.Time, 1)
+	secondRun := make(chan time.Time, 1)
+	runCount := 0
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	runManagedCertificateRenewalPass = func(context.Context, config.Config, *service.PluginDNSTokenResolver) error {
+		runCount++
+		if runCount == 1 {
+			firstRun <- time.Now()
+		} else {
+			secondRun <- time.Now()
+			stop()
+		}
+		return nil
+	}
+	nextManagedCertificateRenewalRetryAt = func(context.Context, config.Config, *service.PluginDNSTokenResolver) (time.Time, error) {
+		return time.Time{}, nil
+	}
+
+	startManagedCertificateAutoRenewLoop(stopCtx, config.Config{
+		ManagedDNSCertificatesEnabled:   true,
+		ManagedCertificateRenewInterval: time.Hour,
+	}, log.New(io.Discard, "", 0), nil)
+
+	select {
+	case first := <-firstRun:
+		select {
+		case second := <-secondRun:
+			if second.Sub(first) >= time.Second {
+				t.Fatalf("second renewal run started after %s, want polling before daily interval", second.Sub(first))
+			}
+		case <-time.After(time.Second):
+			t.Fatal("renewal loop did not poll without persisted retry")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("renewal loop did not run initial pass")
+	}
+}
