@@ -11,6 +11,8 @@
         class="status-message"
         :class="`status-message--${msg.type}`"
         :data-id="msg.id"
+        :role="msg.type === 'error' ? 'alert' : 'status'"
+        :aria-live="msg.type === 'error' ? 'assertive' : 'polite'"
         @mouseenter="(e) => pauseTimer(msg.id, e)"
         @mouseleave="(e) => resumeTimer(msg.id, e)"
       >
@@ -47,14 +49,14 @@
         </div>
 
         <!-- 关闭按钮 -->
-        <button class="status-message__close" @click="remove(msg.id)">
+        <button class="status-message__close" aria-label="关闭" @click="remove(msg.id)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path d="M6 6l12 12M18 6l-12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           </svg>
         </button>
 
         <!-- 进度条 -->
-        <div class="status-message__progress" :style="{ animationDuration: msg.duration + 'ms' }"></div>
+        <div class="status-message__progress" :style="{ animationDuration: msg.duration + 'ms' }" aria-hidden="true"></div>
       </div>
     </TransitionGroup>
   </Teleport>
@@ -101,41 +103,24 @@ const resumeTimer = (id, event) => {
   max-width: 420px;
 }
 
-/* 消息卡片 - 毛玻璃效果 */
+/* 消息卡片 - 毛玻璃效果（颜色跟随当前 data-theme，而非系统 prefers-color-scheme） */
 .status-message {
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-4);
-  background: rgba(255, 255, 255, 0.95);
+  background: color-mix(in srgb, var(--color-bg-surface-raised) 94%, transparent);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-radius: var(--radius-xl);
-  box-shadow:
-    0 4px 6px -1px rgba(0, 0, 0, 0.05),
-    0 10px 15px -3px rgba(0, 0, 0, 0.08),
-    0 20px 25px -5px rgba(0, 0, 0, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-xl), var(--shadow-md);
+  border: 1px solid var(--color-border-default);
   pointer-events: auto;
   min-width: 320px;
   max-width: 420px;
   overflow: hidden;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* 深色模式适配 */
-@media (prefers-color-scheme: dark) {
-  .status-message {
-    background: rgba(30, 30, 35, 0.95);
-    border-color: rgba(255, 255, 255, 0.08);
-    box-shadow:
-      0 4px 6px -1px rgba(0, 0, 0, 0.2),
-      0 10px 15px -3px rgba(0, 0, 0, 0.3),
-      0 20px 25px -5px rgba(0, 0, 0, 0.2),
-      inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  }
 }
 
 /* 顶部彩色条 */
@@ -263,7 +248,7 @@ const resumeTimer = (id, event) => {
 
 .status-message__close:hover {
   color: var(--color-text-primary);
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--color-bg-hover);
   transform: rotate(90deg);
 }
 
@@ -339,11 +324,7 @@ const resumeTimer = (id, event) => {
 /* 悬停效果 */
 .status-message:hover {
   transform: translateY(-2px);
-  box-shadow:
-    0 8px 12px -2px rgba(0, 0, 0, 0.08),
-    0 16px 24px -4px rgba(0, 0, 0, 0.1),
-    0 24px 32px -6px rgba(0, 0, 0, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  box-shadow: var(--shadow-2xl), var(--shadow-lg);
 }
 
 /* 移动端适配 */

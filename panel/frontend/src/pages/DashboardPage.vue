@@ -11,10 +11,7 @@
     <AttentionBar :attention="attention" class="dashboard__attention card-enter stagger-1" />
 
     <!-- Loading state -->
-    <div v-if="isLoading" class="dashboard__loading card-enter">
-      <div class="spinner"></div>
-      <span>加载中...</span>
-    </div>
+    <SkeletonList v-if="isLoading" variant="cards" :count="3" label="仪表盘加载中" />
 
     <!-- Empty state -->
     <div v-else-if="!agents?.length" class="dashboard__empty card-enter">
@@ -64,6 +61,7 @@ import AttentionBar from '../components/dashboard/AttentionBar.vue'
 import AgentStatusTiles from '../components/dashboard/AgentStatusTiles.vue'
 import ClusterMetricsCard from '../components/dashboard/ClusterMetricsCard.vue'
 import DashboardTrafficModule from '../components/traffic/DashboardTrafficModule.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
 
 const { data: agents, isLoading } = useAgents()
 

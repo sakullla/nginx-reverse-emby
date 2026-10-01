@@ -2,7 +2,15 @@
   <Teleport to="body">
     <Transition name="dialog">
       <div v-if="show" class="delete-dialog-overlay" @click.self="handleCancel">
-        <div class="delete-dialog">
+        <div
+          ref="dialogRef"
+          class="delete-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          :aria-labelledby="titleId"
+          :aria-describedby="descId"
+          tabindex="-1"
+        >
           <!-- 图标区域 -->
           <div class="delete-dialog__icon-wrapper">
             <div class="delete-dialog__icon">
@@ -16,10 +24,10 @@
           </div>
 
           <!-- 标题 -->
-          <h3 class="delete-dialog__title">{{ title }}</h3>
+          <h3 :id="titleId" class="delete-dialog__title">{{ title }}</h3>
 
           <!-- 内容 -->
-          <p class="delete-dialog__message">
+          <p :id="descId" class="delete-dialog__message">
             <slot>{{ message }}</slot>
           </p>
 
@@ -44,7 +52,7 @@
 
           <!-- 按钮区域 -->
           <div class="delete-dialog__actions">
-            <button class="delete-dialog__btn delete-dialog__btn--cancel" @click="handleCancel">
+            <button ref="cancelBtnRef" class="delete-dialog__btn delete-dialog__btn--cancel" @click="handleCancel">
               取消
             </button>
             <button
@@ -68,6 +76,8 @@
 </template>
 
 <script setup>
+import { ref, watch, onUnmounted, useId } from 'vue'
+
 const props = defineProps({
   show: { type: Boolean, required: true },
   title: { type: String, default: '确认删除' },
@@ -78,6 +88,13 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
+
+const dialogRef = ref(null)
+const cancelBtnRef = ref(null)
+const uid = useId()
+const titleId = `delete-dialog-title-${uid}`
+const descId = `delete-dialog-desc-${uid}`
+let previousActiveElement = null
 
 const handleConfirm = () => {
   if (!props.loading) {
@@ -90,6 +107,56 @@ const handleCancel = () => {
     emit('cancel')
   }
 }
+
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+const handleKeydown = (e) => {
+  if (e.key === 'Escape') {
+    handleCancel()
+    return
+  }
+  if (e.key !== 'Tab' || !dialogRef.value) return
+  const focusables = dialogRef.value.querySelectorAll(FOCUSABLE_SELECTOR)
+  if (!focusables.length) {
+    e.preventDefault()
+    return
+  }
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const active = document.activeElement
+  if (!dialogRef.value.contains(active)) {
+    e.preventDefault()
+    first.focus()
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+// Focus the cancel button on open — the safe default for a destructive action
+// — and return focus to the trigger element when the dialog closes.
+watch(() => props.show, (isOpen) => {
+  if (isOpen) {
+    previousActiveElement = document.activeElement
+    setTimeout(() => {
+      cancelBtnRef.value?.focus()
+    }, 50)
+    document.addEventListener('keydown', handleKeydown)
+  } else {
+    document.removeEventListener('keydown', handleKeydown)
+    if (previousActiveElement instanceof HTMLElement && document.contains(previousActiveElement)) {
+      previousActiveElement.focus()
+    }
+    previousActiveElement = null
+  }
+}, { immediate: true })
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <style scoped>

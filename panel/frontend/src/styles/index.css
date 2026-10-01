@@ -39,6 +39,25 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
   transition: opacity var(--duration-normal) var(--ease-default);
 }
 
+/* Gentle fade when a new route mounts — animation only runs on element
+   insertion, so async blocks appearing later get the same soft entry. */
+.content > * {
+  animation: fadeIn var(--duration-normal) var(--ease-default);
+}
+
+/* Visually hidden but available to assistive tech */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Scrollbar — clean minimal */
 ::-webkit-scrollbar {
   width: 8px;

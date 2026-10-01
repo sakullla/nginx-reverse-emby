@@ -77,7 +77,13 @@
         </RouterLink>
 
         <div v-else class="sidebar__nav-icon-wrap">
-          <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }" :title="item.label">
+          <div
+            class="sidebar__nav-icon"
+            :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }"
+            :title="item.label"
+            :aria-label="item.label"
+            tabindex="0"
+          >
             <component :is="item.icon" />
           </div>
           <div class="sidebar__hover-popup">
@@ -540,6 +546,7 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 }
 
 .sidebar__nav-icon-wrap:hover .sidebar__hover-popup,
+.sidebar__nav-icon-wrap:focus-within .sidebar__hover-popup,
 .sidebar__hover-popup:hover {
   opacity: 1;
   visibility: visible;

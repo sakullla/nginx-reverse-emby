@@ -1,9 +1,16 @@
 <template>
   <Teleport to="body">
-    <div v-if="open" class="global-search-overlay" @click.self="close">
-      <div class="global-search-panel">
+    <div
+      v-if="open"
+      class="global-search-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="全局搜索"
+      @click.self="close"
+    >
+      <div class="global-search-panel" @keydown="handlePanelKeydown">
         <div class="global-search-input-wrap">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <circle cx="11" cy="11" r="8"/>
             <line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
@@ -14,9 +21,13 @@
             type="text"
             class="global-search-input"
             placeholder="跨节点搜索规则 / 监听器 / 证书 / 节点..."
-            @keydown.escape="close"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="global-search-results"
+            aria-autocomplete="list"
+            :aria-activedescendant="activeIndex >= 0 ? `gs-item-${activeIndex}` : undefined"
           >
-          <button v-if="query" class="clear-btn" @click="query = ''">
+          <button v-if="query" type="button" class="clear-btn" aria-label="清除搜索" @click="query = ''">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -40,7 +51,7 @@
             </svg>
             <p>未找到匹配结果</p>
           </div>
-          <div v-else class="global-search-results">
+          <div v-else id="global-search-results" class="global-search-results" role="listbox">
             <div v-for="group in results" :key="group.agentId" class="result-group">
               <div class="result-group__header" @click="group.agentId ? navigateToResult(group.agentId) : null">
                 <div class="result-group__dot" :class="group.online ? 'result-group__dot--online' : 'result-group__dot--offline'"></div>
@@ -50,8 +61,13 @@
               <div
                 v-for="item in group.items"
                 :key="`${item._type}-${item.id}`"
+                :id="`gs-item-${flatIndexOf(group.agentId, item)}`"
                 class="result-item"
+                :class="{ 'result-item--active': flatIndexOf(group.agentId, item) === activeIndex }"
+                role="option"
+                :aria-selected="flatIndexOf(group.agentId, item) === activeIndex"
                 @click="navigateToItem(group.agentId, item)"
+                @mousemove="activeIndex = flatIndexOf(group.agentId, item)"
               >
                 <div class="result-item__type-badge" :class="`result-item__type-badge--${item._type}`">
                   {{ typeLabel(item._type) }}
@@ -72,13 +88,19 @@
             </div>
           </div>
         </div>
+
+        <div class="global-search-footer">
+          <span class="gs-hint"><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+          <span class="gs-hint"><kbd>Enter</kbd> 打开</span>
+          <span class="gs-hint"><kbd>Esc</kbd> 关闭</span>
+        </div>
       </div>
     </div>
   </Teleport>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import { parseIdQuery } from '../hooks/useIdSearch'
@@ -104,6 +126,49 @@ const results = ref([])
 const isLoading = ref(false)
 const searchDebounceTimer = ref(null)
 const searchId = ref(0)
+const activeIndex = ref(-1)
+
+// Flattened [agentId, item] pairs in display order — the keyboard cursor moves
+// through this list.
+const flatEntries = computed(() =>
+  results.value.flatMap(group => group.items.map(item => ({ agentId: group.agentId, item })))
+)
+
+function flatIndexOf(agentId, item) {
+  return flatEntries.value.findIndex(e => e.agentId === agentId && e.item === item)
+}
+
+watch(flatEntries, (entries) => {
+  activeIndex.value = entries.length ? 0 : -1
+})
+
+watch(activeIndex, async (index) => {
+  if (index < 0) return
+  await nextTick()
+  document.getElementById(`gs-item-${index}`)?.scrollIntoView?.({ block: 'nearest' })
+})
+
+function handlePanelKeydown(e) {
+  if (e.key === 'Escape') {
+    close()
+    return
+  }
+  const count = flatEntries.value.length
+  if (!count) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    activeIndex.value = (activeIndex.value + 1) % count
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    activeIndex.value = (activeIndex.value - 1 + count) % count
+  } else if (e.key === 'Enter') {
+    const entry = flatEntries.value[activeIndex.value]
+    if (entry) {
+      e.preventDefault()
+      navigateToItem(entry.agentId, entry.item)
+    }
+  }
+}
 
 function httpBackendUrls(rule) {
   if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
@@ -300,8 +365,18 @@ function getCertStatus(cert) {
   return cert.status === 'active' ? '生效中' : cert.status === 'pending' ? '待签发' : '未激活'
 }
 
+function isEditableTarget(el) {
+  return !!el?.closest?.('input, textarea, select, [contenteditable="true"], [role="textbox"]')
+}
+
 function handleKeydown(e) {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    if (props.open) close()
+    else emit('update:open', true)
+    return
+  }
+  if (!props.open && e.key === '/' && !isEditableTarget(e.target)) {
     e.preventDefault()
     emit('update:open', true)
   }
@@ -329,7 +404,9 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-group__name { font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); flex: 1; }
 .result-group__count { font-size: 0.75rem; color: var(--color-text-tertiary); background: var(--color-bg-subtle); padding: 1px 6px; border-radius: var(--radius-full); }
 .result-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); cursor: pointer; transition: all 0.15s; }
-.result-item:hover { border-color: var(--color-primary); background: var(--color-primary-subtle); transform: translateX(2px); }
+.result-item:hover,
+.result-item--active { border-color: var(--color-primary); background: var(--color-primary-subtle); }
+.result-item:hover { transform: translateX(2px); }
 .result-item__status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .result-item__status.on { background: var(--color-primary); }
 .result-item__status.off { background: var(--color-text-muted); }
@@ -342,6 +419,10 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-item__info { flex: 1; min-width: 0; }
 .result-item__url { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-item__backend { font-size: 0.75rem; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-search-footer { display: flex; align-items: center; gap: 1rem; padding: 0.55rem 1.25rem; border-top: 1px solid var(--color-border-subtle); color: var(--color-text-muted); font-size: 0.75rem; }
+.gs-hint { display: inline-flex; align-items: center; gap: 0.3rem; }
+.gs-hint kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; padding: 0.05rem 0.35rem; border: 1px solid var(--color-border-default); border-bottom-width: 2px; border-radius: var(--radius-sm); background: var(--color-bg-subtle); font-family: inherit; font-size: 0.6875rem; color: var(--color-text-secondary); }
+@media (max-width: 640px) { .global-search-footer { display: none; } }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>

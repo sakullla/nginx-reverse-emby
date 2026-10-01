@@ -1,5 +1,6 @@
 <template>
   <div class="app-shell">
+    <a class="skip-link" href="#main-content">跳到主内容</a>
     <OperationTracker />
     <TopBar @open-search="searchOpen = true" />
     <GlobalSearch
@@ -11,7 +12,7 @@
       <Sidebar v-if="!isMobile" />
       <!-- Mobile sidebar overlay -->
       <div v-if="mobileSidebarOpen" class="sidebar-overlay" @click="mobileSidebarOpen = false" />
-      <main class="content">
+      <main id="main-content" class="content" tabindex="-1">
         <RouterView />
       </main>
     </div>
@@ -66,6 +67,30 @@ onUnmounted(() => {
   inset: 0;
   background: rgba(0, 0, 0, 0.3);
   z-index: calc(var(--z-fixed) - 1);
+}
+/* Keyboard-only shortcut into the page — invisible until focused */
+.skip-link {
+  position: fixed;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: var(--z-toast);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface-raised);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  text-decoration: none;
+  transform: translateY(calc(-100% - var(--space-4)));
+  transition: transform var(--duration-fast) var(--ease-default);
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+#main-content:focus {
+  outline: none;
 }
 @media (max-width: 1023px) {
   .content {

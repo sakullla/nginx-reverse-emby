@@ -125,10 +125,36 @@ const routes = [
   }
 ]
 
+// `.content` (inside AppShell) is the real scroll container — the window never
+// scrolls — so we keep per-route scroll positions ourselves and restore them
+// on history back/forward.
+const CONTENT_SELECTOR = '.app-shell .content'
+const contentScrollPositions = new Map()
+
+function storeContentScroll(route) {
+  const el = document.querySelector(CONTENT_SELECTOR)
+  if (el) contentScrollPositions.set(route.fullPath, el.scrollTop)
+}
+
 const router = createRouter({
   history: createWebHistory(window.__NRE_PANEL_BASE__ || import.meta.env.BASE_URL || '/'),
-  routes
+  routes,
+  scrollBehavior(to, from, savedPosition) {
+    // The login page renders outside AppShell — no .content container to scroll.
+    if (to.name === 'login') return false
+    if (savedPosition) {
+      return { el: CONTENT_SELECTOR, top: contentScrollPositions.get(to.fullPath) ?? 0 }
+    }
+    if (to.hash) return { el: to.hash, behavior: 'smooth' }
+    return { el: CONTENT_SELECTOR, top: 0 }
+  }
 })
+
+// Preserve the attempted destination so a successful login returns the user
+// to the page they actually wanted instead of always landing on the dashboard.
+function loginRedirect(to) {
+  return to.fullPath ? { name: 'login', query: { return: to.fullPath } } : { name: 'login' }
+}
 
 export async function authGuard(to) {
   // Allow login route through
@@ -136,7 +162,7 @@ export async function authGuard(to) {
 
   const token = getStoredAuthToken()
   if (!token) {
-    return { name: 'login' }
+    return loginRedirect(to)
   }
 
   try {
@@ -146,7 +172,7 @@ export async function authGuard(to) {
     const valid = await verifyToken(token)
     if (!valid) {
       clearCredentials()
-      return { name: 'login' }
+      return loginRedirect(to)
     }
     return true
   } catch (err) {
@@ -154,7 +180,7 @@ export async function authGuard(to) {
     // Transport errors (network) and 5xx should not destroy a valid panel token.
     if (err?.response?.status === 401) {
       clearCredentials()
-      return { name: 'login' }
+      return loginRedirect(to)
     }
     // For any other error (5xx, network), allow navigation to proceed so the
     // page can surface the outage to the user rather than blocking the app entirely.
@@ -162,6 +188,15 @@ export async function authGuard(to) {
   }
 }
 
+router.beforeEach((to, from) => {
+  storeContentScroll(from)
+})
+
 router.beforeEach(authGuard)
+
+router.afterEach((to) => {
+  const title = to.meta?.title
+  document.title = title ? `${title} · Nginx Proxy` : 'Nginx Proxy'
+})
 
 export default router

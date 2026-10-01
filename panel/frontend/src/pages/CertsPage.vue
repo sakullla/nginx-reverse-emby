@@ -42,9 +42,7 @@
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
-    <div v-else-if='isLoading' class='certs-page__loading'>
-      <div class='spinner'></div>
-    </div>
+    <SkeletonList v-else-if='isLoading' :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
     <div v-show='hasAgentFilter && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
@@ -151,6 +149,7 @@ import CertCard from '../components/certs/CertCard.vue'
 import CertificateCenterChrome from '../components/certs/CertificateCenterChrome.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { useListFilterUrl } from '../composables/useListFilterUrl'

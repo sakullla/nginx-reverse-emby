@@ -15,7 +15,13 @@
     </div>
 
     <div class="topbar__actions">
-      <button class="topbar__action topbar__action--search" @click="$emit('open-search')" title="全局搜索 (Ctrl+K)">
+      <button
+        class="topbar__action topbar__action--search"
+        aria-label="全局搜索"
+        aria-keyshortcuts="Control+K"
+        title="全局搜索 (Ctrl+K 或 /)"
+        @click="$emit('open-search')"
+      >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>

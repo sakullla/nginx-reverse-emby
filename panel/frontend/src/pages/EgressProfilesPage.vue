@@ -15,9 +15,7 @@
 
     <OperationStatusList />
 
-    <div v-if="isLoading" class="egress-page__empty">
-      <div class="spinner"></div>
-    </div>
+    <SkeletonList v-if="isLoading" variant="rows" :count="4" />
 
     <div v-else-if="!profiles.length" class="egress-page__empty">
       <p>暂无 Egress Profile</p>
@@ -100,6 +98,7 @@ import BaseBadge from '../components/base/BaseBadge.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import EgressProfileForm from '../components/egress/EgressProfileForm.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
 
 const { data: profilesData, isLoading } = useEgressProfiles()
 const createEgressProfile = useCreateEgressProfile()

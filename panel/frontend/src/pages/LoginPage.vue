@@ -17,12 +17,16 @@
             v-model="tokenInput"
             type="password"
             class="input"
+            :class="{ 'input--error': error }"
             placeholder="输入访问令牌"
             :disabled="loading"
             autocomplete="current-password"
+            autofocus
+            :aria-invalid="error ? 'true' : undefined"
+            aria-describedby="login-error"
           >
         </div>
-        <p v-if="error" class="login-error">{{ error }}</p>
+        <p v-if="error" id="login-error" class="login-error" role="alert">{{ error }}</p>
         <button type="submit" class="btn btn--primary btn--full" :disabled="loading">
           <span v-if="loading" class="spinner spinner--sm"></span>
           <span v-else>连接</span>
@@ -166,6 +170,15 @@ async function handleLogin() {
   cursor: not-allowed;
 }
 
+.input--error {
+  border-color: var(--color-danger);
+}
+
+.input--error:focus {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 3px var(--color-danger-50);
+}
+
 .login-error {
   font-size: var(--text-sm);
   color: var(--color-danger);
@@ -173,6 +186,7 @@ async function handleLogin() {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   margin: 0;
+  animation: errorShake var(--duration-slow) var(--ease-default);
 }
 
 .btn--full {

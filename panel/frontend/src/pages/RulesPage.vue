@@ -121,10 +121,8 @@
       @update:page="page = $event"
     />
 
-    <!-- Loading -->
-    <div v-if="isLoading" class="rules-page__loading">
-      <div class="spinner"></div>
-    </div>
+    <!-- Loading — skeleton mirrors the target layout so the swap feels seamless -->
+    <SkeletonList v-if="isLoading" :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
     <!-- Add/Edit Form Modal -->
     <BaseModal
@@ -219,6 +217,7 @@ import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vu
 import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
 import RuleTable from '../components/rules/RuleTable.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { useViewToggle } from '../composables/useViewToggle'

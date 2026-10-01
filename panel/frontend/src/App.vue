@@ -23,7 +23,8 @@ const { hasToken } = useAuthState()
 // If token is cleared (401, logout), redirect to login immediately
 watch(hasToken, (authenticated) => {
   if (!authenticated && route.name !== 'login') {
-    router.replace({ name: 'login' })
+    const returnTo = route.fullPath
+    router.replace(returnTo ? { name: 'login', query: { return: returnTo } } : { name: 'login' })
   }
 })
 </script>

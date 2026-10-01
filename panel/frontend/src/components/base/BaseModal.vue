@@ -14,14 +14,15 @@
           ref="modalRef"
           role="dialog"
           aria-modal="true"
+          :aria-labelledby="titleId"
           @click.stop
         >
           <div class="modal__header">
             <div>
-              <h3 class="modal__title">{{ title }}</h3>
+              <h3 :id="titleId" class="modal__title">{{ title }}</h3>
               <p v-if="subtitle" class="modal__subtitle">{{ subtitle }}</p>
             </div>
-            <button class="modal__close" @click="close">
+            <button class="modal__close" aria-label="关闭" @click="close">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/>
                 <line x1="6" y1="6" x2="18" y2="18"/>
@@ -44,7 +45,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted, computed } from 'vue'
+import { ref, watch, onUnmounted, computed, useId } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -63,6 +64,8 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'confirm'])
 const modalRef = ref(null)
+const titleId = `modal-title-${useId()}`
+let previousActiveElement = null
 
 const modalSizeClass = computed(() => {
   if (props.large) return 'modal--lg'
@@ -83,22 +86,50 @@ const confirm = () => {
   emit('confirm')
 }
 
-// Handle ESC key to close modal
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+// ESC closes; Tab is trapped inside the dialog while it is open.
 const handleKeydown = (e) => {
   if (e.key === 'Escape') {
     close()
+    return
+  }
+  if (e.key !== 'Tab' || !modalRef.value) return
+  const focusables = modalRef.value.querySelectorAll(FOCUSABLE_SELECTOR)
+  if (!focusables.length) {
+    e.preventDefault()
+    return
+  }
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const active = document.activeElement
+  if (!modalRef.value.contains(active)) {
+    e.preventDefault()
+    first.focus()
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
   }
 }
 
-// Add/remove ESC listener when modal opens/closes
+// Add/remove key listeners when modal opens/closes, and restore focus to the
+// element that opened it afterwards.
 watch(() => props.modelValue, (isOpen) => {
   if (isOpen) {
+    previousActiveElement = document.activeElement
     setTimeout(() => {
       modalRef.value?.focus()
     }, 50)
     document.addEventListener('keydown', handleKeydown)
   } else {
     document.removeEventListener('keydown', handleKeydown)
+    if (previousActiveElement instanceof HTMLElement && document.contains(previousActiveElement)) {
+      previousActiveElement.focus()
+    }
+    previousActiveElement = null
   }
 }, { immediate: true })
 

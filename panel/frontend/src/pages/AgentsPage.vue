@@ -81,9 +81,7 @@
       <p>暂无节点</p>
     </div>
 
-    <div v-if="isLoading" class="agents-page__loading">
-      <div class="spinner"></div>
-    </div>
+    <SkeletonList v-if="isLoading" :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
     <BaseModal
       :model-value="showJoinModal"
@@ -289,6 +287,7 @@ import AgentTable from '../components/AgentTable.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { createPkiEnrollmentToken } from '../api/pki'
 import { useAgent } from '../context/AgentContext'

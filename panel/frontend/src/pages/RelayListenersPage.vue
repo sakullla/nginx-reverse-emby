@@ -98,10 +98,8 @@
       @update:page="page = $event"
     />
 
-    <!-- Loading -->
-    <div v-if='isLoading' class='relay-page__loading'>
-      <div class="spinner"></div>
-    </div>
+    <!-- Loading — skeleton mirrors the target layout so the swap feels seamless -->
+    <SkeletonList v-if='isLoading' :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
     <BaseModal
       :model-value="showAddForm || !!editingListener"
@@ -168,6 +166,7 @@ import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vu
 import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
