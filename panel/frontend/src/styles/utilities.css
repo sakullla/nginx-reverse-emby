@@ -536,7 +536,9 @@
   .search-wrapper:focus-within .search-input { opacity: 1; pointer-events: auto; border-color: var(--color-primary); }
   .search-wrapper:focus-within .clear-btn { opacity: 1; pointer-events: auto; }
   .clear-btn { opacity: 0; pointer-events: none; position: absolute; right: 8px; z-index: 2; transition: opacity 0.2s; }
-  .btn-text { display: none; }
+  /* Keep a short visible label on the primary add action instead of a bare
+     icon-only '+' so the mobile CTA stays self-describing. */
+  .btn-text { display: inline; font-size: 0.8125rem; }
 }
 
 /* ----- Tag — capsule ----- */
