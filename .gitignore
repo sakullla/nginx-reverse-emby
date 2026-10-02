@@ -1,6 +1,7 @@
 node_modules/
 panel/frontend/node_modules/
 panel/frontend/dist/
+panel/frontend/docs/verification/
 docs-site/.vitepress/cache/
 docs-site/.vitepress/dist/
 playwright-report/

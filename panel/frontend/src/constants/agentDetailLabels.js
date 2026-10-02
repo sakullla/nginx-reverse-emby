@@ -84,6 +84,12 @@ export const agentDetailLabels = {
     status: '同步状态',
     message: '同步消息',
     time: '同步时间',
+    statusLabel: {
+      success: '已同步',
+      failed: '同步失败',
+      error: '同步失败',
+      pending: '待同步',
+    },
   },
 
   // System info card titles

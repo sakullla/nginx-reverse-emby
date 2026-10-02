@@ -4,6 +4,7 @@
       class="view-toggle__btn"
       :class="{ active: view === 'card' }"
       title="卡片视图"
+      aria-label="卡片视图"
       @click="$emit('update:view', 'card')"
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -17,6 +18,7 @@
       class="view-toggle__btn"
       :class="{ active: view === 'list' }"
       title="列表视图"
+      aria-label="列表视图"
       @click="$emit('update:view', 'list')"
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

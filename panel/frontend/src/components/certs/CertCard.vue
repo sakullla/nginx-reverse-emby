@@ -319,9 +319,12 @@ const canDelete = computed(() => !isSystemRelayCA(props.cert))
   color: var(--color-text-primary);
   line-height: 1.2;
   letter-spacing: -0.025em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .cert-card__scope {

@@ -72,6 +72,12 @@
             </svg>
             {{ pluginRoute.label }}
           </a>
+          <RouterLink to="/plugins" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': route.name === 'plugins' || route.name === 'plugin-detail' }" :aria-current="route.name === 'plugins' || route.name === 'plugin-detail' ? 'page' : undefined" @click.stop="moreOpen = false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z"/>
+            </svg>
+            已安装插件
+          </RouterLink>
           <RouterLink to="/plugins/marketplace" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/plugins/marketplace') }" :aria-current="isMoreItemActive('/plugins/marketplace') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z"/>
@@ -196,8 +202,7 @@ onUnmounted(() => {
 .more-dropdown {
   position: absolute;
   bottom: calc(100% + 12px);
-  left: 50%;
-  transform: translateX(-50%);
+  right: 0.35rem;
   background: var(--color-bg-surface);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
@@ -215,7 +220,7 @@ onUnmounted(() => {
 .more-pop-enter-from,
 .more-pop-leave-to {
   opacity: 0;
-  transform: translateX(-50%) translateY(6px);
+  transform: translateY(6px);
 }
 .more-dropdown__item {
   display: flex;

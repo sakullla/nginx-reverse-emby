@@ -89,6 +89,22 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
   outline-offset: 2px;
 }
 
+::placeholder {
+  color: var(--color-text-secondary);
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Dialog containers receive programmatic focus (tabindex="-1") for keyboard
    capture only — they are not interactive controls, so no focus ring. */
 .modal:focus,

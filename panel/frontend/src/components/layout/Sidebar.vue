@@ -206,7 +206,10 @@ const navItems = computed(() => {
 })
 
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
-const openGroups = ref(new Set(JSON.parse(localStorage.getItem('sidebar_open_groups') || '[]')))
+const storedGroups = localStorage.getItem('sidebar_open_groups')
+const openGroups = ref(new Set(storedGroups == null
+  ? ['流量管理', '基础设施', '插件']
+  : JSON.parse(storedGroups)))
 
 function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : isPathActive(item.to) }
 function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : isPathActive(child.to) }

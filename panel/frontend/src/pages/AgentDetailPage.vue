@@ -851,7 +851,11 @@ const syncStatusTone = computed(() => {
   if (status === 'pending') return 'warning'
   return 'primary'
 })
-const syncStatusLabel = computed(() => agent.value?.last_apply_status || '—')
+const syncStatusLabel = computed(() => {
+  const status = String(agent.value?.last_apply_status || '').trim()
+  if (!status) return '—'
+  return detailLabels.sync.statusLabel[status] || status
+})
 
 const rulesSubtitle = computed(() => `${httpRulesCount.value} HTTP / ${l4RulesCount.value} L4`)
 const certificatesSubtitle = computed(() => String(certificatesCount.value))

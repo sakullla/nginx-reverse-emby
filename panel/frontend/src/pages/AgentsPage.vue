@@ -406,15 +406,11 @@ const joinCommandState = computed(() => {
 })
 
 const displayJoinCommand = computed(() => {
-  if (selectedPlatform.value === 'windows') {
-    if (activeJoinToken.value) return activeJoinToken.value
-    if (joinCommandState.value === 'loading') return '正在创建令牌...'
-    return joinTokenError.value || 'TOKEN_UNAVAILABLE'
-  }
-  const token = activeJoinToken.value
-    || (joinCommandState.value === 'loading' ? '正在创建令牌...' : 'TOKEN_UNAVAILABLE')
+  if (joinCommandState.value === 'loading') return '正在创建令牌...'
+  if (!activeJoinToken.value) return '令牌尚未就绪。生成成功后，这里会显示可复制的完整命令。'
+  if (selectedPlatform.value === 'windows') return activeJoinToken.value
   const modeFlag = joinCommandModeFlag.value ? ` ${joinCommandModeFlag.value}` : ''
-  return `curl -fsSL ${joinScriptUrl.value} | sh -s -- --register-token '${token}'${modeFlag} ${joinInstallFlag.value}`
+  return `curl -fsSL ${joinScriptUrl.value} | sh -s -- --register-token '${activeJoinToken.value}'${modeFlag} ${joinInstallFlag.value}`
 })
 
 const canCopyJoinCommand = computed(() => Boolean(activeJoinToken.value))
@@ -441,6 +437,12 @@ const joinStatusText = computed(() => {
   return '固定令牌不可用：请检查控制面 master register token 配置后重试。'
 })
 
+function readableJoinTokenError(error) {
+  const message = String(error?.message || '').trim()
+  if (message && /[\u4e00-\u9fff]/.test(message)) return message
+  return '一次性登记令牌创建失败，请检查内部 PKI 是否可用后重试'
+}
+
 async function createJoinEnrollmentToken() {
   if (joinTokenBusy.value) return
   const request = ++joinTokenRequest
@@ -454,7 +456,7 @@ async function createJoinEnrollmentToken() {
     }
   } catch (error) {
     if (request === joinTokenRequest) {
-      joinTokenError.value = error?.message || '一次性登记令牌创建失败，请检查内部 PKI 是否可用后重试'
+      joinTokenError.value = readableJoinTokenError(error)
     }
   } finally {
     if (!disposed && request === joinTokenRequest) joinTokenBusy.value = false
@@ -821,8 +823,8 @@ function confirmDelete() {
   font-size: 0.8125rem;
   line-height: 1.6;
   color: var(--color-text-primary);
-  white-space: nowrap;
-  word-break: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .join-token-card {

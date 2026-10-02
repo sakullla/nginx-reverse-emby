@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run --reporter=dot"
+    "test": "vitest run --reporter=dot",
+    "capture:ui": "node scripts/capture-ui.mjs"
   },
   "dependencies": {
     "@tanstack/vue-query": "^5.101.4",
@@ -28,6 +29,7 @@
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/test-utils": "^2.4.11",
     "jsdom": "^30.0.1",
+    "playwright": "^1.63.0",
     "unocss": "^66.7.5",
     "unplugin-vue-jsx": "^0.10.0",
     "vite": "^8.2.0",

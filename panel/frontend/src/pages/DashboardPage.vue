@@ -20,8 +20,9 @@
         <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
         <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
       </svg>
-      <p>暂无节点</p>
-      <p class="dashboard__empty-hint">点击顶部「加入节点」或顶部导航栏「加入节点」来添加第一个 Agent</p>
+      <p>还没有节点</p>
+      <p class="dashboard__empty-hint">到节点管理加入第一台 Agent，这里会显示在线、同步和证书状态。</p>
+      <RouterLink to="/agents" class="btn btn-primary">去加入节点</RouterLink>
     </div>
 
     <div
@@ -202,7 +203,7 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
   justify-content: center;
   gap: var(--space-3);
   padding: var(--space-16) var(--space-6);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   text-align: center;
 }
 
@@ -213,7 +214,8 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 
 .dashboard__empty .dashboard__empty-hint {
   font-size: var(--text-sm);
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
+  max-width: 28rem;
 }
 
 @media (max-width: 1024px) {

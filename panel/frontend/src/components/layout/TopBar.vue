@@ -16,16 +16,18 @@
 
     <div class="topbar__actions">
       <button
-        class="topbar__action topbar__action--search"
+        class="topbar__search"
         aria-label="全局搜索"
         aria-keyshortcuts="Control+K"
         title="全局搜索 (Ctrl+K 或 /)"
         @click="$emit('open-search')"
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="11" cy="11" r="8"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
+        <span class="topbar__search-label">搜索</span>
+        <kbd class="topbar__search-kbd">Ctrl K</kbd>
       </button>
 
       <ThemeSelector />
@@ -193,6 +195,42 @@ async function handleLogout() {
 
 .topbar__actions { display: flex; align-items: center; gap: 0.5rem; }
 
+.topbar__search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 36px;
+  padding: 0 0.55rem 0 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.topbar__search:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-hover);
+}
+
+.topbar__search-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.topbar__search-kbd {
+  font-family: inherit;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.35rem;
+}
+
 .topbar__account {
   position: relative;
 }
@@ -303,6 +341,17 @@ async function handleLogout() {
 .topbar__action:hover {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
+}
+
+@media (max-width: 900px) {
+  .topbar__search-label,
+  .topbar__search-kbd { display: none; }
+  .topbar__search {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+    border-radius: var(--radius-lg);
+  }
 }
 
 @media (max-width: 640px) {

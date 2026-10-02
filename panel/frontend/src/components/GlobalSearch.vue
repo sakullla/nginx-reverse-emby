@@ -419,7 +419,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-item__info { flex: 1; min-width: 0; }
 .result-item__url { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-item__backend { font-size: 0.75rem; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.global-search-footer { display: flex; align-items: center; gap: 1rem; padding: 0.55rem 1.25rem; border-top: 1px solid var(--color-border-subtle); color: var(--color-text-muted); font-size: 0.75rem; }
+.global-search-footer { display: flex; align-items: center; gap: 1rem; padding: 0.55rem 1.25rem; border-top: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size: 0.75rem; }
 .gs-hint { display: inline-flex; align-items: center; gap: 0.3rem; }
 .gs-hint kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; padding: 0.05rem 0.35rem; border: 1px solid var(--color-border-default); border-bottom-width: 2px; border-radius: var(--radius-sm); background: var(--color-bg-subtle); font-family: inherit; font-size: 0.6875rem; color: var(--color-text-secondary); }
 @media (max-width: 640px) { .global-search-footer { display: none; } }

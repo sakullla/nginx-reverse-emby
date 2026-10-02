@@ -30,7 +30,7 @@
       <button type="button" class="btn btn--sm btn--secondary" @click="refetchHTTPBackendProviders">重试</button>
     </div>
     <div v-else-if="providerCatalogStatus === 'loading' && hasAgentFilter" class="provider-catalog-notice" role="status">
-      正在确认插件状态…
+      正在核对插件后端…
     </div>
 
     <ResourceListFilterBar

@@ -6,25 +6,36 @@
           <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
           <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
         </svg>
-        <h1 class="login-card__title">nginx-reverse-emby</h1>
-        <p class="login-card__subtitle">访问令牌</p>
+        <h1 class="login-card__title">Nginx Proxy</h1>
+        <p class="login-card__subtitle">使用访问令牌进入管理端</p>
       </div>
       <form class="login-form" @submit.prevent="handleLogin">
         <div class="form-group">
           <label for="token-input" class="sr-only">访问令牌</label>
-          <input
-            id="token-input"
-            v-model="tokenInput"
-            type="password"
-            class="input"
-            :class="{ 'input--error': error }"
-            placeholder="输入访问令牌"
-            :disabled="loading"
-            autocomplete="current-password"
-            autofocus
-            :aria-invalid="error ? 'true' : undefined"
-            aria-describedby="login-error"
-          >
+          <div class="input-wrap">
+            <input
+              id="token-input"
+              v-model="tokenInput"
+              :type="revealToken ? 'text' : 'password'"
+              class="input"
+              :class="{ 'input--error': error }"
+              placeholder="输入访问令牌"
+              :disabled="loading"
+              autocomplete="current-password"
+              autofocus
+              :aria-invalid="error ? 'true' : undefined"
+              aria-describedby="login-error"
+            >
+            <button
+              type="button"
+              class="reveal-btn"
+              :aria-pressed="revealToken"
+              :aria-label="revealToken ? '隐藏访问令牌' : '显示访问令牌'"
+              @click="revealToken = !revealToken"
+            >
+              {{ revealToken ? '隐藏' : '显示' }}
+            </button>
+          </div>
         </div>
         <p v-if="error" id="login-error" class="login-error" role="alert">{{ error }}</p>
         <button type="submit" class="btn btn--primary btn--full" :disabled="loading">
@@ -46,6 +57,7 @@ const router = useRouter()
 const route = useRoute()
 const { clearCredentials, setToken } = useAuthState()
 const tokenInput = ref('')
+const revealToken = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -62,7 +74,7 @@ async function handleLogin() {
   const token = tokenInput.value.trim()
   error.value = ''
   if (!token) {
-    error.value = '令牌无效'
+    error.value = '请输入访问令牌'
     return
   }
 
@@ -128,8 +140,9 @@ async function handleLogin() {
 
 .login-card__subtitle {
   font-size: var(--text-sm);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   margin: 0;
+  text-align: center;
 }
 
 .login-form {
@@ -143,9 +156,13 @@ async function handleLogin() {
   flex-direction: column;
 }
 
+.input-wrap {
+  position: relative;
+}
+
 .input {
   width: 100%;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) 4.5rem var(--space-3) var(--space-4);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   background: var(--color-bg-subtle);
@@ -162,7 +179,29 @@ async function handleLogin() {
 }
 
 .input::placeholder {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
+  opacity: 1;
+}
+
+.reveal-btn {
+  position: absolute;
+  top: 50%;
+  right: var(--space-2);
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.reveal-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
 }
 
 .input:disabled {
@@ -181,8 +220,10 @@ async function handleLogin() {
 
 .login-error {
   font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   color: var(--color-danger);
   background: var(--color-danger-50);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   margin: 0;

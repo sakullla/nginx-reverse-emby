@@ -5,6 +5,9 @@
       :class="{ 'theme-trigger--open': isOpen }"
       @click="isOpen = !isOpen"
       :title="currentTheme.label"
+      :aria-label="`选择主题，当前${currentTheme.label}`"
+      aria-haspopup="listbox"
+      :aria-expanded="isOpen ? 'true' : 'false'"
     >
       <span class="theme-trigger__emoji">{{ currentTheme.emoji }}</span>
       <svg class="theme-trigger__arrow" :class="{ 'theme-trigger__arrow--up': isOpen }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">

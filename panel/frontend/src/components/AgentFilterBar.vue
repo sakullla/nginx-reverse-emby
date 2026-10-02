@@ -7,6 +7,7 @@
           class="view-toggle__btn"
           :class="{ active: view === 'monitor' }"
           title="监控视图"
+          aria-label="监控视图"
           @click="view = 'monitor'"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -20,6 +21,7 @@
           class="view-toggle__btn"
           :class="{ active: view === 'list' }"
           title="列表视图"
+          aria-label="列表视图"
           @click="view = 'list'"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
