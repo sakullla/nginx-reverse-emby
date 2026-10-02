@@ -1,5 +1,5 @@
 <template>
-  <nav class="bottom-nav">
+  <nav class="bottom-nav" aria-label="主导航">
     <RouterLink to="/" class="nav-item" :class="{ active: route.path === '/' }" aria-label="首页">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
@@ -20,51 +20,55 @@
       </svg>
       <span>证书中心</span>
     </RouterLink>
+    <RouterLink to="/agents" class="nav-item" :class="{ active: route.path.startsWith('/agents') }" aria-label="节点管理">
+      <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/>
+      </svg>
+      <span>节点</span>
+    </RouterLink>
     <div
       ref="moreRef"
-      class="nav-item nav-item--dropdown"
-      :class="{ active: isMoreActive }"
-      role="button"
-      tabindex="0"
-      aria-label="更多"
-      aria-haspopup="menu"
-      :aria-expanded="moreOpen"
-      @click="moreOpen = !moreOpen"
-      @keydown.enter.prevent="moreOpen = !moreOpen"
-      @keydown.space.prevent="moreOpen = !moreOpen"
-      @keydown.escape="moreOpen = false"
+      class="nav-more"
+      @keydown="handleMenuKeydown"
+      @focusout="handleFocusOut"
     >
-      <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <circle cx="12" cy="6" r="1.5" fill="currentColor" stroke="none"/>
-        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>
-        <circle cx="12" cy="18" r="1.5" fill="currentColor" stroke="none"/>
-      </svg>
-      <span>更多</span>
+      <button
+        ref="moreTriggerRef"
+        type="button"
+        class="nav-item nav-item--dropdown"
+        :class="{ active: isMoreActive }"
+        aria-label="更多"
+        aria-haspopup="menu"
+        :aria-expanded="moreOpen"
+        aria-controls="mobile-more-menu"
+        @click="toggleMore"
+      >
+        <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="6" r="1.5" fill="currentColor" stroke="none"/>
+          <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+          <circle cx="12" cy="18" r="1.5" fill="currentColor" stroke="none"/>
+        </svg>
+        <span>更多</span>
+      </button>
       <Transition name="more-pop">
-        <div v-if="moreOpen" class="more-dropdown" role="menu">
-          <RouterLink to="/l4" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/l4') }" :aria-current="isMoreItemActive('/l4') ? 'page' : undefined" @click.stop="moreOpen = false">
+        <div v-if="moreOpen" id="mobile-more-menu" class="more-dropdown" role="menu" aria-label="更多导航">
+          <RouterLink to="/l4" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/l4') }" :aria-current="isMoreItemActive('/l4') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
             </svg>
             L4 规则
           </RouterLink>
-          <RouterLink to="/relay-listeners" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/relay-listeners') }" :aria-current="isMoreItemActive('/relay-listeners') ? 'page' : undefined" @click.stop="moreOpen = false">
+          <RouterLink to="/relay-listeners" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/relay-listeners') }" :aria-current="isMoreItemActive('/relay-listeners') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
             </svg>
             Relay 监听器
           </RouterLink>
-          <RouterLink to="/agents" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/agents') }" :aria-current="isMoreItemActive('/agents') ? 'page' : undefined" @click.stop="moreOpen = false">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-            节点管理
-          </RouterLink>
           <a
             v-for="pluginRoute in pluginUIRoutes"
             :key="pluginRoute.id"
             :href="pluginRoute.href"
-            class="more-dropdown__item"
+            class="more-dropdown__item" role="menuitem"
             @click.stop="moreOpen = false"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -72,19 +76,19 @@
             </svg>
             {{ pluginRoute.label }}
           </a>
-          <RouterLink to="/plugins" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': route.name === 'plugins' || route.name === 'plugin-detail' }" :aria-current="route.name === 'plugins' || route.name === 'plugin-detail' ? 'page' : undefined" @click.stop="moreOpen = false">
+          <RouterLink to="/plugins" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': route.name === 'plugins' || route.name === 'plugin-detail' }" :aria-current="route.name === 'plugins' || route.name === 'plugin-detail' ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z"/>
             </svg>
             已安装插件
           </RouterLink>
-          <RouterLink to="/plugins/marketplace" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/plugins/marketplace') }" :aria-current="isMoreItemActive('/plugins/marketplace') ? 'page' : undefined" @click.stop="moreOpen = false">
+          <RouterLink to="/plugins/marketplace" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/plugins/marketplace') }" :aria-current="isMoreItemActive('/plugins/marketplace') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z"/>
             </svg>
             插件市场
           </RouterLink>
-          <RouterLink to="/settings" class="more-dropdown__item" :class="{ 'more-dropdown__item--active': isMoreItemActive('/settings') }" :aria-current="isMoreItemActive('/settings') ? 'page' : undefined" @click.stop="moreOpen = false">
+          <RouterLink to="/settings" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/settings') }" :aria-current="isMoreItemActive('/settings') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1z"/>
@@ -98,7 +102,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useAccessControl } from '../../context/useAccessControl'
 import { usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
@@ -106,6 +110,7 @@ import { usePluginUIRoutes } from '../../hooks/usePluginUIRoutes'
 const route = useRoute()
 const moreOpen = ref(false)
 const moreRef = ref(null)
+const moreTriggerRef = ref(null)
 const { refreshActor } = useAccessControl()
 const { routes: pluginUIRoutes } = usePluginUIRoutes()
 
@@ -116,10 +121,57 @@ function isMoreItemActive(to) {
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
   route.path.startsWith('/relay-listeners') ||
-  route.path.startsWith('/agents') ||
   route.path.startsWith('/plugins') ||
   route.path.startsWith('/settings')
 )
+
+function menuItems() {
+  return [...(moreRef.value?.querySelectorAll('.more-dropdown__item') || [])]
+}
+
+async function openMore(last = false) {
+  moreOpen.value = true
+  await nextTick()
+  const items = menuItems()
+  items[last ? items.length - 1 : 0]?.focus()
+}
+
+function closeMore(restoreFocus = false) {
+  moreOpen.value = false
+  if (restoreFocus) moreTriggerRef.value?.focus()
+}
+
+function toggleMore() {
+  if (moreOpen.value) closeMore()
+  else openMore()
+}
+
+function handleMenuKeydown(event) {
+  if (event.key === 'Escape' && moreOpen.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    closeMore(true)
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  if (!moreOpen.value) {
+    openMore(event.key === 'ArrowUp' || event.key === 'End')
+    return
+  }
+  const items = menuItems()
+  if (!items.length) return
+  const current = items.indexOf(document.activeElement)
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+    : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+  items[index]?.focus()
+}
+
+function handleFocusOut(event) {
+  if (!moreRef.value?.contains(event.relatedTarget)) closeMore()
+}
+
+watch(() => route.fullPath, () => closeMore())
 
 function handleClickOutside(e) {
   if (moreRef.value && !moreRef.value.contains(e.target)) {
@@ -164,7 +216,11 @@ onUnmounted(() => {
   gap: 4px;
   text-decoration: none;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-family: inherit;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  min-width: 0;
   font-weight: 500;
   transition: all 0.2s;
   padding: 0.5rem 0.25rem;
@@ -191,13 +247,16 @@ onUnmounted(() => {
   height: 24px;
   transition: transform 0.2s;
 }
-.nav-item.active .nav-icon {
+.nav-item.active > .nav-icon {
   transform: translateY(-2px);
 }
 
 /* More Dropdown */
-.nav-item--dropdown {
+.nav-more {
+  flex: 1;
+  min-width: 0;
   position: relative;
+  display: flex;
 }
 .more-dropdown {
   position: absolute;
@@ -207,8 +266,11 @@ onUnmounted(() => {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
-  min-width: 160px;
-  overflow: hidden;
+  min-width: 200px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 150px - env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: var(--z-dropdown);
   backdrop-filter: blur(16px);
   padding: 0.5rem;
@@ -235,8 +297,11 @@ onUnmounted(() => {
   white-space: nowrap;
   border-radius: var(--radius-md);
   font-weight: 500;
+  min-height: 44px;
+  box-sizing: border-box;
 }
-.more-dropdown__item:hover {
+.more-dropdown__item:hover,
+.more-dropdown__item:focus-visible {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
 }

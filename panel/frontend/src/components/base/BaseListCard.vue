@@ -110,7 +110,8 @@ function onKey(e) {
 }
 
 .base-list-card--disabled {
-  opacity: 0.58;
+  background: var(--color-bg-sunken);
+  border-style: dashed;
 }
 
 .base-list-card__header {
@@ -166,5 +167,15 @@ function onKey(e) {
   min-width: 0;
   margin-top: auto;
   padding-top: 0.05rem;
+}
+
+@media (max-width: 640px) {
+  .base-list-card__header {
+    flex-wrap: wrap;
+  }
+
+  .base-list-card__header-right {
+    margin-left: auto;
+  }
 }
 </style>

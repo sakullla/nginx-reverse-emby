@@ -1325,21 +1325,40 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
-  .resource-list-filter-bar__field--agent,
+  .resource-list-filter-bar__toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .resource-list-filter-bar__field--agent {
+    width: auto;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
   .resource-list-filter-bar__field--search {
-    width: 100%;
-    flex: 1 1 100%;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
     max-width: none;
   }
 
   .resource-list-filter-bar__field--filter {
-    width: 100%;
-    flex: 1 1 100%;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: end;
   }
 
-  .resource-list-filter-bar__filter-trigger {
-    width: 100%;
-    justify-content: center;
+  .resource-list-filter-bar__filter-trigger,
+  .resource-list-filter-bar__search-shell,
+  .resource-list-filter-bar__field--agent :deep(.agent-search-select__trigger) {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+
+  .resource-list-filter-bar__clear {
+    width: 32px;
+    height: 32px;
   }
 
   .resource-list-filter-bar__conditions {

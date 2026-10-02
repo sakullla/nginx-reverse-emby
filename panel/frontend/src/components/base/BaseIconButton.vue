@@ -92,4 +92,11 @@ function onClick(e) {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
 }
+
+@media (pointer: coarse) {
+  .base-icon-button {
+    width: 44px;
+    height: 44px;
+  }
+}
 </style>

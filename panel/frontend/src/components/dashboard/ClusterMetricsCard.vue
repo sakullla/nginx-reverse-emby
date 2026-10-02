@@ -313,4 +313,33 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
   color: var(--color-danger, #ef4444);
   font-weight: 600;
 }
+
+@media (max-width: 640px) {
+  .cluster-metrics__ring {
+    width: 64px;
+    height: 64px;
+  }
+
+  .cluster-metrics__rows {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+
+  .cluster-metrics__row {
+    min-width: 0;
+    margin: 0;
+    padding: var(--space-3) 0;
+  }
+
+  .cluster-metrics__row-head {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .cluster-metrics__row-sub {
+    line-height: 1.5;
+  }
+}
 </style>

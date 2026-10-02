@@ -9,7 +9,7 @@ const outDir = process.env.NRE_CAPTURE_OUT
   ?? path.join(frontendRoot, 'docs', 'verification', 'ui')
 const baseURL = (process.env.NRE_CAPTURE_URL ?? 'http://localhost:5173').replace(/\/$/, '')
 const themes = (process.env.NRE_CAPTURE_THEMES ?? 'sakura-day,sakura-night').split(',').map((item) => item.trim()).filter(Boolean)
-const widths = (process.env.NRE_CAPTURE_WIDTHS ?? '1360,900,640').split(',').map((item) => Number(item.trim())).filter((item) => item > 0)
+const widths = (process.env.NRE_CAPTURE_WIDTHS ?? '1360,900,390').split(',').map((item) => Number(item.trim())).filter((item) => item > 0)
 
 fs.mkdirSync(outDir, { recursive: true })
 
@@ -184,7 +184,7 @@ const browser = await launchBrowser()
 
 for (const width of widths) {
   for (const theme of themes) {
-    const context = await browser.newContext({ viewport: { width, height: 1000 }, deviceScaleFactor: 1 })
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, deviceScaleFactor: 1, hasTouch: width < 1024 })
     await context.route('**/panel-api/**', fulfillPanelApi)
     await context.addInitScript((initialTheme) => {
       localStorage.setItem('panel_token', 'admin')
@@ -196,11 +196,13 @@ for (const width of widths) {
     page.on('pageerror', (error) => failures.push({ theme, width, message: error.message }))
 
     async function settle() {
+      // Let lazy route modules mount before checking their loading indicators.
+      await page.waitForTimeout(500)
       await page.waitForFunction(() => {
         const busy = document.querySelectorAll('.spinner, .skeleton, [class*="skeleton"]')
         return [...busy].every((el) => !el.getClientRects().length)
-      }, { timeout: 8000 }).catch(() => {})
-      await page.waitForTimeout(180)
+      }, undefined, { timeout: 8000 })
+      await page.evaluate(() => document.fonts.ready)
     }
 
     async function chooseLocalAgent() {
@@ -216,7 +218,7 @@ for (const width of widths) {
         document.documentElement.dataset.theme = activeTheme
       }, theme)
       const file = path.join(outDir, `${name}-${theme}-${width}.png`)
-      await page.screenshot({ path: file })
+      await page.screenshot({ path: file, animations: 'disabled' })
       const over = await page.evaluate(() => [...document.querySelectorAll('main, section, article, input, textarea, select, button, table')]
         .filter((el) => el.getClientRects().length && el.getBoundingClientRect().right > window.innerWidth + 1)
         .slice(0, 8)
@@ -231,7 +233,7 @@ for (const width of widths) {
       if (scrolled) {
         await page.waitForTimeout(80)
         const endFile = path.join(outDir, `${name}-end-${theme}-${width}.png`)
-        await page.screenshot({ path: endFile })
+        await page.screenshot({ path: endFile, animations: 'disabled' })
         await page.evaluate(() => {
           const el = document.querySelector('.app-shell .content')
           if (el) el.scrollTop = 0
@@ -325,12 +327,13 @@ for (const width of widths) {
     await step('rules', async () => {
       await open('/rules', 'HTTP 规则')
       await capture('rules')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '添加规则' }).waitFor()
       await capture('rules-agent')
-      await page.getByTitle('列表视图').click()
-      await capture('rules-list')
+      if (desktop) {
+        await page.getByTitle('列表视图').click()
+        await capture('rules-list')
+      }
       await page.getByRole('button', { name: '添加规则' }).click()
       await page.getByRole('dialog').waitFor()
       await capture('rules-create')
@@ -343,7 +346,6 @@ for (const width of widths) {
     await step('l4', async () => {
       await open('/l4', 'L4 规则')
       await capture('l4')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '添加 L4 规则' }).click()
       await page.getByRole('dialog').waitFor()
@@ -354,7 +356,6 @@ for (const width of widths) {
     await step('certs', async () => {
       await open('/certs', '公网证书')
       await capture('certs')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '新建证书' }).click()
       await page.getByRole('dialog').waitFor()
@@ -370,7 +371,6 @@ for (const width of widths) {
     await step('relays', async () => {
       await open('/relay-listeners', 'Relay 监听器')
       await capture('relays')
-      if (!desktop) return
       await chooseLocalAgent()
       await page.getByRole('button', { name: '新建监听器' }).click()
       await page.getByRole('dialog').waitFor()
@@ -410,5 +410,6 @@ for (const width of widths) {
 }
 
 await browser.close()
+fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify({ baseURL, themes, widths, failures }, null, 2))
 console.log(JSON.stringify({ failures }, null, 2))
 if (failures.length) process.exitCode = 1

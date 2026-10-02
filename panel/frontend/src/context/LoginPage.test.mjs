@@ -62,7 +62,7 @@ describe('LoginPage', () => {
     expect(verifyToken).not.toHaveBeenCalled()
     expect(login).not.toHaveBeenCalled()
     expect(push).not.toHaveBeenCalled()
-    expect(wrapper.get('.login-error').text()).toBe('令牌无效')
+    expect(wrapper.get('.login-error').text()).toBe('请输入访问令牌')
   })
 
   it('stays on the login page with a visible error when the token is invalid', async () => {

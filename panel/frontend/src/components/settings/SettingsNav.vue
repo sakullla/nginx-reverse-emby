@@ -1,11 +1,12 @@
 <template>
-  <nav class="settings-nav">
+  <nav class="settings-nav" :aria-label="label">
     <div class="settings-nav__label">{{ label }}</div>
     <button
       v-for="tab in tabs"
       :key="tab.id"
       class="settings-nav__item"
       :class="{ active: activeTab === tab.id }"
+      :aria-current="activeTab === tab.id ? 'page' : undefined"
       @click="$emit('update:activeTab', tab.id)"
     >
       <span v-if="tab.icon" class="settings-nav__icon">{{ tab.icon }}</span>
@@ -75,27 +76,29 @@ defineEmits(['update:activeTab'])
 
 @media (max-width: 767px) {
   .settings-nav {
-    flex-direction: row;
-    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: var(--space-2);
     min-width: unset;
     border-bottom: 1px solid var(--color-border-default);
-    overflow-x: auto;
-    gap: 0;
+    gap: var(--space-1);
   }
   .settings-nav__label { display: none; }
   .settings-nav__item {
-    padding: var(--space-3) var(--space-5);
+    padding: var(--space-3);
+    justify-content: center;
+    min-height: 44px;
     margin: 0;
     width: auto;
     border-left: none;
     border-bottom: 2px solid transparent;
-    border-radius: 0;
+    border-radius: var(--radius-md);
     white-space: nowrap;
   }
   .settings-nav__item.active {
     border-left-color: transparent;
     border-bottom-color: var(--color-primary);
-    background: none;
+    background: var(--color-primary-subtle);
   }
 }
 </style>

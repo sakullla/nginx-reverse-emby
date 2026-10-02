@@ -1,6 +1,6 @@
 <template>
   <div v-if="total > 0" class="list-pagination">
-    <span class="list-pagination__meta">
+    <span class="list-pagination__meta" role="status" aria-live="polite">
       共 {{ total }} 条 · 第 {{ page }} / {{ totalPages }} 页
     </span>
     <div class="list-pagination__controls">
@@ -100,5 +100,16 @@ function emitPage(next) {
 .list-pagination__btn:disabled {
   opacity: 0.42;
   cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .list-pagination__controls {
+    width: 100%;
+  }
+
+  .list-pagination__btn {
+    flex: 1;
+    min-height: 44px;
+  }
 }
 </style>

@@ -104,8 +104,8 @@
 
   --color-text-primary: #122019;
   --color-text-secondary: #40584c;
-  --color-text-tertiary: #66806f;
-  --color-text-muted: #9db3a5;
+  --color-text-tertiary: #526c5c;
+  --color-text-muted: #5d7365;
   --color-text-inverse: #ffffff;
 
   --color-bg-canvas: #f6f9f7;
@@ -154,9 +154,9 @@
    Theme: 昼樱 (sakura-day) — Light anime
    ============================================= */
 [data-theme="sakura-day"] {
-  --color-primary: #ec4899;
-  --color-primary-hover: #db2777;
-  --color-primary-active: #be185d;
+  --color-primary: #be185d;
+  --color-primary-hover: #a31450;
+  --color-primary-active: #831843;
   --color-primary-subtle: rgba(236, 72, 153, 0.08);
   --color-primary-50: rgba(236, 72, 153, 0.04);
   --color-primary-100: rgba(236, 72, 153, 0.10);
@@ -168,9 +168,9 @@
   --color-accent-subtle: rgba(244, 114, 182, 0.08);
 
   --color-text-primary: #1f2937;
-  --color-text-secondary: #6b7280;
-  --color-text-tertiary: #9ca3af;
-  --color-text-muted: #d1d5db;
+  --color-text-secondary: #4b5563;
+  --color-text-tertiary: #626b79;
+  --color-text-muted: #6b7280;
   --color-text-inverse: #ffffff;
 
   --color-bg-canvas: #fafafa;
@@ -182,28 +182,28 @@
   --color-bg-active: #fbcfe8;
 
   --color-border-subtle: rgba(0, 0, 0, 0.06);
-  --color-border-default: rgba(0, 0, 0, 0.08);
+  --color-border-default: rgba(31, 41, 55, 0.15);
   --color-border-strong: rgba(0, 0, 0, 0.12);
   --color-border-focus: rgba(236, 72, 153, 0.35);
 
-  --color-success: #10b981;
+  --color-success: #047857;
   --color-success-50: rgba(16, 185, 129, 0.08);
   --color-success-subtle: rgba(16, 185, 129, 0.10);
   --color-success-glow: rgba(16, 185, 129, 0.20);
-  --color-danger: #ef4444;
+  --color-danger: #c62828;
   --color-danger-50: rgba(239, 68, 68, 0.08);
   --color-danger-subtle: rgba(239, 68, 68, 0.10);
   --color-danger-glow: rgba(239, 68, 68, 0.20);
-  --color-warning: #f59e0b;
+  --color-warning: #a15c00;
   --color-warning-50: rgba(245, 158, 11, 0.08);
   --color-warning-subtle: rgba(245, 158, 11, 0.10);
   --color-warning-glow: rgba(245, 158, 11, 0.20);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #fdf2f8;
-  --color-dashboard-tile-border: var(--color-border-default);
+  --color-dashboard-tile-bg: #f8f9fc;
+  --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(236, 72, 153, 0.05);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
+  --color-dashboard-tile-shadow: none;
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -369,7 +369,7 @@
   --color-text-primary: #0f172a;
   --color-text-secondary: #475569;
   --color-text-tertiary: #64748b;
-  --color-text-muted: #94a3b8;
+  --color-text-muted: #64748b;
   --color-text-inverse: #ffffff;
 
   /* Background: Cool gray — clean, unobtrusive canvas */

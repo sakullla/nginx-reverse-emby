@@ -109,7 +109,7 @@ describe('RuleDetailPage', () => {
     expect(hrefs).toEqual([
       '/l4',
       '/relay-listeners',
-      '/agents',
+      '/plugins',
       '/plugins/marketplace',
       '/settings'
     ])
@@ -118,6 +118,7 @@ describe('RuleDetailPage', () => {
     expect(hrefs).not.toContain('/access/resource-groups')
     expect(hrefs).not.toContain('/resource-groups')
     expect(hrefs).not.toContain('/plugins/repositories')
+    expect(wrapper.find('.nav-item[data-to="/agents"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('用户与资源管理')
     expect(wrapper.text()).not.toContain('用户管理')
     expect(wrapper.text()).not.toContain('资源组管理')
