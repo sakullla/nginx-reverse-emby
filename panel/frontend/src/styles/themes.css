@@ -151,68 +151,69 @@
 }
 
 /* =============================================
-   Theme: 昼樱 (sakura-day) — Light anime
+   Theme: 昼樱 (sakura-day) — Warm porcelain and muted rose
+   Neutral surfaces keep dense pages calm; rose marks actions and selection.
    ============================================= */
 [data-theme="sakura-day"] {
-  --color-primary: #be185d;
-  --color-primary-hover: #a31450;
-  --color-primary-active: #831843;
-  --color-primary-subtle: rgba(236, 72, 153, 0.08);
-  --color-primary-50: rgba(236, 72, 153, 0.04);
-  --color-primary-100: rgba(236, 72, 153, 0.10);
-  --color-primary-200: rgba(236, 72, 153, 0.18);
-  --color-primary-300: rgba(236, 72, 153, 0.28);
+  --color-primary: #8d596d;
+  --color-primary-hover: #805064;
+  --color-primary-active: #704557;
+  --color-primary-subtle: #f3e9ed;
+  --color-primary-50: #faf5f7;
+  --color-primary-100: #f3e9ed;
+  --color-primary-200: #e8d5dd;
+  --color-primary-300: #d9bdc9;
 
-  --color-accent: #f472b6;
-  --color-accent-hover: #ec4899;
-  --color-accent-subtle: rgba(244, 114, 182, 0.08);
+  --color-accent: #a66f83;
+  --color-accent-hover: #8d596d;
+  --color-accent-subtle: #f7eef1;
 
-  --color-text-primary: #1f2937;
-  --color-text-secondary: #4b5563;
-  --color-text-tertiary: #626b79;
-  --color-text-muted: #6b7280;
+  --color-text-primary: #302e33;
+  --color-text-secondary: #59555d;
+  --color-text-tertiary: #6e6871;
+  --color-text-muted: #706973;
   --color-text-inverse: #ffffff;
 
-  --color-bg-canvas: #fafafa;
+  --color-bg-canvas: #f6f5f3;
   --color-bg-surface: #ffffff;
   --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #f9fafb;
-  --color-bg-subtle: #fdf2f8;
-  --color-bg-hover: #fce7f3;
-  --color-bg-active: #fbcfe8;
+  --color-bg-sunken: #f1efed;
+  --color-bg-subtle: #f8f7f5;
+  --color-bg-hover: #eeecea;
+  --color-bg-active: #e6e2df;
 
-  --color-border-subtle: rgba(0, 0, 0, 0.06);
-  --color-border-default: rgba(31, 41, 55, 0.15);
-  --color-border-strong: rgba(0, 0, 0, 0.12);
-  --color-border-focus: rgba(236, 72, 153, 0.35);
+  --color-border-subtle: #ece8e5;
+  --color-border-default: #dcd6d3;
+  --color-border-strong: #b9b0ad;
+  --color-border-focus: #b28396;
 
-  --color-success: #047857;
-  --color-success-50: rgba(16, 185, 129, 0.08);
-  --color-success-subtle: rgba(16, 185, 129, 0.10);
-  --color-success-glow: rgba(16, 185, 129, 0.20);
-  --color-danger: #c62828;
-  --color-danger-50: rgba(239, 68, 68, 0.08);
-  --color-danger-subtle: rgba(239, 68, 68, 0.10);
-  --color-danger-glow: rgba(239, 68, 68, 0.20);
-  --color-warning: #a15c00;
-  --color-warning-50: rgba(245, 158, 11, 0.08);
-  --color-warning-subtle: rgba(245, 158, 11, 0.10);
-  --color-warning-glow: rgba(245, 158, 11, 0.20);
+  --color-success: #37735b;
+  --color-success-50: #edf5f0;
+  --color-success-subtle: #e5f0e9;
+  --color-success-glow: rgba(55, 115, 91, 0.16);
+  --color-danger: #b34648;
+  --color-danger-50: #fbefee;
+  --color-danger-subtle: #f7e6e5;
+  --color-danger-glow: rgba(179, 70, 72, 0.16);
+  --color-warning: #92651f;
+  --color-warning-50: #faf3e7;
+  --color-warning-subtle: #f5ecd9;
+  --color-warning-glow: rgba(146, 101, 31, 0.16);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #f8f9fc;
+  --color-dashboard-tile-bg: #faf9f7;
   --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: rgba(236, 72, 153, 0.05);
+  --color-dashboard-tile-header-bg: #f2efed;
   --color-dashboard-tile-shadow: none;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.06), 0 4px 6px rgba(0, 0, 0, 0.04);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.08), 0 8px 10px rgba(0, 0, 0, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.10);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-xs: 0 1px 2px rgba(48, 39, 43, 0.03);
+  --shadow-sm: 0 2px 4px rgba(48, 39, 43, 0.04);
+  --shadow-md: 0 4px 12px rgba(48, 39, 43, 0.06);
+  --shadow-lg: 0 8px 24px rgba(48, 39, 43, 0.07);
+  --shadow-xl: 0 16px 36px rgba(48, 39, 43, 0.09);
+  --shadow-2xl: 0 24px 48px rgba(48, 39, 43, 0.12);
+  --shadow-focus: 0 0 0 3px rgba(141, 89, 109, 0.18);
+  --shadow-inner: inset 0 1px 2px rgba(48, 39, 43, 0.04);
 }
 
 /* =============================================
