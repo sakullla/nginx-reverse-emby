@@ -464,9 +464,9 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 	// zero/legacy state (no backoff class) falls through to normal issuance.
 	// Returning an error preserves the existing Apply contract; the renewal loop
 	// separately skips in-backoff candidates via isInRenewalBackoffLocked.
-	if m.isInRenewalBackoffLocked(policy.ID, m.cfg.now()) {
+	if backoffErr := m.renewalBackoffErrorLocked(policy.ID, m.cfg.now()); backoffErr != nil {
 		failureRecorded = true
-		return resolvedCertificateMaterial{}, fmt.Errorf("certificate %d: issuance deferred by failure backoff", policy.ID)
+		return resolvedCertificateMaterial{}, backoffErr
 	}
 
 	request, err := m.newACMEIssueRequest(policy, persisted)

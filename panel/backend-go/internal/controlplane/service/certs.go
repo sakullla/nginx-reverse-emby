@@ -2978,6 +2978,13 @@ func reconcileLocalHTTP01CertificatesForAgent(rows []storage.ManagedCertificateR
 	if strings.TrimSpace(agentID) == "" || applyRevision <= 0 {
 		return rows, false
 	}
+	// Modern agents report certificate outcomes explicitly. A successful older
+	// configuration may not contain the current HTTPS rule or its certificate;
+	// treating that heartbeat as issuance fabricates an active certificate and
+	// overwrites its failure. Retain inference only for legacy agents.
+	if agentHasCapability(capabilities, managedCertificateReportsCapability) {
+		return rows, false
+	}
 	if !agentHasCapability(capabilities, "cert_install") || !agentHasCapability(capabilities, "local_acme") {
 		return rows, false
 	}
