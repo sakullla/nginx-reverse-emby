@@ -3,9 +3,7 @@
     <div class="topbar__left">
       <div class="topbar__brand">
         <div class="topbar__logo">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-          </svg>
+          <BrandMark />
         </div>
         <div class="topbar__title">
           <span class="topbar__name">Nginx Proxy</span>
@@ -89,6 +87,7 @@ import { useRouter } from 'vue-router'
 import { logout } from '../../api/access'
 import { useAccessControl } from '../../context/useAccessControl'
 import ThemeSelector from '../base/ThemeSelector.vue'
+import BrandMark from '../base/BrandMark.vue'
 
 const router = useRouter()
 const { actor } = useAccessControl()
@@ -144,7 +143,8 @@ async function handleLogout() {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-5);
-  background: var(--color-bg-surface);
+  background: var(--color-bg-chrome, var(--color-bg-surface));
+  backdrop-filter: blur(var(--chrome-blur, 0px));
   border-bottom: 1px solid var(--color-border-subtle);
   position: sticky;
   top: 0;
@@ -160,12 +160,12 @@ async function handleLogout() {
 .topbar__logo {
   width: 36px;
   height: 36px;
-  background: var(--color-primary);
+  background: var(--color-brand-bg, var(--color-primary));
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
+  color: var(--color-brand-ink, white);
   box-shadow: var(--shadow-md);
   flex-shrink: 0;
   transition: transform var(--duration-fast) var(--ease-bounce);
@@ -188,8 +188,8 @@ async function handleLogout() {
   font-size: 0.6875rem;
   font-weight: 600;
   padding: 2px 8px;
-  background: var(--color-primary);
-  color: white;
+  background: var(--color-badge-bg, var(--color-primary));
+  color: var(--color-badge-ink, white);
   border-radius: var(--radius-full);
 }
 

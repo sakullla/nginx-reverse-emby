@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { safePluginJSON, sanitizePluginText } from '../../api/pluginSecurity'
 import { formatPanelDateTime, panelTimeZone } from '../../utils/panelDateTime.js'
+import { pluginOperationKindLabel, pluginOperationStatusLabel } from '../../utils/pluginOperationLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
 
 const props = defineProps({ operations: { type: Array, default: () => [] } })
@@ -32,14 +33,14 @@ function formatStamp(value) {
   <ol v-else class="plugin-operation-timeline">
     <li v-for="operation in visibleOperations" :key="operation.id">
       <div class="plugin-operation-timeline__heading">
-        <strong>{{ operation.kind }}</strong>
-        <BaseBadge :tone="statusTone(operation.status)">{{ operation.status }}</BaseBadge>
+        <strong :title="operation.kind">{{ pluginOperationKindLabel(operation.kind) }}</strong>
+        <BaseBadge :tone="statusTone(operation.status)" :title="operation.status">{{ pluginOperationStatusLabel(operation.status) }}</BaseBadge>
         <time :datetime="operation.completed_at || operation.created_at" :title="operation.completed_at || operation.created_at" :data-timezone="panelTimeZone">{{ formatStamp(operation.completed_at || operation.created_at) }}</time>
       </div>
       <p>操作人 {{ operation.actor_id || 'system' }} · revision {{ operation.target_revision || '—' }}</p>
       <p v-if="operation.error" class="plugin-operation-timeline__error">{{ sanitizePluginText(operation.error) }}</p>
       <details v-if="operation.agent_results && Object.keys(operation.agent_results).length">
-        <summary>逐 Agent 安全回报</summary>
+        <summary>查看各节点执行结果</summary>
         <pre>{{ safePluginJSON(operation.agent_results) }}</pre>
       </details>
     </li>

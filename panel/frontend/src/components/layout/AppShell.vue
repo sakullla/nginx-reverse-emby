@@ -8,6 +8,7 @@
       @update:open="searchOpen = $event"
     />
     <div class="app-layout">
+      <SakuraBackdrop />
       <!-- Desktop sidebar -->
       <Sidebar v-if="!isMobile" />
       <main id="main-content" class="content" tabindex="-1">
@@ -25,6 +26,7 @@ import Sidebar from './Sidebar.vue'
 import BottomNav from './BottomNav.vue'
 import GlobalSearch from '../GlobalSearch.vue'
 import OperationTracker from '../operations/OperationTracker.vue'
+import SakuraBackdrop from '../base/SakuraBackdrop.vue'
 
 const searchOpen = ref(false)
 const isMobile = ref(window.innerWidth < 1024)
@@ -44,17 +46,21 @@ onUnmounted(() => {
 
 <style scoped>
 .app-shell {
+  background: var(--color-bg-atmosphere, var(--color-bg-canvas));
   height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .app-layout {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
 }
 .content {
+  position: relative;
+  z-index: 1;
   flex: 1;
   min-width: 0;
   overflow-y: auto;

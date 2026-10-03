@@ -356,7 +356,7 @@ function scalePoints(points, factor) {
 
 /* Bento cell chrome */
 .dt-cell {
-  background: var(--color-bg-surface);
+  background: var(--color-bg-panel, var(--color-bg-surface));
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-xs);

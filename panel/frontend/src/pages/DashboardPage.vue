@@ -146,7 +146,7 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
 }
 
 .dashboard__health-cell {
-  background: var(--color-bg-surface);
+  background: var(--color-bg-panel, var(--color-bg-surface));
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-xs);

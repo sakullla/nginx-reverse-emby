@@ -190,16 +190,6 @@ describe('PluginMarketplacePage', () => {
     expect(wrapper.find('.plugin-marketplace-page__loading').exists()).toBe(true)
   })
 
-  it('shows preview catalog names when the market fails to load', async () => {
-    mocks.fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
-    const wrapper = mountPage()
-    await flushPromises()
-    expect(wrapper.text()).toContain('Emby 助手')
-    expect(wrapper.text()).toContain('网站防火墙')
-    expect(wrapper.text()).not.toContain('official.emby-helper')
-    expect(wrapper.text()).toContain('下一步')
-  })
-
   it('renders the catalog name from the signed package instead of unnamed fallback', async () => {
     mocks.fetchRepositoryContents.mockResolvedValue({
       entries: [{ id: 'cloudflare-dns', name: 'Cloudflare DNS', version: '0.1.5', sha256: 'd'.repeat(64), description: '按域名后缀解析 Cloudflare DNS Token' }],
@@ -248,8 +238,9 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     const confirm = wrapper.get('[data-test="marketplace-confirm-modal"]')
     expect(confirm.find('.modal-title').text()).toBe('确认安装插件')
+    expect(wrapper.find('[data-test="marketplace-inspect-modal"]').exists()).toBe(false)
     expect(confirm.text()).toContain('http.inspect')
-    expect(confirm.text()).toContain('我已复核非官方来源')
+    expect(confirm.text()).toContain('确认即同意授予上列能力')
     expect(wrapper.find('.page-title').text()).toBe('插件市场')
     expect(mocks.push).not.toHaveBeenCalled()
   })
@@ -314,10 +305,10 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
-    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('读取插件包超时')
-    expect(buttonByText(wrapper, '重试安装')).toBeTruthy()
-    expect(buttonByText(wrapper, '重试安装').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('读取插件包超时')
+    expect(messageStore.state.messages).toHaveLength(0)
+    expect(buttonByText(wrapper, '重试下载')).toBeTruthy()
+    expect(buttonByText(wrapper, '重试下载').attributes('disabled')).toBeUndefined()
   })
 
   it('uses permissions from a successful retry instead of the failed preview', async () => {
@@ -328,7 +319,10 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
     await flushPromises()
-    await buttonByText(wrapper, '重试安装').trigger('click')
+    await buttonByText(wrapper, '重试下载').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    await buttonByText(wrapper, '确认安装').trigger('click')
     await flushPromises()
     expect(mocks.installPlugin).toHaveBeenCalledWith(expect.objectContaining({
       plugin_id: entry.id,
@@ -350,7 +344,7 @@ describe('PluginMarketplacePage', () => {
     const inspect = wrapper.get('[data-test="marketplace-inspect-modal"]')
     expect(inspect.find('.modal-title').text()).toBe('Helper')
     expect(inspect.text()).not.toContain('http.inspect')
-    expect(inspect.text()).toContain('市场快照只展示已签名的索引信息')
+    expect(inspect.text()).toContain('确认安装前会下载并校验插件包')
   })
 
   it('rechecks installed state immediately before choosing install versus upgrade', async () => {
@@ -486,7 +480,7 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('已安装')
-    expect(wrapper.text()).not.toContain('可升级')
+    expect(wrapper.get(`[data-test="marketplace-package-${entry.id}"]`).text()).not.toContain('可升级')
     expect(wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).text()).toBe('打开')
   })
 
@@ -498,42 +492,42 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认安装').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
-    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('source rejected')
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('source rejected')
+    expect(messageStore.state.messages).toHaveLength(0)
     expect(wrapper.find('.modal-title').text()).toBe('确认安装插件')
     expect(buttonByText(wrapper, '重试安装')).toBeTruthy()
     expect(mocks.push).not.toHaveBeenCalled()
   })
 
-  it('retries upgrade after a pending-operation conflict instead of ignoring the confirm click', async () => {
+  it('shows known pending work without downloading or submitting, and resumes after refreshing', async () => {
     mocks.fetchPlugins.mockResolvedValue([{
-      plugin_id: entry.id,
-      active_package_digest: 'c'.repeat(64),
-      pending_operation_id: 'op-configure',
-      pending_kind: 'configure'
+      plugin_id: entry.id, active_package_digest: 'c'.repeat(64),
+      pending_operation_id: 'op-configure', pending_kind: 'configure'
     }])
-    mocks.upgradePlugin
-      .mockRejectedValueOnce(new Error('plugin state conflict: another plugin operation is already pending'))
-      .mockResolvedValueOnce({})
     const wrapper = mountPage()
     await flushPromises()
-    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    const action = wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`)
+    expect(action.text()).toBe('查看进度')
+    await action.trigger('click')
     await flushPromises()
-    await buttonByText(wrapper, '确认升级').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
-    expect(messageStore.state.messages.map((item) => item.text).join('\n')).toContain('未完成的操作')
+    expect(wrapper.get('[data-test="marketplace-pending-status"]').text()).toContain('配置更新正在处理')
+    expect(wrapper.find('[data-test="marketplace-confirm-submit"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="marketplace-pending-detail"]').attributes('href')).toBe(`/plugins/${encodeURIComponent(entry.id)}`)
-    expect(wrapper.find('[data-test="marketplace-confirm-next"]').exists()).toBe(false)
-    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
-    expect(mocks.push).not.toHaveBeenCalled()
+    expect(mocks.fetchPluginPackageDetail).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+    await wrapper.get('[data-test="marketplace-pending-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="marketplace-pending-status"]').exists()).toBe(false)
+    expect(mocks.fetchPluginPackageDetail).toHaveBeenCalledTimes(1)
     await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
     await flushPromises()
-    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(2)
+    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
     expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
   })
 
-  it('does not tell the user to open the second plugin when another upgrade is still applying', async () => {
+  it('does not infer the cause of a conflict from another plugin being busy', async () => {
     const helper = {
       ...entry,
       id: 'official.emby-helper',
@@ -559,9 +553,9 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认升级').trigger('click')
     await flushPromises()
-    const text = messageStore.state.messages.map((item) => item.text).join('\n')
-    expect(text).toContain('另一个插件的升级还在节点上应用')
-    expect(text).toContain('这个插件本身正常')
+    const text = wrapper.get('[data-test="marketplace-action-error"]').text()
+    expect(text).toContain('服务端报告有操作尚未结束')
+    expect(text).not.toContain('另一个插件的升级')
     expect(text).not.toContain('打开详情查看进度')
     expect(wrapper.find('[data-test="marketplace-pending-detail"]').exists()).toBe(false)
     expect(mocks.upgradePlugin).toHaveBeenCalledWith(helper.id, expect.objectContaining({
@@ -579,13 +573,13 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认升级').trigger('click')
     await flushPromises()
-    const text = messageStore.state.messages.map((item) => item.text).join('\n')
+    const text = wrapper.get('[data-test="marketplace-action-error"]').text()
     expect(text).toContain('市场目录刚刷新或正在刷新')
     expect(text).toContain('这个插件本身正常')
     expect(wrapper.find('[data-test="marketplace-pending-detail"]').exists()).toBe(false)
   })
 
-  it('still submits upgrade when the same catalog digest is already pending', async () => {
+  it('blocks a duplicate upgrade when pending work appears before final submission', async () => {
     mocks.fetchPlugins
       .mockResolvedValueOnce([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
       .mockResolvedValue([{
@@ -601,28 +595,163 @@ describe('PluginMarketplacePage', () => {
     await flushPromises()
     await buttonByText(wrapper, '确认升级').trigger('click')
     await flushPromises()
-    expect(mocks.upgradePlugin).toHaveBeenCalledWith(entry.id, expect.objectContaining({
-      source_id: 'community', plugin_id: entry.id, digest: entry.sha256
-    }))
-    expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="marketplace-pending-status"]').text()).toContain('升级正在处理')
+    expect(wrapper.find('[data-test="marketplace-confirm-submit"]').exists()).toBe(false)
+    expect(mocks.push).not.toHaveBeenCalled()
   })
 
-  it('does not skip upgrade when a non-upgrade pending operation happens to share the catalog digest', async () => {
-    mocks.fetchPlugins.mockResolvedValue([{
-      plugin_id: entry.id,
-      active_package_digest: 'c'.repeat(64),
-      pending_operation_id: 'op-configure',
-      pending_kind: 'configure',
-      pending_target_digest: entry.sha256
-    }])
+  it('keeps server-side pending conflicts visible and prevents repeated submissions', async () => {
+    mocks.fetchPlugins.mockResolvedValueOnce([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+      .mockResolvedValueOnce([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64) }])
+      .mockResolvedValue([{ plugin_id: entry.id, active_package_digest: 'c'.repeat(64), pending_operation_id: 'op-configure', pending_kind: 'configure' }])
+    mocks.upgradePlugin.mockRejectedValue(new Error('plugin state conflict: another plugin operation is already pending'))
     const wrapper = mountPage()
     await flushPromises()
     await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
     await flushPromises()
-    await buttonByText(wrapper, '确认升级').trigger('click')
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
     await flushPromises()
     expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="marketplace-pending-status"]').text()).toContain('未完成的操作')
+    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="marketplace-confirm-submit"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="marketplace-pending-detail"]').exists()).toBe(true)
+    await wrapper.get('[data-test="marketplace-pending-refresh"]').trigger('click')
+    await flushPromises()
+    expect(mocks.upgradePlugin).toHaveBeenCalledTimes(1)
+    expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('does not mutate from stale installed data if the final status refresh fails', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    mocks.fetchPlugins.mockRejectedValue(new Error('status unavailable'))
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('status unavailable')
+  })
+
+  it('keeps known pending status and reports a failed refresh without offering retry installation', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, pending_operation_id: 'op-configure', pending_kind: 'configure' }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    mocks.fetchPlugins.mockRejectedValue(new Error('status unavailable'))
+    await wrapper.get('[data-test="marketplace-pending-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('status unavailable')
+    expect(wrapper.find('[data-test="marketplace-confirm-submit"]').exists()).toBe(false)
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+  })
+
+  it('reports submission timeouts without claiming the package download failed', async () => {
+    mocks.installPlugin.mockRejectedValue(new Error('timeout exceeded'))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-action-error"]').text()).toContain('等待提交结果超时')
+    expect(wrapper.text()).not.toContain('读取插件包超时')
+  })
+
+  it('reports catalog load failures instead of presenting synthetic installable packages', async () => {
+    mocks.fetchRepositorySources.mockRejectedValue(new Error('catalog unavailable'))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('catalog unavailable')
+    expect(wrapper.find('[data-test^="marketplace-card-action-"]').exists()).toBe(false)
+    mocks.fetchRepositorySources.mockResolvedValue([source])
+    await buttonByText(wrapper, '重试').trigger('click')
+    await flushPromises()
+    expect(wrapper.find(`[data-test="marketplace-card-action-${entry.id}"]`).exists()).toBe(true)
+  })
+
+  it('combines search with installed and update filters and clears an empty result', async () => {
+    const other = { ...entry, id: 'other', name: 'Other', sha256: 'd'.repeat(64) }
+    mocks.fetchRepositoryContents.mockResolvedValue({ entries: [entry, other], directPlugin: null })
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_version: '1.0.0' }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-test="marketplace-filter-updates"]').trigger('click')
+    expect(wrapper.find(`[data-test="marketplace-package-${entry.id}"]`).exists()).toBe(true)
+    expect(wrapper.find('[data-test="marketplace-package-other"]').exists()).toBe(false)
+    await wrapper.get('input[type="search"]').setValue('Other')
+    expect(wrapper.text()).toContain('没有匹配的插件')
+    await buttonByText(wrapper, '清除筛选').trigger('click')
+    expect(wrapper.findAll('.marketplace-card')).toHaveLength(2)
+    await wrapper.get('[data-test="marketplace-filter-installed"]').trigger('click')
+    expect(wrapper.findAll('.marketplace-card')).toHaveLength(1)
+  })
+
+  it('opens an installation completed elsewhere without downloading or resubmitting', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, pending_operation_id: 'op-install', pending_kind: 'install' }])
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: entry.id, active_version: entry.version }])
+    await wrapper.get('[data-test="marketplace-pending-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-confirm-submit"]').text()).toBe('打开插件')
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(mocks.fetchPluginPackageDetail).not.toHaveBeenCalled()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
     expect(mocks.push).toHaveBeenCalledWith(`/plugins/${encodeURIComponent(entry.id)}`)
+  })
+
+  it('handles an HTTP conflict without a detailed server message using refreshed pending state', async () => {
+    mocks.fetchPlugins.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+      .mockResolvedValue([{ plugin_id: entry.id, pending_operation_id: 'op-install', pending_kind: 'install' }])
+    mocks.installPlugin.mockRejectedValue(Object.assign(new Error('Request failed with status code 409'), { status: 409 }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-pending-status"]').text()).toContain('未完成的操作')
+    expect(wrapper.find('[data-test="marketplace-action-error"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('status code 409')
+    expect(wrapper.find('[data-test="marketplace-confirm-submit"]').exists()).toBe(false)
+  })
+
+  it('preserves available catalog entries and reports a source that could not be read', async () => {
+    mocks.fetchRepositorySources.mockResolvedValue([source, { id: 'broken', name: '离线仓库', kind: 'custom' }])
+    mocks.fetchRepositoryContents.mockImplementation(async (id) => {
+      if (id === 'broken') throw new Error('source unavailable')
+      return { entries: [entry], directPlugin: null }
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find(`[data-test="marketplace-package-${entry.id}"]`).exists()).toBe(true)
+    expect(wrapper.get('.marketplace-load-error').text()).toContain('离线仓库：source unavailable')
+  })
+
+  it('requires another confirmation after retrying a failed permission download', async () => {
+    mocks.fetchPluginPackageDetail.mockRejectedValueOnce(new Error('network error'))
+      .mockResolvedValueOnce({ ...packageDetail, permissions: ['http.outbound', 'secret.use', 'vendor.custom'] })
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get(`[data-test="marketplace-card-action-${entry.id}"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="marketplace-confirm-submit"]').text()).toBe('重试下载')
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    expect(wrapper.get('.permission-list').text()).toContain('访问外部 HTTP 服务')
+    expect(wrapper.get('.permission-list').text()).toContain('vendor.custom')
+    expect(wrapper.get('[data-test="marketplace-confirm-submit"]').text()).toBe('确认安装')
+    await wrapper.get('[data-test="marketplace-confirm-submit"]').trigger('click')
+    await flushPromises()
+    expect(mocks.installPlugin).toHaveBeenCalledWith(expect.objectContaining({ confirmed_permissions: ['http.outbound', 'secret.use', 'vendor.custom'] }))
   })
 
   it('switches the catalog to a list table with a visible install action and a name link', async () => {

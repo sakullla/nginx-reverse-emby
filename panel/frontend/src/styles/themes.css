@@ -151,134 +151,183 @@
 }
 
 /* =============================================
-   Theme: 昼樱 (sakura-day) — Warm porcelain and muted rose
-   Neutral surfaces keep dense pages calm; rose marks actions and selection.
+   Theme: 昼樱 (sakura-day) — Sakura rose and airy lilac
+   Cool white surfaces over a soft petal-light canvas.
    ============================================= */
 [data-theme="sakura-day"] {
-  --color-primary: #8d596d;
-  --color-primary-hover: #805064;
-  --color-primary-active: #704557;
-  --color-primary-subtle: #f3e9ed;
-  --color-primary-50: #faf5f7;
-  --color-primary-100: #f3e9ed;
-  --color-primary-200: #e8d5dd;
-  --color-primary-300: #d9bdc9;
+  color-scheme: light;
 
-  --color-accent: #a66f83;
-  --color-accent-hover: #8d596d;
-  --color-accent-subtle: #f7eef1;
+  --color-primary: #b83f73;
+  --color-primary-hover: #a53165;
+  --color-primary-active: #892653;
+  --color-primary-subtle: #fbeaf2;
+  --color-primary-50: #fff5fa;
+  --color-primary-100: #fbeaf2;
+  --color-primary-200: #f2cde1;
+  --color-primary-300: #e4a6c7;
 
-  --color-text-primary: #302e33;
-  --color-text-secondary: #59555d;
-  --color-text-tertiary: #6e6871;
-  --color-text-muted: #706973;
+  --color-accent: #7760b2;
+  --color-accent-hover: #624995;
+  --color-accent-subtle: #f0ecfa;
+
+  --color-text-primary: #292b42;
+  --color-text-secondary: #595d76;
+  --color-text-tertiary: #6d7088;
+  --color-text-muted: #71738c;
   --color-text-inverse: #ffffff;
 
-  --color-bg-canvas: #f6f5f3;
+  --color-bg-canvas: #f6f7fc;
   --color-bg-surface: #ffffff;
   --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #f1efed;
-  --color-bg-subtle: #f8f7f5;
-  --color-bg-hover: #eeecea;
-  --color-bg-active: #e6e2df;
+  --color-bg-sunken: #edf0f8;
+  --color-bg-subtle: #f6f6fb;
+  --color-bg-hover: #efeef8;
+  --color-bg-active: #e5e2f3;
 
-  --color-border-subtle: #ece8e5;
-  --color-border-default: #dcd6d3;
-  --color-border-strong: #b9b0ad;
-  --color-border-focus: #b28396;
+  --color-border-subtle: #e8e9f2;
+  --color-border-default: #d8daea;
+  --color-border-strong: #a5abc5;
+  --color-border-focus: #be80b3;
 
-  --color-success: #37735b;
-  --color-success-50: #edf5f0;
-  --color-success-subtle: #e5f0e9;
-  --color-success-glow: rgba(55, 115, 91, 0.16);
-  --color-danger: #b34648;
-  --color-danger-50: #fbefee;
-  --color-danger-subtle: #f7e6e5;
-  --color-danger-glow: rgba(179, 70, 72, 0.16);
-  --color-warning: #92651f;
-  --color-warning-50: #faf3e7;
-  --color-warning-subtle: #f5ecd9;
-  --color-warning-glow: rgba(146, 101, 31, 0.16);
+  --color-success: #23775e;
+  --color-success-50: #eff8f4;
+  --color-success-subtle: #e3f3ec;
+  --color-success-glow: rgba(35, 119, 94, 0.14);
+  --color-danger: #b83b54;
+  --color-danger-50: #fff3f4;
+  --color-danger-subtle: #fce8eb;
+  --color-danger-glow: rgba(184, 59, 84, 0.14);
+  --color-warning: #936021;
+  --color-warning-50: #fff8ec;
+  --color-warning-subtle: #fbefd8;
+  --color-warning-glow: rgba(147, 96, 33, 0.14);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #faf9f7;
+  --color-dashboard-tile-bg: #f6f6fb;
   --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: #f2efed;
+  --color-dashboard-tile-header-bg: #f0edf8;
   --color-dashboard-tile-shadow: none;
 
-  --shadow-xs: 0 1px 2px rgba(48, 39, 43, 0.03);
-  --shadow-sm: 0 2px 4px rgba(48, 39, 43, 0.04);
-  --shadow-md: 0 4px 12px rgba(48, 39, 43, 0.06);
-  --shadow-lg: 0 8px 24px rgba(48, 39, 43, 0.07);
-  --shadow-xl: 0 16px 36px rgba(48, 39, 43, 0.09);
-  --shadow-2xl: 0 24px 48px rgba(48, 39, 43, 0.12);
-  --shadow-focus: 0 0 0 3px rgba(141, 89, 109, 0.18);
-  --shadow-inner: inset 0 1px 2px rgba(48, 39, 43, 0.04);
+  --shadow-xs: 0 1px 2px rgba(68, 31, 51, 0.03);
+  --shadow-sm: 0 2px 6px rgba(68, 31, 51, 0.04);
+  --shadow-md: 0 4px 14px rgba(68, 31, 51, 0.06);
+  --shadow-lg: 0 8px 28px rgba(68, 31, 51, 0.08);
+  --shadow-xl: 0 16px 40px rgba(68, 31, 51, 0.10);
+  --shadow-2xl: 0 24px 56px rgba(68, 31, 51, 0.13);
+  --shadow-focus: 0 0 0 3px rgba(184, 63, 115, 0.16);
+  --shadow-inner: inset 0 1px 2px rgba(68, 31, 51, 0.04);
+
+  /* Sakura visual identity: translucent chrome, petal light and lilac ink. */
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+  --color-bg-chrome: rgba(255, 255, 255, 0.86);
+  --color-bg-sidebar: linear-gradient(180deg, #ffffff 0%, #faf8ff 100%);
+  --color-bg-panel: linear-gradient(145deg, #ffffff 65%, #faf9ff);
+  --color-bg-atmosphere:
+    radial-gradient(ellipse 65% 42% at 5% 0%, rgba(245, 196, 220, 0.32), transparent 72%),
+    radial-gradient(ellipse 55% 45% at 95% 0%, rgba(187, 197, 248, 0.28), transparent 72%),
+    var(--color-bg-canvas);
+  --color-brand-bg: linear-gradient(135deg, #b83f73, #8650ab);
+  --color-brand-ink: #ffffff;
+  --color-badge-bg: var(--color-primary-subtle);
+  --color-badge-ink: var(--color-primary);
+  --color-nav-selected: linear-gradient(100deg, #fbeaf2, #f0ecfa);
+  --color-button-bg: linear-gradient(115deg, #b83f73, #8650ab);
+  --color-button-hover-bg: linear-gradient(115deg, #a53165, #744394);
+  --chrome-blur: 16px;
+  --sakura-decoration-display: block;
+  --sakura-decoration-opacity: 0.28;
 }
 
 /* =============================================
-   Theme: 夜樱 (sakura-night) — Dark anime
+   Theme: 夜樱 (sakura-night) — Indigo moonlight and sakura
+   Layered blue-violet surfaces with pink and lilac highlights.
    ============================================= */
 [data-theme="sakura-night"] {
-  --color-primary: #f472b6;
-  --color-primary-hover: #ec4899;
-  --color-primary-active: #db2777;
-  --color-primary-subtle: rgba(244, 114, 182, 0.12);
-  --color-primary-50: rgba(244, 114, 182, 0.06);
-  --color-primary-100: rgba(244, 114, 182, 0.14);
-  --color-primary-200: rgba(244, 114, 182, 0.22);
-  --color-primary-300: rgba(244, 114, 182, 0.32);
+  color-scheme: dark;
 
-  --color-accent: #c084fc;
-  --color-accent-hover: #a855f7;
-  --color-accent-subtle: rgba(192, 132, 252, 0.10);
+  --color-primary: #efaccf;
+  --color-primary-hover: #f8c3de;
+  --color-primary-active: #df96c0;
+  --color-primary-subtle: #35283f;
+  --color-primary-50: #242237;
+  --color-primary-100: #35283f;
+  --color-primary-200: #4b3458;
+  --color-primary-300: #6d4b7c;
 
-  --color-text-primary: #f1f5f9;
-  --color-text-secondary: #94a3b8;
-  --color-text-tertiary: #8b9cb3;
-  --color-text-muted: #8b9cb3;
-  --color-text-inverse: #0f172a;
+  --color-accent: #b6acf1;
+  --color-accent-hover: #cec5ff;
+  --color-accent-subtle: #302d4b;
 
-  --color-bg-canvas: #0f0f14;
-  --color-bg-surface: #1a1a24;
-  --color-bg-surface-raised: #22222e;
-  --color-bg-sunken: #0a0a0f;
-  --color-bg-subtle: rgba(244, 114, 182, 0.05);
-  --color-bg-hover: rgba(244, 114, 182, 0.08);
-  --color-bg-active: rgba(244, 114, 182, 0.12);
+  --color-text-primary: #f0eefb;
+  --color-text-secondary: #c0c2dc;
+  --color-text-tertiary: #a2a6c5;
+  --color-text-muted: #9ba1c0;
+  --color-text-inverse: #221a35;
 
-  --color-border-subtle: rgba(255, 255, 255, 0.06);
-  --color-border-default: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.14);
-  --color-border-focus: rgba(244, 114, 182, 0.35);
+  --color-bg-canvas: #101320;
+  --color-bg-surface: #1b1e31;
+  --color-bg-surface-raised: #24283e;
+  --color-bg-sunken: #0c0f1b;
+  --color-bg-subtle: #22263b;
+  --color-bg-hover: #2b2e47;
+  --color-bg-active: #353551;
 
-  --color-success: #34d399;
-  --color-success-50: rgba(52, 211, 153, 0.10);
-  --color-success-subtle: rgba(52, 211, 153, 0.12);
-  --color-success-glow: rgba(52, 211, 153, 0.25);
-  --color-danger: #f87171;
-  --color-danger-50: rgba(248, 113, 113, 0.10);
-  --color-danger-subtle: rgba(248, 113, 113, 0.12);
-  --color-danger-glow: rgba(248, 113, 113, 0.25);
-  --color-warning: #fbbf24;
-  --color-warning-50: rgba(251, 191, 36, 0.10);
-  --color-warning-subtle: rgba(251, 191, 36, 0.12);
-  --color-warning-glow: rgba(251, 191, 36, 0.25);
+  --color-border-subtle: #2c314a;
+  --color-border-default: #3c435f;
+  --color-border-strong: #616b8e;
+  --color-border-focus: #b89bdc;
+
+  --color-success: #85ccb5;
+  --color-success-50: #1b2e2c;
+  --color-success-subtle: #223a32;
+  --color-success-glow: rgba(133, 204, 181, 0.14);
+  --color-danger: #f1a2a7;
+  --color-danger-50: #322433;
+  --color-danger-subtle: #422b38;
+  --color-danger-glow: rgba(241, 162, 167, 0.14);
+  --color-warning: #e4c18a;
+  --color-warning-50: #2d2930;
+  --color-warning-subtle: #3b3336;
+  --color-warning-glow: rgba(228, 193, 138, 0.14);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
+  --color-dashboard-tile-bg: #22263b;
   --color-dashboard-tile-border: var(--color-border-subtle);
-  --color-dashboard-tile-header-bg: rgba(244, 114, 182, 0.08);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
+  --color-dashboard-tile-header-bg: #2a2841;
+  --color-dashboard-tile-shadow: none;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.40), 0 4px 6px rgba(0, 0, 0, 0.30);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.45), 0 8px 10px rgba(0, 0, 0, 0.30);
-  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.55);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-xs: 0 1px 2px rgba(8, 5, 12, 0.16);
+  --shadow-sm: 0 2px 6px rgba(8, 5, 12, 0.20);
+  --shadow-md: 0 4px 14px rgba(8, 5, 12, 0.24);
+  --shadow-lg: 0 8px 28px rgba(8, 5, 12, 0.28);
+  --shadow-xl: 0 16px 40px rgba(8, 5, 12, 0.32);
+  --shadow-2xl: 0 24px 56px rgba(8, 5, 12, 0.40);
+  --shadow-focus: 0 0 0 3px rgba(239, 172, 207, 0.18);
+  --shadow-inner: inset 0 1px 2px rgba(8, 5, 12, 0.20);
+
+  /* The same sakura identity under indigo moonlight. */
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+  --color-bg-chrome: rgba(27, 30, 49, 0.88);
+  --color-bg-sidebar: linear-gradient(180deg, #1b1e31 0%, #1d1d33 100%);
+  --color-bg-panel: linear-gradient(145deg, #20243a, #1b1e31 70%);
+  --color-bg-atmosphere:
+    radial-gradient(ellipse 65% 42% at 5% 0%, rgba(117, 70, 123, 0.18), transparent 72%),
+    radial-gradient(ellipse 55% 45% at 95% 0%, rgba(100, 104, 187, 0.18), transparent 72%),
+    var(--color-bg-canvas);
+  --color-brand-bg: linear-gradient(135deg, #efaccf, #bcb0f2);
+  --color-brand-ink: #221a35;
+  --color-badge-bg: var(--color-primary-subtle);
+  --color-badge-ink: var(--color-primary);
+  --color-nav-selected: linear-gradient(100deg, #35283f, #302d4b);
+  --color-button-bg: linear-gradient(115deg, #efaccf, #bcb0f2);
+  --color-button-hover-bg: linear-gradient(115deg, #f8c3de, #cec5ff);
+  --chrome-blur: 16px;
+  --sakura-decoration-display: block;
+  --sakura-decoration-opacity: 0.20;
 }
 
 /* =============================================

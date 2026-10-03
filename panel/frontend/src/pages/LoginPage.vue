@@ -1,11 +1,9 @@
 <template>
   <div class="login-page">
+    <SakuraBackdrop />
     <div class="login-card">
       <div class="login-card__header">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-        </svg>
+        <div class="login-card__mark"><BrandMark fallback="lock" /></div>
         <h1 class="login-card__title">Nginx Proxy</h1>
         <p class="login-card__subtitle">使用访问令牌进入管理端</p>
       </div>
@@ -52,6 +50,8 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { verifyToken } from '../api'
 import { useAuthState } from '../context/useAuthState'
+import BrandMark from '../components/base/BrandMark.vue'
+import SakuraBackdrop from '../components/base/SakuraBackdrop.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -104,18 +104,20 @@ async function handleLogin() {
 
 <style scoped>
 .login-page {
+  position: relative;
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-bg-canvas);
+  background: var(--color-bg-atmosphere, var(--color-bg-canvas));
   padding: var(--space-4);
 }
 
 .login-card {
+  position: relative;
   width: 100%;
   max-width: 360px;
-  background: var(--color-bg-surface);
+  background: var(--color-bg-panel, var(--color-bg-surface));
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-2xl);
   padding: var(--space-8);
@@ -129,6 +131,17 @@ async function handleLogin() {
   gap: var(--space-3);
   margin-bottom: var(--space-6);
   color: var(--color-primary);
+}
+
+.login-card__mark {
+  width: 56px;
+  height: 56px;
+  padding: 8px;
+  box-sizing: border-box;
+  border-radius: var(--radius-xl);
+  background: var(--color-brand-bg, transparent);
+  color: var(--color-brand-ink, var(--color-primary));
+  box-shadow: var(--shadow-sm);
 }
 
 .login-card__title {

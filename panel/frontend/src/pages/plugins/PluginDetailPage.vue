@@ -60,7 +60,7 @@ const source = computed(() => ({ kind: detail.value?.plugin.active_source_kind, 
 const visibleResourceGroups = computed(() => visibleResourceGroupsForActor(resourceGroups.value, actor.value))
 const sourceLabel = computed(() => source.value.kind === 'official' ? '官方来源' : '非官方来源')
 const lifecycleLabel = computed(() => {
-  const labels = { active: '生效中', degraded: '已降级', disabled: '已停用', upgrading: '升级中', applying: '应用中', rolling_back: '回滚中' }
+  const labels = { installed: '已安装', active: '生效中', degraded: '已降级', disabled: '已停用', upgrading: '升级中', applying: '应用中', rolling_back: '回滚中' }
   return labels[detail.value?.plugin?.current_lifecycle] || detail.value?.plugin?.current_lifecycle || '未知'
 })
 const deploymentStatusLabel = computed(() => (detail.value?.instances || []).length ? '已部署' : '尚未部署')
@@ -699,6 +699,14 @@ async function retryAgent(status) {
         </div>
       </header>
 
+      <section v-if="hasPendingOperation" class="plugin-ops-panel" data-test="plugin-pending-progress" aria-label="进行中的操作">
+        <header class="plugin-ops-panel__head">
+          <div><h2>操作进度</h2><p>有操作尚未结束，节点执行结果会自动刷新。</p></div>
+          <button class="btn btn-secondary" type="button" @click="load({ background: true })">刷新状态</button>
+        </header>
+        <PluginOperationTimeline :operations="operations" />
+      </section>
+
       <section class="plugin-task" data-test="plugin-task-center" aria-label="插件任务">
         <div class="plugin-task__head">
           <p class="plugin-task__purpose">{{ pluginPurpose }}</p>
@@ -950,7 +958,7 @@ async function retryAgent(status) {
             <PluginLogViewer :key="selectedInstance.id" :plugin-id="detail.plugin.plugin_id" :instance-id="selectedInstance.id" :agents="logViewerAgents" />
           </section>
 
-          <section class="plugin-ops-panel">
+          <section v-if="!hasPendingOperation" class="plugin-ops-panel">
             <header class="plugin-ops-panel__head">
               <div>
                 <h2>生命周期操作与审计</h2>
@@ -1023,6 +1031,15 @@ async function retryAgent(status) {
 
 <style scoped>
 .plugin-detail-page { max-width: 1180px; display: grid; gap: var(--space-6); margin: 0 auto; }
+
+.page-header__left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 390px) {
+  .page-header__left { flex: none; }
+}
 
 .plugin-detail-page__loading {
   display: flex;

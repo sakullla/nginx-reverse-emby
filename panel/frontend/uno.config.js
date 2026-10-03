@@ -27,7 +27,7 @@ export default defineConfig({
     // Keep these aligned with the capsule-button spec in styles/utilities.css —
     // this stylesheet loads after it and would silently override the shape.
     'btn': 'px-6 py-2.5 rounded-full font-semibold text-sm transition-all duration-250 cursor-pointer',
-    'btn-primary': 'btn bg-primary text-white hover:opacity-90',
+    'btn-primary': 'btn',
     'btn-secondary': 'btn bg-surface border border-default hover:bg-hover',
     'card': 'bg-surface rounded-2xl border border-default shadow-sm',
     'input-base': 'w-full px-3 py-2 rounded-xl bg-subtle border border-default text-sm outline-none focus:border-primary transition-all duration-250'

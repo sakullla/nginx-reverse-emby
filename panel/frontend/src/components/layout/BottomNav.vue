@@ -198,7 +198,7 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   height: 64px;
-  background: var(--color-bg-surface);
+  background: var(--color-bg-chrome, var(--color-bg-surface));
   border-top: 1px solid var(--color-border-default);
   backdrop-filter: blur(16px);
   z-index: var(--z-sticky);

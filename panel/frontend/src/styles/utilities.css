@@ -97,12 +97,12 @@
 .btn,
 .btn-primary,
 .btn--primary {
-  background:
+  background: var(--color-button-bg,
     linear-gradient(
       180deg,
       color-mix(in srgb, var(--color-primary) 92%, white) 0%,
       var(--color-primary) 100%
-    );
+    ));
   color: var(--color-text-inverse, #fff);
   border-color: color-mix(in srgb, var(--color-primary) 82%, black 8%);
   box-shadow:
@@ -114,12 +114,12 @@
 .btn:hover:not(:disabled),
 .btn-primary:hover:not(:disabled),
 .btn--primary:hover:not(:disabled) {
-  background:
+  background: var(--color-button-hover-bg,
     linear-gradient(
       180deg,
       color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 90%, white) 0%,
       var(--color-primary-hover, var(--color-primary)) 100%
-    );
+    ));
   border-color: color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 78%, black 12%);
   transform: translateY(-1px);
   box-shadow:

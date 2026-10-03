@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import BaseBadge from '../../components/base/BaseBadge.vue'
 import BaseListCard from '../../components/base/BaseListCard.vue'
-import BaseModal from '../../components/base/BaseModal.vue'
+import PluginMarketplaceConfirmModal from '../../components/plugins/PluginMarketplaceConfirmModal.vue'
 import EmptyState from '../../components/base/EmptyState.vue'
 import PluginMarketplaceInspectModal from '../../components/plugins/PluginMarketplaceInspectModal.vue'
 import PluginRepositoriesModal from '../../components/plugins/PluginRepositoriesModal.vue'
@@ -12,32 +12,31 @@ import { useMarketplaceCatalog } from '../../composables/useMarketplaceCatalog'
 
 const { view } = useViewToggle('plugin-marketplace')
 const query = ref('')
+const statusFilter = ref('all')
+const filters = [
+  { value: 'all', label: '全部' },
+  { value: 'installed', label: '已安装' },
+  { value: 'updates', label: '可升级' },
+]
 const searchInputRef = ref(null)
 const repoModalOpen = ref(false)
 const inspectVisible = ref(false)
 
+const catalog = useMarketplaceCatalog()
 const {
   loading,
   actionBusy,
   detailLoading,
   catalogRefreshing,
   error,
-  actionError,
   packages,
   selected,
   detail,
   detailPrepared,
-  confirmVisible,
-  downloadElapsedSec,
-  downloadSteps,
-  downloadPhaseLabel,
-  downloadHint,
   source,
   isUpgrade,
   requiredPermissions,
   alreadyInstalled,
-  selectedDetailPath,
-  hasPendingDetailLink,
   pluginPurpose,
   nextStepHint,
   catalogUpdatedLabel,
@@ -45,9 +44,6 @@ const {
   refreshCatalog,
   showCatalogItem,
   startCardAction,
-  cancelConfirm,
-  onConfirmVisible,
-  applyPackage,
   isSelected,
   installedStatus,
   statusTone,
@@ -57,12 +53,15 @@ const {
   pluginBlurb,
   sourceKindLabel,
   packageKey,
-} = useMarketplaceCatalog()
+} = catalog
 
 const filteredPackages = computed(() => {
   const needle = query.value.trim().toLowerCase()
-  if (!needle) return packages.value
   return packages.value.filter((item) => {
+    const status = installedStatus(item)
+    if (statusFilter.value === 'installed' && status === '未安装') return false
+    if (statusFilter.value === 'updates' && status !== '可升级') return false
+    if (!needle) return true
     const haystack = [
       pluginTitle(item),
       item.plugin?.name,
@@ -81,7 +80,7 @@ function focusSearch() {
 }
 
 function openMarketplaceInspect(item) {
-  if (!item?.plugin?.id) return
+  if (!item?.plugin?.id || actionBusy.value) return
   showCatalogItem(item)
   inspectVisible.value = true
 }
@@ -91,6 +90,7 @@ function onInspectVisible(open) {
 }
 
 function onInspectAction() {
+  inspectVisible.value = false
   if (selected.value) startCardAction(selected.value)
 }
 
@@ -109,37 +109,9 @@ function onRepositoriesUpdated() {
       <div class="page-header__left">
         <RouterLink to="/plugins" class="back-link">← 已安装插件</RouterLink>
         <h1 class="page-title">插件市场</h1>
-        <p class="page-subtitle">选一个插件安装或升级。成功后会进入详情，下一步是部署；提供访问入口的插件还要发布域名。</p>
+        <p class="page-subtitle">为你的服务添加新能力。安装后，下一步是部署与配置；需要访问入口时再发布域名。</p>
       </div>
       <div class="page-header__right">
-        <div v-if="packages.length" class="search-field" @click="focusSearch">
-          <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
-          <input
-            ref="searchInputRef"
-            v-model="query"
-            class="search-field__input"
-            type="search"
-            placeholder="搜索插件名称 / 来源"
-            aria-label="搜索插件"
-            @keydown.esc.prevent="query = ''"
-          >
-          <button
-            v-if="query.trim()"
-            type="button"
-            class="search-field__clear"
-            aria-label="清空搜索"
-            @click.stop="query = ''"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-        <ViewToggle v-if="packages.length" v-model:view="view" />
         <div class="catalog-sync">
           <button
             class="btn btn-secondary"
@@ -163,6 +135,41 @@ function onRepositoriesUpdated() {
       </div>
     </header>
 
+    <section v-if="packages.length" class="marketplace-toolbar" aria-label="搜索和筛选插件">
+      <div v-if="packages.length" class="search-field" @click="focusSearch">
+        <svg class="search-field__icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="M20 20l-3.5-3.5" />
+        </svg>
+        <input
+          ref="searchInputRef"
+          v-model="query"
+          class="search-field__input"
+          type="search"
+          placeholder="搜索插件名称 / 来源"
+          aria-label="搜索插件"
+          @keydown.esc.prevent="query = ''"
+        >
+        <button
+          v-if="query.trim()"
+          type="button"
+          class="search-field__clear"
+          aria-label="清空搜索"
+          @click.stop="query = ''"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <ViewToggle v-if="packages.length" v-model:view="view" />
+      <div class="marketplace-filters" aria-label="安装状态">
+        <button v-for="filter in filters" :key="filter.value" type="button" :aria-pressed="statusFilter === filter.value" :data-test="`marketplace-filter-${filter.value}`" @click="statusFilter = filter.value">{{ filter.label }}</button>
+      </div>
+      <span class="marketplace-count" role="status">{{ filteredPackages.length }} 个插件</span>
+    </section>
+
     <div v-if="loading" class="plugin-marketplace-page__loading">
       <div class="spinner"></div>
       <p>正在读取已验证市场快照…</p>
@@ -183,7 +190,11 @@ function onRepositoriesUpdated() {
     </EmptyState>
 
     <template v-else>
-      <p v-if="query.trim() && !filteredPackages.length" class="plugin-marketplace-empty">没有匹配的插件</p>
+      <p v-if="error" class="marketplace-load-error" role="alert">{{ error }} <button class="btn btn-secondary btn-sm" type="button" @click="load({ silent: true })">重试</button></p>
+      <div v-if="!filteredPackages.length" class="plugin-marketplace-empty">
+        <p>没有匹配的插件</p>
+        <button class="btn btn-secondary" type="button" @click="query = ''; statusFilter = 'all'">清除筛选</button>
+      </div>
 
       <section v-else-if="view === 'card'" class="plugin-marketplace-catalog" aria-label="可安装插件">
         <BaseListCard
@@ -196,17 +207,19 @@ function onRepositoriesUpdated() {
           @click="openMarketplaceInspect(item)"
         >
           <template #header-left>
-            <span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span>
-            <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
+            <span class="marketplace-card__icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="5" /><path d="M9 8v8M15 8v8M8 12h8" /></svg></span>
+            <span class="marketplace-card__heading"><span class="marketplace-card__name" :title="pluginTitle(item)">{{ pluginTitle(item) }}</span><span class="marketplace-card__version">v{{ item.plugin.version }}</span></span>
           </template>
           <template #header-right>
-            <span class="marketplace-card__version">{{ item.plugin.version }}</span>
+            <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
           </template>
           <p v-if="pluginBlurb(item)" class="marketplace-card__blurb">{{ pluginBlurb(item) }}</p>
           <template #footer>
             <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
               {{ sourceKindLabel(item.source.kind) }}
             </BaseBadge>
+            <div class="marketplace-card__actions">
+            <button type="button" class="btn btn-ghost btn-sm" :aria-label="`查看 ${pluginTitle(item)} 的详情`" @click.stop="openMarketplaceInspect(item)">详情</button>
             <button
               type="button"
               :class="tableActionClass(item)"
@@ -216,6 +229,7 @@ function onRepositoriesUpdated() {
             >
               {{ detailLoading && isSelected(item) ? '下载中…' : cardActionLabel(item) }}
             </button>
+            </div>
           </template>
         </BaseListCard>
       </section>
@@ -241,17 +255,17 @@ function onRepositoriesUpdated() {
             >
               <td>
                 <div class="plugin-catalog-table__name">
-                  <strong :title="pluginTitle(item)">{{ pluginTitle(item) }}</strong>
+                  <button class="marketplace-name-button" type="button" @click.stop="openMarketplaceInspect(item)">{{ pluginTitle(item) }}</button>
                   <small v-if="pluginBlurb(item)">{{ pluginBlurb(item) }}</small>
                 </div>
               </td>
-              <td>
+              <td data-label="状态">
                 <BaseBadge :tone="statusTone(item)" dot>{{ installedStatus(item) }}</BaseBadge>
               </td>
-              <td>
+              <td data-label="版本">
                 <span class="plugin-catalog-table__version">{{ item.plugin.version }}</span>
               </td>
-              <td>
+              <td data-label="来源">
                 <BaseBadge :tone="item.source.kind === 'official' ? 'success' : 'warning'">
                   {{ sourceKindLabel(item.source.kind) }}
                 </BaseBadge>
@@ -303,60 +317,7 @@ function onRepositoriesUpdated() {
       @updated="onRepositoriesUpdated"
     />
 
-    <BaseModal
-      :model-value="confirmVisible"
-      :title="isUpgrade ? '确认升级插件' : '确认安装插件'"
-      :subtitle="pluginTitle(selected)"
-      size="sm"
-      :close-on-click-modal="!actionBusy"
-      show-footer
-      data-test="marketplace-confirm-modal"
-      @update:model-value="onConfirmVisible"
-    >
-      <div class="confirm-permissions">
-        <p v-if="hasPendingDetailLink" class="confirm-pending-next">
-          <RouterLink :to="selectedDetailPath" data-test="marketplace-pending-detail">打开详情查看进行中的操作</RouterLink>
-        </p>
-        <div v-if="detailLoading" class="package-download-progress" data-test="marketplace-detail-loading">
-          <p class="package-download-progress__title">{{ downloadPhaseLabel }}</p>
-          <p class="package-download-progress__hint">{{ downloadHint }}</p>
-          <div
-            class="package-download-progress__track"
-            role="progressbar"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            :aria-valuetext="downloadPhaseLabel"
-          >
-            <div class="package-download-progress__fill"></div>
-          </div>
-          <ol class="package-download-progress__steps">
-            <li
-              v-for="step in downloadSteps"
-              :key="step.id"
-              :class="{ 'is-current': step.id === 'download' }"
-            >
-              {{ step.label }}
-            </li>
-          </ol>
-          <p class="package-download-progress__elapsed">已等待 {{ downloadElapsedSec }} 秒</p>
-        </div>
-        <template v-else>
-          <p v-if="requiredPermissions.length">安装将授予以下宿主能力：</p>
-          <p v-else>此包未请求宿主能力。</p>
-          <ul v-if="requiredPermissions.length" class="permission-list">
-            <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
-          </ul>
-          <p v-if="!actionError" class="confirm-next" data-test="marketplace-confirm-next">{{ nextStepHint }}</p>
-          <p v-if="source.kind !== 'official'" class="confirm-risk">我已复核非官方来源、签名指纹、checksum、权限差异和宿主风险。</p>
-        </template>
-      </div>
-      <template #footer>
-        <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="cancelConfirm">取消</button>
-        <button class="btn btn-primary" type="button" data-test="marketplace-confirm-submit" :disabled="actionBusy || detailLoading" @click="applyPackage">
-          {{ actionBusy ? '提交中…' : detailLoading ? '下载中…' : actionError ? (isUpgrade ? '重试升级' : '重试安装') : isUpgrade ? '确认升级' : '确认安装' }}
-        </button>
-      </template>
-    </BaseModal>
+    <PluginMarketplaceConfirmModal :catalog="catalog" />
   </main>
 </template>
 
@@ -416,7 +377,7 @@ function onRepositoriesUpdated() {
 
 .plugin-marketplace-catalog {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(17.5rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
   gap: 0.85rem;
   padding: 4px 4px 12px;
   margin: -4px -4px -4px;
@@ -442,6 +403,13 @@ function onRepositoriesUpdated() {
   box-shadow: var(--shadow-md);
 }
 
+.marketplace-card__heading {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+
 .marketplace-card__name {
   min-width: 0;
   overflow: hidden;
@@ -464,10 +432,13 @@ function onRepositoriesUpdated() {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-muted);
-  font-size: 0.8125rem;
-  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.65;
+  min-height: 2.9em;
 }
 
 .marketplace-card :deep(.base-list-card__footer) {
@@ -479,127 +450,282 @@ function onRepositoriesUpdated() {
   border-top: 1px solid var(--color-border-subtle);
 }
 
-.permission-list {
-  display: grid;
-  gap: var(--space-2);
-  margin: 0;
-  padding-left: 1.2rem;
-}
 
-.permission-list code {
-  font-size: var(--text-xs);
-  overflow-wrap: anywhere;
-}
-
-.confirm-permissions {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.confirm-permissions > p {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.confirm-next {
-  color: var(--color-text-primary);
-}
-
-.confirm-pending-next {
-  margin: 0;
-  font-size: var(--text-sm);
-}
-
-.confirm-pending-next a {
-  color: var(--color-primary);
-  text-decoration: none;
-}
-
-.confirm-pending-next a:hover {
-  text-decoration: underline;
-}
-
-.confirm-risk {
-  color: var(--color-warning);
-}
-
-.package-download-progress {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.package-download-progress__title {
-  margin: 0;
-  color: var(--color-text-primary);
-  font-size: 0.9375rem;
-  font-weight: 650;
-}
-
-.package-download-progress__hint,
-.package-download-progress__elapsed {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.8125rem;
-  line-height: 1.45;
-}
-
-.package-download-progress__track {
-  position: relative;
-  overflow: hidden;
-  height: 0.4rem;
-  border-radius: 999px;
-  background: var(--color-bg-subtle);
-}
-
-.package-download-progress__fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 36%;
-  border-radius: inherit;
-  background: var(--color-primary);
-  animation: package-download-indeterminate 1.35s ease-in-out infinite;
-}
-
-.package-download-progress__steps {
-  display: grid;
-  gap: 0.3rem;
-  margin: 0.15rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.package-download-progress__steps li {
-  display: flex;
+.page-header {
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 0.5rem;
-  color: var(--color-text-tertiary);
-  font-size: 0.8125rem;
 }
 
-.package-download-progress__steps li::before {
-  content: '';
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: currentColor;
+.page-header__left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.page-subtitle {
+  max-width: 38rem;
+  line-height: 1.65;
+}
+
+.page-header__right {
   flex-shrink: 0;
 }
 
-.package-download-progress__steps li.is-current {
-  color: var(--color-primary);
-  font-weight: 650;
+.catalog-sync {
+  flex-wrap: wrap;
 }
 
-@keyframes package-download-indeterminate {
-  0% { transform: translateX(-120%); }
-  100% { transform: translateX(340%); }
+.catalog-sync__time {
+  width: 100%;
+  order: 2;
+  font-size: 0.6875rem;
+  text-align: center;
+}
+
+.marketplace-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.marketplace-toolbar .search-field {
+  flex: 1 1 16rem;
+  max-width: 28rem;
+  min-width: 0;
+  height: 44px;
+}
+
+.marketplace-filters {
+  display: flex;
+  gap: 0.25rem;
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
+
+.marketplace-filters button {
+  border: 0;
+  padding: 0.45rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.marketplace-filters button[aria-pressed="true"] {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+.marketplace-count {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.marketplace-card {
+  padding: 1.2rem;
+  gap: 0.9rem;
+}
+
+.marketplace-card__icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 13px;
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.marketplace-card :deep(.base-list-card__header-left) {
+  gap: 0.65rem;
+}
+
+.marketplace-card :deep(.base-list-card__header-right) {
+  margin-left: 0;
+}
+
+.marketplace-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.marketplace-card__actions .btn {
+  min-height: 40px;
+  min-width: 56px;
+}
+
+.marketplace-name-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: 650;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.marketplace-name-button:hover {
+  color: var(--color-primary);
+}
+
+.marketplace-load-error {
+  color: var(--color-danger);
+  font-size: var(--text-sm);
 }
 
 @media (max-width: 800px) {
-  .page-header__right .search-field {
-    flex: 1 1 100%;
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .page-header__left {
+    flex: none;
+    min-width: 0;
+  }
+
+  .page-header__right {
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+  }
+
+  .page-header__right > .btn {
+    flex: none;
+    min-height: 44px;
+  }
+
+  .catalog-sync {
+    flex-wrap: nowrap;
+    flex: 1;
+  }
+
+  .catalog-sync__time {
+    width: auto;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .marketplace-toolbar .search-field {
+    flex: 1 1 calc(100% - 5rem);
     max-width: none;
   }
+
+  .marketplace-toolbar :deep(.view-toggle) {
+    margin-left: auto;
+  }
+
+  .marketplace-toolbar :deep(.view-toggle__btn) {
+    width: 38px;
+    height: 38px;
+  }
+
+  .marketplace-filters button {
+    min-height: 38px;
+  }
+
 }
+@media (max-width: 640px) {
+  .plugin-marketplace-catalog {
+    grid-template-columns: 1fr;
+  }
+
+  .marketplace-card :deep(.base-list-card__header) {
+    flex-wrap: nowrap;
+  }
+
+  .marketplace-card__actions .btn {
+    min-height: 44px;
+  }
+
+  .plugin-catalog-table-wrap {
+    border: 0;
+    background: transparent;
+    overflow: visible;
+  }
+
+  .plugin-catalog-table, .plugin-catalog-table tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .plugin-catalog-table thead {
+    display: none;
+  }
+
+  .plugin-catalog-table tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .plugin-catalog-table tbody tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    padding: 1rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xl);
+    background: var(--color-bg-surface);
+  }
+
+  .plugin-catalog-table td {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: auto;
+    padding: 0.35rem 0;
+    border: 0;
+  }
+
+  .plugin-catalog-table td:first-child {
+    grid-column: 1 / -1;
+    width: auto;
+    padding: 0 0 0.5rem;
+  }
+
+  .plugin-catalog-table td[data-label="状态"] {
+    grid-column: 2;
+    grid-row: 2;
+    justify-content: flex-end;
+  }
+
+  .plugin-catalog-table td[data-label="版本"] {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .plugin-catalog-table td[data-label="来源"] {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .plugin-catalog-table td:last-child {
+    grid-column: 2;
+    grid-row: 3;
+    justify-content: flex-end;
+  }
+
+  .plugin-catalog-table__name small {
+    white-space: normal;
+    line-height: 1.6;
+  }
+
+  .plugin-catalog-table__actions .btn {
+    min-height: 44px;
+  }
+
+}
+
 </style>

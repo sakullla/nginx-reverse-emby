@@ -142,11 +142,15 @@ async function fulfillPanelApi(route) {
   }
   if (pathname === '/plugins' && request.method() === 'GET') return json(route, { plugins })
   if (pathname === '/plugins/package-detail') {
+    const selection = request.postDataJSON() || {}
+    const entry = Object.values(catalog).flat().find((item) => item.id === selection.plugin_id)
     return json(route, {
-      digest: 'preview-waf',
-      version: '2.1.0',
-      manifest: { id: 'official.waf', name: '网站防火墙' },
-      permissions: ['http.inspect']
+      package: {
+        digest: entry?.sha256,
+        version: entry?.version,
+        manifest: { id: entry?.id, name: entry?.name },
+        permissions: ['http.outbound', 'secret.use', 'dns.manage']
+      }
     })
   }
   if (/^\/plugins\/[^/]+\/operations$/.test(pathname)) return json(route, { operations: [] })
@@ -390,6 +394,57 @@ for (const width of widths) {
       await capture('plugin-detail')
       await open('/plugins/marketplace', '插件市场')
       await capture('marketplace')
+      await page.getByRole('button', { name: '列表视图' }).click()
+      await capture('marketplace-list')
+      await page.getByRole('button', { name: '卡片视图' }).click()
+      await page.locator('[data-test="marketplace-package-community.ddns"]').click()
+      await capture('marketplace-inspect')
+      await page.locator('[data-test="marketplace-inspect-action"]').click()
+      await page.locator('[data-test="marketplace-confirm-submit"]').waitFor()
+      await capture('marketplace-install')
+      let pendingInstall = false
+      let installedDDNS = false
+      const ddns = { plugin_id: 'community.ddns', name: '动态域名', active_version: '0.9.1' }
+      await page.route('**/panel-api/plugins', (route) => json(route, {
+        plugins: [...plugins, ...(pendingInstall ? [{ ...ddns, pending_operation_id: 'op-configure', pending_kind: 'configure' }] : installedDDNS ? [ddns] : [])]
+      }))
+      await page.route('**/panel-api/plugins/install', (route) => json(route, { message: '暂时连不上服务，请稍后重试。' }, 503))
+      await page.locator('[data-test="marketplace-confirm-submit"]').click()
+      await page.locator('[data-test="marketplace-action-error"]').waitFor()
+      await capture('marketplace-install-error')
+      await page.unroute('**/panel-api/plugins/install')
+      await page.route('**/panel-api/plugins/install', (route) => {
+        pendingInstall = true
+        return json(route, { message: 'plugin state conflict', details: 'another plugin operation is already pending' }, 409)
+      })
+      await page.locator('[data-test="marketplace-confirm-submit"]').click()
+      await page.locator('[data-test="marketplace-pending-status"]').waitFor()
+      await capture('marketplace-pending')
+      await page.route('**/panel-api/plugins/community.ddns', (route) => {
+        const detail = pluginDetail(ddns.plugin_id)
+        detail.plugin = { ...detail.plugin, ...ddns, pending_operation_id: 'op-configure', pending_kind: 'configure' }
+        detail.package.manifest.name = ddns.name
+        return json(route, detail)
+      })
+      await page.route('**/panel-api/plugins/community.ddns/operations', (route) => json(route, {
+        operations: [{ id: 'op-configure', kind: 'configure', status: 'running', created_at: '2026-10-01T08:00:00Z', agent_results: { local: { state: 'running' } } }]
+      }))
+      await page.locator('[data-test="marketplace-pending-detail"]').click()
+      await page.locator('[data-test="plugin-pending-progress"]').waitFor()
+      await capture('plugin-operation-progress')
+      await open('/plugins/marketplace', '插件市场')
+      await page.locator('[data-test="marketplace-card-action-community.ddns"]').click()
+      await page.locator('[data-test="marketplace-pending-status"]').waitFor()
+      pendingInstall = false
+      installedDDNS = true
+      await page.locator('[data-test="marketplace-pending-refresh"]').click()
+      await page.locator('[data-test="marketplace-pending-status"]').waitFor({ state: 'hidden' })
+      await capture('marketplace-operation-complete')
+      await closeDialog()
+      await page.unroute('**/panel-api/plugins')
+      await page.unroute('**/panel-api/plugins/install')
+      await page.unroute('**/panel-api/plugins/community.ddns')
+      await page.unroute('**/panel-api/plugins/community.ddns/operations')
       await open('/plugins/marketplace/official.waf?source=official', '网站防火墙')
       await capture('marketplace-detail')
       await open('/plugins/repositories', '插件仓库')

@@ -43,6 +43,7 @@ function onAction(event) {
     :title="title || '插件详情'"
     :subtitle="[version, status].filter(Boolean).join(' · ')"
     size="lg"
+    fit-content-on-mobile
     show-footer
     data-test="marketplace-inspect-modal"
     @update:model-value="onVisible"
@@ -61,17 +62,17 @@ function onAction(event) {
         <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
         <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
       </section>
-      <PluginRiskNotices :package-detail="detail" :source="source" />
       <section class="permission-review">
-        <h3>精确权限确认</h3>
-        <p v-if="!detailPrepared">市场快照只展示已签名的索引信息；点击安装或升级后，会校验完整包并显示精确权限。</p>
+        <h3>安装权限</h3>
+        <p v-if="!detailPrepared">确认安装前会下载并校验插件包，再逐项展示需要授予的能力。</p>
         <p v-else-if="!requiredPermissions.length">此包未请求宿主能力。</p>
         <ul v-else class="permission-list">
           <li v-for="permission in requiredPermissions" :key="permission"><code>{{ permission }}</code></li>
         </ul>
       </section>
       <details class="marketplace-technical">
-        <summary>技术详情</summary>
+        <summary>来源、签名与运行限制</summary>
+        <PluginRiskNotices :package-detail="detail" :source="source" />
         <PluginPackageSummary :detail="detail" :source="source" :show-identity="false" :collapsible="false" />
       </details>
     </div>
@@ -139,9 +140,18 @@ function onAction(event) {
 }
 
 .marketplace-technical {
-  display: grid;
-  gap: var(--space-4);
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 0.5rem;
 }
+
+.marketplace-technical summary {
+  padding: 0.6rem 0;
+}
+
+.marketplace-technical :deep(.plugin-risks) {
+  margin: 0.6rem 0 1rem;
+}
+
 
 .marketplace-technical summary {
   cursor: pointer;
@@ -153,6 +163,18 @@ function onAction(event) {
   display: grid;
   gap: 0.4rem;
 }
+
+.permission-review h3 {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.permission-review p {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.65;
+}
+
 
 .permission-review h3,
 .permission-review p {

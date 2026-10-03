@@ -259,7 +259,7 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
   width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
-  background: var(--color-bg-surface);
+  background: var(--color-bg-sidebar, var(--color-bg-surface));
   border-right: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
   overflow: hidden;
@@ -356,7 +356,7 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 
 .sidebar__nav-item--active,
 .sidebar__nav-item.active {
-  background: var(--color-primary-subtle);
+  background: var(--color-nav-selected, var(--color-primary-subtle));
   color: var(--color-primary);
   font-weight: 600;
 }
@@ -384,7 +384,7 @@ watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 }
 
 .sidebar__nav-item--child-active {
-  background: var(--color-primary-subtle) !important;
+  background: var(--color-nav-selected, var(--color-primary-subtle)) !important;
   color: var(--color-primary) !important;
   font-weight: 600;
 }

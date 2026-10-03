@@ -9,7 +9,7 @@
       >
         <div
           class="modal"
-          :class="modalSizeClass"
+          :class="[modalSizeClass, { 'modal--fit-mobile': fitContentOnMobile }]"
           tabindex="-1"
           ref="modalRef"
           role="dialog"
@@ -59,6 +59,7 @@ const props = defineProps({
   large: { type: Boolean, default: false },
   showFooter: { type: Boolean, default: false },
   closeOnClickModal: { type: Boolean, default: true },
+  fitContentOnMobile: { type: Boolean, default: false },
   dataTest: { type: String, default: '' },
 })
 
@@ -229,6 +230,10 @@ onUnmounted(() => {
     max-height: 100vh;
     max-height: 100dvh;
     border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+  }
+
+  .modal--fit-mobile {
+    height: auto;
   }
 }
 </style>
