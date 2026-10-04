@@ -64,18 +64,13 @@
               class="input protocol-input-group__host"
               :class="{ 'input--error': errors.frontend_url }"
               placeholder="例如：emby.yourdomain.com"
+              :aria-invalid="errors.frontend_url ? 'true' : undefined"
+              :aria-describedby="errors.frontend_url ? 'frontend-url-error' : undefined"
               @input="handleFrontendHostInput($event.target.value)"
               @paste="handleFrontendPaste"
             >
           </div>
-          <p v-if="errors.frontend_url" class="form-error">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            {{ errors.frontend_url }}
-          </p>
+          <FieldError v-if="errors.frontend_url" id="frontend-url-error">{{ errors.frontend_url }}</FieldError>
         </div>
 
         <div class="form-group form-group--block">
@@ -145,6 +140,8 @@
                   class="input protocol-input-group__host"
                   :class="{ 'input--error': errors.backend }"
                   placeholder="例如：192.168.1.100:8096"
+                  :aria-invalid="index === 0 && errors.backend ? 'true' : undefined"
+                  :aria-describedby="index === 0 && errors.backend ? 'backend-url-error' : undefined"
                   @input="handleBackendHostInput(index, $event.target.value)"
                   @paste="handleBackendPaste(index, $event)"
                 >
@@ -199,14 +196,7 @@
               当前节点没有可用的插件提供商
             </p>
           </div>
-          <p v-if="errors.backend" class="form-error">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            {{ errors.backend }}
-          </p>
+          <FieldError v-if="errors.backend" id="backend-url-error">{{ errors.backend }}</FieldError>
           <p v-if="form.backend_mode === 'url'" class="field-hint">可填多台后端，多后端时按负载策略分发</p>
         </div>
       </div>
@@ -445,9 +435,10 @@
                       class="input input--compact"
                       :class="{ 'input--error': headerErrors[index]?.name }"
                       placeholder="X-Custom-Header"
+                      :aria-invalid="headerErrors[index]?.name ? 'true' : undefined"
                       @input="handleCustomHeaderNameInput(index)"
                     >
-                    <p v-if="headerErrors[index]?.name" class="field-error">{{ headerErrors[index].name }}</p>
+                    <FieldError v-if="headerErrors[index]?.name">{{ headerErrors[index].name }}</FieldError>
                   </div>
                   <div class="headers-table__cell">
                     <input
@@ -456,9 +447,10 @@
                       class="input input--compact"
                       :class="{ 'input--error': headerErrors[index]?.value }"
                       placeholder="value"
+                      :aria-invalid="headerErrors[index]?.value ? 'true' : undefined"
                       @input="clearHeaderFieldError(index, 'value')"
                     >
-                    <p v-if="headerErrors[index]?.value" class="field-error">{{ headerErrors[index].value }}</p>
+                    <FieldError v-if="headerErrors[index]?.value">{{ headerErrors[index].value }}</FieldError>
                   </div>
                   <div class="headers-table__cell--action">
                     <button
@@ -559,14 +551,7 @@
     </div>
 
     <div class="rule-form__footer">
-      <p v-if="errors.submit" class="form-error rule-form__submit-error">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        {{ errors.submit }}
-      </p>
+      <FieldError v-if="errors.submit" block class="rule-form__submit-error">{{ errors.submit }}</FieldError>
       <button
         type="submit"
         class="btn btn--primary rule-form__submit"
@@ -588,6 +573,7 @@ import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
 import { fetchHTTPBackendProviders } from '../api'
 import RelayChainInput from './RelayChainInput.vue'
+import FieldError from './base/FieldError.vue'
 
 const UA_PRESETS = [
   { id: 'custom', label: '自定义', value: '' },
@@ -1832,7 +1818,6 @@ async function handleSubmit() {
   line-height: 1.35;
 }
 
-.form-error,
 .form-warning {
   display: flex;
   align-items: center;
@@ -1842,20 +1827,9 @@ async function handleSubmit() {
   font-size: 0.75rem;
 }
 
-.form-error {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-}
-
 .form-warning {
   background: var(--color-warning-50);
   color: var(--color-warning);
-}
-
-.field-error {
-  margin: 0;
-  font-size: 0.6875rem;
-  color: var(--color-danger);
 }
 
 .input {

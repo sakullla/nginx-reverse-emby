@@ -2,6 +2,7 @@
   <button
     :type="type"
     :disabled="disabled || loading"
+    :aria-busy="loading ? 'true' : undefined"
     class="btn"
     :class="[
       variantClass,

@@ -47,39 +47,51 @@
     />
 
     <!-- No agents available -->
-    <div v-if="!allAgents.length" class="rules-page__prompt">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-      </svg>
-      <p>暂无可用节点</p>
-      <p class="rules-page__prompt-hint">请先加入节点后再管理规则</p>
-      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
-    </div>
+    <EmptyState
+      v-if="!allAgents.length"
+      title="暂无可用节点"
+      description="请先加入节点后再管理规则"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+      </template>
+      <template #action>
+        <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
+      </template>
+    </EmptyState>
 
     <!-- Filter active, no rules -->
-    <div v-else-if="hasAgentFilter && !rules.length && !exactRuleMatch && !isLoading" class="rules-page__empty">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-      </svg>
-      <template v-if="hasActiveFilters">
-        <p>没有匹配的规则</p>
+    <EmptyState
+      v-else-if="hasAgentFilter && !rules.length && !exactRuleMatch && !isLoading"
+      :title="hasActiveFilters ? '没有匹配的规则' : '暂无规则'"
+      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
       </template>
-      <template v-else>
-        <p>暂无规则</p>
-        <button v-if="canCreate" class="btn btn-primary" @click="startCreate">添加第一条规则</button>
-        <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
+      <template v-if="!hasActiveFilters && canCreate" #action>
+        <button class="btn btn-primary" @click="startCreate">添加第一条规则</button>
       </template>
-    </div>
+    </EmptyState>
 
     <!-- No search results -->
-    <div v-else-if="hasAgentFilter && rules.length && !filteredRules.length" class="rules-page__empty">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
-      <p>没有匹配的规则</p>
-    </div>
+    <EmptyState
+      v-else-if="hasAgentFilter && rules.length && !filteredRules.length"
+      title="没有匹配的规则"
+      description=""
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </template>
+    </EmptyState>
 
     <!-- Rules card grid -->
     <div v-show="hasAgentFilter && filteredRules.length && view === 'card'" class="rule-grid">
@@ -218,6 +230,7 @@ import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
 import RuleTable from '../components/rules/RuleTable.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { useViewToggle } from '../composables/useViewToggle'
@@ -838,25 +851,6 @@ async function confirmDelete() {
 .provider-catalog-notice--error {
   color: var(--color-danger);
   font-weight: 600;
-}
-
-.rules-page__prompt,
-.rules-page__empty,
-.rules-page__loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 3.25rem 1.5rem;
-  color: var(--color-text-muted);
-  text-align: center;
-  animation: fadeIn 0.3s var(--ease-default) both;
-}
-
-.rules-page__prompt-hint {
-  font-size: 0.8125rem;
-  color: var(--color-text-tertiary);
 }
 
 @media (max-width: 640px) {

@@ -30,6 +30,7 @@
         data-testid="base-action-menu-panel"
         :aria-hidden="open ? 'false' : 'true'"
         :style="panelStyle"
+        @keydown="handleMenuKeydown"
       >
         <button
           v-for="item in items"
@@ -114,6 +115,41 @@ function updatePosition() {
   }
 }
 
+function menuItems() {
+  if (!panelRef.value) return []
+  return Array.from(panelRef.value.querySelectorAll('.base-action-menu__item:not(:disabled)'))
+}
+
+function focusItem(index) {
+  const items = menuItems()
+  if (!items.length) return
+  const clamped = (index + items.length) % items.length
+  items[clamped].focus()
+}
+
+function handleMenuKeydown(e) {
+  const items = menuItems()
+  if (!items.length) return
+  const current = items.indexOf(document.activeElement)
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    focusItem(current + 1)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    focusItem(current <= 0 ? items.length - 1 : current - 1)
+  } else if (e.key === 'Home') {
+    e.preventDefault()
+    focusItem(0)
+  } else if (e.key === 'End') {
+    e.preventDefault()
+    focusItem(items.length - 1)
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    close()
+    triggerEl()?.focus()
+  }
+}
+
 async function openMenu() {
   open.value = true
   await nextTick()
@@ -121,6 +157,7 @@ async function openMenu() {
   // second pass after panel paints so height-based flip is accurate
   await nextTick()
   updatePosition()
+  focusItem(0)
 }
 
 function close() {

@@ -29,14 +29,17 @@
       <div class='form-group'>
         <label class='form-label form-label--required'>域名 / IP</label>
         <input
+          id='cert-domain'
           v-model='form.domain'
           class='input'
           :class="{ 'input--error': errors.domain }"
           placeholder='media.example.com 或 203.0.113.4'
           :disabled='isProtectedSystemRelayCA'
+          :aria-invalid="errors.domain ? 'true' : undefined"
+          :aria-describedby="errors.domain ? 'cert-domain-error' : undefined"
           @input='errors.domain = ""'
         >
-        <p v-if='errors.domain' class='form-error'>{{ errors.domain }}</p>
+        <FieldError v-if='errors.domain' id='cert-domain-error'>{{ errors.domain }}</FieldError>
       </div>
 
       <div v-if='form.scope === "ip"' class='cert-banner cert-banner--warn'>
@@ -65,23 +68,29 @@
       <div class='form-group'>
         <label class='form-label'>证书 PEM</label>
         <textarea
+          id='cert-pem'
           v-model='uploadedMaterial.certificate_pem'
           class='input textarea'
           :class="{ 'input--error': errors.certificate_pem }"
           placeholder='-----BEGIN CERTIFICATE-----'
+          :aria-invalid="errors.certificate_pem ? 'true' : undefined"
+          :aria-describedby="errors.certificate_pem ? 'cert-pem-error' : undefined"
         ></textarea>
-        <p v-if='errors.certificate_pem' class='form-error'>{{ errors.certificate_pem }}</p>
+        <FieldError v-if='errors.certificate_pem' id='cert-pem-error'>{{ errors.certificate_pem }}</FieldError>
       </div>
 
       <div class='form-group'>
         <label class='form-label'>私钥 PEM</label>
         <textarea
+          id='cert-key'
           v-model='uploadedMaterial.private_key_pem'
           class='input textarea'
           :class="{ 'input--error': errors.private_key_pem }"
           placeholder='-----BEGIN PRIVATE KEY-----'
+          :aria-invalid="errors.private_key_pem ? 'true' : undefined"
+          :aria-describedby="errors.private_key_pem ? 'cert-key-error' : undefined"
         ></textarea>
-        <p v-if='errors.private_key_pem' class='form-error'>{{ errors.private_key_pem }}</p>
+        <FieldError v-if='errors.private_key_pem' id='cert-key-error'>{{ errors.private_key_pem }}</FieldError>
       </div>
 
       <div class='form-group'>
@@ -180,7 +189,7 @@
     </div>
 
     <div class='cert-form__footer'>
-      <p v-if='errors.submit' class='form-error form-error--block cert-form__submit-error'>{{ errors.submit }}</p>
+      <FieldError v-if='errors.submit' block class='cert-form__submit-error'>{{ errors.submit }}</FieldError>
       <div v-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info cert-form__footer-note'>
         系统 Relay CA 不提供前端保存或删除操作。
       </div>
@@ -194,6 +203,7 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
 import { useCreateCertificate, useUpdateCertificate } from '../hooks/useCertificates'
+import FieldError from './base/FieldError.vue'
 import {
   CERTIFICATE_TEMPLATES,
   applyCertificateTemplate,
@@ -508,18 +518,6 @@ async function handleSubmit() {
 .form-label--required::after {
   content: ' *';
   color: var(--color-danger);
-}
-
-.form-error {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-danger);
-}
-
-.form-error--block {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
 }
 
 .input {

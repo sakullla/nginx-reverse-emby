@@ -392,14 +392,7 @@
     </div>
 
     <div class="rule-form__footer">
-      <p v-if="error" class="form-error rule-form__submit-error">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        {{ error }}
-      </p>
+      <FieldError v-if="error" block class="rule-form__submit-error">{{ error }}</FieldError>
       <button
         type="submit"
         class="btn btn--primary rule-form__submit"
@@ -417,6 +410,7 @@ import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import RelayChainInput from './RelayChainInput.vue'
+import FieldError from './base/FieldError.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
 import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
@@ -1291,17 +1285,6 @@ async function handleSubmit() {
 .settings-card--status .toggle--inline .toggle__desc {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.form-error {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.4rem 0.55rem;
-  border-radius: var(--radius-md);
-  font-size: 0.75rem;
-  background: var(--color-danger-50);
-  color: var(--color-danger);
 }
 
 .input {

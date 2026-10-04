@@ -9,7 +9,7 @@
       mono ? 'base-badge--mono' : null,
     ]"
   >
-    <i v-if="dot" class="base-badge__dot" />
+    <i v-if="dot" class="base-badge__dot" aria-hidden="true" />
     <slot />
   </span>
 </template>

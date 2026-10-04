@@ -13,13 +13,16 @@
         <div class="form-group">
           <label class="form-label form-label--required">名称</label>
           <input
+            id="relay-name"
             v-model="form.name"
             class="input"
             :class="{ 'input--error': errors.name }"
             placeholder="例如 hk-edge-1"
             autocomplete="off"
+            :aria-invalid="errors.name ? 'true' : undefined"
+            :aria-describedby="errors.name ? 'relay-name-error' : undefined"
           >
-          <p v-if="errors.name" class="form-error">{{ errors.name }}</p>
+          <FieldError v-if="errors.name" id="relay-name-error">{{ errors.name }}</FieldError>
         </div>
 
         <div class="form-group">
@@ -71,20 +74,24 @@
           <div class="form-group listen-grid__hosts">
             <label class="form-label form-label--required">绑定地址</label>
             <textarea
+              id="relay-bind-hosts"
               v-model="form.bind_hosts_text"
               class="input textarea textarea--hosts"
               :class="{ 'input--error': errors.bind_hosts }"
               placeholder="0.0.0.0"
               rows="2"
               spellcheck="false"
+              :aria-invalid="errors.bind_hosts ? 'true' : undefined"
+              :aria-describedby="errors.bind_hosts ? 'relay-bind-hosts-error' : undefined"
             ></textarea>
-            <p v-if="errors.bind_hosts" class="form-error">{{ errors.bind_hosts }}</p>
+            <FieldError v-if="errors.bind_hosts" id="relay-bind-hosts-error">{{ errors.bind_hosts }}</FieldError>
             <p v-else class="field-hint">每行一个地址；多地址绑定可继续换行填写</p>
           </div>
 
           <div class="form-group listen-grid__port">
             <label class="form-label form-label--required">监听端口</label>
             <input
+              id="relay-port"
               v-model.number="form.listen_port"
               class="input"
               type="number"
@@ -92,21 +99,26 @@
               max="65535"
               :class="{ 'input--error': errors.listen_port }"
               placeholder="7443"
+              :aria-invalid="errors.listen_port ? 'true' : undefined"
+              :aria-describedby="errors.listen_port ? 'relay-port-error' : undefined"
             >
-            <p v-if="errors.listen_port" class="form-error">{{ errors.listen_port }}</p>
+            <FieldError v-if="errors.listen_port" id="relay-port-error">{{ errors.listen_port }}</FieldError>
           </div>
         </div>
 
         <div class="form-group">
           <label class="form-label">{{ publicEndpointLabel }}</label>
           <input
+            id="relay-endpoint"
             v-model="form.public_endpoint"
             class="input"
             :class="{ 'input--error': errors.public_endpoint }"
             :placeholder="publicEndpointPlaceholder"
             spellcheck="false"
+            :aria-invalid="errors.public_endpoint ? 'true' : undefined"
+            :aria-describedby="errors.public_endpoint ? 'relay-endpoint-error' : undefined"
           >
-          <p v-if="errors.public_endpoint" class="form-error">{{ errors.public_endpoint }}</p>
+          <FieldError v-if="errors.public_endpoint" id="relay-endpoint-error">{{ errors.public_endpoint }}</FieldError>
           <p v-else class="field-hint">{{ publicEndpointHint }}</p>
         </div>
       </section>
@@ -182,16 +194,19 @@
         >
           <label class="form-label" :class="{ 'form-label--required': form.enabled }">绑定监听证书</label>
           <select
+            id="relay-cert"
             v-model="form.certificate_id"
             class="input"
             :class="{ 'input--error': errors.certificate_id }"
+            :aria-invalid="errors.certificate_id ? 'true' : undefined"
+            :aria-describedby="errors.certificate_id ? 'relay-cert-error' : undefined"
           >
             <option :value="null">请选择证书</option>
             <option v-for="cert in certificates" :key="cert.id" :value="cert.id">
               #{{ cert.id }} {{ cert.domain }}
             </option>
           </select>
-          <p v-if="errors.certificate_id" class="form-error">{{ errors.certificate_id }}</p>
+          <FieldError v-if="errors.certificate_id" id="relay-cert-error">{{ errors.certificate_id }}</FieldError>
         </div>
 
         <div
@@ -312,12 +327,12 @@
     </div>
 
     <div class="relay-listener-form__footer">
-      <p v-if="errors.trust_material" class="form-error form-error--block relay-listener-form__submit-error">
+      <FieldError v-if="errors.trust_material" block class="relay-listener-form__submit-error">
         {{ errors.trust_material }}
-      </p>
-      <p v-if="errors.submit" class="form-error form-error--block relay-listener-form__submit-error">
+      </FieldError>
+      <FieldError v-if="errors.submit" block class="relay-listener-form__submit-error">
         {{ errors.submit }}
-      </p>
+      </FieldError>
       <button
         type="submit"
         class="btn btn--primary relay-listener-form__submit"
@@ -333,6 +348,7 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { useCertificates } from '../hooks/useCertificates'
+import FieldError from './base/FieldError.vue'
 import {
   parsePublicEndpoint,
   buildPublicEndpoint,
@@ -872,18 +888,6 @@ async function handleSubmit() {
   font-size: 0.6875rem;
   color: var(--color-text-muted);
   line-height: 1.4;
-}
-
-.form-error {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-danger);
-}
-
-.form-error--block {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
 }
 
 .input {

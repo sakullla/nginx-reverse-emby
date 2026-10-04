@@ -44,13 +44,20 @@
     />
 
     <!-- Empty with filters -->
-    <div v-if="agents.length && !filteredAgents.length" class="agents-page__empty">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
-      <p>没有符合筛选条件的节点</p>
-      <button class="btn btn-secondary" @click="clearFilters">清除筛选</button>
-    </div>
+    <EmptyState
+      v-if="agents.length && !filteredAgents.length"
+      title="没有符合筛选条件的节点"
+      description=""
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </template>
+      <template #action>
+        <button class="btn btn-secondary" @click="clearFilters">清除筛选</button>
+      </template>
+    </EmptyState>
 
     <!-- Monitor View -->
     <transition-group
@@ -77,9 +84,14 @@
       @delete="startDelete"
     />
 
-    <div v-if="!agents.length && !isLoading" class="agents-page__empty">
-      <p>暂无节点</p>
-    </div>
+    <EmptyState v-if="!agents.length && !isLoading" title="暂无节点" description="">
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+          <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+        </svg>
+      </template>
+    </EmptyState>
 
     <SkeletonList v-if="isLoading" :variant="view === 'list' ? 'rows' : 'cards'" :count="view === 'list' ? 5 : 6" />
 
@@ -288,6 +300,7 @@ import BaseModal from '../components/base/BaseModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { createPkiEnrollmentToken } from '../api/pki'
 import { useAgent } from '../context/AgentContext'
@@ -703,25 +716,6 @@ function confirmDelete() {
 
 @media (min-width: 1280px) {
   .agent-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
-}
-
-.agents-page__empty,
-.agents-page__loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 4rem 2rem;
-  color: var(--color-text-muted);
-  text-align: center;
-  border: 1.5px dashed var(--color-border-default);
-  border-radius: var(--radius-2xl);
-  animation: fadeIn 0.3s var(--ease-default) both;
-}
-
-.agents-page__loading {
-  border: none;
 }
 
 /* Join modal redesign */

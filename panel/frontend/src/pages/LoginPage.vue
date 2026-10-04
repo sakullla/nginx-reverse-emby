@@ -35,7 +35,7 @@
             </button>
           </div>
         </div>
-        <p v-if="error" id="login-error" class="login-error" role="alert">{{ error }}</p>
+        <FieldError v-if="error" id="login-error" class="login-error">{{ error }}</FieldError>
         <button type="submit" class="btn btn--primary btn--full" :disabled="loading">
           <span v-if="loading" class="spinner spinner--sm"></span>
           <span v-else>连接</span>
@@ -52,6 +52,7 @@ import { verifyToken } from '../api'
 import { useAuthState } from '../context/useAuthState'
 import BrandMark from '../components/base/BrandMark.vue'
 import SakuraBackdrop from '../components/base/SakuraBackdrop.vue'
+import FieldError from '../components/base/FieldError.vue'
 
 const router = useRouter()
 const route = useRoute()

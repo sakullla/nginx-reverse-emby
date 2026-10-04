@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class='versions-page'>
     <div class='versions-page__header'>
       <div>
@@ -16,8 +16,16 @@
       @update:agentId="selectAgent"
     />
 
-    <div v-if='isLoading' class='versions-page__empty'>加载中...</div>
-    <div v-else-if='!policies.length' class='versions-page__empty'>暂无版本策略</div>
+    <SkeletonList v-if='isLoading' variant='rows' :count='4' label='版本策略加载中' />
+    <EmptyState v-else-if='!policies.length' compact title='暂无版本策略' description='点击「新增策略」创建第一个发布通道。'>
+      <template #icon>
+        <svg width='40' height='40' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+          <path d='M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z'/>
+          <path d='m3.3 7 8.7 5 8.7-5'/>
+          <path d='M12 22V12'/>
+        </svg>
+      </template>
+    </EmptyState>
 
     <div v-else class='versions-grid'>
       <article v-for='policy in policies' :key='policy.id' class='version-card'>
@@ -56,14 +64,30 @@
             <form class='policy-form' @submit.prevent='submitPolicy'>
               <div class='form-row'>
                 <div class='form-group'>
-                  <label class='form-label form-label--required'>通道</label>
-                  <input v-model='form.channel' class='input' :class="{ 'input--error': errors.channel }" placeholder='stable'>
-                  <p v-if='errors.channel' class='form-error'>{{ errors.channel }}</p>
+                  <label class='form-label form-label--required' for='policy-channel'>通道</label>
+                  <input
+                    id='policy-channel'
+                    v-model='form.channel'
+                    class='input'
+                    :class="{ 'input--error': errors.channel }"
+                    placeholder='stable'
+                    :aria-invalid="errors.channel ? 'true' : undefined"
+                    :aria-describedby="errors.channel ? 'policy-channel-error' : undefined"
+                  >
+                  <FieldError v-if='errors.channel' id='policy-channel-error'>{{ errors.channel }}</FieldError>
                 </div>
                 <div class='form-group'>
-                  <label class='form-label form-label--required'>目标版本</label>
-                  <input v-model='form.desired_version' class='input' :class="{ 'input--error': errors.desired_version }" placeholder='1.2.3'>
-                  <p v-if='errors.desired_version' class='form-error'>{{ errors.desired_version }}</p>
+                  <label class='form-label form-label--required' for='policy-version'>目标版本</label>
+                  <input
+                    id='policy-version'
+                    v-model='form.desired_version'
+                    class='input'
+                    :class="{ 'input--error': errors.desired_version }"
+                    placeholder='1.2.3'
+                    :aria-invalid="errors.desired_version ? 'true' : undefined"
+                    :aria-describedby="errors.desired_version ? 'policy-version-error' : undefined"
+                  >
+                  <FieldError v-if='errors.desired_version' id='policy-version-error'>{{ errors.desired_version }}</FieldError>
                 </div>
               </div>
 
@@ -74,15 +98,15 @@
                 </div>
                 <div class='package-edit-list'>
                   <div v-for='(pkg, index) in form.packages' :key='`edit-${index}`' class='package-edit-item'>
-                    <input v-model='pkg.platform' class='input' :class="{ 'input--error': packageErrors[index]?.platform }" placeholder='linux-amd64'>
+                    <input v-model='pkg.platform' class='input' :class="{ 'input--error': packageErrors[index]?.platform }" :aria-invalid="packageErrors[index]?.platform ? 'true' : undefined" placeholder='linux-amd64'>
                     <input v-model='pkg.filename' class='input' placeholder='文件名（可自动推导）'>
-                    <input v-model='pkg.size' class='input' :class="{ 'input--error': packageErrors[index]?.size }" inputmode='numeric' placeholder='字节数（可自动推导）'>
+                    <input v-model='pkg.size' class='input' :class="{ 'input--error': packageErrors[index]?.size }" :aria-invalid="packageErrors[index]?.size ? 'true' : undefined" inputmode='numeric' placeholder='字节数（可自动推导）'>
                     <button type='button' class='icon-btn icon-btn--danger' @click='removePackage(index)'>删除</button>
-                    <input v-model='pkg.url' class='input package-edit-item__url' :class="{ 'input--error': packageErrors[index]?.url }" placeholder='https://...'>
-                    <input v-model='pkg.sha256' class='input package-edit-item__sha' :class="{ 'input--error': packageErrors[index]?.sha256 }" placeholder='sha256'>
+                    <input v-model='pkg.url' class='input package-edit-item__url' :class="{ 'input--error': packageErrors[index]?.url }" :aria-invalid="packageErrors[index]?.url ? 'true' : undefined" placeholder='https://...'>
+                    <input v-model='pkg.sha256' class='input package-edit-item__sha' :class="{ 'input--error': packageErrors[index]?.sha256 }" :aria-invalid="packageErrors[index]?.sha256 ? 'true' : undefined" placeholder='sha256'>
                   </div>
                 </div>
-                <p v-if='errors.packages' class='form-error'>{{ errors.packages }}</p>
+                <FieldError v-if='errors.packages'>{{ errors.packages }}</FieldError>
               </div>
 
               <div class='form-group'>
@@ -90,7 +114,7 @@
                 <input v-model='tagsText' class='input' placeholder='rollout, canary'>
               </div>
 
-              <p v-if='errors.submit' class='form-error'>{{ errors.submit }}</p>
+              <FieldError v-if='errors.submit' block>{{ errors.submit }}</FieldError>
 
               <div class='modal__footer'>
                 <button type='button' class='btn btn-secondary' @click='closeForm'>取消</button>
@@ -128,6 +152,9 @@ import { useAgent } from '../context/AgentContext'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
+import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
+import FieldError from '../components/base/FieldError.vue'
 
 const { data: policiesData, isLoading } = useVersionPolicies()
 const createPolicy = useCreateVersionPolicy()
@@ -308,12 +335,6 @@ function confirmDelete() {
   font-size: var(--text-sm);
 }
 
-.versions-page__empty {
-  padding: var(--space-8);
-  text-align: center;
-  color: var(--color-text-muted);
-}
-
 .versions-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -411,12 +432,6 @@ function confirmDelete() {
 .form-label--required::after {
   content: ' *';
   color: var(--color-danger);
-}
-
-.form-error {
-  margin: 0;
-  color: var(--color-danger);
-  font-size: var(--text-xs);
 }
 
 .input {

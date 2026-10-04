@@ -30,10 +30,12 @@
               :class="{ 'input--error': error }"
               placeholder="请输入访问令牌"
               autofocus
+              :aria-invalid="error ? 'true' : undefined"
+              :aria-describedby="error ? 'token-auth-error' : undefined"
               @input="error = ''"
             >
           </div>
-          <p v-if="error" class="form-error">{{ error }}</p>
+          <FieldError v-if="error" id="token-auth-error">{{ error }}</FieldError>
         </div>
 
         <button 
@@ -63,6 +65,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useRuleStore } from '../../stores/rules'
+import FieldError from './FieldError.vue'
 
 const ruleStore = useRuleStore()
 

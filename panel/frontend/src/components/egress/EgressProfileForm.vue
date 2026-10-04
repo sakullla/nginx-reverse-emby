@@ -1,6 +1,6 @@
 <template>
   <form class="egress-form" @submit.prevent="handleSubmit">
-    <div v-if="error" class="form-error">{{ error }}</div>
+    <FieldError v-if="error" block>{{ error }}</FieldError>
 
     <div class="form-grid">
       <div class="form-group">
@@ -51,6 +51,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import FieldError from '../base/FieldError.vue'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
@@ -175,14 +176,6 @@ function handleSubmit() {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: var(--shadow-focus);
-}
-
-.form-error {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  font-size: var(--text-sm);
 }
 
 .toggle-row {
