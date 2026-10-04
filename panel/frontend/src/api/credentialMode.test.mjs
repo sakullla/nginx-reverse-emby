@@ -2,15 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { post } = vi.hoisted(() => ({ post: vi.fn() }))
 
-vi.mock('../../api/client', () => ({ api: { post } }))
+vi.mock('./client', () => ({ api: { post } }))
 
-import { login, logout } from '../../api/access'
+import { login, logout } from './access'
 import {
   authToken,
   sessionToken,
   setAuthToken,
   setSessionToken
-} from '../../api/authState'
+} from './authState'
 
 describe('credential mode exclusivity', () => {
   beforeEach(() => {

@@ -24,8 +24,7 @@ panel/frontend/
 │   ├── stores/
 │   │   └── rules.js          # Pinia store
 │   ├── App.vue               # 根组件
-│   ├── main.js               # 入口文件
-│   └── style.css             # 全局样式
+│   └── main.js               # 入口文件
 ├── index.html
 ├── package.json
 └── vite.config.js
