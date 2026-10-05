@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Nginx-Reverse-Emby
-  text: 纯 Go 反向代理控制面
-  tagline: 一台 VPS + 一个面板 = 任意 HTTP/HTTPS/TCP/UDP 服务反代到你的域名。内置 Relay 隧道、ACME 自动证书、流量额度与多节点管理。
+  text: 通用 HTTP/HTTPS 反代 + L4 TCP/UDP 转发控制面板
+  tagline: 一台 VPS + 一个面板，把任意服务安全地转发到自己的域名：优化线路中转加速、免维护 HTTPS、安全 L4 转发、反向 L4 内网穿透，纯 Go 实现，不用手写 Nginx 配置。
   actions:
     - theme: brand
       text: 快速开始
@@ -22,19 +22,24 @@ features:
     details: 控制面和 Agent 都用 Go 实现，不依赖 Nginx。一个 Docker Compose 拉起控制面与 local Agent。
     link: /getting-started/deploy
     linkText: 部署方式
-  - icon: 🌐
-    title: HTTP / HTTPS 反代
-    details: 按域名反代 Web 服务，内置断流续传、同后端重试、302/307 重定向改写与 ACME 自动证书。
+  - icon: 🔀
+    title: 优化线路中转加速
+    details: 把已在用的优质线路 / 中转机变成入口，按域名反代后端服务；电视、盒子等不便挂代理的设备也能直接走加速线路。
     link: /guides/http-rules
     linkText: 添加 HTTP 规则
+  - icon: 🔒
+    title: 免维护 HTTPS
+    details: ACME 自动签发与续期（HTTP-01 / Cloudflare DNS-01），也可手动上传公网证书，不用自己盯到期时间。
+    link: /guides/certificates
+    linkText: 证书与 HTTPS
   - icon: 🔌
-    title: L4 端口转发
+    title: 安全 L4 转发
     details: 直接转发 TCP/UDP 端口，支持多后端负载均衡、SOCKS/HTTP 入口与 PROXY Protocol。
     link: /guides/l4-rules
     linkText: L4 端口转发
   - icon: 🛰️
-    title: Relay 隧道
-    details: Agent 到 Agent 的多跳加密隧道，传输可选 TLS/TCP 或 QUIC，流量经中继节点送达后端。
+    title: 反向 L4 内网穿透
+    details: 多节点 Agent 统一管理；入口到内网不通时启用 Relay 加密隧道，NAT 后的服务也能安全接入。
     link: /guides/relay
     linkText: Relay 隧道
   - icon: 📊
@@ -42,9 +47,4 @@ features:
     details: 按网卡统计入站/出站/双向流量，支持月度额度、超额阻断、计费周期与手动校准。
     link: /guides/traffic-quota
     linkText: 流量额度
-  - icon: 🔒
-    title: 证书管理
-    details: HTTP-01 与 Cloudflare DNS-01 自动签发，或手动上传公网证书；证书管理页可进入独立的内部 Relay PKI。
-    link: /guides/certificates
-    linkText: 证书与 HTTPS
 ---

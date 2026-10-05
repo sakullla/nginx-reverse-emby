@@ -6,13 +6,14 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](./LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/sakullla/nginx-reverse-emby?style=social)](https://github.com/sakullla/nginx-reverse-emby/stargazers)
 
-**一台线路好的 VPS + 一个面板，把 Emby / Jellyfin 以及常见 HTTP·TCP 服务反代到自己的域名——不用手写 Nginx 配置。**
+**通用 HTTP/HTTPS 反代 + L4 TCP/UDP 转发控制面板（纯 Go，不依赖 Nginx）——一台 VPS + 一个面板，把任意服务安全地转发到自己的域名，不用手写配置。**
 
-* **懒得写反代配置？** → 一个 Docker Compose 拉起纯 Go 控制面，本机自带 `local` 节点负责转发
-* **观看要挂代理才流畅？** → 用优质线路 VPS 做入口，把后端服务挂到自己的域名
-* **要 HTTPS 又怕证书折腾？** → 规则选 HTTPS 即可 ACME 自动签发（HTTP-01 / Cloudflare DNS-01）
-* **不止 Web，还要端口转发？** → 同一面板管理 HTTP/HTTPS 反代与 L4 TCP/UDP 转发
-* **单机不够、入口到后端不通？** → 多节点 Agent 统一管理，需要时启用 Relay 隧道
+* **优化线路中转加速** → 把已在用的优质线路 / 中转机变成入口，反代后端服务，电视、盒子等不便挂代理的设备也能直接走加速线路
+* **免维护 HTTPS** → 规则选 HTTPS 即可 ACME 自动签发与续期（HTTP-01 / Cloudflare DNS-01），不用再折腾证书
+* **安全 L4 转发** → 同一面板管理 TCP/UDP 端口转发，支持多后端负载均衡与 PROXY Protocol
+* **反向 L4 内网穿透** → 多节点 Agent 统一管理，入口到内网不通时启用 Relay 加密隧道，没有公网 IP 也能安全接入
+
+*Emby / Jellyfin 等媒体服务只是示例场景之一，规则模型对任意 HTTP 服务与 TCP/UDP 端口通用。*
 
 ### 一键安装
 
