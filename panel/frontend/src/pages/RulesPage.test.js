@@ -148,6 +148,19 @@ describe('RulesPage filter integration', () => {
     expect(link.attributes('rel')).toBe('noopener')
   })
 
+  it('opens the create form directly when arriving from the onboarding checklist', async () => {
+    route = reactive({ query: { agentId: '1', create: '1' } })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(routerReplace).toHaveBeenCalledWith({ query: { agentId: '1' } })
+    expect(route.query.create).toBeUndefined()
+    const openModal = wrapper
+      .findAllComponents({ name: 'BaseModal' })
+      .some((modal) => modal.props('modelValue') === true)
+    expect(openModal).toBe(true)
+  })
+
   it('consumes filter state from the URL into the list query', () => {
     route.query = { agentId: '1', enabled: 'true', tags: 'emby,web', sync: 'pending', cert: '7' }
     mountPage()

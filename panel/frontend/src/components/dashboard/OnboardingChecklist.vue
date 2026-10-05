@@ -41,14 +41,14 @@
           <p class="onboarding__step-hint">HTTP 反代或 L4 转发，任选一种创建</p>
           <div v-if="!hasRules" class="onboarding__actions">
             <RouterLink
-              to="/rules"
+              :to="{ path: '/rules', query: { create: '1' } }"
               class="btn btn-sm"
               data-testid="onboarding-add-http"
             >
               添加 HTTP 规则
             </RouterLink>
             <RouterLink
-              to="/l4"
+              :to="{ path: '/l4', query: { create: '1' } }"
               class="btn btn--secondary btn-sm"
               data-testid="onboarding-add-l4"
             >

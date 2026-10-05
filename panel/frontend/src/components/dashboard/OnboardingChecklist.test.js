@@ -40,11 +40,11 @@ describe('OnboardingChecklist', () => {
     expect(storedState().started).toBe(true)
   })
 
-  it('入口按钮直达 HTTP / L4 创建页面', () => {
+  it('入口按钮直达 HTTP / L4 创建页面并携带创建参数', () => {
     const wrapper = mountChecklist()
 
-    expect(wrapper.findComponent('[data-testid="onboarding-add-http"]').props('to')).toBe('/rules')
-    expect(wrapper.findComponent('[data-testid="onboarding-add-l4"]').props('to')).toBe('/l4')
+    expect(wrapper.findComponent('[data-testid="onboarding-add-http"]').props('to')).toEqual({ path: '/rules', query: { create: '1' } })
+    expect(wrapper.findComponent('[data-testid="onboarding-add-l4"]').props('to')).toEqual({ path: '/l4', query: { create: '1' } })
   })
 
   it('已有规则的实例不展示清单,也不写入已开始状态', () => {

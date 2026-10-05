@@ -198,6 +198,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useL4RulesList, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
+import { useCreateQueryParam } from '../hooks/useCreateQueryParam'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import { fetchL4Rules, fetchAllAgentsL4Rules, fetchRelayListeners, fetchAllAgentsRelayListeners, fetchEgressProfiles } from '../api'
@@ -469,6 +470,9 @@ function startCreate() {
   }
   messageStore.error('请先选择节点后再新建')
 }
+
+// 上手清单等入口通过 ?create=1 直达创建表单。
+useCreateQueryParam(route, router, startCreate)
 
 function confirmCreateAgent(agent) {
   const id = String(agent?.id || agent?.agent_id || '').trim()
