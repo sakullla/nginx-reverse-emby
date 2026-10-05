@@ -563,4 +563,78 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('节点: Edge Node A')
     expect(wrapper.text()).not.toContain(opaqueAgentID)
   })
+
+  it('renders a success conclusion above the stats', () => {
+    const wrapper = mountModal()
+
+    const conclusion = wrapper.get('.diagnostic-conclusion')
+    expect(conclusion.classes()).toContain('diagnostic-conclusion--success')
+    expect(conclusion.text()).toContain('HTTP 反代链路正常')
+    expect(conclusion.text()).toContain('3 次探测全部成功')
+
+    const modalChildren = Array.from(wrapper.get('.diagnostic-modal').element.children)
+    const conclusionIndex = modalChildren.indexOf(conclusion.element)
+    const statsIndex = modalChildren.indexOf(wrapper.get('.diagnostic-modal__stats').element)
+    expect(conclusionIndex).toBeGreaterThanOrEqual(0)
+    expect(statsIndex).toBeGreaterThan(conclusionIndex)
+  })
+
+  it('renders a backend failure conclusion with next-step suggestions', () => {
+    const task = buildTask('http')
+    const failedSummary = {
+      sent: 3,
+      succeeded: 1,
+      failed: 2,
+      loss_rate: 0.7,
+      avg_latency_ms: 18,
+      min_latency_ms: 10,
+      max_latency_ms: 22,
+      quality: '较差'
+    }
+    task.result.summary = failedSummary
+    task.result.backends[0].summary = failedSummary
+    const wrapper = mountModal({ task })
+
+    const conclusion = wrapper.get('.diagnostic-conclusion')
+    expect(conclusion.classes()).toContain('diagnostic-conclusion--danger')
+    expect(conclusion.text()).toContain('后端探测失败')
+    expect(conclusion.findAll('.diagnostic-conclusion__suggestions li').length).toBeGreaterThan(0)
+  })
+
+  it('renders a Relay failure conclusion for failed relay paths', () => {
+    const task = buildTask('http')
+    task.result.summary = { sent: 2, succeeded: 0, failed: 2, loss_rate: 1, quality: '不可用' }
+    task.result.relay_paths = [{ path: [7], success: false, error: 'relay dial timeout' }]
+    const wrapper = mountModal({ task })
+
+    const conclusion = wrapper.get('.diagnostic-conclusion')
+    expect(conclusion.classes()).toContain('diagnostic-conclusion--danger')
+    expect(conclusion.text()).toContain('Relay 路径失败')
+    expect(conclusion.text()).toContain('relay dial timeout')
+  })
+
+  it('renders the 无法定位 conclusion when no probe samples were collected', () => {
+    const task = buildTask('http')
+    task.result.summary = { sent: 0, succeeded: 0, failed: 0, loss_rate: 0, quality: '不可用' }
+    const wrapper = mountModal({ task })
+
+    const conclusion = wrapper.get('.diagnostic-conclusion')
+    expect(conclusion.classes()).toContain('diagnostic-conclusion--warning')
+    expect(conclusion.text()).toContain('无法定位')
+  })
+
+  it('keeps the raw task error and adds an execution failure conclusion', () => {
+    const task = buildTask('http')
+    task.state = 'failed'
+    task.error = 'agent offline: task session closed'
+    delete task.result
+    const wrapper = mountModal({ task })
+
+    expect(wrapper.get('.diagnostic-modal__error').text()).toContain('agent offline: task session closed')
+    const conclusion = wrapper.get('.diagnostic-conclusion')
+    expect(conclusion.classes()).toContain('diagnostic-conclusion--danger')
+    expect(conclusion.text()).toContain('诊断执行失败')
+    expect(conclusion.text()).toContain('agent offline: task session closed')
+    expect(conclusion.findAll('.diagnostic-conclusion__suggestions li').length).toBeGreaterThan(0)
+  })
 })

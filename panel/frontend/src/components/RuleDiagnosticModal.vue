@@ -27,11 +27,20 @@
         </div>
       </div>
 
-      <div v-else-if="task?.error" class="diagnostic-modal__error">
-        {{ task.error }}
-      </div>
+      <template v-else>
+        <div v-if="task?.error" class="diagnostic-modal__error">
+          {{ task.error }}
+        </div>
 
-      <template v-else-if="summary">
+        <div class="diagnostic-conclusion" :class="`diagnostic-conclusion--${conclusion.tone}`">
+          <div class="diagnostic-conclusion__headline">{{ conclusion.headline }}</div>
+          <p v-if="conclusion.detail" class="diagnostic-conclusion__detail">{{ conclusion.detail }}</p>
+          <ul v-if="conclusion.suggestions.length" class="diagnostic-conclusion__suggestions">
+            <li v-for="(suggestion, index) in conclusion.suggestions" :key="index">{{ suggestion }}</li>
+          </ul>
+        </div>
+
+        <template v-if="summary">
         <div class="diagnostic-modal__stats">
           <div class="diagnostic-stat">
             <span class="diagnostic-stat__label">{{ hasRelayPaths ? '总路径数' : '总测试数' }}</span>
@@ -224,6 +233,7 @@
             </div>
           </div>
         </div>
+        </template>
       </template>
     </div>
   </BaseModal>
@@ -233,6 +243,7 @@
 import { computed, ref } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
+import { buildDiagnosticConclusion } from '../utils/diagnosticConclusion'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -252,6 +263,12 @@ const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
+const conclusion = computed(() => buildDiagnosticConclusion({
+  kind: props.kind,
+  state: state.value,
+  error: props.task?.error,
+  result: props.task?.result
+}))
 const agentLabel = computed(() => {
   const explicitLabel = props.agentLabel.trim()
   if (explicitLabel) return explicitLabel
@@ -760,6 +777,46 @@ function qualityToneFor(value) {
 }
 .diagnostic-modal__loading-title { font-weight: 700; color: var(--color-text-primary); }
 .diagnostic-modal__loading-text { font-size: 0.82rem; color: var(--color-text-secondary); }
+
+.diagnostic-conclusion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+}
+.diagnostic-conclusion__headline {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+.diagnostic-conclusion__detail {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.diagnostic-conclusion__suggestions {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+.diagnostic-conclusion__suggestions li::marker { color: var(--color-primary); }
+.diagnostic-conclusion--success { background: var(--color-success-50); border-color: var(--color-success); }
+.diagnostic-conclusion--success .diagnostic-conclusion__headline { color: var(--color-success); }
+.diagnostic-conclusion--danger { background: var(--color-danger-50); border-color: var(--color-danger); }
+.diagnostic-conclusion--danger .diagnostic-conclusion__headline { color: var(--color-danger); }
+.diagnostic-conclusion--warning { background: var(--color-warning-50); border-color: var(--color-warning); }
+.diagnostic-conclusion--warning .diagnostic-conclusion__headline { color: var(--color-warning); }
 
 .diagnostic-modal__stats {
   display: grid;
