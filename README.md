@@ -2,12 +2,20 @@
 
 [![Docker Build](https://github.com/sakullla/nginx-reverse-emby/actions/workflows/docker-build.yml/badge.svg)](https://github.com/sakullla/nginx-reverse-emby/actions/workflows/docker-build.yml)
 ![Docker Pulls](https://img.shields.io/docker/pulls/sakullla/nginx-reverse-emby?color=blue)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-brightgreen)](https://sakullla.github.io/nginx-reverse-emby/)
 
-面向 Emby、Jellyfin 以及常见 HTTP / TCP 服务的反向代理控制面。  
-典型场景：你有一台线路较好的 VPS，想把公费服 / 公益服 Emby、Jellyfin 或其它服务反代到自己的域名，减少观看时必须挂代理的问题。
+**一台线路好的 VPS + 一个面板，把 Emby / Jellyfin 以及常见 HTTP·TCP 服务反代到自己的域名——不用手写 Nginx 配置。**
 
-不需要自己写 Nginx 配置。一个 Docker Compose 就能拉起面板，并在本机自带一个 `local` 节点负责真正转发流量。
+- **懒得写反代配置？** → Docker Compose 拉起纯 Go 控制面，本机自带 `local` 节点负责转发
+- **观看要挂代理才流畅？** → 用优质线路 VPS 做入口，把后端服务挂到自己的域名
+- **要 HTTPS 又怕证书折腾？** → 规则开 HTTPS 即可 ACME 自动签发（HTTP-01 / Cloudflare DNS-01）
+- **不止 Web，还要端口转发？** → 同一面板管 HTTP/HTTPS 反代与 L4 TCP/UDP 转发
+- **单机不够、入口到后端不通？** → 多节点 Agent 统一管理，需要时可上 Relay 隧道（见文档）
 
+### 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
 完整中文文档：
 
 - [文档首页](https://sakullla.github.io/nginx-reverse-emby/)
