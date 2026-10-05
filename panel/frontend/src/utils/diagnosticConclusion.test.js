@@ -144,7 +144,21 @@ describe('buildDiagnosticConclusion', () => {
 
     expect(conclusion.tone).toBe('warning')
     expect(conclusion.headline).toContain('无法定位')
+    expect(conclusion.detail).toContain('诊断存在失败样本')
     expect(conclusion.detail).toContain('没有可定位到具体后端或 Relay 路径的数据')
+    expect(conclusion.suggestions.length).toBeGreaterThan(0)
+  })
+
+  it('keeps 诊断已失败 wording when the diagnostic task itself failed', () => {
+    const conclusion = buildDiagnosticConclusion({
+      kind: 'http',
+      state: 'failed',
+      result: { summary: buildSummary({ sent: 2, succeeded: 0, failed: 2, loss_rate: 1, quality: '不可用' }) }
+    })
+
+    expect(conclusion.tone).toBe('warning')
+    expect(conclusion.headline).toContain('无法定位')
+    expect(conclusion.detail).toContain('诊断已失败')
     expect(conclusion.suggestions.length).toBeGreaterThan(0)
   })
 

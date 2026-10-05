@@ -28,7 +28,7 @@ export function buildDiagnosticConclusion(input = {}) {
   }
   if (failedRelayPaths.length > 0) return relayFailureConclusion(failedRelayPaths)
   if (failedBackends.length > 0) return backendFailureConclusion(failedBackends, result)
-  return unattributedConclusion()
+  return unattributedConclusion(input.state)
 }
 
 function successConclusion(kind, summary, failedRelayPaths = []) {
@@ -115,11 +115,14 @@ function insufficientDataConclusion() {
   }
 }
 
-function unattributedConclusion() {
+function unattributedConclusion(state) {
+  const detail = state === 'completed'
+    ? '诊断存在失败样本，但结果中没有可定位到具体后端或 Relay 路径的数据，无法判断失败环节。'
+    : '诊断已失败，但结果中没有可定位到具体后端或 Relay 路径的数据，无法判断失败环节。'
   return {
     tone: 'warning',
     headline: '无法定位：缺少可归因的失败信息',
-    detail: '诊断已失败，但结果中没有可定位到具体后端或 Relay 路径的数据，无法判断失败环节。',
+    detail,
     suggestions: [
       '展开探测样本，结合错误信息排查失败环节',
       '确认规则配置无误后重新运行诊断'
