@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import LoginPage from '../pages/LoginPage.vue'
 import { clearCredentials, setSessionToken } from '../api/authState'
+import { DOC_LINKS } from '../constants/docLinks'
 
 const { push, login, verifyToken } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -35,6 +36,28 @@ describe('LoginPage', () => {
     expect(wrapper.findAll('button').some((button) => button.text() === '账号密码')).toBe(false)
     expect(wrapper.get('#token-input').attributes('type')).toBe('password')
     expect(wrapper.get('button[type="submit"]').text()).toBe('连接')
+  })
+
+  it('reveals where the access token comes from without changing the login flow', async () => {
+    const wrapper = mount(LoginPage)
+
+    const toggle = wrapper.get('.token-help__toggle')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('#token-help-panel').exists()).toBe(false)
+
+    await toggle.trigger('click')
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    const panel = wrapper.get('#token-help-panel')
+    expect(panel.text()).toContain('部署脚本')
+    expect(panel.text()).toContain('.env')
+    expect(panel.text()).toContain('API_TOKEN')
+    const docsLink = panel.get('a')
+    expect(docsLink.attributes('href')).toBe(DOC_LINKS.deploy)
+    expect(docsLink.attributes('target')).toBe('_blank')
+    expect(docsLink.attributes('rel')).toBe('noopener')
+    expect(verifyToken).not.toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
   })
 
   it('enters the panel after a valid access token and does not call account login', async () => {

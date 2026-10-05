@@ -13,6 +13,17 @@
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
+        <a
+          class="btn btn-secondary docs-link agents-page__docs-link"
+          :href="DOC_LINKS.agents"
+          target="_blank"
+          rel="noopener"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+          <span class="btn-text">查看文档</span>
+        </a>
         <button v-if="selectedAgentId" class="btn btn-secondary" :disabled="applying" @click="handleApply">
           <svg v-if="!applying" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
@@ -305,6 +316,7 @@ import { fetchSystemInfo, applyConfig } from '../api'
 import { createPkiEnrollmentToken } from '../api/pki'
 import { useAgent } from '../context/AgentContext'
 import { messageStore } from '../stores/messages'
+import { DOC_LINKS } from '../constants/docLinks'
 
 const router = useRouter()
 const { selectedAgentId } = useAgent()

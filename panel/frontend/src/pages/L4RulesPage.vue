@@ -13,6 +13,17 @@
         </p>
       </div>
       <div class="rules-page__header-right">
+        <a
+          class="btn btn-secondary docs-link rules-page__docs-link"
+          :href="DOC_LINKS.l4Rules"
+          target="_blank"
+          rel="noopener"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+          <span class="btn-text">查看文档</span>
+        </a>
         <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery)" v-model:view="view" />
         <button v-if="canCreate" class="btn btn-primary" title="添加 L4 规则" aria-label="添加 L4 规则" @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
@@ -209,6 +220,7 @@ import OperationStatusList from '../components/operations/OperationStatusList.vu
 import { useViewToggle } from '../composables/useViewToggle'
 import { useListFilterUrl } from '../composables/useListFilterUrl'
 import { messageStore } from '../stores/messages'
+import { DOC_LINKS } from '../constants/docLinks'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'

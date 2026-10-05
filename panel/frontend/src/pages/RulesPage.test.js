@@ -5,6 +5,7 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import RulesPage from './RulesPage.vue'
 import { fetchHTTPBackendProviders } from '../api'
 import { describeHTTPBackends } from '../utils/httpBackend.js'
+import { DOC_LINKS } from '../constants/docLinks'
 
 let route
 let routerReplace
@@ -135,6 +136,16 @@ describe('RulesPage filter integration', () => {
     rulesData = [{ id: 1, agent_id: 1, enabled: true, tags: ['emby'] }]
     capturedListOptions = undefined
     fetchHTTPBackendProviders.mockReset().mockResolvedValue([])
+  })
+
+  it('links the page header to the HTTP rules documentation', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const link = wrapper.get('.rules-page__docs-link')
+    expect(link.attributes('href')).toBe(DOC_LINKS.httpRules)
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener')
   })
 
   it('consumes filter state from the URL into the list query', () => {

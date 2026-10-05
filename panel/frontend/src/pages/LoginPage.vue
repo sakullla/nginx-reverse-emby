@@ -41,6 +41,27 @@
           <span v-else>连接</span>
         </button>
       </form>
+      <div class="token-help">
+        <button
+          type="button"
+          class="token-help__toggle"
+          :aria-expanded="showTokenHelp ? 'true' : 'false'"
+          aria-controls="token-help-panel"
+          @click="showTokenHelp = !showTokenHelp"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span>访问令牌从哪里获取？</span>
+        </button>
+        <div v-if="showTokenHelp" id="token-help-panel" class="token-help__panel">
+          <ul>
+            <li>一键部署脚本执行完成后，会在终端输出访问令牌。</li>
+            <li>也可以在安装目录的 <code>.env</code> 文件中查看 <code>API_TOKEN</code> 的值。</li>
+          </ul>
+          <a class="token-help__docs" :href="DOC_LINKS.deploy" target="_blank" rel="noopener">查看部署指南</a>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -53,12 +74,14 @@ import { useAuthState } from '../context/useAuthState'
 import BrandMark from '../components/base/BrandMark.vue'
 import SakuraBackdrop from '../components/base/SakuraBackdrop.vue'
 import FieldError from '../components/base/FieldError.vue'
+import { DOC_LINKS } from '../constants/docLinks'
 
 const router = useRouter()
 const route = useRoute()
 const { clearCredentials, setToken } = useAuthState()
 const tokenInput = ref('')
 const revealToken = ref(false)
+const showTokenHelp = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -246,6 +269,71 @@ async function handleLogin() {
 
 .btn--full {
   width: 100%;
+}
+
+.token-help {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border-default);
+}
+
+.token-help__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.token-help__toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.token-help__toggle svg {
+  flex-shrink: 0;
+}
+
+.token-help__panel {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.token-help__panel ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.token-help__panel code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.95em;
+  color: var(--color-text-primary);
+}
+
+.token-help__docs {
+  display: inline-block;
+  margin-top: var(--space-2);
+  color: var(--color-primary);
+  font-weight: var(--font-semibold);
+  text-decoration: none;
+}
+
+.token-help__docs:hover {
+  text-decoration: underline;
 }
 
 .spinner {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
 import AgentsPage from './AgentsPage.vue'
+import { DOC_LINKS } from '../constants/docLinks'
 
 const createPkiEnrollmentToken = vi.fn()
 let agentsData
@@ -70,6 +71,17 @@ describe('AgentsPage join modal', () => {
     monitorActive = ref(false)
     createPkiEnrollmentToken.mockReset()
     createPkiEnrollmentToken.mockReturnValue(new Promise(() => {}))
+  })
+
+  it('links the page header to the nodes documentation', () => {
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub } }
+    })
+
+    const link = wrapper.get('.agents-page__docs-link')
+    expect(link.attributes('href')).toBe(DOC_LINKS.agents)
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener')
   })
 
   it('can close while an enrollment-token request is still pending', async () => {
