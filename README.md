@@ -15,9 +15,9 @@
 ### 一键安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
-完整中文文档：
-
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh
+```
+ 
 - [文档首页](https://sakullla.github.io/nginx-reverse-emby/)
 - [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)
 - [部署指南](https://sakullla.github.io/nginx-reverse-emby/getting-started/deploy)
