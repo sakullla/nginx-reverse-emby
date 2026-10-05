@@ -27,6 +27,8 @@ awk '
     /^configure_forwarded_headers_trust\(\)/ ||
     /^resolve_domain_ipv4\(\)/ ||
     /^detect_busy_ports\(\)/ ||
+    /^normalize_domain\(\)/ ||
+    /^resolve_cli_domain\(\)/ ||
     /^preflight_checks\(\)/ ||
     /^wait_public_panel_ready\(\)/ {
         emit = 1
@@ -400,5 +402,18 @@ if ! preflight_checks "panel.example.com"; then
 fi
 assert_contains "ipv6-only warning" "$WARN_LOG" "无法解析"
 assert_contains "ipv6-only continue summary" "$WARN_LOG" "预检有警告，可继续"
+
+# ---- 非交互域名（--domain / NRE_DOMAIN）解析 ----
+
+assert_eq "cli domain valid" "$(resolve_cli_domain 'panel.example.com')" "panel.example.com"
+assert_eq "cli domain strips scheme and path" "$(resolve_cli_domain 'https://panel.example.com/path')" "panel.example.com"
+assert_eq "cli domain strips port" "$(resolve_cli_domain 'panel.example.com:8443')" "panel.example.com"
+assert_eq "cli domain invalid no dot" "$(resolve_cli_domain 'panel')" ""
+assert_eq "cli domain invalid spaces" "$(resolve_cli_domain 'panel example.com')" ""
+assert_eq "cli domain invalid empty" "$(resolve_cli_domain '')" ""
+
+help_output="$(sh "$script" --help 2>&1)"
+assert_contains "help lists --domain" "$help_output" "--domain"
+assert_contains "help lists NRE_DOMAIN" "$help_output" "NRE_DOMAIN"
 
 printf 'deploy-compose deferred apply tests passed\n'

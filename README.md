@@ -187,11 +187,16 @@ environment:
 CI 或已知全部参数时：
 
 ```bash
+# 已有 HTTPS 面板地址（外部反代）：
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | \
   sh -s -- --public-url https://panel.example.com --cf-token YOUR_CF_TOKEN --yes --non-interactive
+
+# 由本机申请证书并自代理（DNS 已指向本机）：
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | \
+  sh -s -- --domain panel.example.com --cf-token YOUR_CF_TOKEN --yes --non-interactive
 ```
 
-也可用环境变量 `API_TOKEN`、`MASTER_REGISTER_TOKEN`、`CF_TOKEN`、`NRE_NONINTERACTIVE=1` 达到同样效果。
+也可用环境变量 `API_TOKEN`、`MASTER_REGISTER_TOKEN`、`CF_TOKEN`、`NRE_DOMAIN`、`NRE_NONINTERACTIVE=1` 达到同样效果。`--domain` / `NRE_DOMAIN` 与交互模式一样会执行部署前预检。
 
 ## 加入更多节点
 

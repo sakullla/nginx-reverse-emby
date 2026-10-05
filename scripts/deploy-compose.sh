@@ -8,6 +8,7 @@ install_dir="${NRE_INSTALL_DIR:-nginx-reverse-emby}"
 image="${NRE_IMAGE:-sakullla/nginx-reverse-emby:latest}"
 timezone="${NRE_TIMEZONE:-Asia/Shanghai}"
 public_url="${NRE_PUBLIC_URL:-}"
+domain_input="${NRE_DOMAIN:-}"
 trust_forwarded_headers="${NRE_TRUST_FORWARDED_HEADERS:-}"
 docker_cli_version="${NRE_DOCKER_CLI_VERSION:-29.5.3}"
 docker_compose_version="${NRE_DOCKER_COMPOSE_VERSION:-v5.1.4}"
@@ -33,6 +34,7 @@ nginx-reverse-emby 一键部署脚本：下载 compose、生成 token、按需�
   --image IMAGE        容器镜像，默认 sakullla/nginx-reverse-emby:latest
   --timezone TZ        面板时区，默认 Asia/Shanghai
   --public-url URL     已有 HTTPS 面板地址，例如 https://panel.example.com
+  --domain DOMAIN      非交互部署的面板域名，例如 panel.example.com（用于预检与面板自代理）
   --cf-token TOKEN     直接提供 Cloudflare API Token（跳过交互输入并在线校验）
   --non-interactive    关闭所有交互提示，未提供的值回退到默认或环境变量
   --yes                跳过临时 HTTP 部署前的确认
@@ -41,6 +43,7 @@ nginx-reverse-emby 一键部署脚本：下载 compose、生成 token、按需�
 环境变量（同样可覆盖对应选项，便于 curl | sh 自动化）：
   NRE_REPO_RAW_BASE    docker-compose.yaml 下载地址前缀
   NRE_INSTALL_DIR / NRE_IMAGE / NRE_TIMEZONE / NRE_PUBLIC_URL
+  NRE_DOMAIN           非交互部署的面板域名（等同 --domain）
   NRE_TRUST_FORWARDED_HEADERS 显式覆盖代理头信任；反代模式默认 true，直连默认 false
   NRE_HTTP2_ENABLED=false 可强制代理到上游后端使用 HTTP/1.1
   NRE_HTTP_RESPONSE_HEADER_TIMEOUT / NRE_HTTP_MAX_CONNS_PER_HOST
@@ -77,6 +80,11 @@ while [ "$#" -gt 0 ]; do
         --public-url)
             [ "$#" -ge 2 ] || { echo "缺少 --public-url 的值" >&2; exit 2; }
             public_url="$2"
+            shift 2
+            ;;
+        --domain)
+            [ "$#" -ge 2 ] || { echo "缺少 --domain 的值" >&2; exit 2; }
+            domain_input="$2"
             shift 2
             ;;
         --cf-token)
@@ -1118,6 +1126,17 @@ normalize_domain() {
     printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:.*##'
 }
 
+# 校验并规范化 --domain / NRE_DOMAIN 输入；无效域名输出空串。
+resolve_cli_domain() {
+    _normalized="$(normalize_domain "$1")"
+    case "$_normalized" in
+        ""|*[!A-Za-z0-9.-]*|.|*.) printf '' ;;
+        .*) printf '' ;;
+        *.*) printf '%s' "$_normalized" ;;
+        *) printf '' ;;
+    esac
+}
+
 apply_domain_config() {
     _d="$1"
     [ -n "$_d" ] || return 1
@@ -1191,6 +1210,22 @@ if [ -n "$public_url" ]; then
         write_env_value "ACME_DNS_PROVIDER" "cf" "$env_file"
         write_env_value "CF_TOKEN" "$CF_TOKEN" "$env_file"
         cf_enabled=1
+    fi
+elif [ -n "$domain_input" ]; then
+    # 非交互（--domain / NRE_DOMAIN）：直接使用给定域名并继续预检。
+    domain="$(resolve_cli_domain "$domain_input")"
+    if [ -z "$domain" ]; then
+        warn "域名「${domain_input}」看起来无效，将改用临时 HTTP。示例：panel.example.com"
+    else
+        apply_domain_config "$domain"
+        cf_token="$(collect_cf_token)"
+        if [ -n "$cf_token" ]; then
+            write_env_value "ACME_DNS_PROVIDER" "cf" "$env_file"
+            write_env_value "CF_TOKEN" "$cf_token" "$env_file"
+            cf_enabled=1
+        else
+            warn "未配置 Cloudflare Token，将使用 HTTP-01（需 80/443 公网可达）"
+        fi
     fi
 elif [ "$interactive" -eq 1 ]; then
     # 一步输入域名：回车 = 临时 HTTP，无需先问「是否有域名」
