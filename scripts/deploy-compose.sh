@@ -821,6 +821,155 @@ detect_public_ip() {
     fi
 }
 
+# ---- 部署前预检：域名解析与 80/443 占用（异常一律降级为警告） ----
+
+# 命令是否可用；预检据此在工具缺失时降级为警告。
+has_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# 解析域名的 IPv4（A 记录）。依次尝试 getent / nslookup / host，
+# 输出去重后的 IPv4 列表（空格分隔）；无法解析或工具缺失时输出空。
+resolve_domain_ipv4() {
+    _rd_domain="$1"
+    _rd_ips=""
+
+    if has_command getent; then
+        _rd_ips="$(getent ahostsv4 "$_rd_domain" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && !seen[$1]++ { print $1 }')"
+    fi
+
+    if [ -z "$_rd_ips" ] && has_command nslookup; then
+        _rd_ips="$(nslookup -type=A "$_rd_domain" 2>/dev/null | awk '
+            /^[[:space:]]*Name:/ { in_answer = 1 }
+            in_answer {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && !seen[$i]++) {
+                        print $i
+                    }
+                }
+            }
+        ')"
+    fi
+
+    if [ -z "$_rd_ips" ] && has_command host; then
+        _rd_ips="$(host -t A "$_rd_domain" 2>/dev/null | awk '
+            /has address/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && !seen[$i]++) {
+                        print $i
+                    }
+                }
+            }
+        ')"
+    fi
+
+    printf '%s' "$_rd_ips" | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
+# 检测宿主 80/443 的 TCP 监听占用。优先 ss，回退 netstat；
+# 输出被占用的端口（每行一个）。无可用检测工具时返回 1，由调用方降级为警告。
+detect_busy_ports() {
+    _dbp_listing=""
+
+    if has_command ss; then
+        _dbp_listing="$(ss -H -ltn 2>/dev/null)" || _dbp_listing="$(ss -ltn 2>/dev/null)" || return 1
+    elif has_command netstat; then
+        _dbp_listing="$(netstat -ltn 2>/dev/null)" || return 1
+    else
+        return 1
+    fi
+
+    printf '%s\n' "$_dbp_listing" | awk '
+        {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /:80$/ || $i ~ /:443$/) {
+                    port = $i
+                    sub(/.*:/, "", port)
+                    if (!seen[port]++) {
+                        print port
+                    }
+                }
+            }
+        }
+    '
+}
+
+# 部署前预检：仅在填写域名（面板自代理路径）时调用。
+# 全部通过输出「预检通过」并返回 0；存在警告但继续返回 0；
+# 交互模式下用户选择中止返回 1。任何检测失败都降级为警告并继续。
+preflight_checks() {
+    _pf_domain="$1"
+    _pf_warnings=0
+    _pf_abort=0
+
+    say "部署前预检：${_pf_domain}"
+
+    _pf_resolved="$(resolve_domain_ipv4 "$_pf_domain")"
+    if [ -z "$_pf_resolved" ]; then
+        warn "DNS 预检：无法解析 ${_pf_domain} 的 IPv4 地址（可能 DNS 未生效、仅有 IPv6 记录或本机缺少解析工具），跳过 IP 比对。"
+        _pf_warnings=$((_pf_warnings + 1))
+    else
+        _pf_public_ip="$(detect_public_ip)"
+        case "$_pf_public_ip" in
+            ""|"<服务器IP>")
+                warn "DNS 预检：无法获取本机公网 IP，跳过与 ${_pf_domain}（解析结果 ${_pf_resolved}）的比对。"
+                _pf_warnings=$((_pf_warnings + 1))
+                ;;
+            *:*)
+                warn "DNS 预检：本机公网出口为 IPv6（${_pf_public_ip}），无法与 IPv4 解析结果（${_pf_resolved}）比对，跳过。"
+                _pf_warnings=$((_pf_warnings + 1))
+                ;;
+            *)
+                _pf_match=0
+                # shellcheck disable=SC2086
+                for _pf_ip in $_pf_resolved; do
+                    if [ "$_pf_ip" = "$_pf_public_ip" ]; then
+                        _pf_match=1
+                    fi
+                done
+                if [ "$_pf_match" -eq 1 ]; then
+                    say "DNS 预检通过：${_pf_domain} → ${_pf_public_ip}"
+                else
+                    warn "DNS 预检警告：${_pf_domain} 解析为 ${_pf_resolved}，本机公网 IP 为 ${_pf_public_ip}，两者不一致。"
+                    warn "常见原因：DNS 未生效或 TTL 未过期、域名指向其它机器、经过 CDN 代理；不匹配会导致 HTTP-01 证书签发失败。"
+                    _pf_warnings=$((_pf_warnings + 1))
+                    if [ "$interactive" -eq 1 ] && [ "$_pf_abort" -eq 0 ]; then
+                        if ! ask_yes_no "DNS 解析与本机公网 IP 不一致，是否仍继续部署" "y"; then
+                            _pf_abort=1
+                        fi
+                    fi
+                fi
+                ;;
+        esac
+    fi
+
+    _pf_busy="$(detect_busy_ports)" || _pf_busy="?"
+    if [ "$_pf_busy" = "?" ]; then
+        warn "端口预检：未找到 ss/netstat 检测工具，跳过 80/443 占用检查。"
+        _pf_warnings=$((_pf_warnings + 1))
+    elif [ -n "$_pf_busy" ]; then
+        _pf_busy_list="$(printf '%s' "$_pf_busy" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        warn "端口预检警告：宿主 80/443 已被监听占用（占用端口：${_pf_busy_list}）。"
+        warn "请先停止占用端口的服务（如系统自带 nginx/apache/caddy），否则本地节点会启动失败。"
+        _pf_warnings=$((_pf_warnings + 1))
+        if [ "$interactive" -eq 1 ] && [ "$_pf_abort" -eq 0 ]; then
+            if ! ask_yes_no "80/443 已被占用，是否仍继续部署" "y"; then
+                _pf_abort=1
+            fi
+        fi
+    fi
+
+    if [ "$_pf_abort" -eq 1 ]; then
+        return 1
+    fi
+    if [ "$_pf_warnings" -eq 0 ]; then
+        say "预检通过"
+    else
+        warn "预检有警告，可继续"
+    fi
+    return 0
+}
+
 # 简易 JSON "字段":"取值" 提取（不依赖 jq，best-effort）。
 cf_field() {
     printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
@@ -1082,6 +1231,14 @@ if [ -z "$public_url" ] && [ -z "$domain" ]; then
 fi
 
 configure_forwarded_headers_trust "$env_file"
+
+# 部署前预检：仅在填写域名（面板自代理）时执行；外部反代与临时 HTTP 路径跳过。
+if [ -n "$domain" ]; then
+    if ! preflight_checks "$domain"; then
+        warn "已取消部署。可修复上述问题后重新运行脚本；配置保留在 $(pwd)/${env_file}"
+        exit 0
+    fi
+fi
 
 # 部署前预览（默认直接开始；仅临时 HTTP 再确认一次，避免误暴露公网）
 if [ -n "$domain" ]; then
