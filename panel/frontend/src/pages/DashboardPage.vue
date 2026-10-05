@@ -7,6 +7,13 @@
       </div>
     </div>
 
+    <!-- 首启上手清单:无规则的新实例展示,关闭后可从关于页重新打开 -->
+    <OnboardingChecklist
+      class="dashboard__onboarding card-enter"
+      :agents="agents || []"
+      :loaded="!isLoading"
+    />
+
     <!-- 第一屏:系统健康总览(需关注条 + 集群指标 + 节点状态) -->
     <AttentionBar :attention="attention" class="dashboard__attention card-enter stagger-1" />
 
@@ -66,6 +73,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useAttention } from '../hooks/useAttention'
 import { fetchSystemInfo } from '../api'
 import AttentionBar from '../components/dashboard/AttentionBar.vue'
+import OnboardingChecklist from '../components/dashboard/OnboardingChecklist.vue'
 import AgentStatusTiles from '../components/dashboard/AgentStatusTiles.vue'
 import ClusterMetricsCard from '../components/dashboard/ClusterMetricsCard.vue'
 import DashboardTrafficModule from '../components/traffic/DashboardTrafficModule.vue'
@@ -133,6 +141,10 @@ const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   margin: 0;
+}
+
+.dashboard__onboarding {
+  margin-bottom: var(--space-4);
 }
 
 .dashboard__attention {

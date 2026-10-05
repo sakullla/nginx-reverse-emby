@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardPage from './DashboardPage.vue'
+import { __resetPreferenceCacheForTests } from '../hooks/usePreference'
 
 const attentionPayload = {
   ok: true,
@@ -15,7 +16,7 @@ const attentionPayload = {
 
 const { useCertificatesSpy, agentsState } = vi.hoisted(() => ({
   useCertificatesSpy: vi.fn(),
-  agentsState: { list: [] }
+  agentsState: { list: [], ref: null }
 }))
 
 vi.mock('vue-router', () => ({
@@ -25,7 +26,10 @@ vi.mock('vue-router', () => ({
 }))
 
 vi.mock('../hooks/useAgents', () => ({
-  useAgents: () => ({ data: ref(agentsState.list), isLoading: ref(false) })
+  useAgents: () => {
+    agentsState.ref = ref(agentsState.list)
+    return { data: agentsState.ref, isLoading: ref(false) }
+  }
 }))
 
 vi.mock('../hooks/useAttention', () => ({
@@ -77,6 +81,8 @@ async function mountPage() {
 }
 
 beforeEach(() => {
+  localStorage.clear()
+  __resetPreferenceCacheForTests()
   agentsState.list = [
     { id: 'a1', status: 'online' },
     { id: 'a2', status: 'offline' }
@@ -126,5 +132,39 @@ describe('DashboardPage 健康优先布局', () => {
     const wrapper = await mountPage()
     expect(wrapper.get('.dashboard__health').classes()).not.toContain('dashboard__health--compact')
     expect(wrapper.get('[data-testid="agent-tiles"]').attributes('data-detailed')).toBe('false')
+  })
+})
+
+describe('DashboardPage 首启上手清单', () => {
+  it('无规则的新实例在需关注条之前展示三步清单', async () => {
+    agentsState.list = [{ id: 'local', status: 'online', http_rules_count: 0, l4_rules_count: 0 }]
+    const html = (await mountPage()).html()
+    const checklistIndex = html.indexOf('data-testid="onboarding-checklist"')
+    const attentionIndex = html.indexOf('data-testid="attention-bar"')
+    expect(checklistIndex).toBeGreaterThanOrEqual(0)
+    expect(attentionIndex).toBeGreaterThan(checklistIndex)
+  })
+
+  it('已有规则的实例不展示上手清单', async () => {
+    agentsState.list = [{ id: 'local', status: 'online', http_rules_count: 4, l4_rules_count: 2 }]
+    const wrapper = await mountPage()
+    expect(wrapper.find('[data-testid="onboarding-checklist"]').exists()).toBe(false)
+  })
+
+  it('创建规则后第一步自动完成并移除创建入口', async () => {
+    agentsState.list = [{ id: 'local', status: 'online', http_rules_count: 0, l4_rules_count: 0 }]
+    const wrapper = await mountPage()
+    expect(wrapper.find('[data-testid="onboarding-add-http"]').exists()).toBe(true)
+
+    agentsState.ref.value = [{
+      id: 'local',
+      status: 'online',
+      http_rules_count: 1,
+      l4_rules_count: 0
+    }]
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="onboarding-rules-done"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="onboarding-add-http"]').exists()).toBe(false)
   })
 })

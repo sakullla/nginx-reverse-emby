@@ -11,7 +11,7 @@
       <div class="about-identity">
         <h3 class="about-identity__name">Nginx Reverse Emby</h3>
         <div class="about-identity__divider"></div>
-        <p class="about-identity__tagline">Nginx 反向代理 &amp; Emby 媒体管理控制面板</p>
+        <p class="about-identity__tagline">通用 HTTP/HTTPS 反代 + L4 TCP/UDP 转发控制面板</p>
         <p class="about-identity__version">
           版本
           <strong>{{ info?.app_version || 'dev' }}</strong>
@@ -84,11 +84,35 @@
 
     <section class="settings-section">
       <div class="settings-section__header">
+        <h3 class="settings-section__title">上手引导</h3>
+        <p class="settings-section__desc">重新显示首页的三步清单</p>
+      </div>
+      <div class="settings-section__body">
+        <button
+          type="button"
+          class="btn btn--secondary"
+          data-testid="reopen-onboarding"
+          @click="reopenOnboarding"
+        >
+          重新打开上手引导
+        </button>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="settings-section__header">
         <h3 class="settings-section__title">项目地址</h3>
-        <p class="settings-section__desc">源码与反馈入口</p>
+        <p class="settings-section__desc">文档、源码与反馈入口</p>
       </div>
       <div class="settings-section__body">
         <div class="project-links">
+          <a :href="DOCS_SITE_URL" target="_blank" rel="noopener" class="project-link" data-testid="about-docs-link">
+            <span class="project-link__icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </span>
+            <span class="project-link__text">使用文档</span>
+            <span class="project-link__arrow">↗</span>
+          </a>
           <a href="https://github.com/sakullla/nginx-reverse-emby" target="_blank" rel="noopener" class="project-link">
             <span class="project-link__icon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
@@ -108,9 +132,35 @@
 </template>
 
 <script setup>
+import { useRouter } from 'vue-router'
 import { useSystemInfo } from '../../hooks/useSystemInfo'
+import { usePreference } from '../../hooks/usePreference'
 
+// 文档站基址,与 docs-site 发布地址保持一致
+const DOCS_SITE_URL = 'https://sakullla.github.io/nginx-reverse-emby/'
+
+const router = useRouter()
 const { data: info, isLoading } = useSystemInfo()
+
+// Keep the key and shape in sync with OnboardingChecklist.vue
+// (`onboarding.checklist.v1`); reopening restarts the checklist so it stays
+// visible even after a completed run was auto-hidden.
+const onboardingChecklist = usePreference('onboarding.checklist.v1', {
+  started: false,
+  dismissed: false,
+  verifyDone: false,
+  httpsDone: false
+})
+
+function reopenOnboarding() {
+  onboardingChecklist.value = {
+    started: true,
+    dismissed: false,
+    verifyDone: false,
+    httpsDone: false
+  }
+  router.push('/')
+}
 
 function formatUptime(startedAt) {
   if (!startedAt) return '—'
