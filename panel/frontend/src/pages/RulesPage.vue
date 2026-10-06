@@ -901,6 +901,10 @@ async function confirmDelete() {
   .rule-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
 }
 
+@media (max-width: 640px) {
+  .rule-grid { grid-template-columns: 1fr; }
+}
+
 .rule-grid,
 .rules-page :deep(.rule-table) {
   animation: viewToggleIn 200ms var(--ease-default) both;

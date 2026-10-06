@@ -204,6 +204,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import BaseButton from '../components/base/BaseButton.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import CertificateCenterChrome from '../components/certs/CertificateCenterChrome.vue'
@@ -235,8 +236,12 @@ import { useAgents } from '../hooks/useAgents'
 import { recordPkiOperation, resetPkiOperationMemory, usePkiOperations } from '../hooks/usePkiOperations'
 import { messageStore } from '../stores/messages'
 
+const route = useRoute()
 const loading = ref(false)
 const pageError = ref('')
+// Mock demo data is only populated through the explicit ?preview=1 entry; a real
+// read failure surfaces an error block with retry instead of fake data.
+const isMockPreview = computed(() => route?.query?.preview === '1')
 const PKI_PAGE_SIZE = 5
 const overview = ref({})
 const authorities = ref([])
@@ -1011,9 +1016,14 @@ async function loadAll() {
     events.value = nextEvents
     mockAgents.value = []
   } catch (error) {
-    // API unavailable in local UI preview: fall back to rich mock data so layout can be reviewed.
-    applyMockData()
-    pageError.value = ''
+    if (isMockPreview) {
+      // Explicit preview entry (?preview=1): populate the layout demo data instead of an error.
+      applyMockData()
+      pageError.value = ''
+    } else {
+      mockAgents.value = []
+      pageError.value = error?.message || '内部 PKI 数据读取失败'
+    }
   } finally {
     loading.value = false
   }

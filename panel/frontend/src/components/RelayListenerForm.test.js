@@ -83,6 +83,20 @@ describe('RelayListenerForm transport behavior', () => {
     expect(wrapper.find('.settings-card').exists()).toBe(true)
   })
 
+  it('associates field errors with their inputs for screen readers', async () => {
+    const wrapper = mountForm()
+
+    await wrapper.get('input[type="number"]').setValue(7443)
+    await wrapper.get('input[placeholder="relay.example.com:7443"]').setValue('relay.example.com:7443')
+    await submit(wrapper)
+
+    const nameInput = wrapper.get('input[placeholder="例如 hk-edge-1"]')
+    expect(nameInput.attributes('aria-invalid')).toBe('true')
+    expect(nameInput.attributes('aria-describedby')).toBe('relay-name-error')
+    expect(wrapper.get('#relay-name-error').text()).toContain('请输入监听器名称')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+  })
+
   it('submits the default TLS/TCP transport with automatic trust', async () => {
     const wrapper = mountForm()
 

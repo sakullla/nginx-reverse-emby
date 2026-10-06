@@ -77,6 +77,17 @@ function mountModal(props = {}) {
 }
 
 describe('RuleDiagnosticModal', () => {
+  it('announces polled diagnostic state changes through a live region', async () => {
+    const wrapper = mountModal()
+    const state = wrapper.get('.diagnostic-modal__state')
+    expect(state.attributes('role')).toBe('status')
+    expect(state.attributes('aria-live')).toBe('polite')
+    expect(state.text()).toBe('已完成')
+
+    await wrapper.setProps({ task: { ...buildTask('http'), state: 'failed', error: 'agent offline' } })
+    expect(wrapper.get('.diagnostic-modal__state').text()).toBe('失败')
+  })
+
   it('renders HTTP-only adaptive throughput and performance fields in history details', async () => {
     const wrapper = mountModal()
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')

@@ -323,4 +323,47 @@ describe('L4RuleForm egress profile and relay path', () => {
     expect(options.join('\n')).not.toContain('tcp http proxy')
     expect(options.join('\n')).not.toContain('disabled socks')
   })
+
+  it('links the listen port error to the port input for screen readers', async () => {
+    const wrapper = mountForm()
+
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:9000')
+    await listenPortInput(wrapper).setValue('0')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const port = listenPortInput(wrapper)
+    expect(port.attributes('aria-invalid')).toBe('true')
+    expect(port.attributes('aria-describedby')).toBe('l4-listen-port-error')
+    expect(wrapper.get('#l4-listen-port-error').text()).toContain('监听端口必须在 1-65535 之间')
+  })
+
+  it('clears the per-field port error once the port is corrected', async () => {
+    const wrapper = mountForm()
+
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:9000')
+    await listenPortInput(wrapper).setValue('0')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await listenPortInput(wrapper).setValue('25565')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('#l4-listen-port-error').exists()).toBe(false)
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks invalid backends per row with an associated field error', async () => {
+    const wrapper = mountForm()
+
+    await listenPortInput(wrapper).setValue('25565')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const backend = wrapper.get('input[placeholder="IP:端口 或 域名:端口"]')
+    expect(backend.attributes('aria-invalid')).toBe('true')
+    expect(backend.attributes('aria-describedby')).toBe('l4-backend-0-error')
+    expect(wrapper.get('#l4-backend-0-error').text()).toContain('IP:端口')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+  })
 })

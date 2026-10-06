@@ -177,6 +177,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { sanitizePluginText } from '../../api/pluginSecurity'
 import {
   createRepositorySource,
@@ -193,8 +194,12 @@ import BaseListCard from '../../components/base/BaseListCard.vue'
 import BaseModal from '../../components/base/BaseModal.vue'
 import { messageStore } from '../../stores/messages'
 
+const route = useRoute()
 const sources = ref([])
 const selectedId = ref('')
+// Preview demo sources are only populated through the explicit ?preview=1 entry;
+// a real read failure surfaces an error block with retry instead of fake data.
+const isMockPreview = computed(() => route?.query?.preview === '1')
 const loading = ref(false)
 const saving = ref(false)
 const refreshingId = ref('')
@@ -218,8 +223,14 @@ async function loadSources(preferredId = selectedId.value) {
     selectedId.value = keep
     if (keep && inspectVisible.value) inspectVisible.value = true
   } catch (cause) {
-    applyPreviewSources()
-    loadError.value = ''
+    if (isMockPreview) {
+      // Explicit preview entry (?preview=1): populate demo sources instead of an error.
+      applyPreviewSources()
+      loadError.value = ''
+    } else {
+      sources.value = []
+      loadError.value = sanitizePluginText(cause?.message || '读取仓库源失败，请稍后重试')
+    }
   } finally {
     loading.value = false
   }

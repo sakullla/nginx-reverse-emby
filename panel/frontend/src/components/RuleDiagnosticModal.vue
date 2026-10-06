@@ -14,7 +14,13 @@
           <p class="diagnostic-modal__subtitle">{{ endpointLabel }}</p>
           <p v-if="agentLabel" class="diagnostic-modal__meta">节点: {{ agentLabel }}</p>
         </div>
-        <span class="diagnostic-modal__state" :class="`diagnostic-modal__state--${tone}`">
+        <span
+          class="diagnostic-modal__state"
+          :class="`diagnostic-modal__state--${tone}`"
+          role="status"
+          aria-live="polite"
+          data-test="diagnostic-state"
+        >
           {{ stateLabel }}
         </span>
       </div>

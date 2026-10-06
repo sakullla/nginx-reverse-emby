@@ -40,6 +40,16 @@
             <span>{{ name }}</span>
           </div>
 
+          <!-- 删除失败提示 -->
+          <div v-if="error" class="delete-dialog__error" role="alert">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>{{ error }}</span>
+          </div>
+
           <!-- 警告提示 -->
           <div class="delete-dialog__warning">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -84,7 +94,8 @@ const props = defineProps({
   message: { type: String, default: '确定要删除以下项目吗？' },
   name: { type: String, default: '' },
   confirmText: { type: String, default: '确认删除' },
-  loading: { type: Boolean, default: false }
+  loading: { type: Boolean, default: false },
+  error: { type: String, default: '' }
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
@@ -248,6 +259,26 @@ onUnmounted(() => {
 .delete-dialog__highlight svg {
   flex-shrink: 0;
   color: var(--color-text-tertiary);
+}
+
+/* 删除失败提示 */
+.delete-dialog__error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--color-danger-50);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  word-break: break-all;
+  text-align: left;
+}
+
+.delete-dialog__error svg {
+  flex-shrink: 0;
 }
 
 /* 警告提示 */

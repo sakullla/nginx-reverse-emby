@@ -137,6 +137,7 @@
       :name='deletingCert?.domain'
       confirm-text='确认删除'
       :loading='deleteCertificate.isPending?.value'
+      :error='deleteError'
       @confirm='confirmDelete'
       @cancel='deletingCert = null'
     />
@@ -189,6 +190,7 @@ import { fetchCertificates, fetchAllAgentsCertificates } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
+import { messageStore } from '../stores/messages'
 
 const route = useRoute()
 const router = useRouter()
@@ -418,6 +420,7 @@ const listTotal = computed(() => certsPage.value?.total ?? 0)
 const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
+const deleteError = ref('')
 
 // Search pre-fill / clear is handled by useListFilterUrl's key-level watcher
 // on route.query.search (replaces the old per-page watch; same semantics).
@@ -528,9 +531,11 @@ function startEdit(cert) {
 
 function startDelete(cert) {
   if (isSystemRelayCA(cert)) {
+    messageStore.error('系统 Relay CA 证书由面板自动管理，不能手动删除')
     return
   }
   deletingCert.value = cert
+  deleteError.value = ''
 }
 
 function closeForm() {
@@ -538,12 +543,18 @@ function closeForm() {
   editingCert.value = null
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   if (!deletingCert.value) return
   const target = requireMutationAgent(deletingCert.value, '删除')
   if (!target) return
-  deleteCertificate.mutate({ id: deletingCert.value.id, agentId: target })
-  deletingCert.value = null
+  try {
+    await deleteCertificate.mutateAsync({ id: deletingCert.value.id, agentId: target })
+    deleteError.value = ''
+    deletingCert.value = null
+  } catch (error) {
+    // Keep the dialog open with the failure reason; the hook also toasts.
+    deleteError.value = error?.message || '删除失败，请稍后重试'
+  }
 }
 
 </script>
@@ -563,6 +574,10 @@ function confirmDelete() {
 
 @media (min-width: 1280px) {
   .cert-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .cert-grid { grid-template-columns: 1fr; }
 }
 
 .cert-grid,

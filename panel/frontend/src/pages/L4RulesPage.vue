@@ -50,37 +50,49 @@
     />
 
     <!-- No agents available -->
-    <div v-if="!allAgents.length" class="rules-page__prompt">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
-      </svg>
-      <p>暂无可用节点</p>
-      <p class="rules-page__prompt-hint">请先加入节点后再管理 L4 规则</p>
-      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
-    </div>
+    <EmptyState
+      v-if="!allAgents.length"
+      title="暂无可用节点"
+      description="请先加入节点后再管理 L4 规则"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+        </svg>
+      </template>
+      <template #action>
+        <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
+      </template>
+    </EmptyState>
 
     <!-- Filter active, no rules -->
-    <div v-else-if="hasAgentFilter && !rules.length && !exactL4Match && !isLoading && !_crossSearching" class="rules-page__empty">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
-      </svg>
-      <template v-if="hasActiveFilters">
-        <p>没有匹配的 L4 规则</p>
+    <EmptyState
+      v-else-if="hasAgentFilter && !rules.length && !exactL4Match && !isLoading && !_crossSearching"
+      :title="hasActiveFilters ? '没有匹配的 L4 规则' : '暂无 L4 规则'"
+      :description="!hasActiveFilters && !canCreate ? '全部节点视图下请先选择具体节点再新建' : ''"
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+        </svg>
       </template>
-      <template v-else>
-        <p>暂无 L4 规则</p>
-        <button v-if="canCreate" class="btn btn-primary" @click="startCreate">添加第一条规则</button>
-        <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
+      <template v-if="!hasActiveFilters && canCreate" #action>
+        <button class="btn btn-primary" @click="startCreate">添加第一条规则</button>
       </template>
-    </div>
+    </EmptyState>
 
     <!-- No search results -->
-    <div v-if="hasAgentFilter && rules.length && !filteredRules.length && !_crossSearching" class="rules-page__prompt">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
-      <p>没有匹配的 L4 规则</p>
-    </div>
+    <EmptyState
+      v-if="hasAgentFilter && rules.length && !filteredRules.length && !_crossSearching"
+      title="没有匹配的 L4 规则"
+      description=""
+    >
+      <template #icon>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </template>
+    </EmptyState>
 
     <!-- Rule card grid -->
     <div v-show="hasAgentFilter && filteredRules.length && view === 'card'" class="rule-grid">
@@ -153,6 +165,7 @@
       :name="deletingRule?.listen_host + ':' + deletingRule?.listen_port"
       confirm-text="确认删除"
       :loading="deleteL4Rule.isPending?.value"
+      :error="deleteError"
       @confirm="confirmDelete"
       @cancel="deletingRule = null"
     />
@@ -215,6 +228,7 @@ import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vu
 import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import SkeletonList from '../components/base/SkeletonList.vue'
+import EmptyState from '../components/base/EmptyState.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
@@ -598,6 +612,7 @@ const editingRule = ref(null)
 const copyingRule = ref(null)
 const showCopyModal = ref(false)
 const deletingRule = ref(null)
+const deleteError = ref('')
 const showDiagnostic = ref(false)
 const diagnosticRule = ref(null)
 const diagnosticTaskId = ref('')
@@ -658,6 +673,7 @@ function handleCopy(rule) {
 
 function startDelete(rule) {
   deletingRule.value = rule
+  deleteError.value = ''
 }
 
 function closeForm() {
@@ -670,12 +686,18 @@ function closeCopy() {
   copyingRule.value = null
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   if (!deletingRule.value) return
   const target = requireMutationAgent(deletingRule.value, '删除')
   if (!target) return
-  deleteL4Rule.mutate({ id: deletingRule.value.id, agentId: target })
-  deletingRule.value = null
+  try {
+    await deleteL4Rule.mutateAsync({ id: deletingRule.value.id, agentId: target })
+    deleteError.value = ''
+    deletingRule.value = null
+  } catch (error) {
+    // Keep the dialog open with the failure reason; the hook also toasts.
+    deleteError.value = error?.message || '删除失败，请稍后重试'
+  }
 }
 
 async function openDiagnostic(rule) {
@@ -745,25 +767,6 @@ function closeDiagnostic() {
   font-variant-numeric: tabular-nums;
 }
 
-.rules-page__prompt,
-.rules-page__empty,
-.rules-page__loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 3.25rem 1.5rem;
-  color: var(--color-text-muted);
-  text-align: center;
-  animation: fadeIn 0.3s var(--ease-default) both;
-}
-
-.rules-page__prompt-hint {
-  font-size: 0.8125rem;
-  color: var(--color-text-tertiary);
-}
-
 @media (max-width: 640px) {
   .rules-page__header {
     flex-direction: column;
@@ -794,6 +797,10 @@ function closeDiagnostic() {
 
 @media (min-width: 1280px) {
   .rule-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .rule-grid { grid-template-columns: 1fr; }
 }
 
 .rule-grid,

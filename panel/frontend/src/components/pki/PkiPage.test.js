@@ -13,7 +13,6 @@ import agentPickerSource from '../AgentPicker.vue?raw'
 import baseModalSource from '../base/BaseModal.vue?raw'
 import createAgentPickerSource from '../common/CreateAgentPicker.vue?raw'
 import globalSearchSource from '../GlobalSearch.vue?raw'
-import versionsPageSource from '../../pages/VersionsPage.vue?raw'
 import indexDocumentSource from '../../../index.html?raw'
 
 const modalUtilitiesSource = readFileSync(resolve('src/styles/utilities.css'), 'utf8')
@@ -235,16 +234,14 @@ describe('PkiPage behavior boundary', () => {
     expect(declarationsFor(sharedModalStyles, '.modal-overlay', 'padding-bottom'))
       .toContain('max(clamp(0.75rem, 2vw, 1.5rem), env(safe-area-inset-bottom, 0px))')
 
+    // VersionsPage now mounts its policy form through BaseModal, whose mobile
+    // viewport contract is asserted above, so it no longer ships local modal CSS.
     const overlayContracts = [
       [globalSearchSource, 'GlobalSearch.vue', '.global-search-panel', undefined, ['80vh', '80dvh']],
       [agentPickerSource, 'AgentPicker.vue', '.agent-picker__dropdown', '(max-width: 640px)', ['70vh', '70dvh']],
       [createAgentPickerSource, 'CreateAgentPicker.vue', '.create-agent-picker', undefined, [
         'min(520px, calc(100vh - var(--space-8)))',
         'min(520px, calc(100dvh - var(--space-8)))'
-      ]],
-      [versionsPageSource, 'VersionsPage.vue', '.modal', undefined, [
-        'calc(100vh - var(--space-8))',
-        'calc(100dvh - var(--space-8))'
       ]]
     ]
     for (const [source, filename, selector, mediaQuery, expected] of overlayContracts) {

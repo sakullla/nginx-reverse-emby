@@ -65,14 +65,18 @@
             <input
               v-model.number="form.listen_port"
               class="input protocol-input-group__port"
+              :class="{ 'input--error': fieldErrors.listen_port }"
               type="number"
               min="1"
               max="65535"
               placeholder="25565"
-              @input="updateAutoTags"
+              :aria-invalid="fieldErrors.listen_port ? 'true' : undefined"
+              :aria-describedby="fieldErrors.listen_port ? 'l4-listen-port-error' : undefined"
+              @input="onListenPortInput"
             >
           </div>
-          <p class="field-hint">一般填 0.0.0.0 表示监听所有网卡</p>
+          <FieldError v-if="fieldErrors.listen_port" id="l4-listen-port-error">{{ fieldErrors.listen_port }}</FieldError>
+          <p v-else class="field-hint">一般填 0.0.0.0 表示监听所有网卡</p>
         </div>
 
         <div v-if="requiresBackends" class="form-group form-group--block">
@@ -110,13 +114,19 @@
                 </svg>
               </div>
 
-              <input
-                v-model="backend.address"
-                class="input backend-address-input"
-                :class="{ 'backend-address-input--flat': form.backends.length === 1 }"
-                placeholder="IP:端口 或 域名:端口"
-                @blur="parseBackendAddress(index)"
-              >
+              <div class="backend-item__main">
+                <input
+                  v-model="backend.address"
+                  class="input backend-address-input"
+                  :class="{ 'backend-address-input--flat': form.backends.length === 1, 'input--error': backendErrors[index] }"
+                  :aria-invalid="backendErrors[index] ? 'true' : undefined"
+                  :aria-describedby="backendErrors[index] ? `l4-backend-${index}-error` : undefined"
+                  placeholder="IP:端口 或 域名:端口"
+                  @input="backendErrors[index] = ''"
+                  @blur="parseBackendAddress(index)"
+                >
+                <FieldError v-if="backendErrors[index]" :id="`l4-backend-${index}-error`">{{ backendErrors[index] }}</FieldError>
+              </div>
 
               <button
                 v-if="form.backends.length > 1"
@@ -502,7 +512,18 @@ const form = ref(createFormState(props.initialData))
 const activeTab = ref('basic')
 const tagInput = ref('')
 const error = ref('')
+const fieldErrors = ref({ listen_port: '' })
+const backendErrors = ref([])
 const dragState = ref({ from: -1, to: -1 })
+
+function resetBackendErrors() {
+  backendErrors.value = form.value.backends.map(() => '')
+}
+
+function onListenPortInput() {
+  if (fieldErrors.value.listen_port) fieldErrors.value.listen_port = ''
+  updateAutoTags()
+}
 
 function onDragStart(index) {
   dragState.value = { from: index, to: index }
@@ -636,6 +657,8 @@ watch(() => props.initialData, (value) => {
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
+  fieldErrors.value = { listen_port: '' }
+  resetBackendErrors()
 }, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {
@@ -710,11 +733,13 @@ function handleStrategyChange() {
 
 function addBackend() {
   form.value.backends.push(createBackend())
+  backendErrors.value.push('')
 }
 
 function removeBackend(index) {
   if (form.value.backends.length > 1) {
     form.value.backends.splice(index, 1)
+    backendErrors.value.splice(index, 1)
   }
 }
 
@@ -846,10 +871,13 @@ function buildPayload() {
 
 async function handleSubmit() {
   error.value = ''
+  fieldErrors.value = { listen_port: '' }
+  backendErrors.value = form.value.backends.map(() => '')
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (requiresBackends.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
+    backendErrors.value = form.value.backends.map(() => '请填写有效的 IP:端口 或 域名:端口')
     activeTab.value = 'basic'
     return
   }
@@ -861,6 +889,7 @@ async function handleSubmit() {
   const listenPort = Number(form.value.listen_port)
   if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
     error.value = '监听端口必须在 1-65535 之间'
+    fieldErrors.value.listen_port = '监听端口必须在 1-65535 之间'
     activeTab.value = 'basic'
     return
   }
@@ -1311,6 +1340,10 @@ async function handleSubmit() {
   box-shadow: var(--shadow-focus);
 }
 
+.input--error {
+  border-color: var(--color-danger);
+}
+
 .input::placeholder {
   color: var(--color-text-muted);
 }
@@ -1472,6 +1505,14 @@ async function handleSubmit() {
 
 .backend-drag-handle:active {
   cursor: grabbing;
+}
+
+.backend-item__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .backend-address-input {
