@@ -46,9 +46,33 @@ function dropOlderSingleAgentOperations(appliedOperation) {
     const tracked = singleAgentRevision(state.byId[id])
     if (!tracked || tracked.agentID !== applied.agentID || tracked.revision >= applied.revision) return
     delete state.byId[id]
+    refreshSequence.delete(id)
     removed.add(id)
   })
   if (removed.size > 0) state.order = state.order.filter((id) => !removed.has(id))
+}
+
+export function reconcileAppliedAgentRevisions(agents = []) {
+  const applied = new Map(agents.map((agent) => [String(agent.id || ''), Number(agent.current_revision)]))
+  const removed = new Set()
+  for (const id of state.order) {
+    const operation = state.byId[id]
+    const targets = operation?.agents?.length ? operation.agents : [operation]
+    const superseded = targets.every((target) => {
+      const agentID = String(target?.agent_id || operation?.agent_id || '')
+      const revision = Number(target?.desired_revision || operation?.desired_revision)
+      const current = applied.get(agentID)
+      return Number.isSafeInteger(revision) && revision > 0 && Number.isSafeInteger(current) && current > revision
+    })
+    if (!superseded) continue
+    delete state.byId[id]
+    refreshSequence.delete(id)
+    removed.add(id)
+  }
+  if (removed.size) {
+    state.order = state.order.filter((id) => !removed.has(id))
+    persist()
+  }
 }
 
 export function recordAcceptedOperation(operation) {
@@ -177,6 +201,7 @@ const operationsStore = {
   retry: retryOperation,
   rollback: rollbackOperation,
   dismiss: dismissOperation,
+  reconcileAppliedAgents: reconcileAppliedAgentRevisions,
   restore: restoreOperations,
   reset: resetOperations
 }

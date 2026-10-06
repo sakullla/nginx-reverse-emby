@@ -119,6 +119,32 @@ describe('operation store', () => {
     expect(JSON.parse(localStorage.getItem('nre.operations.v1')).map((operation) => operation.operation_id)).toEqual(['op-group'])
   })
 
+  it('only supersedes a multi-agent failure after every target has applied a newer revision', () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'multi', apply_status: 'degraded',
+      agents: [{ agent_id: 'a', desired_revision: 4 }, { agent_id: 'b', desired_revision: 6 }]
+    })
+    storeModule.reconcileAppliedAgentRevisions([{ id: 'a', current_revision: 5 }, { id: 'b', current_revision: 6, desired_revision: 9 }])
+    expect(storeModule.useOperationsStore().get('multi')).not.toBeNull()
+    storeModule.reconcileAppliedAgentRevisions([{ id: 'a', current_revision: 5 }, { id: 'b', current_revision: 7 }])
+    expect(storeModule.useOperationsStore().get('multi')).toBeNull()
+  })
+
+  it('does not resurrect a superseded operation from an in-flight status request', async () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'old', agent_id: 'local', desired_revision: 4,
+      status_url: '/panel-api/operations/old', apply_status: 'applying'
+    })
+    let resolve
+    api.fetch.mockReturnValue(new Promise((done) => { resolve = done }))
+    const refresh = storeModule.refreshOperation('old')
+    storeModule.reconcileAppliedAgentRevisions([{ id: 'local', current_revision: 25 }])
+    resolve({ operation_id: 'old', agent_id: 'local', desired_revision: 4, apply_status: 'failed' })
+    await refresh
+    expect(storeModule.useOperationsStore().get('old')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1'))).toEqual([])
+  })
+
   it('recovers from stream loss by querying the persisted status URL', async () => {
     storeModule.recordAcceptedOperation({
       operation_id: 'op-2', status_url: '/panel-api/operations/op-2', apply_status: 'pending'

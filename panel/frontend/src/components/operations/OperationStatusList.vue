@@ -14,7 +14,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useAgents } from '../../hooks/useAgents'
 import { useOperationsStore } from '../../stores/operations'
 import { messageStore } from '../../stores/messages'
@@ -27,6 +27,9 @@ const props = defineProps({
 const store = useOperationsStore()
 const operations = store.operations
 const { data: agentsData } = useAgents()
+watch([() => agentsData.value, operations], ([agents]) => {
+  store.reconcileAppliedAgents(agents || [])
+}, { immediate: true, deep: true })
 const agentNameById = computed(() => {
   const names = new Map()
   for (const agent of agentsData.value || []) {

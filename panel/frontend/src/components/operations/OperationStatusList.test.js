@@ -87,6 +87,22 @@ describe('OperationStatusList', () => {
     wrapper.unmount()
   })
 
+  it('removes a cached failure after another client applies a newer revision', async () => {
+    recordAcceptedOperation({ operation_id: 'old-failure', agent_id: 'local', desired_revision: 4, apply_status: 'failed' })
+    recordAcceptedOperation({ operation_id: 'current-failure', agent_id: 'edge-a', desired_revision: 8, apply_status: 'failed' })
+    hooks.agentsData.value = [
+      { id: 'local', current_revision: 25, desired_revision: 25 },
+      { id: 'edge-a', current_revision: 7, desired_revision: 9 }
+    ]
+    const wrapper = mount(OperationStatusList)
+    await nextTick()
+    expect(wrapper.findAll('.operation-status')).toHaveLength(1)
+    expect(wrapper.text()).toContain('edge-a')
+    expect(useOperationsStore().get('old-failure')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1')).map((item) => item.operation_id)).toEqual(['current-failure'])
+    wrapper.unmount()
+  })
+
   it('only renders operations for the selected agent', async () => {
     recordAcceptedOperation({
       operation_id: 'op-edge-a',
