@@ -95,7 +95,7 @@
 .btn:active,
 .btn-primary:active,
 .btn-secondary:active {
-  animation: buttonPress 0.15s var(--ease-default);
+  animation: buttonPress var(--duration-fast) var(--ease-default);
 }
 
 /* Card entrance animation */

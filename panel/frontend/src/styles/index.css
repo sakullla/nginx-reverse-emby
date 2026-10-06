@@ -60,8 +60,8 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
 
 /* Scrollbar — clean minimal */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: var(--space-2);
+  height: var(--space-2);
 }
 
 ::-webkit-scrollbar-track {
@@ -85,7 +85,7 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
 
 /* Focus visible for keyboard nav */
 :focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: var(--focus-outline-width) solid var(--color-primary);
   outline-offset: 2px;
 }
 

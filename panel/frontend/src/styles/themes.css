@@ -71,7 +71,77 @@
   --sidebar-width: 220px;
   --header-height: 56px;
 
-  /* Dashboard metric tiles — per-theme overrides below */
+  /* Border widths & focus outline */
+  --border-width-thin: 1px;
+  --border-width-thick: 1.5px;
+  --focus-outline-width: 2px;
+
+  /* Shadow system — shared geometry lives here; themes only tune the
+     color/intensity params below (no per-theme shadow geometry).
+     --shadow-color is an RGB triplet consumed as rgb(var(--shadow-color) / <alpha>). */
+  --shadow-color: 15 23 42;
+  --shadow-alpha-xs: 0.04;
+  --shadow-alpha-sm: 0.06;
+  --shadow-alpha-sm-2: 0.04;
+  --shadow-alpha-md: 0.06;
+  --shadow-alpha-md-2: 0.04;
+  --shadow-alpha-lg: 0.07;
+  --shadow-alpha-lg-2: 0.04;
+  --shadow-alpha-xl: 0.08;
+  --shadow-alpha-xl-2: 0.04;
+  --shadow-alpha-2xl: 0.10;
+  --shadow-alpha-inner: 0.04;
+  --shadow-focus-color: var(--color-primary-subtle);
+
+  --shadow-xs: 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-xs));
+  --shadow-sm:
+    0 1px 3px rgb(var(--shadow-color) / var(--shadow-alpha-sm)),
+    0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-sm-2));
+  --shadow-md:
+    0 4px 6px rgb(var(--shadow-color) / var(--shadow-alpha-md)),
+    0 2px 4px rgb(var(--shadow-color) / var(--shadow-alpha-md-2));
+  --shadow-lg:
+    0 10px 15px rgb(var(--shadow-color) / var(--shadow-alpha-lg)),
+    0 4px 6px rgb(var(--shadow-color) / var(--shadow-alpha-lg-2));
+  --shadow-xl:
+    0 20px 25px rgb(var(--shadow-color) / var(--shadow-alpha-xl)),
+    0 8px 10px rgb(var(--shadow-color) / var(--shadow-alpha-xl-2));
+  --shadow-2xl: 0 24px 48px rgb(var(--shadow-color) / var(--shadow-alpha-2xl));
+  --shadow-focus: 0 0 0 3px var(--shadow-focus-color);
+  --shadow-focus-danger: 0 0 0 3px var(--color-danger-50);
+  --shadow-inner: inset 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-inner));
+
+  /* Modal overlay scrim — themes may tint or darken */
+  --color-overlay: rgb(15 23 42 / 0.42);
+
+  /* Theme identity tokens — neutral defaults derived from generic tokens so no
+     consumer fallback chains are needed; sakura themes override below. */
+  --color-bg-chrome: var(--color-bg-surface);
+  --color-bg-sidebar: var(--color-bg-surface);
+  --color-bg-panel: var(--color-bg-surface);
+  --color-bg-atmosphere: var(--color-bg-canvas);
+  --color-brand-bg: var(--color-primary);
+  --color-brand-ink: var(--color-text-inverse);
+  --color-badge-bg: var(--color-primary-subtle);
+  --color-badge-ink: var(--color-primary);
+  --color-nav-selected: var(--color-primary-subtle);
+  --color-button-bg:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary) 92%, white) 0%,
+      var(--color-primary) 100%
+    );
+  --color-button-hover-bg:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 90%, white) 0%,
+      var(--color-primary-hover, var(--color-primary)) 100%
+    );
+  --chrome-blur: 0px;
+  --sakura-decoration-display: none;
+  --sakura-decoration-opacity: 0;
+
+  /* Dashboard metric tiles — colors per theme below; shadow fixed to one shared level */
   --color-dashboard-tile-bg: var(--color-bg-subtle);
   --color-dashboard-tile-border: var(--color-border-default);
   --color-dashboard-tile-header-bg: rgba(255, 255, 255, 0.25);
@@ -89,6 +159,8 @@
    low-saturation green tints so content, not the wash, carries the theme.
    ============================================= */
 [data-theme="fresh-green"] {
+  color-scheme: light;
+
   --color-primary: #059669;
   --color-primary-hover: #047857;
   --color-primary-active: #065f46;
@@ -138,16 +210,17 @@
   --color-dashboard-tile-bg: #f0f7f3;
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.05);
-  --color-dashboard-tile-shadow: var(--shadow-xs);
 
-  --shadow-xs: 0 1px 2px rgba(18, 32, 25, 0.04);
-  --shadow-sm: 0 1px 3px rgba(18, 32, 25, 0.05), 0 1px 2px rgba(18, 32, 25, 0.03);
-  --shadow-md: 0 4px 6px rgba(18, 32, 25, 0.05), 0 2px 4px rgba(18, 32, 25, 0.03);
-  --shadow-lg: 0 10px 18px rgba(18, 32, 25, 0.07), 0 4px 6px rgba(18, 32, 25, 0.03);
-  --shadow-xl: 0 20px 25px rgba(18, 32, 25, 0.08), 0 8px 10px rgba(18, 32, 25, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(18, 32, 25, 0.10);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(18, 32, 25, 0.04);
+  /* Shadow quality params (geometry lives in the shared block) */
+  --shadow-color: 18 32 25;
+  --shadow-alpha-sm: 0.05;
+  --shadow-alpha-sm-2: 0.03;
+  --shadow-alpha-md: 0.05;
+  --shadow-alpha-md-2: 0.03;
+  --shadow-alpha-lg-2: 0.03;
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(18 32 25 / 0.42);
 }
 
 /* =============================================
@@ -206,21 +279,27 @@
   --color-dashboard-tile-bg: #f6f6fb;
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: #f0edf8;
-  --color-dashboard-tile-shadow: none;
 
-  --shadow-xs: 0 1px 2px rgba(68, 31, 51, 0.03);
-  --shadow-sm: 0 2px 6px rgba(68, 31, 51, 0.04);
-  --shadow-md: 0 4px 14px rgba(68, 31, 51, 0.06);
-  --shadow-lg: 0 8px 28px rgba(68, 31, 51, 0.08);
-  --shadow-xl: 0 16px 40px rgba(68, 31, 51, 0.10);
-  --shadow-2xl: 0 24px 56px rgba(68, 31, 51, 0.13);
-  --shadow-focus: 0 0 0 3px rgba(184, 63, 115, 0.16);
-  --shadow-inner: inset 0 1px 2px rgba(68, 31, 51, 0.04);
+  /* Shadow quality params — soft petal-light, single-layer look
+     (second-layer alphas at 0; slightly raised alphas compensate the tighter
+     shared geometry versus the former diffuse per-theme shadows). */
+  --shadow-color: 68 31 51;
+  --shadow-alpha-xs: 0.03;
+  --shadow-alpha-sm: 0.05;
+  --shadow-alpha-sm-2: 0;
+  --shadow-alpha-md: 0.07;
+  --shadow-alpha-md-2: 0;
+  --shadow-alpha-lg: 0.10;
+  --shadow-alpha-lg-2: 0;
+  --shadow-alpha-xl: 0.12;
+  --shadow-alpha-xl-2: 0;
+  --shadow-alpha-2xl: 0.15;
+  --shadow-focus-color: rgba(184, 63, 115, 0.16);
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(41 43 66 / 0.40);
 
   /* Sakura visual identity: translucent chrome, petal light and lilac ink. */
-  --radius-xl: 0.875rem;
-  --radius-2xl: 1rem;
-  --radius-3xl: 1.25rem;
   --color-bg-chrome: rgba(255, 255, 255, 0.86);
   --color-bg-sidebar: linear-gradient(180deg, #ffffff 0%, #faf8ff 100%);
   --color-bg-panel: linear-gradient(145deg, #ffffff 65%, #faf9ff);
@@ -296,21 +375,26 @@
   --color-dashboard-tile-bg: #22263b;
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: #2a2841;
-  --color-dashboard-tile-shadow: none;
 
-  --shadow-xs: 0 1px 2px rgba(8, 5, 12, 0.16);
-  --shadow-sm: 0 2px 6px rgba(8, 5, 12, 0.20);
-  --shadow-md: 0 4px 14px rgba(8, 5, 12, 0.24);
-  --shadow-lg: 0 8px 28px rgba(8, 5, 12, 0.28);
-  --shadow-xl: 0 16px 40px rgba(8, 5, 12, 0.32);
-  --shadow-2xl: 0 24px 56px rgba(8, 5, 12, 0.40);
-  --shadow-focus: 0 0 0 3px rgba(239, 172, 207, 0.18);
-  --shadow-inner: inset 0 1px 2px rgba(8, 5, 12, 0.20);
+  /* Shadow quality params — same single-layer sakura look, deep indigo ink */
+  --shadow-color: 8 5 12;
+  --shadow-alpha-xs: 0.16;
+  --shadow-alpha-sm: 0.22;
+  --shadow-alpha-sm-2: 0;
+  --shadow-alpha-md: 0.26;
+  --shadow-alpha-md-2: 0;
+  --shadow-alpha-lg: 0.32;
+  --shadow-alpha-lg-2: 0;
+  --shadow-alpha-xl: 0.36;
+  --shadow-alpha-xl-2: 0;
+  --shadow-alpha-2xl: 0.44;
+  --shadow-alpha-inner: 0.20;
+  --shadow-focus-color: rgba(239, 172, 207, 0.18);
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(8 5 12 / 0.55);
 
   /* The same sakura identity under indigo moonlight. */
-  --radius-xl: 0.875rem;
-  --radius-2xl: 1rem;
-  --radius-3xl: 1.25rem;
   --color-bg-chrome: rgba(27, 30, 49, 0.88);
   --color-bg-sidebar: linear-gradient(180deg, #1b1e31 0%, #1d1d33 100%);
   --color-bg-panel: linear-gradient(145deg, #20243a, #1b1e31 70%);
@@ -334,6 +418,8 @@
    Theme: 夜猫 (neko-dark) — Deep blue dark
    ============================================= */
 [data-theme="neko-dark"] {
+  color-scheme: dark;
+
   --color-primary: #60a5fa;
   --color-primary-hover: #93c5fd;
   --color-primary-active: #3b82f6;
@@ -350,7 +436,8 @@
   --color-text-primary: #f1f5f9;
   --color-text-secondary: #94a3b8;
   --color-text-tertiary: #8b9cb3;
-  --color-text-muted: #8b9cb3;
+  /* Alias kept for consumers of the old name — same canonical value. */
+  --color-text-muted: var(--color-text-tertiary);
   --color-text-inverse: #0f172a;
 
   --color-bg-canvas: #0f172a;
@@ -383,16 +470,23 @@
   --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(96, 165, 250, 0.08);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.40), 0 4px 6px rgba(0, 0, 0, 0.30);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.45), 0 8px 10px rgba(0, 0, 0, 0.30);
-  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.55);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.20);
+  /* Shadow quality params — deep dark, high opacity (geometry in shared block) */
+  --shadow-color: 0 0 0;
+  --shadow-alpha-xs: 0.25;
+  --shadow-alpha-sm: 0.30;
+  --shadow-alpha-sm-2: 0.20;
+  --shadow-alpha-md: 0.35;
+  --shadow-alpha-md-2: 0.25;
+  --shadow-alpha-lg: 0.40;
+  --shadow-alpha-lg-2: 0.30;
+  --shadow-alpha-xl: 0.45;
+  --shadow-alpha-xl-2: 0.30;
+  --shadow-alpha-2xl: 0.55;
+  --shadow-alpha-inner: 0.20;
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(2 6 23 / 0.60);
 }
 
 /* =============================================
@@ -400,6 +494,8 @@
    Primary: Indigo 600 — calm, trustworthy, modern
    ============================================= */
 [data-theme="business"] {
+  color-scheme: light;
+
   /* Primary: Indigo — the gold standard for SaaS (Stripe, Linear, Vercel) */
   --color-primary: #4f46e5;
   --color-primary-hover: #4338ca;
@@ -419,7 +515,8 @@
   --color-text-primary: #0f172a;
   --color-text-secondary: #475569;
   --color-text-tertiary: #64748b;
-  --color-text-muted: #64748b;
+  /* Alias kept for consumers of the old name — same canonical value. */
+  --color-text-muted: var(--color-text-tertiary);
   --color-text-inverse: #ffffff;
 
   /* Background: Cool gray — clean, unobtrusive canvas */
@@ -455,15 +552,9 @@
   --color-dashboard-tile-bg: #f1f5f9;
   --color-dashboard-tile-border: var(--color-border-default);
   --color-dashboard-tile-header-bg: rgba(79, 70, 229, 0.04);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
 
-  /* Shadows: slate-tinted for depth cohesion */
-  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 6px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
-  --shadow-lg: 0 10px 15px rgba(15, 23, 42, 0.07), 0 4px 6px rgba(15, 23, 42, 0.04);
-  --shadow-xl: 0 20px 25px rgba(15, 23, 42, 0.08), 0 8px 10px rgba(15, 23, 42, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(15, 23, 42, 0.10);
-  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+  /* Shadow quality params match the shared (slate-tinted) defaults exactly. */
+
+  /* Modal overlay scrim */
+  --color-overlay: rgb(15 23 42 / 0.42);
 }
