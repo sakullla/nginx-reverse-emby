@@ -1,12 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 import Sidebar from './Sidebar.vue'
 
 const pluginRoutes = ref([])
+const route = reactive({ name: 'dashboard', path: '/' })
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ name: 'dashboard', path: '/' }),
+  useRoute: () => route,
   RouterLink: { props: ['to'], template: '<a :href="typeof to === \'string\' ? to : to.path"><slot /></a>' }
 }))
 
@@ -91,6 +92,65 @@ describe('Sidebar plugin UI routes', () => {
     expect(link).toBeTruthy()
     expect(link.text()).toContain('域名 Token')
     expect(sidebar.find('[data-testid="mapping-create"]').exists()).toBe(false)
+    sidebar.unmount()
+  })
+})
+
+describe('Sidebar navigation semantics', () => {
+  afterEach(() => {
+    route.name = 'dashboard'
+    route.path = '/'
+    localStorage.removeItem('sidebar_collapsed')
+    localStorage.removeItem('sidebar_open_groups')
+  })
+
+  it('links version policy under the traffic management group', () => {
+    pluginRoutes.value = []
+    const sidebar = mount(Sidebar)
+    const trafficGroup = sidebar.findAll('.nav-group')
+      .find((group) => group.find('.nav-group__header').text().includes('流量管理'))
+    expect(trafficGroup).toBeTruthy()
+    const versionLink = trafficGroup.findAll('a').find((a) => a.attributes('href') === '/versions')
+    expect(versionLink).toBeTruthy()
+    expect(versionLink.text()).toContain('版本策略')
+    sidebar.unmount()
+  })
+
+  it('marks the active top-level item with aria-current', async () => {
+    route.name = 'settings'
+    route.path = '/settings'
+    const sidebar = mount(Sidebar)
+    await flushPromises()
+    const settingsLink = sidebar.findAll('a.sidebar__nav-item')
+      .find((a) => a.attributes('href') === '/settings')
+    expect(settingsLink.attributes('aria-current')).toBe('page')
+    const homeLink = sidebar.findAll('a.sidebar__nav-item')
+      .find((a) => a.attributes('href') === '/')
+    expect(homeLink.attributes('aria-current')).toBeUndefined()
+    sidebar.unmount()
+  })
+
+  it('exposes aria-expanded on group headers and toggles it', async () => {
+    const sidebar = mount(Sidebar)
+    const header = sidebar.findAll('button.nav-group__header')
+      .find((button) => button.text().includes('流量管理'))
+    expect(header.attributes('aria-expanded')).toBe('true')
+    await header.trigger('click')
+    expect(header.attributes('aria-expanded')).toBe('false')
+    sidebar.unmount()
+  })
+
+  it('renders collapsed group icons with button semantics', () => {
+    localStorage.setItem('sidebar_collapsed', 'true')
+    const sidebar = mount(Sidebar)
+    const collapsedButton = sidebar.findAll('button.sidebar__nav-icon')
+      .find((button) => button.attributes('aria-label') === '流量管理')
+    expect(collapsedButton).toBeTruthy()
+    expect(collapsedButton.attributes('tabindex')).toBeUndefined()
+    const versionLink = sidebar.findAll('a.sidebar__hover-popup__item')
+      .find((a) => a.attributes('href') === '/versions')
+    expect(versionLink).toBeTruthy()
+    expect(versionLink.text()).toContain('版本策略')
     sidebar.unmount()
   })
 })

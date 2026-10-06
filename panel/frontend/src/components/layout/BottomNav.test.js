@@ -79,3 +79,41 @@ describe('mobile navigation', () => {
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
   })
 })
+
+describe('mobile navigation state semantics', () => {
+  it('marks the active main item with aria-current', async () => {
+    render()
+    route.path = '/rules'
+    route.fullPath = '/rules'
+    await flushPromises()
+    expect(wrapper.get('a[href="/rules"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('a[href="/"]').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.get('a[href="/certs"]').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.get('a[href="/agents"]').attributes('aria-current')).toBeUndefined()
+  })
+
+  it('keeps /pki active on the certificate item', async () => {
+    render()
+    route.path = '/pki'
+    route.fullPath = '/pki'
+    await flushPromises()
+    expect(wrapper.get('a[href="/certs"]').attributes('aria-current')).toBe('page')
+  })
+
+  it('offers version policy in the more menu with current state', async () => {
+    const trigger = render()
+    await trigger.trigger('click')
+    await flushPromises()
+    const versionLink = wrapper.get('a[href="/versions"]')
+    expect(versionLink.text()).toContain('版本策略')
+    expect(versionLink.attributes('aria-current')).toBeUndefined()
+    route.path = '/versions'
+    route.fullPath = '/versions'
+    await flushPromises()
+    // the menu closes on route change; reopen to inspect the updated state
+    await trigger.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('a[href="/versions"]').attributes('aria-current')).toBe('page')
+    expect(trigger.attributes('class')).toContain('active')
+  })
+})

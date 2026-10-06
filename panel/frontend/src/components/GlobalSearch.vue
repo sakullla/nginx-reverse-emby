@@ -35,6 +35,9 @@
         </div>
 
         <div class="global-search-body">
+          <div v-if="hasFetchFailures" class="global-search-partial" role="status">
+            部分节点请求失败，结果可能不完整
+          </div>
           <div v-if="isLoading" class="global-search-state">
             <div class="spinner"></div>
             <span>搜索中...</span>
@@ -53,7 +56,7 @@
           </div>
           <div v-else id="global-search-results" class="global-search-results" role="listbox">
             <div v-for="group in results" :key="group.agentId" class="result-group">
-              <div class="result-group__header" @click="group.agentId ? navigateToResult(group.agentId) : null">
+              <div class="result-group__header" @click="navigateToResult(group)">
                 <div class="result-group__dot" :class="group.online ? 'result-group__dot--online' : 'result-group__dot--offline'"></div>
                 <span class="result-group__name">{{ group.agentName }}</span>
                 <span class="result-group__count">{{ group.items.length }} 条</span>
@@ -127,6 +130,7 @@ const isLoading = ref(false)
 const searchDebounceTimer = ref(null)
 const searchId = ref(0)
 const activeIndex = ref(-1)
+const hasFetchFailures = ref(false)
 
 // Flattened [agentId, item] pairs in display order — the keyboard cursor moves
 // through this list.
@@ -227,6 +231,7 @@ watch(query, (val) => {
 async function doSearch(val) {
   const currentSearchId = ++searchId.value
   isLoading.value = true
+  hasFetchFailures.value = false
   try {
     const agents = agentsData.value || []
     if (!agents.length) {
@@ -234,13 +239,15 @@ async function doSearch(val) {
       return
     }
     const agentIds = agents.map(a => a.id)
-    const [rulesResults, l4Results, certsResults, relayResults] = await Promise.all([
-      api.fetchAllAgentsRules(agentIds).catch(() => []),
-      api.fetchAllAgentsL4Rules(agentIds).catch(() => []),
-      api.fetchAllAgentsCertificates(agentIds).catch(() => []),
-      api.fetchAllAgentsRelayListeners(agentIds).catch(() => [])
+    const settled = await Promise.all([
+      api.fetchAllAgentsRules(agentIds).then((value) => ({ ok: true, value }), () => ({ ok: false })),
+      api.fetchAllAgentsL4Rules(agentIds).then((value) => ({ ok: true, value }), () => ({ ok: false })),
+      api.fetchAllAgentsCertificates(agentIds).then((value) => ({ ok: true, value }), () => ({ ok: false })),
+      api.fetchAllAgentsRelayListeners(agentIds).then((value) => ({ ok: true, value }), () => ({ ok: false }))
     ])
     if (currentSearchId !== searchId.value) return
+    hasFetchFailures.value = settled.some((entry) => !entry.ok)
+    const [rulesResults, l4Results, certsResults, relayResults] = settled.map((entry) => (entry.ok ? entry.value : []))
 
     const rulesByAgent = Object.fromEntries(rulesResults.map(r => [r.agentId, r.rules || []]))
     const l4ByAgent = Object.fromEntries(l4Results.map(r => [r.agentId, r.l4Rules || []]))
@@ -336,9 +343,14 @@ function close() {
   query.value = ''
 }
 
-function navigateToResult(agentId) {
-  // Navigate to rules page for this agent; page will use ?search= to pre-fill
-  router.push({ path: '/rules', query: { agentId, search: query.value } })
+function navigateToResult(group) {
+  // Route by group type: agent groups go to the agent list, per-agent groups
+  // keep the rules page pre-fill behavior.
+  if (group.type === 'agent') {
+    router.push('/agents')
+  } else {
+    router.push({ path: '/rules', query: { agentId: group.agentId, search: query.value } })
+  }
   close()
 }
 
@@ -395,6 +407,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .global-search-input::placeholder { color: var(--color-text-muted); }
 .clear-btn { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: var(--color-bg-hover); border-radius: 50%; color: var(--color-text-secondary); cursor: pointer; }
 .global-search-body { flex: 1; overflow-y: auto; padding: var(--space-4); }
+.global-search-partial { display: flex; align-items: center; gap: var(--space-1-5); margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width-thin) solid var(--color-warning-subtle); border-radius: var(--radius-lg); background: var(--color-warning-subtle); color: var(--color-warning); font-size: var(--text-xs); }
 .global-search-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); padding: var(--space-12) var(--space-4); color: var(--color-text-muted); font-size: var(--text-sm); text-align: center; }
 .global-search-results { display: flex; flex-direction: column; gap: var(--space-4); }
 .result-group__header { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }

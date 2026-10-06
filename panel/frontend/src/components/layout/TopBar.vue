@@ -32,6 +32,7 @@
 
       <div ref="accountMenuRef" class="topbar__account">
         <button
+          ref="accountTriggerRef"
           type="button"
           class="topbar__action"
           :class="{ 'topbar__action--open': accountMenuOpen }"
@@ -41,6 +42,8 @@
           :aria-expanded="accountMenuOpen ? 'true' : 'false'"
           aria-controls="topbar-account-menu"
           @click="toggleAccountMenu"
+          @keydown.arrow-down.prevent="openAccountMenu(false)"
+          @keydown.arrow-up.prevent="openAccountMenu(true)"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
@@ -55,6 +58,7 @@
             class="topbar__menu"
             role="menu"
             aria-label="账号"
+            @keydown="onMenuKeydown"
           >
             <div v-if="accountLabel" class="topbar__menu-identity" role="none">
               <span class="topbar__menu-identity-label">当前账号</span>
@@ -82,7 +86,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { logout } from '../../api/access'
 import { useAccessControl } from '../../context/useAccessControl'
@@ -93,6 +97,7 @@ const router = useRouter()
 const { actor } = useAccessControl()
 
 const accountMenuRef = ref(null)
+const accountTriggerRef = ref(null)
 const accountMenuOpen = ref(false)
 
 const accountLabel = computed(() => {
@@ -104,8 +109,38 @@ function toggleAccountMenu() {
   accountMenuOpen.value = !accountMenuOpen.value
 }
 
-function closeAccountMenu() {
+function closeAccountMenu(restoreFocus = false) {
   accountMenuOpen.value = false
+  if (restoreFocus) accountTriggerRef.value?.focus()
+}
+
+function menuItems() {
+  return [...(accountMenuRef.value?.querySelectorAll('[role="menuitem"]') || [])]
+}
+
+async function openAccountMenu(focusLast = false) {
+  accountMenuOpen.value = true
+  await nextTick()
+  const items = menuItems()
+  items[focusLast ? items.length - 1 : 0]?.focus()
+}
+
+function onMenuKeydown(event) {
+  if (!accountMenuOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeAccountMenu(true)
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const items = menuItems()
+  if (!items.length) return
+  const current = items.indexOf(document.activeElement)
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+    : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+  items[index]?.focus()
 }
 
 function onDocumentClick(event) {

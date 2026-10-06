@@ -1,26 +1,26 @@
 <template>
   <nav class="bottom-nav" aria-label="主导航">
-    <RouterLink to="/" class="nav-item" :class="{ active: route.path === '/' }" aria-label="首页">
+    <RouterLink to="/" class="nav-item" :class="{ active: route.path === '/' }" aria-label="首页" :aria-current="route.path === '/' ? 'page' : undefined">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
       </svg>
       <span>首页</span>
     </RouterLink>
-    <RouterLink to="/rules" class="nav-item" :class="{ active: route.path.startsWith('/rules') }" aria-label="HTTP规则">
+    <RouterLink to="/rules" class="nav-item" :class="{ active: route.path.startsWith('/rules') }" aria-label="HTTP规则" :aria-current="route.path.startsWith('/rules') ? 'page' : undefined">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
       <span>HTTP规则</span>
     </RouterLink>
-    <RouterLink to="/certs" class="nav-item" :class="{ active: route.path === '/certs' || route.path === '/pki' }" aria-label="证书中心">
+    <RouterLink to="/certs" class="nav-item" :class="{ active: route.path === '/certs' || route.path === '/pki' }" aria-label="证书中心" :aria-current="route.path === '/certs' || route.path === '/pki' ? 'page' : undefined">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
       </svg>
       <span>证书中心</span>
     </RouterLink>
-    <RouterLink to="/agents" class="nav-item" :class="{ active: route.path.startsWith('/agents') }" aria-label="节点管理">
+    <RouterLink to="/agents" class="nav-item" :class="{ active: route.path.startsWith('/agents') }" aria-label="节点管理" :aria-current="route.path.startsWith('/agents') ? 'page' : undefined">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/>
       </svg>
@@ -57,6 +57,12 @@
               <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
             </svg>
             L4 规则
+          </RouterLink>
+          <RouterLink to="/versions" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/versions') }" :aria-current="isMoreItemActive('/versions') ? 'page' : undefined" @click.stop="moreOpen = false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M12 2l10 5-10 5L2 7z"/><path d="M2 12l10 5 10-5"/><path d="M2 17l10 5 10-5"/>
+            </svg>
+            版本策略
           </RouterLink>
           <RouterLink to="/relay-listeners" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/relay-listeners') }" :aria-current="isMoreItemActive('/relay-listeners') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -120,6 +126,7 @@ function isMoreItemActive(to) {
 
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
+  route.path.startsWith('/versions') ||
   route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/plugins') ||
   route.path.startsWith('/settings')
