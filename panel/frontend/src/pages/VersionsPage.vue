@@ -477,7 +477,7 @@ function confirmDelete() {
 }
 
 .btn-danger:hover {
-  background: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 92%, black);
 }
 
 .btn-sm {

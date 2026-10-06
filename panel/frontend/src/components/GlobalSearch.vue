@@ -414,7 +414,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-item__type-badge--rule { background: var(--color-primary-subtle); color: var(--color-primary); }
 .result-item__type-badge--l4 { background: var(--color-accent-subtle); color: var(--color-accent); }
 .result-item__type-badge--cert { background: var(--color-success-subtle); color: var(--color-success); }
-.result-item__type-badge--agent { background: var(--color-bg-active); color: var(--color-text-secondary); }
+.result-item__type-badge--agent { background: var(--color-badge-agent-bg); color: var(--color-badge-agent-ink); }
 .result-item__type-badge--relay { background: var(--color-warning-subtle); color: var(--color-warning); }
 .result-item__info { flex: 1; min-width: 0; }
 .result-item__url { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

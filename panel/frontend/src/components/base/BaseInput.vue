@@ -130,7 +130,7 @@ input::placeholder {
 }
 
 input:disabled {
-  opacity: 0.6;
+  opacity: 0.48;
   cursor: not-allowed;
   background: var(--color-bg-subtle);
 }

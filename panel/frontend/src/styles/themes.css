@@ -109,6 +109,8 @@
   --shadow-2xl: 0 24px 48px rgb(var(--shadow-color) / var(--shadow-alpha-2xl));
   --shadow-focus: 0 0 0 3px var(--shadow-focus-color);
   --shadow-focus-danger: 0 0 0 3px var(--color-danger-50);
+  /* Decorative halo for non-focus dots (timeline/path chips) — do not use for focus */
+  --shadow-dot-ring: 0 0 0 3px var(--color-primary-subtle);
   --shadow-inner: inset 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-inner));
 
   /* Modal overlay scrim — themes may tint or darken */
@@ -124,6 +126,9 @@
   --color-brand-ink: var(--color-text-inverse);
   --color-badge-bg: var(--color-primary-subtle);
   --color-badge-ink: var(--color-primary);
+  /* Agent badge — purple family, per-theme overrides below */
+  --color-badge-agent-bg: rgba(124, 58, 237, 0.10);
+  --color-badge-agent-ink: #7c3aed;
   --color-nav-selected: var(--color-primary-subtle);
   --color-button-bg:
     linear-gradient(
@@ -210,6 +215,10 @@
   --color-dashboard-tile-bg: #f0f7f3;
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.05);
+
+  /* Agent badge — purple, distinct from the green primary */
+  --color-badge-agent-bg: rgba(124, 58, 237, 0.10);
+  --color-badge-agent-ink: #6d28d9;
 
   /* Shadow quality params (geometry lives in the shared block) */
   --shadow-color: 18 32 25;
@@ -311,6 +320,9 @@
   --color-brand-ink: #ffffff;
   --color-badge-bg: var(--color-primary-subtle);
   --color-badge-ink: var(--color-primary);
+  /* Agent badge — lilac violet, distinct from the rose primary-subtle */
+  --color-badge-agent-bg: #efe9fa;
+  --color-badge-agent-ink: #6d4fa1;
   --color-nav-selected: linear-gradient(100deg, #fbeaf2, #f0ecfa);
   --color-button-bg: linear-gradient(115deg, #b83f73, #8650ab);
   --color-button-hover-bg: linear-gradient(115deg, #a53165, #744394);
@@ -406,6 +418,9 @@
   --color-brand-ink: #221a35;
   --color-badge-bg: var(--color-primary-subtle);
   --color-badge-ink: var(--color-primary);
+  /* Agent badge — cool violet, distinct from the pink primary badge */
+  --color-badge-agent-bg: #2f2b4d;
+  --color-badge-agent-ink: #c9bcff;
   --color-nav-selected: linear-gradient(100deg, #35283f, #302d4b);
   --color-button-bg: linear-gradient(115deg, #efaccf, #bcb0f2);
   --color-button-hover-bg: linear-gradient(115deg, #f8c3de, #cec5ff);
@@ -470,6 +485,10 @@
   --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
   --color-dashboard-tile-border: var(--color-border-subtle);
   --color-dashboard-tile-header-bg: rgba(96, 165, 250, 0.08);
+
+  /* Agent badge — violet, distinct from the blue primary badge */
+  --color-badge-agent-bg: rgba(167, 139, 250, 0.18);
+  --color-badge-agent-ink: #c4b5fd;
 
   /* Shadow quality params — deep dark, high opacity (geometry in shared block) */
   --shadow-color: 0 0 0;
@@ -552,6 +571,10 @@
   --color-dashboard-tile-bg: #f1f5f9;
   --color-dashboard-tile-border: var(--color-border-default);
   --color-dashboard-tile-header-bg: rgba(79, 70, 229, 0.04);
+
+  /* Agent badge — purple, distinct from the indigo primary */
+  --color-badge-agent-bg: rgba(147, 51, 234, 0.10);
+  --color-badge-agent-ink: #9333ea;
 
   /* Shadow quality params match the shared (slate-tinted) defaults exactly. */
 

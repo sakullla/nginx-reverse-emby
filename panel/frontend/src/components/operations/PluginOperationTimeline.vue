@@ -98,7 +98,7 @@ function formatStamp(value) {
   height: 0.45rem;
   border-radius: var(--radius-full);
   background: var(--color-primary);
-  box-shadow: var(--shadow-focus);
+  box-shadow: var(--shadow-dot-ring);
 }
 
 .plugin-operation-timeline__heading {
