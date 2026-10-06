@@ -3,9 +3,20 @@
     <div class="agents-page__header">
       <div class="agents-page__header-left">
         <h1 class="agents-page__title">节点管理</h1>
-        <p class="agents-page__subtitle">{{ agents.length }} 个节点 · {{ onlineCount }} 在线 · 累计 {{ totalHttpRules }} HTTP 规则 · 累计 {{ totalL4Rules }} L4 规则</p>
+        <p class="agents-page__subtitle" data-testid="agents-subtitle">{{ subtitleText }}</p>
       </div>
       <div class="agents-page__header-right">
+        <button
+          class="btn btn-secondary agents-page__refresh"
+          data-testid="agents-refresh"
+          :disabled="isFetching"
+          :title="isFetching ? '刷新中…' : '刷新节点列表'"
+          @click="refreshAgents"
+        >
+          <svg v-if="!isFetching" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          <span class="btn-text">{{ isFetching ? '刷新中...' : '刷新' }}</span>
+        </button>
         <div class="search-wrapper" v-if="agents.length" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" name="agent-search" class="search-input" placeholder="搜索节点名称 / IP / 标签 / #id=...">
@@ -54,6 +65,25 @@
       @toggle-sort-order="toggleSortOrder"
     />
 
+    <!-- Load failure: separate from the genuine empty state -->
+    <div
+      v-if="isError && !agents.length && !isLoading"
+      class="agents-page__error"
+      role="alert"
+      data-testid="agents-error"
+    >
+      <div class="agents-page__error-main">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <div>
+          <div class="agents-page__error-title">节点列表加载失败</div>
+          <div class="agents-page__error-text">请检查控制面连接后重试</div>
+        </div>
+      </div>
+      <button class="btn btn-secondary" data-testid="agents-retry" @click="refreshAgents">重试</button>
+    </div>
+
     <!-- Empty with filters -->
     <EmptyState
       v-if="agents.length && !filteredAgents.length"
@@ -78,7 +108,7 @@
       class="agent-grid"
     >
       <AgentMonitorCard
-        v-for="agent in filteredAgents"
+        v-for="agent in pagedAgents"
         :key="agent.id"
         :agent="agent"
         @details="agent => router.push(`/agents/${agent.id}`)"
@@ -88,19 +118,29 @@
     <!-- List View -->
     <AgentTable
       v-else-if="view === 'list' && filteredAgents.length"
-      :agents="filteredAgents"
+      :agents="pagedAgents"
       :clickable="true"
       @click="agent => router.push(`/agents/${agent.id}`)"
       @rename="startEdit"
       @delete="startDelete"
     />
 
-    <EmptyState v-if="!agents.length && !isLoading" title="暂无节点" description="">
+    <ListPagination
+      v-if="filteredAgents.length > AGENT_PAGE_SIZE"
+      v-model:page="page"
+      :page-size="AGENT_PAGE_SIZE"
+      :total="filteredAgents.length"
+    />
+
+    <EmptyState v-if="!agents.length && !isLoading && !isError" title="暂无节点" description="加入第一台 Agent 节点，开始管理流量规则。">
       <template #icon>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
           <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
         </svg>
+      </template>
+      <template #action>
+        <button class="btn btn-primary" data-testid="agents-empty-join" @click="openJoinModal">去加入节点</button>
       </template>
     </EmptyState>
 
@@ -222,66 +262,80 @@
     </BaseModal>
 
     <!-- Edit Modal -->
-    <Teleport to="body">
-      <div v-if="editingAgent" class="modal-overlay">
-        <div class="modal">
-          <div class="modal__header">
-            <div class="edit-modal__heading">
-              <span>编辑节点</span>
-              <span class="edit-modal__subtitle">{{ editingAgent.name || editingAgent.id }}</span>
-            </div>
-            <button class="modal__close" aria-label="关闭" @click="editingAgent = null">✕</button>
-          </div>
-          <div class="modal__body">
-            <div class="form-group">
-              <label>节点名称</label>
-              <input v-model="editName" class="input-base" placeholder="输入节点名称" @keyup.enter="confirmEdit" />
-            </div>
-            <div v-if="!editingAgent?.is_local" class="form-group">
-              <label>出网代理</label>
-              <input
-                v-model="editOutboundProxy"
-                class="input-base"
-                placeholder="socks://user:pass@127.0.0.1:1080"
-                @keyup.enter="confirmEdit"
-              />
-              <span class="edit-modal__hint">可选；节点访问外网时经由该代理</span>
-            </div>
-            <div v-if="!editingAgent?.is_local" class="form-group">
-              <label>标签</label>
-              <div class="edit-modal__tag-editor">
-                <span v-for="(tag, index) in editTags" :key="tag" class="tag">
-                  {{ tag }}
-                  <button
-                    type="button"
-                    class="edit-modal__tag-remove"
-                    :aria-label="`移除标签 ${tag}`"
-                    @click="removeEditTag(index)"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <line x1="18" y1="6" x2="6" y2="18"/>
-                      <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                  </button>
-                </span>
-                <input
-                  v-model="editTagInput"
-                  class="edit-modal__tag-input"
-                  placeholder="回车添加，如 edge / hk"
-                  @keydown.enter.prevent="addEditTag"
-                />
-              </div>
-            </div>
-          </div>
-          <div class="modal__footer">
-            <button class="btn btn-secondary" @click="editingAgent = null">取消</button>
-            <button class="btn btn-primary" :disabled="updateAgent.isPending.value" @click="confirmEdit">
-              {{ updateAgent.isPending.value ? '保存中...' : '保存' }}
-            </button>
+    <BaseModal
+      :model-value="!!editingAgent"
+      title="编辑节点"
+      :subtitle="editingAgent?.name || editingAgent?.id"
+      size="md"
+      :show-footer="true"
+      @update:model-value="onEditModalChange"
+      @confirm="confirmEdit"
+    >
+      <div class="edit-modal" data-testid="agents-edit-modal-body">
+        <div class="form-group">
+          <label for="agents-edit-name">节点名称</label>
+          <input
+            id="agents-edit-name"
+            v-model="editName"
+            class="input-base"
+            data-testid="agents-edit-name"
+            placeholder="输入节点名称"
+            @keyup.enter="confirmEdit"
+          />
+        </div>
+        <div v-if="!editingAgent?.is_local" class="form-group">
+          <label for="agents-edit-outbound">出网代理</label>
+          <input
+            id="agents-edit-outbound"
+            v-model="editOutboundProxy"
+            class="input-base"
+            data-testid="agents-edit-outbound"
+            placeholder="socks://user:pass@127.0.0.1:1080"
+            @keyup.enter="confirmEdit"
+          />
+          <span class="edit-modal__hint">可选；节点访问外网时经由该代理</span>
+        </div>
+        <div v-if="!editingAgent?.is_local" class="form-group">
+          <label for="agents-edit-tags">标签</label>
+          <div class="edit-modal__tag-editor">
+            <span v-for="(tag, index) in editTags" :key="tag" class="tag">
+              {{ tag }}
+              <button
+                type="button"
+                class="edit-modal__tag-remove"
+                :aria-label="`移除标签 ${tag}`"
+                @click="removeEditTag(index)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </span>
+            <input
+              id="agents-edit-tags"
+              v-model="editTagInput"
+              class="edit-modal__tag-input"
+              data-testid="agents-edit-tag-input"
+              placeholder="回车添加，如 edge / hk"
+              @keydown.enter.prevent="addEditTag"
+            />
           </div>
         </div>
       </div>
-    </Teleport>
+      <template #footer>
+        <button type="button" class="btn btn--secondary" @click="closeEdit">取消</button>
+        <button
+          type="button"
+          class="btn btn--primary"
+          data-testid="agents-edit-save"
+          :disabled="updateAgent.isPending.value"
+          @click="confirmEdit"
+        >
+          {{ updateAgent.isPending.value ? '保存中...' : '保存' }}
+        </button>
+      </template>
+    </BaseModal>
 
     <DeleteConfirmDialog
       :show="!!deletingAgent"
@@ -307,6 +361,7 @@ import { useAgentFilters } from '../hooks/useAgentFilters'
 import AgentFilterBar from '../components/AgentFilterBar.vue'
 import AgentMonitorCard from '../components/AgentMonitorCard.vue'
 import AgentTable from '../components/AgentTable.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
@@ -321,7 +376,7 @@ import { DOC_LINKS } from '../constants/docLinks'
 const router = useRouter()
 const { selectedAgentId } = useAgent()
 
-const { data, isLoading } = useAgents()
+const { data, isLoading, isError, isFetching, refetch } = useAgents()
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 
@@ -351,6 +406,28 @@ const {
 watch(view, () => {
   monitorStreamEnabled.value = view.value === 'monitor'
 }, { immediate: true })
+
+// Pagination over the filtered list; any filter/sort/view change resets to page 1.
+const AGENT_PAGE_SIZE = 20
+const page = ref(1)
+const pagedAgents = computed(() => {
+  const start = (page.value - 1) * AGENT_PAGE_SIZE
+  return filteredAgents.value.slice(start, start + AGENT_PAGE_SIZE)
+})
+watch([filteredAgents, view], () => {
+  page.value = 1
+})
+
+function refreshAgents() {
+  return refetch?.()
+}
+
+const subtitleText = computed(() => {
+  const total = agents.value.length
+  const shown = filteredAgents.value.length
+  const countLabel = shown === total ? `${total} 个节点` : `${shown} / ${total} 个节点`
+  return `${countLabel} · ${onlineCount.value} 在线 · 累计 ${totalHttpRules.value} HTTP 规则 · 累计 ${totalL4Rules.value} L4 规则`
+})
 
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
@@ -623,6 +700,17 @@ function removeEditTag(index) {
   editTags.value.splice(index, 1)
 }
 
+function closeEdit() {
+  editingAgent.value = null
+  editName.value = ''
+  editOutboundProxy.value = ''
+  editTagInput.value = ''
+}
+
+function onEditModalChange(open) {
+  if (!open) closeEdit()
+}
+
 async function confirmEdit() {
   if (!editingAgent.value) return
   const payload = {}
@@ -639,9 +727,7 @@ async function confirmEdit() {
       Object.assign(payload, proxyPayload)
     } catch (error) {
       messageStore.warning(error.message, '出网代理密码已隐藏')
-      editingAgent.value = null
-      editName.value = ''
-      editOutboundProxy.value = ''
+      closeEdit()
       return
     }
     addEditTag()
@@ -651,14 +737,19 @@ async function confirmEdit() {
     }
   }
   if (Object.keys(payload).length > 0) {
-    await updateAgent.mutateAsync({
-      agentId: editingAgent.value.id,
-      payload
-    })
+    try {
+      await updateAgent.mutateAsync({
+        agentId: editingAgent.value.id,
+        payload
+      })
+    } catch (error) {
+      // Keep the modal open so the user can retry; the mutation hook has
+      // already surfaced the failure via the message store.
+      messageStore.error(error, '保存节点设置失败')
+      return
+    }
   }
-  editingAgent.value = null
-  editName.value = ''
-  editOutboundProxy.value = ''
+  closeEdit()
 }
 
 function startDelete(agent) {
@@ -1028,20 +1119,43 @@ function confirmDelete() {
 .form-group { display: flex; flex-direction: column; gap: 0.375rem; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
 
-/* Edit-node modal chrome */
-.edit-modal__heading {
+/* Load-failure block: distinct from the empty state */
+.agents-page__error {
   display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border-default));
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--color-danger) 6%, var(--color-bg-surface));
+}
+.agents-page__error-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  color: var(--color-danger);
   min-width: 0;
 }
-.edit-modal__subtitle {
-  font-size: 0.75rem;
-  font-weight: 400;
-  color: var(--color-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.agents-page__error-main svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.agents-page__error-title {
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+.agents-page__error-text {
+  font-size: 0.8125rem;
+  opacity: 0.9;
+}
+
+/* Edit-node modal body */
+.edit-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
 }
 .edit-modal__hint {
   font-size: 0.75rem;

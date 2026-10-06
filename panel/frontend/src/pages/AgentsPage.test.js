@@ -1,20 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
-import { computed, ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import AgentsPage from './AgentsPage.vue'
 import { DOC_LINKS } from '../constants/docLinks'
 
 const createPkiEnrollmentToken = vi.fn()
 let agentsData
+let agentsError
 let monitorData
 let monitorActive
+let routeQuery
+const routerReplace = vi.fn()
+const refetchAgents = vi.fn()
 
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() })
+  useRouter: () => ({ push: vi.fn(), replace: routerReplace }),
+  useRoute: () => ({ query: routeQuery })
 }))
 
 vi.mock('../hooks/useAgents', () => ({
-  useAgents: () => ({ data: agentsData, isLoading: ref(false) }),
+  useAgents: () => ({
+    data: agentsData,
+    isLoading: ref(false),
+    isError: agentsError,
+    isFetching: ref(false),
+    refetch: refetchAgents
+  }),
   useUpdateAgent: () => ({ mutateAsync: vi.fn(), isPending: ref(false) }),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: ref(false) })
 }))
@@ -23,22 +34,13 @@ vi.mock('../hooks/useAgentMonitorStream', () => ({
   useAgentMonitorStream: () => ({ data: monitorData, active: monitorActive })
 }))
 
-vi.mock('../hooks/useAgentFilters', () => ({
-  useAgentFilters: (agents) => ({
-    view: ref('monitor'),
-    statusFilter: ref('all'),
-    modeFilter: ref('all'),
-    tagFilter: ref('all'),
-    sortField: ref('name'),
-    sortOrder: ref('asc'),
-    searchQuery: ref(''),
-    availableTags: computed(() => []),
-    filteredAgents: computed(() => agents.value || []),
-    hasActiveFilters: computed(() => false),
-    clearFilters: vi.fn(),
-    toggleSortOrder: vi.fn()
-  })
-}))
+// Real filter hook so URL/query integration stays covered here.
+vi.mock('../hooks/useAgentFilters', async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    useAgentFilters: (agents) => actual.useAgentFilters(agents)
+  }
+})
 
 vi.mock('../api', () => ({
   fetchSystemInfo: vi.fn().mockResolvedValue({ master_register_token: 'fixed-token' }),
@@ -64,9 +66,20 @@ const BaseModalStub = {
   template: '<div><slot /></div>'
 }
 
+const EmptyStateStub = {
+  name: 'EmptyState',
+  props: ['title', 'description'],
+  template: '<div class="empty-state-stub"><slot name="icon" /><slot /><slot name="action" /></div>'
+}
+
 describe('AgentsPage join modal', () => {
   beforeEach(() => {
+    localStorage.clear()
+    routeQuery = {}
+    routerReplace.mockClear()
+    refetchAgents.mockClear()
     agentsData = ref([])
+    agentsError = ref(false)
     monitorData = ref([])
     monitorActive = ref(false)
     createPkiEnrollmentToken.mockReset()
@@ -144,5 +157,116 @@ describe('AgentsPage join modal', () => {
       id: 'edge-1',
       status: 'online'
     })
+  })
+
+  it('separates load failure from the empty state and offers retry', async () => {
+    agentsError.value = true
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub } }
+    })
+
+    expect(wrapper.find('[data-testid="agents-error"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('暂无节点')
+
+    await wrapper.find('[data-testid="agents-retry"]').trigger('click')
+    expect(refetchAgents).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers a join CTA from the genuine empty state', async () => {
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub, EmptyState: EmptyStateStub } }
+    })
+
+    expect(wrapper.find('[data-testid="agents-error"]').exists()).toBe(false)
+    const cta = wrapper.find('[data-testid="agents-empty-join"]')
+    expect(cta.exists()).toBe(true)
+
+    await cta.trigger('click')
+    expect(wrapper.findComponent(BaseModalStub).props('modelValue')).toBe(true)
+    expect(createPkiEnrollmentToken).toHaveBeenCalledTimes(1)
+  })
+
+  it('triggers a manual refresh from the header', async () => {
+    agentsData.value = [{ id: 'edge-1', status: 'online' }]
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub, EmptyState: EmptyStateStub } }
+    })
+
+    await wrapper.find('[data-testid="agents-refresh"]').trigger('click')
+    expect(refetchAgents).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('AgentsPage list UX', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    routeQuery = {}
+    routerReplace.mockClear()
+    refetchAgents.mockClear()
+    agentsData = ref([])
+    agentsError = ref(false)
+    monitorData = ref([])
+    monitorActive = ref(false)
+    createPkiEnrollmentToken.mockReset()
+    createPkiEnrollmentToken.mockReturnValue(new Promise(() => {}))
+  })
+
+  it('syncs the search term into the URL query and shows the filtered count', async () => {
+    agentsData.value = [
+      { id: 'edge-1', name: 'edge-1', status: 'online', last_seen_at: new Date().toISOString() },
+      { id: 'core-1', name: 'core-1', status: 'online', last_seen_at: new Date().toISOString() }
+    ]
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub } }
+    })
+
+    expect(wrapper.get('[data-testid="agents-subtitle"]').text()).toContain('2 个节点')
+
+    await wrapper.get('input[name="agent-search"]').setValue('edge')
+    await nextTick()
+    await nextTick()
+
+    expect(routerReplace).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ search: 'edge' })
+    }))
+    expect(wrapper.get('[data-testid="agents-subtitle"]').text()).toContain('1 / 2 个节点')
+  })
+
+  it('paginates the list view with ListPagination', async () => {
+    routeQuery = { view: 'list' }
+    agentsData.value = Array.from({ length: 25 }, (_, i) => ({
+      id: `a${i}`,
+      name: `agent-${i}`,
+      status: 'online',
+      last_seen_at: new Date(Date.now() - i * 60000).toISOString()
+    }))
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub } }
+    })
+
+    const pagination = wrapper.findComponent({ name: 'ListPagination' })
+    expect(pagination.exists()).toBe(true)
+    expect(pagination.props('total')).toBe(25)
+    expect(wrapper.findComponent({ name: 'AgentTable' }).props('agents')).toHaveLength(20)
+
+    pagination.vm.$emit('update:page', 2)
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'AgentTable' }).props('agents')).toHaveLength(5)
+    expect(pagination.props('page')).toBe(2)
+  })
+
+  it('caps the monitor grid at the same page size', async () => {
+    agentsData.value = Array.from({ length: 22 }, (_, i) => ({
+      id: `a${i}`,
+      name: `agent-${i}`,
+      status: 'online',
+      last_seen_at: new Date(Date.now() - i * 60000).toISOString()
+    }))
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub } }
+    })
+
+    expect(wrapper.findAllComponents({ name: 'AgentMonitorCard' })).toHaveLength(20)
+    expect(wrapper.findComponent({ name: 'ListPagination' }).props('total')).toBe(22)
   })
 })

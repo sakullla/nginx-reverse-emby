@@ -41,6 +41,22 @@
       <template #header-right>
         <div class="agent-detail-actions">
           <BaseIconButton
+            data-testid="detail-action-refresh"
+            :title="refreshing ? '刷新中…' : '刷新节点数据'"
+            :disabled="refreshing"
+            @click="refreshDetail"
+          >
+            <span class="i-mdi-refresh" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
+            data-testid="detail-action-apply"
+            :title="applyingConfig ? '推送中…' : '推送配置'"
+            :disabled="applyingConfig"
+            @click="handleApplyConfig"
+          >
+            <span class="i-mdi-cloud-upload" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
             data-testid="detail-action-collapse"
             :title="summaryCollapsed ? detailLabels.actions.expandSummary : detailLabels.actions.collapseSummary"
             @click="toggleSummaryCollapsed"
@@ -123,6 +139,20 @@
                 data-testid="detail-info-ipv6"
               >{{ displayIPv6 }}</span>
             </div>
+          </div>
+          <div
+            v-if="metricsLoadError"
+            class="agent-detail__stats-error"
+            role="alert"
+            data-testid="detail-metrics-error"
+          >
+            <span class="agent-detail__stats-error-text">指标查询失败，暂无可用数据</span>
+            <button
+              type="button"
+              class="btn btn--secondary btn--sm"
+              data-testid="detail-metrics-retry"
+              @click="refetchAgentStats"
+            >重试</button>
           </div>
         </section>
 
@@ -354,15 +384,6 @@
                 </div>
               </BaseListCard>
 
-              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.sync" :clickable="false">
-                <div class="info-grid">
-                  <div class="info-row info-row--clean">
-                    <span>同步状态</span>
-                    <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
-                  </div>
-                  <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
-                </div>
-              </BaseListCard>
             </div>
           </TrafficCollapsibleSection>
 
@@ -623,7 +644,7 @@ import { useL4Rules } from '../hooks/useL4Rules'
 import { useCertificates } from '../hooks/useCertificates'
 import { useRelayListeners } from '../hooks/useRelayListeners'
 import { useAgents, useDeleteAgent, useUpdateAgent } from '../hooks/useAgents'
-import { fetchAgentStats, fetchSystemInfo } from '../api'
+import { applyConfig, fetchAgentStats, fetchSystemInfo } from '../api'
 import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
@@ -656,7 +677,7 @@ const router = useRouter()
 const agentId = computed(() => route.params.id)
 const detailLabels = agentDetailLabels
 
-const { data: agentsData, isLoading } = useAgents()
+const { data: agentsData, isLoading, refetch: refetchAgents } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const runningPackageSha = computed(() => String(agent.value?.runtime_package_sha256 || '').trim())
 const desiredPackageSha = computed(() => String(agent.value?.desired_package_sha256 || '').trim())
@@ -715,7 +736,7 @@ function listMoreLabel(total, key) {
     : `${detailLabels.listFooter.viewAll} ${total} 条`
 }
 
-const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt } = useQuery({
+const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt, isError: agentStatsIsError, refetch: refetchAgentStats } = useQuery({
   queryKey: ['agent-stats', agentId],
   queryFn: () => fetchAgentStats(agentId.value),
   enabled: () => !!agentId.value,
@@ -830,6 +851,11 @@ const trafficBreakdownTabs = computed(() => [
 ].filter(t => t.rows.length > 0))
 
 const agentMetricsData = computed(() => metricsFromAgentStats(agentStats.value) || agent.value?.monitor?.metrics || agent.value?.metrics || {})
+// Stats fetch failed and the SSE monitor snapshot provides no fallback metrics:
+// surface an explicit error instead of silently rendering "—" placeholders.
+const metricsLoadError = computed(() =>
+  agentStatsIsError.value && !(agent.value?.monitor?.metrics || agent.value?.metrics)
+)
 const networkMetrics = computed(() => agentMetricsData.value.network || null)
 const displayIPv4 = computed(() => agent.value?.last_seen_ipv4 || agent.value?.ddns_status?.last_resolved_ipv4 || '')
 const displayIPv6 = computed(() => agent.value?.last_seen_ipv6 || agent.value?.ddns_status?.last_resolved_ipv6 || '')
@@ -909,6 +935,33 @@ const summaryCollapsed = ref(localStorage.getItem(SUMMARY_COLLAPSED_STORAGE_KEY)
 function toggleSummaryCollapsed() {
   summaryCollapsed.value = !summaryCollapsed.value
   localStorage.setItem(SUMMARY_COLLAPSED_STORAGE_KEY, summaryCollapsed.value ? '1' : '0')
+}
+
+// Manual refresh: re-fetch the agents list and this agent's metrics snapshot.
+const refreshing = ref(false)
+async function refreshDetail() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.allSettled([refetchAgents?.(), refetchAgentStats()])
+  } finally {
+    refreshing.value = false
+  }
+}
+
+// Push the current config revision to this agent (same entry point as the list page).
+const applyingConfig = ref(false)
+async function handleApplyConfig() {
+  if (!agent.value || applyingConfig.value) return
+  applyingConfig.value = true
+  try {
+    await applyConfig(agent.value.id)
+    messageStore.success('配置推送已发起')
+  } catch (error) {
+    messageStore.error(error, '推送配置失败')
+  } finally {
+    applyingConfig.value = false
+  }
 }
 
 function openBreakdownTrendModal(row) {
@@ -1642,6 +1695,24 @@ function packageStatusLabel(status) {
 
 .agent-detail__zone--traffic {
   gap: var(--space-2-5, 0.625rem);
+}
+
+.agent-detail__stats-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2-5) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border-default));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-danger) 6%, var(--color-bg-surface));
+}
+
+.agent-detail__stats-error-text {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-danger);
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header) {
@@ -2466,7 +2537,7 @@ function packageStatusLabel(status) {
 
 .info-sections {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
 }
 

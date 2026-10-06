@@ -1,6 +1,12 @@
 <template>
   <div class="agent-picker" ref="pickerRef">
-    <button ref="triggerRef" class="agent-picker__trigger" @click="open = !open">
+    <button
+      ref="triggerRef"
+      class="agent-picker__trigger"
+      aria-haspopup="listbox"
+      :aria-expanded="open"
+      @click="open = !open"
+    >
       <span class="agent-picker__trigger-text">{{ selectedLabel }}</span>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"/>
@@ -13,10 +19,12 @@
         ref="dropdownRef"
         class="agent-picker__dropdown"
         :style="dropdownStyle"
+        @keydown="handleDropdownKeydown"
       >
         <!-- Search -->
         <div class="agent-picker__search">
           <input
+            ref="searchInputRef"
             v-model="searchQuery"
             name="agent-picker-search"
             class="agent-picker__search-input"
@@ -32,6 +40,7 @@
             :key="opt.value"
             class="agent-picker__filter-btn"
             :class="{ active: statusFilter === opt.value }"
+            :aria-pressed="statusFilter === opt.value"
             @click="statusFilter = opt.value"
           >
             {{ opt.label }}
@@ -39,25 +48,38 @@
         </div>
 
         <!-- Agent List -->
-        <div class="agent-picker__list">
+        <div
+          class="agent-picker__list"
+          role="listbox"
+          aria-label="节点列表"
+          :aria-activedescendant="activeDescendantId || undefined"
+        >
           <button
             v-if="showAllOption"
+            id="agent-picker-option-all"
             class="agent-picker__item agent-picker__item--all"
+            :class="{ 'agent-picker__item--active': activeIndex === 0 }"
+            role="option"
+            :aria-selected="isAllOptionSelected"
             @click="selectAll()"
           >
             <span class="agent-picker__item-name">{{ allLabel }}</span>
           </button>
           <button
-            v-for="agent in displayedAgents"
+            v-for="(agent, i) in displayedAgents"
+            :id="`agent-picker-option-${i}`"
             :key="agent.id || agent.agent_id"
             class="agent-picker__item"
+            :class="{ 'agent-picker__item--active': activeIndex === optionIndex(i) }"
+            role="option"
+            :aria-selected="isAgentSelected(agent)"
             @click="selectAgent(agent)"
           >
             <span v-if="agent.status != null || agent.desired_revision != null" class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
             <span class="agent-picker__item-name">{{ agent.name }}</span>
             <span v-if="agent.last_seen_at" class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
           </button>
-          <div v-if="!displayedAgents.length" class="agent-picker__empty">没有匹配的节点</div>
+          <div v-if="!displayedAgents.length" class="agent-picker__empty" role="status">没有匹配的节点</div>
         </div>
 
         <!-- Sort -->
@@ -66,6 +88,7 @@
           <button
             class="agent-picker__sort-btn"
             :class="{ active: sortBy === 'last_seen' }"
+            :aria-pressed="sortBy === 'last_seen'"
             @click="sortBy = 'last_seen'"
           >
             最近活跃
@@ -73,6 +96,7 @@
           <button
             class="agent-picker__sort-btn"
             :class="{ active: sortBy === 'name' }"
+            :aria-pressed="sortBy === 'name'"
             @click="sortBy = 'name'"
           >
             名称
@@ -104,8 +128,80 @@ const statusFilter = ref('')
 const sortBy = ref('last_seen')
 const pickerRef = ref(null)
 const triggerRef = ref(null)
+const searchInputRef = ref(null)
 const dropdownRef = ref(null)
 const dropdownStyle = ref({})
+
+// Arrow-key highlight over the option list. Index 0 is the "all" option when
+// enabled; displayed agents follow with a +1 offset.
+const activeIndex = ref(-1)
+watch([open, searchQuery, statusFilter], () => {
+  activeIndex.value = -1
+})
+
+function optionIndex(agentIndex) {
+  return props.showAllOption ? agentIndex + 1 : agentIndex
+}
+
+const activeDescendantId = computed(() => {
+  if (activeIndex.value < 0) return ''
+  if (activeIndex.value === 0 && props.showAllOption) return 'agent-picker-option-all'
+  const agentIndex = activeIndex.value - (props.showAllOption ? 1 : 0)
+  return displayedAgents.value[agentIndex] ? `agent-picker-option-${agentIndex}` : ''
+})
+
+const isAllOptionSelected = computed(() =>
+  props.showAllOption && (props.modelId === props.allValue || props.modelId == null)
+)
+
+function isAgentSelected(agent) {
+  if (props.modelId != null) return (agent.agent_id || agent.id) === props.modelId
+  return !!props.modelValue && props.modelValue === agent
+}
+
+function chooseActiveOption() {
+  if (activeIndex.value === 0 && props.showAllOption) {
+    selectAll()
+    return
+  }
+  const agentIndex = activeIndex.value - (props.showAllOption ? 1 : 0)
+  const agent = displayedAgents.value[agentIndex]
+  if (agent) selectAgent(agent)
+}
+
+function closeMenu() {
+  open.value = false
+  nextTick(() => triggerRef.value?.focus())
+}
+
+// Roving highlight: arrows move, Enter/Space (from the search box) commit the
+// highlighted option, Escape closes and returns focus to the trigger.
+function handleDropdownKeydown(e) {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    if (!displayedAgents.value.length && !props.showAllOption) return
+    const total = displayedAgents.value.length + (props.showAllOption ? 1 : 0)
+    if (!total) return
+    const delta = e.key === 'ArrowDown' ? 1 : -1
+    let next = activeIndex.value + delta
+    if (next < 0) next = total - 1
+    if (next >= total) next = 0
+    activeIndex.value = next
+    nextTick(() => {
+      document.getElementById(activeDescendantId.value)?.scrollIntoView({ block: 'nearest' })
+    })
+    return
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && activeIndex.value >= 0 && e.target === searchInputRef.value) {
+    e.preventDefault()
+    chooseActiveOption()
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeMenu()
+  }
+}
 
 const statusOptions = [
   { value: '', label: '全部' },
@@ -350,7 +446,8 @@ onUnmounted(() => {
   font-family: inherit;
   text-align: left;
 }
-.agent-picker__item:hover {
+.agent-picker__item:hover,
+.agent-picker__item--active {
   background: var(--color-bg-hover);
 }
 .agent-picker__item--all {

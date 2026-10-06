@@ -14,9 +14,10 @@ const attentionPayload = {
   certs_total: 4
 }
 
-const { useCertificatesSpy, agentsState } = vi.hoisted(() => ({
+const { useCertificatesSpy, agentsState, attentionState } = vi.hoisted(() => ({
   useCertificatesSpy: vi.fn(),
-  agentsState: { list: [], ref: null }
+  agentsState: { list: [], ref: null },
+  attentionState: { data: null, error: false, refetch: null }
 }))
 
 vi.mock('vue-router', () => ({
@@ -33,7 +34,11 @@ vi.mock('../hooks/useAgents', () => ({
 }))
 
 vi.mock('../hooks/useAttention', () => ({
-  useAttention: () => ({ data: ref(attentionPayload) })
+  useAttention: () => ({
+    data: attentionState.ref,
+    isError: ref(attentionState.error),
+    refetch: attentionState.refetch
+  })
 }))
 
 vi.mock('../hooks/useCertificates', () => ({
@@ -45,7 +50,12 @@ vi.mock('../api', () => ({
 }))
 
 vi.mock('../components/dashboard/AttentionBar.vue', () => ({
-  default: { name: 'AttentionBar', props: ['attention'], template: '<div data-testid="attention-bar" />' }
+  default: {
+    name: 'AttentionBar',
+    props: ['attention', 'error'],
+    emits: ['retry'],
+    template: '<div data-testid="attention-bar" :data-error="String(!!error)" @retry="$emit(\'retry\')" />'
+  }
 }))
 
 vi.mock('../components/dashboard/ClusterMetricsCard.vue', () => ({
@@ -87,6 +97,10 @@ beforeEach(() => {
     { id: 'a1', status: 'online' },
     { id: 'a2', status: 'offline' }
   ]
+  attentionState.data = attentionPayload
+  attentionState.error = false
+  attentionState.refetch = vi.fn()
+  attentionState.ref = ref(attentionState.data)
 })
 
 afterEach(() => {
@@ -132,6 +146,13 @@ describe('DashboardPage 健康优先布局', () => {
     const wrapper = await mountPage()
     expect(wrapper.get('.dashboard__health').classes()).not.toContain('dashboard__health--compact')
     expect(wrapper.get('[data-testid="agent-tiles"]').attributes('data-detailed')).toBe('false')
+  })
+
+  it('注意力请求失败时向需关注条传递错误,不再停留于加载态', async () => {
+    attentionState.error = true
+    const wrapper = await mountPage()
+    const bar = wrapper.get('[data-testid="attention-bar"]')
+    expect(bar.attributes('data-error')).toBe('true')
   })
 })
 

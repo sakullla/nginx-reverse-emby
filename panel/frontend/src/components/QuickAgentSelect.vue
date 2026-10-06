@@ -8,6 +8,7 @@
         class="quick-agent-select__chip"
         :class="{ 'quick-agent-select__chip--active': isAllSelected }"
         title="全部节点"
+        :aria-pressed="isAllSelected"
         @click="selectAll"
       >
         <span class="quick-agent-select__chip-name">全部节点</span>
@@ -19,6 +20,7 @@
         class="quick-agent-select__chip"
         :class="{ 'quick-agent-select__chip--active': !isAllSelected && agent.id === agentId }"
         :title="agent.name"
+        :aria-pressed="!isAllSelected && agent.id === agentId"
         @click="select(agent)"
       >
         <span
@@ -34,7 +36,10 @@
         ref="moreRef"
       >
         <button
+          ref="moreButtonRef"
           class="quick-agent-select__chip quick-agent-select__chip--more"
+          aria-haspopup="listbox"
+          :aria-expanded="moreOpen"
           @click="moreOpen = !moreOpen"
         >
           +{{ hiddenAgents.length }} 更多
@@ -42,20 +47,33 @@
             <polyline points="6 9 12 15 18 9"/>
           </svg>
         </button>
-        <div v-if="moreOpen" class="quick-agent-select__dropdown">
+        <div
+          v-if="moreOpen"
+          class="quick-agent-select__dropdown"
+          @keydown="handleDropdownKeydown"
+        >
           <div class="quick-agent-select__dropdown-search">
             <input
+              ref="searchInputRef"
               v-model="moreSearch"
               class="quick-agent-select__dropdown-input"
               placeholder="搜索节点..."
             />
           </div>
-          <div class="quick-agent-select__dropdown-list">
+          <div
+            class="quick-agent-select__dropdown-list"
+            role="listbox"
+            aria-label="更多节点"
+            :aria-activedescendant="activeDescendantId || undefined"
+          >
             <button
-              v-for="agent in filteredHiddenAgents"
+              v-for="(agent, i) in filteredHiddenAgents"
+              :id="`quick-agent-option-${i}`"
               :key="agent.id"
               class="quick-agent-select__dropdown-item"
-              :class="{ active: !isAllSelected && agent.id === agentId }"
+              :class="{ active: !isAllSelected && agent.id === agentId, 'quick-agent-select__dropdown-item--highlight': activeIndex === i }"
+              role="option"
+              :aria-selected="!isAllSelected && agent.id === agentId"
               @click="select(agent)"
             >
               <span
@@ -64,7 +82,7 @@
               />
               <span class="quick-agent-select__dropdown-name">{{ agent.name }}</span>
             </button>
-            <div v-if="!filteredHiddenAgents.length" class="quick-agent-select__dropdown-empty">
+            <div v-if="!filteredHiddenAgents.length" class="quick-agent-select__dropdown-empty" role="status">
               没有匹配的节点
             </div>
           </div>
@@ -75,7 +93,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { getAgentStatus } from '../utils/agentHelpers.js'
 import { useAgent } from '../context/AgentContext.js'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter } from '../utils/agentFilter.js'
@@ -95,6 +113,53 @@ const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
 const moreOpen = ref(false)
 const moreSearch = ref('')
 const moreRef = ref(null)
+const moreButtonRef = ref(null)
+const searchInputRef = ref(null)
+
+// Roving arrow-key highlight over the hidden-agent options.
+const activeIndex = ref(-1)
+watch([moreOpen, moreSearch], () => {
+  activeIndex.value = -1
+})
+
+const activeDescendantId = computed(() =>
+  activeIndex.value >= 0 && filteredHiddenAgents.value[activeIndex.value]
+    ? `quick-agent-option-${activeIndex.value}`
+    : ''
+)
+
+function closeMore() {
+  moreOpen.value = false
+  moreSearch.value = ''
+  nextTick(() => moreButtonRef.value?.focus())
+}
+
+function handleDropdownKeydown(e) {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    const total = filteredHiddenAgents.value.length
+    if (!total) return
+    const delta = e.key === 'ArrowDown' ? 1 : -1
+    let next = activeIndex.value + delta
+    if (next < 0) next = total - 1
+    if (next >= total) next = 0
+    activeIndex.value = next
+    nextTick(() => {
+      document.getElementById(activeDescendantId.value)?.scrollIntoView({ block: 'nearest' })
+    })
+    return
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && activeIndex.value >= 0 && e.target === searchInputRef.value) {
+    e.preventDefault()
+    const agent = filteredHiddenAgents.value[activeIndex.value]
+    if (agent) select(agent)
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeMore()
+  }
+}
 
 const isAllSelected = computed(() => isAllAgentsFilter(props.agentId))
 
@@ -340,7 +405,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   text-align: left;
 }
 
-.quick-agent-select__dropdown-item:hover {
+.quick-agent-select__dropdown-item:hover,
+.quick-agent-select__dropdown-item--highlight {
   background: var(--color-bg-hover);
 }
 

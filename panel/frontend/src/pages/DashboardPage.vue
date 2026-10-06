@@ -15,7 +15,12 @@
     />
 
     <!-- 第一屏:系统健康总览(需关注条 + 集群指标 + 节点状态) -->
-    <AttentionBar :attention="attention" class="dashboard__attention card-enter stagger-1" />
+    <AttentionBar
+      :attention="attention"
+      :error="attentionFailed"
+      class="dashboard__attention card-enter stagger-1"
+      @retry="refetchAttention"
+    />
 
     <!-- Loading state -->
     <SkeletonList v-if="isLoading" variant="cards" :count="3" label="仪表盘加载中" />
@@ -82,8 +87,11 @@ import EmptyState from '../components/base/EmptyState.vue'
 
 const { data: agents, isLoading } = useAgents()
 
-const { data: attentionData } = useAttention()
+const { data: attentionData, isError: attentionIsError, refetch: refetchAttention } = useAttention()
 const attention = computed(() => attentionData.value?.ok ? attentionData.value : null)
+// A failed request (or an explicit ok:false payload) must surface as an error,
+// not stay stuck on the "checking cluster status" loading line forever.
+const attentionFailed = computed(() => !!attentionIsError?.value || attentionData.value?.ok === false)
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],

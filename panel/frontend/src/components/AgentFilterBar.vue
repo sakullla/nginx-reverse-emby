@@ -8,6 +8,7 @@
           :class="{ active: view === 'monitor' }"
           title="监控视图"
           aria-label="监控视图"
+          :aria-pressed="view === 'monitor'"
           @click="view = 'monitor'"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -22,6 +23,7 @@
           :class="{ active: view === 'list' }"
           title="列表视图"
           aria-label="列表视图"
+          :aria-pressed="view === 'list'"
           @click="view = 'list'"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -66,7 +68,13 @@
           <option value="http_rules_count">HTTP 规则</option>
           <option value="l4_rules_count">L4 规则</option>
         </select>
-        <button class="sort-order-btn" :title="sortOrder === 'asc' ? '升序' : '降序'" @click="toggleSortOrder">
+        <button
+          class="sort-order-btn"
+          :title="sortOrder === 'asc' ? '切换为降序' : '切换为升序'"
+          :aria-label="sortOrder === 'asc' ? '当前升序，切换为降序' : '当前降序，切换为升序'"
+          :aria-pressed="sortOrder === 'asc'"
+          @click="toggleSortOrder"
+        >
           <svg v-if="sortOrder === 'asc'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="19" x2="12" y2="5"/>
             <polyline points="5 12 12 5 19 12"/>
@@ -170,6 +178,7 @@ function toggleSortOrder() {
   border: 1px solid var(--color-border-subtle);
 }
 .view-toggle__btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -181,6 +190,19 @@ function toggleSortOrder() {
   color: var(--color-text-tertiary);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-default);
+}
+/* ≥40px touch targets via an expanded pseudo-element hit area. */
+.view-toggle__btn::after,
+.sort-order-btn::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: var(--radius-full);
+}
+.view-toggle__btn:focus-visible,
+.sort-order-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 .view-toggle__btn:hover {
   color: var(--color-text-primary);
@@ -220,6 +242,7 @@ function toggleSortOrder() {
   gap: 4px;
 }
 .sort-order-btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;

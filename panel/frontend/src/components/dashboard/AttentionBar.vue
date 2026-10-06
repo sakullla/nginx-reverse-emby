@@ -32,6 +32,17 @@
         一切正常,没有需要关注的异常
       </span>
     </template>
+    <template v-else-if="error">
+      <span class="attention-bar__error" data-testid="attention-error" role="alert">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        集群状态获取失败
+      </span>
+      <button type="button" class="attention-bar__retry" data-testid="attention-retry" @click="emit('retry')">重试</button>
+    </template>
     <template v-else>
       <span class="attention-bar__loading">检查集群状态…</span>
     </template>
@@ -42,8 +53,11 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  attention: { type: Object, default: null }
+  attention: { type: Object, default: null },
+  error: { type: Boolean, default: false }
 })
+
+const emit = defineEmits(['retry'])
 
 function agentTarget(group) {
   const ids = group?.agent_ids || []
@@ -148,6 +162,38 @@ const signals = computed(() => {
 .attention-bar__loading {
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
+}
+
+.attention-bar__error {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-danger, #ef4444);
+}
+
+.attention-bar__retry {
+  min-height: 40px;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--color-danger, #ef4444) 35%, var(--color-border-default));
+  background: transparent;
+  color: var(--color-danger, #ef4444);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+.attention-bar__retry:hover {
+  background: color-mix(in srgb, var(--color-danger, #ef4444) 8%, transparent);
+}
+
+.attention-bar__retry:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 @media (max-width: 640px) {
