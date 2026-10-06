@@ -904,7 +904,7 @@ async function handleSubmit() {
       var(--color-bg-subtle) 100%
     );
   border: 1px solid color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary) 8%);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border-radius: var(--radius-xl);
   z-index: 2;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent);
 }
@@ -948,7 +948,7 @@ async function handleSubmit() {
   background: var(--color-bg-surface-raised);
   border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
   font-weight: 700;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+  box-shadow: var(--shadow-xs);
 }
 
 .form-tabs__dot {
@@ -1538,7 +1538,7 @@ async function handleSubmit() {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  padding: 1px 7px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-primary-subtle);
   border: none;
   border-radius: var(--radius-full);
@@ -1609,7 +1609,7 @@ async function handleSubmit() {
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-sm);
 }
 
 .toggle__input:checked + .toggle__slider,
@@ -1710,12 +1710,7 @@ async function handleSubmit() {
 }
 
 .rule-form__submit.btn--primary {
-  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  box-shadow: var(--shadow-lg);
 }
 
 .relay-alert {

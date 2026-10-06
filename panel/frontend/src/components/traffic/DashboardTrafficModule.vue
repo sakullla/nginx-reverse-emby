@@ -616,8 +616,8 @@ function scalePoints(points, factor) {
 .dashboard-traffic__controls {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-0-5);
+  padding: var(--space-0-5);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
@@ -627,14 +627,14 @@ function scalePoints(points, factor) {
   width: 1px;
   height: 1.1rem;
   background: var(--color-border-default);
-  margin: 0 2px;
+  margin: 0 var(--space-0-5);
   flex-shrink: 0;
 }
 
 .dashboard-traffic__view,
 .dashboard-traffic__granularity {
   display: inline-flex;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 .dashboard-traffic__view-btn {

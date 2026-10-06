@@ -488,7 +488,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
   font-size: 9px;
   font-weight: 700;
   border-radius: var(--radius-full);
@@ -554,18 +554,18 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   background: var(--color-primary);
-  color: white;
-  font-size: 10px;
+  color: var(--color-text-inverse);
+  font-size: var(--text-xs);
   font-weight: 700;
   border-radius: var(--radius-full);
 }
 
 .relay-editor__layer-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   color: var(--color-primary);
   background: var(--color-primary-subtle);
-  padding: 1px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-full);
 }
 
@@ -673,7 +673,7 @@ onUnmounted(() => {
 
 .relay-editor__chip-remove:hover {
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
 }
 
 /* Add node dropdown */
@@ -715,7 +715,7 @@ onUnmounted(() => {
 
 .relay-editor__dropdown-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-1));
   left: 0;
   z-index: 50;
   min-width: 320px;
@@ -896,7 +896,7 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
   background: var(--color-bg-hover);
-  padding: 1px 8px;
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-full);
 }
 
@@ -931,7 +931,7 @@ onUnmounted(() => {
   justify-content: center;
   background: var(--color-bg-hover);
   border-radius: var(--radius-full);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   color: var(--color-text-secondary);
   flex-shrink: 0;

@@ -91,6 +91,4 @@ defineExpose({ submit, localForm })
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
 .form-group--check { flex-direction: row; align-items: center; }
 .form-group--check label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: normal; }
-.input-base { width: 100%; padding: 0.5rem 0.75rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; }
-.input-base:focus { border-color: var(--color-primary); }
 </style>

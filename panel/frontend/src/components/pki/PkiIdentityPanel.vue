@@ -285,8 +285,8 @@ function runInspectAction(kind) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(17.5rem, 1fr));
   gap: 0.75rem;
-  padding: 4px;
-  margin: -4px;
+  padding: var(--space-1);
+  margin: calc(-1 * var(--space-1));
 }
 
 .identity-card :deep(.base-list-card__header-left) {

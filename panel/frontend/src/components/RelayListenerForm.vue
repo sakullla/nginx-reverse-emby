@@ -792,11 +792,7 @@ async function handleSubmit() {
   border-radius: var(--radius-lg);
   font-weight: 700;
   letter-spacing: -0.01em;
-  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
-}
-
-.relay-listener-form__submit:hover:not(:disabled) {
-  filter: brightness(1.02);
+  box-shadow: var(--shadow-lg);
 }
 
 .settings-card {
@@ -811,7 +807,7 @@ async function handleSubmit() {
       var(--color-bg-surface) 42%
     );
   border: 1px solid color-mix(in srgb, var(--color-border-default) 94%, var(--color-primary) 6%);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border-radius: var(--radius-xl);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 65%, transparent);
 }
 
@@ -956,9 +952,9 @@ async function handleSubmit() {
 .path-chip__dot {
   width: 0.45rem;
   height: 0.45rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent);
+  box-shadow: var(--shadow-focus);
   flex-shrink: 0;
 }
 
@@ -1081,7 +1077,7 @@ async function handleSubmit() {
   border-radius: var(--radius-full);
   background: white;
   transition: transform var(--duration-fast) var(--ease-default);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.16);
+  box-shadow: var(--shadow-xs);
 }
 
 .toggle__input:checked + .toggle__slider {
@@ -1191,7 +1187,7 @@ async function handleSubmit() {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);

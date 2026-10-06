@@ -1409,7 +1409,7 @@ async function handleSubmit() {
   background: var(--color-bg-surface-raised);
   border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
   font-weight: 700;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+  box-shadow: var(--shadow-xs);
 }
 
 .form-tabs__dot {
@@ -1940,7 +1940,7 @@ async function handleSubmit() {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: min(100%, 22rem);
-  padding: 3px;
+  padding: var(--space-1);
   margin-bottom: 0.65rem;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
@@ -2125,7 +2125,7 @@ async function handleSubmit() {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  padding: 1px 7px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-primary-subtle);
   border: none;
   border-radius: var(--radius-full);
@@ -2204,7 +2204,7 @@ async function handleSubmit() {
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-sm);
 }
 
 .toggle__input:checked + .toggle__slider,
@@ -2491,7 +2491,7 @@ async function handleSubmit() {
 }
 
 .rule-form__submit.btn--primary {
-  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
+  box-shadow: var(--shadow-lg);
 }
 
 /* 请求头配置样式 */
@@ -2514,7 +2514,7 @@ async function handleSubmit() {
   height: 32px;
   background: var(--color-primary);
   border-radius: var(--radius-md);
-  color: white;
+  color: var(--color-text-inverse);
   flex-shrink: 0;
 }
 

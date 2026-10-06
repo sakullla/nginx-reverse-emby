@@ -138,7 +138,7 @@ function updateField(key, value) {
   border-radius: var(--radius-lg);
   padding: 0.875rem 1rem 1rem;
   min-width: 0;
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .traffic-policy-form__card--primary {
   border-color: color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 65%, var(--color-border-default));
@@ -169,7 +169,7 @@ function updateField(key, value) {
   display: inline-flex;
   align-items: center;
   padding: 0.08rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 70%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-primary-50) 75%, var(--color-bg-surface));
   color: var(--color-text-secondary);
@@ -255,7 +255,7 @@ function updateField(key, value) {
 .traffic-policy-form__badge {
   margin-left: 0.35rem;
   padding: 0.05rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--color-bg-subtle) 88%, transparent);
   color: var(--color-text-muted);
   font-size: 0.6875rem;
@@ -280,7 +280,7 @@ function updateField(key, value) {
 .traffic-policy-form__input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--color-primary, #3b82f6) 55%, var(--color-border-default));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary, #3b82f6) 16%, transparent);
+  box-shadow: var(--shadow-focus);
 }
 .traffic-policy-form__hint {
   color: var(--color-text-muted);

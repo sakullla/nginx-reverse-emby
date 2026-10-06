@@ -205,8 +205,8 @@ watch(() => props.visible, (val) => {
 }
 .traffic-trend-modal__granularity {
   display: inline-flex;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-0-5);
+  padding: var(--space-0-5);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);

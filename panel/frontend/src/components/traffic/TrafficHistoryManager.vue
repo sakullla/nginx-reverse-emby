@@ -75,7 +75,7 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   display: inline-flex;
   align-items: center;
   padding: 0.08rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--color-border-default) 85%, transparent);
   background: color-mix(in srgb, var(--color-bg-subtle) 80%, var(--color-bg-surface));
   color: var(--color-text-tertiary);
@@ -103,7 +103,7 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   display: inline-flex;
   align-items: center;
   padding: 0.2rem 0.5rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--color-border-default) 80%, transparent);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
@@ -137,7 +137,7 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
       color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 88%, #fff),
       color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 55%, transparent)
     );
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-danger, #dc2626) 8%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .traffic-history-manager__action-label {
   color: var(--color-text-tertiary);

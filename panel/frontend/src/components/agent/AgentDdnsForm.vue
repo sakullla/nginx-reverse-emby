@@ -414,7 +414,7 @@ function familyInterfaceMissing(key) {
 .agent-ddns-form__input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--color-primary, #3b82f6) 55%, var(--color-border-default));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary, #3b82f6) 16%, transparent);
+  box-shadow: var(--shadow-focus);
 }
 
 .agent-ddns-form__input:disabled {
