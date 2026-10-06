@@ -8,7 +8,6 @@ import (
 	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,7 +29,7 @@ type socketPolicyFactory struct {
 	errors    map[string]error
 }
 
-// This recording audit owner exercises authorization acknowledgement only.
+// This recording audit owner exercises audit submission and failure isolation.
 // Disk durability/latency belongs to the production journal's separate tests.
 type socketPolicyAudit struct {
 	mu     sync.Mutex
@@ -43,7 +42,7 @@ func (a *socketPolicyAudit) Audit(_ context.Context, event hostapi.AuditEvent) e
 	defer a.mu.Unlock()
 	a.events = append(a.events, event)
 	if a.reject {
-		return errors.New("fixture audit acknowledgement rejected")
+		return errors.New("fixture audit write rejected")
 	}
 	return nil
 }
@@ -75,15 +74,17 @@ func (runtime *socketPolicyRuntime) Evaluate(ctx context.Context, request policy
 
 func TestIntegrationHTTPWASMSourceAndComposedModes(t *testing.T) {
 	cases := []struct {
-		name   string
-		stages []testfixture.Stage
-		status int
+		name        string
+		stages      []testfixture.Stage
+		status      int
+		rejectAudit bool
 	}{
-		{"observe IP", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}}, 200},
-		{"enforce IP", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny}}, 403},
-		{"observe IP preserves WAF", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 403},
-		{"IP deny precedes observed WAF", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 403},
-		{"WAF requires audit acknowledgement", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 503},
+		{"observe IP", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}}, 200, false},
+		{"enforce IP", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny}}, 403, false},
+		{"observe IP preserves WAF", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 403, false},
+		{"IP deny precedes observed WAF", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 403, false},
+		{"WAF denial survives audit failure", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeEnforce, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 403, true},
+		{"WAF observation survives audit failure", []testfixture.Stage{{Kind: model.PolicyKindIP, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny}, {Kind: model.PolicyKindWAF, Mode: sdk.PolicyModeObserve, Action: sdk.PolicyActionDeny, Handling: sdk.PolicyModeHandlingLegacyWAF}}, 200, true},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -100,7 +101,7 @@ func TestIntegrationHTTPWASMSourceAndComposedModes(t *testing.T) {
 			rule := model.HTTPRule{ID: 7, Enabled: true, PolicyRef: &model.PolicyRef{ID: "effective"}, TrustedProxyRanges: []string{"127.0.0.0/8"}}
 			snapshot.Rules = []model.HTTPRule{rule}
 			registry := module.NewRegistry()
-			audit := &socketPolicyAudit{reject: test.name == "WAF requires audit acknowledgement"}
+			audit := &socketPolicyAudit{reject: test.rejectAudit}
 			observer := observability.CapabilityAuditObserver{Observer: observability.Default(), Auditor: audit}
 			if err := registry.Register(policy.NewModule(factory, observer)); err != nil {
 				t.Fatal(err)
@@ -185,14 +186,14 @@ func TestIntegrationHTTPWASMSourceAndComposedModes(t *testing.T) {
 					found = found || event.Call.Validate() == nil && event.Call.InstanceID == "fixture-waf" && event.Call.Generation == view.ID() && event.Call.Capability == sdk.CapabilityPolicyTrustedSource && event.Outcome == "allowed"
 				}
 				if !found {
-					t.Fatal("WAF normalized HTTP bypassed authorization acknowledgement")
+					t.Fatal("WAF normalized HTTP bypassed capability audit submission")
 				}
 				if audit.reject {
 					factory.mu.Lock()
 					failure := factory.errors["fixture-waf"]
 					factory.mu.Unlock()
-					if failure == nil || !strings.Contains(failure.Error(), "normalized-http") {
-						t.Fatal("503 did not come from rejected audit acknowledgement", failure)
+					if failure != nil {
+						t.Fatal("audit failure changed WAF capability authorization", failure)
 					}
 				}
 			}
