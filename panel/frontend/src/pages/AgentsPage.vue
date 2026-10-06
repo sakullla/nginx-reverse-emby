@@ -407,15 +407,21 @@ watch(view, () => {
   monitorStreamEnabled.value = view.value === 'monitor'
 }, { immediate: true })
 
-// Pagination over the filtered list; any filter/sort/view change resets to page 1.
+// Pagination over the filtered list. Reset to page 1 only on user-side input
+// changes (search/filter/sort/view) — never on background data refreshes, whose
+// new array identities from the 10s poll / SSE merge must not yank the page.
 const AGENT_PAGE_SIZE = 20
 const page = ref(1)
 const pagedAgents = computed(() => {
   const start = (page.value - 1) * AGENT_PAGE_SIZE
   return filteredAgents.value.slice(start, start + AGENT_PAGE_SIZE)
 })
-watch([filteredAgents, view], () => {
+watch([searchQuery, statusFilter, modeFilter, tagFilter, sortField, sortOrder, view], () => {
   page.value = 1
+})
+// If the list shrinks below the current page (e.g. deletions), clamp into range.
+watch(() => Math.ceil(filteredAgents.value.length / AGENT_PAGE_SIZE), (totalPages) => {
+  if (page.value > totalPages) page.value = Math.max(1, totalPages)
 })
 
 function refreshAgents() {
@@ -742,10 +748,9 @@ async function confirmEdit() {
         agentId: editingAgent.value.id,
         payload
       })
-    } catch (error) {
-      // Keep the modal open so the user can retry; the mutation hook has
-      // already surfaced the failure via the message store.
-      messageStore.error(error, '保存节点设置失败')
+    } catch {
+      // Keep the modal open so the user can retry. The mutation hook's onError
+      // already surfaced the failure toast; do not double-report here.
       return
     }
   }

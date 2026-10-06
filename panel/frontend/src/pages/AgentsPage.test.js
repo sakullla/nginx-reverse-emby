@@ -269,4 +269,50 @@ describe('AgentsPage list UX', () => {
     expect(wrapper.findAllComponents({ name: 'AgentMonitorCard' })).toHaveLength(20)
     expect(wrapper.findComponent({ name: 'ListPagination' }).props('total')).toBe(22)
   })
+
+  it('keeps the current page across background data refreshes with new array identities', async () => {
+    routeQuery = { view: 'list' }
+    const makeAgents = () => Array.from({ length: 25 }, (_, i) => ({
+      id: `a${i}`,
+      name: `agent-${i}`,
+      status: 'online',
+      last_seen_at: new Date(Date.now() - i * 60000).toISOString()
+    }))
+    agentsData.value = makeAgents()
+    const wrapper = shallowMount(AgentsPage, {
+      global: { stubs: { BaseModal: BaseModalStub, EmptyState: EmptyStateStub } }
+    })
+
+    const pagination = wrapper.findComponent({ name: 'ListPagination' })
+    pagination.vm.$emit('update:page', 2)
+    await nextTick()
+    expect(pagination.props('page')).toBe(2)
+    expect(wrapper.findComponent({ name: 'AgentTable' }).props('agents')).toHaveLength(5)
+
+    // Simulate the 10s background poll / SSE merge: same content, but every
+    // element is a fresh object so filteredAgents gets a brand-new array.
+    agentsData.value = makeAgents().map(agent => ({ ...agent, last_seen_at: new Date().toISOString() }))
+    await nextTick()
+    await nextTick()
+
+    expect(wrapper.findComponent({ name: 'ListPagination' }).props('page')).toBe(2)
+    expect(wrapper.findComponent({ name: 'AgentTable' }).props('agents')).toHaveLength(5)
+
+    // User-side filter input changes still reset to page 1.
+    await wrapper.get('input[name="agent-search"]').setValue('agent-')
+    await nextTick()
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ListPagination' }).props('page')).toBe(1)
+
+    // A shrinking list clamps an out-of-range page back into range.
+    await wrapper.get('input[name="agent-search"]').setValue('')
+    await nextTick()
+    wrapper.findComponent({ name: 'ListPagination' }).vm.$emit('update:page', 2)
+    await nextTick()
+    agentsData.value = makeAgents().slice(0, 15)
+    await nextTick()
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ListPagination' }).exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'AgentTable' }).props('agents')).toHaveLength(15)
+  })
 })
