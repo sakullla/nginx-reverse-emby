@@ -794,7 +794,7 @@ function confirmDelete() {
   border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-primary-subtle) 75%, var(--color-bg-surface));
   color: var(--color-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent);
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
 }
 
 .join-platform__icon {
@@ -850,7 +850,7 @@ function confirmDelete() {
 .join-token-card--active {
   border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-primary-subtle) 55%, var(--color-bg-surface));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent);
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
 }
 
 .join-token-card__checkbox {
@@ -883,7 +883,7 @@ function confirmDelete() {
   display: inline-flex;
   align-items: center;
   padding: 0.1rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   color: var(--color-primary);
   font-size: 0.68rem;
@@ -983,7 +983,7 @@ function confirmDelete() {
 .join-steps__index {
   width: 1.35rem;
   height: 1.35rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   display: inline-flex;
   align-items: center;
   justify-content: center;

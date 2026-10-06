@@ -160,7 +160,7 @@ async function handleLogin() {
 .login-card__mark {
   width: 56px;
   height: 56px;
-  padding: 8px;
+  padding: var(--space-2);
   box-sizing: border-box;
   border-radius: var(--radius-xl);
   background: var(--color-brand-bg, transparent);
@@ -252,7 +252,7 @@ async function handleLogin() {
 
 .input--error:focus {
   border-color: var(--color-danger);
-  box-shadow: 0 0 0 3px var(--color-danger-50);
+  box-shadow: var(--shadow-focus-danger);
 }
 
 .login-error {
@@ -337,18 +337,18 @@ async function handleLogin() {
 }
 
 .spinner {
-  width: 20px;
-  height: 20px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
+  width: var(--space-5);
+  height: var(--space-5);
+  border: 2px solid color-mix(in srgb, var(--color-text-inverse) 30%, transparent);
+  border-top-color: var(--color-text-inverse);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
 
 .spinner--sm {
-  width: 16px;
-  height: 16px;
-  border-width: 1.5px;
+  width: var(--space-4);
+  height: var(--space-4);
+  border-width: var(--border-width-thick);
 }
 
 @keyframes spin {

@@ -284,8 +284,8 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
 
 .cluster-metrics__bar {
   display: flex;
-  gap: 2px;
-  height: 6px;
+  gap: var(--space-0-5);
+  height: var(--space-1-5);
   border-radius: var(--radius-full);
   overflow: hidden;
   background: var(--color-bg-subtle);
@@ -294,7 +294,7 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
 .cluster-metrics__bar-seg {
   height: 100%;
   border-radius: var(--radius-full);
-  min-width: 4px;
+  min-width: var(--space-1);
   animation: cluster-bar-enter 0.55s var(--ease-default, ease) both;
   transform-origin: left center;
 }
@@ -316,8 +316,8 @@ const certsLink = computed(() => props.defaultAgentId ? `/certs?agentId=${props.
 
 @media (max-width: 640px) {
   .cluster-metrics__ring {
-    width: 64px;
-    height: 64px;
+    width: var(--space-16);
+    height: var(--space-16);
   }
 
   .cluster-metrics__rows {

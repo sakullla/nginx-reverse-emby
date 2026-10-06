@@ -111,8 +111,8 @@ function tileClass(agent) {
 }
 
 .agent-tile__dot {
-  width: 8px;
-  height: 8px;
+  width: var(--space-2);
+  height: var(--space-2);
   border-radius: 50%;
   background: var(--color-success, #34d399);
   flex-shrink: 0;

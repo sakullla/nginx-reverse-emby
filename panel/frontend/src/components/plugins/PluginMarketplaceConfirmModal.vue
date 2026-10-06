@@ -206,7 +206,7 @@ const submitLabel = computed(() => {
 .package-download-progress__track {
   height: 5px;
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
 }
 

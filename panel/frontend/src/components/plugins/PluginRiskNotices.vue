@@ -95,7 +95,7 @@ const notices = computed(() => pluginRiskNotices(props.packageDetail, props.sour
   top: 0.8rem;
   width: 0.35rem;
   height: 0.35rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-warning);
 }
 </style>

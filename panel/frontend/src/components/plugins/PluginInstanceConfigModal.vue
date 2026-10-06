@@ -704,10 +704,10 @@ async function runDynamicAction({ action, target_id, confirmed }) {
 .plugin-publish__node, .plugin-publish__host { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); }
 .plugin-publish__host { display: grid; gap: var(--space-2); }
 .plugin-publish__host input {
-  min-width: 0; padding: .6rem .75rem; border: 1px solid var(--color-border-default);
+  min-width: 0; padding: var(--space-2-5) var(--space-3); border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit;
 }
-.plugin-publish__host input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
+.plugin-publish__host input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle)); }
 .plugin-publish__https { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--text-sm); }
 .plugin-publish__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 

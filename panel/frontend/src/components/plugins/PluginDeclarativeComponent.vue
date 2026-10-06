@@ -297,7 +297,7 @@ const error = computed(() => {
 .declarative-field select,
 .declarative-array-scalar input,
 .declarative-keyvalue__row input {
-  width: 100%; box-sizing: border-box; padding: .6rem .75rem;
+  width: 100%; box-sizing: border-box; padding: var(--space-2-5) var(--space-3);
   border: 1px solid var(--color-border-default); border-radius: var(--radius-md);
   background: var(--color-bg-surface); color: var(--color-text-primary); font: inherit;
   transition: border-color var(--duration-fast) var(--ease-default), box-shadow var(--duration-fast) var(--ease-default);
@@ -307,7 +307,7 @@ const error = computed(() => {
 .declarative-field select:focus-visible,
 .declarative-keyvalue__row input:focus-visible {
   outline: none; border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
 }
 .declarative-field textarea { min-height: 5.5rem; resize: vertical; }
 
@@ -360,8 +360,8 @@ const error = computed(() => {
 }
 .declarative-toggle--on .declarative-toggle__track { background: var(--color-primary); }
 .declarative-toggle--on .declarative-toggle__thumb { transform: translateX(1rem); }
-.declarative-toggle input:focus-visible + .declarative-toggle__track { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
-.declarative-toggle__text { display: grid; gap: 2px; min-width: 0; }
+.declarative-toggle input:focus-visible + .declarative-toggle__track { box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle)); }
+.declarative-toggle__text { display: grid; gap: var(--space-0-5); min-width: 0; }
 .declarative-toggle__label { color: var(--color-text-primary); font-size: var(--text-sm); font-weight: 600; }
 
 /* --- radio / multiselect choices --- */
@@ -383,8 +383,8 @@ const error = computed(() => {
 }
 .declarative-choice__control--box { border-radius: var(--radius-sm, 4px); }
 .declarative-choice--selected .declarative-choice__control { border-color: var(--color-primary); box-shadow: inset 0 0 0 3px var(--color-bg-surface); background: var(--color-primary); }
-.declarative-choice input:focus-visible + .declarative-choice__control { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
-.declarative-choice__text { min-width: 0; display: grid; gap: 2px; color: var(--color-text-primary); font-size: var(--text-sm); }
+.declarative-choice input:focus-visible + .declarative-choice__control { box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle)); }
+.declarative-choice__text { min-width: 0; display: grid; gap: var(--space-0-5); color: var(--color-text-primary); font-size: var(--text-sm); }
 
 /* --- keyvalue --- */
 .declarative-keyvalue__rows { display: grid; gap: var(--space-2); }

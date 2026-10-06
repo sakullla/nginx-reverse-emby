@@ -416,8 +416,8 @@ function formatDate(value) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
   gap: 0.75rem;
-  padding: 4px 4px 12px;
-  margin: -4px -4px -4px;
+  padding: var(--space-1) var(--space-1) var(--space-3);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) calc(-1 * var(--space-1));
 }
 
 .repository-card :deep(.base-list-card__header-left) {

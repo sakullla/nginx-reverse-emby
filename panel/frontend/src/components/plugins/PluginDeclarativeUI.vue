@@ -114,5 +114,5 @@ function action(action) {
   padding-top: var(--space-4); border-top: 1px solid var(--color-border-subtle);
 }
 .declarative-target { min-width: 12rem; display: grid; gap: var(--space-1); color: var(--color-text-secondary); font-size: var(--text-sm); }
-.declarative-target input { padding: .6rem .75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.declarative-target input { padding: var(--space-2-5) var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }
 </style>

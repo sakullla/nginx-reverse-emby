@@ -179,7 +179,7 @@ function resetImport() {
   top: 14px;
   right: -50%;
   width: 100%;
-  height: 2px;
+  height: var(--space-0-5);
   background: var(--color-border-default);
   z-index: 0;
 }
@@ -199,7 +199,7 @@ function resetImport() {
   z-index: 1;
   transition: all var(--duration-fast) var(--ease-default);
 }
-.stepper__item.active .stepper__circle { border-color: var(--color-primary); background: var(--color-primary); color: white; }
+.stepper__item.active .stepper__circle { border-color: var(--color-primary); background: var(--color-primary); color: var(--color-text-inverse); }
 .stepper__item.done .stepper__circle { border-color: var(--color-primary); background: var(--color-primary-subtle); color: var(--color-primary); }
 .stepper__label { font-size: var(--text-xs); color: var(--color-text-tertiary); font-weight: var(--font-medium); }
 .stepper__item.active .stepper__label { color: var(--color-text-primary); font-weight: var(--font-semibold); }
@@ -234,7 +234,7 @@ function resetImport() {
     height: 26px;
   }
   .stepper__item:not(:last-child)::after {
-    top: 12px;
+    top: var(--space-3);
   }
 }
 </style>

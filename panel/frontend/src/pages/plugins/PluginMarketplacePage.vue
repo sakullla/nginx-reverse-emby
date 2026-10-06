@@ -379,8 +379,8 @@ function onRepositoriesUpdated() {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
   gap: 0.85rem;
-  padding: 4px 4px 12px;
-  margin: -4px -4px -4px;
+  padding: var(--space-1) var(--space-1) var(--space-3);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) calc(-1 * var(--space-1));
   align-items: stretch;
 }
 
@@ -499,7 +499,7 @@ function onRepositoriesUpdated() {
 .marketplace-filters {
   display: flex;
   gap: 0.25rem;
-  padding: 3px;
+  padding: var(--space-1);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
   background: var(--color-bg-subtle);
@@ -540,7 +540,7 @@ function onRepositoriesUpdated() {
   width: 42px;
   height: 42px;
   flex-shrink: 0;
-  border-radius: 13px;
+  border-radius: var(--radius-lg);
   color: var(--color-primary);
   background: var(--color-primary-subtle);
 }

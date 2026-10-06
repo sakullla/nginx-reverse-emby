@@ -527,7 +527,7 @@ function openDetail(detail) {
 .plugins-chip {
   padding: 0.3rem 0.7rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-bg-canvas);
   color: var(--color-text-secondary);
   font: inherit;
@@ -538,7 +538,7 @@ function openDetail(detail) {
 .plugins-chip--active {
   border-color: var(--color-primary);
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-text-inverse);
 }
 
 .plugin-card__meta {
@@ -571,7 +571,7 @@ function openDetail(detail) {
   min-width: 0;
   padding: 0.28rem 0.6rem;
   border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border-default));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
   color: var(--color-primary);
   font-family: var(--font-mono);
@@ -619,7 +619,7 @@ function openDetail(detail) {
 }
 
 .plugin-card__facts dd {
-  margin: 2px 0 0;
+  margin: var(--space-0-5) 0 0;
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }

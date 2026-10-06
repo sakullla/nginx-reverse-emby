@@ -2427,8 +2427,8 @@ function packageStatusLabel(status) {
 }
 .traffic-trend__controls {
   display: inline-flex;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-0-5);
+  padding: var(--space-0-5);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
@@ -2460,7 +2460,7 @@ function packageStatusLabel(status) {
 .empty-hint {
   text-align: center;
   color: var(--color-text-muted);
-  padding: var(--space-8);
+  padding: var(--space-8) var(--space-4);
   font-size: var(--text-sm);
 }
 
@@ -2602,8 +2602,8 @@ function packageStatusLabel(status) {
 }
 
 .spinner {
-  width: 24px;
-  height: 24px;
+  width: var(--space-6);
+  height: var(--space-6);
   border: 2px solid var(--color-border-default);
   border-top-color: var(--color-primary);
   border-radius: 50%;
@@ -2692,7 +2692,7 @@ function packageStatusLabel(status) {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   background: var(--color-bg-surface);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .traffic-scenario-modal__section-header--analysis {
   gap: 0.25rem;
@@ -2787,7 +2787,7 @@ function packageStatusLabel(status) {
   display: inline-flex;
   align-items: center;
   padding: 0.12rem 0.45rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 70%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-primary-50) 70%, var(--color-bg-surface));
   color: var(--color-text-secondary);
@@ -2846,7 +2846,7 @@ function packageStatusLabel(status) {
   gap: 0.75rem;
 }
 .traffic-scenario-modal--management .traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__card) {
-  box-shadow: 0 1px 1px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .traffic-scenario-modal--management .traffic-scenario-modal__panel--history :deep(.traffic-history-manager) {
   gap: 0.875rem;

@@ -392,7 +392,7 @@ function confirmDelete() {
 
 .tag {
   font-size: var(--text-xs);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-full);
   background: var(--color-primary-subtle);
   color: var(--color-primary);
@@ -473,11 +473,11 @@ function confirmDelete() {
 
 .btn-danger {
   background: var(--color-danger);
-  color: white;
+  color: var(--color-text-inverse);
 }
 
 .btn-danger:hover {
-  background: #dc2626;
+  background: var(--color-danger);
 }
 
 .btn-sm {
@@ -489,7 +489,7 @@ function confirmDelete() {
   border: 1px solid var(--color-border-default);
   background: var(--color-bg-surface);
   border-radius: var(--radius-sm);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--text-xs);
   cursor: pointer;
 }
@@ -501,7 +501,7 @@ function confirmDelete() {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(37, 23, 54, 0.4);
+  background: var(--color-overlay);
   backdrop-filter: blur(8px);
   z-index: var(--z-modal);
   display: flex;
