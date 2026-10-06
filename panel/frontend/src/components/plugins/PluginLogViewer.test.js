@@ -313,6 +313,24 @@ describe('PluginLogViewer', () => {
     expect(mocks.fetchPluginLogs).toHaveBeenCalledTimes(4)
   })
 
+  it('stops auto refresh after consecutive load failures', async () => {
+    vi.useFakeTimers()
+    mocks.fetchPluginLogs.mockRejectedValue(new Error('log backend unreachable'))
+    const wrapper = mount(PluginLogViewer, { props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [] } })
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-test="plugin-log-auto-refresh"]').setValue(true)
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+    // Initial load + three failing polls turn the switch back off.
+    expect(mocks.fetchPluginLogs).toHaveBeenCalledTimes(4)
+    expect(wrapper.get('[data-test="plugin-log-auto-refresh"]').element.checked).toBe(false)
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+    expect(mocks.fetchPluginLogs).toHaveBeenCalledTimes(4)
+    expect(wrapper.get('.plugin-log-viewer__error').attributes('role')).toBe('alert')
+  })
+
   it('shows a sanitized error when loading fails', async () => {
     mocks.fetchPluginLogs.mockRejectedValue(new Error('log backend unreachable'))
     const wrapper = mount(PluginLogViewer, { props: { pluginId: 'official.rpc', instanceId: 'rpc-a', agents: [] } })

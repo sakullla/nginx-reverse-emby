@@ -396,7 +396,14 @@ function openDetail(detail) {
               </BaseBadge>
             </td>
             <td class="plugin-catalog-table__col-actions">
-              <div class="plugin-catalog-table__actions" @click.stop>
+              <!-- Keydown must stop here: the row's Enter/Space handler would otherwise
+                   swallow the inline action's default activation and navigate to detail. -->
+              <div
+                class="plugin-catalog-table__actions"
+                @click.stop
+                @keydown.enter.stop
+                @keydown.space.stop
+              >
                 <a
                   v-if="firstPublishedEntry(detail)"
                   class="plugin-card__domain plugin-card__domain--table"
@@ -671,6 +678,13 @@ function openDetail(detail) {
     width: auto;
     padding: 0.35rem 0;
     border: 0;
+  }
+
+  .plugin-catalog-table td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
   }
 
   .plugin-catalog-table td:first-child {

@@ -42,7 +42,8 @@ const {
 const missing = computed(() => !loading.value && !selected.value)
 
 // Manual entry to refresh the install status shown in the header without
-// leaving the page; load({ silent: true }) re-reads installed summaries.
+// leaving the page; load({ silent: true }) silently reloads the catalog
+// snapshot, which also re-reads the installed summaries behind the status.
 function refreshStatus() {
   if (loading.value || catalogRefreshing.value || detailLoading.value || actionBusy.value) return
   load({ silent: true })

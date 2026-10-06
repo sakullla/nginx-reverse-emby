@@ -9,6 +9,7 @@ const CONTROL_PLANE_AGENT_ID = 'control-plane'
 const CONTROL_PLANE_LABEL = '控制面'
 const DEFAULT_LOG_LIMIT = 50
 const AUTO_REFRESH_INTERVAL_MS = 10000
+const AUTO_REFRESH_FAILURE_LIMIT = 3
 
 const props = defineProps({
   pluginId: { type: String, required: true },
@@ -45,6 +46,7 @@ const autoRefresh = ref(false)
 let generation = 0
 let controller = null
 let autoRefreshTimer = 0
+let consecutiveLoadFailures = 0
 
 const levelOptions = [
   { value: '', label: '全部级别' },
@@ -84,7 +86,11 @@ watch(() => [props.pluginId, props.instanceId], () => {
 watch(agentID, () => load(true))
 watch(autoRefresh, (enabled) => {
   stopAutoRefresh()
-  if (enabled) autoRefreshTimer = window.setInterval(() => load(), AUTO_REFRESH_INTERVAL_MS)
+  if (enabled) {
+    // Only failures observed while polling count toward stopping auto refresh.
+    consecutiveLoadFailures = 0
+    autoRefreshTimer = window.setInterval(() => load(), AUTO_REFRESH_INTERVAL_MS)
+  }
 })
 onBeforeUnmount(() => {
   stopAutoRefresh()
@@ -112,6 +118,7 @@ async function load(selectionChanged = false) {
       signal: controller.signal
     })
     if (requestGeneration !== generation) return
+    consecutiveLoadFailures = 0
     entries.value = [...page.entries]
       .sort((left, right) => {
         const leftTime = Date.parse(left?.created_at || '') || 0
@@ -122,6 +129,10 @@ async function load(selectionChanged = false) {
   } catch (cause) {
     if (requestGeneration === generation && cause?.name !== 'AbortError' && cause?.code !== 'ERR_CANCELED') {
       error.value = sanitizePluginText(cause?.message || '读取运行日志失败')
+      consecutiveLoadFailures += 1
+      // Stop polling a log backend that keeps failing so auto refresh never
+      // retries forever; the manual agent filter or remount restarts it.
+      if (autoRefresh.value && consecutiveLoadFailures >= AUTO_REFRESH_FAILURE_LIMIT) autoRefresh.value = false
     }
   } finally {
     if (requestGeneration === generation) loading.value = false
