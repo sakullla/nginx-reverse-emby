@@ -145,12 +145,15 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		m.mu.Unlock()
 		return nil, errors.New("HTTP packet ingress cannot join stream-only hot restart")
 	}
-	binding := m.bindings[spec.bindingKey]
+	// HTTP and HTTPS generations share the same raw TCP socket. TLS belongs
+	// to each generation's endpoint, not to the listening address.
+	bindingKey := spec.address
+	binding := m.bindings[bindingKey]
 	if binding == nil {
 		var stream *ingress.StreamBroker
 		var err error
 		if m.processStreams != nil {
-			stream, err = m.processStreams.NewBroker(ctx, "http:"+spec.bindingKey, func(ctx context.Context) (net.Listener, error) {
+			stream, err = m.processStreams.NewBroker(ctx, "http:"+bindingKey, func(ctx context.Context) (net.Listener, error) {
 				return listenRuntimeSpecTCP(ctx, spec, providers)
 			})
 		} else {
@@ -169,7 +172,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			return nil, err
 		}
 		binding = &httpIngressBinding{
-			key:    spec.bindingKey,
+			key:    bindingKey,
 			stream: stream,
 		}
 		if binding.stream == nil {
@@ -177,12 +180,11 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			return nil, errors.New("create HTTP stream broker")
 		}
 		if m.selector != nil {
-			bindingKey := spec.bindingKey
 			binding.stream.SetSelector(func() *ingress.StreamEndpoint {
 				return m.currentStreamEndpoint(bindingKey)
 			})
 		}
-		m.bindings[spec.bindingKey] = binding
+		m.bindings[bindingKey] = binding
 	}
 	if http3Enabled && spec.scheme == "https" && binding.packet == nil {
 		binding.quicClassifier = newQUICConnectionClassifier()
@@ -198,7 +200,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		}
 		var err error
 		if m.processPackets != nil {
-			binding.packet, err = m.processPackets.NewBroker(ctx, "http:"+spec.bindingKey, "udp", listenPacket, ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
+			binding.packet, err = m.processPackets.NewBroker(ctx, "http:"+bindingKey, "udp", listenPacket, ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
 		} else {
 			var packet net.PacketConn
 			packet, err = listenPacket(ctx)
@@ -211,7 +213,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		}
 		if err != nil {
 			if binding.refs == 0 {
-				delete(m.bindings, spec.bindingKey)
+				delete(m.bindings, bindingKey)
 				_ = binding.stream.Close()
 			}
 			m.mu.Unlock()
@@ -219,14 +221,13 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		}
 		if binding.packet == nil {
 			if binding.refs == 0 {
-				delete(m.bindings, spec.bindingKey)
+				delete(m.bindings, bindingKey)
 				_ = binding.stream.Close()
 			}
 			m.mu.Unlock()
 			return nil, errors.New("create HTTP/3 packet broker")
 		}
 		if m.selector != nil {
-			bindingKey := spec.bindingKey
 			binding.packet.SetSelector(func() *ingress.PacketEndpoint {
 				return m.currentPacketEndpoint(bindingKey)
 			})

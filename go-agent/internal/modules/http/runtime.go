@@ -288,6 +288,7 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 	groups := make(map[string][]model.HTTPRule)
 	addresses := make(map[string]string)
 	schemes := make(map[string]string)
+	addressSchemes := make(map[string]string)
 	hosts := make(map[string]map[string]struct{})
 	order := make([]string, 0)
 
@@ -299,6 +300,10 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 		if err := validateRelayChain(rule, relayListeners, providers.Relay); err != nil {
 			return nil, err
 		}
+		if scheme, exists := addressSchemes[spec.address]; exists && scheme != spec.scheme {
+			return nil, fmt.Errorf("http listener %s cannot serve HTTP and HTTPS in the same generation", spec.address)
+		}
+		addressSchemes[spec.address] = spec.scheme
 		if _, ok := groups[spec.key]; !ok {
 			order = append(order, spec.key)
 			addresses[spec.key] = spec.address
