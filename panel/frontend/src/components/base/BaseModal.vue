@@ -166,8 +166,8 @@ onUnmounted(() => {
 }
 
 .modal__title {
-  font-size: 1.0625rem;
-  font-weight: 700;
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0;
   letter-spacing: -0.02em;
@@ -175,9 +175,9 @@ onUnmounted(() => {
 }
 
 .modal__subtitle {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
-  margin: 0.2rem 0 0;
+  margin: var(--space-1) 0 0;
   line-height: 1.4;
 }
 

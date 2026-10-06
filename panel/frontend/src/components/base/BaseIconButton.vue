@@ -47,13 +47,13 @@ function onClick(e) {
   color: var(--color-text-secondary);
   cursor: pointer;
   border-radius: var(--radius-md);
-  transition: background 0.15s, color 0.15s, transform 0.15s;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default);
   padding: 0;
   flex-shrink: 0;
 }
 
 .base-icon-button:disabled {
-  opacity: 0.4;
+  opacity: 0.48;
   cursor: not-allowed;
 }
 

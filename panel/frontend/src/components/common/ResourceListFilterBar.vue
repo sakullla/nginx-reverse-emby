@@ -671,15 +671,15 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.65rem;
-  margin-bottom: 0.875rem;
+  gap: var(--space-2) var(--space-2-5);
+  margin-bottom: var(--space-4);
 }
 
 .resource-list-filter-bar__toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--space-2);
   flex: 1 1 100%;
   min-width: 0;
 }
@@ -687,7 +687,7 @@ onUnmounted(() => {
 .resource-list-filter-bar__field {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -713,18 +713,18 @@ onUnmounted(() => {
 }
 
 .resource-list-filter-bar__label {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
 
 .resource-list-filter-bar__search-shell {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: var(--space-1-5);
   min-height: 34px;
-  padding: 0 0.45rem 0 0.7rem;
+  padding: 0 var(--space-2) 0 var(--space-3);
   border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   transition: border-color var(--duration-fast) var(--ease-default),
               box-shadow var(--duration-fast) var(--ease-default);
@@ -746,10 +746,10 @@ onUnmounted(() => {
   border: none;
   background: transparent;
   color: var(--color-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   outline: none;
-  padding: 0.35rem 0;
+  padding: var(--space-1-5) 0;
 }
 
 .resource-list-filter-bar__input::-webkit-search-cancel-button {
@@ -766,7 +766,7 @@ onUnmounted(() => {
   margin: 0;
   padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-bg-subtle);
   color: var(--color-text-muted);
   cursor: pointer;
@@ -788,14 +788,14 @@ onUnmounted(() => {
 .resource-list-filter-bar__filter-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: var(--space-1-5);
   min-height: 34px;
-  padding: 0.35rem 0.7rem;
+  padding: var(--space-1-5) var(--space-3);
   border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
@@ -831,12 +831,12 @@ onUnmounted(() => {
   justify-content: center;
   min-width: 1.1rem;
   height: 1.1rem;
-  padding: 0 0.3rem;
-  border-radius: 999px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
   background: var(--color-primary);
-  color: var(--color-on-primary, #fff);
-  font-size: 0.6875rem;
-  font-weight: 600;
+  color: var(--color-text-inverse);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   line-height: 1;
 }
 
@@ -846,12 +846,11 @@ onUnmounted(() => {
   box-sizing: border-box;
   padding: 0;
   background: var(--color-bg-surface-raised);
-  border: 1px solid color-mix(in srgb, var(--color-border-default) 88%, var(--color-primary) 12%);
-  border-radius: calc(var(--radius-xl) + 4px);
+  border: var(--border-width-thin) solid color-mix(in srgb, var(--color-border-default) 88%, var(--color-primary) 12%);
+  border-radius: var(--radius-2xl);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent),
-    var(--shadow-xl),
-    0 24px 48px -20px rgb(15 23 42 / 0.18);
+    var(--shadow-2xl);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -859,11 +858,10 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .resource-list-filter-bar__panel {
-    border-radius: calc(var(--radius-xl) + 6px);
+    border-radius: var(--radius-3xl);
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent),
-      var(--shadow-xl),
-      0 -12px 36px -18px rgb(15 23 42 / 0.22);
+      var(--shadow-2xl);
   }
 
   .resource-list-filter-bar__panel-group-grid--status,
@@ -893,10 +891,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: var(--space-3);
   flex-shrink: 0;
-  padding: 0.8rem 0.95rem 0.8rem 1.05rem;
-  border-bottom: 1px solid var(--color-border-default);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-width-thin) solid var(--color-border-default);
   background:
     linear-gradient(
       180deg,
@@ -909,33 +907,33 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.4rem 0.55rem;
+  gap: var(--space-1-5) var(--space-2);
   min-width: 0;
 }
 
 .resource-list-filter-bar__panel-title {
-  font-size: 0.9375rem;
-  font-weight: 700;
+  font-size: var(--text-base);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   letter-spacing: -0.015em;
   line-height: 1.2;
 }
 
 .resource-list-filter-bar__panel-count {
-  font-size: 0.6875rem;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
   color: var(--color-primary);
   background: var(--color-primary-subtle);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border: var(--border-width-thin) solid color-mix(in srgb, var(--color-primary) 22%, transparent);
   border-radius: var(--radius-full);
-  padding: 0.12rem 0.5rem;
+  padding: var(--space-0-5) var(--space-2);
   line-height: 1.2;
 }
 
 .resource-list-filter-bar__panel-actions {
   display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
+  gap: var(--space-1);
   flex-shrink: 0;
 }
 
@@ -975,25 +973,25 @@ onUnmounted(() => {
   overflow-y: auto;
   overscroll-behavior: contain;
   min-height: 0;
-  padding: 0.2rem 0 0.35rem;
+  padding: var(--space-1) 0 var(--space-1-5);
   scrollbar-gutter: stable;
 }
 
 .resource-list-filter-bar__panel-group {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
-  padding: 0.9rem 1.05rem;
+  gap: var(--space-2-5);
+  padding: var(--space-4);
 }
 
 .resource-list-filter-bar__panel-group + .resource-list-filter-bar__panel-group {
-  border-top: 1px solid color-mix(in srgb, var(--color-border-default) 85%, transparent);
+  border-top: var(--border-width-thin) solid color-mix(in srgb, var(--color-border-default) 85%, transparent);
 }
 
 .resource-list-filter-bar__panel-group-title {
   margin: 0;
-  font-size: 0.6875rem;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--color-text-muted);
@@ -1001,17 +999,17 @@ onUnmounted(() => {
 
 .resource-list-filter-bar__panel-group-grid {
   display: grid;
-  gap: 0.85rem;
+  gap: var(--space-3);
 }
 
 .resource-list-filter-bar__panel-group-grid--status {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem 1rem;
+  gap: var(--space-3) var(--space-4);
 }
 
 .resource-list-filter-bar__panel-group-grid--resource {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.7rem 0.75rem;
+  gap: var(--space-3);
 }
 
 .resource-list-filter-bar__panel-group-grid--tags {
@@ -1021,11 +1019,11 @@ onUnmounted(() => {
 .resource-list-filter-bar__segments {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem;
-  padding: 0.22rem;
+  gap: var(--space-1);
+  padding: var(--space-1);
   border-radius: var(--radius-lg);
   background: var(--color-bg-subtle, var(--color-bg-surface));
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
 }
 
 .resource-list-filter-bar__segment {
@@ -1035,13 +1033,13 @@ onUnmounted(() => {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 30px;
-  padding: 0.25rem 0.7rem;
-  border-radius: calc(var(--radius-lg) - 2px);
-  border: 1px solid transparent;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  border: var(--border-width-thin) solid transparent;
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   font-family: inherit;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
@@ -1065,18 +1063,18 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, var(--color-primary) 18%, transparent);
   background: var(--color-bg-surface-raised);
   color: var(--color-primary);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.07);
+  box-shadow: var(--shadow-xs);
 }
 
 .resource-list-filter-bar__reset {
   border: none;
   background: transparent;
   color: var(--color-primary);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   font-family: inherit;
   cursor: pointer;
-  padding: 0.25rem 0.45rem;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-md, var(--radius-lg));
   transition: background var(--duration-fast) var(--ease-default),
               color var(--duration-fast) var(--ease-default);
@@ -1098,19 +1096,19 @@ onUnmounted(() => {
 .resource-list-filter-bar__reset--panel {
   flex-shrink: 0;
   min-height: 1.85rem;
-  padding-inline: 0.55rem;
+  padding-inline: var(--space-2);
 }
 
 .resource-list-filter-bar__panel-field {
   display: flex;
   flex-direction: column;
-  gap: 0.38rem;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 
 .resource-list-filter-bar__panel-field .resource-list-filter-bar__label {
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   color: var(--color-text-secondary);
   line-height: 1.2;
 }
@@ -1118,12 +1116,12 @@ onUnmounted(() => {
 .resource-list-filter-bar__select {
   min-height: 36px;
   width: 100%;
-  padding: 0.45rem 0.7rem;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   outline: none;
   box-sizing: border-box;
@@ -1146,10 +1144,10 @@ onUnmounted(() => {
 .resource-list-filter-bar__multi-wrap {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  padding: 0.7rem;
-  border-radius: calc(var(--radius-lg) + 2px);
-  border: 1px solid var(--color-border-default);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  border: var(--border-width-thin) solid var(--color-border-default);
   background:
     linear-gradient(
       180deg,
@@ -1161,25 +1159,25 @@ onUnmounted(() => {
 .resource-list-filter-bar__multi-selected {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: var(--space-1-5);
   max-height: 5.5rem;
   overflow-y: auto;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px dashed color-mix(in srgb, var(--color-border-default) 80%, var(--color-primary) 20%);
+  padding-bottom: var(--space-1-5);
+  border-bottom: var(--border-width-thin) dashed color-mix(in srgb, var(--color-border-default) 80%, var(--color-primary) 20%);
 }
 
 .resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip {
-  gap: 0.3rem;
+  gap: var(--space-1);
 }
 
 .resource-list-filter-bar__multi-search-shell {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-1-5);
   min-height: 34px;
-  padding: 0 0.55rem 0 0.65rem;
+  padding: 0 var(--space-2) 0 var(--space-2-5);
   border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface-raised);
   transition: border-color var(--duration-fast) var(--ease-default),
               box-shadow var(--duration-fast) var(--ease-default);
@@ -1199,11 +1197,11 @@ onUnmounted(() => {
   min-height: 32px;
   width: 100%;
   min-width: 0;
-  padding: 0.3rem 0;
+  padding: var(--space-1) 0;
   border: none;
   background: transparent;
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-family: inherit;
   outline: none;
   box-sizing: border-box;
@@ -1216,30 +1214,30 @@ onUnmounted(() => {
 .resource-list-filter-bar__multi {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: var(--space-1-5);
   max-height: 11rem;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.15rem 0.05rem;
+  padding: var(--space-0-5) 0;
 }
 
 .resource-list-filter-bar__multi-empty {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
-  padding: 0.35rem 0.2rem;
+  padding: var(--space-1-5) var(--space-1);
 }
 
 .resource-list-filter-bar__chip {
   display: inline-flex;
   align-items: center;
   min-height: 26px;
-  padding: 0.2rem 0.65rem;
+  padding: var(--space-1) var(--space-2-5);
   border-radius: var(--radius-full);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   font-family: inherit;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
@@ -1267,31 +1265,31 @@ onUnmounted(() => {
 
 .resource-list-filter-bar__chip--panel {
   min-height: 24px;
-  padding: 0.15rem 0.55rem;
+  padding: var(--space-0-5) var(--space-2);
 }
 
 .resource-list-filter-bar__conditions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-1-5);
   flex: 1 1 100%;
   min-width: 0;
-  padding: 0.2rem 0 0.05rem;
+  padding: var(--space-1) 0 0;
 }
 
 .resource-list-filter-bar__condition {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: var(--space-1-5);
   min-height: 26px;
-  padding: 0.2rem 0.5rem 0.2rem 0.65rem;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-2-5);
   border-radius: var(--radius-full);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border-default));
+  border: var(--border-width-thin) solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-primary-subtle) 88%, var(--color-bg-surface));
   color: var(--color-primary);
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   font-family: inherit;
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-default),

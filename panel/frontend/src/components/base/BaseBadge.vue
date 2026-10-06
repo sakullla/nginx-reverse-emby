@@ -45,9 +45,9 @@ defineProps({
 .base-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   line-height: 1;
-  font-weight: 600;
+  font-weight: var(--font-semibold);
   white-space: nowrap;
   flex-shrink: 0;
   transition: all var(--duration-fast) var(--ease-default);
@@ -103,19 +103,19 @@ defineProps({
 }
 
 .base-badge--sm {
-  font-size: 0.7rem;
-  padding: 2px 6px;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  padding: var(--space-0-5) var(--space-1-5);
+  font-weight: var(--font-bold);
 }
 
 .base-badge--md {
-  font-size: 0.75rem;
-  padding: 3px 8px;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
 }
 
 .base-badge--mono {
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: var(--font-bold);
   letter-spacing: 0.02em;
 }
 </style>

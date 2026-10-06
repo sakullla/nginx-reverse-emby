@@ -145,7 +145,7 @@ async function handleLogout() {
   padding: 0 var(--space-5);
   background: var(--color-bg-chrome, var(--color-bg-surface));
   backdrop-filter: blur(var(--chrome-blur, 0px));
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
@@ -153,9 +153,9 @@ async function handleLogout() {
   box-shadow: var(--shadow-xs);
 }
 
-.topbar__left { display: flex; align-items: center; gap: 1rem; }
+.topbar__left { display: flex; align-items: center; gap: var(--space-4); }
 
-.topbar__brand { display: flex; align-items: center; gap: 0.75rem; }
+.topbar__brand { display: flex; align-items: center; gap: var(--space-3); }
 
 .topbar__logo {
   width: 36px;
@@ -175,33 +175,33 @@ async function handleLogout() {
   transform: scale(1.05);
 }
 
-.topbar__title { display: flex; align-items: center; gap: 0.5rem; }
+.topbar__title { display: flex; align-items: center; gap: var(--space-2); }
 
 .topbar__name {
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: var(--text-base);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   letter-spacing: -0.01em;
 }
 
 .topbar__badge {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  padding: var(--space-0-5) var(--space-2);
   background: var(--color-badge-bg, var(--color-primary));
   color: var(--color-badge-ink, white);
   border-radius: var(--radius-full);
 }
 
-.topbar__actions { display: flex; align-items: center; gap: 0.5rem; }
+.topbar__actions { display: flex; align-items: center; gap: var(--space-2); }
 
 .topbar__search {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-1-5);
   height: 36px;
-  padding: 0 0.55rem 0 0.7rem;
-  border: 1px solid var(--color-border-default);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-full);
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
@@ -216,19 +216,19 @@ async function handleLogout() {
 }
 
 .topbar__search-label {
-  font-size: 0.8125rem;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
 }
 
 .topbar__search-kbd {
   font-family: inherit;
-  font-size: 0.6875rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   color: var(--color-text-tertiary);
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-sm);
-  padding: 0.05rem 0.35rem;
+  padding: var(--space-0-5) var(--space-1-5);
 }
 
 .topbar__account {
@@ -242,12 +242,12 @@ async function handleLogout() {
 
 .topbar__menu {
   position: absolute;
-  top: calc(100% + 0.5rem);
+  top: calc(100% + var(--space-2));
   right: 0;
-  z-index: 20;
+  z-index: var(--z-dropdown);
   min-width: 11.5rem;
-  padding: 0.35rem;
-  border: 1px solid var(--color-border-subtle);
+  padding: var(--space-1-5);
+  border: var(--border-width-thin) solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
   background: var(--color-bg-surface);
   box-shadow: var(--shadow-lg);
@@ -255,15 +255,15 @@ async function handleLogout() {
 
 .topbar__menu-identity {
   display: grid;
-  gap: 0.1rem;
+  gap: var(--space-0-5);
   min-width: 0;
-  padding: 0.55rem 0.7rem 0.45rem;
+  padding: var(--space-2) var(--space-3) var(--space-2);
 }
 
 .topbar__menu-identity-label {
   color: var(--color-text-tertiary);
-  font-size: 0.6875rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
 }
 
 .topbar__menu-identity-name {
@@ -272,22 +272,22 @@ async function handleLogout() {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
 }
 
 .topbar__menu-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
   min-height: 2.15rem;
-  padding: 0 0.7rem;
+  padding: 0 var(--space-3);
   border: 0;
   border-radius: var(--radius-lg);
   background: transparent;
   color: var(--color-text-primary);
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -308,14 +308,14 @@ async function handleLogout() {
 }
 
 .topbar__menu-sep {
-  height: 1px;
-  margin: 0.3rem 0.4rem;
+  height: var(--border-width-thin);
+  margin: var(--space-1) var(--space-1-5);
   background: var(--color-border-subtle);
 }
 
 .dropdown-enter-active,
 .dropdown-leave-active {
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default);
 }
 
 .dropdown-enter-from,

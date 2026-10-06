@@ -108,9 +108,8 @@ const handleClick = (event) => {
 }
 
 .base-button--success:hover:not(:disabled) {
-  filter: brightness(0.95);
-  background: var(--color-success) !important;
-  border-color: var(--color-success) !important;
+  background: color-mix(in srgb, var(--color-success) 92%, black) !important;
+  border-color: color-mix(in srgb, var(--color-success) 92%, black) !important;
 }
 
 @keyframes button-spin {

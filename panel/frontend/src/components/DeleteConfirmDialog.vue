@@ -164,7 +164,7 @@ onUnmounted(() => {
 .delete-dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(37, 23, 54, 0.4);
+  background: var(--color-overlay);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   z-index: var(--z-modal);
@@ -172,7 +172,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  transition: opacity 0.3s ease;
+  transition: opacity var(--duration-slow) var(--ease-default);
 }
 
 /* 对话框 */
@@ -180,13 +180,13 @@ onUnmounted(() => {
   background: var(--color-bg-surface);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-2xl);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   width: min(420px, 90vw);
   max-width: 100%;
   padding: var(--space-6);
   text-align: center;
   transform-origin: center;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+  transition: transform var(--duration-slow) var(--ease-bounce), opacity var(--duration-slow) var(--ease-default);
 }
 
 /* 图标区域 */
@@ -214,8 +214,8 @@ onUnmounted(() => {
 
 /* 标题 */
 .delete-dialog__title {
-  font-size: 1.25rem;
-  font-weight: 700;
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0 0 var(--space-2);
   letter-spacing: -0.02em;
@@ -223,7 +223,7 @@ onUnmounted(() => {
 
 /* 消息文本 */
 .delete-dialog__message {
-  font-size: 0.9375rem;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0 0 var(--space-4);
@@ -240,7 +240,7 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
   margin-bottom: var(--space-4);
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
   word-break: break-all;
 }
@@ -260,9 +260,9 @@ onUnmounted(() => {
   background: var(--color-warning-50);
   border-radius: var(--radius-lg);
   margin-bottom: var(--space-5);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-warning);
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 
 .delete-dialog__warning svg {
@@ -283,10 +283,10 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  padding: 0.625rem 1.25rem;
+  padding: var(--space-2-5) var(--space-5);
   border-radius: var(--radius-lg);
-  font-size: 0.9375rem;
-  font-weight: 600;
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-default);
   border: none;
@@ -295,7 +295,7 @@ onUnmounted(() => {
 }
 
 .delete-dialog__btn:disabled {
-  opacity: 0.6;
+  opacity: 0.48;
   cursor: not-allowed;
 }
 
@@ -303,7 +303,7 @@ onUnmounted(() => {
 .delete-dialog__btn--cancel {
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
 }
 
 .delete-dialog__btn--cancel:hover:not(:disabled) {
@@ -320,8 +320,7 @@ onUnmounted(() => {
 }
 
 .delete-dialog__btn--confirm:hover:not(:disabled) {
-  background: var(--color-danger);
-  filter: brightness(0.9);
+  background: color-mix(in srgb, var(--color-danger) 90%, black);
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
@@ -340,8 +339,8 @@ onUnmounted(() => {
   position: absolute;
   width: 18px;
   height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
+  border: 2px solid color-mix(in srgb, var(--color-text-inverse) 30%, transparent);
+  border-top-color: var(--color-text-inverse);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -353,12 +352,12 @@ onUnmounted(() => {
 /* 入场/离场动画 */
 .dialog-enter-active,
 .dialog-leave-active {
-  transition: opacity 0.3s ease;
+  transition: opacity var(--duration-slow) var(--ease-default);
 }
 
 .dialog-enter-active .delete-dialog,
 .dialog-leave-active .delete-dialog {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+  transition: transform var(--duration-slow) var(--ease-bounce), opacity var(--duration-slow) var(--ease-default);
 }
 
 .dialog-enter-from,
@@ -385,11 +384,11 @@ onUnmounted(() => {
   }
 
   .delete-dialog__title {
-    font-size: 1.125rem;
+    font-size: var(--text-lg);
   }
 
   .delete-dialog__message {
-    font-size: 0.875rem;
+    font-size: var(--text-sm);
   }
 
   .delete-dialog__actions {

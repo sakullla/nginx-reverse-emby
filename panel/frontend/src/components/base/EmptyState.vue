@@ -48,7 +48,7 @@ defineProps({
 }
 
 .empty-state-icon {
-  font-size: 2.25rem;
+  font-size: var(--text-3xl);
   margin-bottom: var(--space-6);
   opacity: 0.5;
   color: var(--color-text-muted);

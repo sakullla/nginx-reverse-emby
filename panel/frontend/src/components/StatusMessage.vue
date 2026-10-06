@@ -115,12 +115,12 @@ const resumeTimer = (id, event) => {
   -webkit-backdrop-filter: blur(12px);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl), var(--shadow-md);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   pointer-events: auto;
   min-width: 320px;
   max-width: 420px;
   overflow: hidden;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all var(--duration-slow) var(--ease-default);
 }
 
 /* 顶部彩色条 */
@@ -135,19 +135,19 @@ const resumeTimer = (id, event) => {
 }
 
 .status-message--success::before {
-  background: linear-gradient(90deg, #10b981, #34d399);
+  background: linear-gradient(90deg, var(--color-success), color-mix(in srgb, var(--color-success) 65%, white));
 }
 
 .status-message--error::before {
-  background: linear-gradient(90deg, #ef4444, #f87171);
+  background: linear-gradient(90deg, var(--color-danger), color-mix(in srgb, var(--color-danger) 65%, white));
 }
 
 .status-message--warning::before {
-  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  background: linear-gradient(90deg, var(--color-warning), color-mix(in srgb, var(--color-warning) 65%, white));
 }
 
 .status-message--info::before {
-  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  background: linear-gradient(90deg, var(--color-primary), color-mix(in srgb, var(--color-primary) 65%, white));
 }
 
 /* 图标容器 - 圆形背景 */
@@ -159,23 +159,23 @@ const resumeTimer = (id, event) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: -2px;
+  margin-top: calc(-1 * var(--space-0-5));
 }
 
 .status-message--success .status-message__icon-wrapper {
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--color-success-subtle);
 }
 
 .status-message--error .status-message__icon-wrapper {
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--color-danger-subtle);
 }
 
 .status-message--warning .status-message__icon-wrapper {
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--color-warning-subtle);
 }
 
 .status-message--info .status-message__icon-wrapper {
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--color-primary-subtle);
 }
 
 .status-message__icon {
@@ -185,19 +185,19 @@ const resumeTimer = (id, event) => {
 }
 
 .status-message--success .status-message__icon {
-  color: #10b981;
+  color: var(--color-success);
 }
 
 .status-message--error .status-message__icon {
-  color: #ef4444;
+  color: var(--color-danger);
 }
 
 .status-message--warning .status-message__icon {
-  color: #f59e0b;
+  color: var(--color-warning);
 }
 
 .status-message--info .status-message__icon {
-  color: #3b82f6;
+  color: var(--color-primary);
 }
 
 /* 内容区域 */
@@ -205,23 +205,23 @@ const resumeTimer = (id, event) => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   padding-right: var(--space-2);
 }
 
 .status-message__title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   color: var(--color-text-primary);
   line-height: 1.4;
   letter-spacing: -0.01em;
 }
 
 .status-message__text {
-  font-size: 13px;
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
-  font-weight: 400;
+  font-weight: var(--font-normal);
   line-height: 1.5;
   word-break: break-word;
   letter-spacing: 0.01em;
@@ -238,12 +238,12 @@ const resumeTimer = (id, event) => {
   color: var(--color-text-muted);
   cursor: pointer;
   border-radius: 50%;
-  transition: all 0.2s ease;
+  transition: all var(--duration-normal) var(--ease-default);
   background: transparent;
   border: none;
   padding: 0;
-  margin-top: -4px;
-  margin-right: -4px;
+  margin-top: calc(-1 * var(--space-1));
+  margin-right: calc(-1 * var(--space-1));
 }
 
 .status-message__close:hover {
@@ -267,19 +267,19 @@ const resumeTimer = (id, event) => {
 }
 
 .status-message--success .status-message__progress {
-  background: linear-gradient(90deg, #10b981, #34d399);
+  background: linear-gradient(90deg, var(--color-success), color-mix(in srgb, var(--color-success) 65%, white));
 }
 
 .status-message--error .status-message__progress {
-  background: linear-gradient(90deg, #ef4444, #f87171);
+  background: linear-gradient(90deg, var(--color-danger), color-mix(in srgb, var(--color-danger) 65%, white));
 }
 
 .status-message--warning .status-message__progress {
-  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  background: linear-gradient(90deg, var(--color-warning), color-mix(in srgb, var(--color-warning) 65%, white));
 }
 
 .status-message--info .status-message__progress {
-  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  background: linear-gradient(90deg, var(--color-primary), color-mix(in srgb, var(--color-primary) 65%, white));
 }
 
 @keyframes progress {
@@ -294,7 +294,7 @@ const resumeTimer = (id, event) => {
 /* 入场/离场动画 */
 .toast-enter-active,
 .toast-leave-active {
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all var(--duration-slow) var(--ease-default);
 }
 
 .toast-enter-from {
@@ -318,7 +318,7 @@ const resumeTimer = (id, event) => {
 }
 
 .toast-move {
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--duration-slow) var(--ease-default);
 }
 
 /* 悬停效果 */

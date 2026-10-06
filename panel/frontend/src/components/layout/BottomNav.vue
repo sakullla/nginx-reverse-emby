@@ -199,7 +199,7 @@ onUnmounted(() => {
   right: 0;
   height: 64px;
   background: var(--color-bg-chrome, var(--color-bg-surface));
-  border-top: 1px solid var(--color-border-default);
+  border-top: var(--border-width-thin) solid var(--color-border-default);
   backdrop-filter: blur(16px);
   z-index: var(--z-sticky);
   padding-bottom: env(safe-area-inset-bottom, 0);
@@ -213,17 +213,17 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--space-1);
   text-decoration: none;
   color: var(--color-text-muted);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--text-xs);
   border: none;
   background: transparent;
   min-width: 0;
-  font-weight: 500;
-  transition: all 0.2s;
-  padding: 0.5rem 0.25rem;
+  font-weight: var(--font-medium);
+  transition: all var(--duration-normal) var(--ease-default);
+  padding: var(--space-2) var(--space-1);
   border-radius: var(--radius-lg);
   cursor: pointer;
   position: relative;
@@ -234,18 +234,18 @@ onUnmounted(() => {
 .nav-item.active::before {
   content: '';
   position: absolute;
-  top: 4px;
+  top: var(--space-1);
   left: 50%;
   transform: translateX(-50%);
   width: 20px;
   height: 3px;
   background: var(--color-primary);
-  border-radius: 2px;
+  border-radius: var(--radius-full);
 }
 .nav-icon {
   width: 24px;
   height: 24px;
-  transition: transform 0.2s;
+  transition: transform var(--duration-normal) var(--ease-default);
 }
 .nav-item.active > .nav-icon {
   transform: translateY(-2px);
@@ -260,24 +260,24 @@ onUnmounted(() => {
 }
 .more-dropdown {
   position: absolute;
-  bottom: calc(100% + 12px);
-  right: 0.35rem;
+  bottom: calc(100% + var(--space-3));
+  right: var(--space-1-5);
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   min-width: 200px;
-  max-width: calc(100vw - 24px);
+  max-width: calc(100vw - var(--space-6));
   max-height: calc(100dvh - 150px - env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
   overscroll-behavior: contain;
   z-index: var(--z-dropdown);
   backdrop-filter: blur(16px);
-  padding: 0.5rem;
+  padding: var(--space-2);
 }
 .more-pop-enter-active,
 .more-pop-leave-active {
-  transition: opacity 0.15s var(--ease-default), transform 0.15s var(--ease-default);
+  transition: opacity var(--duration-fast) var(--ease-default), transform var(--duration-fast) var(--ease-default);
 }
 .more-pop-enter-from,
 .more-pop-leave-to {
@@ -287,16 +287,16 @@ onUnmounted(() => {
 .more-dropdown__item {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0.875rem;
-  font-size: 0.875rem;
+  gap: var(--space-3);
+  padding: var(--space-2-5) var(--space-4);
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
   text-decoration: none;
   text-align: left;
-  transition: all 0.15s;
+  transition: all var(--duration-fast) var(--ease-default);
   white-space: nowrap;
   border-radius: var(--radius-md);
-  font-weight: 500;
+  font-weight: var(--font-medium);
   min-height: 44px;
   box-sizing: border-box;
 }
@@ -308,7 +308,7 @@ onUnmounted(() => {
 .more-dropdown__item--active {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
-  font-weight: 600;
+  font-weight: var(--font-semibold);
 }
 .more-dropdown__item svg {
   flex-shrink: 0;

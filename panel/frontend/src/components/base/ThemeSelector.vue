@@ -81,7 +81,7 @@ onUnmounted(() => {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-full);
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   transition: all var(--duration-normal) var(--ease-bounce);
   cursor: pointer;
   font-family: inherit;
@@ -101,7 +101,7 @@ onUnmounted(() => {
 }
 
 .theme-trigger__emoji {
-  font-size: 16px;
+  font-size: var(--text-base);
   line-height: 1;
 }
 
@@ -121,7 +121,7 @@ onUnmounted(() => {
   right: 0;
   min-width: 180px;
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-xl);
   padding: var(--space-2);
@@ -145,7 +145,7 @@ onUnmounted(() => {
   border-radius: var(--radius-xl);
   cursor: pointer;
   transition: all var(--duration-normal) var(--ease-bounce);
-  border: 1.5px solid transparent;
+  border: var(--border-width-thick) solid transparent;
   background: transparent;
   font-family: inherit;
   color: var(--color-text-primary);
@@ -172,7 +172,7 @@ onUnmounted(() => {
 }
 
 .theme-option__emoji {
-  font-size: 16px;
+  font-size: var(--text-base);
   line-height: 1;
   flex-shrink: 0;
 }

@@ -40,7 +40,7 @@ defineProps({
 .form-error {
   display: flex;
   align-items: flex-start;
-  gap: 0.3rem;
+  gap: var(--space-1);
   margin: 0;
   font-size: var(--text-xs);
   line-height: 1.4;

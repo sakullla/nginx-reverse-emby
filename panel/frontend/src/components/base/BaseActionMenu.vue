@@ -231,14 +231,14 @@ onUnmounted(() => {
 <style>
 .base-action-menu__panel {
   min-width: 8.5rem;
-  padding: 0.25rem;
+  padding: var(--space-1);
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-lg, 0.5rem);
   box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: var(--space-0-5);
 }
 
 .base-action-menu__item {
@@ -251,10 +251,10 @@ onUnmounted(() => {
   font: inherit;
   font-size: var(--text-sm, 0.875rem);
   line-height: 1.35;
-  padding: 0.5rem 0.625rem;
+  padding: var(--space-2) var(--space-2-5);
   border-radius: var(--radius-md, 0.375rem);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--duration-fast) var(--ease-default), color var(--duration-fast) var(--ease-default);
 }
 
 .base-action-menu__item:hover:not(:disabled),
@@ -264,7 +264,7 @@ onUnmounted(() => {
 }
 
 .base-action-menu__item:disabled {
-  opacity: 0.45;
+  opacity: 0.48;
   cursor: not-allowed;
 }
 

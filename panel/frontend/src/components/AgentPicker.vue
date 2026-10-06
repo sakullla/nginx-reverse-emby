@@ -267,13 +267,13 @@ onUnmounted(() => {
 .agent-picker__trigger {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: var(--color-bg-subtle);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-lg);
   color: var(--color-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   cursor: pointer;
   font-family: inherit;
   min-width: 200px;
@@ -283,22 +283,22 @@ onUnmounted(() => {
 }
 .agent-picker__dropdown {
   background: var(--color-bg-surface-raised);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   overflow: hidden;
 }
 .agent-picker__search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: var(--space-2);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
 }
 .agent-picker__search-input {
   width: 100%;
-  padding: 0.375rem 0.625rem;
-  border: 1px solid var(--color-border-default);
+  padding: var(--space-1-5) var(--space-2-5);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   color: var(--color-text-primary);
   outline: none;
   font-family: inherit;
@@ -306,47 +306,47 @@ onUnmounted(() => {
 }
 .agent-picker__filters {
   display: flex;
-  gap: 0.25rem;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   overflow-x: auto;
 }
 .agent-picker__filter-btn {
-  padding: 0.25rem 0.625rem;
+  padding: var(--space-1) var(--space-2-5);
   border: none;
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   white-space: nowrap;
   font-family: inherit;
 }
 .agent-picker__filter-btn.active {
   background: var(--color-primary);
-  color: white;
+  color: var(--color-text-inverse);
 }
 .agent-picker__list {
   max-height: 240px;
   overflow-y: auto;
-  padding: 0.25rem;
+  padding: var(--space-1);
   scrollbar-width: thin;
 }
 .agent-picker__list::-webkit-scrollbar { width: 6px; }
 .agent-picker__list::-webkit-scrollbar-track { background: transparent; }
-.agent-picker__list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
+.agent-picker__list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: var(--radius-full); }
 .agent-picker__list::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 .agent-picker__item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
-  padding: 0.5rem 0.625rem;
+  padding: var(--space-2) var(--space-2-5);
   border: none;
   background: transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--duration-fast) var(--ease-default);
   font-family: inherit;
   text-align: left;
 }
@@ -354,16 +354,16 @@ onUnmounted(() => {
   background: var(--color-bg-hover);
 }
 .agent-picker__item--all {
-  font-weight: 500;
-  border-bottom: 1px solid var(--color-border-subtle);
+  font-weight: var(--font-medium);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
   border-radius: 0;
-  margin: 0 0.25rem;
-  padding-left: 0.375rem;
-  width: calc(100% - 0.5rem);
+  margin: 0 var(--space-1);
+  padding-left: var(--space-1-5);
+  width: calc(100% - var(--space-2));
 }
 .agent-picker__item--all:hover {
   border-radius: var(--radius-md);
-  margin: 0 0.25rem;
+  margin: 0 var(--space-1);
 }
 .agent-picker__dot {
   width: 7px;
@@ -376,7 +376,7 @@ onUnmounted(() => {
 .agent-picker__dot--failed { background: var(--color-danger); }
 .agent-picker__dot--pending { background: var(--color-warning); }
 .agent-picker__item-name {
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
   flex: 1;
   overflow: hidden;
@@ -384,45 +384,45 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .agent-picker__item-time {
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
 .agent-picker__empty {
-  padding: 1rem;
+  padding: var(--space-4);
   text-align: center;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
 .agent-picker__sort {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  border-top: 1px solid var(--color-border-subtle);
-  font-size: 0.75rem;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-top: var(--border-width-thin) solid var(--color-border-subtle);
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
 }
 .agent-picker__sort-btn {
-  padding: 0.125rem 0.375rem;
+  padding: var(--space-0-5) var(--space-1-5);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   font-family: inherit;
 }
 .agent-picker__sort-btn.active {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 
 @media (max-width: 640px) {
   .agent-picker__trigger {
     min-width: 140px;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.8125rem;
+    padding: var(--space-1-5) var(--space-2-5);
+    font-size: var(--text-sm);
   }
   .agent-picker__dropdown {
     width: auto;

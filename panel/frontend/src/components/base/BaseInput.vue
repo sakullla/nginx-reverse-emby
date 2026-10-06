@@ -83,7 +83,7 @@ const handleBlur = (event) => {
 .base-input {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: var(--space-1-5);
 }
 
 .base-input__label {
@@ -98,9 +98,9 @@ const handleBlur = (event) => {
 
 input {
   width: 100%;
-  padding: 10px 16px;
-  border-radius: 10px;
-  border: 1.5px solid var(--color-border-default);
+  padding: var(--space-2-5) var(--space-4);
+  border-radius: var(--radius-md);
+  border: var(--border-width-thick) solid var(--color-border-default);
   background: var(--color-bg-surface);
   font-size: var(--text-sm);
   color: var(--color-text-primary);
@@ -122,7 +122,7 @@ input[aria-invalid='true'] {
 
 input[aria-invalid='true']:focus {
   border-color: var(--color-danger);
-  box-shadow: 0 0 0 3px var(--color-danger-50);
+  box-shadow: var(--shadow-focus-danger);
 }
 
 input::placeholder {

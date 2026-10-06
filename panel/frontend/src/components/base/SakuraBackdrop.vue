@@ -21,8 +21,8 @@
 .sakura-backdrop {
   display: var(--sakura-decoration-display, none);
   position: absolute;
-  top: 0.5rem;
-  right: 1.5rem;
+  top: var(--space-2);
+  right: var(--space-6);
   width: min(30vw, 320px);
   height: 150px;
   color: var(--color-accent);
@@ -34,7 +34,7 @@
   .sakura-backdrop {
     width: 160px;
     height: 100px;
-    right: 0.5rem;
+    right: var(--space-2);
     top: 0;
   }
 }

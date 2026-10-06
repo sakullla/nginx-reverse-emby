@@ -37,9 +37,9 @@ defineProps({
 <style scoped>
 .card {
   background: var(--color-bg-panel, var(--color-bg-surface));
-  border: 1px solid var(--color-border-default);
+  border: var(--border-width-thin) solid var(--color-border-default);
   border-radius: var(--radius-lg);
-  padding: 20px;
+  padding: var(--space-5);
   box-shadow: var(--shadow-xs);
   transition: box-shadow var(--duration-normal) var(--ease-default),
               transform var(--duration-normal) var(--ease-default);
@@ -63,7 +63,7 @@ defineProps({
   justify-content: space-between;
   margin-bottom: var(--space-4);
   padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: var(--border-width-thin) solid var(--color-border-subtle);
 }
 
 .card-title {
@@ -88,6 +88,6 @@ defineProps({
 .card-footer {
   margin-top: var(--space-4);
   padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border-subtle);
+  border-top: var(--border-width-thin) solid var(--color-border-subtle);
 }
 </style>

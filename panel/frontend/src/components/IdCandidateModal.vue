@@ -66,45 +66,45 @@ function handleSelect(candidate) {
 .candidate-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .candidate-item {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
-  background: var(--color-bg);
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width-thin) solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color var(--duration-fast) var(--ease-default), background var(--duration-fast) var(--ease-default);
   text-align: left;
   width: 100%;
 }
 
 .candidate-item:hover {
   border-color: var(--color-primary);
-  background: var(--color-primary-bg, rgba(59, 130, 246, 0.05));
+  background: var(--color-primary-subtle);
 }
 
 .candidate-item__agent,
 .candidate-item__detail {
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: var(--space-0-5);
 }
 
 .candidate-item__label {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .candidate-item__value {
-  font-size: 0.875rem;
-  color: var(--color-text);
-  font-weight: 500;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-weight: var(--font-medium);
 }
 </style>

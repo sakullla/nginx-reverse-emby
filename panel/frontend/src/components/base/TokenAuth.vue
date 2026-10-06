@@ -102,7 +102,7 @@ const handleLogin = async () => {
   align-items: center;
   justify-content: center;
   padding: var(--space-6);
-  background: var(--theme-bg);
+  background: var(--color-bg-atmosphere);
   background-attachment: fixed;
   position: relative;
 }
@@ -111,9 +111,9 @@ const handleLogin = async () => {
   content: '';
   position: fixed;
   inset: 0;
-  background: radial-gradient(ellipse at 25% 25%, rgba(192, 132, 252, 0.08) 0%, transparent 50%),
-              radial-gradient(ellipse at 75% 75%, rgba(244, 114, 182, 0.06) 0%, transparent 50%);
-  opacity: var(--theme-decorator-opacity, 0.5);
+  background: radial-gradient(ellipse at 25% 25%, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 50%),
+              radial-gradient(ellipse at 75% 75%, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, transparent 50%);
+  opacity: var(--sakura-decoration-opacity, 0.5);
   animation: sparkle 6s ease-in-out infinite alternate;
   pointer-events: none;
 }
@@ -128,7 +128,7 @@ const handleLogin = async () => {
   width: 100%;
   max-width: 420px;
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
+  border: var(--border-width-thick) solid var(--color-border-default);
   border-radius: var(--radius-3xl);
   box-shadow: var(--shadow-2xl);
   overflow: hidden;
@@ -153,13 +153,13 @@ const handleLogin = async () => {
 .auth-logo__icon {
   width: 72px;
   height: 72px;
-  background: var(--gradient-primary);
+  background: var(--color-brand-bg);
   border-radius: var(--radius-2xl);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
-  box-shadow: var(--shadow-glow);
+  color: var(--color-brand-ink);
+  box-shadow: var(--shadow-lg);
   animation: float 4s ease-in-out infinite;
 }
 
@@ -168,7 +168,7 @@ const handleLogin = async () => {
   font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0;
-  background: var(--gradient-primary);
+  background: var(--color-brand-bg);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -189,8 +189,8 @@ const handleLogin = async () => {
 
 .auth-card__footer {
   padding: var(--space-4) var(--space-6);
-  background: var(--gradient-soft);
-  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  border-top: var(--border-width-thin) solid var(--color-border-subtle);
 }
 
 .auth-hint {
