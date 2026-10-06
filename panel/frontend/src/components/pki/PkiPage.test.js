@@ -199,6 +199,35 @@ describe('PkiPage behavior boundary', () => {
     pki.revoke.mockResolvedValue({ id: 'op-revoke', state: 'accepted', kind: 'revoke' })
   })
 
+  it('surfaces the load error with retry instead of mock data when reads fail', async () => {
+    pki.overview.mockRejectedValue(new Error('pki api unavailable'))
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    const notices = wrapper.findAll('.notice--danger')
+    expect(notices.length).toBe(1)
+    expect(notices[0].text()).toContain('内部 PKI 数据暂时不可用')
+    expect(notices[0].text()).toContain('pki api unavailable')
+    // Mock preview identities must not leak into a real failure view.
+    expect(wrapper.text()).not.toContain('identity-agent-edge-1')
+
+    pki.overview.mockResolvedValue({
+      pki_domain_id: 'domain-1',
+      pki_epoch: 4,
+      security_revision: 11,
+      upgrade_state: 'tunnel_mtls_only',
+      runtime_status: 'healthy',
+      identity_count: 1,
+      certificate_count: 1
+    })
+    await wrapper.get('.notice--danger .text-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.notice--danger').exists()).toBe(false)
+    // Real identities are back (rendered through the shared agent names).
+    expect(wrapper.text()).toContain('香港边缘节点')
+  })
+
   it('keeps mounted dialogs inside the mobile viewport and safe area', async () => {
     const wrapper = await mountPage()
     await flushPromises()

@@ -223,7 +223,7 @@ async function loadSources(preferredId = selectedId.value) {
     selectedId.value = keep
     if (keep && inspectVisible.value) inspectVisible.value = true
   } catch (cause) {
-    if (isMockPreview) {
+    if (isMockPreview.value) {
       // Explicit preview entry (?preview=1): populate demo sources instead of an error.
       applyPreviewSources()
       loadError.value = ''

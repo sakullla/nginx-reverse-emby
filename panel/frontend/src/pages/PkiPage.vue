@@ -1016,7 +1016,7 @@ async function loadAll() {
     events.value = nextEvents
     mockAgents.value = []
   } catch (error) {
-    if (isMockPreview) {
+    if (isMockPreview.value) {
       // Explicit preview entry (?preview=1): populate the layout demo data instead of an error.
       applyMockData()
       pageError.value = ''

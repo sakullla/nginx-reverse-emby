@@ -25,7 +25,6 @@ export default defineConfig({
       'src/components/traffic/TrafficHistoryManager.test.js',
       'src/components/traffic/TrafficPolicyForm.test.js',
       'src/components/traffic/TrafficTrendChart.test.js',
-      'src/components/RuleDiagnosticModal.test.js',
       'src/context/ThemeContext.test.mjs',
       'src/utils/__tests__/scrollHighlight.test.js'
     ],

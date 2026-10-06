@@ -25,6 +25,13 @@ vi.mock('../../api/pluginRepositories', () => ({
   refreshRepositorySource
 }))
 
+const routerState = vi.hoisted(() => ({ route: { query: {} } }))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => routerState.route,
+  RouterLink: { props: ['to'], template: '<a><slot /></a>' }
+}))
+
 vi.mock('../../components/DeleteConfirmDialog.vue', () => ({
   default: {
     name: 'DeleteConfirmDialog',
@@ -95,6 +102,7 @@ async function openSource(name) {
 }
 
 beforeEach(() => {
+  routerState.route = { query: {} }
   fetchRepositorySources.mockReset().mockResolvedValue([customSource, officialSource])
   createRepositorySource.mockReset().mockResolvedValue(customSource)
   updateRepositorySource.mockReset().mockResolvedValue(customSource)
@@ -174,7 +182,25 @@ describe('PluginRepositoriesPage', () => {
     expect(wrapper.text()).toContain('最近刷新失败：credential rejected')
   })
 
-  it('shows preview catalog names when sources fail to load', async () => {
+  it('shows the load error with retry instead of fake sources when reading fails', async () => {
+    fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
+    await mountPage()
+
+    expect(wrapper.text()).toContain('读取失败')
+    expect(wrapper.text()).toContain('backend unavailable')
+    expect(wrapper.text()).not.toContain('官方市场')
+    expect(wrapper.text()).not.toContain('团队插件仓库')
+
+    fetchRepositorySources.mockResolvedValue([customSource, officialSource])
+    await buttonByText('重试').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Team Plugins')
+    expect(wrapper.text()).not.toContain('读取失败')
+  })
+
+  it('loads preview sources only through the explicit ?preview=1 entry', async () => {
+    routerState.route = { query: { preview: '1' } }
     fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
     await mountPage()
 
