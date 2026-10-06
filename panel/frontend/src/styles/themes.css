@@ -11,6 +11,7 @@
   --space-2-5: 0.625rem;   /* 10px */
   --space-3: 0.75rem;      /* 12px */
   --space-4: 1rem;         /* 16px */
+  --space-4-5: 1.125rem;   /* 18px */
   --space-5: 1.25rem;      /* 20px */
   --space-6: 1.5rem;       /* 24px */
   --space-8: 2rem;         /* 32px */
@@ -18,6 +19,18 @@
   --space-12: 3rem;        /* 48px */
   --space-16: 4rem;        /* 64px */
   --space-20: 5rem;        /* 80px */
+
+  /* Control heights (buttons, icon buttons, dense table/list actions) */
+  --control-height-dense: 1.65rem;
+  --control-height-sm: 2rem;
+  --control-height-md: 2.375rem;
+  --control-height-lg: 2.75rem;
+  --control-height-icon: 2.25rem;
+  --control-height-icon-sm: 1.85rem;
+
+  /* Button icon sizing */
+  --icon-size-btn: 0.95rem;
+  --icon-size-btn-sm: 0.85rem;
 
   /* Radius */
   --radius-none: 0;
@@ -29,6 +42,11 @@
   --radius-2xl: 1.25rem;   /* 20px */
   --radius-3xl: 1.5rem;    /* 24px */
   --radius-full: 9999px;
+  --radius-dense: 0.45rem;  /* compact table/list action buttons */
+
+  /* Dense table/list action sizing */
+  --space-dense-block: 0.16rem;
+  --space-dense-inline: 0.55rem;
 
   /* Fonts */
   --font-sans: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -112,6 +130,20 @@
   /* Decorative halo for non-focus dots (timeline/path chips) — do not use for focus */
   --shadow-dot-ring: 0 0 0 3px var(--color-primary-subtle);
   --shadow-inner: inset 0 1px 2px rgb(var(--shadow-color) / var(--shadow-alpha-inner));
+  /* Deep drop under modal dialogs — single shared geometry, tuned per theme via --shadow-color */
+  --shadow-modal-deep: 0 28px 60px -28px rgb(var(--shadow-color) / 0.28);
+
+  /* Modal geometry */
+  --modal-width-sm: 400px;
+  --modal-width-md: 500px;
+  --modal-width-lg: 760px;
+  --modal-width-xl: 980px;
+  --modal-pad-block: 0.9rem;
+  --modal-pad-block-footer: 0.85rem;
+  --modal-pad-inline: 1.15rem;
+
+  /* Status dot (breathing indicator) */
+  --status-dot-size: 7px;
 
   /* Modal overlay scrim — themes may tint or darken */
   --color-overlay: rgb(15 23 42 / 0.42);

@@ -163,14 +163,6 @@ onUnmounted(() => {
   border-color: var(--color-primary);
 }
 
-.theme-option__preview {
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-md);
-  flex-shrink: 0;
-  border: 1px solid rgba(255,255,255,0.2);
-}
-
 .theme-option__emoji {
   font-size: var(--text-base);
   line-height: 1;
