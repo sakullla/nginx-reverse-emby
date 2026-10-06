@@ -192,7 +192,7 @@ function guideSubmitButton(guide) {
   if (named.exists()) return named
   return ['发布到域名', '部署并发布', '保存入口', '发布', '开始部署', '部署']
     .map((label) => buttonByText(guide, label))
-    .find(Boolean) || guide.find('button.btn-primary')
+    .find(Boolean) || guide.find('button.btn-primary, button.btn--primary')
 }
 
 function writePaths() {

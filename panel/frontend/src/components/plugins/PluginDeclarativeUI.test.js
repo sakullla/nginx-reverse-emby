@@ -1,9 +1,26 @@
-import { describe, expect, it, vi } from 'vitest'
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
 import { schemaToUIComponents } from '../../api/pluginSecurity.js'
 
-const document = {
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
+function confirmModal() {
+  return document.body.querySelector('[data-test="declarative-confirm-modal"]')
+}
+
+async function clickConfirmButton(testId) {
+  const button = confirmModal()?.querySelector(`[data-test="${testId}"]`)
+  expect(button, `confirm dialog button ${testId}`).toBeTruthy()
+  button.click()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+const baseDocument = {
   schema_version: 1,
   title: 'Host UI <script>guest()</script>',
   components: [
@@ -38,7 +55,7 @@ const richDocument = {
 
 describe('PluginDeclarativeUI', () => {
   it('renders only fixed host controls and never interprets package markup', async () => {
-    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true, canAct: true } })
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: baseDocument, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true, canAct: true } })
     expect(wrapper.findAll('script')).toHaveLength(0)
     expect(wrapper.findAll('img')).toHaveLength(0)
     expect(wrapper.text()).toContain('<script>guest()</script>')
@@ -48,17 +65,49 @@ describe('PluginDeclarativeUI', () => {
   })
 
   it('requires host confirmation and emits only the typed action target', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
-    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: {}, canConfigure: true, canAct: true } })
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: baseDocument, config: {}, canConfigure: true, canAct: true } })
     await wrapper.get('.declarative-target input').setValue('relay-1')
-    await wrapper.findAll('button')[1].trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Rotate').trigger('click')
+    expect(confirmModal()).toBeTruthy()
+    expect(confirmModal().textContent).toContain('Continue?')
     expect(wrapper.emitted('dynamic')).toBeUndefined()
-    await wrapper.findAll('button')[1].trigger('click')
-    expect(wrapper.emitted('dynamic')[0][0]).toEqual({ action: document.actions[1], target_id: 'relay-1', confirmed: true })
+    await clickConfirmButton('declarative-confirm-cancel')
+    expect(confirmModal()).toBeFalsy()
+    expect(wrapper.emitted('dynamic')).toBeUndefined()
+    await wrapper.findAll('button').find((button) => button.text() === 'Rotate').trigger('click')
+    await clickConfirmButton('declarative-confirm-accept')
+    expect(wrapper.emitted('dynamic')[0][0]).toEqual({ action: baseDocument.actions[1], target_id: 'relay-1', confirmed: true })
+  })
+
+  it('runs a reset without a confirm text immediately and with one only after confirming', async () => {
+    const resetDocument = {
+      schema_version: 1,
+      title: 'Resettable',
+      components: [
+        { type: 'section', id: 'general', label: 'General', children: [
+          { type: 'text', id: 'name', label: 'Name', binding: '/name' }
+        ] }
+      ],
+      actions: [
+        { type: 'submit', id: 'save', label: 'Save' },
+        { type: 'reset', id: 'reset-pl', label: '重置', confirm: '恢复默认配置？' }
+      ]
+    }
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: resetDocument, config: { name: 'original' }, canConfigure: true } })
+    await wrapper.get('input[type="text"]').setValue('changed')
+    await wrapper.findAll('button').find((button) => button.text() === '重置').trigger('click')
+    expect(confirmModal().textContent).toContain('恢复默认配置？')
+    await clickConfirmButton('declarative-confirm-cancel')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit').at(-1)[0].config.name).toBe('changed')
+    await wrapper.findAll('button').find((button) => button.text() === '重置').trigger('click')
+    await clickConfirmButton('declarative-confirm-accept')
+    await wrapper.findAll('button').find((button) => button.text() === 'Save').trigger('click')
+    expect(wrapper.emitted('submit').at(-1)[0].config.name).toBe('original')
   })
 
   it('keeps required declarative secrets write-only and allows only preserve or rotate', async () => {
-    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: baseDocument, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
     const password = wrapper.get('input[type="password"]')
     expect(password.element.value).toBe('')
     expect(wrapper.html()).not.toContain('existing-secret')
@@ -72,7 +121,7 @@ describe('PluginDeclarativeUI', () => {
   })
 
   it('allows an existing optional secret to be explicitly cleared', async () => {
-    const optionalDocument = structuredClone(document)
+    const optionalDocument = structuredClone(baseDocument)
     optionalDocument.components[0].children[1].required = false
     const wrapper = mount(PluginDeclarativeUI, { props: { document: optionalDocument, config: { name: 'before' }, secretFields: [{ pointer: '/token', present: true }], canConfigure: true } })
     await wrapper.findAll('button').find((button) => button.text() === '清除凭据').trigger('click')
@@ -191,14 +240,14 @@ describe('PluginDeclarativeUI', () => {
   })
 
   it('keeps configuration hidden for resource writers while allowing dynamic actions', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const wrapper = mount(PluginDeclarativeUI, { props: { document, config: { name: 'private-config' }, canConfigure: false, canAct: true } })
+    const wrapper = mount(PluginDeclarativeUI, { props: { document: baseDocument, config: { name: 'private-config' }, canConfigure: false, canAct: true } })
     expect(wrapper.find('.declarative-section').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Save')
     expect(wrapper.text()).not.toContain('private-config')
     await wrapper.get('.declarative-target input').setValue('relay-1')
     await wrapper.get('button').trigger('click')
     expect(wrapper.emitted('submit')).toBeUndefined()
+    await clickConfirmButton('declarative-confirm-accept')
     expect(wrapper.emitted('dynamic')[0][0].target_id).toBe('relay-1')
   })
 

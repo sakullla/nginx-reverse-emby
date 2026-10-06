@@ -1,8 +1,9 @@
 <script setup>
 import { reactive, ref, watch } from 'vue'
 import PluginDeclarativeComponent from './PluginDeclarativeComponent.vue'
+import BaseModal from '../base/BaseModal.vue'
 import { assignOwnJSON, collectHiddenPointers, prunePointer, resolvePointer, setPointer } from '../../api/pluginCondition.js'
-import { collectDeclarativeConstraintErrors } from '../../api/pluginSecurity.js'
+import { collectDeclarativeConstraintErrors, sanitizePluginText } from '../../api/pluginSecurity.js'
 
 const props = defineProps({ document: { type: Object, required: true }, config: { type: Object, default: () => ({}) }, secretFields: { type: Array, default: () => [] }, saving: { type: Boolean, default: false }, actionBusy: { type: Boolean, default: false }, canConfigure: { type: Boolean, default: false }, canAct: { type: Boolean, default: false } })
 const emit = defineEmits(['submit', 'dynamic'])
@@ -10,6 +11,8 @@ const model = reactive({})
 const targets = reactive({})
 const secretReplacements = reactive({})
 const forceValidate = ref(false)
+// Pending reset/dynamic action awaiting host-dialog confirmation instead of window.confirm.
+const pendingConfirm = ref(null)
 watch(() => props.config, reset, { immediate: true, deep: true })
 function clone(value) { return JSON.parse(JSON.stringify(value || {})) }
 function reset() {
@@ -76,8 +79,23 @@ function action(action) {
     for (const pointer of hidden) delete secret_replacements[pointer]
     emit('submit', { config, secret_replacements })
   }
-  else if (action.type === 'reset' && (!action.confirm || window.confirm(action.confirm))) reset()
-  else if (action.type === 'dynamic' && (!action.confirm || window.confirm(action.confirm))) emit('dynamic', { action, target_id: targets[action.id] || '', confirmed: true })
+  else if (action.confirm) pendingConfirm.value = { action, confirmText: sanitizePluginText(action.confirm) }
+  else runAction(action)
+}
+
+function runAction(action) {
+  if (action.type === 'reset') reset()
+  else if (action.type === 'dynamic') emit('dynamic', { action, target_id: targets[action.id] || '', confirmed: true })
+}
+
+function confirmPendingAction() {
+  const pending = pendingConfirm.value
+  pendingConfirm.value = null
+  if (pending) runAction(pending.action)
+}
+
+function cancelPendingAction() {
+  pendingConfirm.value = null
 }
 </script>
 
@@ -93,10 +111,26 @@ function action(action) {
     <div class="declarative-actions">
       <template v-for="item in (document.actions || []).filter((action) => action.type === 'dynamic' ? canAct : canConfigure)" :key="item.id">
         <label v-if="item.type === 'dynamic'" class="declarative-target"><span>{{ item.target_kind }} ID</span><input v-model="targets[item.id]" type="text" autocomplete="off"></label>
-        <button class="btn" :class="item.type === 'submit' ? 'btn-primary' : 'btn-secondary'" type="button" :disabled="saving || actionBusy || (item.type === 'dynamic' && !targets[item.id])" @click="action(item)">{{ item.label }}</button>
+        <button class="btn" :class="item.type === 'submit' ? 'btn--primary' : 'btn--secondary'" type="button" :disabled="saving || actionBusy || (item.type === 'dynamic' && !targets[item.id])" @click="action(item)">{{ item.label }}</button>
       </template>
     </div>
     <p class="declarative-boundary">此界面仅使用宿主内置组件渲染经过验证的声明式数据，不加载插件 HTML、JavaScript 或远程组件。</p>
+
+    <BaseModal
+      :model-value="!!pendingConfirm"
+      title="确认执行操作"
+      size="sm"
+      show-footer
+      :close-on-click-modal="false"
+      data-test="declarative-confirm-modal"
+      @update:model-value="(open) => { if (!open) cancelPendingAction() }"
+    >
+      <p class="declarative-confirm__message">{{ pendingConfirm?.confirmText }}</p>
+      <template #footer>
+        <button class="btn btn--secondary" type="button" data-test="declarative-confirm-cancel" @click="cancelPendingAction">取消</button>
+        <button class="btn btn--primary" type="button" data-test="declarative-confirm-accept" @click="confirmPendingAction">{{ pendingConfirm?.action?.label || '确认' }}</button>
+      </template>
+    </BaseModal>
   </section>
 </template>
 
@@ -115,4 +149,5 @@ function action(action) {
 }
 .declarative-target { min-width: 12rem; display: grid; gap: var(--space-1); color: var(--color-text-secondary); font-size: var(--text-sm); }
 .declarative-target input { padding: var(--space-2-5) var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.declarative-confirm__message { margin: 0; color: var(--color-text-secondary); font-size: var(--text-sm); line-height: 1.65; overflow-wrap: anywhere; }
 </style>

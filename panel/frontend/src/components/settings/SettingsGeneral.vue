@@ -20,6 +20,7 @@
             type="button"
             class="theme-card"
             :class="{ active: currentTheme === theme.id }"
+            :aria-pressed="currentTheme === theme.id"
             @click="setTheme(theme.id)"
           >
             <span class="theme-card__icon">{{ theme.emoji || '✨' }}</span>
@@ -53,6 +54,7 @@
               type="button"
               class="settings-pref__option"
               :class="{ 'settings-pref__option--active': preferenceValues[pref.key] === option.value }"
+              :aria-pressed="preferenceValues[pref.key] === option.value"
               @click="preferenceValues[pref.key] = option.value"
             >
               {{ option.label }}

@@ -109,7 +109,7 @@ describe('PluginMarketplacePage', () => {
     const repoButton = wrapper.get('[data-test="marketplace-repositories"]')
     expect(repoButton.element.tagName).toBe('BUTTON')
     expect(repoButton.text()).toBe('插件仓库')
-    expect(repoButton.classes()).toContain('btn-secondary')
+    expect(repoButton.classes()).toContain('btn--secondary')
     expect(wrapper.get('[data-test="marketplace-catalog-refresh"]').text()).toBe('更新')
     expect(wrapper.get('[data-test="marketplace-catalog-updated-at"]').text()).toBe('尚未更新')
   })

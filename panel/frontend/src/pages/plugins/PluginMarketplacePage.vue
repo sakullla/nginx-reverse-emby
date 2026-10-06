@@ -114,7 +114,7 @@ function onRepositoriesUpdated() {
       <div class="page-header__right">
         <div class="catalog-sync">
           <button
-            class="btn btn-secondary"
+            class="btn btn--secondary"
             type="button"
             data-test="marketplace-catalog-refresh"
             :disabled="catalogRefreshing || loading"
@@ -125,7 +125,7 @@ function onRepositoriesUpdated() {
           <span class="catalog-sync__time" data-test="marketplace-catalog-updated-at">{{ catalogUpdatedLabel }}</span>
         </div>
         <button
-          class="btn btn-secondary"
+          class="btn btn--secondary"
           type="button"
           data-test="marketplace-repositories"
           @click="openRepositories"
@@ -178,22 +178,27 @@ function onRepositoriesUpdated() {
     <div v-else-if="!packages.length && error" role="alert">
       <EmptyState title="读取失败" :description="error">
         <template #action>
-          <button class="btn btn-secondary" type="button" @click="load">重试</button>
+          <button class="btn btn--secondary" type="button" @click="load">重试</button>
         </template>
       </EmptyState>
     </div>
 
-    <EmptyState v-else-if="!packages.length" icon="🧩" title="暂无插件" description="当前市场没有可安装的插件。下一步：到仓库检查来源是否刷新成功。">
+    <EmptyState v-else-if="!packages.length" title="暂无插件" description="当前市场没有可安装的插件。下一步：到仓库检查来源是否刷新成功。">
+      <template #icon>
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <path d="M10 3.5a1.5 1.5 0 0 1 3 0V5h1.6A2.4 2.4 0 0 1 17 7.4V9h1.5a1.5 1.5 0 0 1 0 3H17v3.6a2.4 2.4 0 0 1-2.4 2.4H13v1.5a1.5 1.5 0 0 1-3 0V18H8.4A2.4 2.4 0 0 1 6 15.6V13H4.5a1.5 1.5 0 0 1 0-3H6V7.4A2.4 2.4 0 0 1 8.4 5H10V3.5z" />
+        </svg>
+      </template>
       <template #action>
-        <button class="btn btn-secondary" type="button" data-test="marketplace-repositories-empty" @click="openRepositories">插件仓库</button>
+        <button class="btn btn--secondary" type="button" data-test="marketplace-repositories-empty" @click="openRepositories">插件仓库</button>
       </template>
     </EmptyState>
 
     <template v-else>
-      <p v-if="error" class="marketplace-load-error" role="alert">{{ error }} <button class="btn btn-secondary btn-sm" type="button" @click="load({ silent: true })">重试</button></p>
+      <p v-if="error" class="marketplace-load-error" role="alert">{{ error }} <button class="btn btn--secondary btn--sm" type="button" @click="load({ silent: true })">重试</button></p>
       <div v-if="!filteredPackages.length" class="plugin-marketplace-empty">
         <p>没有匹配的插件</p>
-        <button class="btn btn-secondary" type="button" @click="query = ''; statusFilter = 'all'">清除筛选</button>
+        <button class="btn btn--secondary" type="button" @click="query = ''; statusFilter = 'all'">清除筛选</button>
       </div>
 
       <section v-else-if="view === 'card'" class="plugin-marketplace-catalog" aria-label="可安装插件">
@@ -219,7 +224,7 @@ function onRepositoriesUpdated() {
               {{ sourceKindLabel(item.source.kind) }}
             </BaseBadge>
             <div class="marketplace-card__actions">
-            <button type="button" class="btn btn-ghost btn-sm" :aria-label="`查看 ${pluginTitle(item)} 的详情`" @click.stop="openMarketplaceInspect(item)">详情</button>
+            <button type="button" class="btn btn--ghost btn--sm" :aria-label="`查看 ${pluginTitle(item)} 的详情`" @click.stop="openMarketplaceInspect(item)">详情</button>
             <button
               type="button"
               :class="tableActionClass(item)"

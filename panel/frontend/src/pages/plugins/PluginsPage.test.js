@@ -353,6 +353,54 @@ describe('PluginsPage', () => {
     expect(wrapper.findAll('.plugins-chip').map((chip) => chip.text())).toEqual(['全部', '尚未部署', '待发布', '已可用', '异常'])
   })
 
+  it('marks task-status chips with aria-pressed instead of a half tablist', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'alpha' }, { plugin_id: 'beta' }])
+    mocks.fetchPluginDetail.mockImplementation(async (id) => (
+      id === 'alpha'
+        ? withHTTPBackend(detail(id, 'group-a', {
+          published_entries: [{
+            rule_id: 8,
+            agent_id: 'edge-a',
+            frontend_url: 'https://alpha.example.com',
+            enabled: true,
+            accessible: true
+          }]
+        }))
+        : detail(id, 'group-a', { instances: [], agent_statuses: [] })
+    ))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="plugins-filter-all"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-test="plugins-filter-available"]').attributes('aria-pressed')).toBe('false')
+    await wrapper.get('[data-test="plugins-filter-available"]').trigger('click')
+    expect(wrapper.get('[data-test="plugins-filter-available"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-test="plugins-filter-all"]').attributes('aria-pressed')).toBe('false')
+  })
+
+  it('opens the installed plugin detail from the table with the keyboard', async () => {
+    mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
+    mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-a', {
+      published_entries: [{
+        rule_id: 12,
+        agent_id: 'edge-a',
+        frontend_url: 'https://ready.example.com',
+        enabled: true,
+        accessible: true
+      }]
+    })))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('button[title="列表视图"]').trigger('click')
+    const row = wrapper.get('[data-test="installed-plugins-table"] tbody tr')
+    expect(row.attributes('tabindex')).toBe('0')
+    await row.trigger('keydown', { key: 'Enter' })
+    expect(mocks.push).toHaveBeenCalledWith('/plugins/ready')
+    mocks.push.mockClear()
+    await row.trigger('keydown', { key: ' ' })
+    expect(mocks.push).toHaveBeenCalledWith('/plugins/ready')
+  })
+
   it('switches the installed catalog to a list table', async () => {
     mocks.fetchPlugins.mockResolvedValue([{ plugin_id: 'ready' }])
     mocks.fetchPluginDetail.mockResolvedValue(withHTTPBackend(detail('ready', 'group-a', {

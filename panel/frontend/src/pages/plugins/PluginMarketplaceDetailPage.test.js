@@ -179,6 +179,22 @@ describe('PluginMarketplaceDetailPage', () => {
     expect(wrapper.find('[data-test="marketplace-detail-action"]').exists()).toBe(false)
   })
 
+  it('refreshes the install status from the header entry without reinstalling', async () => {
+    mocks.fetchPlugins
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ plugin_id: entry.id, active_version: entry.version, active_package_digest: entry.sha256 }])
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.text()).toContain('未安装')
+    expect(wrapper.get('[data-test="marketplace-detail-action"]').text()).toBe('安装')
+    await wrapper.get('[data-test="marketplace-detail-refresh"]').trigger('click')
+    await flushPromises()
+    expect(mocks.fetchPlugins).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-test="marketplace-detail-action"]').text()).toBe('打开')
+    expect(mocks.installPlugin).not.toHaveBeenCalled()
+    expect(mocks.upgradePlugin).not.toHaveBeenCalled()
+  })
+
   it('confirms install from the detail action and does not submit on cancel', async () => {
     const wrapper = mountPage()
     await flushPromises()

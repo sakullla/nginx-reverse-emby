@@ -121,7 +121,9 @@
             <span class="project-link__arrow">↗</span>
           </a>
           <a href="https://github.com/sakullla/nginx-reverse-emby/issues" target="_blank" rel="noopener" class="project-link">
-            <span class="project-link__icon">🐛</span>
+            <span class="project-link__icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 2l1.5 2.5"/><path d="M16 2l-1.5 2.5"/><rect x="6" y="6" width="12" height="6" rx="3"/><path d="M18 10v1a6 6 0 0 1-12 0v-1"/><path d="M12 17v3"/><circle cx="9" cy="9" r="0.5" fill="currentColor"/><circle cx="15" cy="9" r="0.5" fill="currentColor"/><path d="M9 13.5c.9.7 2.1.7 3 0"/></svg>
+            </span>
             <span class="project-link__text">问题反馈</span>
             <span class="project-link__arrow">↗</span>
           </a>

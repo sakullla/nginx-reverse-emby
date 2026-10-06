@@ -9,7 +9,9 @@
       :aria-current="activeTab === tab.id ? 'page' : undefined"
       @click="$emit('update:activeTab', tab.id)"
     >
-      <span v-if="tab.icon" class="settings-nav__icon">{{ tab.icon }}</span>
+      <span v-if="$slots['tab-icon'] || tab.icon" class="settings-nav__icon">
+        <slot name="tab-icon" :tab="tab">{{ tab.icon }}</slot>
+      </span>
       <span class="settings-nav__text">{{ tab.label }}</span>
     </button>
   </nav>
@@ -72,7 +74,14 @@ defineEmits(['update:activeTab'])
   border-left-color: var(--color-primary);
   background: var(--color-primary-subtle);
 }
-.settings-nav__icon { font-size: var(--text-base); line-height: 1; }
+.settings-nav__icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-base);
+  line-height: 1;
+}
+
+.settings-nav__icon svg { flex-shrink: 0; }
 
 @media (max-width: 767px) {
   .settings-nav {

@@ -7,6 +7,8 @@ import BaseBadge from '../base/BaseBadge.vue'
 
 const CONTROL_PLANE_AGENT_ID = 'control-plane'
 const CONTROL_PLANE_LABEL = '控制面'
+const DEFAULT_LOG_LIMIT = 50
+const AUTO_REFRESH_INTERVAL_MS = 10000
 
 const props = defineProps({
   pluginId: { type: String, required: true },
@@ -37,8 +39,39 @@ const entries = ref([])
 const agentID = ref('')
 const loading = ref(false)
 const error = ref('')
+const levelFilter = ref('')
+const textFilter = ref('')
+const autoRefresh = ref(false)
 let generation = 0
 let controller = null
+let autoRefreshTimer = 0
+
+const levelOptions = [
+  { value: '', label: '全部级别' },
+  { value: 'error', label: '错误' },
+  { value: 'warning', label: '警告' },
+  { value: 'info', label: '信息' },
+  { value: 'debug', label: '调试' }
+]
+
+function levelGroup(level) {
+  const value = String(level || '').toLowerCase()
+  if (['error', 'fatal', 'panic'].includes(value)) return 'error'
+  if (['warning', 'warn'].includes(value)) return 'warning'
+  if (['debug', 'trace'].includes(value)) return 'debug'
+  return 'info'
+}
+
+const filteredEntries = computed(() => {
+  const level = levelFilter.value
+  const needle = textFilter.value.trim().toLowerCase()
+  return entries.value.filter((entry) => {
+    if (level && levelGroup(entry.level) !== level) return false
+    if (!needle) return true
+    const haystack = [entry?.message, agentLabel(entry?.agent_id)].join(' ').toLowerCase()
+    return haystack.includes(needle)
+  })
+})
 
 onMounted(() => load(true))
 watch(() => [props.pluginId, props.instanceId], () => {
@@ -49,7 +82,20 @@ watch(() => [props.pluginId, props.instanceId], () => {
   if (!hadFilter) load(true)
 })
 watch(agentID, () => load(true))
-onBeforeUnmount(() => controller?.abort())
+watch(autoRefresh, (enabled) => {
+  stopAutoRefresh()
+  if (enabled) autoRefreshTimer = window.setInterval(() => load(), AUTO_REFRESH_INTERVAL_MS)
+})
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+  controller?.abort()
+})
+
+function stopAutoRefresh() {
+  if (!autoRefreshTimer) return
+  window.clearInterval(autoRefreshTimer)
+  autoRefreshTimer = 0
+}
 
 async function load(selectionChanged = false) {
   if (loading.value && !selectionChanged) return
@@ -62,8 +108,7 @@ async function load(selectionChanged = false) {
   try {
     const page = await fetchPluginLogs(identity.pluginID, identity.instanceID, {
       agentID: identity.agentID,
-      cursor: '',
-      limit: 5,
+      limit: DEFAULT_LOG_LIMIT,
       signal: controller.signal
     })
     if (requestGeneration !== generation) return
@@ -73,7 +118,7 @@ async function load(selectionChanged = false) {
         const rightTime = Date.parse(right?.created_at || '') || 0
         return rightTime - leftTime
       })
-      .slice(0, 5)
+      .slice(0, DEFAULT_LOG_LIMIT)
   } catch (cause) {
     if (requestGeneration === generation && cause?.name !== 'AbortError' && cause?.code !== 'ERR_CANCELED') {
       error.value = sanitizePluginText(cause?.message || '读取运行日志失败')
@@ -118,18 +163,41 @@ function displayMessage(value) {
 
 <template>
   <div class="plugin-log-viewer">
-    <label class="plugin-log-viewer__filter">
-      <span>Agent 过滤</span>
-      <select v-model="agentID">
-        <option value="">全部可见 Agent</option>
-        <option v-for="agent in agentOptions" :key="agent.id" :value="agent.id">{{ agentLabel(agent.id) }}</option>
-      </select>
-    </label>
+    <div class="plugin-log-viewer__toolbar">
+      <label class="plugin-log-viewer__filter">
+        <span>Agent 过滤</span>
+        <select v-model="agentID" data-test="plugin-log-agent-filter">
+          <option value="">全部可见 Agent</option>
+          <option v-for="agent in agentOptions" :key="agent.id" :value="agent.id">{{ agentLabel(agent.id) }}</option>
+        </select>
+      </label>
+      <label class="plugin-log-viewer__filter">
+        <span>级别过滤</span>
+        <select v-model="levelFilter" data-test="plugin-log-level-filter">
+          <option v-for="option in levelOptions" :key="option.value || 'all'" :value="option.value">{{ option.label }}</option>
+        </select>
+      </label>
+      <label class="plugin-log-viewer__filter">
+        <span>文本过滤</span>
+        <input
+          v-model="textFilter"
+          type="search"
+          placeholder="搜索日志正文 / Agent"
+          aria-label="搜索日志正文或 Agent"
+          data-test="plugin-log-text-filter"
+          @keydown.esc.prevent="textFilter = ''"
+        >
+      </label>
+      <label class="plugin-log-viewer__auto">
+        <input v-model="autoRefresh" type="checkbox" data-test="plugin-log-auto-refresh">
+        <span>自动刷新</span>
+      </label>
+    </div>
 
     <p v-if="error" class="plugin-log-viewer__error" role="alert">{{ error }}</p>
     <p v-else-if="loading && !entries.length" class="plugin-log-viewer__empty">正在读取运行日志…</p>
-    <ol v-else-if="entries.length" class="plugin-log-list">
-      <li v-for="(entry, index) in entries" :key="`${entry.created_at}-${index}`" :data-level="entry.level">
+    <ol v-else-if="filteredEntries.length" class="plugin-log-list">
+      <li v-for="(entry, index) in filteredEntries" :key="`${entry.created_at}-${index}`" :data-level="entry.level">
         <header>
           <BaseBadge :tone="levelTone(entry.level)" size="sm">{{ entry.level || 'info' }}</BaseBadge>
           <strong>{{ agentLabel(entry.agent_id) }}</strong>
@@ -139,6 +207,7 @@ function displayMessage(value) {
         <em v-if="entry.truncated">已截断</em>
       </li>
     </ol>
+    <p v-else-if="!loading && entries.length && (levelFilter || textFilter.trim())" class="plugin-log-viewer__empty">没有匹配的日志条目。</p>
     <p v-else-if="!loading && !entries.length" class="plugin-log-viewer__empty">暂无宿主持久化运行日志。</p>
   </div>
 </template>
@@ -150,15 +219,24 @@ function displayMessage(value) {
   min-width: 0;
 }
 
+.plugin-log-viewer__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.65rem 0.85rem;
+}
+
 .plugin-log-viewer__filter {
   display: grid;
   gap: 0.35rem;
-  max-width: 22rem;
+  flex: 0 1 12rem;
+  min-width: 0;
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
 }
 
-.plugin-log-viewer__filter select {
+.plugin-log-viewer__filter select,
+.plugin-log-viewer__filter input {
   min-width: 0;
   width: 100%;
   padding: 0.55rem 0.7rem;
@@ -167,6 +245,23 @@ function displayMessage(value) {
   background: var(--color-bg-canvas);
   color: var(--color-text-primary);
   font: inherit;
+}
+
+.plugin-log-viewer__auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.4rem;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.plugin-log-viewer__auto input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--color-primary);
 }
 
 .plugin-log-viewer__error {
@@ -250,8 +345,10 @@ function displayMessage(value) {
 }
 
 @media (max-width: 42rem) {
+  .plugin-log-viewer__toolbar,
   .plugin-log-viewer__filter {
-    max-width: none;
+    width: 100%;
+    flex-basis: 100%;
   }
 
   .plugin-log-list header {

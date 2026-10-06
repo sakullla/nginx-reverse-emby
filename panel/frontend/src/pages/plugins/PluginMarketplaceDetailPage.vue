@@ -18,6 +18,7 @@ const {
   error,
   actionBusy,
   detailLoading,
+  catalogRefreshing,
   packages,
   selected,
   detail,
@@ -40,6 +41,13 @@ const {
 
 const missing = computed(() => !loading.value && !selected.value)
 
+// Manual entry to refresh the install status shown in the header without
+// leaving the page; load({ silent: true }) re-reads installed summaries.
+function refreshStatus() {
+  if (loading.value || catalogRefreshing.value || detailLoading.value || actionBusy.value) return
+  load({ silent: true })
+}
+
 watch(
   () => [packages.value, String(route.params.pluginId || ''), route.query.source],
   () => {
@@ -60,8 +68,8 @@ watch(
       <EmptyState :title="error ? '读取失败' : '没有找到这个插件'" :description="error || '市场目录里没有对应条目。下一步：返回市场重新选择，或到仓库检查来源是否刷新成功。'">
         <template #action>
           <div class="plugin-marketplace-detail-empty-actions">
-            <button class="btn btn-secondary" type="button" @click="load">重试</button>
-            <RouterLink class="btn btn-secondary" to="/plugins/marketplace">返回插件市场</RouterLink>
+            <button class="btn btn--secondary" type="button" @click="load">重试</button>
+            <RouterLink class="btn btn--secondary" to="/plugins/marketplace">返回插件市场</RouterLink>
           </div>
         </template>
       </EmptyState>
@@ -77,7 +85,16 @@ watch(
         <div class="page-header__right">
           <button
             type="button"
-            class="btn btn-primary"
+            class="btn btn--secondary"
+            data-test="marketplace-detail-refresh"
+            :disabled="loading || catalogRefreshing || detailLoading || actionBusy"
+            @click="refreshStatus"
+          >
+            {{ catalogRefreshing ? '刷新中…' : '刷新状态' }}
+          </button>
+          <button
+            type="button"
+            class="btn btn--primary"
             data-test="marketplace-detail-action"
             :disabled="actionBusy || detailLoading"
             @click="startCardAction(selected)"

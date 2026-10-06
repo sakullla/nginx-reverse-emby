@@ -54,6 +54,15 @@ describe('SettingsAbout 定位与入口', () => {
     expect(link.attributes('rel')).toContain('noopener')
   })
 
+  it('项目入口统一使用内联 SVG 图标', () => {
+    const wrapper = mountAbout()
+    const icons = wrapper.findAll('.project-link__icon')
+    expect(icons).toHaveLength(3)
+    for (const icon of icons) {
+      expect(icon.find('svg').exists()).toBe(true)
+    }
+  })
+
   it('重新打开上手引导会重置偏好并跳转首页', async () => {
     localStorage.setItem(PREF_KEY, JSON.stringify({
       started: true,
