@@ -148,6 +148,10 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 	// HTTP and HTTPS generations share the same raw TCP socket. TLS belongs
 	// to each generation's endpoint, not to the listening address.
 	bindingKey := spec.address
+	// Older agents exported protocol/port IDs. Keep accepting both protocols:
+	// a shared socket may have switched HTTP/HTTPS since it was inherited.
+	_, port, _ := net.SplitHostPort(spec.address)
+	inheritedIDs := []string{"http:http:" + port, "http:https:" + port}
 	binding := m.bindings[bindingKey]
 	if binding == nil {
 		var stream *ingress.StreamBroker
@@ -155,7 +159,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		if m.processStreams != nil {
 			stream, err = m.processStreams.NewBroker(ctx, "http:"+bindingKey, func(ctx context.Context) (net.Listener, error) {
 				return listenRuntimeSpecTCP(ctx, spec, providers)
-			})
+			}, inheritedIDs...)
 		} else {
 			var listener net.Listener
 			listener, err = listenRuntimeSpecTCP(ctx, spec, providers)
@@ -200,7 +204,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		}
 		var err error
 		if m.processPackets != nil {
-			binding.packet, err = m.processPackets.NewBroker(ctx, "http:"+bindingKey, "udp", listenPacket, ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
+			binding.packet, err = m.processPackets.NewBrokerWithAliases(ctx, "http:"+bindingKey, "udp", listenPacket, inheritedIDs, ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
 		} else {
 			var packet net.PacketConn
 			packet, err = listenPacket(ctx)

@@ -69,6 +69,19 @@ func (r *ProcessPacketRegistry) NewBroker(
 	listen func(context.Context) (net.PacketConn, error),
 	classifiers ...PacketClassifier,
 ) (*PacketBroker, error) {
+	return r.NewBrokerWithAliases(ctx, id, network, listen, nil, classifiers...)
+}
+
+// NewBrokerWithAliases accepts previous wire identities while retaining the
+// inherited ID for packet forwarding and subsequent process handoffs.
+func (r *ProcessPacketRegistry) NewBrokerWithAliases(
+	ctx context.Context,
+	id string,
+	network string,
+	listen func(context.Context) (net.PacketConn, error),
+	inheritedAliases []string,
+	classifiers ...PacketClassifier,
+) (*PacketBroker, error) {
 	if r == nil {
 		return nil, errors.New("process packet registry is required")
 	}
@@ -87,7 +100,13 @@ func (r *ProcessPacketRegistry) NewBroker(
 	if r.strict {
 		var inherited *hotrestart.GatedPacketConn
 		if r.imported != nil {
-			inherited = r.imported.Conns[id]
+			for _, candidate := range append([]string{id}, inheritedAliases...) {
+				candidate = strings.TrimSpace(candidate)
+				if candidate != "" && r.imported.Conns[candidate] != nil {
+					id, inherited = candidate, r.imported.Conns[candidate]
+					break
+				}
+			}
 		}
 		if inherited == nil {
 			return nil, fmt.Errorf("inherited packet descriptor %q is missing", id)
