@@ -164,7 +164,7 @@ onUnmounted(() => {
 })
 
 async function handleLogout() {
-  closeAccountMenu()
+  closeAccountMenu(true)
   await logout().catch(() => undefined)
   localStorage.removeItem('selected_agent_id')
   await router.replace({ name: 'login' })

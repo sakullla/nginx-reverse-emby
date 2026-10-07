@@ -906,8 +906,8 @@
   font-size: var(--text-lg);
   cursor: pointer;
   color: var(--color-text-muted);
-  width: var(--space-8);
-  height: var(--space-8);
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   display: flex;
   align-items: center;
   justify-content: center;

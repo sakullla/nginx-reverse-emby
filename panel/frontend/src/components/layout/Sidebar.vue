@@ -77,13 +77,15 @@
           <component :is="item.icon" />
         </RouterLink>
 
-        <div v-else class="sidebar__nav-icon-wrap">
+        <div v-else class="sidebar__nav-icon-wrap" :class="{ 'sidebar__nav-icon-wrap--pinned': pinnedGroup === item.label }" @keydown.escape="pinnedGroup = null">
           <button
             type="button"
             class="sidebar__nav-icon"
             :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }"
             :title="item.label"
             :aria-label="item.label"
+            :aria-expanded="pinnedGroup === item.label"
+            @click="togglePinnedGroup(item.label)"
           >
             <component :is="item.icon" />
           </button>
@@ -151,7 +153,6 @@ const icons = {
   settings: () => h('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [h('circle', { cx: '12', cy: '12', r: '3' }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' })]),
   infra: makeIconMixed([{ tag: 'rect', attrs: { x: '2', y: '2', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'rect', attrs: { x: '2', y: '14', width: '20', height: '8', rx: '2', ry: '2' } }, { tag: 'line', attrs: { x1: '6', y1: '6', x2: '6.01', y2: '6' } }, { tag: 'line', attrs: { x1: '6', y1: '18', x2: '6.01', y2: '18' } }]),
   plugin: makeIcon(['M8.5 3a2.5 2.5 0 1 0 5 0H18a2 2 0 0 1 2 2v4.5a2.5 2.5 0 1 1 0 5V19a2 2 0 0 1-2 2h-4.5a2.5 2.5 0 1 0-5 0H4a2 2 0 0 1-2-2v-4.5a2.5 2.5 0 1 0 0-5V5a2 2 0 0 1 2-2z']),
-  layers: makeIcon(['M12 2l10 5-10 5L2 7z', 'M2 12l10 5 10-5', 'M2 17l10 5 10-5']),
 }
 
 const { refreshActor } = useAccessControl()
@@ -172,7 +173,6 @@ const navItems = computed(() => {
       children: [
         { label: 'HTTP 规则', to: '/rules', icon: icons.traffic },
         { label: 'L4 规则', to: '/l4', icon: icons.infra },
-        { label: '版本策略', to: '/versions', icon: icons.layers },
       ],
     },
     {
@@ -209,6 +209,12 @@ const navItems = computed(() => {
 })
 
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
+const pinnedGroup = ref(null)
+
+function togglePinnedGroup(label) {
+  pinnedGroup.value = pinnedGroup.value === label ? null : label
+}
+
 const storedGroups = localStorage.getItem('sidebar_open_groups')
 const openGroups = ref(new Set(storedGroups == null
   ? ['流量管理', '基础设施', '插件']
@@ -254,6 +260,7 @@ onMounted(() => {
   openActiveGroups()
 })
 watch(() => route.path, openActiveGroups)
+watch(() => route.path, () => { pinnedGroup.value = null })
 watch(() => navItems.value.map((item) => item.label).join(), openActiveGroups)
 </script>
 
@@ -561,6 +568,7 @@ button.sidebar__nav-icon {
 
 .sidebar__nav-icon-wrap:hover .sidebar__hover-popup,
 .sidebar__nav-icon-wrap:focus-within .sidebar__hover-popup,
+.sidebar__nav-icon-wrap--pinned .sidebar__hover-popup,
 .sidebar__hover-popup:hover {
   opacity: 1;
   visibility: visible;
