@@ -473,7 +473,7 @@ func newHTTPWAFAttachStore(t *testing.T) *storage.GormStore {
 		t.Skip("SQLite-backed WAF attach scenarios run in the full test tier")
 	}
 	root := t.TempDir()
-	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local", TrafficStatsEnabled: true})
+	store, err := newServiceSQLiteStore(t, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ func newOfficialWAFDisableLifecycleFixture(t *testing.T) officialWAFDisableLifec
 		t.Skip("SQLite-backed WAF attach scenarios run in the full test tier")
 	}
 	root := t.TempDir()
-	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local", TrafficStatsEnabled: true})
+	store, err := newServiceSQLiteStore(t, root)
 	if err != nil {
 		t.Fatal(err)
 	}

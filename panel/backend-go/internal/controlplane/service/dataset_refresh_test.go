@@ -30,7 +30,7 @@ import (
 func rollingDatasetFixture(t *testing.T) *DatasetService {
 	t.Helper()
 	root := t.TempDir()
-	store, err := storage.NewSQLiteStore(root, "local")
+	store, err := newServiceSQLiteStore(t, root)
 	if err != nil {
 		t.Fatal(err)
 	}

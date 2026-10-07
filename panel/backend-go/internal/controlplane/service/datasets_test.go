@@ -27,7 +27,7 @@ import (
 
 func datasetServiceFixture(t *testing.T) (*DatasetService, DatasetAuthorization) {
 	t.Helper()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceSQLiteStore(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

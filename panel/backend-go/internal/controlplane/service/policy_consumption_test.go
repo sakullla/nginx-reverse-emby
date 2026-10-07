@@ -33,7 +33,7 @@ func newPolicyConsumptionFixture(t *testing.T, rpcFace ...bool) (*PluginCapabili
 		t.Skip("SQLite-backed WAF attach scenarios run in the full test tier")
 	}
 	root := t.TempDir()
-	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: root, LocalAgentID: "local", TrafficStatsEnabled: true})
+	store, err := newServiceSQLiteStore(t, root)
 	if err != nil {
 		t.Fatal(err)
 	}
