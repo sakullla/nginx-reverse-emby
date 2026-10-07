@@ -58,12 +58,6 @@
             </svg>
             L4 规则
           </RouterLink>
-          <RouterLink to="/versions" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/versions') }" :aria-current="isMoreItemActive('/versions') ? 'page' : undefined" @click.stop="moreOpen = false">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path d="M12 2l10 5-10 5L2 7z"/><path d="M2 12l10 5 10-5"/><path d="M2 17l10 5 10-5"/>
-            </svg>
-            版本策略
-          </RouterLink>
           <RouterLink to="/relay-listeners" class="more-dropdown__item" role="menuitem" :class="{ 'more-dropdown__item--active': isMoreItemActive('/relay-listeners') }" :aria-current="isMoreItemActive('/relay-listeners') ? 'page' : undefined" @click.stop="moreOpen = false">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
@@ -126,7 +120,6 @@ function isMoreItemActive(to) {
 
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
-  route.path.startsWith('/versions') ||
   route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/plugins') ||
   route.path.startsWith('/settings')

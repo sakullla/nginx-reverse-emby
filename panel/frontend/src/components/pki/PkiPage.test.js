@@ -263,8 +263,8 @@ describe('PkiPage behavior boundary', () => {
     expect(declarationsFor(sharedModalStyles, '.modal-overlay', 'padding-bottom'))
       .toContain('max(clamp(0.75rem, 2vw, 1.5rem), env(safe-area-inset-bottom, 0px))')
 
-    // VersionsPage now mounts its policy form through BaseModal, whose mobile
-    // viewport contract is asserted above, so it no longer ships local modal CSS.
+    // Policy forms mount through BaseModal, whose mobile viewport contract is
+    // asserted above, so pages no longer ship local modal CSS.
     const overlayContracts = [
       [globalSearchSource, 'GlobalSearch.vue', '.global-search-panel', undefined, ['80vh', '80dvh']],
       [agentPickerSource, 'AgentPicker.vue', '.agent-picker__dropdown', '(max-width: 640px)', ['70vh', '70dvh']],

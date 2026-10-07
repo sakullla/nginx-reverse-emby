@@ -611,26 +611,6 @@ export async function deleteRelayListener(agentId, id) {
   return mutationResource(data, 'listener')
 }
 
-export async function fetchVersionPolicies() {
-  const { data } = await api.get('/version-policies')
-  return data.policies || []
-}
-
-export async function createVersionPolicy(payload) {
-  const { data } = await api.post('/version-policies', payload, longRunningRequest)
-  return mutationResource(data, 'policy')
-}
-
-export async function updateVersionPolicy(id, payload) {
-  const { data } = await api.put(`/version-policies/${encodeURIComponent(id)}`, payload, longRunningRequest)
-  return mutationResource(data, 'policy')
-}
-
-export async function deleteVersionPolicy(id) {
-  const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
-  return mutationResource(data, 'policy')
-}
-
 export async function exportBackupSelective(include) {
   const params = new URLSearchParams()
   params.set('include', include.join(','))

@@ -382,11 +382,6 @@ for (const width of widths) {
       await closeDialog()
     })
 
-    await step('versions', async () => {
-      await open('/versions', '版本策略')
-      await capture('versions')
-    })
-
     await step('plugins', async () => {
       await open('/plugins', '已安装插件')
       await capture('plugins')

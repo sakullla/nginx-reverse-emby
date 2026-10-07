@@ -100,20 +100,20 @@ describe('mobile navigation state semantics', () => {
     expect(wrapper.get('a[href="/certs"]').attributes('aria-current')).toBe('page')
   })
 
-  it('offers version policy in the more menu with current state', async () => {
+  it('offers relay listeners in the more menu with current state', async () => {
     const trigger = render()
     await trigger.trigger('click')
     await flushPromises()
-    const versionLink = wrapper.get('a[href="/versions"]')
-    expect(versionLink.text()).toContain('版本策略')
-    expect(versionLink.attributes('aria-current')).toBeUndefined()
-    route.path = '/versions'
-    route.fullPath = '/versions'
+    const relayLink = wrapper.get('a[href="/relay-listeners"]')
+    expect(relayLink.text()).toContain('Relay 监听器')
+    expect(relayLink.attributes('aria-current')).toBeUndefined()
+    route.path = '/relay-listeners'
+    route.fullPath = '/relay-listeners'
     await flushPromises()
     // the menu closes on route change; reopen to inspect the updated state
     await trigger.trigger('click')
     await flushPromises()
-    expect(wrapper.get('a[href="/versions"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('a[href="/relay-listeners"]').attributes('aria-current')).toBe('page')
     expect(trigger.attributes('class')).toContain('active')
   })
 })
