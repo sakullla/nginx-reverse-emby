@@ -91,7 +91,7 @@ function pluginDetail(id) {
         http_backend_providers: deployed ? [{ id: 'default', display_name: '默认' }] : []
       }
     },
-    instances: deployed ? [{ id: 'inst-emby', resource_group_id: 'default', targets: ['local'] }] : [],
+    instances: deployed ? [{ id: 'inst-emby', resource_group_id: 'default', targets: ['local'], config_version: 1, current_state: 'active' }] : [],
     agent_statuses: deployed ? [{ instance_id: 'inst-emby', agent_id: 'local', runtime_state: 'active' }] : [],
     published_entries: deployed ? [{
       rule_id: 12,
@@ -203,9 +203,21 @@ for (const width of widths) {
       // Let lazy route modules mount before checking their loading indicators.
       await page.waitForTimeout(500)
       await page.waitForFunction(() => {
-        const busy = document.querySelectorAll('.spinner, .skeleton, [class*="skeleton"]')
+        const busy = document.querySelectorAll('.spinner, .skeleton, [class*="skeleton"], [data-testid="traffic-trend-loading"]')
         return [...busy].every((el) => !el.getClientRects().length)
       }, undefined, { timeout: 8000 })
+      // ApexCharts mounts its canvas before painting the series; wait until each
+      // chart host has painted marks (or legitimately shows its empty state) so
+      // screenshots do not capture a blank plot area. Best effort.
+      await page.waitForFunction(() => {
+        const hosts = [...document.querySelectorAll('.traffic-trend-chart')]
+        return hosts.every((host) => {
+          if (host.querySelector('[data-testid="traffic-trend-loading"]')) return false
+          if (host.querySelector('[data-testid="traffic-trend-empty"]')) return true
+          const canvas = host.querySelector('.apexcharts-canvas')
+          return Boolean(canvas && canvas.querySelector('.apexcharts-series path, .apexcharts-series rect'))
+        })
+      }, undefined, { timeout: 5000 }).catch(() => {})
       await page.evaluate(() => document.fonts.ready)
     }
 
