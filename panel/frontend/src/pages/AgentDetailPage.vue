@@ -527,6 +527,7 @@
           :status="agent.ddns_status || null"
           :active-domain="agent.ddns_domain || ''"
           @save="saveDdns"
+          @cancel="ddnsModalVisible = false"
         />
       </div>
     </BaseModal>

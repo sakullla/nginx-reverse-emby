@@ -193,7 +193,15 @@
       <div v-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info cert-form__footer-note'>
         系统 Relay CA 不提供前端保存或删除操作。
       </div>
-      <button v-else type='submit' class='btn btn--primary cert-form__submit' :disabled='isLoading'>
+      <button
+        type='button'
+        class='btn btn--secondary'
+        :disabled='isLoading'
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
+      <button v-if='!isProtectedSystemRelayCA' type='submit' class='btn btn--primary cert-form__submit' :disabled='isLoading'>
         {{ isEdit ? '保存修改' : '创建证书' }}
       </button>
     </div>
@@ -217,7 +225,7 @@ const props = defineProps({
   agentId: { type: [String, Object], required: true }
 })
 
-const emit = defineEmits(['success'])
+const emit = defineEmits(['success', 'cancel'])
 
 const createCertificate = useCreateCertificate(props.agentId)
 const updateCertificate = useUpdateCertificate(props.agentId)

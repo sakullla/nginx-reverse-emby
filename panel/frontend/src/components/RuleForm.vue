@@ -554,6 +554,14 @@
     <div class="rule-form__footer">
       <FieldError v-if="errors.submit" block class="rule-form__submit-error">{{ errors.submit }}</FieldError>
       <button
+        type="button"
+        class="btn btn--secondary"
+        :disabled="isLoading"
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
+      <button
         type="submit"
         class="btn btn--primary rule-form__submit"
         :disabled="isLoading"
@@ -591,7 +599,7 @@ const props = defineProps({
   agentId: { type: [String, Object], required: true }
 })
 
-const emit = defineEmits(['success'])
+const emit = defineEmits(['success', 'cancel'])
 
 const { systemInfo } = useAgent()
 

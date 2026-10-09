@@ -405,6 +405,14 @@
     <div class="rule-form__footer">
       <FieldError v-if="error" block class="rule-form__submit-error">{{ error }}</FieldError>
       <button
+        type="button"
+        class="btn btn--secondary"
+        :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
+      <button
         type="submit"
         class="btn btn--primary rule-form__submit"
         :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
@@ -430,7 +438,7 @@ const props = defineProps({
   l4Rules: { type: Array, default: () => [] },
   agentId: { type: [String, Object], required: true }
 })
-const emit = defineEmits(['success'])
+const emit = defineEmits(['success', 'cancel'])
 
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)

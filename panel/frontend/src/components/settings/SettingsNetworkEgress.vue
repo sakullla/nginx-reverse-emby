@@ -105,6 +105,7 @@
         :initial-data="editingProfile"
         :is-loading="isSaving"
         @submit="handleSubmit"
+        @cancel="showForm = false"
       />
     </BaseModal>
 

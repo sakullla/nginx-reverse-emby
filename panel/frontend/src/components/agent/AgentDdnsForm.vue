@@ -127,6 +127,13 @@
 
     <div class="agent-ddns-form__footer">
       <button
+        class="btn btn--secondary agent-ddns-form__cancel"
+        type="button"
+        :disabled="saving"
+        data-testid="agent-ddns-form-cancel"
+        @click="$emit('cancel')"
+      >取消</button>
+      <button
         class="btn btn-primary agent-ddns-form__save"
         type="button"
         :disabled="saving || !canSave"
@@ -152,7 +159,7 @@ const props = defineProps({
   activeDomain: { type: String, default: '' }
 })
 
-const emit = defineEmits(['update:modelValue', 'save'])
+const emit = defineEmits(['update:modelValue', 'save', 'cancel'])
 
 const families = [
   { key: 'ipv4', label: 'IPv4', short: 'A' },
@@ -530,6 +537,7 @@ function familyInterfaceMissing(key) {
 .agent-ddns-form__footer {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   padding-top: 0.125rem;
 }
 

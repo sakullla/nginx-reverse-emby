@@ -133,7 +133,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RelayListenerForm :initial-data="editingListener" :agent-id="formAgentId" @success="closeForm" />
+      <RelayListenerForm :initial-data="editingListener" :agent-id="formAgentId" @success="closeForm" @cancel="closeForm" />
     </BaseModal>
 
     <DeleteConfirmDialog

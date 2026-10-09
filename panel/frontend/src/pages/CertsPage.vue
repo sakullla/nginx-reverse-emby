@@ -127,7 +127,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <CertificateForm :initial-data="editingCert" :agent-id="formAgentId" @success="closeForm" />
+      <CertificateForm :initial-data="editingCert" :agent-id="formAgentId" @success="closeForm" @cancel="closeForm" />
     </BaseModal>
 
     <DeleteConfirmDialog

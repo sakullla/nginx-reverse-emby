@@ -42,6 +42,9 @@
     </div>
 
     <div class="form-actions">
+      <button type="button" class="btn btn--secondary" :disabled="isLoading" @click="emit('cancel')">
+        取消
+      </button>
       <button type="submit" class="btn btn--primary" :disabled="isLoading">
         {{ initialData ? '保存' : '创建' }}
       </button>
@@ -58,7 +61,7 @@ const props = defineProps({
   isLoading: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['submit'])
+const emit = defineEmits(['submit', 'cancel'])
 
 const error = ref('')
 const form = ref(createFormState(props.initialData))
@@ -231,6 +234,7 @@ function handleSubmit() {
 .form-actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 @media (max-width: 640px) {

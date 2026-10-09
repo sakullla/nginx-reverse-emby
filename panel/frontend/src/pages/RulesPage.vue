@@ -156,7 +156,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RuleForm :initial-data="editingRule" :agent-id="formAgentId" @success="closeForm" />
+      <RuleForm :initial-data="editingRule" :agent-id="formAgentId" @success="closeForm" @cancel="closeForm" />
     </BaseModal>
 
     <!-- Copy Modal -->
@@ -168,7 +168,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="formAgentId" @success="closeForm" />
+      <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="formAgentId" @success="closeForm" @cancel="closeForm" />
     </BaseModal>
 
     <!-- Delete Modal -->
