@@ -41,9 +41,10 @@
                 <button
                   type="button"
                   class="tag__remove"
+                  :aria-label="`移除标签 ${tag}`"
                   @click="removeTag(index)"
                 >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <line x1="18" y1="6" x2="6" y2="18"/>
                     <line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
@@ -224,7 +225,7 @@
           <span class="toggle__slider"></span>
           <span class="option-row__content">
             <span class="option-row__label">启用监听器</span>
-            <span class="option-row__desc">创建后立即参与同步与接入</span>
+            <span class="option-row__desc">{{ isEdit ? '保存后立即参与同步与接入' : '创建后立即参与同步与接入' }}</span>
           </span>
         </label>
       </section>

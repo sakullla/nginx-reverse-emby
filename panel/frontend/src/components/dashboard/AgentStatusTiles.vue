@@ -6,6 +6,8 @@
       :to="`/agents/${agent.id}`"
       class="agent-tile"
       :class="tileClass(agent)"
+      :title="tileTitle(agent)"
+      :aria-label="tileTitle(agent)"
       data-testid="agent-tile"
     >
       <span class="agent-tile__dot" aria-hidden="true"></span>
@@ -49,6 +51,13 @@ function statusLabel(agent) {
 function endpointLabel(agent) {
   const label = getAgentEndpointLabel(agent)
   return label === '—' ? '' : label
+}
+
+function tileTitle(agent) {
+  const name = agent.name || agent.id
+  const status = statusLabel(agent)
+  const endpoint = endpointLabel(agent)
+  return endpoint ? `${name}，${status}，${endpoint}` : `${name}，${status}`
 }
 
 function tileClass(agent) {
@@ -168,6 +177,8 @@ function tileClass(agent) {
 }
 
 .agent-tile__endpoint {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

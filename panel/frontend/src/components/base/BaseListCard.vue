@@ -27,7 +27,9 @@
       </div>
     </header>
 
-    <div v-if="title" class="base-list-card__title">{{ title }}</div>
+    <div v-if="title" class="base-list-card__title" :title="title">
+      <template v-for="(part, index) in titleParts" :key="index">{{ part }}<wbr v-if="index < titleParts.length - 1" /></template>
+    </div>
 
     <div v-if="$slots.default" class="base-list-card__body">
       <slot />
@@ -46,6 +48,8 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
+import { softBreakParts } from '../../utils/softBreak.js'
 
 const props = defineProps({
   status: {
@@ -61,8 +65,13 @@ const props = defineProps({
 
 const emit = defineEmits(['click'])
 
+const titleParts = computed(() => softBreakParts(props.title))
+
 function onClick(e) {
   if (!props.clickable) return
+  // Dragging to copy a hostname should not also open the editor.
+  const selection = window.getSelection?.()
+  if (selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode)) return
   emit('click', e)
 }
 
@@ -149,8 +158,8 @@ function onKey(e) {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .base-list-card__body {

@@ -331,9 +331,10 @@ const resumeTimer = (id, event) => {
 @media (max-width: 640px) {
   .status-message-container {
     top: auto;
-    bottom: var(--space-4);
-    left: var(--space-4);
-    right: var(--space-4);
+    /* Keep toasts above the fixed bottom nav and the home-indicator inset. */
+    bottom: calc(4rem + var(--space-3) + env(safe-area-inset-bottom, 0px));
+    left: var(--space-3);
+    right: var(--space-3);
     max-width: none;
   }
 

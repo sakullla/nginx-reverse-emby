@@ -221,9 +221,10 @@
               <button
                 type="button"
                 class="tag__remove"
+                :aria-label="`移除标签 ${tag}`"
                 @click="removeTag(index)"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                   <line x1="18" y1="6" x2="6" y2="18"/>
                   <line x1="6" y1="6" x2="18" y2="18"/>
                 </svg>
@@ -251,7 +252,7 @@
           >
           <span class="toggle__content">
             <span class="toggle__label">启用此规则</span>
-            <span class="toggle__desc">创建后立即生效</span>
+            <span class="toggle__desc">{{ isEdit ? '保存后立即生效' : '创建后立即生效' }}</span>
           </span>
           <span class="toggle__slider" aria-hidden="true"></span>
         </label>

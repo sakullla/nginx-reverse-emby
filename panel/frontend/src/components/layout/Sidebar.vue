@@ -2,7 +2,7 @@
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
     <div class="sidebar__header">
       <span class="sidebar__brand" v-show="!collapsed">Nginx Proxy</span>
-      <button class="sidebar__collapse-btn" @click="toggleCollapse" :title="collapsed ? '展开' : '折叠'">
+      <button class="sidebar__collapse-btn" type="button" @click="toggleCollapse" :aria-label="collapsed ? '展开侧栏' : '折叠侧栏'" :title="collapsed ? '展开侧栏' : '折叠侧栏'">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ 'rotate-180': collapsed }">
           <polyline points="15 18 9 12 15 6"/>
         </svg>

@@ -57,6 +57,11 @@ function onClick(e) {
   cursor: not-allowed;
 }
 
+.base-icon-button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+
 .base-icon-button:active:not(:disabled) {
   transform: scale(0.95);
 }

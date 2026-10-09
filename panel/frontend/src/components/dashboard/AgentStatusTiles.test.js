@@ -42,6 +42,7 @@ describe('AgentStatusTiles', () => {
     ])
     const tiles = wrapper.findAll('[data-testid="agent-tile"]')
     expect(tiles[0].text()).toContain('hk.example.com')
+    expect(tiles[0].attributes('title')).toContain('hk.example.com')
     expect(tiles[0].text()).not.toContain('1.2.3.4')
     expect(tiles[1].text()).toContain('vps-b.example.com')
     expect(tiles[2].text()).toContain('5.6.7.8')
