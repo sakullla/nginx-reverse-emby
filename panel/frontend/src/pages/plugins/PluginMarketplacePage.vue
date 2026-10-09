@@ -36,7 +36,6 @@ const {
   source,
   isUpgrade,
   requiredPermissions,
-  alreadyInstalled,
   pluginPurpose,
   nextStepHint,
   catalogUpdatedLabel,
@@ -307,7 +306,6 @@ function onRepositoriesUpdated() {
       :source-label="sourceKindLabel(source.kind)"
       :purpose="pluginPurpose"
       :next-step="nextStepHint"
-      :already-installed="alreadyInstalled"
       :is-upgrade="isUpgrade"
       :required-permissions="requiredPermissions"
       :action-busy="actionBusy"
@@ -476,14 +474,12 @@ function onRepositoriesUpdated() {
 }
 
 .catalog-sync {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .catalog-sync__time {
-  width: 100%;
-  order: 2;
-  font-size: 0.6875rem;
-  text-align: center;
+  font-size: var(--text-xs);
+  text-align: left;
 }
 
 .marketplace-toolbar {

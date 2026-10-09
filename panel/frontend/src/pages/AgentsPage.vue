@@ -432,7 +432,7 @@ const subtitleText = computed(() => {
   const total = agents.value.length
   const shown = filteredAgents.value.length
   const countLabel = shown === total ? `${total} 个节点` : `${shown} / ${total} 个节点`
-  return `${countLabel} · ${onlineCount.value} 在线 · 累计 ${totalHttpRules.value} HTTP 规则 · 累计 ${totalL4Rules.value} L4 规则`
+  return `${countLabel} · ${onlineCount.value} 在线 · ${totalHttpRules.value} HTTP / ${totalL4Rules.value} L4 规则`
 })
 
 const showJoinModal = ref(false)
@@ -785,7 +785,7 @@ function confirmDelete() {
   flex-wrap: wrap;
 }
 
-.agents-page__header-left { flex: 1; min-width: 0; }
+.agents-page__header-left { flex: 1 1 18rem; min-width: min(18rem, 100%); }
 
 .agents-page__header-right {
   display: flex;
@@ -793,6 +793,8 @@ function confirmDelete() {
   gap: 0.75rem;
   flex-shrink: 0;
   flex-wrap: wrap;
+  /* Never let the action cluster overhang the content box; wrap inside instead. */
+  max-width: 100%;
 }
 
 .agents-page__title {
@@ -807,6 +809,8 @@ function confirmDelete() {
   font-size: 0.875rem;
   color: var(--color-text-tertiary);
   margin: 0;
+  /* Header actions claim most of the row; keep stats wrapping tidy when tight. */
+  text-wrap: balance;
 }
 
 .agent-list-move {
@@ -1224,12 +1228,33 @@ function confirmDelete() {
   box-shadow: var(--shadow-focus);
 }
 
+/* Tablet: the action cluster (search + four buttons) can claim the whole row,
+   so stack the header instead of crushing the title and stats into a sliver. */
+@media (min-width: 641px) and (max-width: 1023px) {
+  .agents-page__header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+  .agents-page__header-left {
+    flex: none;
+  }
+  .agents-page__header-right {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 640px) {
   .agents-page__header {
     flex-direction: column;
     align-items: stretch;
     margin-bottom: 0.85rem;
     gap: 0.65rem;
+  }
+  /* Column layout: the row-layout flex basis must not become a min height. */
+  .agents-page__header-left {
+    flex: none;
   }
   .agents-page__header-right {
     width: 100%;

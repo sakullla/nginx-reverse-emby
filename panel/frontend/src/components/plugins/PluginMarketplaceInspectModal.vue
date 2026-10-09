@@ -17,7 +17,6 @@ defineProps({
   sourceLabel: { type: String, default: '' },
   purpose: { type: String, default: '' },
   nextStep: { type: String, default: '' },
-  alreadyInstalled: { type: Boolean, default: false },
   isUpgrade: { type: Boolean, default: false },
   requiredPermissions: { type: Array, default: () => [] },
   actionBusy: { type: Boolean, default: false },
@@ -59,8 +58,7 @@ function onAction(event) {
         </p>
         <p class="marketplace-primary__purpose">{{ purpose }}</p>
         <p class="marketplace-primary__next" data-test="marketplace-inspect-next">{{ nextStep }}</p>
-        <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
-        <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
+        <p v-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
       </section>
       <section class="permission-review">
         <h3>安装权限</h3>

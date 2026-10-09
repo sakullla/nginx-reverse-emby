@@ -26,7 +26,6 @@ const {
   source,
   isUpgrade,
   requiredPermissions,
-  alreadyInstalled,
   pluginPurpose,
   nextStepHint,
   load,
@@ -115,8 +114,7 @@ watch(
           </p>
           <p class="marketplace-primary__purpose">{{ pluginPurpose }}</p>
           <p class="marketplace-primary__next" data-test="marketplace-next-step">{{ nextStepHint }}</p>
-          <p v-if="alreadyInstalled">当前版本已安装，可打开详情继续部署或配置。</p>
-          <p v-else-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
+          <p v-if="isUpgrade" class="upgrade-notice">升级将先验证候选版本；失败时保留当前已安装版本。</p>
         </section>
         <section class="permission-review">
           <h3>安装权限</h3>
