@@ -9,7 +9,7 @@
       <div class="traffic-history-manager__summary-body">
         <span class="traffic-history-manager__chip">小时 {{ policy.hourly_retention_days }} 天</span>
         <span class="traffic-history-manager__chip">日 {{ policy.daily_retention_months }} 个月</span>
-        <span class="traffic-history-manager__chip">月 {{ policy.monthly_retention_months ?? '—' }} 个月</span>
+        <span class="traffic-history-manager__chip">月 {{ monthlyRetentionLabel }}</span>
       </div>
     </div>
     <div class="traffic-history-manager__actions">
@@ -35,7 +35,9 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   policy: {
     type: Object,
     required: true,
@@ -46,6 +48,12 @@ defineProps({
   },
   calibrating: { type: Boolean, default: false },
   cleaning: { type: Boolean, default: false }
+})
+
+// 月汇总留空表示永久保留，不要渲染成“— 个月”。
+const monthlyRetentionLabel = computed(() => {
+  const months = props.policy?.monthly_retention_months
+  return typeof months === 'number' && months > 0 ? `${months} 个月` : '永久保留'
 })
 
 defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])

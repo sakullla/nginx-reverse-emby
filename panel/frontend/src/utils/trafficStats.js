@@ -120,7 +120,7 @@ export function formatBytes(value) {
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`
 }
 
-export function formatQuota(value, unlimitedLabel = 'Unlimited') {
+export function formatQuota(value, unlimitedLabel = '无限制') {
   const bytes = normalizeNullableBytes(value)
   return bytes == null ? unlimitedLabel : formatBytes(bytes)
 }
@@ -173,4 +173,20 @@ export function formatPercentage(value, fallback = '—') {
   const p = Number(value)
   if (!Number.isFinite(p)) return fallback
   return `${Math.round(p)}%`
+}
+
+/**
+ * 保留期数值的人性化提示：换算到更易读的单位，避免出现“约 0 个月 / 约 0 年”。
+ * unit = 'days' 时，不足 30 天按天显示，否则折算为月；
+ * unit = 'months' 时，不足 12 个月按天显示，否则折算为年。
+ * 空值或非法值返回 emptyLabel（月汇总留空表示永久时传入相应文案）。
+ */
+export function formatRetentionHint(value, unit, emptyLabel = '') {
+  const amount = Number(value)
+  if (!Number.isFinite(amount) || amount <= 0) return emptyLabel
+  if (unit === 'days') {
+    return amount < 30 ? `约 ${Math.round(amount)} 天` : `约 ${Math.round(amount / 30)} 个月`
+  }
+  if (amount < 12) return `约 ${Math.round(amount * 30)} 天`
+  return `约 ${Math.round(amount / 12)} 年`
 }

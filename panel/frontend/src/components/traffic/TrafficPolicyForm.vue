@@ -53,7 +53,7 @@
               <span class="traffic-policy-form__badge">单位：天</span>
             </span>
             <input :value="modelValue.hourly_retention_days" class="traffic-policy-form__input" type="number" min="1" @input="updateField('hourly_retention_days', Number($event.target.value))">
-            <span class="traffic-policy-form__hint">约 {{ Math.round(modelValue.hourly_retention_days / 30) }} 个月</span>
+            <span class="traffic-policy-form__hint">{{ formatRetentionHint(modelValue.hourly_retention_days, 'days') }}</span>
           </label>
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">
@@ -61,7 +61,7 @@
               <span class="traffic-policy-form__badge">单位：月</span>
             </span>
             <input :value="modelValue.daily_retention_months" class="traffic-policy-form__input" type="number" min="1" @input="updateField('daily_retention_months', Number($event.target.value))">
-            <span class="traffic-policy-form__hint">约 {{ modelValue.daily_retention_months * 30 }} 天</span>
+            <span class="traffic-policy-form__hint">{{ formatRetentionHint(modelValue.daily_retention_months, 'months') }}</span>
           </label>
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">
@@ -69,7 +69,7 @@
               <span class="traffic-policy-form__badge">单位：月</span>
             </span>
             <input :value="modelValue.monthly_retention_months" class="traffic-policy-form__input" type="number" min="1" placeholder="留空表示永久" @input="updateField('monthly_retention_months', $event.target.value)">
-            <span class="traffic-policy-form__hint">约 {{ Math.round(modelValue.monthly_retention_months / 12) }} 年</span>
+            <span class="traffic-policy-form__hint">{{ formatRetentionHint(modelValue.monthly_retention_months, 'months', '永久保留') }}</span>
           </label>
         </div>
       </div>
@@ -93,6 +93,8 @@
 </template>
 
 <script setup>
+import { formatRetentionHint } from '../../utils/trafficStats.js'
+
 const props = defineProps({
   modelValue: { type: Object, required: true },
   saving: { type: Boolean, default: false }
