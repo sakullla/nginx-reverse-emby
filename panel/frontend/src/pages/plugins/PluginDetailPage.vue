@@ -476,8 +476,25 @@ function faceStateTone(state) {
   return 'warning'
 }
 
+const LOCAL_MANAGEMENT_STATE_LABELS = {
+  active: '管理面就绪',
+  applying: '配置生效中',
+  degraded: '管理面降级',
+  disabled: '已停用',
+  failed: '执行失败',
+  crashed: '执行崩溃',
+  pending: '等待生效',
+  undeployed: '尚未部署'
+}
+
 function localManagementState(instance) {
-  return instance?.current_state || '尚未部署'
+  const state = String(instance?.current_state || '').trim().toLowerCase()
+  return state || 'undeployed'
+}
+
+function localManagementStateLabel(instance) {
+  const state = localManagementState(instance)
+  return LOCAL_MANAGEMENT_STATE_LABELS[state] || state
 }
 
 function taskStateTone(state) {
@@ -809,7 +826,7 @@ async function retryAgent(status) {
           </button>
           <button
             v-if="showUninstallOnTask"
-            class="btn btn-danger"
+            class="btn btn--danger-soft"
             type="button"
             data-test="plugin-task-uninstall"
             :disabled="!!busy"
@@ -870,7 +887,7 @@ async function retryAgent(status) {
                 <small v-if="faceHostScope('local-management')">{{ faceHostScope('local-management') }}</small>
               </div>
               <BaseBadge :tone="faceStateTone(localManagementState(selectedInstance))" size="sm" dot>
-                {{ localManagementState(selectedInstance) }}
+                {{ localManagementStateLabel(selectedInstance) }}
               </BaseBadge>
             </div>
             <p>目标固定为 {{ canonicalLocalTargetID || '本地' }}；配置与管理状态只归属当前控制面。</p>
@@ -894,7 +911,7 @@ async function retryAgent(status) {
           <span>配置版本 {{ selectedInstance.config_version }}</span>
           <template v-if="!hasDeclaredFaceProjection">
             <span>目标 {{ instanceTargetLabels(selectedInstance) }}</span>
-            <span>状态 {{ selectedInstance.current_state }}</span>
+            <span>状态 {{ localManagementStateLabel(selectedInstance) }}</span>
           </template>
           <div v-if="canWrite" class="instance-actions">
             <button v-if="!formEmpty" class="btn btn-secondary btn-sm" type="button" @click="openConfigModal">编辑配置</button>

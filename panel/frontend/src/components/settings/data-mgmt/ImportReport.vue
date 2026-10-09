@@ -42,7 +42,7 @@
               :key="`${section.key}-${item.kind}-${item.key}`"
               class="report-list__item"
             >
-              <span class="report-list__kind">{{ item.kind }}</span>
+              <span class="report-list__kind">{{ kindLabel(item.kind) }}</span>
               <span class="report-list__key">{{ item.key }}</span>
               <span v-if="item.reason" class="report-list__reason">{{ item.reason }}</span>
             </li>
@@ -56,6 +56,20 @@
 
 <script setup>
 import { computed } from 'vue'
+
+const KIND_LABELS = {
+  agent: '节点',
+  http_rule: 'HTTP 规则',
+  l4_rule: 'L4 规则',
+  certificate: '证书',
+  relay_listener: 'Relay 监听器',
+  version_policy: '版本策略'
+}
+
+function kindLabel(kind) {
+  const key = String(kind || '').trim().toLowerCase()
+  return KIND_LABELS[key] || key || '—'
+}
 
 const props = defineProps({
   importResult: { type: Object, required: true }

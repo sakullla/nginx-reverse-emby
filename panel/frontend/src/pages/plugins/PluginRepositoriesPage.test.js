@@ -182,6 +182,20 @@ describe('PluginRepositoriesPage', () => {
     expect(wrapper.text()).toContain('最近刷新失败：credential rejected')
   })
 
+  it('localizes a raw refresh result instead of echoing the API enum', async () => {
+    fetchRepositorySources.mockResolvedValueOnce([{
+      ...customSource,
+      current_resolved_oid: '',
+      current_snapshot: '',
+      last_result: 'succeeded'
+    }])
+    await mountPage()
+    await openSource('Team Plugins')
+
+    expect(wrapper.text()).toContain('刷新成功')
+    expect(wrapper.text()).not.toContain('succeeded')
+  })
+
   it('shows the load error with retry instead of fake sources when reading fails', async () => {
     fetchRepositorySources.mockRejectedValue(new Error('backend unavailable'))
     await mountPage()

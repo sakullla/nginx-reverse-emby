@@ -5,6 +5,7 @@ import { configurePlugin, invokePluginDynamicAction, publishPlugin } from '../..
 import { resolvePointer } from '../../api/pluginCondition'
 import { sanitizePluginText, stripReadOnlyConfigValues } from '../../api/pluginSecurity'
 import { buildFrontendURL, parseFrontendURL } from '../../utils/frontendURL'
+import { getAgentStatusLabel } from '../../utils/agentHelpers'
 import { messageStore } from '../../stores/messages'
 import BaseModal from '../base/BaseModal.vue'
 import PluginDeclarativeUI from './PluginDeclarativeUI.vue'
@@ -520,7 +521,7 @@ async function runDynamicAction({ action, target_id, confirmed }) {
             >
             <span>
               <strong>{{ agent.name || agent.id }}</strong>
-              <small>{{ agent.status === 'online' ? '在线' : agent.status === 'offline' ? '离线' : (agent.status || '状态未知') }}</small>
+              <small>{{ getAgentStatusLabel(agent.status) }}</small>
             </span>
           </label>
         </div>
