@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
@@ -19,6 +21,30 @@ type fakePluginDNSTokenHost struct {
 func (h fakePluginDNSTokenHost) HasActiveDNSProvider() bool { return h.active }
 func (h fakePluginDNSTokenHost) ResolveDNSToken(context.Context, string) (string, error) {
 	return h.token, h.err
+}
+
+type fakePluginDNSProviderHost struct {
+	fakePluginDNSTokenHost
+	resolution pluginhost.DNSProviderResolution
+	ensured    int
+	deleted    int
+}
+
+func (h *fakePluginDNSProviderHost) ResolveDNSProvider(context.Context, string) (pluginhost.DNSProviderResolution, error) {
+	if h.err != nil {
+		return pluginhost.DNSProviderResolution{}, h.err
+	}
+	return h.resolution, nil
+}
+
+func (h *fakePluginDNSProviderHost) EnsureDNSRecord(context.Context, string, string, string, string, int) error {
+	h.ensured++
+	return nil
+}
+
+func (h *fakePluginDNSProviderHost) DeleteDNSRecord(context.Context, string, string, string, string) error {
+	h.deleted++
+	return nil
 }
 
 func TestPluginDNSTokenResolverPrecedenceAndFallback(t *testing.T) {
@@ -47,5 +73,53 @@ func TestPluginDNSTokenResolverPrecedenceAndFallback(t *testing.T) {
 				t.Fatalf("token=%q err=%v", token, err)
 			}
 		})
+	}
+}
+
+func TestPluginDNSCredentialDoesNotHandDomesticProviderToCloudflare(t *testing.T) {
+	t.Parallel()
+	host := &fakePluginDNSProviderHost{
+		fakePluginDNSTokenHost: fakePluginDNSTokenHost{active: true, token: "must-not-leak"},
+		resolution:             pluginhost.DNSProviderResolution{Provider: pluginhost.DNSProviderAliyun},
+	}
+	resolver := NewPluginDNSTokenResolver(host, "env-token")
+	credential, err := resolver.ResolveCredential(t.Context(), "edge.example.cn")
+	if err != nil || credential.Provider != pluginhost.DNSProviderAliyun || credential.Token != "" || !credential.Mapped {
+		t.Fatalf("credential=%+v err=%v", credential, err)
+	}
+	token, err := resolver.Resolve(t.Context(), "edge.example.cn")
+	if err == nil || token != "" || strings.Contains(err.Error(), "env-token") || strings.Contains(err.Error(), "must-not-leak") {
+		t.Fatalf("token=%q err=%v", token, err)
+	}
+
+	host.resolution = pluginhost.DNSProviderResolution{Provider: pluginhost.DNSProviderCloudflare, Token: "mapped-token"}
+	token, err = resolver.Resolve(t.Context(), "edge.example.com")
+	if err != nil || token != "mapped-token" {
+		t.Fatalf("cloudflare token=%q err=%v", token, err)
+	}
+	host.err = errors.New("vault unavailable")
+	if _, err := resolver.ResolveCredential(t.Context(), "edge.example.cn"); err == nil || strings.Contains(err.Error(), "env-token") {
+		t.Fatalf("mapped failure err=%v", err)
+	}
+}
+
+func TestManagedCertificateIssuerModeFollowsDomesticMapping(t *testing.T) {
+	t.Parallel()
+	domestic, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
+		return DNSCredential{Provider: pluginhost.DNSProviderDNSPodCN, Mapped: true}, nil
+	}, t.Context(), "www.example.cn", false)
+	if err != nil || domestic != "master_cf_dns" {
+		t.Fatalf("domestic mode=%q err=%v", domestic, err)
+	}
+	http01, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
+		return DNSCredential{}, fmt.Errorf("%w: missing.example", errDNSCredentialUnavailable)
+	}, t.Context(), "missing.example", false)
+	if err != nil || http01 != "local_http01" {
+		t.Fatalf("unmapped mode=%q err=%v", http01, err)
+	}
+	if _, err := managedCertificateIssuerModeForDomain(true, func(context.Context, string) (DNSCredential, error) {
+		return DNSCredential{}, errors.New("vault unavailable")
+	}, t.Context(), "edge.example.cn", true); err == nil {
+		t.Fatal("mapped provider failure fell through")
 	}
 }

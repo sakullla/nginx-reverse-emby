@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/sanitize"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -37,6 +40,7 @@ type DDNSService struct {
 	now           func() time.Time
 	resolveToken  func(context.Context, string) (string, error)
 	resolverReady func() bool
+	records       managedDNSRecordProvider
 
 	dispatcher *ddnsDispatcher
 
@@ -61,6 +65,15 @@ func (s *DDNSService) SetTokenResolver(resolve func(context.Context, string) (st
 	}
 	s.resolveToken = resolve
 	s.resolverReady = ready
+}
+
+// SetRecordProvider routes domestic mappings to the plugin record API. Cloudflare
+// mappings and environment fallback still use the Cloudflare client.
+func (s *DDNSService) SetRecordProvider(records managedDNSRecordProvider) {
+	if s == nil {
+		return
+	}
+	s.records = records
 }
 
 // NewDDNSService constructs a reconciler that uses cf to upsert Cloudflare
@@ -202,7 +215,7 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 
 	// Disabled master (no env fallback and no plugin): record the reason and
 	// stop. A specific domain can still fail later if that name has no Token.
-	resolverReady := s.resolveToken != nil && (s.resolverReady == nil || s.resolverReady())
+	resolverReady := (s.records != nil || s.resolveToken != nil) && (s.resolverReady == nil || s.resolverReady())
 	if !s.cfg.DDNSReady() && !resolverReady {
 		if prior.Status != "disabled" {
 			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "disabled", LastError: "cloudflare token not configured"})
@@ -270,7 +283,7 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		delay := ddnsBackoffDelay(class, extractDDNSRetryAfter(err), retryCount)
 		status := storage.DdnsStatus{
 			Status:            "error",
-			LastError:         truncateDDNSError(err.Error()),
+			LastError:         publicDDNSError(err),
 			RetryCount:        retryCount,
 			NextRetryAtUnix:   s.now().Add(delay).Unix(),
 			BackoffClass:      class,
@@ -309,15 +322,54 @@ func (s *DDNSService) desiredRecords(cfg *storage.DDNSConfig, row storage.AgentR
 }
 
 func (s *DDNSService) upsertRecords(ctx context.Context, domains []string, desired []desiredRecord) error {
+	var upsertErrors []error
 	for _, domain := range domains {
-		token, err := s.tokenForDomain(ctx, domain)
+		if err := s.upsertDomain(ctx, domain, desired); err != nil {
+			upsertErrors = append(upsertErrors, err)
+		}
+	}
+	return errors.Join(upsertErrors...)
+}
+
+func (s *DDNSService) upsertDomain(ctx context.Context, domain string, desired []desiredRecord) error {
+	if s.records != nil {
+		credential, err := s.records.ResolveCredential(ctx, domain)
 		if err != nil {
 			return err
+		}
+		if pluginhost.IsDomesticDNSProvider(credential.Provider) {
+			if credential.Token != "" {
+				return errors.New("domestic DNS provider returned a token")
+			}
+			ttl := s.cfg.DDNS.TTL
+			if ttl < 1 {
+				ttl = 120
+			}
+			for _, rec := range desired {
+				if err := s.records.EnsureRecord(ctx, domain, rec.recordType, domain, rec.content, ttl); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		token := strings.TrimSpace(credential.Token)
+		if token == "" {
+			return fmt.Errorf("Cloudflare domain %s has no available token", strings.TrimSpace(domain))
 		}
 		for _, rec := range desired {
 			if _, err := s.cf.EnsureRecord(ctx, token, domain, rec.recordType, rec.content, s.cfg.DDNS.TTL); err != nil {
 				return err
 			}
+		}
+		return nil
+	}
+	token, err := s.tokenForDomain(ctx, domain)
+	if err != nil {
+		return err
+	}
+	for _, rec := range desired {
+		if _, err := s.cf.EnsureRecord(ctx, token, domain, rec.recordType, rec.content, s.cfg.DDNS.TTL); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -459,6 +511,13 @@ func parseDDNSStatus(raw string) storage.DdnsStatus {
 		return storage.DdnsStatus{}
 	}
 	return status
+}
+
+func publicDDNSError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return truncateDDNSError(sanitize.Text(err.Error(), nil))
 }
 
 func truncateDDNSError(msg string) string {

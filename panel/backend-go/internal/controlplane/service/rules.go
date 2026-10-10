@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	pluginsdk "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
@@ -278,6 +279,7 @@ type ruleService struct {
 	postCommitActions      *[]func()
 	pluginPublishAdmission bool
 	dnsTokenProviderReady  func() bool
+	dnsCredential          func(context.Context, string) (DNSCredential, error)
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
@@ -290,6 +292,13 @@ func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) 
 
 func (s *ruleService) SetDNSTokenProviderReady(ready func() bool) {
 	s.dnsTokenProviderReady = ready
+}
+
+func (s *ruleService) SetDNSCredentialResolver(resolve func(context.Context, string) (DNSCredential, error)) {
+	if s == nil {
+		return
+	}
+	s.dnsCredential = resolve
 }
 
 func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {
@@ -455,7 +464,8 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &ruleService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
-				postCommitActions: &postCommitActions,
+				postCommitActions: &postCommitActions, dnsTokenProviderReady: s.dnsTokenProviderReady,
+				dnsCredential: s.dnsCredential,
 			}
 			var mutateErr error
 			created, mutateErr = txService.createLegacy(ctx, resolvedID, input)
@@ -647,7 +657,8 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &ruleService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
-				postCommitActions: &postCommitActions,
+				postCommitActions: &postCommitActions, dnsTokenProviderReady: s.dnsTokenProviderReady,
+				dnsCredential: s.dnsCredential,
 			}
 			var mutateErr error
 			updated, mutateErr = txService.updateLegacy(ctx, resolvedID, id, input)
@@ -872,7 +883,8 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &ruleService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
-				postCommitActions: &postCommitActions,
+				postCommitActions: &postCommitActions, dnsTokenProviderReady: s.dnsTokenProviderReady,
+				dnsCredential: s.dnsCredential,
 			}
 			var mutateErr error
 			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
@@ -1323,6 +1335,9 @@ func (s *ruleService) prepareAutoManagedDNSCertificateIssues(originalRows []stor
 }
 
 func (s *ruleService) autoManagedDNSIssuerAvailable() bool {
+	if s.dnsCredential != nil {
+		return true
+	}
 	return (s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || (s.cfg.ManagedCloudflareDNSReady() && newMasterCFDNSManagedCertificateIssuer() != nil)
 }
 
@@ -1379,13 +1394,50 @@ func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
 		}
 		return "local_http01", nil
 	}
-	if (s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || s.cfg.ManagedCloudflareDNSReady() {
+	mode, err := managedCertificateIssuerModeForDomain(
+		agentHasCapability(capabilities, "local_acme"),
+		s.dnsCredential,
+		ctx,
+		host,
+		(s.dnsTokenProviderReady != nil && s.dnsTokenProviderReady()) || s.cfg.ManagedCloudflareDNSReady(),
+	)
+	if err != nil {
+		return "", err
+	}
+	if mode == "" {
+		return "", fmt.Errorf("%w: no available unified certificate issuer for %s", ErrInvalidArgument, host)
+	}
+	return mode, nil
+}
+
+func managedCertificateIssuerModeForDomain(
+	localACME bool,
+	resolve func(context.Context, string) (DNSCredential, error),
+	ctx context.Context,
+	host string,
+	globalDNSReady bool,
+) (string, error) {
+	if resolve != nil {
+		credential, err := resolve(ctx, host)
+		if err != nil {
+			if !errors.Is(err, errDNSCredentialUnavailable) && !errors.Is(err, pluginhost.ErrDNSTokenNotMapped) {
+				return "", err
+			}
+		} else if pluginhost.IsDomesticDNSProvider(credential.Provider) || strings.TrimSpace(credential.Token) != "" {
+			return "master_cf_dns", nil
+		}
+		if localACME {
+			return "local_http01", nil
+		}
+		return "", nil
+	}
+	if globalDNSReady {
 		return "master_cf_dns", nil
 	}
-	if agentHasCapability(capabilities, "local_acme") {
+	if localACME {
 		return "local_http01", nil
 	}
-	return "", fmt.Errorf("%w: no available unified certificate issuer for %s", ErrInvalidArgument, host)
+	return "", nil
 }
 
 func (s *ruleService) resolveAgentCapabilities(ctx context.Context, agentID string) (string, []string, error) {

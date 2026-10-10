@@ -64,6 +64,37 @@ func TestManagedCertificateAutoRenewLoopWakesForPersistedRetry(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateAutoRenewLoopRunsForPluginWithoutCloudflareEnv(t *testing.T) {
+	originalPass := runManagedCertificateRenewalPass
+	originalRetryAt := nextManagedCertificateRenewalRetryAt
+	originalInitialDelay := managedCertificateAutoRenewInitialDelay
+	t.Cleanup(func() {
+		runManagedCertificateRenewalPass = originalPass
+		nextManagedCertificateRenewalRetryAt = originalRetryAt
+		managedCertificateAutoRenewInitialDelay = originalInitialDelay
+	})
+	managedCertificateAutoRenewInitialDelay = 0
+	ran := make(chan struct{}, 1)
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	runManagedCertificateRenewalPass = func(context.Context, config.Config, *service.PluginDNSTokenResolver) error {
+		ran <- struct{}{}
+		stop()
+		return nil
+	}
+	nextManagedCertificateRenewalRetryAt = func(context.Context, config.Config, *service.PluginDNSTokenResolver) (time.Time, error) {
+		return time.Time{}, nil
+	}
+	startManagedCertificateAutoRenewLoop(stopCtx, config.Config{
+		ManagedCertificateRenewInterval: time.Hour,
+	}, log.New(io.Discard, "", 0), service.NewPluginDNSTokenResolver(nil, ""))
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("renewal loop did not start without ACME_DNS_PROVIDER=cf")
+	}
+}
+
 func TestManagedCertificateAutoRenewLoopPollsWhenNoRetryWasPersisted(t *testing.T) {
 	originalPass := runManagedCertificateRenewalPass
 	originalRetryAt := nextManagedCertificateRenewalRetryAt

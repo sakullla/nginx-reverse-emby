@@ -56,6 +56,9 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 		}
 
 		_, renewErr := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
+		if errors.Is(renewErr, errRenewalDNSNotConfigured) {
+			continue
+		}
 		if renewErr != nil {
 			if ctx.Err() != nil {
 				return errors.Join(append(renewalErrors, renewErr)...)
@@ -138,6 +141,9 @@ func (s *certificateService) renewSingleCertificate(
 	result, err := s.runManagedCertificateACMEOperation(ctx, cert.Domain, func(operationCtx context.Context) (managedCertificateRenewalResult, error) {
 		return issuer.Renew(operationCtx, cert)
 	})
+	if errors.Is(err, errRenewalDNSNotConfigured) {
+		return false, errRenewalDNSNotConfigured
+	}
 	if err != nil {
 		if _, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index); saveErr != nil {
 			return false, saveErr

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/pluginhost"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 	"gorm.io/gorm"
@@ -246,10 +247,34 @@ func NewCertificateService(cfg config.Config, store storage.Store) *certificateS
 }
 
 func NewCertificateServiceWithDNSTokenResolver(cfg config.Config, store storage.Store, resolve func(context.Context, string) (string, error)) *certificateService {
-	if !cfg.ManagedDNSCertificatesEnabled {
+	return newCertificateServiceWithManagedDNS(cfg, store, resolve, nil)
+}
+
+func NewCertificateServiceWithDNSProvider(cfg config.Config, store storage.Store, provider *PluginDNSTokenResolver) *certificateService {
+	if provider == nil {
+		return NewCertificateServiceWithDNSTokenResolver(cfg, store, nil)
+	}
+	return newCertificateServiceWithManagedDNS(cfg, store, provider.Resolve, provider)
+}
+
+func newCertificateServiceWithManagedDNS(cfg config.Config, store storage.Store, resolve func(context.Context, string) (string, error), provider managedDNSRecordProvider) *certificateService {
+	if !cfg.ManagedDNSCertificatesEnabled && provider == nil {
 		return newCertificateServiceWithRenewal(cfg, store, nil)
 	}
-	return newCertificateServiceWithRenewal(cfg, store, newMasterCFDNSManagedCertificateIssuerWithResolver(resolve))
+	if resolve == nil && provider == nil {
+		return newCertificateServiceWithRenewal(cfg, store, nil)
+	}
+	issuer := newMasterCFDNSManagedCertificateIssuerWithResolver(resolve)
+	if issuer == nil && provider != nil {
+		issuer = newMasterCFDNSManagedCertificateIssuerWithResolver(func(context.Context, string) (string, error) {
+			return "", errDNSCredentialUnavailable
+		})
+	}
+	if typed, ok := issuer.(*masterCFDNSManagedCertificateIssuer); ok && typed != nil {
+		typed.records = provider
+		typed.skipWithoutCredential = provider != nil && !cfg.ManagedDNSCertificatesEnabled && !cfg.ManagedCloudflareDNSReady()
+	}
+	return newCertificateServiceWithRenewal(cfg, store, issuer)
 }
 
 func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
@@ -1497,6 +1522,9 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		issueResult, err := s.runManagedCertificateACMEOperation(ctx, current.Domain, func(operationCtx context.Context) (managedCertificateRenewalResult, error) {
 			return issuer.Issue(operationCtx, current)
 		})
+		if errors.Is(err, errRenewalDNSNotConfigured) {
+			return current, nil
+		}
 		if err != nil {
 			// Re-read before recording failure — the ACME order may have taken long
 			// enough that the certificate was concurrently deleted or edited. Using the
@@ -2109,8 +2137,8 @@ func (s *certificateService) scheduleManagedCertificateIssue(ctx context.Context
 	if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
 		return ManagedCertificate{}, err
 	}
-	if !s.managedCertificateIssuerAvailable() {
-		return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+	if err := s.assertManagedDNSSubmissionAllowed(ctx, current.Domain); err != nil {
+		return ManagedCertificate{}, err
 	}
 
 	scheduled := current
@@ -2143,6 +2171,27 @@ func (s *certificateService) scheduleManagedCertificateIssue(ctx context.Context
 // for this service: an injected renewal issuer, or the Cloudflare DNS issuer when
 // ACME DNS-01 is ready (environment Token or an installed plugin). Used to fail-fast
 // at submit time instead of after dispatch.
+func (s *certificateService) assertManagedDNSSubmissionAllowed(ctx context.Context, domain string) error {
+	issuer, _ := s.renewalIssuer.(*masterCFDNSManagedCertificateIssuer)
+	if issuer != nil && issuer.records != nil {
+		credential, err := issuer.records.ResolveCredential(ctx, domain)
+		if err != nil {
+			if errors.Is(err, errDNSCredentialUnavailable) || errors.Is(err, pluginhost.ErrDNSTokenNotMapped) {
+				return fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+			}
+			return err
+		}
+		if pluginhost.IsDomesticDNSProvider(credential.Provider) || strings.TrimSpace(credential.Token) != "" {
+			return nil
+		}
+		return fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+	}
+	if !s.managedCertificateIssuerAvailable() {
+		return fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+	}
+	return nil
+}
+
 func (s *certificateService) managedCertificateIssuerAvailable() bool {
 	if s.renewalIssuer != nil {
 		return true
@@ -2161,11 +2210,14 @@ func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (sto
 }
 
 func ManagedCertificateBackgroundSignerWithDNSTokenResolver(cfg config.Config, openStore func() (storage.Store, error), localApplyTrigger func(context.Context) error, resolve func(context.Context, string) (string, error)) managedCertificateSignFunc {
-	var issuer managedCertificateRenewalIssuer
-	if cfg.ManagedDNSCertificatesEnabled {
-		issuer = newMasterCFDNSManagedCertificateIssuerWithResolver(resolve)
+	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, newCertificateServiceWithManagedDNS(cfg, nil, resolve, nil).renewalIssuer, localApplyTrigger)
+}
+
+func ManagedCertificateBackgroundSignerWithDNSProvider(cfg config.Config, openStore func() (storage.Store, error), localApplyTrigger func(context.Context) error, provider *PluginDNSTokenResolver) managedCertificateSignFunc {
+	if provider == nil {
+		return ManagedCertificateBackgroundSignerWithDNSTokenResolver(cfg, openStore, localApplyTrigger, nil)
 	}
-	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, issuer, localApplyTrigger)
+	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, newCertificateServiceWithManagedDNS(cfg, nil, provider.Resolve, provider).renewalIssuer, localApplyTrigger)
 }
 
 // managedCertificateBackgroundSignerWithIssuer is the testable core: tests inject a fake issuer

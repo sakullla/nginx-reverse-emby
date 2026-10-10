@@ -106,10 +106,10 @@ var runControlPlaneFromEnv = func() error {
 	// Wire the background signer before startup recovery so re-dispatched "issuing" certificates
 	// have a real sign function (otherwise Submit is a safe no-op). Each issuance opens a fresh
 	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
-	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSignerWithDNSTokenResolver(cfg, func() (storage.Store, error) {
+	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSignerWithDNSProvider(cfg, func() (storage.Store, error) {
 		return openConfiguredStore(cfg)
-	}, nil, dnsTokenResolver.Resolve))
-	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
+	}, nil, dnsTokenResolver))
+	startManagedCertificateIssuanceRecovery(ctx, cfg, nil, dnsTokenResolver != nil)
 	if err := application.Run(ctx); err != nil {
 		return err
 	}
@@ -338,7 +338,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 		_ = store.Close()
 	}()
 
-	return service.NewCertificateServiceWithDNSTokenResolver(cfg, store, resolver.Resolve).RunRenewalPass(ctx)
+	return service.NewCertificateServiceWithDNSProvider(cfg, store, resolver).RunRenewalPass(ctx)
 }
 
 var nextManagedCertificateRenewalRetryAt = func(ctx context.Context, cfg config.Config, resolver *service.PluginDNSTokenResolver) (time.Time, error) {
@@ -350,7 +350,7 @@ var nextManagedCertificateRenewalRetryAt = func(ctx context.Context, cfg config.
 	defer func() {
 		_ = store.Close()
 	}()
-	return service.NewCertificateServiceWithDNSTokenResolver(cfg, store, resolver.Resolve).NextManagedCertificateRenewalRetryAt(ctx, time.Now().UTC())
+	return service.NewCertificateServiceWithDNSProvider(cfg, store, resolver).NextManagedCertificateRenewalRetryAt(ctx, time.Now().UTC())
 }
 
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
@@ -363,7 +363,10 @@ var revisionRetentionStartupMaxAttempts = 6
 var pluginRuntimeRetentionAge = 24 * time.Hour
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger, resolver *service.PluginDNSTokenResolver) {
-	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
+	if cfg.ManagedCertificateRenewInterval <= 0 {
+		return
+	}
+	if !cfg.ManagedDNSCertificatesEnabled && resolver == nil {
 		return
 	}
 	if logger == nil {
@@ -438,8 +441,8 @@ var runManagedCertificateIssuanceRecovery = func(ctx context.Context, cfg config
 	return service.ManagedCertificateDispatcher().Recover(ctx, store)
 }
 
-func startManagedCertificateIssuanceRecovery(ctx context.Context, cfg config.Config, logger *log.Logger) {
-	if !cfg.ManagedDNSCertificatesEnabled {
+func startManagedCertificateIssuanceRecovery(ctx context.Context, cfg config.Config, logger *log.Logger, pluginRenewal bool) {
+	if !cfg.ManagedDNSCertificatesEnabled && !pluginRenewal {
 		return
 	}
 	if logger == nil {
@@ -667,9 +670,11 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 	agentSvc.SetTrafficService(trafficSvc)
 	ddnsSvc := service.NewDDNSService(cfg, serviceStore, nil, nil)
 	ddnsSvc.SetTokenResolver(dnsTokenResolver.Resolve, dnsTokenResolver.Ready)
+	ddnsSvc.SetRecordProvider(dnsTokenResolver)
 	agentSvc.SetDDNSReconciler(ddnsSvc)
 	revisionReconciler := service.NewRevisionReconciler(agentSvc.RevisionAPI(), logger)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
+	ruleSvc.SetDNSCredentialResolver(dnsTokenResolver.ResolveCredential)
 	ruleSvc.SetDNSTokenProviderReady(func() bool {
 		return cfg.ManagedDNSCertificatesEnabled && dnsTokenResolver.Ready()
 	})
@@ -677,7 +682,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger, bindDNSTokenResol
 	versionSvc := service.NewVersionPolicyService(serviceStore)
 	egressSvc := service.NewEgressProfileServiceWithConfig(cfg, serviceStore)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
-	certSvc := service.NewCertificateServiceWithDNSTokenResolver(cfg, serviceStore, dnsTokenResolver.Resolve)
+	certSvc := service.NewCertificateServiceWithDNSProvider(cfg, serviceStore, dnsTokenResolver)
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 	pkiProxy := service.NewDegradedPKIService(service.ErrPKIRuntimeUnavailable)
 	pkiSupervisor := newControlPlanePKISupervisor(cfg, serviceStore, taskSvc, relaySvc, pkiProxy, logger)
